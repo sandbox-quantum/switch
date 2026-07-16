@@ -67,6 +67,15 @@ class DiscordAdapter(CollaborationAdapter):
         # Discord user id ↔ username caches, for mention translation both ways.
         self._user_names: dict[int, str] = {}
         self._username_to_id: dict[str, int] = {}
+        # (channel_id, agent_name) -> message ref of the agent's live "working
+        # on it…" runtime-state message, so it can be deleted when the agent
+        # stops working. Webhook messages delete cleanly on Discord, so a
+        # persistent message is preferable to the one-shot typing indicator.
+        self._working_msg: dict[tuple[str, str], str] = {}
+        # (channel_id, agent_name) -> refs of the live "needs your input" pings,
+        # kept so they can be removed when the turn ends. The working indicator
+        # stays up alongside these — the agent is mid-turn, just paused.
+        self._input_pings: dict[tuple[str, str], list[str]] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -314,6 +323,62 @@ class DiscordAdapter(CollaborationAdapter):
             logger.exception(
                 "Failed to trigger typing in Discord channel %s", channel_id
             )
+
+    # ── Runtime state ────────────────────────────────────────────────────────
+
+    async def apply_runtime_state(
+        self,
+        channel_id: str,
+        agent_name: str,
+        state: str,
+        *,
+        notify_user: str | None,
+        thread_root_id: str | None,
+        deeplink_url: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Render runtime state as persistent, truly-deletable status messages.
+
+        Discord deletes webhook messages cleanly (no tombstone), so — like
+        Slack — the "working on it…" indicator and any "needs your input"
+        pings are posted while relevant and deleted when the turn ends. The
+        working indicator stays up through `awaiting-input` (the agent is
+        mid-turn, just paused) and the pings are removed alongside it when
+        the turn goes idle or resumes to `working`. When the agent was
+        addressed in a thread, messages surface in that thread.
+        """
+        key = (channel_id, agent_name)
+        if state == "working":
+            await self._clear_input_pings(channel_id, agent_name)
+            # Posted under the agent's own name/icon, so the body just states
+            # the activity — no need to repeat the agent name in the text.
+            body = self._working_body(detail, deeplink_url)
+            existing = self._working_msg.get(key)
+            if existing is not None:
+                await self.update_message(channel_id, existing, body)
+                return
+            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
+            if ref is not None:
+                self._working_msg[key] = ref
+        elif state == "awaiting-input":
+            ref = await self._ping_operator(
+                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+            )
+            if ref is not None:
+                self._input_pings.setdefault(key, []).append(ref)
+        else:
+            await self._clear_working(channel_id, agent_name)
+            await self._clear_input_pings(channel_id, agent_name)
+
+    async def _clear_working(self, channel_id: str, agent_name: str) -> None:
+        ref = self._working_msg.pop((channel_id, agent_name), None)
+        if ref is not None:
+            await self.delete_message(channel_id, ref)
+
+    async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
+        refs = self._input_pings.pop((channel_id, agent_name), [])
+        for ref in refs:
+            await self.delete_message(channel_id, ref)
 
     # ── Channels ─────────────────────────────────────────────────────────────
 

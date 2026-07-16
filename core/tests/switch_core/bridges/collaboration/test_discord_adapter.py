@@ -588,6 +588,132 @@ def test_send_typing_triggers_once_and_off_is_noop() -> None:
     assert channel.typing_count == 1
 
 
+# ── Runtime state (working-on-it activity) ──────────────────────────────────
+
+
+def _runtime_setup() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+    return adapter, channel, webhook
+
+
+def test_runtime_state_working_posts_persistent_indicator() -> None:
+    adapter, _, webhook = _runtime_setup()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+        )
+    )
+
+    assert len(webhook.sent) == 1
+    assert webhook.sent[0]["content"] == "⚙️ _Working on it…_"
+    assert webhook.sent[0]["username"] == "my-agent"
+    assert adapter._working_msg[(str(CHANNEL_ID), "my-agent")] == f"{CHANNEL_ID}:901"
+
+
+def test_runtime_state_detail_edits_message_in_place() -> None:
+    adapter, _, webhook = _runtime_setup()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+            detail="Editing adapter.py",
+        )
+    )
+
+    assert len(webhook.sent) == 1
+    assert len(webhook.edits) == 1
+    assert webhook.edits[0]["message_id"] == 901
+    assert webhook.edits[0]["content"] == "⚙️ Editing adapter.py"
+    assert adapter._working_msg[(str(CHANNEL_ID), "my-agent")] == f"{CHANNEL_ID}:901"
+
+
+def test_runtime_state_idle_clears_working_message() -> None:
+    adapter, channel, _ = _runtime_setup()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID), "my-agent", "idle", notify_user=None, thread_root_id=None
+        )
+    )
+
+    assert channel.deleted_ids == [901]
+    assert (str(CHANNEL_ID), "my-agent") not in adapter._working_msg
+
+
+def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
+    adapter, channel, webhook = _runtime_setup()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "awaiting-input",
+            notify_user="louis",
+            thread_root_id=None,
+        )
+    )
+
+    # Working indicator stays up; a ping was posted and tracked.
+    assert len(webhook.sent) == 2
+    assert "@louis" in webhook.sent[1]["content"]
+    assert "needs your input" in webhook.sent[1]["content"]
+    assert adapter._input_pings[(str(CHANNEL_ID), "my-agent")] == [f"{CHANNEL_ID}:902"]
+
+    # Resuming work means the input was provided — the ping is deleted, the
+    # working indicator is refreshed in place.
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+        )
+    )
+    assert channel.deleted_ids == [902]
+    assert (str(CHANNEL_ID), "my-agent") not in adapter._input_pings
+
+
 # ── Webhook management ───────────────────────────────────────────────────────
 
 
