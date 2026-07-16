@@ -36,6 +36,10 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.adapter import (
+    TeamsAdapter,
+    TeamsConnectionConfig,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.admin_client import AdminClient
@@ -318,6 +322,7 @@ async def run() -> None:
         "mattermost", MattermostAdapter, MattermostConnectionConfig
     )
     collab_lifecycle.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+    collab_lifecycle.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
 
     # Health check and collab bridge mounted on the agent bridge app
     @agent_bridge_app.get("/health")

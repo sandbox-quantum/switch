@@ -13,6 +13,10 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.teams.adapter import (
+    TeamsAdapter,
+    TeamsConnectionConfig,
+)
 
 
 def _service() -> CollaborationBridgeLifecycleService:
@@ -61,3 +65,21 @@ def test_get_config_schema_unknown_type_raises() -> None:
     service = _service()
     with pytest.raises(ValueError, match="Unknown bridge type"):
         service.get_config_schema("does-not-exist")
+
+
+def test_teams_adapter_registers_with_expected_required_fields() -> None:
+    service = _service()
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+
+    assert "teams" in service.get_registered_types()
+
+    schema = service.get_config_schema("teams")
+    # The credentials + endpoint fields with no default are required; the
+    # subscription/encryption/deeplink fields are optional.
+    assert set(schema["required"]) == {
+        "app_id",
+        "app_password",
+        "tenant_id",
+        "team_id",
+        "public_base_url",
+    }

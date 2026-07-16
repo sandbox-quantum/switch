@@ -1,0 +1,1021 @@
+from __future__ import annotations
+
+import asyncio
+import html
+import logging
+import re
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from urllib.parse import quote
+
+import httpx
+from aiohttp import web
+
+from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.models import (
+    BridgeConnectionConfig,
+    ChannelType,
+    InboundAgentJoin,
+    InboundAppJoin,
+    InboundCommand,
+    InboundMessage,
+    InboundUserJoin,
+)
+from switch_core.bridges.collaboration.teams.auth import (
+    InboundActivityValidator,
+    TeamsTokenProvider,
+)
+from switch_core.bridges.collaboration.teams.cards import (
+    agent_message_card,
+    card_attachment,
+)
+from switch_core.bridges.collaboration.teams.connector import BotConnectorClient
+from switch_core.bridges.collaboration.teams.crypto import (
+    decrypt_resource_data,
+    load_certificate_der_b64,
+)
+from switch_core.bridges.collaboration.teams.graph import GraphClient
+
+logger = logging.getLogger(__name__)
+
+_MENTION_TAG = re.compile(r"<at\b[^>]*>.*?</at>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+# Channel-message subscriptions with resource data live at most 60 minutes; we
+# request 55 and proactively renew well before expiry.
+_SUBSCRIPTION_TTL = timedelta(minutes=55)
+_RENEWAL_INTERVAL_SECONDS = 40 * 60
+
+
+class TeamsConnectionConfig(BridgeConnectionConfig):
+    """Per-bridge Microsoft Teams credentials and endpoints.
+
+    Teams integration uses an Azure AD app registration that backs both a Bot
+    Framework bot (outbound messaging, proactive messages) and Microsoft Graph
+    access (channel-message capture, provisioning). Secrets live per-bridge in
+    the ``connection_config`` JSONB column, like every other collaboration
+    bridge — nothing here belongs in global config.
+    """
+
+    # Azure AD app registration (bot client id + secret + tenant).
+    app_id: str
+    app_password: str
+    tenant_id: str
+
+    # AAD team (group) id that outbound-created channels are provisioned into.
+    team_id: str
+
+    # Public HTTPS base URL where this adapter's inbound listener is reachable.
+    # Teams and Graph are HTTP-push, so the adapter hosts its own listener:
+    # Bot Framework activities at ``/api/messages`` and Graph change
+    # notifications at ``/api/teams/notifications``, both under this base.
+    public_base_url: str
+
+    # Local bind for the inbound listener.
+    listen_host: str = "0.0.0.0"
+    listen_port: int = 3978
+
+    # Graph change-notification resource-data encryption. Graph encrypts message
+    # bodies with the public certificate; the private key decrypts them on
+    # delivery. Required once channel-message subscriptions are enabled.
+    encryption_certificate_id: str | None = None
+    encryption_public_certificate: str | None = None
+    encryption_private_key: str | None = None
+
+    # Shared secret echoed back in every change notification, validated on
+    # receipt to reject spoofed callbacks.
+    client_state: str | None = None
+
+    # User-facing deeplink base (https://teams.microsoft.com/l/...). When unset,
+    # channel deeplinks are not offered.
+    public_url: str | None = None
+
+
+class TeamsAdapter(CollaborationAdapter):
+    """Microsoft Teams collaboration adapter.
+
+    Single-bot identity model (like Slack): one Azure bot app backs every Switch
+    agent, and per-agent presentation is done with Adaptive Card sender labels
+    rather than a bot account per agent. Outbound messages are delivered through
+    the Bot Framework connector; inbound activities arrive at a self-hosted
+    aiohttp listener. Full (non-@mention) channel-message capture via Microsoft
+    Graph subscriptions is layered on in a later phase.
+    """
+
+    def __init__(self, *, config: TeamsConnectionConfig) -> None:
+        super().__init__()
+        self._config = config
+
+        self._http: httpx.AsyncClient | None = None
+        self._tokens: TeamsTokenProvider | None = None
+        self._connector: BotConnectorClient | None = None
+        self._graph: GraphClient | None = None
+        self._validator: InboundActivityValidator | None = None
+        self._runner: web.AppRunner | None = None
+
+        # Per-tenant Bot Connector endpoint, captured from inbound activities.
+        self._service_url: dict[str, str] = {}
+        self._default_service_url: str | None = None
+        # channel/chat id -> ChannelType, learned from inbound activities.
+        self._channel_type: dict[str, ChannelType] = {}
+        # message id -> (service_url, conversation_id) for later edit/delete.
+        self._sent: dict[str, tuple[str, str]] = {}
+        # Inbound de-duplication — the Bot Framework and Graph capture paths can
+        # both deliver the same channel message, keyed on the Teams message id.
+        self._seen: OrderedDict[str, None] = OrderedDict()
+        self._seen_max = 2000
+
+        # channel id -> Graph subscription id, for channels we capture.
+        self._subscriptions: dict[str, str] = {}
+        # channel id -> AAD team id, learned from bot-join activities so a
+        # channel-message subscription can be created for it.
+        self._team_of_channel: dict[str, str] = {}
+        self._sub_lock = asyncio.Lock()
+        self._renewal_task: asyncio.Task[None] | None = None
+
+        # (channel_id, agent_name) -> live "working on it…" message ref.
+        self._working_msg: dict[tuple[str, str], str] = {}
+        # (channel_id, agent_name) -> live "needs your input" ping refs.
+        self._input_pings: dict[tuple[str, str], list[str]] = {}
+
+    # ── Lifecycle ────────────────────────────────────────────────────────────
+
+    async def start(
+        self,
+        on_message: Callable[[InboundMessage], Awaitable[None]],
+        on_command: Callable[[InboundCommand], Awaitable[None]],
+        on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]],
+        on_user_joined: Callable[[InboundUserJoin], Awaitable[None]],
+        on_app_joined: Callable[[InboundAppJoin], Awaitable[None]],
+    ) -> None:
+        self._on_message = on_message
+        self._on_command = on_command
+        self._on_agent_joined = on_agent_joined
+        self._on_user_joined = on_user_joined
+        self._on_app_joined = on_app_joined
+
+        self._http = httpx.AsyncClient(timeout=30)
+        self._tokens = TeamsTokenProvider(
+            tenant_id=self._config.tenant_id,
+            app_id=self._config.app_id,
+            app_password=self._config.app_password,
+            http=self._http,
+        )
+        self._connector = BotConnectorClient(tokens=self._tokens, http=self._http)
+        self._graph = GraphClient(tokens=self._tokens, http=self._http)
+        self._validator = InboundActivityValidator(app_id=self._config.app_id)
+
+        app = web.Application()
+        app.router.add_post("/api/messages", self._handle_http_messages)
+        app.router.add_post("/api/teams/notifications", self._handle_http_notifications)
+        app.router.add_get("/api/teams/notifications", self._handle_http_notifications)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        site = web.TCPSite(
+            self._runner, self._config.listen_host, self._config.listen_port
+        )
+        await site.start()
+        logger.info(
+            "Teams adapter listening on %s:%d (app %s)",
+            self._config.listen_host,
+            self._config.listen_port,
+            self._config.app_id,
+        )
+        await self._adopt_existing_subscriptions()
+        self._renewal_task = asyncio.create_task(self._renewal_loop())
+
+    @property
+    def _notification_url(self) -> str:
+        base = self._config.public_base_url.rstrip("/")
+        return f"{base}/api/teams/notifications"
+
+    async def _adopt_existing_subscriptions(self) -> None:
+        """Re-attach to subscriptions this bridge already owns after a restart.
+
+        Graph subscriptions outlive the process, so on start we reclaim any that
+        point at our notification URL rather than blindly creating duplicates."""
+        if self._graph is None:
+            return
+        try:
+            existing = await self._graph.list_subscriptions()
+        except Exception:
+            logger.warning("Could not list existing Graph subscriptions on start")
+            return
+        for sub in existing:
+            if sub.get("notificationUrl") != self._notification_url:
+                continue
+            resource = str(sub.get("resource", ""))
+            channel_id = self._channel_from_resource(resource)
+            if channel_id:
+                self._subscriptions[channel_id] = str(sub.get("id", ""))
+        if self._subscriptions:
+            logger.info(
+                "Re-attached to %d existing Teams subscriptions",
+                len(self._subscriptions),
+            )
+
+    async def _renewal_loop(self) -> None:
+        """Proactively renew channel-message subscriptions before they expire.
+
+        Complements the reactive ``reauthorizationRequired`` lifecycle handler:
+        even if a lifecycle notification is missed, subscriptions are refreshed
+        on this cadence so capture never silently lapses."""
+        while True:
+            await asyncio.sleep(_RENEWAL_INTERVAL_SECONDS)
+            await self._renew_all_subscriptions()
+
+    async def _renew_all_subscriptions(self) -> None:
+        if self._graph is None:
+            return
+        for channel_id, subscription_id in list(self._subscriptions.items()):
+            try:
+                await self._graph.renew_subscription(
+                    subscription_id=subscription_id,
+                    expiration_iso=self._expiration_iso(),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to renew subscription %s for channel %s",
+                    subscription_id,
+                    channel_id,
+                )
+
+    async def stop(self) -> None:
+        if self._renewal_task is not None:
+            self._renewal_task.cancel()
+            self._renewal_task = None
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
+        if self._validator is not None:
+            self._validator.close()
+            self._validator = None
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+        logger.info("Teams adapter stopped")
+
+    # ── Outbound helpers ─────────────────────────────────────────────────────
+
+    def _service_url_for(self, channel_id: str) -> str:
+        url = self._service_url.get(channel_id) or self._default_service_url
+        if not url:
+            raise RuntimeError(
+                f"no Bot Connector serviceUrl known for channel {channel_id} — "
+                "the bot has not yet received an activity from this tenant"
+            )
+        return url
+
+    def _is_channel(self, channel_id: str) -> bool:
+        """Whether ``channel_id`` is a Teams channel (threaded) vs a flat chat.
+
+        Learned type wins; otherwise fall back to the id shape (channels use
+        ``@thread.tacv2``). Switch-created channels default to channel."""
+        known = self._channel_type.get(channel_id)
+        if known is not None:
+            return known in ("channel_public", "channel_private")
+        return "@thread.tacv2" in channel_id or channel_id not in self._channel_type
+
+    @staticmethod
+    def _thread_conversation(channel_id: str, root_id: str) -> str:
+        return f"{channel_id};messageid={root_id}"
+
+    def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
+        return {
+            "type": "message",
+            "attachments": [card_attachment(agent_message_card(sender_name, body))],
+        }
+
+    # ── Messaging ────────────────────────────────────────────────────────────
+
+    async def send_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        content: str,
+        thread_root_id: str | None = None,
+    ) -> str | None:
+        if self._connector is None:
+            logger.error("Cannot send message: Teams adapter not started")
+            return None
+
+        service_url = self._service_url_for(channel_id)
+        activity = self._message_activity(sender_name, self.translate_outbound(content))
+
+        if self._is_channel(channel_id) and thread_root_id is None:
+            conversation_id, msg_id = await self._connector.create_channel_thread(
+                service_url=service_url, channel_id=channel_id, activity=activity
+            )
+        else:
+            conversation_id = (
+                self._thread_conversation(channel_id, thread_root_id)
+                if thread_root_id
+                else channel_id
+            )
+            msg_id = await self._connector.send_to_conversation(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                activity=activity,
+            )
+
+        if msg_id:
+            self._sent[msg_id] = (service_url, conversation_id)
+            return msg_id
+        return None
+
+    async def admin_message(
+        self,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None = None,
+        *,
+        message_type: str | None = None,
+    ) -> str | None:
+        # Admin/system messages render as the Switch bot itself — a plain text
+        # activity, no per-agent Adaptive Card — so they read as the platform
+        # speaking rather than an agent.
+        if self._connector is None:
+            logger.error("Cannot post admin message: Teams adapter not started")
+            return None
+
+        service_url = self._service_url_for(channel_id)
+        activity = {"type": "message", "text": self.translate_outbound(content)}
+
+        if self._is_channel(channel_id) and thread_root_id is None:
+            conversation_id, msg_id = await self._connector.create_channel_thread(
+                service_url=service_url, channel_id=channel_id, activity=activity
+            )
+        else:
+            conversation_id = (
+                self._thread_conversation(channel_id, thread_root_id)
+                if thread_root_id
+                else channel_id
+            )
+            msg_id = await self._connector.send_to_conversation(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                activity=activity,
+            )
+
+        if msg_id:
+            self._sent[msg_id] = (service_url, conversation_id)
+            return msg_id
+        return None
+
+    def _locate(self, channel_id: str, message_ref: str) -> tuple[str, str]:
+        """Resolve ``(service_url, conversation_id)`` for a previously sent
+        message so it can be edited or deleted. Falls back to treating the
+        message as its own thread root when it wasn't sent in this session."""
+        located = self._sent.get(message_ref)
+        if located is not None:
+            return located
+        logger.warning(
+            "No tracked conversation for Teams message %s; reconstructing", message_ref
+        )
+        return (
+            self._service_url_for(channel_id),
+            self._thread_conversation(channel_id, message_ref),
+        )
+
+    async def update_message(
+        self, channel_id: str, message_ref: str, new_content: str
+    ) -> None:
+        if self._connector is None:
+            logger.error("Cannot update message: Teams adapter not started")
+            return
+        service_url, conversation_id = self._locate(channel_id, message_ref)
+        await self._connector.update_activity(
+            service_url=service_url,
+            conversation_id=conversation_id,
+            activity_id=message_ref,
+            activity={"type": "message", "text": self.translate_outbound(new_content)},
+        )
+
+    async def delete_message(self, channel_id: str, message_ref: str) -> None:
+        if self._connector is None:
+            logger.error("Cannot delete message: Teams adapter not started")
+            return
+        service_url, conversation_id = self._locate(channel_id, message_ref)
+        await self._connector.delete_activity(
+            service_url=service_url,
+            conversation_id=conversation_id,
+            activity_id=message_ref,
+        )
+        self._sent.pop(message_ref, None)
+
+    async def send_typing(
+        self, channel_id: str, sender_name: str, is_typing: bool
+    ) -> None:
+        # Teams typing indicators auto-expire and are best-effort cosmetics; a
+        # failure to show one must not break the turn.
+        if not is_typing or self._connector is None:
+            return
+        try:
+            await self._connector.send_to_conversation(
+                service_url=self._service_url_for(channel_id),
+                conversation_id=channel_id,
+                activity={"type": "typing"},
+            )
+        except Exception:
+            logger.warning("Failed to send typing indicator to %s", channel_id)
+
+    # ── Runtime state ──────────────────────────────────────────────────────────
+
+    async def apply_runtime_state(
+        self,
+        channel_id: str,
+        agent_name: str,
+        state: str,
+        *,
+        notify_user: str | None,
+        thread_root_id: str | None,
+        deeplink_url: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Persistent status messages, mirroring Slack.
+
+        A "working on it…" card is posted (as the agent) while the agent works
+        and edited in place as the activity detail changes; it stays up through
+        ``awaiting-input`` — where a "needs your input" ping is added — and both
+        are removed when the turn goes ``idle`` (or resumes to ``working``,
+        since the requested input was provided). Teams messages are truly
+        deletable, so no tombstone is left behind.
+        """
+        key = (channel_id, agent_name)
+        if state == "working":
+            await self._clear_input_pings(channel_id, agent_name)
+            body = self._working_body(detail, deeplink_url)
+            existing = self._working_msg.get(key)
+            if existing is not None:
+                await self._refresh_card(channel_id, existing, agent_name, body)
+                return
+            ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
+            if ref is not None:
+                self._working_msg[key] = ref
+        elif state == "awaiting-input":
+            ref = await self._ping_operator(
+                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+            )
+            if ref is not None:
+                self._input_pings.setdefault(key, []).append(ref)
+        else:
+            await self._clear_working(channel_id, agent_name)
+            await self._clear_input_pings(channel_id, agent_name)
+
+    async def _refresh_card(
+        self, channel_id: str, message_ref: str, agent_name: str, body: str
+    ) -> None:
+        if self._connector is None:
+            return
+        service_url, conversation_id = self._locate(channel_id, message_ref)
+        await self._connector.update_activity(
+            service_url=service_url,
+            conversation_id=conversation_id,
+            activity_id=message_ref,
+            activity=self._message_activity(agent_name, body),
+        )
+
+    async def _clear_working(self, channel_id: str, agent_name: str) -> None:
+        ref = self._working_msg.pop((channel_id, agent_name), None)
+        if ref is not None:
+            await self.delete_message(channel_id, ref)
+
+    async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
+        refs = self._input_pings.pop((channel_id, agent_name), [])
+        for ref in refs:
+            await self.delete_message(channel_id, ref)
+
+    # ── Channels ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sanitize_channel_name(name: str) -> str:
+        """Teams channel display names disallow several characters and cap at
+        50 chars. Replace the reserved set and trim."""
+        cleaned = re.sub(r'[~#%&*{}+/\\:<>?|\'"]', "-", name).strip(" .-")
+        return (cleaned or "switch")[:50]
+
+    async def create_channel(
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: ChannelType = "channel_public",
+    ) -> str:
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        if channel_type in ("group", "direct"):
+            raise ValueError(
+                f"Cannot create {channel_type} channels — they are initiated "
+                "from the messaging platform"
+            )
+
+        membership_type = "private" if channel_type == "channel_private" else "standard"
+        channel = await self._graph.create_channel(
+            team_id=self._config.team_id,
+            display_name=self._sanitize_channel_name(name),
+            description=topic,
+            membership_type=membership_type,
+        )
+        channel_id = str(channel.get("id", ""))
+        if not channel_id:
+            raise RuntimeError(f"Teams channel creation returned no id for '{name}'")
+
+        self._channel_type[channel_id] = channel_type
+        self._team_of_channel[channel_id] = self._config.team_id
+        # Capture the new channel's messages right away.
+        await self._ensure_channel_subscription(channel_id)
+        return channel_id
+
+    async def get_channel_type(self, channel_id: str) -> ChannelType:
+        known = self._channel_type.get(channel_id)
+        if known is not None:
+            return known
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id, self._config.team_id)
+        channel = await self._graph.get_channel(team_id=team_id, channel_id=channel_id)
+        resolved: ChannelType = (
+            "channel_private"
+            if channel.get("membershipType") == "private"
+            else "channel_public"
+        )
+        self._channel_type[channel_id] = resolved
+        return resolved
+
+    async def channel_deeplink(self, external_channel_id: str) -> str | None:
+        """`https://teams.microsoft.com/l/channel/...` opening the channel in the
+        Teams client. Built from the channel id, its team, and the tenant."""
+        if not external_channel_id:
+            return None
+        team_id = self._team_of_channel.get(external_channel_id, self._config.team_id)
+        encoded = quote(external_channel_id, safe="")
+        return (
+            f"https://teams.microsoft.com/l/channel/{encoded}/channel"
+            f"?groupId={team_id}&tenantId={self._config.tenant_id}"
+        )
+
+    async def add_agents_to_channel(
+        self, channel_id: str, agent_names: list[str]
+    ) -> None:
+        # Single-bot identity model: agents share one Teams bot, so there is no
+        # per-agent membership to manage (mirrors Slack).
+        pass
+
+    async def add_users_to_channel(
+        self,
+        channel_id: str,
+        user_names: list[str],
+        user_external_ids: list[str],
+    ) -> None:
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id, self._config.team_id)
+        # Private channels have their own membership; standard channels inherit
+        # the team's, so a user is added to the team instead.
+        is_private = self._channel_type.get(channel_id) == "channel_private"
+        for user_id in user_external_ids:
+            try:
+                if is_private:
+                    await self._graph.add_channel_member(
+                        team_id=team_id, channel_id=channel_id, user_aad_id=user_id
+                    )
+                else:
+                    await self._graph.add_team_member(
+                        team_id=team_id, user_aad_id=user_id
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to add user %s to Teams channel %s", user_id, channel_id
+                )
+
+    # ── Agent identity ───────────────────────────────────────────────────────
+
+    async def create_agent_identity(
+        self, agent_name: str, agent_description: str
+    ) -> None:
+        # Single-bot model: no per-agent platform account is created.
+        pass
+
+    async def remove_agent_identity(self, agent_name: str) -> None:
+        pass
+
+    async def get_channel_agent_names(self, channel_id: str) -> list[str]:
+        # Single shared bot cannot enumerate per-agent membership (mirrors Slack).
+        return []
+
+    # ── Translation ──────────────────────────────────────────────────────────
+
+    def translate_outbound(self, content: str) -> str:
+        return content
+
+    def translate_inbound(self, raw_message: str) -> str:
+        return raw_message
+
+    # ── Inbound listener ─────────────────────────────────────────────────────
+
+    async def _handle_http_messages(self, request: web.Request) -> web.Response:
+        auth_header = request.headers.get("Authorization")
+        if self._validator is not None:
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._validator.validate, auth_header
+                )
+            except Exception as e:
+                logger.warning("Rejected inbound Teams activity: %s", e)
+                return web.Response(status=401, text="unauthorized")
+
+        try:
+            activity = await request.json()
+        except Exception:
+            return web.Response(status=400, text="invalid json")
+
+        try:
+            await self._dispatch_activity(activity)
+        except Exception:
+            logger.exception("Failed to handle inbound Teams activity")
+
+        return web.Response(status=200)
+
+    async def _dispatch_activity(self, activity: dict[str, Any]) -> None:
+        service_url = str(activity.get("serviceUrl", "")).strip()
+        activity_type = activity.get("type")
+
+        channel_id, channel_type = self._channel_from_activity(activity)
+        if service_url and channel_id:
+            self._service_url[channel_id] = service_url
+            self._default_service_url = service_url
+            self._channel_type[channel_id] = channel_type
+
+        team_id = ((activity.get("channelData") or {}).get("team") or {}).get("id")
+        if team_id and channel_id:
+            self._team_of_channel[channel_id] = str(team_id)
+
+        if activity_type == "message":
+            await self._dispatch_message(activity, channel_id, channel_type)
+        elif activity_type == "conversationUpdate":
+            await self._dispatch_conversation_update(activity, channel_id, channel_type)
+
+    @staticmethod
+    def _channel_from_activity(
+        activity: dict[str, Any],
+    ) -> tuple[str, ChannelType]:
+        conversation = activity.get("conversation") or {}
+        conv_id = str(conversation.get("id", ""))
+        conv_type = conversation.get("conversationType", "")
+        channel_data = activity.get("channelData") or {}
+        channel = channel_data.get("channel") or {}
+
+        if conv_type == "channel" or "@thread.tacv2" in conv_id:
+            channel_id = str(channel.get("id") or conv_id.split(";", 1)[0])
+            return channel_id, "channel_public"
+        if conv_type == "personal":
+            return conv_id, "direct"
+        if conv_type == "groupChat":
+            return conv_id, "group"
+        return conv_id.split(";", 1)[0], "channel_public"
+
+    def _seen_activity(self, activity_id: str) -> bool:
+        if not activity_id:
+            return False
+        if activity_id in self._seen:
+            return True
+        self._seen[activity_id] = None
+        if len(self._seen) > self._seen_max:
+            self._seen.popitem(last=False)
+        return False
+
+    async def _dispatch_message(
+        self, activity: dict[str, Any], channel_id: str, channel_type: ChannelType
+    ) -> None:
+        activity_id = str(activity.get("id", ""))
+        if self._seen_activity(activity_id):
+            return
+
+        sender = activity.get("from") or {}
+        sender_id = str(sender.get("aadObjectId") or sender.get("id") or "")
+        sender_name = str(sender.get("name") or sender_id)
+
+        text = self._clean_text(str(activity.get("text", "")))
+
+        conversation = activity.get("conversation") or {}
+        conv_id = str(conversation.get("id", ""))
+        root_id: str | None = None
+        if ";messageid=" in conv_id:
+            thread_root = conv_id.split(";messageid=", 1)[1]
+            if thread_root and thread_root != activity_id:
+                root_id = thread_root
+
+        channel_name = self._channel_name(activity)
+
+        await self._deliver(
+            channel_id=channel_id,
+            channel_type=channel_type,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=text,
+            message_ref=activity_id,
+            root_id=root_id,
+            channel_name=channel_name,
+            self_mention_token=self._self_mention_token(activity),
+        )
+
+    async def _deliver(
+        self,
+        *,
+        channel_id: str,
+        channel_type: ChannelType,
+        sender_id: str,
+        sender_name: str,
+        text: str,
+        message_ref: str,
+        root_id: str | None,
+        channel_name: str | None,
+        self_mention_token: str | None = None,
+    ) -> None:
+        """Route a parsed inbound message to the command or message callback.
+
+        Shared by the Bot Framework activity path and the Graph capture path so
+        both apply the same ``!``-command detection and translation."""
+        stripped = text.strip()
+        if stripped.startswith("!") and self._on_command is not None:
+            parts = stripped.split(None, 1)
+            await self._on_command(
+                InboundCommand(
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    command=parts[0].lstrip("!"),
+                    args=parts[1].strip() if len(parts) > 1 else "",
+                    message_ref=message_ref,
+                    root_id=root_id,
+                    channel_name=channel_name,
+                )
+            )
+            return
+
+        if self._on_message is not None:
+            await self._on_message(
+                InboundMessage(
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    content=self.translate_inbound(text),
+                    message_ref=message_ref,
+                    root_id=root_id,
+                    channel_name=channel_name,
+                    self_mention_token=self_mention_token,
+                )
+            )
+
+    async def _dispatch_conversation_update(
+        self, activity: dict[str, Any], channel_id: str, channel_type: ChannelType
+    ) -> None:
+        members_added = activity.get("membersAdded") or []
+        recipient = activity.get("recipient") or {}
+        bot_id = str(recipient.get("id", ""))
+        channel_name = self._channel_name(activity)
+
+        for member in members_added:
+            member_id = str(member.get("id", ""))
+            if member_id == bot_id:
+                # The bot was added to a channel/team → start capturing all of
+                # its messages via a Graph subscription (channels only; chats are
+                # captured through the Bot Framework path).
+                if channel_type in ("channel_public", "channel_private"):
+                    await self._ensure_channel_subscription(channel_id)
+                if self._on_app_joined is not None:
+                    await self._on_app_joined(
+                        InboundAppJoin(
+                            channel_id=channel_id,
+                            channel_type=channel_type,
+                            channel_name=channel_name,
+                        )
+                    )
+            elif self._on_user_joined is not None:
+                await self._on_user_joined(
+                    InboundUserJoin(
+                        channel_id=channel_id,
+                        channel_type=channel_type,
+                        external_user_id=str(member.get("aadObjectId") or member_id),
+                        external_username=str(member.get("name") or member_id),
+                        channel_name=channel_name,
+                    )
+                )
+
+    @staticmethod
+    def _channel_name(activity: dict[str, Any]) -> str | None:
+        channel_data = activity.get("channelData") or {}
+        team = channel_data.get("team") or {}
+        name = team.get("name")
+        return str(name) if name else None
+
+    def _self_mention_token(self, activity: dict[str, Any]) -> str | None:
+        recipient = activity.get("recipient") or {}
+        bot_id = str(recipient.get("id", ""))
+        for entity in activity.get("entities") or []:
+            if entity.get("type") == "mention":
+                mentioned = entity.get("mentioned") or {}
+                if str(mentioned.get("id", "")) == bot_id:
+                    return bot_id
+        return None
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        """Strip Teams ``<at>…</at>`` mention markup from message text."""
+        return _MENTION_TAG.sub("", text).strip()
+
+    # ── Graph capture (subscriptions + notifications) ────────────────────────
+
+    @staticmethod
+    def _expiration_iso() -> str:
+        expiry = datetime.now(UTC) + _SUBSCRIPTION_TTL
+        return expiry.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _channel_from_resource(resource: str) -> str:
+        """Extract the channel id from a subscription's ``resource`` string
+        (``teams/{team}/channels/{channel}/messages``)."""
+        match = re.search(r"channels/([^/]+)/messages", resource)
+        return match.group(1) if match else ""
+
+    async def _ensure_channel_subscription(self, channel_id: str) -> None:
+        """Create a Graph change-notification subscription for a channel's
+        messages, so the bridge captures every post — not just @mentions.
+
+        Requires the encryption certificate + private key (Graph encrypts the
+        message body) and the channel's team id. A missing prerequisite is a
+        loud log, not a crash: the bot still joins, capture is simply degraded.
+        """
+        if channel_id in self._subscriptions or self._graph is None:
+            return
+        if not (
+            self._config.encryption_public_certificate
+            and self._config.encryption_certificate_id
+        ):
+            logger.error(
+                "Cannot subscribe to channel %s messages: encryption certificate "
+                "not configured on the Teams bridge",
+                channel_id,
+            )
+            return
+        team_id = self._team_of_channel.get(channel_id)
+        if not team_id:
+            logger.warning(
+                "Cannot subscribe to channel %s: team id unknown", channel_id
+            )
+            return
+
+        async with self._sub_lock:
+            if channel_id in self._subscriptions:
+                return
+            try:
+                cert_der = load_certificate_der_b64(
+                    self._config.encryption_public_certificate
+                )
+                sub = await self._graph.create_subscription(
+                    resource=f"teams/{team_id}/channels/{channel_id}/messages",
+                    notification_url=self._notification_url,
+                    lifecycle_notification_url=self._notification_url,
+                    client_state=self._config.client_state or "",
+                    expiration_iso=self._expiration_iso(),
+                    encryption_certificate=cert_der,
+                    encryption_certificate_id=self._config.encryption_certificate_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to create Graph subscription for channel %s", channel_id
+                )
+                return
+            self._subscriptions[channel_id] = str(sub.get("id", ""))
+            logger.info(
+                "Subscribed to Teams channel %s messages (subscription %s)",
+                channel_id,
+                self._subscriptions[channel_id],
+            )
+
+    async def _handle_http_notifications(self, request: web.Request) -> web.Response:
+        # Subscription-creation handshake: Graph calls the endpoint with a
+        # ``validationToken`` that must be echoed back verbatim as text/plain.
+        validation_token = request.query.get("validationToken")
+        if validation_token is not None:
+            return web.Response(
+                status=200, text=validation_token, content_type="text/plain"
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.Response(status=400, text="invalid json")
+
+        for item in payload.get("value", []):
+            try:
+                await self._dispatch_graph_notification(item)
+            except Exception:
+                logger.exception("Failed to handle Graph change notification")
+
+        return web.Response(status=202)
+
+    async def _dispatch_graph_notification(self, item: dict[str, Any]) -> None:
+        lifecycle_event = item.get("lifecycleEvent")
+        if lifecycle_event:
+            await self._handle_lifecycle_event(item)
+            return
+
+        expected_state = self._config.client_state
+        if expected_state and item.get("clientState") != expected_state:
+            logger.warning("Rejected Graph notification: clientState mismatch")
+            return
+
+        encrypted = item.get("encryptedContent")
+        if not encrypted:
+            return
+        if not self._config.encryption_private_key:
+            logger.error(
+                "Received encrypted Graph notification but no private key is "
+                "configured to decrypt it"
+            )
+            return
+
+        chat_message = decrypt_resource_data(
+            encrypted, self._config.encryption_private_key
+        )
+        await self._deliver_graph_message(chat_message)
+
+    async def _handle_lifecycle_event(self, item: dict[str, Any]) -> None:
+        event = item.get("lifecycleEvent")
+        subscription_id = str(item.get("subscriptionId", ""))
+        if event == "reauthorizationRequired" and self._graph is not None:
+            try:
+                await self._graph.renew_subscription(
+                    subscription_id=subscription_id,
+                    expiration_iso=self._expiration_iso(),
+                )
+                logger.info("Renewed Teams subscription %s", subscription_id)
+            except Exception:
+                logger.exception(
+                    "Failed to renew Teams subscription %s", subscription_id
+                )
+        else:
+            logger.info(
+                "Teams subscription %s lifecycle event: %s",
+                subscription_id,
+                event,
+            )
+
+    async def _deliver_graph_message(self, chat_message: dict[str, Any]) -> None:
+        if chat_message.get("messageType", "message") != "message":
+            return
+
+        message_id = str(chat_message.get("id", ""))
+        if self._seen_activity(message_id):
+            return
+
+        sender = chat_message.get("from") or {}
+        application = sender.get("application") or {}
+        if application:
+            # Drop our own bot's posts (they are captured too) to avoid a loop.
+            if str(application.get("id", "")) == self._config.app_id:
+                return
+            sender_id = str(application.get("id", ""))
+            sender_name = str(application.get("displayName") or sender_id)
+        else:
+            user = sender.get("user") or {}
+            sender_id = str(user.get("id", ""))
+            sender_name = str(user.get("displayName") or sender_id)
+
+        identity = chat_message.get("channelIdentity") or {}
+        channel_id = str(identity.get("channelId", ""))
+        if not channel_id:
+            return
+
+        body = chat_message.get("body") or {}
+        content = str(body.get("content", ""))
+        if str(body.get("contentType", "")).lower() == "html":
+            content = self._graph_text(content)
+
+        reply_to = chat_message.get("replyToId")
+        root_id = str(reply_to) if reply_to and str(reply_to) != message_id else None
+
+        await self._deliver(
+            channel_id=channel_id,
+            channel_type=self._channel_type.get(channel_id, "channel_public"),
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=content,
+            message_ref=message_id,
+            root_id=root_id,
+            channel_name=None,
+        )
+
+    @staticmethod
+    def _graph_text(content: str) -> str:
+        """Flatten a Graph channel message's HTML body to plain text."""
+        text = _BR_TAG.sub("\n", content)
+        text = _MENTION_TAG.sub("", text)
+        text = _HTML_TAG.sub("", text)
+        return html.unescape(text).strip()
