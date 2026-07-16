@@ -324,7 +324,67 @@ class DiscordAdapter(CollaborationAdapter):
         *,
         channel_type: ChannelType = "channel_public",
     ) -> str:
-        raise NotImplementedError("Discord channel provisioning lands in P3")
+        if channel_type in ("group", "direct"):
+            raise ValueError(
+                f"Cannot create {channel_type} channels — they are initiated from the messaging platform"
+            )
+
+        guild = await self._get_guild()
+        channel = await guild.create_text_channel(
+            name=self._sanitize_channel_name(name),
+            topic=topic,
+            overwrites=(
+                self._private_channel_overwrites(guild)
+                if channel_type == "channel_private"
+                else {}
+            ),
+        )
+        return str(channel.id)
+
+    async def create_dm_channel(
+        self,
+        *,
+        agent_name: str,
+        user_name: str,
+        user_external_id: str,
+    ) -> str:
+        # Discord bots can open real DMs, but DM channels have no webhooks —
+        # so no per-agent identity — and DM traffic maps to the deprecated
+        # "lobby" flow. Mirror Slack instead: a private channel named after
+        # the pair, visible only to the bridge and the user.
+        guild = await self._get_guild()
+        channel = await guild.create_text_channel(
+            name=self._sanitize_channel_name(f"dm-{user_name}-{agent_name}"),
+            topic=f"Direct conversation between {user_name} and {agent_name}",
+            overwrites=self._private_channel_overwrites(guild),
+        )
+        member = await self._get_member(guild, user_external_id)
+        await channel.set_permissions(member, view_channel=True)
+        return str(channel.id)
+
+    @staticmethod
+    def _sanitize_channel_name(name: str) -> str:
+        return re.sub(r"[^a-z0-9_-]", "-", name.lower()).strip("-")[:100]
+
+    @staticmethod
+    def _private_channel_overwrites(
+        guild: Any,
+    ) -> dict[Any, discord.PermissionOverwrite]:
+        overwrites: dict[Any, discord.PermissionOverwrite] = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False)
+        }
+        me = getattr(guild, "me", None)
+        if me is not None:
+            overwrites[me] = discord.PermissionOverwrite(view_channel=True)
+        return overwrites
+
+    async def channel_deeplink(self, external_channel_id: str) -> str | None:
+        """`https://discord.com/channels/<guild>/<channel>` — Discord's
+        canonical channel link; the desktop app claims it. Pure: built from
+        the configured guild id, no API call needed."""
+        if not external_channel_id:
+            return None
+        return f"https://discord.com/channels/{self._config.guild_id}/{external_channel_id}"
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         target = await self._get_channel(int(channel_id))
@@ -364,7 +424,24 @@ class DiscordAdapter(CollaborationAdapter):
         user_names: list[str],
         user_external_ids: list[str],
     ) -> None:
-        raise NotImplementedError("Discord channel membership lands in P3")
+        channel = await self._get_channel(int(channel_id))
+        if self._channel_type_of(channel) != "channel_private":
+            # Public guild channels are visible to every member — there is no
+            # per-channel membership to grant.
+            return
+        guild = channel.guild
+        for user_name, user_id in zip(user_names, user_external_ids):
+            try:
+                member = await self._get_member(guild, user_id)
+                await channel.set_permissions(member, view_channel=True)
+            except (discord.HTTPException, ValueError) as e:
+                logger.error(
+                    "Failed to grant Discord user %s (%s) access to channel %s: %s",
+                    user_name,
+                    user_id,
+                    channel_id,
+                    e,
+                )
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
@@ -540,6 +617,20 @@ class DiscordAdapter(CollaborationAdapter):
         if channel is None:
             channel = await client.fetch_channel(channel_id)
         return channel
+
+    async def _get_guild(self) -> Any:
+        client = self._require_client()
+        guild = client.get_guild(self._guild_id)
+        if guild is None:
+            guild = await client.fetch_guild(self._guild_id)
+        return guild
+
+    @staticmethod
+    async def _get_member(guild: Any, user_external_id: str) -> Any:
+        member = guild.get_member(int(user_external_id))
+        if member is None:
+            member = await guild.fetch_member(int(user_external_id))
+        return member
 
     async def _get_webhook(self, channel_id: int) -> discord.Webhook:
         cached = self._webhooks.get(channel_id)
