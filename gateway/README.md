@@ -9,3 +9,5 @@ repository-root `justfile`: `just gateway-install` (deps, first time only),
 `just gateway-dev` (dev server), `just gateway-build` (production build).
 
 > **Note:** full documentation is coming as part of the docs effort.
+
+<!-- CI smoke: exercises the gateway PR job on sandbox-quantum/switch. -->

@@ -25,3 +25,5 @@ repository layout — see the [repository README](../README.md).
 Development commands are driven from the repository-root `justfile` (e.g.
 `just run`, `just test`, `just migrate`), which invokes tooling against this
 project.
+
+<!-- CI smoke: exercises the backend PR job on sandbox-quantum/switch. -->

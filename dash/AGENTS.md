@@ -379,3 +379,5 @@ pnpm run test
 - [Updater risk notes](agents/risky-areas/updater.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Project README](README.md)
+
+<!-- CI smoke: exercises the dash PR job on sandbox-quantum/switch. -->
