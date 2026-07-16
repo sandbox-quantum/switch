@@ -7,7 +7,6 @@ import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplin
 import { WorkspaceLayoutContextProvider } from './lib/layout/layout-provider';
 import { WorkspaceViewProvider } from './lib/layout/provider';
 import { ModalRenderer } from './lib/modal/modal-renderer';
-import { FeatureFlagProvider } from './lib/providers/feature-flag-override-context';
 import { ThemeProvider } from './lib/providers/theme-provider';
 import { TerminalPoolProvider } from './lib/pty/pty-pool-provider';
 import { queryClient } from './lib/query-client';
@@ -65,9 +64,7 @@ function AppContent() {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <FeatureFlagProvider>
-        <AppContent />
-      </FeatureFlagProvider>
+      <AppContent />
     </QueryClientProvider>
   );
 }

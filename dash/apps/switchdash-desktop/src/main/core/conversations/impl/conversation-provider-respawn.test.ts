@@ -110,12 +110,6 @@ vi.mock('@main/lib/events', () => ({
   },
 }));
 
-vi.mock('@main/lib/telemetry', () => ({
-  telemetryService: {
-    capture: vi.fn(),
-  },
-}));
-
 vi.mock('@main/core/settings/provider-settings-service', () => ({
   providerOverrideSettings: {
     getItem: vi.fn(async () => undefined),

@@ -13,7 +13,6 @@ import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
-import { telemetryService } from '@main/lib/telemetry';
 import {
   conversationAgentStatusChangedChannel,
   conversationChangedChannel,
@@ -157,13 +156,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
           };
           this.emitAgentEvent(agentEvent, isAppFocused());
         }
-
-        telemetryService.capture('agent_run_started', {
-          provider: providerId,
-          project_id: projectId,
-          session_id: sessionId,
-          conversation_id: conversationId,
-        });
 
         const now = new Date().toISOString();
         void touchConversation(conversationId, now).then(() => {

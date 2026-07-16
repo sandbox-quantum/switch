@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 import { BrowserWindow } from 'electron';
 import appIcon from '@/assets/images/switchdash/switchdash_logo.png?asset';
-import { telemetryService } from '@main/lib/telemetry';
 import { registerExternalLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { APP_ORIGIN } from './protocol';
@@ -49,17 +48,10 @@ export function createMainWindow(): BrowserWindow {
     mainWindow?.show();
   });
 
-  // Track window focus for telemetry
   mainWindow.on('focus', () => {
-    telemetryService.capture('app_window_focused');
     if (typeof mainWindow?.setWindowButtonVisibility === 'function') {
       mainWindow.setWindowButtonVisibility(true);
     }
-    void telemetryService.checkAndReportDailyActiveUser();
-  });
-
-  mainWindow.on('blur', () => {
-    telemetryService.capture('app_window_unfocused');
   });
 
   // Cleanup reference on close

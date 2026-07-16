@@ -1,7 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
-import { telemetryService } from '@main/lib/telemetry';
 import { type SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 
 export async function updateSessionStatus(
@@ -20,9 +19,4 @@ export async function updateSessionStatus(
       statusChangedAt: sql`CURRENT_TIMESTAMP`,
     })
     .where(eq(sessions.id, sessionId));
-
-  telemetryService.capture('session_status_changed', {
-    from_status: row.status as SessionLifecycleStatus,
-    to_status: status,
-  });
 }

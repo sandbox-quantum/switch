@@ -21,7 +21,6 @@ import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import type { SshConnectionManagerEvent } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { telemetryService } from '@main/lib/telemetry';
 import type { Conversation } from '@shared/core/conversations/conversations';
 import type { AgentSessionConfig } from '@shared/core/providers/agent-session';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
@@ -502,12 +501,6 @@ export class SshConversationProvider implements ConversationProvider {
         conversation,
         initialPrompt,
         isResuming: agentSession.isResuming,
-      });
-      telemetryService.capture('agent_run_started', {
-        provider: conversation.providerId,
-        project_id: conversation.projectId,
-        session_id: conversation.sessionId,
-        conversation_id: conversation.id,
       });
     } catch (error) {
       this.supervisor.failSpawn(sessionId, spawnToken);

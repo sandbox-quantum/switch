@@ -106,7 +106,7 @@ class SessionRuntimeManager {
   /**
    * Registers a fully-provisioned session into the lifecycle map.
    * Idempotent — if the session is already registered, returns immediately.
-   * Fires `session:provisioned` hook for telemetry, git watchers, PR sync.
+   * Fires `session:provisioned` hook for git watchers and PR sync.
    */
   async registerSession(
     sessionId: string,

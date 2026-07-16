@@ -16,7 +16,6 @@ import { subagentsController } from './core/subagents/controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
 import { switchSetupController } from './core/switch-setup/controller';
-import { telemetryController } from './core/telemetry/controller';
 import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
 import { projectSettingsController } from './core/workspaces/project-settings-controller';
@@ -33,7 +32,6 @@ export const rpcRouter = createRPCRouter({
   promptLibrary: promptLibraryController,
   projects: projectController,
   sessions: sessionController,
-  telemetry: telemetryController,
   viewState: viewStateController,
   search: searchController,
   switchRooms: switchRoomsController,

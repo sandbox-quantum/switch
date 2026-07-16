@@ -24,7 +24,6 @@ import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { telemetryService } from '@main/lib/telemetry';
 import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
@@ -289,12 +288,6 @@ export class LocalConversationProvider implements ConversationProvider {
             error: String(error),
           });
         });
-      telemetryService.capture('agent_run_started', {
-        provider: conversation.providerId,
-        project_id: conversation.projectId,
-        session_id: conversation.sessionId,
-        conversation_id: conversation.id,
-      });
     } catch (error) {
       this.supervisor.failSpawn(sessionId, spawnToken);
       throw error;

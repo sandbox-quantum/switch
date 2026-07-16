@@ -18,7 +18,6 @@ import {
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
 import SidebarMetadataSettingsCard from './SidebarMetadataSettingsCard';
-import TelemetryCard from './TelemetryCard';
 import TerminalSettingsCard from './TerminalSettingsCard';
 import ThemeCard from './ThemeCard';
 import { UpdateCard } from './UpdateCard';
@@ -46,7 +45,6 @@ function GeneralSettingsPage() {
         description="Manage your account, privacy settings, notifications, and app updates."
       />
       <UpdateCard />
-      <TelemetryCard />
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
       <CreateBranchAndWorktreeRow />

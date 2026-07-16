@@ -3,7 +3,6 @@ import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manag
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
-import { telemetryService } from '@main/lib/telemetry';
 
 export async function archiveSession(projectId: string, sessionId: string): Promise<void> {
   const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
@@ -16,7 +15,6 @@ export async function archiveSession(projectId: string, sessionId: string): Prom
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .where(eq(sessions.id, sessionId));
-  telemetryService.capture('session_archived', { project_id: projectId, session_id: sessionId });
 
   const teardownResult = await sessionRuntimeManager
     .teardownSession(sessionId, 'detach')

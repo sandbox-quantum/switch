@@ -3,7 +3,6 @@ import { makeObservable, observable, runInAction } from 'mobx';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
-import { captureTelemetry } from '@renderer/utils/telemetryClient';
 import { type LocalProject } from '@shared/projects';
 import type { ProjectViewSnapshot } from '@shared/view-state';
 import {
@@ -109,9 +108,6 @@ export class ProjectManagerStore {
     projectId: string,
     targetPath: string | undefined
   ): Promise<ProjectCreationCompletion> {
-    const projectTelemetryType = 'local' as const;
-    const projectTelemetryStrategy = 'open' as const;
-
     let result: ProjectCreationCompletion;
     try {
       const projectResult = await rpc.projects.createProject({
@@ -131,20 +127,10 @@ export class ProjectManagerStore {
       }
     } catch (error) {
       this._markUnexpectedCreationError(projectId, error);
-      captureTelemetry('project_added', {
-        type: projectTelemetryType,
-        strategy: projectTelemetryStrategy,
-        success: false,
-      });
       throw error;
     }
 
     if (!result.success) this._markCreationError(projectId, result.error);
-    captureTelemetry('project_added', {
-      type: projectTelemetryType,
-      strategy: projectTelemetryStrategy,
-      success: result.success,
-    });
     return result;
   }
 

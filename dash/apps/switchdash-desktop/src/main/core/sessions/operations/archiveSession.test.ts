@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { archiveSession } from './archiveSession';
 
 const mocks = vi.hoisted(() => ({
-  capture: vi.fn(),
   selectLimit: vi.fn(),
   teardownSession: vi.fn(),
   updateSet: vi.fn(),
@@ -27,12 +26,6 @@ vi.mock('@main/db/client', () => ({
 vi.mock('@main/core/sessions/session-runtime-manager', () => ({
   sessionRuntimeManager: {
     teardownSession: mocks.teardownSession,
-  },
-}));
-
-vi.mock('@main/lib/telemetry', () => ({
-  telemetryService: {
-    capture: mocks.capture,
   },
 }));
 
@@ -66,10 +59,6 @@ describe('archiveSession', () => {
     expect(updatePayload).not.toHaveProperty('statusChangedAt');
 
     expect(mocks.teardownSession).toHaveBeenCalledWith('session-1', 'detach');
-    expect(mocks.capture).toHaveBeenCalledWith('session_archived', {
-      project_id: 'project-1',
-      session_id: 'session-1',
-    });
     expect(mocks.selectLimit).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,14 +4,6 @@ vi.mock('@renderer/lib/modal/modal-store', () => ({
   modalStore: { closeModal: vi.fn() },
 }));
 
-vi.mock('@renderer/utils/focus-tracker', () => ({
-  focusTracker: { transition: vi.fn(() => null) },
-}));
-
-vi.mock('@renderer/utils/telemetryClient', () => ({
-  captureTelemetry: vi.fn(),
-}));
-
 vi.mock('./app-state', () => ({
   appState: {
     history: { push: vi.fn() },

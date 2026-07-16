@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { deleteSession } from './deleteSession';
 
 const mocks = vi.hoisted(() => ({
-  capture: vi.fn(),
   deleteWhere: vi.fn(),
   getProject: vi.fn(),
   selectLimit: vi.fn(),
@@ -43,12 +42,6 @@ vi.mock('@main/core/view-state/view-state-service', () => ({
   },
 }));
 
-vi.mock('@main/lib/telemetry', () => ({
-  telemetryService: {
-    capture: mocks.capture,
-  },
-}));
-
 describe('deleteSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -67,9 +60,5 @@ describe('deleteSession', () => {
     mocks.selectLimit.mockResolvedValueOnce([{ id: 'session-1', agentId: 'agent-1' }]);
     await deleteSession('project-1', 'session-1');
     expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
-    expect(mocks.capture).toHaveBeenCalledWith(
-      'session_deleted',
-      expect.objectContaining({ session_id: 'session-1' })
-    );
   });
 });

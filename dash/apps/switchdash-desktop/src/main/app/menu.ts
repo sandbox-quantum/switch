@@ -1,6 +1,5 @@
 import { app, clipboard, Menu, shell } from 'electron';
 import { events } from '@main/lib/events';
-import { telemetryService } from '@main/lib/telemetry';
 import {
   menuCheckForUpdatesChannel,
   menuCloseTabChannel,
@@ -17,11 +16,9 @@ import {
 } from '@shared/urls';
 import { getMainWindow } from './window';
 
-function copyInstallationId(): void {
-  const instanceId = telemetryService.getInstanceId() ?? 'unavailable';
+function copyVersionInfo(): void {
   const lines = [
     `Switchdash ${app.getVersion()}`,
-    `Installation ID: ${instanceId}`,
     `Platform: ${process.platform} ${process.arch}`,
     `Electron: ${process.versions.electron}`,
   ];
@@ -186,8 +183,8 @@ export function setupApplicationMenu(): void {
               },
             },
             {
-              label: 'Copy Installation ID',
-              click: copyInstallationId,
+              label: 'Copy Version Info',
+              click: copyVersionInfo,
             },
           ],
         },

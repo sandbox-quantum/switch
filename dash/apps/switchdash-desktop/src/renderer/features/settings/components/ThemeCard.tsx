@@ -1,16 +1,12 @@
 import { Monitor, Moon, Sun } from 'lucide-react';
 import React from 'react';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
-import { captureTelemetry } from '@renderer/utils/telemetryClient';
 import type { Theme } from '@shared/core/app-settings';
 
 const ThemeCard: React.FC = () => {
   const { theme, setTheme } = useTheme();
 
   const handleSetTheme = (next: Theme) => {
-    if (theme !== next) {
-      captureTelemetry('setting_changed', { setting: 'theme' });
-    }
     setTheme(next);
   };
 

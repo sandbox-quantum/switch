@@ -2,24 +2,11 @@ import { makeAutoObservable, toJS } from 'mobx';
 import { type GuardResult, type ViewId, type WrapParams } from '@renderer/app/view-registry';
 import type { NonSettingsViewId } from '@renderer/lib/layout/navigation-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { focusTracker } from '@renderer/utils/focus-tracker';
-import { captureTelemetry } from '@renderer/utils/telemetryClient';
 import type { NavigationSnapshot } from '@shared/view-state';
 import { appState } from './app-state';
 import type { Snapshottable } from './snapshottable';
 
 type ViewParamsStore = Partial<{ [K in ViewId]: WrapParams<K> }>;
-
-export const viewEvents: Record<
-  ViewId,
-  'home_viewed' | 'project_viewed' | 'session_viewed' | 'settings_viewed' | 'server_viewed'
-> = {
-  home: 'home_viewed',
-  project: 'project_viewed',
-  session: 'session_viewed',
-  settings: 'settings_viewed',
-  server: 'server_viewed',
-};
 
 export class NavigationStore implements Snapshottable<NavigationSnapshot> {
   currentViewId: ViewId = 'home';
@@ -70,17 +57,6 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
     }
 
     if (viewId !== this.currentViewId) {
-      const transition = focusTracker.transition(
-        {
-          view: viewId,
-          mainPanel: null,
-          focusedRegion: null,
-        },
-        'navigation'
-      );
-      captureTelemetry(viewEvents[viewId], {
-        from_view: transition?.previous.view ?? null,
-      });
       this.currentViewId = viewId;
       if (viewId !== 'settings') {
         this.lastNonSettingsView = viewId;

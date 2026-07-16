@@ -228,7 +228,7 @@ domain types live under `src/shared/`.
 Major main-process domains live under `src/main/core/`: agent hooks, agents, app,
 conversations, dependencies, execution context, fs, projects, prompt library, PTY,
 resource monitor, runtime, search, secrets, sessions, settings, switch agents,
-telemetry, terminal shell, terminals, updates, view state, and workspaces. Stateful
+terminal shell, terminals, updates, view state, and workspaces. Stateful
 main-process concerns use singleton services; expected failures should use the
 `Result<T, E>` pattern from `src/main/lib/result.ts`.
 
@@ -270,10 +270,9 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- Telemetry must remain optional; users can disable it with `TELEMETRY_ENABLED=false`
-  or in the app settings.
+- The app ships no telemetry or analytics; do not add tracking or phone-home behavior.
 - File logging redacts common secret patterns; preserve this behavior when touching
-  logging, telemetry, or error-reporting code.
+  logging or error-reporting code.
 - PTY environment passthrough must use the allowlist in `src/main/core/pty/pty-env.ts`.
 - Treat shell escaping and PTY spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
@@ -336,7 +335,7 @@ pnpm run test
 - Project settings such as `tmux` and `workspaceProvider` are DB-backed, not
   `.switchdash.json`.
 - Optional environment variables:
-  `TELEMETRY_ENABLED`, `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
+  `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
   `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, `CODEX_SANDBOX_MODE`,
   and `CODEX_APPROVAL_POLICY`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
@@ -346,9 +345,6 @@ pnpm run test
   installed app. To test deeplinks against the dev build, run with
   `SWITCHDASH_REGISTER_DEEPLINK=1 pnpm run dev`; afterwards run
   `pnpm run deeplink:reset` (macOS) to hand the scheme back to the installed app.
-- Build-time telemetry configuration may use `VITE_POSTHOG_KEY` and
-  `VITE_POSTHOG_HOST`.
-- Runtime feature flags are read through telemetry-backed feature flag helpers.
 - Path aliases are defined in `tsconfig.json` and mirrored in `electron.vite.config.ts`:
   `@/*`, `@renderer/*`, `@main/*`, `@shared/*`, and `@root/*`.
 - Versioned JSON column schemas are defined in `src/shared/` using

@@ -36,7 +36,6 @@ import {
   registerRendererLogHandler,
 } from './lib/file-logger';
 import { log } from './lib/logger';
-import { telemetryService } from './lib/telemetry';
 import { rpcRouter } from './rpc';
 import { resolveUserEnv } from './utils/userEnv';
 
@@ -106,12 +105,6 @@ void app.whenReady().then(async () => {
     );
     app.quit();
     return;
-  }
-
-  try {
-    await telemetryService.initialize({ installSource: app.isPackaged ? 'dmg' : 'dev' });
-  } catch (e) {
-    log.warn('telemetry init failed:', e);
   }
 
   projectSettingsService.initialize();
@@ -196,14 +189,11 @@ void app.whenReady().then(async () => {
 
 app.on('before-quit', (event) => {
   event.preventDefault();
-  telemetryService.capture('app_closed');
-  void telemetryService.dispose().finally(() => {
-    agentHookService.dispose();
-    stopResourceSampler();
-    updateService.dispose();
-    void projectManager.dispose().catch((e) => {
-      log.error('Failed to shutdown project manager:', e);
-    });
-    app.exit(0);
+  agentHookService.dispose();
+  stopResourceSampler();
+  updateService.dispose();
+  void projectManager.dispose().catch((e) => {
+    log.error('Failed to shutdown project manager:', e);
   });
+  app.exit(0);
 });

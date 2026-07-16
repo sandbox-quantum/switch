@@ -1,5 +1,4 @@
 import { getDiagnosticLogAttachment } from '@main/lib/file-logger';
-import { telemetryService } from '@main/lib/telemetry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import type { OpenInAppId } from '@shared/openInApps';
 import { appService } from './service';
@@ -8,7 +7,6 @@ export const appController = createRPCController({
   openExternal: async (url: string) => {
     try {
       await appService.openExternal(url);
-      telemetryService.capture('open_in_external', { app: 'browser' });
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -57,7 +55,6 @@ export const appController = createRPCController({
   }) => {
     try {
       await appService.openIn(args);
-      telemetryService.capture('open_in_external', { app: args.app });
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

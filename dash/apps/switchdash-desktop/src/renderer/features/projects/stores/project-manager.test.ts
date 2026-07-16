@@ -40,10 +40,6 @@ vi.mock('@renderer/lib/stores/view-state-cache', () => ({
   },
 }));
 
-vi.mock('@renderer/utils/telemetryClient', () => ({
-  captureTelemetry: vi.fn(),
-}));
-
 function localProject(overrides: Partial<LocalProject> = {}): LocalProject {
   return {
     type: 'local',

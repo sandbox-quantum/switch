@@ -5,7 +5,6 @@ import { db } from '@main/db/client';
 import { agents, sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { telemetryService } from '@main/lib/telemetry';
 import { conversationCreatedChannel } from '@shared/core/conversations/conversationEvents';
 import {
   type Conversation,
@@ -114,13 +113,6 @@ export async function createConversation(
   conversationEvents._emit('conversation:created', conversation);
   events.emit(conversationCreatedChannel, { conversation });
   emitInitialPromptStarted(conversation, params);
-  telemetryService.capture('conversation_created', {
-    provider: params.provider,
-    is_first_in_session: true,
-    project_id: params.projectId,
-    session_id: params.sessionId,
-    conversation_id: id,
-  });
 
   return conversation;
 }

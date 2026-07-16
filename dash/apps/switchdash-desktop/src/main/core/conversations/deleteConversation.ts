@@ -4,7 +4,6 @@ import { projectManager } from '@main/core/projects/project-manager';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
-import { telemetryService } from '@main/lib/telemetry';
 import { resolveSession } from '../projects/utils';
 import { conversationEvents } from './conversation-events';
 
@@ -30,9 +29,4 @@ export async function deleteConversation(
       await killTmuxSession(project.ctx, makeAgentTmuxSessionName(conversationId));
     }
   }
-  telemetryService.capture('conversation_deleted', {
-    project_id: projectId,
-    session_id: sessionId,
-    conversation_id: conversationId,
-  });
 }

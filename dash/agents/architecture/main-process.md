@@ -24,7 +24,6 @@ The main process is organized into domain modules under `src/main/core/`. Each d
 - **settings** — App settings service and schema, provider settings (separate controller)
 - **shared** — Shared main-process utilities
 - **switch-agents** — Switch agent integration
-- **telemetry** — Telemetry service
 - **terminal-shell** — Terminal shell availability and detection
 - **terminals** — Terminal lifecycle with provider pattern (`impl/local-terminal-provider.ts`), lifecycle scripts
 - **updates** — Auto-update service
@@ -35,7 +34,7 @@ The main process is organized into domain modules under `src/main/core/`. Each d
 ## Other Main Process Areas
 
 - `src/main/app/` — Menu, protocol handler, window creation
-- `src/main/lib/` — Logger, telemetry, events, result type, updater error
+- `src/main/lib/` — Logger, events, result type, updater error
 - `src/main/db/` — Database schema and initialization
 - `src/main/utils/` — Shell environment, shell escaping, child process env, external links
 - `src/main/core/agent-hooks/` — Hook server, event enrichment, OS notifications, hook/plugin config writer

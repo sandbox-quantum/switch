@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { deleteProject } from './deleteProject';
 
 const mocks = vi.hoisted(() => ({
-  captureTelemetry: vi.fn(),
   closeProject: vi.fn(),
   deleteProjectRow: vi.fn(),
   deleteWhere: vi.fn(),
@@ -44,12 +43,6 @@ vi.mock('@main/core/sessions/session-runtime-manager', () => ({
 vi.mock('@main/core/view-state/view-state-service', () => ({
   viewStateService: {
     del: mocks.delViewState,
-  },
-}));
-
-vi.mock('@main/lib/telemetry', () => ({
-  telemetryService: {
-    capture: mocks.captureTelemetry,
   },
 }));
 
