@@ -464,8 +464,30 @@ function AgentTypeRow({
     onSettled: invalidateAll,
   });
 
+  const checkUpdates = useMutation({
+    mutationFn: () => rpc.remoteHosts.checkAgentPluginUpdates({ sshHost, agentId: dep.id }),
+    onSuccess: (status) => {
+      setActionError(
+        status.refreshError
+          ? `Could not refresh the plugin marketplace — showing cached status. ${status.refreshError}`
+          : null
+      );
+      queryClient.setQueryData(pluginsQueryKey(sshHost), (prev: AgentPluginStatus[] | undefined) =>
+        prev?.map((p) => (p.agentId === status.agentId ? status : p))
+      );
+    },
+    onError: (error) => {
+      log.error('Remote plugin update check failed', { sshHost, id: dep.id, error });
+      setActionError(error instanceof Error ? error.message : 'Update check failed.');
+    },
+  });
+
   const cliInstalled = dep.status === 'available';
-  const pending = installCli.isPending || installPlugin.isPending || updatePlugin.isPending;
+  const pending =
+    installCli.isPending ||
+    installPlugin.isPending ||
+    updatePlugin.isPending ||
+    checkUpdates.isPending;
 
   // Green only when the agent type is fully usable: CLI present AND (the Switch
   // plugin is installed, or this agent type has no plugin). CLI-without-plugin is
@@ -528,6 +550,16 @@ function AgentTypeRow({
         {cliInstalled && plugin?.supported && !plugin.installed && (
           <Button size="sm" disabled={pending} onClick={() => installPlugin.mutate()}>
             {installPlugin.isPending ? 'Installing…' : 'Install plugin'}
+          </Button>
+        )}
+        {cliInstalled && plugin?.installed && !plugin.updateAvailable && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => checkUpdates.mutate()}
+          >
+            {checkUpdates.isPending ? 'Checking…' : 'Check for updates'}
           </Button>
         )}
         {cliInstalled && plugin?.installed && plugin.updateAvailable && (
