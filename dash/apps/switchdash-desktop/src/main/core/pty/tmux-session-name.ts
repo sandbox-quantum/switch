@@ -22,6 +22,10 @@ export function buildTmuxShellLine(
 ): string {
   const quotedName = JSON.stringify(sessionName);
   const quotedTarget = JSON.stringify(exactTmuxTarget(sessionName));
+  // set-option/show-options reject a bare `=name` target ("no such session"),
+  // unlike has-session/attach-session. A trailing colon makes them parse it as
+  // a session target while keeping the `=` exact-match guarantee.
+  const quotedOptionTarget = JSON.stringify(`${exactTmuxTarget(sessionName)}:`);
   const quotedCmd = JSON.stringify(commandLine);
   // Set the agent's env on the tmux session itself with `-e`. A new pane inherits
   // the tmux SERVER's environment, NOT that of the shell invoking `new-session`,
@@ -40,14 +44,14 @@ export function buildTmuxShellLine(
   // non-UTF-8 locale and mangles multibyte glyphs like Nerd-font/box-drawing characters.
   const checkExists = `tmux has-session -t ${quotedTarget} 2>/dev/null`;
   const newSession = `tmux -u new-session ${newSessionFlags} -s ${quotedName} ${quotedCmd}`;
-  const enableMouse = `tmux set-option -t ${quotedTarget} mouse on 2>/dev/null || true`;
-  const setHistoryLimit = `tmux set-option -t ${quotedTarget} history-limit ${TMUX_HISTORY_LIMIT} 2>/dev/null || true`;
+  const enableMouse = `tmux set-option -t ${quotedOptionTarget} mouse on 2>/dev/null || true`;
+  const setHistoryLimit = `tmux set-option -t ${quotedOptionTarget} history-limit ${TMUX_HISTORY_LIMIT} 2>/dev/null || true`;
   // With multiple clients (different laptops) attached to the same session, tmux
   // otherwise clamps the shared window to the SMALLEST client, cramping the active
   // user whenever an idle viewer with a smaller terminal is attached. `latest`
   // sizes the window to the most-recently-active client instead, so a passive
   // viewer no longer constrains whoever is actually driving the session.
-  const setWindowSize = `tmux set-option -t ${quotedTarget} window-size latest 2>/dev/null || true`;
+  const setWindowSize = `tmux set-option -t ${quotedOptionTarget} window-size latest 2>/dev/null || true`;
   const configure = `(${enableMouse}) && (${setHistoryLimit}) && (${setWindowSize})`;
   const attach = `tmux -u attach-session -t ${quotedTarget}`;
   const script = `(${checkExists} || ${newSession}) && ${configure} && ${attach}`;

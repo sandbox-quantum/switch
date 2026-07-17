@@ -16,9 +16,12 @@ describe('buildTmuxShellLine', () => {
     expect(result).toContain(
       'tmux -u new-session -d -s \\"agent-session\\" \\"exec /bin/zsh -il\\"'
     );
-    expect(result).toContain('tmux set-option -t \\"=agent-session\\" mouse on');
-    expect(result).toContain('tmux set-option -t \\"=agent-session\\" history-limit 100000');
-    expect(result).toContain('tmux set-option -t \\"=agent-session\\" window-size latest');
+    // set-option needs the trailing colon: it rejects a bare `=name` target
+    // ("no such session"), silently disabling mouse scroll on tmux terminals
+    // (CHOO-1403). `=name:` keeps the exact match and is accepted.
+    expect(result).toContain('tmux set-option -t \\"=agent-session:\\" mouse on');
+    expect(result).toContain('tmux set-option -t \\"=agent-session:\\" history-limit 100000');
+    expect(result).toContain('tmux set-option -t \\"=agent-session:\\" window-size latest');
     expect(result).toContain('tmux -u attach-session -t \\"=agent-session\\"');
     expect(result.indexOf('mouse on')).toBeLessThan(result.indexOf('attach-session'));
     expect(result.indexOf('history-limit')).toBeLessThan(result.indexOf('attach-session'));
