@@ -15,7 +15,27 @@ export type SwitchSetupStatus = {
   installedVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;
+  /**
+   * Set when a checkForUpdates marketplace refresh failed: the returned
+   * versions come from the stale local cache, not the source. Always null on
+   * plain getStatus reads.
+   */
+  refreshError: string | null;
 };
+
+/** Marketplace entry shape from `plugin marketplace list --json`. */
+export type MarketplaceListEntry = {
+  name?: string;
+  source?: string;
+  repo?: string;
+  path?: string;
+  installLocation?: string;
+};
+
+/** Whether a registered marketplace entry points at the expected source (repo or path). */
+export function marketplaceMatchesSource(entry: MarketplaceListEntry, source: string): boolean {
+  return entry.repo === source || entry.path === source;
+}
 
 /** Outcome of a mutating operation, mirroring the providers controller shape. */
 export type SwitchSetupResult = { success: boolean; message?: string };
@@ -32,6 +52,7 @@ function unsupported(agentId: string): SwitchSetupStatus {
     installedVersion: null,
     latestVersion: null,
     updateAvailable: false,
+    refreshError: null,
   };
 }
 
@@ -139,7 +160,12 @@ class SwitchSetupService {
     return pluginManifest?.version ?? null;
   }
 
-  /** Ensure the marketplace is registered; treat an already-added marketplace as success. */
+  /**
+   * Ensure the marketplace is registered AND points at the expected source.
+   * A same-named marketplace registered against a different source (e.g. a
+   * pre-migration repo) is removed and re-added so update checks read the
+   * current source rather than a stale one.
+   */
   private async ensureMarketplace(
     bin: string,
     marketplaceName: string,
@@ -147,10 +173,28 @@ class SwitchSetupService {
   ): Promise<void> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
     try {
-      const markets: Array<{ name?: string }> = JSON.parse(stdout);
-      if (markets.some((m) => m.name === marketplaceName)) return;
-    } catch {
-      // fall through and attempt to add
+      const markets: MarketplaceListEntry[] = JSON.parse(stdout);
+      const existing = markets.find((m) => m.name === marketplaceName);
+      if (existing) {
+        if (marketplaceMatchesSource(existing, marketplaceSource)) return;
+        log.warn('switch-setup: re-pointing marketplace to current source', {
+          marketplaceName,
+          from: existing.repo ?? existing.path ?? null,
+          to: marketplaceSource,
+        });
+        const removed = await this.run(bin, ['plugin', 'marketplace', 'remove', marketplaceName]);
+        if (removed.code !== 0) {
+          throw new Error(
+            removed.stderr.trim() || `Failed to remove stale marketplace ${marketplaceName}`
+          );
+        }
+      }
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        // Unparseable list output — fall through and attempt to add.
+      } else {
+        throw err;
+      }
     }
     const res = await this.run(bin, ['plugin', 'marketplace', 'add', marketplaceSource]);
     if (res.code !== 0 && !/already|exists/i.test(res.stderr)) {
@@ -184,6 +228,7 @@ class SwitchSetupService {
       installedVersion,
       latestVersion,
       updateAvailable,
+      refreshError: null,
     };
   }
 
@@ -202,18 +247,34 @@ class SwitchSetupService {
     return onboardable;
   }
 
-  /** Refresh the marketplace catalog, then recompute status (the network step). */
+  /**
+   * Refresh the marketplace catalog, then recompute status (the network step).
+   * A failed refresh does not throw — the returned status carries the cached
+   * versions with `refreshError` set so the UI can disclose the staleness.
+   */
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
     const { descriptor, bin } = resolved;
+    let refreshError: string | null = null;
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, descriptor.marketplaceSource);
-      await this.run(bin, ['plugin', 'marketplace', 'update', descriptor.marketplaceName]);
+      const res = await this.run(bin, [
+        'plugin',
+        'marketplace',
+        'update',
+        descriptor.marketplaceName,
+      ]);
+      if (res.code !== 0) {
+        throw new Error(
+          res.stderr.trim() || `Failed to update marketplace ${descriptor.marketplaceName}`
+        );
+      }
     } catch (err) {
       log.warn('switch-setup: marketplace refresh failed', { agentId, err });
+      refreshError = err instanceof Error ? err.message : String(err);
     }
-    return this.getStatus(agentId);
+    return { ...(await this.getStatus(agentId)), refreshError };
   }
 
   async install(agentId: string): Promise<SwitchSetupResult> {

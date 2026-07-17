@@ -43,7 +43,13 @@ export function useSwitchSetup(agentId: string) {
     mutationFn: () => rpc.switchSetup.checkForUpdates(agentId),
     onSuccess: (status) => {
       qc.setQueryData(queryKey, status);
-      if (status.supported && status.installed && !status.updateAvailable) {
+      if (status.refreshError) {
+        toast({
+          title: 'Could not refresh the plugin marketplace — showing cached status',
+          description: status.refreshError,
+          variant: 'destructive',
+        });
+      } else if (status.supported && status.installed && !status.updateAvailable) {
         toast({ title: 'Switch connector is up to date' });
       }
     },

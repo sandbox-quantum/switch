@@ -96,6 +96,11 @@ export function SwitchSetupCard({ agentId }: { agentId: string }) {
             )}
           </div>
         </div>
+        {status.refreshError && (
+          <p className="text-destructive text-xs">
+            Couldn't refresh the plugin marketplace — showing cached status. {status.refreshError}
+          </p>
+        )}
         <p className="text-xs text-foreground-muted">
           Connects this agent to a Switch instance. Credentials are managed when you add the agent
           to a Switch server.

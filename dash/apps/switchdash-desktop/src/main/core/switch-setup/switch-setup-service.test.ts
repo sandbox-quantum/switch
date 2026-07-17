@@ -79,7 +79,12 @@ function execImpl(installedVersion: string | null) {
     if (a === 'plugin marketplace list --json') {
       return Promise.resolve({
         stdout: JSON.stringify([
-          { name: 'switch-plugins', source: 'github', installLocation: MARKET_LOCATION },
+          {
+            name: 'switch-plugins',
+            source: 'github',
+            repo: 'sandbox-quantum/switch',
+            installLocation: MARKET_LOCATION,
+          },
         ]),
         stderr: '',
       });
@@ -182,6 +187,90 @@ describe('switchSetupService.listOnboardable', () => {
   });
 });
 
+describe('switchSetupService.checkForUpdates', () => {
+  function calls(): string[] {
+    return mocks.exec.mock.calls.map((c) => (c[1] as string[]).join(' '));
+  }
+
+  it('leaves a marketplace already pointing at the expected source alone', async () => {
+    mocks.exec.mockImplementation(execImpl('0.1.0'));
+    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
+
+    const status = await switchSetupService.checkForUpdates('claude');
+
+    expect(status.refreshError).toBeNull();
+    expect(calls()).not.toContain('plugin marketplace remove switch-plugins');
+    expect(calls()).toContain('plugin marketplace update switch-plugins');
+  });
+
+  it('re-points a same-named marketplace registered against a different source', async () => {
+    const base = execImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === 'plugin marketplace list --json') {
+        return Promise.resolve({
+          stdout: JSON.stringify([
+            {
+              name: 'switch-plugins',
+              source: 'github',
+              repo: 'sandbox-quantum/napoleon',
+              installLocation: MARKET_LOCATION,
+            },
+          ]),
+          stderr: '',
+        });
+      }
+      return base(bin, args);
+    });
+    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.9'));
+
+    const status = await switchSetupService.checkForUpdates('claude');
+
+    expect(calls()).toContain('plugin marketplace remove switch-plugins');
+    expect(calls()).toContain('plugin marketplace add sandbox-quantum/switch');
+    expect(status.refreshError).toBeNull();
+    expect(status.updateAvailable).toBe(true);
+  });
+
+  it('surfaces refreshError with cached status when the marketplace update fails', async () => {
+    const base = execImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === 'plugin marketplace update switch-plugins') {
+        return Promise.reject(
+          Object.assign(new Error('boom'), { code: 1, stderr: 'repository not found' })
+        );
+      }
+      return base(bin, args);
+    });
+    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
+
+    const status = await switchSetupService.checkForUpdates('claude');
+
+    expect(status.refreshError).toBe('repository not found');
+    expect(status.installedVersion).toBe('0.1.0');
+    expect(status.updateAvailable).toBe(false);
+  });
+
+  it('surfaces refreshError when re-adding the marketplace fails', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      const a = args.join(' ');
+      if (a === 'plugin list --json') {
+        return Promise.resolve({ stdout: JSON.stringify([]), stderr: '' });
+      }
+      if (a === 'plugin marketplace list --json') {
+        return Promise.resolve({ stdout: JSON.stringify([]), stderr: '' });
+      }
+      return Promise.reject(
+        Object.assign(new Error('boom'), { code: 1, stderr: 'could not resolve source' })
+      );
+    });
+    mocks.readFile.mockImplementation(() => Promise.reject(new Error('ENOENT')));
+
+    const status = await switchSetupService.checkForUpdates('claude');
+
+    expect(status.refreshError).toBe('could not resolve source');
+  });
+});
+
 describe('switchSetupService mutations', () => {
   it('install issues the scoped install command (marketplace already present)', async () => {
     mocks.exec.mockImplementation(execImpl(null));
@@ -213,7 +302,14 @@ describe('switchSetupService mutations', () => {
     mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
       if (args.join(' ') === 'plugin marketplace list --json') {
         return Promise.resolve({
-          stdout: JSON.stringify([{ name: 'switch-plugins', installLocation: MARKET_LOCATION }]),
+          stdout: JSON.stringify([
+            {
+              name: 'switch-plugins',
+              source: 'github',
+              repo: 'sandbox-quantum/switch',
+              installLocation: MARKET_LOCATION,
+            },
+          ]),
           stderr: '',
         });
       }

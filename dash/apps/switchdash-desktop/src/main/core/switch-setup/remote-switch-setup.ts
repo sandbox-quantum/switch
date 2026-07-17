@@ -5,7 +5,12 @@ import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
 import { log } from '@main/lib/logger';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
-import type { SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
+import type {
+  MarketplaceListEntry,
+  SwitchSetupResult,
+  SwitchSetupStatus,
+} from './switch-setup-service';
+import { marketplaceMatchesSource } from './switch-setup-service';
 
 const EXEC_TIMEOUT_MS = 120_000;
 
@@ -19,6 +24,7 @@ function unsupported(agentId: string): SwitchSetupStatus {
     installedVersion: null,
     latestVersion: null,
     updateAvailable: false,
+    refreshError: null,
   };
 }
 
@@ -126,6 +132,12 @@ export class RemoteSwitchSetupService {
     return market?.plugins?.find((p) => p.name === pluginName)?.version ?? null;
   }
 
+  /**
+   * Ensure the marketplace is registered AND points at the expected source.
+   * A same-named marketplace registered against a different source (e.g. a
+   * pre-migration repo) is removed and re-added so update checks read the
+   * current source rather than a stale one.
+   */
   private async ensureMarketplace(
     bin: string,
     marketplaceName: string,
@@ -133,11 +145,22 @@ export class RemoteSwitchSetupService {
   ): Promise<void> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
     const parsed = parseJsonLoose(stdout);
-    if (
-      Array.isArray(parsed) &&
-      (parsed as Array<{ name?: string }>).some((m) => m.name === marketplaceName)
-    ) {
-      return;
+    const existing = Array.isArray(parsed)
+      ? (parsed as MarketplaceListEntry[]).find((m) => m.name === marketplaceName)
+      : undefined;
+    if (existing) {
+      if (marketplaceMatchesSource(existing, marketplaceSource)) return;
+      log.warn('remote-switch-setup: re-pointing marketplace to current source', {
+        marketplaceName,
+        from: existing.repo ?? existing.path ?? null,
+        to: marketplaceSource,
+      });
+      const removed = await this.run(bin, ['plugin', 'marketplace', 'remove', marketplaceName]);
+      if (removed.code !== 0) {
+        throw new Error(
+          removed.stderr.trim() || `Failed to remove stale marketplace ${marketplaceName}`
+        );
+      }
     }
     const res = await this.run(bin, ['plugin', 'marketplace', 'add', marketplaceSource]);
     if (res.code !== 0 && !/already|exists/i.test(res.stderr)) {
@@ -170,20 +193,38 @@ export class RemoteSwitchSetupService {
       installedVersion,
       latestVersion,
       updateAvailable,
+      refreshError: null,
     };
   }
 
+  /**
+   * Refresh the marketplace catalog, then recompute status (the network step).
+   * A failed refresh does not throw — the returned status carries the cached
+   * versions with `refreshError` set so the UI can disclose the staleness.
+   */
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
     const { descriptor, bin } = resolved;
+    let refreshError: string | null = null;
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, descriptor.marketplaceSource);
-      await this.run(bin, ['plugin', 'marketplace', 'update', descriptor.marketplaceName]);
+      const res = await this.run(bin, [
+        'plugin',
+        'marketplace',
+        'update',
+        descriptor.marketplaceName,
+      ]);
+      if (res.code !== 0) {
+        throw new Error(
+          res.stderr.trim() || `Failed to update marketplace ${descriptor.marketplaceName}`
+        );
+      }
     } catch (err) {
       log.warn('remote-switch-setup: marketplace refresh failed', { agentId, err });
+      refreshError = err instanceof Error ? err.message : String(err);
     }
-    return this.getStatus(agentId);
+    return { ...(await this.getStatus(agentId)), refreshError };
   }
 
   async install(agentId: string): Promise<SwitchSetupResult> {
