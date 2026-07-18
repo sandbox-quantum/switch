@@ -3,8 +3,8 @@ import { FolderOpen } from 'lucide-react';
 import { useObserver } from 'mobx-react-lite';
 import {
   asMounted,
-  getProjectManagerStore,
-} from '@renderer/features/projects/stores/project-selectors';
+  getLocationManagerStore,
+} from '@renderer/features/locations/stores/location-selectors';
 import type { NavigateFnTyped } from '@renderer/lib/layout/navigation-provider';
 import { cn } from '@renderer/utils/utils';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
@@ -17,24 +17,24 @@ const GROUP_CLASS = cn(
 
 interface PaletteProjectsGroupProps {
   /** When set, this project is excluded from the list (project scope). Undefined shows all (app scope). */
-  currentProjectId: string | undefined;
+  currentLocationId: string | undefined;
   limit?: number;
   onClose: () => void;
   navigate: NavigateFnTyped;
 }
 
 export function PaletteProjectsGroup({
-  currentProjectId,
+  currentLocationId,
   limit,
   onClose,
   navigate,
 }: PaletteProjectsGroupProps) {
   const projects = useObserver(() => {
     const result: Array<{ id: string; name: string }> = [];
-    for (const store of getProjectManagerStore().projects.values()) {
+    for (const store of getLocationManagerStore().locations.values()) {
       const mounted = asMounted(store);
       if (!mounted) continue;
-      if (mounted.data.id === currentProjectId) continue;
+      if (mounted.data.id === currentLocationId) continue;
       result.push({ id: mounted.data.id, name: store.name ?? mounted.data.id });
     }
     return result;
@@ -51,7 +51,7 @@ export function PaletteProjectsGroup({
           key={p.id}
           value={`project:${p.id}`}
           onSelect={() => {
-            navigate('project', { projectId: p.id });
+            navigate('location', { locationId: p.id });
             onClose();
           }}
           className={PALETTE_ITEM_CLASS}

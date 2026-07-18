@@ -15,8 +15,8 @@ export function getDraggedFilePaths(dataTransfer: DataTransfer): string[] {
  */
 export const WORKSPACE_FILE_DRAG_TYPE = 'application/x-switchdash-workspace-file';
 
-export type DraggedWorkspaceFile = {
-  workspaceId: string;
+export type DraggedLocationFile = {
+  locationId: string;
   relPath: string;
   /** Absolute path in the workspace environment where the target agent runs. */
   targetPath: string;
@@ -25,7 +25,7 @@ export type DraggedWorkspaceFile = {
 };
 
 type DraggedWorkspaceFileInput = {
-  workspaceId: string;
+  locationId: string;
   workspaceRootPath: string;
   relPath: string;
   targetPlatform?: NodeJS.Platform;
@@ -36,39 +36,39 @@ type DraggedWorkspaceFileInput = {
 // drag source and same-window drop targets share the renderer. Consumers still
 // require the DataTransfer marker so stale state from a previous drag cannot be
 // accepted by an unrelated drop.
-let draggedWorkspaceFile: DraggedWorkspaceFile | null = null;
+let draggedLocationFile: DraggedLocationFile | null = null;
 
-export function resolveWorkspaceFileTargetPath(rootPath: string, relPath: string): string {
+export function resolveLocationFileTargetPath(rootPath: string, relPath: string): string {
   const separator = rootPath.includes('\\') ? '\\' : '/';
   const normalizedRoot = rootPath.replace(/[\\/]+$/, '');
   const normalizedPath = relPath.replace(/^[\\/]+/, '').replace(/[\\/]+/g, separator);
   return `${normalizedRoot}${separator}${normalizedPath}`;
 }
 
-export function setDraggedWorkspaceFile(
+export function setDraggedLocationFile(
   dataTransfer: DataTransfer,
   input: DraggedWorkspaceFileInput
 ): void {
-  const payload: DraggedWorkspaceFile = {
-    workspaceId: input.workspaceId,
+  const payload: DraggedLocationFile = {
+    locationId: input.locationId,
     relPath: input.relPath,
-    targetPath: resolveWorkspaceFileTargetPath(input.workspaceRootPath, input.relPath),
+    targetPath: resolveLocationFileTargetPath(input.workspaceRootPath, input.relPath),
     targetPlatform: input.targetPlatform,
   };
 
-  draggedWorkspaceFile = payload;
+  draggedLocationFile = payload;
   dataTransfer.setData(WORKSPACE_FILE_DRAG_TYPE, JSON.stringify(payload));
   dataTransfer.setData('text/plain', payload.targetPath);
   dataTransfer.effectAllowed = 'copy';
 }
 
 /** Call on dragend; drop fires on the target before dragend on the source. */
-export function clearDraggedWorkspaceFile(): void {
-  draggedWorkspaceFile = null;
+export function clearDraggedLocationFile(): void {
+  draggedLocationFile = null;
 }
 
 /** True when this transfer is tagged as an in-app workspace-file drag. */
-export function hasDraggedWorkspaceFile(dataTransfer: DataTransfer): boolean {
+export function hasDraggedLocationFile(dataTransfer: DataTransfer): boolean {
   return dataTransfer.types.includes(WORKSPACE_FILE_DRAG_TYPE);
 }
 
@@ -90,20 +90,20 @@ function isNodePlatform(value: unknown): value is NodeJS.Platform {
   return typeof value === 'string' && NODE_PLATFORMS.has(value as NodeJS.Platform);
 }
 
-function isDraggedWorkspaceFile(value: unknown): value is DraggedWorkspaceFile {
+function isDraggedWorkspaceFile(value: unknown): value is DraggedLocationFile {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<DraggedWorkspaceFile>;
+  const candidate = value as Partial<DraggedLocationFile>;
   return (
-    typeof candidate.workspaceId === 'string' &&
+    typeof candidate.locationId === 'string' &&
     typeof candidate.relPath === 'string' &&
     typeof candidate.targetPath === 'string' &&
     (candidate.targetPlatform === undefined || isNodePlatform(candidate.targetPlatform))
   );
 }
 
-export function getDraggedWorkspaceFile(dataTransfer: DataTransfer): DraggedWorkspaceFile | null {
-  if (!hasDraggedWorkspaceFile(dataTransfer)) return null;
-  if (draggedWorkspaceFile) return draggedWorkspaceFile;
+export function getDraggedLocationFile(dataTransfer: DataTransfer): DraggedLocationFile | null {
+  if (!hasDraggedLocationFile(dataTransfer)) return null;
+  if (draggedLocationFile) return draggedLocationFile;
 
   try {
     const parsed: unknown = JSON.parse(dataTransfer.getData(WORKSPACE_FILE_DRAG_TYPE));

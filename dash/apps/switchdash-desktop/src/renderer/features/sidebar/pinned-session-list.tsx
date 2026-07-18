@@ -14,10 +14,10 @@ export const SidebarPinnedSessionList = observer(function SidebarPinnedSessionLi
         <MicroLabel className="text-foreground-tertiary-passive">Pinned</MicroLabel>
       </div>
       <SidebarMenu className="px-3 pb-2">
-        {entries.map(({ projectId, sessionId }) => (
+        {entries.map(({ locationId, sessionId }) => (
           <SidebarSessionItem
-            key={`${projectId}:${sessionId}`}
-            projectId={projectId}
+            key={`${locationId}:${sessionId}`}
+            locationId={locationId}
             sessionId={sessionId}
             rowVariant="pinned"
           />

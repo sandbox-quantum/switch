@@ -9,7 +9,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 
 export type DeleteSessionModalArgs = {
-  projectId: string;
+  locationId: string;
   sessions: Array<{ sessionId: string; sessionName: string }>;
 };
 

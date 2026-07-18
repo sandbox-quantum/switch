@@ -2,8 +2,8 @@ import { err, type Result } from '@switchdash/shared';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import type {
-  MigrateProjectConfigRequest,
-  ProjectConfigMigration,
+  MigrateLocationConfigRequest,
+  LocationConfigMigration,
 } from '@shared/core/location-settings/location-settings';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import type { LocationProvider } from '../../location-provider';
@@ -14,14 +14,14 @@ import { supersetConfigMigrator } from './superset-config-migration';
 import { CONFIG_FILE } from './switchdash-config-file';
 
 export type ProjectConfigMigrator = {
-  provider: ProjectConfigMigration['provider'];
+  provider: LocationConfigMigration['provider'];
   inspect: (
     fs: Pick<FileSystemProvider, 'exists' | 'read'>
-  ) => Promise<ProjectConfigMigration | null>;
+  ) => Promise<LocationConfigMigration | null>;
   migrate: (
     project: LocationProvider,
-    request: MigrateProjectConfigRequest
-  ) => Promise<Result<ProjectConfigMigration, UpdateLocationSettingsError>>;
+    request: MigrateLocationConfigRequest
+  ) => Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>>;
 };
 
 const PROJECT_CONFIG_MIGRATORS = [
@@ -37,7 +37,7 @@ function writeConfigFailed(message: string): Result<never, UpdateLocationSetting
 
 export async function inspectProjectConfigMigrations(
   fs: Pick<FileSystemProvider, 'exists' | 'read'>
-): Promise<ProjectConfigMigration[]> {
+): Promise<LocationConfigMigration[]> {
   try {
     if (await fs.exists(CONFIG_FILE)) return [];
   } catch (error) {
@@ -56,13 +56,13 @@ export async function inspectProjectConfigMigrations(
     })
   );
 
-  return migrations.filter((migration): migration is ProjectConfigMigration => migration !== null);
+  return migrations.filter((migration): migration is LocationConfigMigration => migration !== null);
 }
 
 export async function migrateProjectConfigFromProvider(
   project: LocationProvider,
-  request: MigrateProjectConfigRequest
-): Promise<Result<ProjectConfigMigration, UpdateLocationSettingsError>> {
+  request: MigrateLocationConfigRequest
+): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
     if (await project.fs.exists(CONFIG_FILE)) {
       return writeConfigFailed(`${CONFIG_FILE} already exists.`);

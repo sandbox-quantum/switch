@@ -4,10 +4,10 @@ import type { Session } from '@shared/core/sessions/sessions';
 export class SessionAgentRegistry {
   private readonly entries = new Map<string, SessionAgentStore>();
 
-  acquire(sessionId: string, projectId: string, preloaded?: Session[]): SessionAgentStore {
+  acquire(sessionId: string, locationId: string, preloaded?: Session[]): SessionAgentStore {
     const existing = this.entries.get(sessionId);
     if (existing) return existing;
-    const store = new SessionAgentStore(projectId, sessionId, preloaded);
+    const store = new SessionAgentStore(locationId, sessionId, preloaded);
     this.entries.set(sessionId, store);
     return store;
   }

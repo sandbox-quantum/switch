@@ -74,7 +74,7 @@ function getRecentSelection(selection: { text: string; capturedAt: number } | nu
 }
 
 export interface UsePtyOptions {
-  /** Deterministic PTY session ID: makePtySessionId(projectId, scopeId, leafId). */
+  /** Deterministic PTY session ID: makePtySessionId(locationId, scopeId, leafId). */
   sessionId: string;
   /** Pre-connected FrontendPty instance owned by the entity's PtySession store. */
   pty: FrontendPty;

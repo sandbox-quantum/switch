@@ -1,42 +1,39 @@
 import { observer } from 'mobx-react-lite';
 import { createContext, useContext, type ReactNode } from 'react';
-import { ProjectViewWrapper } from '@renderer/features/projects/components/project-view-wrapper';
+import { LocationViewWrapper } from '@renderer/features/locations/components/location-view-wrapper';
 import type { SessionAgentStore } from '@renderer/features/sessions/stores/session-agent-store';
 import {
   getSessionAgent,
   getSessionStore,
-  getWorkspaceForSession,
+  getSessionRuntime,
   sessionViewKind,
   type SessionViewKind,
 } from '@renderer/features/sessions/stores/session-selectors';
-import type { WorkspaceStore } from '@renderer/features/sessions/stores/workspace';
-import type { WorkspaceViewModel } from '@renderer/features/sessions/stores/workspace-view-model';
+import type { SessionRuntimeStore } from '@renderer/features/sessions/stores/session-runtime-store';
+import type { SessionViewModel } from '@renderer/features/sessions/stores/session-view-model';
 
 interface SessionViewContext {
-  projectId: string;
+  locationId: string;
   sessionId: string;
-  /** The workspace ID for this session, or null when not yet registered. */
-  workspaceId: string | null;
 }
 
 const SessionViewContext = createContext<SessionViewContext | null>(null);
 
 export const SessionViewWrapper = observer(function SessionViewWrapper({
   children,
-  projectId,
+  locationId,
   sessionId,
 }: {
   children: ReactNode;
-  projectId: string;
+  locationId: string;
   sessionId: string;
 }) {
-  const workspaceId = getSessionStore(projectId, sessionId)?.workspaceId ?? null;
   return (
-    <ProjectViewWrapper projectId={projectId}>
-      <SessionViewContext.Provider value={{ projectId, sessionId, workspaceId }}>
+    <LocationViewWrapper locationId={locationId}>
+      <SessionViewContext.Provider value={{ locationId, sessionId }}>
         {children}
       </SessionViewContext.Provider>
-    </ProjectViewWrapper>
+    </LocationViewWrapper>
   );
 });
 
@@ -49,33 +46,32 @@ export function useSessionViewContext(): SessionViewContext {
 }
 
 export function useSessionViewKind(): SessionViewKind {
-  const { projectId, sessionId } = useSessionViewContext();
-  return sessionViewKind(getSessionStore(projectId, sessionId), projectId);
+  const { locationId, sessionId } = useSessionViewContext();
+  return sessionViewKind(getSessionStore(locationId, sessionId), locationId);
 }
 
-/** Returns the active WorkspaceStore. Throws if the session is not provisioned. */
-export function useWorkspace(): WorkspaceStore {
-  const { projectId, sessionId } = useSessionViewContext();
-  const workspace = getWorkspaceForSession(projectId, sessionId);
-  if (!workspace) {
-    throw new Error('useWorkspace: session is not provisioned (no workspace)');
+/** Returns the active SessionRuntimeStore. Throws if the session is not provisioned. */
+export function useSessionRuntime(): SessionRuntimeStore {
+  const { locationId, sessionId } = useSessionViewContext();
+  const runtime = getSessionRuntime(locationId, sessionId);
+  if (!runtime) {
+    throw new Error('useSessionRuntime: session is not provisioned (no runtime)');
   }
-  return workspace;
+  return runtime;
 }
 
-/** Returns the workspace ID. Throws if the session has no workspace yet. */
-export function useWorkspaceId(): string {
-  const { workspaceId } = useSessionViewContext();
-  if (!workspaceId) throw new Error('useWorkspaceId: session has no workspace');
-  return workspaceId;
+/** Returns the location id for the active session. */
+export function useSessionLocationId(): string {
+  const { locationId } = useSessionViewContext();
+  return locationId;
 }
 
-/** Returns the WorkspaceViewModel. Throws if the session is not registered. */
-export function useWorkspaceViewModel(): WorkspaceViewModel {
-  const { projectId, sessionId } = useSessionViewContext();
-  const viewModel = getSessionStore(projectId, sessionId)?.viewModel;
+/** Returns the SessionViewModel. Throws if the session is not registered. */
+export function useSessionViewModel(): SessionViewModel {
+  const { locationId, sessionId } = useSessionViewContext();
+  const viewModel = getSessionStore(locationId, sessionId)?.viewModel;
   if (!viewModel) {
-    throw new Error('useWorkspaceViewModel: session is not registered (no view model)');
+    throw new Error('useSessionViewModel: session is not registered (no view model)');
   }
   return viewModel;
 }

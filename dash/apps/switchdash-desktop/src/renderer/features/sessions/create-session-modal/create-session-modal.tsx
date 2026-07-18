@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
-import { getProjectManagerStore } from '@renderer/features/projects/stores/project-selectors';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { useAgentAutoApproveDefaults } from '@renderer/features/sessions/hooks/useAgentAutoApproveDefaults';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -56,13 +56,13 @@ function useDefaultProjectId(propProjectId?: string): string | undefined {
     const nav = appState.navigation;
     const navProjectId =
       nav.currentViewId === 'session'
-        ? (nav.viewParamsStore['session'] as { projectId?: string } | undefined)?.projectId
-        : nav.currentViewId === 'project'
-          ? (nav.viewParamsStore['project'] as { projectId?: string } | undefined)?.projectId
+        ? (nav.viewParamsStore['session'] as { locationId?: string } | undefined)?.locationId
+        : nav.currentViewId === 'location'
+          ? (nav.viewParamsStore['location'] as { locationId?: string } | undefined)?.locationId
           : undefined;
     return (
       navProjectId ??
-      Array.from(getProjectManagerStore().projects.values())
+      Array.from(getLocationManagerStore().locations.values())
         .reverse()
         .find((p) => p.state === 'mounted')?.data?.id
     );
@@ -71,18 +71,18 @@ function useDefaultProjectId(propProjectId?: string): string | undefined {
 }
 
 export const CreateSessionModal = observer(function CreateSessionModal({
-  projectId,
+  locationId,
   subagentName,
   onClose,
 }: BaseModalProps & {
-  projectId?: string;
+  locationId?: string;
   /** When set, start the session as this Claude Code subagent of the agent. */
   subagentName?: string;
   // Accepted for source compatibility with switchdash callers; ignored in switchdash v0.
   strategy?: string;
   initialPR?: unknown;
 }) {
-  const selectedProjectId = useDefaultProjectId(projectId);
+  const selectedProjectId = useDefaultProjectId(locationId);
   const autoApproveDefaults = useAgentAutoApproveDefaults();
   const { navigate } = useNavigate();
 
@@ -173,7 +173,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         initialPrompt,
         subagentName: subagentName || undefined,
       });
-      navigate('session', { projectId: selectedProjectId, sessionId: id });
+      navigate('session', { locationId: selectedProjectId, sessionId: id });
       onClose();
       await created;
     })().catch((e) => log.error('spawn session failed', e));

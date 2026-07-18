@@ -15,7 +15,7 @@ const { NavigationStore } = await import('./navigation-store');
 function buildStore() {
   const store = new NavigationStore();
   store.registerView('home');
-  store.registerView('project');
+  store.registerView('location');
   store.registerView('session');
   store.registerView('settings');
   return store;
@@ -29,19 +29,19 @@ describe('NavigationStore.restoreSnapshot', () => {
   it('restores a snapshot whose view is registered', () => {
     const store = buildStore();
     store.restoreSnapshot({
-      currentViewId: 'project',
-      viewParams: { project: { projectId: 'p1' } },
+      currentViewId: 'location',
+      viewParams: { location: { locationId: 'p1' } },
     });
-    expect(store.currentViewId).toBe('project');
-    expect(store.viewParamsStore.project).toEqual({ projectId: 'p1' });
-    expect(store.lastNonSettingsView).toBe('project');
+    expect(store.currentViewId).toBe('location');
+    expect(store.viewParamsStore.location).toEqual({ locationId: 'p1' });
+    expect(store.lastNonSettingsView).toBe('location');
   });
 
   it('falls back to home when the persisted view is not in the registry', () => {
     const store = buildStore();
     store.restoreSnapshot({
       currentViewId: 'phantom-view-from-old-build',
-      viewParams: { project: { projectId: 'p1' } },
+      viewParams: { location: { locationId: 'p1' } },
     });
     expect(store.currentViewId).toBe('home');
     expect(store.lastNonSettingsView).toBe('home');
@@ -52,11 +52,11 @@ describe('NavigationStore.restoreSnapshot', () => {
     store.restoreSnapshot({
       currentViewId: 'home',
       viewParams: {
-        project: { projectId: 'p1' },
+        location: { locationId: 'p1' },
         ghostView: { stale: true },
       },
     });
-    expect(store.viewParamsStore.project).toEqual({ projectId: 'p1' });
+    expect(store.viewParamsStore.location).toEqual({ locationId: 'p1' });
     expect((store.viewParamsStore as Record<string, unknown>).ghostView).toBeUndefined();
   });
 
@@ -69,10 +69,10 @@ describe('NavigationStore.restoreSnapshot', () => {
 
   it('honors a guard redirect after a valid view is restored', () => {
     const store = buildStore();
-    store.registerGuard('project', () => ({ ok: false, redirect: 'home' }));
+    store.registerGuard('location', () => ({ ok: false, redirect: 'home' }));
     store.restoreSnapshot({
-      currentViewId: 'project',
-      viewParams: { project: { projectId: 'gone' } },
+      currentViewId: 'location',
+      viewParams: { location: { locationId: 'gone' } },
     });
     expect(store.currentViewId).toBe('home');
   });

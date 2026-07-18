@@ -14,10 +14,10 @@ const mocks = vi.hoisted(() => ({
   archiveSession: vi.fn(),
   agentAcquire: vi.fn(),
   agentRelease: vi.fn(),
-  getProjectManagerStore: vi.fn(),
+  getLocationManagerStore: vi.fn(),
   getSessionGitWorktreeStore: vi.fn(),
   getSessions: vi.fn(),
-  mountProject: vi.fn(),
+  mountLocation: vi.fn(),
   provisionWorkspace: vi.fn(),
   teardownSession: vi.fn(),
   viewModels: [] as MockViewModel[],
@@ -45,8 +45,8 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
 }));
 
-vi.mock('@renderer/features/projects/stores/project-selectors', () => ({
-  getProjectManagerStore: mocks.getProjectManagerStore,
+vi.mock('@renderer/features/locations/stores/location-selectors', () => ({
+  getLocationManagerStore: mocks.getLocationManagerStore,
 }));
 
 vi.mock('@renderer/features/sessions/stores/session-selectors', () => ({
@@ -65,8 +65,8 @@ vi.mock('sonner', () => ({
   },
 }));
 
-vi.mock('./workspace-view-model', () => ({
-  WorkspaceViewModel: class {
+vi.mock('./session-view-model', () => ({
+  SessionViewModel: class {
     initialize = vi.fn();
     suspend = vi.fn();
     dispose = vi.fn();
@@ -78,8 +78,8 @@ vi.mock('./workspace-view-model', () => ({
   },
 }));
 
-vi.mock('./workspace-registry', () => ({
-  workspaceRegistry: {
+vi.mock('./session-runtime-registry', () => ({
+  sessionRuntimeRegistry: {
     activate: mocks.workspaceActivate,
     acquire: mocks.workspaceAcquire,
     release: mocks.workspaceRelease,
@@ -122,14 +122,14 @@ describe('SessionManagerStore archive lifecycle', () => {
     vi.clearAllMocks();
     mocks.viewModels.length = 0;
     mocks.archiveSession.mockResolvedValue(undefined);
-    mocks.getProjectManagerStore.mockReturnValue({ mountProject: mocks.mountProject });
+    mocks.getLocationManagerStore.mockReturnValue({ mountLocation: mocks.mountLocation });
     mocks.getSessions.mockResolvedValue([]);
-    mocks.mountProject.mockResolvedValue(undefined);
+    mocks.mountLocation.mockResolvedValue(undefined);
     mocks.provisionWorkspace.mockResolvedValue({
       success: true,
       data: {
         path: '/tmp/workspace-1',
-        workspaceId: 'workspace-1',
+        locationId: 'workspace-1',
       },
     });
     mocks.viewStateGet.mockResolvedValue(undefined);
@@ -139,19 +139,18 @@ describe('SessionManagerStore archive lifecycle', () => {
     const manager = makeSessionManager();
     const session = makeSession();
     const store = createUnprovisionedSession('project-1', session);
-    store.transitionToProvisioned(session, '/tmp/workspace-1', 'workspace-1');
+    store.transitionToProvisioned(session, '/tmp/loc-1');
     const viewModel = mocks.viewModels[0];
     manager.sessions.set(session.id, store);
 
     await manager.archiveSession(session.id);
 
-    expect(mocks.archiveSession).toHaveBeenCalledWith('project-1', 'session-1');
+    expect(mocks.archiveSession).toHaveBeenCalledWith('session-1');
     expect(mocks.teardownSession).not.toHaveBeenCalled();
     expect(mocks.agentRelease).toHaveBeenCalledWith('session-1');
     expect(viewModel.dispose).toHaveBeenCalledOnce();
     expect(store.state).toBe('unprovisioned');
     expect(store.phase).toBe('idle');
-    expect(store.workspaceId).toBeNull();
     expect(store.viewModel).toBeNull();
     expect((store.data as Session).archivedAt).toBeDefined();
 

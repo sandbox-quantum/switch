@@ -4,25 +4,25 @@ import { db } from '@main/db/client';
 import { locations as locationsTable } from '@main/db/schema';
 import type {
   LocationSettingsWriteTarget,
-  ProjectSettingsWriteTargetOption,
-  WriteProjectConfigRequest,
+  LocationSettingsWriteTargetOption,
+  WriteLocationConfigRequest,
 } from '@shared/core/location-settings/location-settings';
 import type { LocationProvider } from '../../location-provider';
 import { resolveLocationRuntime } from '../../utils';
 
-export type ProjectSettingsResolvedTarget = ProjectSettingsWriteTargetOption & {
+export type LocationSettingsResolvedTarget = LocationSettingsWriteTargetOption & {
   fs: FileSystemProvider;
 };
 
-function stripTarget(target: ProjectSettingsWriteTargetOption): LocationSettingsWriteTarget {
+function stripTarget(target: LocationSettingsWriteTargetOption): LocationSettingsWriteTarget {
   if (target.type === 'project') return { type: 'project' };
   if (target.type === 'session') return { type: 'session', sessionId: target.sessionId };
   return { type: 'workspace', locationId: target.locationId };
 }
 
 export function stripResolvedTarget(
-  target: ProjectSettingsResolvedTarget
-): ProjectSettingsWriteTargetOption {
+  target: LocationSettingsResolvedTarget
+): LocationSettingsWriteTargetOption {
   const { fs: _fs, ...option } = target;
   return option;
 }
@@ -33,16 +33,16 @@ function targetKey(target: LocationSettingsWriteTarget): string {
   return `workspace:${target.locationId}`;
 }
 
-export async function resolveAllProjectSettingsTargets(
+export async function resolveAllLocationSettingsTargets(
   project: LocationProvider
-): Promise<ProjectSettingsResolvedTarget[]> {
+): Promise<LocationSettingsResolvedTarget[]> {
   const [locationRow] = await db
     .select({ name: locationsTable.name })
     .from(locationsTable)
     .where(eq(locationsTable.id, project.locationId))
     .limit(1);
 
-  const projectTarget: ProjectSettingsResolvedTarget = {
+  const projectTarget: LocationSettingsResolvedTarget = {
     type: 'project',
     label: locationRow?.name ?? 'Location repository',
     path: project.dir,
@@ -53,17 +53,17 @@ export async function resolveAllProjectSettingsTargets(
   return [projectTarget];
 }
 
-export function getProjectSettingsWriteTargets(
-  targets: ProjectSettingsResolvedTarget[]
-): ProjectSettingsWriteTargetOption[] {
+export function getLocationSettingsWriteTargets(
+  targets: LocationSettingsResolvedTarget[]
+): LocationSettingsWriteTargetOption[] {
   return targets.map(stripResolvedTarget);
 }
 
-export async function resolveProjectSettingsTarget(
+export async function resolveLocationSettingsTarget(
   project: LocationProvider,
-  request: Pick<WriteProjectConfigRequest, 'target'>,
-  resolvedTargets: ProjectSettingsResolvedTarget[]
-): Promise<ProjectSettingsResolvedTarget | null> {
+  request: Pick<WriteLocationConfigRequest, 'target'>,
+  resolvedTargets: LocationSettingsResolvedTarget[]
+): Promise<LocationSettingsResolvedTarget | null> {
   const target = resolvedTargets.find(
     (candidate) => targetKey(stripTarget(candidate)) === targetKey(request.target)
   );

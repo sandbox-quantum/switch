@@ -119,7 +119,7 @@ export function GhAuthPanel({ sshHost, onDone }: Props) {
             ref={paneRef}
             sessionId={sessionId}
             pty={pty}
-            workspaceId=""
+            locationId=""
             className="h-full w-full"
           />
         </div>

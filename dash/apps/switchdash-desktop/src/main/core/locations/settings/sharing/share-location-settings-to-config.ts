@@ -1,11 +1,11 @@
 import { err, ok, type Result } from '@switchdash/shared';
 import { log } from '@main/lib/logger';
-import type { WriteProjectConfigRequest } from '@shared/core/location-settings/location-settings';
+import type { WriteLocationConfigRequest } from '@shared/core/location-settings/location-settings';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import type { LocationProvider } from '../../location-provider';
 import {
-  resolveProjectSettingsTarget,
-  type ProjectSettingsResolvedTarget,
+  resolveLocationSettingsTarget,
+  type LocationSettingsResolvedTarget,
 } from './location-settings-target-resolver';
 import {
   CONFIG_FILE,
@@ -23,11 +23,11 @@ function errorMessage(error: unknown): string {
 
 export async function shareLocationSettingsToConfig(
   project: LocationProvider,
-  request: WriteProjectConfigRequest,
-  resolvedTargets: ProjectSettingsResolvedTarget[]
+  request: WriteLocationConfigRequest,
+  resolvedTargets: LocationSettingsResolvedTarget[]
 ): Promise<Result<void, UpdateLocationSettingsError>> {
   try {
-    const target = await resolveProjectSettingsTarget(project, request, resolvedTargets);
+    const target = await resolveLocationSettingsTarget(project, request, resolvedTargets);
     if (!target) {
       return writeConfigFailed('Could not resolve the selected working copy.');
     }

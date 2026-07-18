@@ -11,15 +11,15 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
-import { useConfirmDeleteProject } from '@renderer/features/projects/hooks/use-confirm-delete-project';
+import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import {
-  isUnregisteredProject,
-  type UnregisteredProject,
-} from '@renderer/features/projects/stores/project';
+  isUnregisteredLocation,
+  type UnregisteredLocation,
+} from '@renderer/features/locations/stores/location';
 import {
-  getProjectStore,
-  projectViewKind,
-} from '@renderer/features/projects/stores/project-selectors';
+  getLocationStore,
+  locationViewKind,
+} from '@renderer/features/locations/stores/location-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { rpc } from '@renderer/lib/ipc';
@@ -47,71 +47,69 @@ import {
 } from './sidebar-primitives';
 import { depthIndent } from './sidebar-store';
 
-const UNREGISTERED_PHASE_LABEL: Record<UnregisteredProject['phase'], string> = {
-  'creating-repo': 'Creating repository…',
-  cloning: 'Cloning…',
+const UNREGISTERED_PHASE_LABEL: Record<UnregisteredLocation['phase'], string> = {
   registering: 'Registering…',
   error: 'Failed',
 };
 
 export const SidebarProjectItem = observer(function SidebarProjectItem({
-  projectId,
+  locationId,
   depth = 0,
 }: {
-  projectId: string;
+  locationId: string;
   depth?: number;
 }) {
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
-  const { params: projectParams } = useParams('project');
+  const { params: projectParams } = useParams('location');
   const { params: sessionParams } = useParams('session');
   const showCreateSessionModal = useShowModal('sessionModal');
   const showAssignServerModal = useShowModal('assignServerModal');
-  const confirmDeleteProject = useConfirmDeleteProject();
+  const confirmDeleteAgent = useConfirmDeleteAgent();
 
   // Resolve the agent's Switch identity so the "go to" button can open its
   // detail page in the gateway web app (parallel to a room's "go to" button).
   const agentQuery = useQuery({
-    queryKey: ['projectAgent', projectId],
-    queryFn: async () => (await rpc.agents.getAgents(projectId))[0] ?? null,
-    enabled: !!projectId,
+    queryKey: ['projectAgent', locationId],
+    queryFn: async () => (await rpc.agents.getAgents(locationId))[0] ?? null,
+    enabled: !!locationId,
   });
 
-  const project = getProjectStore(projectId);
+  const project = getLocationStore(locationId);
 
-  const currentProjectId =
+  const currentLocationId =
     currentView === 'session'
-      ? sessionParams.projectId
-      : currentView === 'project'
-        ? projectParams.projectId
+      ? sessionParams.locationId
+      : currentView === 'location'
+        ? projectParams.locationId
         : null;
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : null;
   // A subagent of this project is scoped by subagentName on the project view;
   // the parent row is active only when no subagent is selected.
-  const currentSubagentName = currentView === 'project' ? projectParams.subagentName : undefined;
+  const currentSubagentName = currentView === 'location' ? projectParams.subagentName : undefined;
 
   const isProjectActive =
-    currentProjectId === projectId && !currentSessionId && !currentSubagentName;
+    currentLocationId === locationId && !currentSessionId && !currentSubagentName;
 
-  const isExpanded = sidebarStore.expandedProjectIds.has(projectId);
+  const isExpanded = sidebarStore.expandedProjectIds.has(locationId);
 
   if (!project) return null;
 
   const iconClass =
     'absolute h-4 w-4 opacity-100 transition-opacity duration-150 group-hover/row:opacity-0';
   const projectLabel = project.name ?? 'agent';
-  const toggleExpanded = () => sidebarStore.toggleProjectExpanded(projectId);
+  const toggleExpanded = () => sidebarStore.toggleProjectExpanded(locationId);
 
   // Clicking the row opens the agent's page (Sessions / Subagents / Settings),
   // mirroring subagent rows; the chevron button below toggles expansion. An
   // unregistered agent has no page yet, so there we just expand.
   const openProject = () => {
-    if (isUnregisteredProject(project)) {
+    if (isUnregisteredLocation(project)) {
       toggleExpanded();
       return;
     }
-    sidebarStore.ensureProjectExpanded(projectId);
-    navigate('project', { projectId });
+    sidebarStore.ensureProjectExpanded(locationId);
+    navigate('location', { locationId });
   };
 
   const agent = agentQuery.data ?? null;
@@ -127,7 +125,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
   };
 
   const renderSpinnerWithTooltip = () => {
-    if (!isUnregisteredProject(project)) return null;
+    if (!isUnregisteredLocation(project)) return null;
     const label = UNREGISTERED_PHASE_LABEL[project.phase] ?? 'Loading…';
     return (
       <Tooltip>
@@ -162,7 +160,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
                 className="relative"
                 onClick={(e) => {
                   e.stopPropagation();
-                  sidebarStore.toggleProjectExpanded(projectId);
+                  sidebarStore.toggleProjectExpanded(locationId);
                 }}
               >
                 {providerId ? (
@@ -182,24 +180,21 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
               aria-label={`Open agent ${projectLabel}`}
               className={cn(
                 'truncate transition-colors select-none',
-                projectViewKind(getProjectStore(projectId)) === 'bootstrapping' &&
+                locationViewKind(getLocationStore(locationId)) === 'bootstrapping' &&
                   'text-foreground-tertiary-passive'
               )}
             >
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{project.name}</span>
-                {agent?.connection === 'remote' && (
+                {project.data?.sshHost != null && (
                   <Tooltip>
                     <TooltipTrigger>
                       <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
                     </TooltipTrigger>
-                    <TooltipContent>
-                      Runs remotely
-                      {agent.remoteConfig?.sshHost ? ` on ${agent.remoteConfig.sshHost}` : ''}
-                    </TooltipContent>
+                    <TooltipContent>Runs remotely on {project.data.sshHost}</TooltipContent>
                   </Tooltip>
                 )}
-                {projectViewKind(project) === 'path_not_found' && (
+                {locationViewKind(project) === 'path_not_found' && (
                   <Tooltip>
                     <TooltipTrigger>
                       <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
@@ -242,7 +237,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
                   }
                   onClick={(e) => {
                     e.stopPropagation();
-                    showCreateSessionModal({ projectId });
+                    showCreateSessionModal({ locationId });
                   }}
                   disabled={project.state === 'unregistered'}
                 >
@@ -258,15 +253,15 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
         </SidebarMenuRow>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={() => showAssignServerModal({ projectId })}>
+        <ContextMenuItem onClick={() => showAssignServerModal({ locationId })}>
           <Server className="size-4" />
           Assign server
         </ContextMenuItem>
         <ContextMenuItem
           variant="destructive"
           onClick={() => {
-            void confirmDeleteProject({
-              projectId,
+            void confirmDeleteAgent({
+              locationId,
               projectLabel: project.name ?? 'this agent',
               onDeleted: () => {
                 if (isProjectActive) navigate('home');

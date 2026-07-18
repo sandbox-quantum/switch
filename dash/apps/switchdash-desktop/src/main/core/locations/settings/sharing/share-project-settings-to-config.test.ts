@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShareableLocationSettings } from '@shared/core/location-settings/location-settings';
-import { computeProjectSettingsOverrideState } from './location-settings-override-state';
+import { computeLocationSettingsOverrideState } from './location-settings-override-state';
 import {
-  getProjectSettingsWriteTargets,
-  resolveAllProjectSettingsTargets,
+  getLocationSettingsWriteTargets,
+  resolveAllLocationSettingsTargets,
 } from './location-settings-target-resolver';
 import { shareLocationSettingsToConfig } from './share-location-settings-to-config';
 
@@ -352,9 +352,9 @@ describe('shareLocationSettingsToConfig', () => {
       }),
     });
 
-    const resolvedTargets = await resolveAllProjectSettingsTargets(project as never);
-    const targets = getProjectSettingsWriteTargets(resolvedTargets);
-    const overrideState = await computeProjectSettingsOverrideState(resolvedTargets);
+    const resolvedTargets = await resolveAllLocationSettingsTargets(project as never);
+    const targets = getLocationSettingsWriteTargets(resolvedTargets);
+    const overrideState = await computeLocationSettingsOverrideState(resolvedTargets);
 
     expect(targets).toEqual([{ type: 'project', label: 'Repo Name', path: '/repo' }]);
     expect(overrideState.shellSetup).toEqual([
@@ -381,8 +381,8 @@ describe('shareLocationSettingsToConfig', () => {
       }),
     });
 
-    const targets = getProjectSettingsWriteTargets(
-      await resolveAllProjectSettingsTargets(project as never)
+    const targets = getLocationSettingsWriteTargets(
+      await resolveAllLocationSettingsTargets(project as never)
     );
 
     expect(targets).toEqual([{ type: 'project', label: 'Location repository', path: '/repo' }]);
@@ -422,7 +422,7 @@ describe('shareLocationSettingsToConfig', () => {
     });
 
     await expect(
-      computeProjectSettingsOverrideState(await resolveAllProjectSettingsTargets(project as never))
+      computeLocationSettingsOverrideState(await resolveAllLocationSettingsTargets(project as never))
     ).resolves.toEqual({
       preservePatterns: [
         {

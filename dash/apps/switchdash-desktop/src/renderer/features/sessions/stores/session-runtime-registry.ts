@@ -1,0 +1,75 @@
+import { observable } from 'mobx';
+import type { WorkspaceResolution } from '@shared/core/workspaces/workspaces';
+import { SessionRuntimeStore } from './session-runtime-store';
+
+export type SessionRuntimeBootstrapState =
+  | { kind: 'pending' }
+  | { kind: 'resolving' }
+  | { kind: 'needs-resolution'; resolution: WorkspaceResolution }
+  | { kind: 'ready' }
+  | { kind: 'error'; message: string };
+
+type SessionRuntimeRegistryEntry = {
+  store: SessionRuntimeStore;
+  refCount: number;
+  activated: boolean;
+};
+
+/**
+ * Ref-counted renderer-side cache of per-location session runtimes, keyed by
+ * location id. Every session at a location shares one runtime.
+ */
+export class SessionRuntimeRegistryStore {
+  private readonly entries = new Map<string, SessionRuntimeRegistryEntry>();
+  private readonly bootstrapStates = observable.map<string, SessionRuntimeBootstrapState>();
+
+  acquire(locationId: string, path: string): SessionRuntimeStore {
+    const existing = this.entries.get(locationId);
+    if (existing) {
+      existing.refCount += 1;
+      return existing.store;
+    }
+
+    const store = new SessionRuntimeStore(locationId, path);
+    this.entries.set(locationId, { store, refCount: 1, activated: false });
+    return store;
+  }
+
+  get(locationId: string): SessionRuntimeStore | undefined {
+    return this.entries.get(locationId)?.store;
+  }
+
+  activate(locationId: string): void {
+    const entry = this.entries.get(locationId);
+    if (!entry || entry.activated) {
+      return;
+    }
+    entry.activated = true;
+    entry.store.activate();
+  }
+
+  release(locationId: string): void {
+    const entry = this.entries.get(locationId);
+    if (!entry) {
+      return;
+    }
+
+    entry.refCount -= 1;
+
+    if (entry.refCount <= 0) {
+      entry.store.dispose();
+      this.entries.delete(locationId);
+      this.bootstrapStates.delete(locationId);
+    }
+  }
+
+  setBootstrapState(locationId: string, state: SessionRuntimeBootstrapState): void {
+    this.bootstrapStates.set(locationId, state);
+  }
+
+  bootstrapStateFor(locationId: string): SessionRuntimeBootstrapState | undefined {
+    return this.bootstrapStates.get(locationId);
+  }
+}
+
+export const sessionRuntimeRegistry = new SessionRuntimeRegistryStore();

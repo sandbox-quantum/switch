@@ -9,9 +9,9 @@ import {
 import { SessionTerminal } from './session-terminal';
 
 export const SessionMainPanel = observer(function SessionMainPanel() {
-  const { projectId, sessionId } = useSessionViewContext();
-  const sessionStore = getSessionStore(projectId, sessionId);
-  const kind = sessionViewKind(sessionStore, projectId);
+  const { locationId, sessionId } = useSessionViewContext();
+  const sessionStore = getSessionStore(locationId, sessionId);
+  const kind = sessionViewKind(sessionStore, locationId);
 
   if (kind === 'creating') {
     return (

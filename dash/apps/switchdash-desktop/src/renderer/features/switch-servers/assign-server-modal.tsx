@@ -19,7 +19,7 @@ import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { log } from '@renderer/utils/logger';
 
 export type AssignServerModalProps = BaseModalProps & {
-  projectId: string;
+  locationId: string;
 };
 
 /**
@@ -29,7 +29,7 @@ export type AssignServerModalProps = BaseModalProps & {
  * verified before it is persisted.
  */
 export const AssignServerModal = observer(function AssignServerModal({
-  projectId,
+  locationId,
   onClose,
 }: AssignServerModalProps) {
   const [serverId, setServerId] = useState<string | null>(null);
@@ -37,9 +37,9 @@ export const AssignServerModal = observer(function AssignServerModal({
   const [submitState, setSubmitState] = useState<'idle' | 'saving'>('idle');
 
   const agentQuery = useQuery({
-    queryKey: ['projectAgent', projectId],
+    queryKey: ['projectAgent', locationId],
     queryFn: async () => {
-      const agents = await rpc.agents.getAgents(projectId);
+      const agents = await rpc.agents.getAgents(locationId);
       return agents[0] ?? null;
     },
   });

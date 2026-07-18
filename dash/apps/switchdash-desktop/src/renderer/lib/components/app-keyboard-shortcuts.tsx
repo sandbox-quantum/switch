@@ -25,13 +25,13 @@ export function AppKeyboardShortcuts() {
 
   const { currentView, lastNonSettingsView } = useWorkspaceSlots();
   const { params: sessionParams } = useParams('session');
-  const { params: projectParams } = useParams('project');
+  const { params: projectParams } = useParams('location');
 
-  const currentProjectId =
+  const currentLocationId =
     currentView === 'session'
-      ? sessionParams.projectId
-      : currentView === 'project'
-        ? projectParams.projectId
+      ? sessionParams.locationId
+      : currentView === 'location'
+        ? projectParams.locationId
         : undefined;
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : undefined;
 
@@ -39,7 +39,7 @@ export function AppKeyboardShortcuts() {
     getHotkeyRegistration('commandPalette', keyboard),
     () =>
       showCommandPalette({
-        projectId: currentProjectId,
+        locationId: currentLocationId,
         sessionId: currentSessionId,
       }),
     { enabled: commandPaletteHotkey !== null }

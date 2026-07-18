@@ -32,13 +32,13 @@ function subagentNameOf(session: SessionStore): string | undefined {
 }
 
 /** Expand-state key for a subagent row (its sessions live underneath). */
-function subagentKey(projectId: string, name: string): string {
-  return `sa:${projectId}|${name}`;
+function subagentKey(locationId: string, name: string): string {
+  return `sa:${locationId}|${name}`;
 }
 
 /** Expand-state key for a room nested under a subagent. */
-function subagentRoomKey(projectId: string, name: string, roomKey: string): string {
-  return `sar:${projectId}|${name}|${roomKey}`;
+function subagentRoomKey(locationId: string, name: string, roomKey: string): string {
+  return `sar:${locationId}|${name}|${roomKey}`;
 }
 
 /**
@@ -54,13 +54,13 @@ function subagentRoomKey(projectId: string, name: string, roomKey: string): stri
  * only the launcher rows.
  */
 export const SidebarSubagentList = observer(function SidebarSubagentList({
-  projectId,
+  locationId,
   sessions = [],
   depth = 1,
   onlyWithSessions = false,
   groupSessionsByRoom = true,
 }: {
-  projectId: string;
+  locationId: string;
   sessions?: SessionStore[];
   /** Tree depth of the subagent rows; their rooms/sessions nest below it. */
   depth?: number;
@@ -75,16 +75,16 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
   const showCreateSessionModal = useShowModal('sessionModal');
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
-  const { params: projectParams } = useParams('project');
+  const { params: projectParams } = useParams('location');
   const activeSubagent =
-    currentView === 'project' && projectParams.projectId === projectId
+    currentView === 'location' && projectParams.locationId === locationId
       ? projectParams.subagentName
       : undefined;
 
   const agentQuery = useQuery({
-    queryKey: ['projectAgent', projectId],
-    queryFn: async () => (await rpc.agents.getAgents(projectId))[0] ?? null,
-    enabled: !!projectId,
+    queryKey: ['projectAgent', locationId],
+    queryFn: async () => (await rpc.agents.getAgents(locationId))[0] ?? null,
+    enabled: !!locationId,
   });
   const agent = agentQuery.data ?? null;
 
@@ -128,10 +128,10 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
       {names.map((name) => {
         const subagent = discoveredByName.get(name) ?? null;
         const subSessions = sessionsByName.get(name) ?? [];
-        const expanded = sidebarStore.isGroupExpanded(subagentKey(projectId, name));
-        const toggle = () => sidebarStore.toggleGroupExpanded(subagentKey(projectId, name));
+        const expanded = sidebarStore.isGroupExpanded(subagentKey(locationId, name));
+        const toggle = () => sidebarStore.toggleGroupExpanded(subagentKey(locationId, name));
         const isActive = activeSubagent === name;
-        const open = () => navigate('project', { projectId, subagentName: name });
+        const open = () => navigate('location', { locationId, subagentName: name });
         return (
           <div key={name}>
             <SidebarMenuRow
@@ -201,7 +201,7 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
                       className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100"
                       onClick={(e) => {
                         e.stopPropagation();
-                        showCreateSessionModal({ projectId, subagentName: name });
+                        showCreateSessionModal({ locationId, subagentName: name });
                       }}
                     >
                       <Plus className="h-4 w-4" />
@@ -216,7 +216,7 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
               subSessions.map((session) => (
                 <SidebarSessionItem
                   key={session.data.id}
-                  projectId={projectId}
+                  locationId={locationId}
                   sessionId={session.data.id}
                   depth={depth + 1}
                 />
@@ -231,13 +231,13 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
                   return roomSessions.map((session) => (
                     <SidebarSessionItem
                       key={session.data.id}
-                      projectId={projectId}
+                      locationId={locationId}
                       sessionId={session.data.id}
                       depth={depth + 1}
                     />
                   ));
                 }
-                const groupKey = subagentRoomKey(projectId, name, roomKey);
+                const groupKey = subagentRoomKey(locationId, name, roomKey);
                 const roomExpanded = sidebarStore.isGroupExpanded(groupKey);
                 return (
                   <div key={roomKey}>
@@ -259,7 +259,7 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
                       roomSessions.map((session) => (
                         <SidebarSessionItem
                           key={session.data.id}
-                          projectId={projectId}
+                          locationId={locationId}
                           sessionId={session.data.id}
                           depth={depth + 2}
                         />

@@ -10,29 +10,23 @@ export const SidebarSearchTrigger = observer(function SidebarSearchTrigger() {
   const showCommandPalette = useShowModal('commandPaletteModal');
   const { currentView } = useWorkspaceSlots();
   const { params: sessionParams } = useParams('session');
-  const { params: projectParams } = useParams('project');
+  const { params: projectParams } = useParams('location');
 
-  const currentProjectId =
+  const currentLocationId =
     currentView === 'session'
-      ? sessionParams.projectId
-      : currentView === 'project'
-        ? projectParams.projectId
+      ? sessionParams.locationId
+      : currentView === 'location'
+        ? projectParams.locationId
         : undefined;
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : undefined;
-
-  const currentWorkspaceId =
-    currentProjectId && currentSessionId
-      ? (getSessionStore(currentProjectId, currentSessionId)?.workspaceId ?? undefined)
-      : undefined;
 
   return (
     <SidebarMenuButton
       isActive={false}
       onClick={() =>
         showCommandPalette({
-          projectId: currentProjectId,
+          locationId: currentLocationId,
           sessionId: currentSessionId,
-          workspaceId: currentWorkspaceId,
         })
       }
       aria-label="Search"

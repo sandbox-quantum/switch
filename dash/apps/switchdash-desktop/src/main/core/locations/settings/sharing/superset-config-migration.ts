@@ -3,10 +3,10 @@ import z from 'zod';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
-  type MigrateProjectConfigRequest,
-  type ProjectConfigMigration,
+  type MigrateLocationConfigRequest,
+  type LocationConfigMigration,
   type ShareableLocationSettings,
-  type ShareableProjectSettingsWriteField,
+  type ShareableLocationSettingsWriteField,
 } from '@shared/core/location-settings/location-settings';
 import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
@@ -39,7 +39,7 @@ type SupersetScriptConfig = z.infer<typeof supersetScriptSchema>;
 type SupersetMigrationData = {
   settings: ShareableLocationSettings;
   files: string[];
-  fields: ShareableProjectSettingsWriteField[];
+  fields: ShareableLocationSettingsWriteField[];
   unsupportedFields: string[];
 };
 
@@ -49,7 +49,7 @@ const SUPERSET_SCRIPT_FIELDS = [
   { source: 'teardown', target: 'scripts.teardown' },
 ] as const satisfies Array<{
   source: 'setup' | 'run' | 'teardown';
-  target: ShareableProjectSettingsWriteField;
+  target: ShareableLocationSettingsWriteField;
 }>;
 
 function writeConfigFailed(message: string): Result<never, UpdateLocationSettingsError> {
@@ -73,7 +73,7 @@ function addUnsupportedOverrideFields(
 
 function setScript(
   settings: ShareableLocationSettings,
-  field: ShareableProjectSettingsWriteField,
+  field: ShareableLocationSettingsWriteField,
   value: string
 ): void {
   settings.scripts ??= {};
@@ -82,7 +82,7 @@ function setScript(
   if (field === 'scripts.teardown') settings.scripts.teardown = value;
 }
 
-function toSupersetMigration(data: SupersetMigrationData): ProjectConfigMigration | null {
+function toSupersetMigration(data: SupersetMigrationData): LocationConfigMigration | null {
   if (data.fields.length === 0) return null;
   return {
     provider: 'superset',
@@ -129,8 +129,8 @@ async function readSupersetMigrationData(
 
 async function migrateSupersetConfig(
   project: LocationProvider,
-  request: MigrateProjectConfigRequest
-): Promise<Result<ProjectConfigMigration, UpdateLocationSettingsError>> {
+  request: MigrateLocationConfigRequest
+): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
     const data = await readSupersetMigrationData(project.fs);
     const migration = toSupersetMigration(data);

@@ -21,7 +21,7 @@ import {
 } from '@renderer/utils/sessionNames';
 
 type RenameSessionModalArgs = {
-  projectId: string;
+  locationId: string;
   sessionId: string;
   currentName: string;
 };
@@ -29,7 +29,7 @@ type RenameSessionModalArgs = {
 type Props = BaseModalProps<void> & RenameSessionModalArgs;
 
 export const RenameSessionModal = observer(function RenameSessionModal({
-  projectId,
+  locationId,
   sessionId,
   currentName,
   onSuccess,
@@ -40,7 +40,7 @@ export const RenameSessionModal = observer(function RenameSessionModal({
   const [error, setError] = useState<string | null>(null);
   const { preserveNameCapitalization } = useSessionSettings();
 
-  const sessionManager = getSessionManagerStore(projectId);
+  const sessionManager = getSessionManagerStore(locationId);
   const siblingNames = new Set(
     Array.from(sessionManager?.sessions.values() ?? [])
       .filter((t) => t.state !== 'unregistered' && t.data.id !== sessionId)

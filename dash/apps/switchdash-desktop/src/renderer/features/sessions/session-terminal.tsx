@@ -5,8 +5,8 @@ import { useIsActiveSession } from '@renderer/features/sessions/hooks/use-is-act
 import {
   useSessionAgent,
   useSessionViewContext,
-  useWorkspaceId,
-  useWorkspaceViewModel,
+  useSessionLocationId,
+  useSessionViewModel,
 } from '@renderer/features/sessions/session-view-context';
 import { PaneSizingProvider } from '@renderer/lib/pty/pane-sizing-context';
 import { PtyPane } from '@renderer/lib/pty/pty-pane';
@@ -20,9 +20,9 @@ import { useTerminalSearch } from '@renderer/lib/pty/use-terminal-search';
  */
 export const SessionTerminal = observer(function SessionTerminal() {
   const { sessionId } = useSessionViewContext();
-  const sessionView = useWorkspaceViewModel();
+  const sessionView = useSessionViewModel();
   const agentStore = useSessionAgent();
-  const workspaceId = useWorkspaceId();
+  const locationId = useSessionLocationId();
   const isActive = useIsActiveSession(sessionId);
 
   const autoFocus = isActive && sessionView.focusedRegion === 'main';
@@ -104,7 +104,7 @@ export const SessionTerminal = observer(function SessionTerminal() {
               className="h-full w-full"
               onInterruptPress={onInterruptPress}
               mapShiftEnterToCtrlJ
-              workspaceId={workspaceId}
+              locationId={locationId}
             />
           </div>
         ) : (

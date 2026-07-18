@@ -16,7 +16,7 @@ const PROJECT_ACTIONS = [
 ] as const;
 
 export function HomeMainPanel() {
-  const showAddProjectModal = useShowModal('addProjectModal');
+  const showAddProjectModal = useShowModal('addAgentModal');
   const { selectedIndex, setSelectedIndex } = useArrowKeyNavigation(
     PROJECT_ACTIONS.length,
     (index) => showAddProjectModal(PROJECT_ACTIONS[index].modalArgs)

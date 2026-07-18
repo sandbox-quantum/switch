@@ -3,10 +3,10 @@ import z from 'zod';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
-  type MigrateProjectConfigRequest,
-  type ProjectConfigMigration,
+  type MigrateLocationConfigRequest,
+  type LocationConfigMigration,
   type ShareableLocationSettings,
-  type ShareableProjectSettingsWriteField,
+  type ShareableLocationSettingsWriteField,
 } from '@shared/core/location-settings/location-settings';
 import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
@@ -44,7 +44,7 @@ const paseoConfigSchema = z
 type PaseoMigrationData = {
   settings: ShareableLocationSettings;
   files: string[];
-  fields: ShareableProjectSettingsWriteField[];
+  fields: ShareableLocationSettingsWriteField[];
   unsupportedFields: string[];
 };
 
@@ -62,7 +62,7 @@ function normalizeCommand(value: string | string[] | undefined): string | undefi
 
 function setScript(
   settings: ShareableLocationSettings,
-  field: ShareableProjectSettingsWriteField,
+  field: ShareableLocationSettingsWriteField,
   value: string
 ): void {
   settings.scripts ??= {};
@@ -72,7 +72,7 @@ function setScript(
 
 function addScript(
   data: PaseoMigrationData,
-  field: ShareableProjectSettingsWriteField,
+  field: ShareableLocationSettingsWriteField,
   value: string | undefined
 ): void {
   if (!value) return;
@@ -80,7 +80,7 @@ function addScript(
   data.fields.push(field);
 }
 
-function toPaseoMigration(data: PaseoMigrationData): ProjectConfigMigration | null {
+function toPaseoMigration(data: PaseoMigrationData): LocationConfigMigration | null {
   if (data.fields.length === 0) return null;
   return {
     provider: 'paseo',
@@ -133,8 +133,8 @@ async function readPaseoMigrationData(
 
 async function migratePaseoConfig(
   project: LocationProvider,
-  request: MigrateProjectConfigRequest
-): Promise<Result<ProjectConfigMigration, UpdateLocationSettingsError>> {
+  request: MigrateLocationConfigRequest
+): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
     const data = await readPaseoMigrationData(project.fs);
     const migration = toPaseoMigration(data);

@@ -70,7 +70,7 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
           {hasProjects ? (
             <div className="flex flex-col gap-1">
               {groups.map((g) => (
-                <ProjectRow key={g.projectId} group={g} />
+                <ProjectRow key={g.locationId} group={g} />
               ))}
             </div>
           ) : (

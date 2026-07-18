@@ -63,9 +63,12 @@ export function AppMenuEvents({ onOpenSettings }: { onOpenSettings?: () => boole
   useEffect(() => {
     const disposers = new Set<() => void>();
 
-    const unlisten = events.on(notificationFocusSessionChannel, ({ projectId, sessionId }) => {
+    const unlisten = events.on(notificationFocusSessionChannel, ({ agentId, sessionId }) => {
       // A session shows its single terminal automatically, so navigating is enough.
-      navigate('session', { projectId, sessionId });
+      // The event carries the agent; resolve its location to route the session view.
+      void rpc.agents.getAgentById(agentId).then((agent) => {
+        if (agent) navigate('session', { locationId: agent.locationId, sessionId });
+      });
     });
 
     return () => {

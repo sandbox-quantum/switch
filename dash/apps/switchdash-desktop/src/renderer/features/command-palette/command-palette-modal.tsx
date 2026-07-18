@@ -25,9 +25,8 @@ import { ResourceMonitorView } from './resource-monitor-view';
 import { applyContextAffinity } from './search-utils';
 
 interface CommandPaletteProps {
-  projectId?: string;
+  locationId?: string;
   sessionId?: string;
-  workspaceId?: string;
 }
 
 interface PaletteAction {
@@ -43,7 +42,7 @@ interface PaletteAction {
 const KIND_ICON: Record<string, React.ReactNode> = {
   action: null,
   session: <GitBranch size={14} className="shrink-0 text-foreground/40" />,
-  project: <FolderOpen size={14} className="shrink-0 text-foreground/40" />,
+  location: <FolderOpen size={14} className="shrink-0 text-foreground/40" />,
 };
 
 const GROUP_CLASS = cn(
@@ -125,9 +124,8 @@ function PaletteFileItem({
 }
 
 export function CommandPaletteModal({
-  projectId,
+  locationId,
   sessionId,
-  workspaceId,
   onClose,
 }: CommandPaletteProps & BaseModalProps) {
   const [view, setView] = useState<'search' | 'resource-monitor'>('search');
@@ -149,20 +147,20 @@ export function CommandPaletteModal({
   // Prefetch recents immediately on mount so the empty-query view is instant.
   useEffect(() => {
     void queryClient.prefetchQuery({
-      queryKey: ['cmdk-search', '', projectId, sessionId, workspaceId],
+      queryKey: ['cmdk-search', '', locationId, sessionId],
       queryFn: () =>
-        rpc.search.commandPalette({ query: '', context: { projectId, sessionId, workspaceId } }),
+        rpc.search.commandPalette({ query: '', context: { locationId, sessionId } }),
       staleTime: 5_000,
     });
     // oxlint-disable-next-line react/exhaustive-deps
   }, []);
 
   const { data: dbResults = [] } = useQuery({
-    queryKey: ['cmdk-search', debouncedQuery, projectId, sessionId, workspaceId],
+    queryKey: ['cmdk-search', debouncedQuery, locationId, sessionId],
     queryFn: () =>
       rpc.search.commandPalette({
         query: debouncedQuery,
-        context: { projectId, sessionId, workspaceId },
+        context: { locationId, sessionId },
       }),
     // Keep results fresh for 5 s — re-opening the palette with the same query
     // returns cached data instantly rather than waiting for a round-trip.
@@ -213,7 +211,7 @@ export function CommandPaletteModal({
     // Empty state: show the ordered context-specific suggested actions only.
     const suggestedIds = sessionId
       ? SESSION_SUGGESTED
-      : projectId
+      : locationId
         ? PROJECT_SUGGESTED
         : APP_SUGGESTED;
     const pool = resourceMonitorAction
@@ -223,9 +221,9 @@ export function CommandPaletteModal({
       .filter((a) => suggestedIds.includes(a.id))
       .sort((a, b) => suggestedIds.indexOf(a.id) - suggestedIds.indexOf(b.id))
       .slice(0, 7);
-  }, [registryActions, resourceMonitorAction, projectId, sessionId]);
+  }, [registryActions, resourceMonitorAction, locationId, sessionId]);
 
-  const rankedDb = applyContextAffinity(dbResults, { projectId });
+  const rankedDb = applyContextAffinity(dbResults, { locationId });
   const actionResults = actions;
 
   const q = debouncedQuery.toLowerCase();
@@ -239,25 +237,25 @@ export function CommandPaletteModal({
   const sessionResults = rankedDb.filter((r): r is SearchItem => r.kind === 'session');
 
   const handleNavigateToSession = (item: SearchItem) => {
-    if (!item.projectId) return;
+    if (!item.locationId) return;
     handleClose();
-    navigate('session', { projectId: item.projectId, sessionId: item.id });
+    navigate('session', { locationId: item.locationId, sessionId: item.id });
   };
 
   const handleNavigateToProject = (item: SearchItem) => {
     handleClose();
-    navigate('project', { projectId: item.id });
+    navigate('location', { locationId: item.id });
   };
 
   const handleOpenFile = (item: SearchItem) => {
-    if (!item.projectId || !item.sessionId) return;
+    if (!item.locationId || !item.sessionId) return;
     handleClose();
-    navigate('session', { projectId: item.projectId, sessionId: item.sessionId });
+    navigate('session', { locationId: item.locationId, sessionId: item.sessionId });
   };
 
   const handleSelect = (item: SearchItem) => {
     if (item.kind === 'session') return handleNavigateToSession(item);
-    if (item.kind === 'project') return handleNavigateToProject(item);
+    if (item.kind === 'location') return handleNavigateToProject(item);
     if (item.kind === 'file') return handleOpenFile(item);
   };
 
@@ -351,8 +349,8 @@ export function CommandPaletteModal({
                   />
                 );
               }
-              if (item.kind === 'session' && item.projectId) {
-                const store = getSessionStore(item.projectId, item.id);
+              if (item.kind === 'session' && item.locationId) {
+                const store = getSessionStore(item.locationId, item.id);
                 if (store) {
                   return (
                     <PaletteSessionItem
@@ -387,7 +385,7 @@ export function CommandPaletteModal({
         ) : (
           <>
             <PaletteNotificationsGroup
-              currentProjectId={projectId}
+              currentLocationId={locationId}
               currentSessionId={sessionId}
               onClose={handleClose}
               navigate={navigate}
@@ -402,8 +400,8 @@ export function CommandPaletteModal({
             {sessionResults.length > 0 && (
               <Command.Group heading="Recent Sessions" className={GROUP_CLASS}>
                 {sessionResults.slice(0, 5).map((item) => {
-                  const store = item.projectId
-                    ? getSessionStore(item.projectId, item.id)
+                  const store = item.locationId
+                    ? getSessionStore(item.locationId, item.id)
                     : undefined;
                   return store ? (
                     <PaletteSessionItem
@@ -425,7 +423,7 @@ export function CommandPaletteModal({
             )}
             {!sessionId && (
               <PaletteProjectsGroup
-                currentProjectId={projectId}
+                currentLocationId={locationId}
                 limit={5}
                 onClose={handleClose}
                 navigate={navigate}

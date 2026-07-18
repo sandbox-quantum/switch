@@ -1,9 +1,9 @@
 import { Pin } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import {
-  getProjectStore,
-  projectDisplayName,
-} from '@renderer/features/projects/stores/project-selectors';
+  getLocationStore,
+  locationDisplayName,
+} from '@renderer/features/locations/stores/location-selectors';
 import { useSessionViewContext } from '@renderer/features/sessions/session-view-context';
 import {
   getRegisteredSessionData,
@@ -17,10 +17,10 @@ import { cn } from '@renderer/utils/utils';
 // switchdash titlebar: agent / session breadcrumb plus a pin toggle. The switchdash
 // git, issue, diff, preview, terminal-drawer and sidebar chrome is gone.
 export const SessionTitlebar = observer(function SessionTitlebar() {
-  const { projectId, sessionId } = useSessionViewContext();
-  const sessionStore = getSessionStore(projectId, sessionId);
-  const sessionPayload = getRegisteredSessionData(projectId, sessionId);
-  const projectName = projectDisplayName(getProjectStore(projectId));
+  const { locationId, sessionId } = useSessionViewContext();
+  const sessionStore = getSessionStore(locationId, sessionId);
+  const sessionPayload = getRegisteredSessionData(locationId, sessionId);
+  const projectName = locationDisplayName(getLocationStore(locationId));
   const { navigate } = useNavigate();
 
   return (
@@ -30,7 +30,7 @@ export const SessionTitlebar = observer(function SessionTitlebar() {
           <button
             type="button"
             className="text-sm text-foreground-passive hover:text-foreground"
-            onClick={() => navigate('project', { projectId })}
+            onClick={() => navigate('location', { locationId })}
           >
             {projectName}
           </button>

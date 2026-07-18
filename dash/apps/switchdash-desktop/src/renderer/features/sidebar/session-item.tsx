@@ -19,7 +19,7 @@ import { depthIndent } from './sidebar-store';
 
 interface SidebarSessionItemProps {
   sessionId: string;
-  projectId: string;
+  locationId: string;
   /** Pinned strip uses tighter padding than sessions nested under a project. */
   rowVariant?: 'underProject' | 'pinned';
   /** Tree depth of this row (ignored for the pinned strip). Drives the row's
@@ -29,7 +29,7 @@ interface SidebarSessionItemProps {
 
 export const SidebarSessionItem = observer(function SidebarSessionItem({
   sessionId,
-  projectId,
+  locationId,
   rowVariant = 'underProject',
   depth = 0,
 }: SidebarSessionItemProps) {
@@ -41,10 +41,10 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
   const { params } = useParams('session');
   const { value: interfaceSettings } = useAppSettingsKey('interface');
   const isActive =
-    currentView === 'session' && params.sessionId === sessionId && params.projectId === projectId;
+    currentView === 'session' && params.sessionId === sessionId && params.locationId === locationId;
 
-  const session = getSessionStore(projectId, sessionId)!;
-  const sessionManager = getSessionManagerStore(projectId);
+  const session = getSessionStore(locationId, sessionId)!;
+  const sessionManager = getSessionManagerStore(locationId);
 
   const sessionName = session.data.title;
 
@@ -55,23 +55,23 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
 
   const openSession = () => {
     handleProvision();
-    navigate('session', { projectId, sessionId });
+    navigate('session', { locationId, sessionId });
   };
 
   const handleArchive = () => {
-    if (isActive) navigate('project', { projectId });
+    if (isActive) navigate('location', { locationId });
     void sessionManager?.archiveSession(sessionId);
   };
 
-  const handleRename = () => showRename({ projectId, sessionId, currentName: sessionName });
+  const handleRename = () => showRename({ locationId, sessionId, currentName: sessionName });
 
   const handleDelete = () =>
     showDeleteSession({
-      projectId,
+      locationId,
       sessions: [{ sessionId, sessionName }],
       onSuccess: () => {
         void sessionManager?.deleteSessions([sessionId]);
-        if (isActive) navigate('project', { projectId });
+        if (isActive) navigate('location', { locationId });
       },
     });
 

@@ -1,6 +1,6 @@
 import z from 'zod';
 
-export const PROJECT_CONFIG_FILE = '.switchdash.json';
+export const LOCATION_CONFIG_FILE = '.switchdash.json';
 
 export const DEFAULT_PRESERVE_PATTERNS = [
   '.env',
@@ -13,7 +13,7 @@ export const DEFAULT_PRESERVE_PATTERNS = [
 
 const preservePatternsSchema = z
   .array(z.string())
-  .transform((patterns) => patterns.filter((pattern) => pattern !== PROJECT_CONFIG_FILE));
+  .transform((patterns) => patterns.filter((pattern) => pattern !== LOCATION_CONFIG_FILE));
 
 export const shareableProjectScriptsSettingsSchema = z.object({
   setup: z.string().optional(),
@@ -21,17 +21,17 @@ export const shareableProjectScriptsSettingsSchema = z.object({
   teardown: z.string().optional(),
 });
 
-export const shareableProjectSettingsSchema = z.object({
+export const shareableLocationSettingsSchema = z.object({
   preservePatterns: preservePatternsSchema.optional(),
   shellSetup: z.string().optional(),
   scripts: shareableProjectScriptsSettingsSchema.optional(),
 });
 
-export const shareableProjectSettingsWithDefaultsSchema = shareableProjectSettingsSchema.extend({
+export const shareableProjectSettingsWithDefaultsSchema = shareableLocationSettingsSchema.extend({
   preservePatterns: preservePatternsSchema.default([...DEFAULT_PRESERVE_PATTERNS]),
 });
 
-export type ShareableLocationSettings = z.infer<typeof shareableProjectSettingsSchema>;
+export type ShareableLocationSettings = z.infer<typeof shareableLocationSettingsSchema>;
 
 export const baseProjectSettingsSchema = z.object({
   worktreeDirectory: z.string().trim().optional(),
@@ -55,11 +55,11 @@ export const legacyBaseProjectSettingsSchema = baseProjectSettingsSchema.extend(
 });
 
 export const projectSettingsSchema = baseProjectSettingsSchema.merge(
-  shareableProjectSettingsSchema
+  shareableLocationSettingsSchema
 );
 
 export const legacyProjectConfigSchema = legacyBaseProjectSettingsSchema.merge(
-  shareableProjectSettingsSchema
+  shareableLocationSettingsSchema
 );
 
 export function defaultShareableProjectSettings(): ShareableLocationSettings {
@@ -69,7 +69,7 @@ export function defaultShareableProjectSettings(): ShareableLocationSettings {
 export type LocationSettings = z.infer<typeof projectSettingsSchema>;
 
 export type LocationSettingsPatch = {
-  clearShareableFields?: ShareableProjectSettingsWriteField[];
+  clearShareableFields?: ShareableLocationSettingsWriteField[];
   githubAccountId?: string | null;
 };
 
@@ -78,9 +78,9 @@ export type LocationSettingsPage = {
   defaults: {
     worktreeDirectory: string;
   };
-  writeTargets: ProjectSettingsWriteTargetOption[];
-  overrideState: ProjectSettingsOverrideState;
-  configMigrations: ProjectConfigMigration[];
+  writeTargets: LocationSettingsWriteTargetOption[];
+  overrideState: LocationSettingsOverrideState;
+  configMigrations: LocationConfigMigration[];
   shouldPromptConfigMigration: boolean;
 };
 
@@ -89,65 +89,65 @@ export type LocationSettingsWriteTarget =
   | { type: 'session'; sessionId: string }
   | { type: 'workspace'; locationId: string };
 
-export type ProjectSettingsWriteTargetOption = LocationSettingsWriteTarget & {
+export type LocationSettingsWriteTargetOption = LocationSettingsWriteTarget & {
   label: string;
   path: string;
 };
 
-export type ShareableProjectSettingsWriteField =
+export type ShareableLocationSettingsWriteField =
   | 'preservePatterns'
   | 'shellSetup'
   | 'scripts.setup'
   | 'scripts.run'
   | 'scripts.teardown';
 
-export const SHAREABLE_PROJECT_SETTINGS_WRITE_FIELDS = [
+export const SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS = [
   'preservePatterns',
   'shellSetup',
   'scripts.setup',
   'scripts.run',
   'scripts.teardown',
-] as const satisfies ShareableProjectSettingsWriteField[];
+] as const satisfies ShareableLocationSettingsWriteField[];
 
-export type WriteProjectConfigRequest = {
+export type WriteLocationConfigRequest = {
   target: LocationSettingsWriteTarget;
-  fields: ShareableProjectSettingsWriteField[];
+  fields: ShareableLocationSettingsWriteField[];
 };
 
-export type ProjectSettingsOverrideSource = {
+export type LocationSettingsOverrideSource = {
   label: string;
   path: string;
   value: string;
 };
 
-export type ProjectSettingsOverrideState = Record<
-  ShareableProjectSettingsWriteField,
-  ProjectSettingsOverrideSource[]
+export type LocationSettingsOverrideState = Record<
+  ShareableLocationSettingsWriteField,
+  LocationSettingsOverrideSource[]
 >;
 
 export type LocationConfigMigrationProvider = 'conductor' | 'superset' | 'paseo' | 'codex';
 
-export type ProjectConfigMigration = {
+export type LocationConfigMigration = {
   provider: LocationConfigMigrationProvider;
   label: string;
   files: string[];
-  fields: ShareableProjectSettingsWriteField[];
+  fields: ShareableLocationSettingsWriteField[];
   unsupportedFields: string[];
 };
 
 export type ProjectConfigMigrationDestination = 'local' | 'shared';
 
-export type MigrateProjectConfigRequest = {
+export type MigrateLocationConfigRequest = {
   provider: LocationConfigMigrationProvider;
   destination: ProjectConfigMigrationDestination;
 };
 
-export type MigrateProjectConfigResult = {
+export type MigrateLocationConfigResult = {
   page: LocationSettingsPage;
-  migration: ProjectConfigMigration;
+  migration: LocationConfigMigration;
 };
 
-export function emptyProjectSettingsOverrideState(): ProjectSettingsOverrideState {
+export function emptyLocationSettingsOverrideState(): LocationSettingsOverrideState {
   return {
     preservePatterns: [],
     shellSetup: [],

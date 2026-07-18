@@ -1,5 +1,5 @@
 import React, { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
-import { getDraggedWorkspaceFile } from '@renderer/lib/drag-files';
+import { getDraggedLocationFile } from '@renderer/lib/drag-files';
 import { rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
@@ -16,7 +16,7 @@ import { type PasteFromClipboardHandler, usePty } from './use-pty';
 
 type Props = {
   /**
-   * Deterministic PTY session ID: `makePtySessionId(projectId, scopeId, leafId)`.
+   * Deterministic PTY session ID: `makePtySessionId(locationId, scopeId, leafId)`.
    */
   sessionId: string;
   /** Pre-connected FrontendPty owned by the entity's PtySession store. */
@@ -26,7 +26,7 @@ type Props = {
   mapShiftEnterToCtrlJ?: boolean;
   /** SSH connection ID — used for remote file drag-and-drop and image paste. */
   remoteConnectionId?: string;
-  workspaceId: string;
+  locationId: string;
   themeOverride?: SessionTheme['override'];
   onActivity?: () => void;
   onExit?: (info: { exitCode: number | undefined; signal?: number }) => void;
@@ -124,7 +124,7 @@ const PtyPaneComponent = forwardRef<{ focus: () => void }, Props>(
       contentFilter,
       mapShiftEnterToCtrlJ,
       remoteConnectionId,
-      workspaceId,
+      locationId,
       themeOverride,
       onActivity,
       onExit,
@@ -261,20 +261,20 @@ const PtyPaneComponent = forwardRef<{ focus: () => void }, Props>(
 
         // In-app drag from the editor file tree. The drag payload already
         // carries the path in the workspace environment where this agent runs.
-        const draggedWorkspaceFile = getDraggedWorkspaceFile(dt);
-        if (draggedWorkspaceFile) {
-          if (draggedWorkspaceFile.workspaceId !== workspaceId) return;
+        const draggedLocationFile = getDraggedLocationFile(dt);
+        if (draggedLocationFile) {
+          if (draggedLocationFile.locationId !== locationId) return;
 
           void (async () => {
             try {
               const platform =
-                draggedWorkspaceFile.targetPlatform ??
+                draggedLocationFile.targetPlatform ??
                 ((await rpc.app.getPlatform()) as NodeJS.Platform);
               // Plain text, not bracketed paste: Claude Code swallows externally
               // injected paste markers, and the escaped single-line path needs
               // no paste protection in shells or other agent TUIs.
               sendInput(
-                `${formatTerminalImagePaths([draggedWorkspaceFile.targetPath], platform)} `,
+                `${formatTerminalImagePaths([draggedLocationFile.targetPath], platform)} `,
                 {
                   track: false,
                 }

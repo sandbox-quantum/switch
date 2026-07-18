@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
-import { agentsStore } from '@renderer/features/projects/stores/agents-store';
-import { getProjectManagerStore } from '@renderer/features/projects/stores/project-selectors';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { events } from '@renderer/lib/ipc';
@@ -14,13 +14,13 @@ import { switchRoomsStore as roomConnectionsStore } from './switch-rooms-store';
  * normally has a single local session, so room id alone disambiguates;
  * `agentId` / `server` from the deeplink are advisory.
  */
-function findSessionForRoom(roomId: string): { projectId: string; sessionId: string } | null {
-  for (const projectId of getProjectManagerStore().projects.keys()) {
-    const manager = getSessionManagerStore(projectId);
+function findSessionForRoom(roomId: string): { locationId: string; sessionId: string } | null {
+  for (const locationId of getLocationManagerStore().locations.keys()) {
+    const manager = getSessionManagerStore(locationId);
     if (!manager) continue;
     for (const session of manager.sessions.values()) {
       if (roomConnectionsStore.roomForSession(session.data.id) === roomId) {
-        return { projectId, sessionId: session.data.id };
+        return { locationId, sessionId: session.data.id };
       }
     }
   }
@@ -33,11 +33,11 @@ function findSessionForRoom(roomId: string): { projectId: string; sessionId: str
  * that has an active relay for the session. This is what makes the deeplink open
  * the right session on a different switchdash client that merely adopted it.
  */
-function findSessionById(sessionId: string): { projectId: string; sessionId: string } | null {
-  for (const projectId of getProjectManagerStore().projects.keys()) {
-    const manager = getSessionManagerStore(projectId);
+function findSessionById(sessionId: string): { locationId: string; sessionId: string } | null {
+  for (const locationId of getLocationManagerStore().locations.keys()) {
+    const manager = getSessionManagerStore(locationId);
     if (manager?.sessions.has(sessionId)) {
-      return { projectId, sessionId: sessionId };
+      return { locationId, sessionId: sessionId };
     }
   }
   return null;
@@ -74,9 +74,9 @@ export function SessionDeeplinkListener(): null {
         // is filtered out of the server-scoped tree and the reveal has nothing
         // to expand.
         if (!agentsStore.loaded) await agentsStore.load();
-        const serverId = agentsStore.serverIdForProject(match.projectId);
+        const serverId = agentsStore.serverIdForProject(match.locationId);
         if (serverId) await switchServersStore.setActive(serverId);
-        sidebarStore.revealSessionInRoom(match.projectId, roomId);
+        sidebarStore.revealSessionInRoom(match.locationId, roomId);
         appState.navigation.navigate('session', match);
       })();
     });

@@ -5,7 +5,7 @@ import {
   baseProjectSettingsSchema,
   legacyBaseProjectSettingsSchema,
   legacyProjectConfigSchema,
-  shareableProjectSettingsSchema,
+  shareableLocationSettingsSchema,
   type BaseLocationSettings,
   type ShareableLocationSettings,
 } from '@shared/core/location-settings/location-settings';
@@ -75,7 +75,7 @@ export async function migrateLegacyProjectSettingsIfNeeded({
   );
   const currentShareable = readJson(
     row.shareableSettingsJson,
-    shareableProjectSettingsSchema,
+    shareableLocationSettingsSchema,
     'shareable project settings'
   );
   const legacy = await readLegacyProjectConfig(configReader);
@@ -95,7 +95,7 @@ export async function migrateLegacyProjectSettingsIfNeeded({
 
   if (legacy && !shareableAlreadyMigrated) {
     if ((await git?.isFileCleanlyTracked('.switchdash.json')) === false) {
-      const legacyShareable = shareableProjectSettingsSchema.parse(legacy);
+      const legacyShareable = shareableLocationSettingsSchema.parse(legacy);
       nextShareable = mergeShareableProjectSettings(currentShareable, legacyShareable);
     }
   }

@@ -7,7 +7,7 @@ import {
   DEFAULT_PRESERVE_PATTERNS,
   legacyBaseProjectSettingsSchema,
   projectSettingsSchema,
-  shareableProjectSettingsSchema,
+  shareableLocationSettingsSchema,
   type BaseLocationSettings,
   type LocationSettings,
   type ShareableLocationSettings,
@@ -61,7 +61,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
     try {
       if (!(await this.configReader.exists(CONFIG_FILE))) return false;
       const { content } = await this.configReader.read(CONFIG_FILE);
-      const parsed = shareableProjectSettingsSchema.safeParse(parseJsonObject(content));
+      const parsed = shareableLocationSettingsSchema.safeParse(parseJsonObject(content));
       if (!parsed.success) {
         log.warn('Failed to inspect shared project settings during initialization', parsed.error);
         return false;
@@ -112,7 +112,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
       base: baseProjectSettingsSchema.parse(baseSettings),
       shareable: readJson(
         row.shareableSettingsJson,
-        shareableProjectSettingsSchema,
+        shareableLocationSettingsSchema,
         'shareable project settings'
       ),
       legacyConfigMigratedAt: row.legacyConfigMigratedAt,
@@ -172,7 +172,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
     nextSettings.worktreeDirectory = worktreeDirectoryResult.data;
 
     const base = baseProjectSettingsSchema.parse(nextSettings);
-    const shareable = shareableProjectSettingsSchema.parse(nextSettings);
+    const shareable = shareableLocationSettingsSchema.parse(nextSettings);
 
     try {
       await this.ensure();
@@ -204,7 +204,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
       const shareable = row
         ? readJson(
             row.shareableSettingsJson,
-            shareableProjectSettingsSchema,
+            shareableLocationSettingsSchema,
             'shareable project settings'
           )
         : {};

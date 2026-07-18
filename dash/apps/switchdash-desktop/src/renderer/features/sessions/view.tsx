@@ -14,15 +14,15 @@ import { SessionTitlebar } from './session-titlebar';
 
 const SessionViewWrapperWithProviders = observer(function SessionViewWrapperWithProviders({
   children,
-  projectId,
+  locationId,
   sessionId,
 }: {
   children: ReactNode;
-  projectId: string;
+  locationId: string;
   sessionId: string;
 }) {
-  const sessionStore = getSessionStore(projectId, sessionId);
-  const kind = sessionViewKind(sessionStore, projectId);
+  const sessionStore = getSessionStore(locationId, sessionId);
+  const kind = sessionViewKind(sessionStore, locationId);
 
   // Auto-provision when the session view is rendered with an idle session — covers
   // session restore where the session wasn't in openSessionIds, direct navigation,
@@ -31,21 +31,21 @@ const SessionViewWrapperWithProviders = observer(function SessionViewWrapperWith
     if (kind !== 'idle') return;
     if (sessionStore && 'archivedAt' in sessionStore.data && sessionStore.data.archivedAt) return;
 
-    getSessionManagerStore(projectId)
+    getSessionManagerStore(locationId)
       ?.provisionSession(sessionId)
       .catch(() => {});
-  }, [kind, projectId, sessionId, sessionStore]);
+  }, [kind, locationId, sessionId, sessionStore]);
 
   if (kind !== 'ready') {
     return (
-      <SessionViewWrapper projectId={projectId} sessionId={sessionId}>
+      <SessionViewWrapper locationId={locationId} sessionId={sessionId}>
         {children}
       </SessionViewWrapper>
     );
   }
 
   return (
-    <SessionViewWrapper projectId={projectId} sessionId={sessionId}>
+    <SessionViewWrapper locationId={locationId} sessionId={sessionId}>
       {children}
     </SessionViewWrapper>
   );
@@ -55,30 +55,30 @@ export const sessionView = {
   WrapView: SessionViewWrapperWithProviders,
   TitlebarSlot: SessionTitlebar,
   MainPanel: SessionMainPanel,
-  commandProvider: ({ projectId, sessionId }: { projectId: string; sessionId: string }) =>
-    createSessionCommandProvider(projectId, sessionId),
+  commandProvider: ({ locationId, sessionId }: { locationId: string; sessionId: string }) =>
+    createSessionCommandProvider(locationId, sessionId),
   canActivate: (params: unknown): GuardResult => {
-    const projectId =
+    const locationId =
       typeof params === 'object' && params !== null
-        ? (params as { projectId?: unknown }).projectId
+        ? (params as { locationId?: unknown }).locationId
         : undefined;
     const sessionId =
       typeof params === 'object' && params !== null
         ? (params as { sessionId?: unknown }).sessionId
         : undefined;
-    if (typeof projectId !== 'string' || typeof sessionId !== 'string') {
+    if (typeof locationId !== 'string' || typeof sessionId !== 'string') {
       return { ok: false, redirect: 'home' };
     }
     if (
-      !appState.projects.projects.has(projectId) &&
-      !appState.projects.pendingCreationIds.has(projectId)
+      !appState.locations.locations.has(locationId) &&
+      !appState.locations.pendingCreationIds.has(locationId)
     ) {
       return { ok: false, redirect: 'home' };
     }
-    const sessionManager = getSessionManagerStore(projectId);
+    const sessionManager = getSessionManagerStore(locationId);
     if (sessionManager && !sessionManager.sessions.has(sessionId)) {
-      return { ok: false, redirect: 'project', params: { projectId } };
+      return { ok: false, redirect: 'location', params: { locationId } };
     }
     return { ok: true };
   },
-} satisfies ViewDefinition<{ projectId: string; sessionId: string }>;
+} satisfies ViewDefinition<{ locationId: string; sessionId: string }>;

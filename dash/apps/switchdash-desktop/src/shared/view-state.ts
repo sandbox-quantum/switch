@@ -1,7 +1,7 @@
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
-export type ProjectViewSnapshot = {
+export type LocationViewSnapshot = {
   activeView: string;
   sessionViewTab: 'active' | 'archived';
 };

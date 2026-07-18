@@ -15,8 +15,8 @@ const mocks = vi.hoisted(() => ({
   workspaceRelease: vi.fn(),
 }));
 
-vi.mock('./workspace-view-model', () => ({
-  WorkspaceViewModel: class {
+vi.mock('./session-view-model', () => ({
+  SessionViewModel: class {
     initialize = vi.fn();
     suspend = vi.fn();
     dispose = vi.fn();
@@ -28,8 +28,8 @@ vi.mock('./workspace-view-model', () => ({
   },
 }));
 
-vi.mock('./workspace-registry', () => ({
-  workspaceRegistry: {
+vi.mock('./session-runtime-registry', () => ({
+  sessionRuntimeRegistry: {
     acquire: mocks.workspaceAcquire,
     release: mocks.workspaceRelease,
   },
@@ -83,16 +83,15 @@ describe('SessionStore frontend runtime lifecycle', () => {
     const session = makeSession();
     const store = createUnprovisionedSession('project-1', session);
 
-    store.transitionToProvisioned(session, '/tmp/workspace-1', 'workspace-1');
+    store.transitionToProvisioned(session, '/tmp/loc-1');
     const viewModel = mocks.viewModels[0];
 
     store.transitionToDryUnprovisioned({ ...session, archivedAt: '2026-01-02T00:00:00.000Z' });
 
     expect(viewModel.dispose).toHaveBeenCalledOnce();
-    expect(mocks.workspaceRelease).toHaveBeenCalledWith('project-1', 'workspace-1');
+    expect(mocks.workspaceRelease).toHaveBeenCalledWith('project-1');
     expect(store.state).toBe('unprovisioned');
     expect(store.phase).toBe('idle');
-    expect(store.workspaceId).toBeNull();
     expect(store.viewModel).toBeNull();
     expect((store.data as Session).archivedAt).toBe('2026-01-02T00:00:00.000Z');
   });
@@ -105,7 +104,7 @@ describe('SessionStore frontend runtime lifecycle', () => {
     store.transitionToDryUnprovisioned(session);
     expect(store.viewModel).toBeNull();
 
-    store.transitionToProvisioned(session, '/tmp/workspace-1', 'workspace-1');
+    store.transitionToProvisioned(session, '/tmp/loc-1');
 
     expect(mocks.viewModels).toHaveLength(2);
     expect(store.viewModel).toBe(mocks.viewModels[1]);

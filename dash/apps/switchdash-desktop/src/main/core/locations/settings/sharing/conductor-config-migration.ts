@@ -3,10 +3,10 @@ import z from 'zod';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
-  type MigrateProjectConfigRequest,
-  type ProjectConfigMigration,
+  type MigrateLocationConfigRequest,
+  type LocationConfigMigration,
   type ShareableLocationSettings,
-  type ShareableProjectSettingsWriteField,
+  type ShareableLocationSettingsWriteField,
 } from '@shared/core/location-settings/location-settings';
 import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
@@ -35,7 +35,7 @@ const conductorConfigSchema = z
 type ConductorMigrationData = {
   settings: ShareableLocationSettings;
   files: string[];
-  fields: ShareableProjectSettingsWriteField[];
+  fields: ShareableLocationSettingsWriteField[];
   unsupportedFields: string[];
 };
 
@@ -55,7 +55,7 @@ function parseWorktreeInclude(content: string): string[] {
     .filter((line) => line && !line.startsWith('#'));
 }
 
-function toConductorMigration(data: ConductorMigrationData): ProjectConfigMigration | null {
+function toConductorMigration(data: ConductorMigrationData): LocationConfigMigration | null {
   if (data.fields.length === 0) return null;
   return {
     provider: 'conductor',
@@ -123,8 +123,8 @@ async function readConductorMigrationData(
 
 async function migrateConductorConfig(
   project: LocationProvider,
-  request: MigrateProjectConfigRequest
-): Promise<Result<ProjectConfigMigration, UpdateLocationSettingsError>> {
+  request: MigrateLocationConfigRequest
+): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
     const data = await readConductorMigrationData(project.fs);
     const migration = toConductorMigration(data);

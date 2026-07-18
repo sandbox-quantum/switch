@@ -4,10 +4,10 @@ import z from 'zod';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
-  type MigrateProjectConfigRequest,
-  type ProjectConfigMigration,
+  type MigrateLocationConfigRequest,
+  type LocationConfigMigration,
   type ShareableLocationSettings,
-  type ShareableProjectSettingsWriteField,
+  type ShareableLocationSettingsWriteField,
 } from '@shared/core/location-settings/location-settings';
 import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
@@ -42,7 +42,7 @@ const codexEnvironmentSchema = z
 type CodexMigrationData = {
   settings: ShareableLocationSettings;
   files: string[];
-  fields: ShareableProjectSettingsWriteField[];
+  fields: ShareableLocationSettingsWriteField[];
   unsupportedFields: string[];
 };
 
@@ -57,7 +57,7 @@ function trimmedText(value: string | undefined): string | undefined {
 
 function setScript(
   settings: ShareableLocationSettings,
-  field: ShareableProjectSettingsWriteField,
+  field: ShareableLocationSettingsWriteField,
   value: string
 ): void {
   settings.scripts ??= {};
@@ -67,7 +67,7 @@ function setScript(
 
 function addScript(
   data: CodexMigrationData,
-  field: ShareableProjectSettingsWriteField,
+  field: ShareableLocationSettingsWriteField,
   value: string | undefined
 ): void {
   if (!value) return;
@@ -93,7 +93,7 @@ function addUnsupportedActions(
   });
 }
 
-function toCodexMigration(data: CodexMigrationData): ProjectConfigMigration | null {
+function toCodexMigration(data: CodexMigrationData): LocationConfigMigration | null {
   if (data.fields.length === 0) return null;
   return {
     provider: 'codex',
@@ -129,8 +129,8 @@ async function readCodexMigrationData(
 
 async function migrateCodexConfig(
   project: LocationProvider,
-  request: MigrateProjectConfigRequest
-): Promise<Result<ProjectConfigMigration, UpdateLocationSettingsError>> {
+  request: MigrateLocationConfigRequest
+): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
     const data = await readCodexMigrationData(project.fs);
     const migration = toCodexMigration(data);

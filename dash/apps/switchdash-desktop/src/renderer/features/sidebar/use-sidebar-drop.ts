@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { getProjectManagerStore } from '@renderer/features/projects/stores/project-selectors';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { getDraggedFilePaths, hasDraggedFiles } from '@renderer/lib/drag-files';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -46,15 +46,12 @@ export function useSidebarDrop() {
       const filePaths = getDraggedFilePaths(e.dataTransfer);
       if (filePaths.length === 0) return;
 
-      const projectManager = getProjectManagerStore();
+      const locationManager = getLocationManagerStore();
 
       void Promise.allSettled(
         filePaths.map(async (filePath) => {
           try {
-            const status = await rpc.projects.inspectProjectPath({
-              type: 'local',
-              path: filePath,
-            });
+            const status = await rpc.locations.inspectLocationPath({ path: filePath });
             if (!status.isDirectory) {
               toast({
                 title: 'Cannot add agent',
@@ -86,18 +83,15 @@ export function useSidebarDrop() {
             }
 
             const name = basenameFromAnyPath(filePath);
-            return await projectManager.createProject(
-              { type: 'local' },
-              {
-                mode: 'pick',
-                name,
-                path: filePath,
-                serverId,
-                // Quick-add has no agent-type picker; a dropped Switch agent is
-                // detected from its .claude config, so it is a Claude Code agent.
-                providerId: 'claude',
-              }
-            );
+            return await locationManager.createAgent({
+              mode: 'pick',
+              name,
+              path: filePath,
+              serverId,
+              // Quick-add has no agent-type picker; a dropped Switch agent is
+              // detected from its .claude config, so it is a Claude Code agent.
+              providerId: 'claude',
+            });
           } catch (err) {
             log.error('Failed to add dropped project:', err);
             toast({
@@ -115,7 +109,7 @@ export function useSidebarDrop() {
         const firstProjectId = projectIds[0];
 
         if (firstProjectId) {
-          navigate('project', { projectId: firstProjectId });
+          navigate('location', { locationId: firstProjectId });
         }
 
         if (projectIds.length > 1) {

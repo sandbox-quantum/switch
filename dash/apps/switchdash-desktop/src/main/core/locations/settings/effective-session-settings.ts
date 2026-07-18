@@ -2,7 +2,7 @@ import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
   defaultShareableProjectSettings,
-  shareableProjectSettingsSchema,
+  shareableLocationSettingsSchema,
   type LocationSettings,
 } from '@shared/core/location-settings/location-settings';
 import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
@@ -13,7 +13,7 @@ export async function getEffectiveSessionSettings(args: {
   sessionFs: FileSystemProvider;
 }): Promise<LocationSettings> {
   const { locationSettings, sessionFs } = args;
-  const parsedSettings = shareableProjectSettingsSchema.safeParse(await locationSettings.get());
+  const parsedSettings = shareableLocationSettingsSchema.safeParse(await locationSettings.get());
   const localShareableSettings = parsedSettings.success ? parsedSettings.data : {};
   const defaults = defaultShareableProjectSettings();
   const exists = await sessionFs.exists('.switchdash.json');
@@ -23,7 +23,7 @@ export async function getEffectiveSessionSettings(args: {
 
   try {
     const { content } = await sessionFs.read('.switchdash.json');
-    const projectFileSettings = shareableProjectSettingsSchema.parse(JSON.parse(content));
+    const projectFileSettings = shareableLocationSettingsSchema.parse(JSON.parse(content));
     return mergeShareableProjectSettings(defaults, projectFileSettings, localShareableSettings);
   } catch (err) {
     log.warn('Failed to parse session .switchdash.json, falling back to project settings', err);

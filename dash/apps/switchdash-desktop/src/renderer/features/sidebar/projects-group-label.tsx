@@ -206,7 +206,7 @@ const FilterDropdown = observer(function FilterDropdown() {
 });
 
 export const ProjectsGroupLabel = observer(function ProjectsGroupLabel() {
-  const showAddProjectModal = useShowModal('addProjectModal');
+  const showAddProjectModal = useShowModal('addAgentModal');
 
   return (
     <div className="flex h-[40px] items-center justify-between pr-2.5 pl-5">

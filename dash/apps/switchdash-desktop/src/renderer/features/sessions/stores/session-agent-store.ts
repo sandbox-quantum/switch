@@ -49,7 +49,7 @@ export class SessionAgentStore implements IDisposable {
   private hydrationDisposed = false;
 
   constructor(
-    private readonly projectId: string,
+    private readonly locationId: string,
     private readonly sessionId: string,
     preloaded?: Session[]
   ) {
@@ -97,9 +97,9 @@ export class SessionAgentStore implements IDisposable {
       this.agent = new AgentStatusStore(session);
     }
     if (!this.pty) {
-      const handlers = makeFileLinkHandlers(this.projectId, this.sessionId);
+      const handlers = makeFileLinkHandlers(this.locationId, this.sessionId);
       this.pty = new PtySession(
-        makeAgentPtySessionId(this.projectId, this.sessionId),
+        makeAgentPtySessionId(this.locationId, this.sessionId),
         undefined,
         handlers.onOpenFile,
         handlers.onOpenExternal,
@@ -159,7 +159,7 @@ export class SessionAgentStore implements IDisposable {
     runInAction(() => {
       if (!this.agent) {
         log.warn(`SessionAgentStore: session ${this.sessionId} not found after load`, {
-          projectId: this.projectId,
+          locationId: this.locationId,
         });
         return;
       }
@@ -190,7 +190,7 @@ export class SessionAgentStore implements IDisposable {
   private async hydrate(): Promise<void> {
     this.hydrationState = 'starting';
     try {
-      await rpc.sessions.hydrateSession(this.projectId, this.sessionId);
+      await rpc.sessions.hydrateSession(this.sessionId);
     } catch (error) {
       this.hydrationState = 'stopped';
       log.warn('SessionAgentStore: failed to hydrate session', {
@@ -210,7 +210,7 @@ export class SessionAgentStore implements IDisposable {
     this.hydrationState = 'stopping';
     this.pty?.dispose();
     try {
-      await rpc.sessions.dehydrateSession(this.projectId, this.sessionId);
+      await rpc.sessions.dehydrateSession(this.sessionId);
     } catch (error) {
       this.hydrationState = 'running';
       log.warn(

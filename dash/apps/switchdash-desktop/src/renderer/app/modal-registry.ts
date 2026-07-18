@@ -1,5 +1,5 @@
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
-import { AddProjectModal } from '@renderer/features/projects/components/add-project-modal/add-project-modal';
+import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
@@ -30,7 +30,7 @@ export function createModal<TProps, TResult>(
 export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
   sessionModal: createModal(CreateSessionModal),
-  addProjectModal: createModal(AddProjectModal),
+  addAgentModal: createModal(AddAgentModal),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   confirmExternalLinkModal: createModal(ExternalLinkChoiceDialog, { size: 'sm' }),
   unsavedChangesModal: createModal(UnsavedChangesDialog, { size: 'xs' }),

@@ -7,8 +7,8 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   setPinned: vi.fn(),
   visibleSessionEntries: [
-    { projectId: 'project-1', sessionId: 'session-1' },
-    { projectId: 'project-1', sessionId: 'session-2' },
+    { locationId: 'project-1', sessionId: 'session-1' },
+    { locationId: 'project-1', sessionId: 'session-2' },
   ],
 }));
 
@@ -42,8 +42,8 @@ describe('createSessionCommandProvider', () => {
       isPinned: false,
     });
     mocks.visibleSessionEntries = [
-      { projectId: 'project-1', sessionId: 'session-1' },
-      { projectId: 'project-1', sessionId: 'session-2' },
+      { locationId: 'project-1', sessionId: 'session-1' },
+      { locationId: 'project-1', sessionId: 'session-2' },
     ];
   });
 
@@ -65,8 +65,8 @@ describe('createSessionCommandProvider', () => {
 
   it('navigates to the next visible session across project boundaries', () => {
     mocks.visibleSessionEntries = [
-      { projectId: 'project-1', sessionId: 'session-1' },
-      { projectId: 'project-2', sessionId: 'session-2' },
+      { locationId: 'project-1', sessionId: 'session-1' },
+      { locationId: 'project-2', sessionId: 'session-2' },
     ];
     const provider = createSessionCommandProvider('project-1', 'session-1');
 
@@ -78,15 +78,15 @@ describe('createSessionCommandProvider', () => {
     command?.execute();
 
     expect(mocks.navigate).toHaveBeenCalledWith('session', {
-      projectId: 'project-2',
+      locationId: 'project-2',
       sessionId: 'session-2',
     });
   });
 
   it('navigates to the previous visible session across project boundaries', () => {
     mocks.visibleSessionEntries = [
-      { projectId: 'project-1', sessionId: 'session-1' },
-      { projectId: 'project-2', sessionId: 'session-2' },
+      { locationId: 'project-1', sessionId: 'session-1' },
+      { locationId: 'project-2', sessionId: 'session-2' },
     ];
     const provider = createSessionCommandProvider('project-2', 'session-2');
 
@@ -98,7 +98,7 @@ describe('createSessionCommandProvider', () => {
     command?.execute();
 
     expect(mocks.navigate).toHaveBeenCalledWith('session', {
-      projectId: 'project-1',
+      locationId: 'project-1',
       sessionId: 'session-1',
     });
   });

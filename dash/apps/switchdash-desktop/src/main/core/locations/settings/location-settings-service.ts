@@ -4,12 +4,12 @@ import { events } from '@main/lib/events';
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
 import {
-  type MigrateProjectConfigRequest,
-  type MigrateProjectConfigResult,
+  type MigrateLocationConfigRequest,
+  type MigrateLocationConfigResult,
   type LocationSettingsPatch,
   type LocationSettings,
   type LocationSettingsPage,
-  type WriteProjectConfigRequest,
+  type WriteLocationConfigRequest,
 } from '@shared/core/location-settings/location-settings';
 import { hasConfiguredShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
 import { locationSettingsChangedChannel } from '@shared/core/locations/locationEvents';
@@ -20,10 +20,10 @@ import {
   inspectProjectConfigMigrations,
   migrateProjectConfigFromProvider,
 } from './sharing/config-migration';
-import { computeProjectSettingsOverrideState } from './sharing/location-settings-override-state';
+import { computeLocationSettingsOverrideState } from './sharing/location-settings-override-state';
 import {
-  getProjectSettingsWriteTargets,
-  resolveAllProjectSettingsTargets,
+  getLocationSettingsWriteTargets,
+  resolveAllLocationSettingsTargets,
 } from './sharing/location-settings-target-resolver';
 import { shareLocationSettingsToConfig as writeSharedProjectSettingsToConfig } from './sharing/share-location-settings-to-config';
 
@@ -91,12 +91,12 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
 
   async shareLocationSettingsToConfig(
     locationId: string,
-    request: WriteProjectConfigRequest
+    request: WriteLocationConfigRequest
   ): Promise<Result<LocationSettingsPage, UpdateLocationSettingsError>> {
     const project = this.requireProject(locationId);
     if (!project.success) return project;
 
-    const resolvedTargets = await resolveAllProjectSettingsTargets(project.data);
+    const resolvedTargets = await resolveAllLocationSettingsTargets(project.data);
     const result = await writeSharedProjectSettingsToConfig(project.data, request, resolvedTargets);
     if (!result.success) return result;
 
@@ -107,8 +107,8 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
 
   async migrateLocationConfig(
     locationId: string,
-    request: MigrateProjectConfigRequest
-  ): Promise<Result<MigrateProjectConfigResult, UpdateLocationSettingsError>> {
+    request: MigrateLocationConfigRequest
+  ): Promise<Result<MigrateLocationConfigResult, UpdateLocationSettingsError>> {
     const project = this.requireProject(locationId);
     if (!project.success) return project;
 
@@ -140,9 +140,9 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
     const defaults = {
       worktreeDirectory: await project.settings.getDefaultWorktreeDirectory(),
     };
-    const resolvedTargets = await resolveAllProjectSettingsTargets(project);
-    const writeTargets = getProjectSettingsWriteTargets(resolvedTargets);
-    const overrideState = await computeProjectSettingsOverrideState(resolvedTargets);
+    const resolvedTargets = await resolveAllLocationSettingsTargets(project);
+    const writeTargets = getLocationSettingsWriteTargets(resolvedTargets);
+    const overrideState = await computeLocationSettingsOverrideState(resolvedTargets);
     const configMigrations = hasConfiguredShareableProjectSettings(settings)
       ? []
       : await inspectProjectConfigMigrations(project.fs);

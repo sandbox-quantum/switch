@@ -8,8 +8,8 @@ import type {
   Session,
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
-import { workspaceRegistry } from './workspace-registry';
-import { WorkspaceViewModel } from './workspace-view-model';
+import { sessionRuntimeRegistry } from './session-runtime-registry';
+import { SessionViewModel } from './session-view-model';
 
 export type UnregisteredSessionPhase = 'creating' | 'create-error';
 
@@ -33,21 +33,21 @@ export type UnregisteredSessionData = {
 };
 
 export class SessionStore {
-  /** The project this session belongs to (session → agent → project). */
-  readonly projectId: string;
+  /** The location this session runs at (session → agent → location). */
+  readonly locationId: string;
   state: 'unregistered' | 'unprovisioned' | 'provisioned';
   data: UnregisteredSessionData | Session;
   phase: UnregisteredSessionPhase | UnprovisionedSessionPhase | null;
   errorMessage: string | undefined = undefined;
   provisionProgressMessage: string | null = null;
 
-  /** The workspace ID for this session session — null when unprovisioned. */
-  workspaceId: string | null = null;
+  /** Whether this session currently holds an acquired location runtime. */
+  private _acquired = false;
   /**
    * Stable view model — created when session first becomes registered, persists
    * across provision/unprovision cycles. Null only while session is unregistered.
    */
-  viewModel: WorkspaceViewModel | null = null;
+  viewModel: SessionViewModel | null = null;
 
   get displayName(): string {
     return this.data.title;
@@ -62,17 +62,16 @@ export class SessionStore {
   }
 
   constructor(
-    projectId: string,
+    locationId: string,
     data: UnregisteredSessionData | Session,
     state: SessionStore['state'],
     phase: UnregisteredSessionPhase | UnprovisionedSessionPhase | null = null
   ) {
-    this.projectId = projectId;
+    this.locationId = locationId;
     this.state = state;
     this.data = data;
     this.phase = phase;
     makeAutoObservable(this, {
-      workspaceId: observable,
       viewModel: observable.ref,
       /** Deep observable so nested fields (e.g. `status`) notify observers (e.g. sidebar). */
       data: observable,
@@ -87,15 +86,15 @@ export class SessionStore {
   ensureRegisteredStores(): void {
     if (this.state === 'unregistered') return;
     if (!this.viewModel) {
-      this.viewModel = new WorkspaceViewModel(this);
+      this.viewModel = new SessionViewModel(this);
     }
   }
 
-  transitionToProvisioned(data: Session, path: string, workspaceId: string): void {
+  transitionToProvisioned(data: Session, path: string): void {
     this.data = data;
     this.ensureRegisteredStores();
-    workspaceRegistry.acquire(this.projectId, workspaceId, path);
-    this.workspaceId = workspaceId;
+    sessionRuntimeRegistry.acquire(this.locationId, path);
+    this._acquired = true;
     this.state = 'provisioned';
     this.phase = null;
     this.errorMessage = undefined;
@@ -105,9 +104,9 @@ export class SessionStore {
 
   transitionToUnprovisioned(data: Session, phase: UnprovisionedSessionPhase = 'idle'): void {
     this.viewModel?.suspend();
-    if (this.workspaceId) {
-      workspaceRegistry.release(this.projectId, this.workspaceId);
-      this.workspaceId = null;
+    if (this._acquired) {
+      sessionRuntimeRegistry.release(this.locationId);
+      this._acquired = false;
     }
     this.data = data;
     this.state = 'unprovisioned';
@@ -130,9 +129,9 @@ export class SessionStore {
 
   transitionToUnregistered(data: UnregisteredSessionData): void {
     this.viewModel?.suspend();
-    if (this.workspaceId) {
-      workspaceRegistry.release(this.projectId, this.workspaceId);
-      this.workspaceId = null;
+    if (this._acquired) {
+      sessionRuntimeRegistry.release(this.locationId);
+      this._acquired = false;
     }
     this.data = data;
     this.state = 'unregistered';
@@ -141,17 +140,17 @@ export class SessionStore {
   }
 
   activate(): void {
-    if (this.workspaceId) {
-      workspaceRegistry.activate(this.projectId, this.workspaceId);
+    if (this._acquired) {
+      sessionRuntimeRegistry.activate(this.locationId);
     }
   }
 
   dispose(): void {
     this.viewModel?.dispose();
     this.viewModel = null;
-    if (this.workspaceId) {
-      workspaceRegistry.release(this.projectId, this.workspaceId);
-      this.workspaceId = null;
+    if (this._acquired) {
+      sessionRuntimeRegistry.release(this.locationId);
+      this._acquired = false;
     }
   }
 
@@ -165,7 +164,7 @@ export class SessionStore {
     const session = registeredSessionData(this);
     if (!session) return err({ type: 'session-not-found', sessionId: this.data.id });
     try {
-      const result = await rpc.sessions.renameSession(this.projectId, session.id, name);
+      const result = await rpc.sessions.renameSession(session.id, name);
       if (!result.success) {
         return result;
       }
@@ -252,7 +251,7 @@ export function isUnprovisioned(t: SessionStore): t is UnprovisionedSession {
 
 export function isProvisioned(
   t: SessionStore
-): t is SessionStore & { state: 'provisioned'; data: Session; workspaceId: string } {
+): t is SessionStore & { state: 'provisioned'; data: Session; locationId: string } {
   return t.state === 'provisioned';
 }
 
@@ -266,12 +265,12 @@ export function unregisteredSessionData(store: SessionStore): UnregisteredSessio
 }
 
 export function createUnregisteredSession(
-  projectId: string,
+  locationId: string,
   data: UnregisteredSessionData
 ): SessionStore {
-  return new SessionStore(projectId, data, 'unregistered', 'creating');
+  return new SessionStore(locationId, data, 'unregistered', 'creating');
 }
 
-export function createUnprovisionedSession(projectId: string, data: Session): SessionStore {
-  return new SessionStore(projectId, data, 'unprovisioned', 'idle');
+export function createUnprovisionedSession(locationId: string, data: Session): SessionStore {
+  return new SessionStore(locationId, data, 'unprovisioned', 'idle');
 }

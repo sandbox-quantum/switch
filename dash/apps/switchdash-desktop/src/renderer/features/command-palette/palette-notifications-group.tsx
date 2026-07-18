@@ -2,15 +2,15 @@ import { Command } from 'cmdk';
 import { useObserver } from 'mobx-react-lite';
 import {
   asMounted,
-  getProjectManagerStore,
-} from '@renderer/features/projects/stores/project-selectors';
+  getLocationManagerStore,
+} from '@renderer/features/locations/stores/location-selectors';
 import { sessionAgentRegistry } from '@renderer/features/sessions/stores/session-agent-registry';
 import { isRegistered, type SessionStore } from '@renderer/features/sessions/stores/session-store';
 import type { NavigateFnTyped } from '@renderer/lib/layout/navigation-provider';
 import { cn } from '@renderer/utils/utils';
 import { PaletteSessionItem } from './palette-session-item';
 
-type NotificationItem = { projectId: string; sessionStore: SessionStore };
+type NotificationItem = { locationId: string; sessionStore: SessionStore };
 
 const GROUP_CLASS = cn(
   '[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5',
@@ -19,14 +19,14 @@ const GROUP_CLASS = cn(
 );
 
 interface PaletteNotificationsGroupProps {
-  currentProjectId: string | undefined;
+  currentLocationId: string | undefined;
   currentSessionId: string | undefined;
   onClose: () => void;
   navigate: NavigateFnTyped;
 }
 
 export function PaletteNotificationsGroup({
-  currentProjectId,
+  currentLocationId,
   currentSessionId,
   onClose,
   navigate,
@@ -34,7 +34,7 @@ export function PaletteNotificationsGroup({
   const items = useObserver((): NotificationItem[] => {
     const result: NotificationItem[] = [];
 
-    for (const projectStore of getProjectManagerStore().projects.values()) {
+    for (const projectStore of getLocationManagerStore().locations.values()) {
       const mounted = asMounted(projectStore);
       if (!mounted) continue;
       const pid = mounted.data.id;
@@ -48,7 +48,7 @@ export function PaletteNotificationsGroup({
         // Only surface awaiting-input, error, completed — not working or idle.
         if (!status || status === 'idle' || status === 'working') continue;
 
-        result.push({ projectId: pid, sessionStore });
+        result.push({ locationId: pid, sessionStore });
       }
     }
 
@@ -66,11 +66,11 @@ export function PaletteNotificationsGroup({
           value={`notif:session:${item.sessionStore.data.id}`}
           onSelect={() => {
             if (
-              item.projectId !== currentProjectId ||
+              item.locationId !== currentLocationId ||
               item.sessionStore.data.id !== currentSessionId
             ) {
               navigate('session', {
-                projectId: item.projectId,
+                locationId: item.locationId,
                 sessionId: item.sessionStore.data.id,
               });
             }

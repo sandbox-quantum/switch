@@ -1,18 +1,18 @@
 import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
-import { projectView } from '@renderer/features/projects/view';
+import { locationView } from '@renderer/features/locations/view';
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
 import { serverView } from '@renderer/features/switch-servers/view';
 import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
 
-// switchdash views: agents (project), sessions (session), home, settings,
+// switchdash views: agents-at-a-location (location), sessions (session), home, settings,
 // server (a connected Switch gateway). Automations, library, skills, and mcp
 // were removed.
 export const views = {
   home: homeView,
-  project: projectView,
+  location: locationView,
   session: sessionView,
   settings: settingsView,
   server: serverView,

@@ -48,7 +48,7 @@ function createAppCommandProvider(): CommandProvider {
           shortcutKey: newProjectDef.shortcutKey,
           group: newProjectDef.group,
           execute() {
-            showModal('addProjectModal', {});
+            showModal('addAgentModal', {});
           },
         },
       ];

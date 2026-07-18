@@ -1,4 +1,4 @@
-import { ProjectManagerStore } from '@renderer/features/projects/stores/project-manager';
+import { LocationManagerStore } from '@renderer/features/locations/stores/location-manager';
 import { SidebarStore } from '@renderer/features/sidebar/sidebar-store';
 import { NavigationHistoryStore } from './navigation-history-store';
 import { NavigationStore } from './navigation-store';
@@ -8,7 +8,7 @@ import { UpdateStore } from './update-store';
 
 class AppState {
   readonly update: UpdateStore;
-  readonly projects: ProjectManagerStore;
+  readonly locations: LocationManagerStore;
   readonly sidebar: SidebarStore;
   readonly snapshots: SnapshotRegistry;
   readonly history: NavigationHistoryStore;
@@ -18,8 +18,8 @@ class AppState {
   constructor() {
     this.snapshots = snapshotRegistry;
     this.update = new UpdateStore();
-    this.projects = new ProjectManagerStore();
-    this.sidebar = new SidebarStore(this.projects);
+    this.locations = new LocationManagerStore();
+    this.sidebar = new SidebarStore(this.locations);
     this.history = new NavigationHistoryStore();
     this.navigation = new NavigationStore();
     this.resourceMonitor = new ResourceMonitorStore();

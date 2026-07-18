@@ -1,9 +1,9 @@
 import {
   DEFAULT_PRESERVE_PATTERNS,
-  SHAREABLE_PROJECT_SETTINGS_WRITE_FIELDS,
+  SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS,
   type LocationSettings,
   type ShareableLocationSettings,
-  type ShareableProjectSettingsWriteField,
+  type ShareableLocationSettingsWriteField,
 } from './location-settings';
 
 type ShareableFieldAccessor = {
@@ -43,7 +43,7 @@ export function hasDefaultPreservePatterns(settings: ShareableLocationSettings):
 }
 
 export function hasConfiguredShareableProjectSettings(settings: LocationSettings): boolean {
-  return SHAREABLE_PROJECT_SETTINGS_WRITE_FIELDS.some((field) => {
+  return SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS.some((field) => {
     if (field === 'preservePatterns') {
       const patterns = normalizePatterns(settings.preservePatterns);
       return patterns.length > 0 && !hasDefaultPreservePatterns(settings);
@@ -114,11 +114,11 @@ export const SHAREABLE_FIELD_ACCESSORS = {
     },
     displayValue: (settings) => displayText(settings.scripts?.teardown),
   },
-} satisfies Record<ShareableProjectSettingsWriteField, ShareableFieldAccessor>;
+} satisfies Record<ShareableLocationSettingsWriteField, ShareableFieldAccessor>;
 
 export function clearShareableProjectSettingsFields<T extends LocationSettings>(
   settings: T,
-  fields: ShareableProjectSettingsWriteField[]
+  fields: ShareableLocationSettingsWriteField[]
 ): T {
   const next: LocationSettings = {
     ...settings,
@@ -139,7 +139,7 @@ export function mergeShareableProjectSettings(
   const next: ShareableLocationSettings = {};
 
   for (const source of sources) {
-    for (const field of SHAREABLE_PROJECT_SETTINGS_WRITE_FIELDS) {
+    for (const field of SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS) {
       const value = SHAREABLE_FIELD_ACCESSORS[field].get(source);
       if (value !== undefined) {
         SHAREABLE_FIELD_ACCESSORS[field].set(next, value);

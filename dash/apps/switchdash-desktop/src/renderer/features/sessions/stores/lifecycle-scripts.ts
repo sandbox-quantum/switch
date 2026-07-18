@@ -10,8 +10,8 @@ import {
   setTabActiveIndex,
 } from '@renderer/lib/stores/tab-utils';
 import { fsWatchEventChannel } from '@shared/core/fs/fsEvents';
-import { PROJECT_CONFIG_FILE } from '@shared/core/project-settings/project-settings';
-import { projectSettingsChangedChannel } from '@shared/core/projects/projectEvents';
+import { LOCATION_CONFIG_FILE } from '@shared/core/location-settings/location-settings';
+import { locationSettingsChangedChannel } from '@shared/core/locations/locationEvents';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
 import {
   lifecycleScriptStatusChannel,
@@ -36,18 +36,17 @@ export class LifecycleScriptStore {
   status: LifecycleScriptStatus = 'idle';
   private offStatus: (() => void) | null = null;
 
-  constructor(data: LifecycleScriptData, projectId: string, workspaceId: string) {
+  constructor(data: LifecycleScriptData, locationId: string) {
     this.data = data;
     this.session = new PtySession(
-      makePtySessionId(projectId, workspaceId, data.id),
+      makePtySessionId(locationId, locationId, data.id),
       undefined,
       undefined,
       undefined
     );
     this.offStatus = events.on(lifecycleScriptStatusChannel, (event) => {
       if (
-        event.projectId !== projectId ||
-        event.workspaceId !== workspaceId ||
+        event.locationId !== locationId ||
         event.type !== this.data.type
       ) {
         return;
@@ -79,8 +78,7 @@ export class LifecycleScriptStore {
 }
 
 export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptStore, never> {
-  private readonly projectId: string;
-  private readonly workspaceId: string;
+  private readonly locationId: string;
   private _loaded = false;
   private _disposed = false;
   private _watchingConfig = false;
@@ -90,9 +88,8 @@ export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptSto
   tabOrder: string[] = [];
   activeTabId: string | undefined = undefined;
 
-  constructor(projectId: string, workspaceId: string) {
-    this.projectId = projectId;
-    this.workspaceId = workspaceId;
+  constructor(locationId: string) {
+    this.locationId = locationId;
     makeObservable(this, {
       scripts: observable,
       tabOrder: observable,
@@ -110,17 +107,17 @@ export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptSto
     });
     this._unsubscribes.push(
       events.on(fsWatchEventChannel, (data) => {
-        if (data.projectId !== this.projectId || data.workspaceId !== this.workspaceId) return;
+        if (data.locationId !== this.locationId) return;
         if (
           data.events.some(
-            (event) => event.path === PROJECT_CONFIG_FILE || event.oldPath === PROJECT_CONFIG_FILE
+            (event) => event.path === LOCATION_CONFIG_FILE || event.oldPath === LOCATION_CONFIG_FILE
           )
         ) {
           this.reloadIfLoaded();
         }
       }),
-      events.on(projectSettingsChangedChannel, ({ projectId }) => {
-        if (projectId === this.projectId) this.reloadIfLoaded();
+      events.on(locationSettingsChangedChannel, ({ locationId }) => {
+        if (locationId === this.locationId) this.reloadIfLoaded();
       })
     );
   }
@@ -183,14 +180,9 @@ export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptSto
   private async watchConfig(): Promise<void> {
     if (this._watchingConfig || this._disposed) return;
     try {
-      await rpc.workspace.fs.watchSetPaths(
-        this.projectId,
-        this.workspaceId,
-        [''],
-        'lifecycle-scripts'
-      );
+      await rpc.fs.watch.watchSetPaths(this.locationId, [''], 'lifecycle-scripts');
       if (this._disposed) {
-        void rpc.workspace.fs.watchStop(this.projectId, this.workspaceId, 'lifecycle-scripts');
+        void rpc.fs.watch.watchStop(this.locationId, 'lifecycle-scripts');
         return;
       }
       this._watchingConfig = true;
@@ -202,7 +194,7 @@ export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptSto
   private async reload(): Promise<void> {
     if (this._disposed) return;
     const refreshSeq = ++this._refreshSeq;
-    const settings = await rpc.projectSettings.getSettings(this.workspaceId);
+    const settings = await rpc.locationRuntimeSettings.getSettings(this.locationId);
     if (this._disposed) return;
 
     const entries: { type: ScriptType; command: string; label: string }[] = [];
@@ -239,7 +231,7 @@ export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptSto
         if (existing) {
           Object.assign(existing.data, data);
         } else {
-          const store = new LifecycleScriptStore(data, this.projectId, this.workspaceId);
+          const store = new LifecycleScriptStore(data, this.locationId);
           this.scripts.set(entry.id, store);
           addTabId(this, entry.id);
         }
@@ -260,7 +252,7 @@ export class LifecycleScriptsStore implements TabViewProvider<LifecycleScriptSto
     this._refreshSeq++;
     for (const unsubscribe of this._unsubscribes) unsubscribe();
     if (this._watchingConfig) {
-      void rpc.workspace.fs.watchStop(this.projectId, this.workspaceId, 'lifecycle-scripts');
+      void rpc.fs.watch.watchStop(this.locationId, 'lifecycle-scripts');
     }
     for (const script of this.scripts.values()) {
       script.dispose();

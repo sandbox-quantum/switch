@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fsWatchEventChannel } from '@shared/core/fs/fsEvents';
-import { projectSettingsChangedChannel } from '@shared/core/projects/projectEvents';
+import { locationSettingsChangedChannel } from '@shared/core/locations/locationEvents';
 import { lifecycleScriptStatusChannel } from '@shared/core/sessions/sessionEvents';
 import { createLifecycleScriptTerminalId } from '@shared/core/terminals/terminals';
 import { LifecycleScriptsStore, LifecycleScriptStore } from './lifecycle-scripts';
@@ -19,11 +19,11 @@ vi.mock('@renderer/lib/ipc', () => ({
     }),
   },
   rpc: {
-    projectSettings: {
+    locationRuntimeSettings: {
       getSettings,
     },
-    workspace: {
-      fs: {
+    fs: {
+      watch: {
         watchSetPaths,
         watchStop,
       },
@@ -56,16 +56,14 @@ describe('LifecycleScriptStore', () => {
   it('tracks script running state from lifecycle status events', () => {
     const store = new LifecycleScriptStore(
       { id: 'script-id', type: 'run', label: 'Run', command: 'pnpm dev' },
-      'project-1',
-      'branch:feature'
+      'loc-1'
     );
 
     expect(store.isRunning).toBe(false);
 
     eventHandlers.get(`${lifecycleScriptStatusChannel.name}.`)?.({
-      projectId: 'project-1',
+      locationId: 'loc-1',
       sessionId: 'session-1',
-      workspaceId: 'branch:feature',
       type: 'run',
       origin: 'manual',
       status: 'running',
@@ -75,9 +73,8 @@ describe('LifecycleScriptStore', () => {
     expect(store.status).toBe('running');
 
     eventHandlers.get(`${lifecycleScriptStatusChannel.name}.`)?.({
-      projectId: 'project-1',
+      locationId: 'loc-1',
       sessionId: 'session-1',
-      workspaceId: 'branch:feature',
       type: 'run',
       origin: 'manual',
       status: 'succeeded',
@@ -91,8 +88,7 @@ describe('LifecycleScriptStore', () => {
   it('unsubscribes from lifecycle status events on dispose', () => {
     const store = new LifecycleScriptStore(
       { id: 'script-id', type: 'run', label: 'Run', command: 'pnpm dev' },
-      'project-1',
-      'branch:feature'
+      'loc-1'
     );
 
     store.dispose();
@@ -114,23 +110,17 @@ describe('LifecycleScriptsStore', () => {
     getSettings
       .mockResolvedValueOnce({ scripts: { run: 'pnpm dev' } })
       .mockResolvedValueOnce({ scripts: { run: 'pnpm start' } });
-    const store = new LifecycleScriptsStore('project-1', 'workspace-1');
+    const store = new LifecycleScriptsStore('loc-1');
 
     await (store as unknown as { load(): Promise<void> }).load();
 
-    expect(watchSetPaths).toHaveBeenCalledWith(
-      'project-1',
-      'workspace-1',
-      [''],
-      'lifecycle-scripts'
-    );
+    expect(watchSetPaths).toHaveBeenCalledWith('loc-1', [''], 'lifecycle-scripts');
     expect(store.tabs).toHaveLength(1);
     expect(store.tabs[0].data.id).toBe(createLifecycleScriptTerminalId('run'));
     expect(store.tabs[0].data.command).toBe('pnpm dev');
 
     eventHandlers.get(`${fsWatchEventChannel.name}.`)?.({
-      projectId: 'project-1',
-      workspaceId: 'workspace-1',
+      locationId: 'loc-1',
       events: [{ type: 'modify', entryType: 'file', path: '.switchdash.json' }],
     });
 
@@ -138,18 +128,18 @@ describe('LifecycleScriptsStore', () => {
     expect(store.tabs[0].data.id).toBe(createLifecycleScriptTerminalId('run'));
 
     store.dispose();
-    expect(watchStop).toHaveBeenCalledWith('project-1', 'workspace-1', 'lifecycle-scripts');
+    expect(watchStop).toHaveBeenCalledWith('loc-1', 'lifecycle-scripts');
   });
 
   it('reloads lifecycle scripts when project settings change', async () => {
     getSettings
       .mockResolvedValueOnce({ scripts: { setup: 'pnpm install' } })
       .mockResolvedValueOnce({ scripts: { setup: 'corepack install', run: 'pnpm dev' } });
-    const store = new LifecycleScriptsStore('project-1', 'workspace-1');
+    const store = new LifecycleScriptsStore('loc-1');
 
     await (store as unknown as { load(): Promise<void> }).load();
 
-    eventHandlers.get(`${projectSettingsChangedChannel.name}.`)?.({ projectId: 'project-1' });
+    eventHandlers.get(`${locationSettingsChangedChannel.name}.`)?.({ locationId: 'loc-1' });
 
     await expect
       .poll(() => store.tabs.map((tab) => tab.data.command))
@@ -163,7 +153,7 @@ describe('LifecycleScriptsStore', () => {
         resolveSettings = resolve;
       })
     );
-    const store = new LifecycleScriptsStore('project-1', 'workspace-1');
+    const store = new LifecycleScriptsStore('loc-1');
 
     const loadPromise = (store as unknown as { load(): Promise<void> }).load();
     store.dispose();
@@ -171,6 +161,6 @@ describe('LifecycleScriptsStore', () => {
     await loadPromise;
 
     expect(store.tabs).toEqual([]);
-    expect(watchStop).toHaveBeenCalledWith('project-1', 'workspace-1', 'lifecycle-scripts');
+    expect(watchStop).toHaveBeenCalledWith('loc-1', 'lifecycle-scripts');
   });
 });

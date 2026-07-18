@@ -1,7 +1,7 @@
 import { makeObservable, observable, runInAction, toJS } from 'mobx';
 import { toast } from 'sonner';
-import { getProjectManagerStore } from '@renderer/features/projects/stores/project-selectors';
-import type { ProjectSettingsStore } from '@renderer/features/projects/stores/project-settings-store';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
+import type { LocationSettingsStore } from '@renderer/features/locations/stores/location-settings-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
@@ -28,7 +28,7 @@ import {
   isUnregistered,
   type SessionStore,
 } from './session-store';
-import { workspaceRegistry } from './workspace-registry';
+import { sessionRuntimeRegistry } from './session-runtime-registry';
 
 function formatCreateSessionError(error: CreateSessionError): string {
   switch (error.type) {
@@ -42,15 +42,15 @@ function formatCreateSessionError(error: CreateSessionError): string {
 }
 
 export class SessionManagerStore {
-  private readonly projectId: string;
-  private readonly _settingsStore: ProjectSettingsStore;
+  private readonly locationId: string;
+  private readonly _settingsStore: LocationSettingsStore;
   private _loadPromise: Promise<void> | null = null;
   private _teardownPromises = new Map<string, Promise<void>>();
   private _provisionPromises = new Map<string, Promise<void>>();
   /** session:provisioned events that arrived before their session:created
    * (main-process automation emits both back-to-back; the created handler is
    * async, so provisioned can win the race). Applied once the session lands. */
-  private _pendingProvisioned = new Map<string, { path: string; workspaceId: string }>();
+  private _pendingProvisioned = new Map<string, { path: string }>();
 
   private _unsubSessionCreated: (() => void) | null = null;
   private _unsubSessionDeleted: (() => void) | null = null;
@@ -61,28 +61,28 @@ export class SessionManagerStore {
 
   sessions = observable.map<string, SessionStore>();
 
-  constructor(projectId: string, settingsStore: ProjectSettingsStore) {
-    this.projectId = projectId;
+  constructor(locationId: string, settingsStore: LocationSettingsStore) {
+    this.locationId = locationId;
     this._settingsStore = settingsStore;
     makeObservable(this, { sessions: observable });
 
     this._unsubSessionCreated = events.on(sessionCreatedChannel, ({ session }) => {
       if (this.sessions.has(session.id)) return;
       void rpc.agents.getAgentById(session.agentId).then((agent) => {
-        if (!agent || agent.projectId !== this.projectId || this.sessions.has(session.id)) return;
+        if (!agent || agent.locationId !== this.locationId || this.sessions.has(session.id)) return;
         runInAction(() => {
-          this.sessions.set(session.id, createUnprovisionedSession(this.projectId, session));
+          this.sessions.set(session.id, createUnprovisionedSession(this.locationId, session));
           // This session was created elsewhere (the auto-session watcher /
           // another window), so there is no record to seed — omit the preloaded
           // list so the store demand-fetches the real session record.
-          sessionAgentRegistry.acquire(session.id, this.projectId);
+          sessionAgentRegistry.acquire(session.id, this.locationId);
           // A provisioned event for this session may have arrived first (the
           // automation path emits created→provisioned back-to-back). Apply it
           // now so the session reaches 'ready' without waiting for a restart.
           const pending = this._pendingProvisioned.get(session.id);
           if (pending) {
             this._pendingProvisioned.delete(session.id);
-            this._applyProvisioned(session.id, pending.path, pending.workspaceId);
+            this._applyProvisioned(session.id, pending.path);
           }
         });
       });
@@ -94,13 +94,12 @@ export class SessionManagerStore {
     // — otherwise it lingers as a ghost until restart.
     this._unsubSessionDeleted = events.on(
       sessionDeletedChannel,
-      ({ sessionId, projectId: evtProjectId }) => {
-        if (evtProjectId !== this.projectId) return;
+      ({ sessionId }) => {
         const store = this.sessions.get(sessionId);
         if (!store) return;
         console.info('SessionManager: removing session (remote-driven delete)', {
           sessionId,
-          projectId: this.projectId,
+          locationId: this.locationId,
         });
         runInAction(() => this.sessions.delete(sessionId));
         this._releaseSessionRegistries(sessionId);
@@ -110,8 +109,7 @@ export class SessionManagerStore {
 
     this._unsubStatusUpdated = events.on(
       sessionStatusUpdatedChannel,
-      ({ sessionId, projectId: evtProjectId, status }) => {
-        if (evtProjectId !== this.projectId) return;
+      ({ sessionId, status }) => {
         const store = this.sessions.get(sessionId);
         if (store && isProvisioned(store)) {
           runInAction(() => {
@@ -123,8 +121,7 @@ export class SessionManagerStore {
 
     this._unsubProvisionProgress = events.on(
       sessionProvisionProgressChannel,
-      ({ sessionId, projectId: evtProjectId, message }) => {
-        if (evtProjectId !== this.projectId) return;
+      ({ sessionId, message }) => {
         const store = this.sessions.get(sessionId);
         if (store?.isBootstrapping) {
           runInAction(() => {
@@ -136,7 +133,7 @@ export class SessionManagerStore {
 
     this._unsubLifecycleScriptStatus = events.on(lifecycleScriptStatusChannel, (statusEvent) => {
       if (
-        statusEvent.projectId !== this.projectId ||
+        statusEvent.locationId !== this.locationId ||
         statusEvent.status !== 'failed' ||
         !statusEvent.surfaceFailure
       ) {
@@ -155,9 +152,8 @@ export class SessionManagerStore {
     // double-transition if the renderer-driven RPC already completed first.
     this._unsubProvisioned = events.on(
       sessionProvisionedChannel,
-      ({ sessionId, projectId: evtProjectId, path, workspaceId }) => {
-        if (evtProjectId !== this.projectId) return;
-        void this._doHandleProvisioned(sessionId, path, workspaceId);
+      ({ sessionId, path }) => {
+        void this._doHandleProvisioned(sessionId, path);
       }
     );
   }
@@ -169,14 +165,14 @@ export class SessionManagerStore {
   loadSessions(): Promise<void> {
     if (!this._loadPromise) {
       this._loadPromise = rpc.sessions
-        .getSessions(this.projectId)
+        .getSessions(this.locationId)
         .then((sessions) => {
           runInAction(() => {
             for (const t of sessions) {
-              this.sessions.set(t.id, createUnprovisionedSession(this.projectId, t));
+              this.sessions.set(t.id, createUnprovisionedSession(this.locationId, t));
               // Seed the agent store with the session record so sidebar badges
               // are available immediately.
-              sessionAgentRegistry.acquire(t.id, this.projectId, [t]);
+              sessionAgentRegistry.acquire(t.id, this.locationId, [t]);
             }
           });
         })
@@ -194,7 +190,7 @@ export class SessionManagerStore {
     runInAction(() => {
       this.sessions.set(
         params.id,
-        createUnregisteredSession(this.projectId, {
+        createUnregisteredSession(this.locationId, {
           id: params.id,
           lastInteractedAt: new Date().toISOString(),
           createdAt: new Date().toISOString(),
@@ -216,7 +212,7 @@ export class SessionManagerStore {
 
     const clearOptimisticInitialWorking = () => {
       if (!params.initialPrompt?.trim()) return;
-      sessionAgentRegistry.acquire(params.id, this.projectId).agent?.clearWorking();
+      sessionAgentRegistry.acquire(params.id, this.locationId).agent?.clearWorking();
     };
 
     runInAction(() => {
@@ -239,7 +235,7 @@ export class SessionManagerStore {
         createdAt: now,
         updatedAt: now,
       };
-      const agentStore = sessionAgentRegistry.acquire(params.id, this.projectId, [optimistic]);
+      const agentStore = sessionAgentRegistry.acquire(params.id, this.locationId, [optimistic]);
       if (params.initialPrompt?.trim()) {
         void agentStore.markWorking();
       }
@@ -287,7 +283,7 @@ export class SessionManagerStore {
   }
 
   async provisionSession(sessionId: string): Promise<void> {
-    await getProjectManagerStore().mountProject(this.projectId);
+    await getLocationManagerStore().mountLocation(this.locationId);
     await this.loadSessions();
 
     const inFlight = this._provisionPromises.get(sessionId);
@@ -326,52 +322,46 @@ export class SessionManagerStore {
       return;
     }
 
-    workspaceRegistry.setBootstrapState(this.projectId, result.data.workspaceId, { kind: 'ready' });
+    sessionRuntimeRegistry.setBootstrapState(this.locationId, { kind: 'ready' });
 
     runInAction(() => {
       const current = this.sessions.get(sessionId);
       if (current && isUnprovisioned(current)) {
-        sessionAgentRegistry.acquire(sessionId, this.projectId);
+        sessionAgentRegistry.acquire(sessionId, this.locationId);
         current.ensureRegisteredStores();
         current.transitionToProvisioned(
           { ...current.data, lastInteractedAt: new Date().toISOString() },
-          result.data.path,
-          result.data.workspaceId
+          result.data.path
         );
         current.activate();
       }
     });
   }
 
-  private async _doHandleProvisioned(
-    sessionId: string,
-    path: string,
-    workspaceId: string
-  ): Promise<void> {
+  private async _doHandleProvisioned(sessionId: string, path: string): Promise<void> {
     runInAction(() => {
       const current = this.sessions.get(sessionId);
       // The session:created handler is async, so a main-process automation
       // path that emits created→provisioned can deliver provisioned first.
       // Buffer it; the created handler applies it when the session lands.
       if (!current) {
-        this._pendingProvisioned.set(sessionId, { path, workspaceId });
+        this._pendingProvisioned.set(sessionId, { path });
         return;
       }
-      this._applyProvisioned(sessionId, path, workspaceId);
+      this._applyProvisioned(sessionId, path);
     });
   }
 
   /** Transition an already-registered unprovisioned session to provisioned.
    * Must run inside a `runInAction`. */
-  private _applyProvisioned(sessionId: string, path: string, workspaceId: string): void {
+  private _applyProvisioned(sessionId: string, path: string): void {
     const current = this.sessions.get(sessionId);
     if (current && isUnprovisioned(current)) {
-      sessionAgentRegistry.acquire(sessionId, this.projectId);
+      sessionAgentRegistry.acquire(sessionId, this.locationId);
       current.ensureRegisteredStores();
       current.transitionToProvisioned(
         { ...current.data, lastInteractedAt: new Date().toISOString() },
-        path,
-        workspaceId
+        path
       );
       current.activate();
     }
@@ -395,7 +385,7 @@ export class SessionManagerStore {
     });
 
     const promise = rpc.sessions
-      .teardownSession(this.projectId, sessionId)
+      .teardownSession(sessionId)
       .then(() => {
         runInAction(() => {
           const current = this.sessions.get(sessionId);
@@ -439,7 +429,7 @@ export class SessionManagerStore {
           session.data.archivedAt = new Date().toISOString();
         }
       });
-      await rpc.sessions.archiveSession(this.projectId, sessionId);
+      await rpc.sessions.archiveSession(sessionId);
     } catch (e) {
       runInAction(() => {
         const session = this.sessions.get(sessionId);
@@ -506,7 +496,7 @@ export class SessionManagerStore {
         this._releaseSessionRegistries(id);
         t.dispose();
       });
-      await rpc.sessions.deleteSessions(this.projectId, sessionIds);
+      await rpc.sessions.deleteSessions(sessionIds);
     } catch (e) {
       runInAction(() => {
         removed.forEach((t, id) => this.sessions.set(id, t));

@@ -1,28 +1,28 @@
 import { log } from '@main/lib/logger';
 import {
-  emptyProjectSettingsOverrideState,
-  SHAREABLE_PROJECT_SETTINGS_WRITE_FIELDS,
-  shareableProjectSettingsSchema,
-  type ProjectSettingsOverrideState,
+  emptyLocationSettingsOverrideState,
+  SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS,
+  shareableLocationSettingsSchema,
+  type LocationSettingsOverrideState,
 } from '@shared/core/location-settings/location-settings';
 import { SHAREABLE_FIELD_ACCESSORS } from '@shared/core/location-settings/location-settings-fields';
-import type { ProjectSettingsResolvedTarget } from './location-settings-target-resolver';
+import type { LocationSettingsResolvedTarget } from './location-settings-target-resolver';
 import { CONFIG_FILE } from './switchdash-config-file';
 
-export async function computeProjectSettingsOverrideState(
-  targets: ProjectSettingsResolvedTarget[]
-): Promise<ProjectSettingsOverrideState> {
-  const state = emptyProjectSettingsOverrideState();
+export async function computeLocationSettingsOverrideState(
+  targets: LocationSettingsResolvedTarget[]
+): Promise<LocationSettingsOverrideState> {
+  const state = emptyLocationSettingsOverrideState();
 
   for (const resolved of targets) {
     try {
       if (!(await resolved.fs.exists(CONFIG_FILE))) continue;
 
       const { content } = await resolved.fs.read(CONFIG_FILE);
-      const parsed = shareableProjectSettingsSchema.safeParse(JSON.parse(content));
+      const parsed = shareableLocationSettingsSchema.safeParse(JSON.parse(content));
       if (!parsed.success) continue;
 
-      for (const field of SHAREABLE_PROJECT_SETTINGS_WRITE_FIELDS) {
+      for (const field of SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS) {
         const value = SHAREABLE_FIELD_ACCESSORS[field].displayValue(parsed.data);
         if (!value) continue;
 

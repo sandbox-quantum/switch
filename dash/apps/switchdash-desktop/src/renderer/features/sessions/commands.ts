@@ -16,20 +16,20 @@ function sessionDef(id: SessionCommandId): CommandDef {
  * sidebar panels, terminal drawer) are gone — only pin and prev/next remain.
  */
 export function createSessionCommandProvider(
-  projectId: string,
+  locationId: string,
   sessionId: string
 ): CommandProvider {
   return {
     scopeId: 'session',
 
     getCommands() {
-      const sessionStore = getSessionStore(projectId, sessionId);
+      const sessionStore = getSessionStore(locationId, sessionId);
       if (sessionStore?.state !== 'provisioned') return [];
 
-      const sessionData = getRegisteredSessionData(projectId, sessionId);
+      const sessionData = getRegisteredSessionData(locationId, sessionId);
       const visibleSessionEntries = sidebarStore.visibleSessionEntries;
       const currentIdx = visibleSessionEntries.findIndex(
-        (entry) => entry.projectId === projectId && entry.sessionId === sessionId
+        (entry) => entry.locationId === locationId && entry.sessionId === sessionId
       );
 
       const pinDef = sessionDef('session.pin');

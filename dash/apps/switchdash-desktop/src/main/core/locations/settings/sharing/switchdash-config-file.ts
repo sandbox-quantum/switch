@@ -1,6 +1,6 @@
 import {
   type LocationSettings,
-  type ShareableProjectSettingsWriteField,
+  type ShareableLocationSettingsWriteField,
 } from '@shared/core/location-settings/location-settings';
 import { SHAREABLE_FIELD_ACCESSORS } from '@shared/core/location-settings/location-settings-fields';
 import { parseJsonObject } from '../location-settings-json';
@@ -26,9 +26,9 @@ function setNested(obj: Record<string, unknown>, path: string[], value: unknown)
 export function patchShareableProjectSettingsFields(
   config: Record<string, unknown>,
   settings: LocationSettings,
-  fields: ShareableProjectSettingsWriteField[]
-): ShareableProjectSettingsWriteField[] {
-  const writtenFields: ShareableProjectSettingsWriteField[] = [];
+  fields: ShareableLocationSettingsWriteField[]
+): ShareableLocationSettingsWriteField[] {
+  const writtenFields: ShareableLocationSettingsWriteField[] = [];
   for (const field of fields) {
     const accessor = SHAREABLE_FIELD_ACCESSORS[field];
     const value = accessor.get(settings);

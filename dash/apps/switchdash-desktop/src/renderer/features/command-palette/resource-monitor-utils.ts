@@ -23,7 +23,7 @@ export type SessionBucket = {
 };
 
 export type Group = {
-  projectId: string;
+  locationId: string;
   projectName: string;
   sessions: SessionBucket[];
   entryCount: number;
@@ -113,17 +113,17 @@ export function sortAppProcesses(processes: ResourceAppProcess[]): ResourceAppPr
 }
 
 export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
-  const projects = appState.projects.projects;
+  const projects = appState.locations.locations;
   const byProject = new Map<
     string,
     { projectName: string; sessions: Map<string, SessionBucket> }
   >();
 
   for (const entry of entries) {
-    const projectStore = projects.get(entry.projectId);
+    const projectStore = projects.get(entry.locationId);
     let sessionName = entry.scopeId;
     // The bucket key normally matches the entry's scopeId, but lifecycle
-    // scripts are scoped by workspaceId while agents are scoped by sessionId.
+    // scripts are scoped by locationId while agents are scoped by sessionId.
     // Resolving both to the owning session id groups them under the same branch.
     let bucketKey = entry.scopeId;
     let providerId: AgentProviderId | undefined;
@@ -132,17 +132,17 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
     let projectKey = UNKNOWN_PROJECT_ID;
 
     if (projectStore) {
-      projectKey = entry.projectId;
-      projectName = projectStore.name ?? projectStore.data?.name ?? entry.projectId.slice(0, 8);
-      const mounted = projectStore.mountedProject;
+      projectKey = entry.locationId;
+      projectName = projectStore.name ?? projectStore.data?.name ?? entry.locationId.slice(0, 8);
+      const mounted = projectStore.mountedLocation;
       // Agent PTYs use the session id as scopeId; lifecycle-script PTYs use the
       // workspace id. Try the direct lookup first, then fall back to matching
-      // a session by its workspaceId so scripts attach to their owning branch.
+      // a session by its locationId so scripts attach to their owning branch.
       let sessionId = entry.scopeId;
       let session = mounted?.sessionManager.sessions.get(entry.scopeId);
       if (!session && mounted) {
         for (const [id, candidate] of mounted.sessionManager.sessions) {
-          if (candidate.workspaceId === entry.scopeId) {
+          if (candidate.locationId === entry.scopeId) {
             sessionId = id;
             session = candidate;
             break;
@@ -179,7 +179,7 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
     byProject.set(projectKey, project);
   }
 
-  const groups: Group[] = Array.from(byProject.entries()).map(([projectId, p]) => {
+  const groups: Group[] = Array.from(byProject.entries()).map(([locationId, p]) => {
     const sessions = Array.from(p.sessions.values());
     for (const t of sessions) {
       t.entries.sort((a, b) => {
@@ -192,7 +192,7 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
       (a, b) => a.sessionName.localeCompare(b.sessionName) || a.scopeId.localeCompare(b.scopeId)
     );
     return {
-      projectId,
+      locationId,
       projectName: p.projectName,
       sessions,
       entryCount: sessions.reduce((n, t) => n + t.entries.length, 0),
@@ -201,9 +201,9 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
 
   // Keep the "Other" bucket at the end so real projects render first.
   groups.sort((a, b) => {
-    if (a.projectId === UNKNOWN_PROJECT_ID) return 1;
-    if (b.projectId === UNKNOWN_PROJECT_ID) return -1;
-    return a.projectName.localeCompare(b.projectName) || a.projectId.localeCompare(b.projectId);
+    if (a.locationId === UNKNOWN_PROJECT_ID) return 1;
+    if (b.locationId === UNKNOWN_PROJECT_ID) return -1;
+    return a.projectName.localeCompare(b.projectName) || a.locationId.localeCompare(b.locationId);
   });
 
   return groups;

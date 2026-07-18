@@ -26,7 +26,7 @@ async function bootstrap() {
     rpc.viewState.get('navigation') as Promise<NavigationSnapshot> | null,
     rpc.viewState.get('sidebar'),
     rpc.viewState.getAll(),
-    appState.projects.load(),
+    appState.locations.load(),
     prefetchAppSettingsKey('interface'),
   ]);
 
