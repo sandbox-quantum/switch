@@ -26,7 +26,7 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { resolveAgentExecutable } from './resolve-agent-executable';
@@ -83,7 +83,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
   /** The registry key of this session's agent PTY (session id == session id). */
   private get ptySessionId(): string {
-    return makePtySessionId(this.projectId, this.sessionId, this.sessionId);
+    return makeAgentPtySessionId(this.projectId, this.sessionId);
   }
 
   async start(
@@ -270,7 +270,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // live tool call, so a resumed session would otherwise go silent.
       void switchRoomService
         .restorePoller({
-          conversationId: this.sessionId,
+          sessionId: this.sessionId,
           projectId: this.projectId,
           providerId: session.providerId,
           ptyId,

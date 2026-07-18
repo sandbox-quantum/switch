@@ -64,17 +64,17 @@ export function makeTmuxSessionName(sessionId: string): string {
 }
 
 /**
- * tmux session name for an AGENT conversation's pane, derived from the
- * conversationId alone. The conversationId is minted once (by whichever client
- * or the VM sidecar starts the session) and is shared verbatim across every
- * switchdash client and the sidecar, so all of them compute the identical tmux
- * name and attach to the SAME pane — enabling concurrent multi-client access
- * (CHOO-1181). It must NOT fold in projectId/scopeId: those are switchdash-
- * instance-local ids that differ per client, which would give each client a
- * different pane name and silently spawn a fresh blank session on attach.
+ * tmux session name for an AGENT's pane, derived from the session id alone.
+ * The session id is minted once (by whichever client or the VM sidecar starts
+ * the session) and is shared verbatim across every switchdash client and the
+ * sidecar, so all of them compute the identical tmux name and attach to the
+ * SAME pane — enabling concurrent multi-client access (CHOO-1181). It must NOT
+ * fold in projectId: that is a switchdash-instance-local id that differs per
+ * client, which would give each client a different pane name and silently
+ * spawn a fresh blank session on attach.
  */
-export function makeAgentTmuxSessionName(conversationId: string): string {
-  return makeTmuxSessionName(`conv-${conversationId}`);
+export function makeAgentTmuxSessionName(sessionId: string): string {
+  return makeTmuxSessionName(`session-${sessionId}`);
 }
 
 export async function killTmuxSession(ctx: IExecutionContext, sessionName: string): Promise<void> {

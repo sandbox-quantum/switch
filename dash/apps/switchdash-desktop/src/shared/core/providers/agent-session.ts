@@ -2,7 +2,6 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 
 export interface AgentSessionConfig {
   sessionId: string;
-  conversationId: string;
   providerId: AgentProviderId;
   command: string;
   args: string[];

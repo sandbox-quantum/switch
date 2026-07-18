@@ -9,7 +9,7 @@ import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomE
 import { switchNotificationPoller } from './switch-notification-poller';
 
 export type SessionRoomContext = {
-  conversationId: string;
+  sessionId: string;
   projectId: string;
   providerId: string;
   ptyId: string;
@@ -54,11 +54,11 @@ class SwitchRoomService implements IDisposable {
     agentId: string,
     roomName: string | null
   ): void {
-    const previous = this.connections.get(ctx.conversationId);
+    const previous = this.connections.get(ctx.sessionId);
     const unchanged = previous && previous.roomId === roomId && previous.agentId === agentId;
 
-    this.connections.set(ctx.conversationId, {
-      conversationId: ctx.conversationId,
+    this.connections.set(ctx.sessionId, {
+      sessionId: ctx.sessionId,
       roomId,
       agentId,
       roomName,
@@ -69,25 +69,23 @@ class SwitchRoomService implements IDisposable {
 
     // Persist so a resumed session re-polls this room after an app restart,
     // even though the connect_to_room hook only fires on a live tool call.
-    void this.persistConnection(ctx.conversationId, { roomId, agentId, roomName }).catch(
-      (error) => {
-        log.warn('SwitchRoomService: failed to persist connection', {
-          conversationId: ctx.conversationId,
-          error: String(error),
-        });
-      }
-    );
+    void this.persistConnection(ctx.sessionId, { roomId, agentId, roomName }).catch((error) => {
+      log.warn('SwitchRoomService: failed to persist connection', {
+        sessionId: ctx.sessionId,
+        error: String(error),
+      });
+    });
 
     if (unchanged) return;
 
     log.info('SwitchRoomService: session connected to room', {
-      conversationId: ctx.conversationId,
+      sessionId: ctx.sessionId,
       roomId,
       agentId,
     });
 
     events.emit(sessionRoomChangedChannel, {
-      conversationId: ctx.conversationId,
+      sessionId: ctx.sessionId,
       roomId,
       agentId,
     });
@@ -100,11 +98,11 @@ class SwitchRoomService implements IDisposable {
    * connect_to_room again. No-op when the session has no persisted room.
    */
   async restorePoller(ctx: SessionRoomContext): Promise<void> {
-    const persisted = await this.getPersisted(ctx.conversationId);
+    const persisted = await this.getPersisted(ctx.sessionId);
     if (!persisted) return;
 
     log.info('SwitchRoomService: restoring room poller for resumed session', {
-      conversationId: ctx.conversationId,
+      sessionId: ctx.sessionId,
       roomId: persisted.roomId,
     });
 
@@ -113,16 +111,16 @@ class SwitchRoomService implements IDisposable {
   }
 
   /** Conversation ids that had a live room connection before the last shutdown. */
-  async listPersistedConversationIds(): Promise<string[]> {
+  async listPersistedSessionIds(): Promise<string[]> {
     return Object.keys(await this.readPersisted());
   }
 
   /** Forget persisted connections whose sessions no longer exist. */
-  async prunePersisted(conversationIds: string[]): Promise<void> {
-    if (conversationIds.length === 0) return;
+  async prunePersisted(sessionIds: string[]): Promise<void> {
+    if (sessionIds.length === 0) return;
     const map = await this.readPersisted();
     let changed = false;
-    for (const id of conversationIds) {
+    for (const id of sessionIds) {
       if (id in map) {
         delete map[id];
         changed = true;
@@ -132,13 +130,13 @@ class SwitchRoomService implements IDisposable {
   }
 
   /** Drop a session's connection (on room switch-away or session exit). */
-  clearSession(conversationId: string): void {
-    if (!this.connections.delete(conversationId)) return;
+  clearSession(sessionId: string): void {
+    if (!this.connections.delete(sessionId)) return;
 
-    log.info('SwitchRoomService: session disconnected from room', { conversationId });
+    log.info('SwitchRoomService: session disconnected from room', { sessionId });
 
     events.emit(sessionRoomChangedChannel, {
-      conversationId,
+      sessionId,
       roomId: null,
       agentId: null,
     });
@@ -146,16 +144,16 @@ class SwitchRoomService implements IDisposable {
 
   /** The current set of live session→room connections. */
   getConnections(): SessionRoomConnection[] {
-    return [...this.connections.values()].map(({ conversationId, roomId, agentId }) => ({
-      conversationId,
+    return [...this.connections.values()].map(({ sessionId, roomId, agentId }) => ({
+      sessionId,
       roomId,
       agentId,
     }));
   }
 
-  private async getPersisted(conversationId: string): Promise<PersistedConnection | null> {
+  private async getPersisted(sessionId: string): Promise<PersistedConnection | null> {
     const map = await this.readPersisted();
-    return map[conversationId] ?? null;
+    return map[sessionId] ?? null;
   }
 
   private async readPersisted(): Promise<Record<string, PersistedConnection>> {
@@ -172,11 +170,11 @@ class SwitchRoomService implements IDisposable {
   }
 
   private async persistConnection(
-    conversationId: string,
+    sessionId: string,
     connection: PersistedConnection
   ): Promise<void> {
     const map = await this.readPersisted();
-    map[conversationId] = connection;
+    map[sessionId] = connection;
     await this.writePersisted(map);
   }
 

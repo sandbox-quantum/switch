@@ -11,7 +11,7 @@ import {
   type AgentStatus,
   type NotificationType,
 } from '@shared/core/providers/agentEvents';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import {
   sessionAgentStatusChangedChannel,
   sessionChangedChannel,
@@ -99,7 +99,7 @@ export class SessionAgentStore implements IDisposable {
     if (!this.pty) {
       const handlers = makeFileLinkHandlers(this.projectId, this.sessionId);
       this.pty = new PtySession(
-        makePtySessionId(this.projectId, this.sessionId, session.id),
+        makeAgentPtySessionId(this.projectId, this.sessionId),
         undefined,
         handlers.onOpenFile,
         handlers.onOpenExternal,

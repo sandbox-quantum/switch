@@ -67,7 +67,7 @@ describe('SidecarRuntime (multi-session)', () => {
 
     expect(created).toHaveLength(1);
     expect(created[0].deps.roomId).toBe('room-1');
-    expect(created[0].deps.conversationId).toBe('conv-a');
+    expect(created[0].deps.sessionId).toBe('conv-a');
     expect(created[0].conn.start).toHaveBeenCalledTimes(1);
   });
 
@@ -132,8 +132,8 @@ describe('SidecarRuntime (multi-session)', () => {
     await runtime.handleHook(switchRoomHook('room-2', PTY_B));
 
     expect(runtime.connectedSessions()).toEqual([
-      { conversationId: 'conv-a', roomId: 'room-1' },
-      { conversationId: 'conv-b', roomId: 'room-2' },
+      { sessionId: 'conv-a', roomId: 'room-1' },
+      { sessionId: 'conv-b', roomId: 'room-2' },
     ]);
   });
 
@@ -178,7 +178,7 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(created[0].conn.stop).toHaveBeenCalledTimes(1);
     expect(created[1].conn.stop).not.toHaveBeenCalled();
     // Forgotten: no longer reported and its room is no longer live.
-    expect(runtime.connectedSessions()).toEqual([{ conversationId: 'conv-b', roomId: 'room-2' }]);
+    expect(runtime.connectedSessions()).toEqual([{ sessionId: 'conv-b', roomId: 'room-2' }]);
     expect(runtime.hasLiveRoom('room-1')).toBe(false);
   });
 

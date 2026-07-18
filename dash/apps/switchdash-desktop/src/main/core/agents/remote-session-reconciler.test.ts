@@ -69,12 +69,12 @@ function reconcile(agentId: string): Promise<void> {
   ).reconcileOnce(agentId);
 }
 
-function handleRemoteTerminated(conversationId: string): Promise<void> {
+function handleRemoteTerminated(sessionId: string): Promise<void> {
   return (
     remoteSessionReconciler as unknown as {
       handleRemoteTerminated: (id: string) => Promise<void>;
     }
-  ).handleRemoteTerminated(conversationId);
+  ).handleRemoteTerminated(sessionId);
 }
 
 describe('RemoteSessionReconciler', () => {
@@ -87,7 +87,7 @@ describe('RemoteSessionReconciler', () => {
   it('adopts a VM session switchdash has never seen, keyed by the VM conversation id', async () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-new', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-new', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
 
@@ -101,7 +101,7 @@ describe('RemoteSessionReconciler', () => {
   it('skips a VM session that already has a switchdash row', async () => {
     knownRows = [{ id: 'conv-known' }];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-known', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-known', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     expect(createSession).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe('RemoteSessionReconciler', () => {
   it('refuses to re-adopt a tombstoned (just-deleted) conversation id', async () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-deleted', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-deleted', roomId: 'room-1' }],
     });
     remoteSessionReconciler.tombstone('conv-deleted');
     await reconcile('agent-1');
@@ -141,7 +141,7 @@ describe('RemoteSessionReconciler', () => {
     // The tombstone set during teardown must block re-adoption from a stale snapshot.
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-term', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-term', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     expect(createSession).not.toHaveBeenCalled();
@@ -177,7 +177,7 @@ describe('RemoteSessionReconciler', () => {
     const emitSpy = vi.spyOn(sessionHooks, '_emit');
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-a', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-a', roomId: 'room-1' }],
     });
     await reconcile('agent-1'); // adopt conv-a
     expect(createSession).toHaveBeenCalledTimes(1);
@@ -197,7 +197,7 @@ describe('RemoteSessionReconciler', () => {
   it('does not prune an adopted session that keeps being reported', async () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-a', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-a', roomId: 'room-1' }],
     });
     await reconcile('agent-1'); // adopt
     knownRows = [{ id: 'conv-a' }];
@@ -205,7 +205,7 @@ describe('RemoteSessionReconciler', () => {
     httpGetJsonOverChannel.mockResolvedValueOnce({ sessions: [] });
     await reconcile('agent-1');
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-a', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-a', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     await reconcile('agent-1');
@@ -217,8 +217,8 @@ describe('RemoteSessionReconciler', () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
       sessions: [
-        { conversationId: 'conv-deleted', roomId: 'room-1' },
-        { conversationId: 'conv-new', roomId: 'room-2' },
+        { sessionId: 'conv-deleted', roomId: 'room-1' },
+        { sessionId: 'conv-new', roomId: 'room-2' },
       ],
     });
     remoteSessionReconciler.tombstone('conv-deleted');
@@ -233,7 +233,7 @@ describe('RemoteSessionReconciler', () => {
     // agent must block adoption or the insert would crash with UNIQUE failed.
     knownRows = [{ id: 'conv-shared', agentId: 'agent-OTHER' }];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-shared', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-shared', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     expect(createSession).not.toHaveBeenCalled();
@@ -246,7 +246,7 @@ describe('RemoteSessionReconciler', () => {
       error: { type: 'already-exists' },
     } as never);
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ conversationId: 'conv-race', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'conv-race', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
 

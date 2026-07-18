@@ -8,7 +8,6 @@ import { resolveSshCommand } from './spawn-utils';
 function makeAgentConfig(overrides: Partial<AgentSessionConfig> = {}): AgentSessionConfig {
   return {
     sessionId: 'session-1',
-    conversationId: 'conv-1',
     providerId: 'claude',
     command: 'claude',
     args: ['--resume', 'conv-1'],

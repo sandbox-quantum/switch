@@ -87,7 +87,7 @@ async function main(): Promise<void> {
   // joined a Switch room. Lets `/sessions` surface bare sessions so another
   // client can discover and attach to them (CHOO-1181), not just room-attending
   // ones. tmux only lists live sessions, so this never reports a dead pane.
-  const listAgentConversationIds = async (): Promise<string[]> => {
+  const listAgentSessionIds = async (): Promise<string[]> => {
     try {
       const { stdout } = await execFileAsync('tmux', ['list-sessions', '-F', '#{session_name}']);
       return stdout
@@ -138,15 +138,15 @@ async function main(): Promise<void> {
         // Every live agent pane THIS sidecar owns, room or not — so bare sessions
         // are discoverable. Scope by hasSeen: tmux names carry no repo/agent, so
         // the VM-wide enumeration must be filtered to this sidecar's sessions.
-        for (const conversationId of await listAgentConversationIds()) {
-          if (runtime.hasSeen(conversationId) && !byId.has(conversationId)) {
-            byId.set(conversationId, null);
+        for (const sessionId of await listAgentSessionIds()) {
+          if (runtime.hasSeen(sessionId) && !byId.has(sessionId)) {
+            byId.set(sessionId, null);
           }
         }
         // Room-attending / watcher-spawned sessions overwrite with their room id.
-        for (const s of spawner?.spawnedSessions() ?? []) byId.set(s.conversationId, s.roomId);
-        for (const s of runtime.connectedSessions()) byId.set(s.conversationId, s.roomId);
-        return [...byId].map(([conversationId, roomId]) => ({ conversationId, roomId }));
+        for (const s of spawner?.spawnedSessions() ?? []) byId.set(s.sessionId, s.roomId);
+        for (const s of runtime.connectedSessions()) byId.set(s.sessionId, s.roomId);
+        return [...byId].map(([sessionId, roomId]) => ({ sessionId, roomId }));
       },
       // switchdash deleted a session: stop its room connection (ends the renew
       // heartbeat keeping the agent live) and forget any watcher-launched entry.
@@ -154,14 +154,14 @@ async function main(): Promise<void> {
       // client via a synthetic event on the shared /events log, so they tear down
       // the session everywhere instead of leaving a ghost row that re-attaches
       // into a blank tmux session.
-      disconnectHandler: (conversationId, terminated) => {
-        runtime.stopSession(conversationId);
-        spawner?.drop(conversationId);
+      disconnectHandler: (sessionId, terminated) => {
+        runtime.stopSession(sessionId);
+        spawner?.drop(sessionId);
         if (terminated) {
           eventLog.append({
             ptyId: '',
             type: 'session-terminated',
-            body: JSON.stringify({ conversationId }),
+            body: JSON.stringify({ sessionId }),
           });
         }
       },

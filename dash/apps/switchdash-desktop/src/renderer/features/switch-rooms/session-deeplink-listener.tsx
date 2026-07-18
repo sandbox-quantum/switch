@@ -33,13 +33,11 @@ function findSessionForRoom(roomId: string): { projectId: string; sessionId: str
  * that has an active relay for the session. This is what makes the deeplink open
  * the right session on a different switchdash client that merely adopted it.
  */
-function findSessionByConversation(
-  conversationId: string
-): { projectId: string; sessionId: string } | null {
+function findSessionById(sessionId: string): { projectId: string; sessionId: string } | null {
   for (const projectId of getProjectManagerStore().projects.keys()) {
     const manager = getSessionManagerStore(projectId);
-    if (manager?.sessions.has(conversationId)) {
-      return { projectId, sessionId: conversationId };
+    if (manager?.sessions.has(sessionId)) {
+      return { projectId, sessionId: sessionId };
     }
   }
   return null;
@@ -58,16 +56,14 @@ export function SessionDeeplinkListener(): null {
   useEffect(() => {
     roomConnectionsStore.ensureLoaded();
     void agentsStore.load();
-    return events.on(sessionDeeplinkChannel, ({ agentId, roomId, server, conversationId }) => {
+    return events.on(sessionDeeplinkChannel, ({ agentId, roomId, server, sessionId }) => {
       void (async () => {
         // Prefer the shared conversation id (resolves on any client); fall back
         // to room matching for older links that didn't carry it.
-        const match =
-          (conversationId ? findSessionByConversation(conversationId) : null) ??
-          findSessionForRoom(roomId);
+        const match = (sessionId ? findSessionById(sessionId) : null) ?? findSessionForRoom(roomId);
         if (!match) {
           console.warn('[deeplink] no local session for deeplink', {
-            conversationId,
+            sessionId,
             roomId,
             agentId,
             server,

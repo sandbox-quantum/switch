@@ -24,7 +24,7 @@ import { log } from '@main/lib/logger';
 import type { AgentSessionConfig } from '@shared/core/providers/agent-session';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
 import { ensureAgentSidecar } from './ensure-agent-sidecar';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
@@ -113,9 +113,9 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     sshConnectionManager.on('connection-event', this.handleConnectionEvent);
   }
 
-  /** The registry key of this session's agent PTY (leaf == session id in the 1:1 model). */
+  /** The registry key of this session's agent PTY. */
   private get ptySessionId(): string {
-    return makePtySessionId(this.projectId, this.sessionId, this.sessionId);
+    return makeAgentPtySessionId(this.projectId, this.sessionId);
   }
 
   /**
@@ -218,10 +218,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
    * failure is logged, not thrown (the reconciler tombstone is the backstop). No
    * endpoint means no sidecar was ever launched for this provider — nothing to do.
    */
-  private async disconnectSidecarSession(
-    conversationId: string,
-    terminated: boolean
-  ): Promise<void> {
+  private async disconnectSidecarSession(sessionId: string, terminated: boolean): Promise<void> {
     const endpoint = this.sidecarEndpoint;
     if (!endpoint) return;
     // Bound the whole round-trip: opening the SSH channel can itself hang on a
@@ -235,10 +232,10 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       );
     });
     try {
-      await Promise.race([this.postDisconnect(endpoint, conversationId, terminated), timeout]);
+      await Promise.race([this.postDisconnect(endpoint, sessionId, terminated), timeout]);
     } catch (error) {
       log.warn('SshAgentRuntime: failed to disconnect sidecar session', {
-        conversationId,
+        sessionId,
         error: String(error),
       });
     } finally {
@@ -248,7 +245,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
   private async postDisconnect(
     endpoint: { port: number; token: string },
-    conversationId: string,
+    sessionId: string,
     terminated: boolean
   ): Promise<void> {
     const channel = await this.proxy.forwardOut(endpoint.port);
@@ -257,7 +254,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         port: endpoint.port,
         token: endpoint.token,
         path: '/disconnect',
-        body: { conversationId, terminated },
+        body: { sessionId, terminated },
         timeoutMs: SIDECAR_DISCONNECT_TIMEOUT_MS,
       });
     } finally {
@@ -371,7 +368,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
       const cfg: AgentSessionConfig = {
         sessionId: this.sessionId,
-        conversationId: this.sessionId,
         providerId: session.providerId,
         command: agentCommand.command,
         args: agentCommand.args,
@@ -573,13 +569,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   private onRemoteTerminated(rawBody: string): void {
     let terminatedSessionId = '';
     try {
-      const parsed = JSON.parse(rawBody) as { conversationId?: unknown };
-      if (typeof parsed.conversationId === 'string') terminatedSessionId = parsed.conversationId;
+      const parsed = JSON.parse(rawBody) as { sessionId?: unknown };
+      if (typeof parsed.sessionId === 'string') terminatedSessionId = parsed.sessionId;
     } catch {
       terminatedSessionId = '';
     }
     if (!terminatedSessionId) {
-      log.warn('SshAgentRuntime: session-terminated event missing conversationId');
+      log.warn('SshAgentRuntime: session-terminated event missing sessionId');
       return;
     }
     if (terminatedSessionId === this.sessionId) {

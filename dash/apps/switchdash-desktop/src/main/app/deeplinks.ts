@@ -28,9 +28,9 @@ type ParsedDeeplink = {
   server: string;
   agentId: string;
   roomId: string;
-  /** Shared conversation id; present on links from current switchdash builds and
+  /** Shared session id; present on links from current switchdash builds and
    * preferred for resolution (works on any client). Empty for older links. */
-  conversationId: string;
+  sessionId: string;
 };
 
 // A deeplink that arrived before the renderer was ready (cold start). Flushed
@@ -53,12 +53,12 @@ function parseSessionDeeplink(rawUrl: string): ParsedDeeplink | null {
   const server = url.searchParams.get('server') ?? '';
   const agentId = url.searchParams.get('agent') ?? '';
   const roomId = url.searchParams.get('room') ?? '';
-  const conversationId = url.searchParams.get('conversation') ?? '';
+  const sessionId = url.searchParams.get('session') ?? '';
   if (!server || !agentId || !roomId) {
     log.warn('deeplink: missing server/agent/room', { rawUrl });
     return null;
   }
-  return { server, agentId, roomId, conversationId };
+  return { server, agentId, roomId, sessionId };
 }
 
 function focusWindow(): void {

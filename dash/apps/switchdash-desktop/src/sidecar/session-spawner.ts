@@ -40,7 +40,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
     args: string[]
   ) => Promise<{ stdout: string; stderr: string }>;
   /** Room id → the session we launched for it (its minted id + tmux target). */
-  private readonly launched = new Map<string, { conversationId: string; tmuxTarget: string }>();
+  private readonly launched = new Map<string, { sessionId: string; tmuxTarget: string }>();
 
   constructor(private readonly deps: InProcessSessionSpawnerDeps) {
     this.exec = deps.exec ?? ((command, args) => execFileAsync(command, args));
@@ -51,13 +51,13 @@ export class InProcessSessionSpawner implements SessionSpawner {
    * it is no longer reported as pending/spawned and a fresh room notification can
    * spawn a new one. No-op if we never launched this conversation.
    */
-  drop(conversationId: string): void {
+  drop(sessionId: string): void {
     for (const [roomId, session] of this.launched) {
-      if (session.conversationId === conversationId) {
+      if (session.sessionId === sessionId) {
         this.launched.delete(roomId);
         this.deps.log.info('InProcessSessionSpawner: dropped launched session', {
           roomId,
-          conversationId,
+          sessionId,
         });
         return;
       }
@@ -76,11 +76,11 @@ export class InProcessSessionSpawner implements SessionSpawner {
    * learns of it. Only live panes are reported — a launched-then-dead session
    * (crashed before connecting) is dropped so it doesn't surface as a ghost.
    */
-  spawnedSessions(): Array<{ conversationId: string; roomId: string }> {
-    const out: Array<{ conversationId: string; roomId: string }> = [];
+  spawnedSessions(): Array<{ sessionId: string; roomId: string }> {
+    const out: Array<{ sessionId: string; roomId: string }> = [];
     for (const [roomId, session] of this.launched) {
       if (this.deps.isPaneLive(session.tmuxTarget)) {
-        out.push({ conversationId: session.conversationId, roomId });
+        out.push({ sessionId: session.sessionId, roomId });
       }
     }
     return out;
@@ -99,26 +99,26 @@ export class InProcessSessionSpawner implements SessionSpawner {
 
   async launch(roomId: string): Promise<void> {
     const { spec, hookPort, hookToken, log } = this.deps;
-    const conversationId = randomUUID();
-    const tmuxTarget = makeAgentTmuxSessionName(conversationId);
+    const sessionId = randomUUID();
+    const tmuxTarget = makeAgentTmuxSessionName(sessionId);
 
     const hookEnv = {
       SWITCHDASH_HOOK_PORT: String(hookPort),
-      SWITCHDASH_PTY_ID: makePtyId(spec.providerId, conversationId),
+      SWITCHDASH_PTY_ID: makePtyId(spec.providerId, sessionId),
       SWITCHDASH_HOOK_TOKEN: hookToken,
       SWITCH_CHANNEL_DISABLE_POLL: '1',
     };
     const command = materializeAgentCommand(spec, {
-      conversationId,
+      sessionId,
       initialPrompt: `connect to switch room ${roomId}`,
       extraEnv: hookEnv,
     });
 
     await this.startDetachedTmux(tmuxTarget, spec.cwd, command.env, command.command, command.args);
-    this.launched.set(roomId, { conversationId, tmuxTarget });
+    this.launched.set(roomId, { sessionId, tmuxTarget });
     log.info('InProcessSessionSpawner: launched session for room', {
       roomId,
-      conversationId,
+      sessionId,
       tmuxTarget,
     });
   }

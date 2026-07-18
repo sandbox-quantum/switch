@@ -151,10 +151,10 @@ export interface RoomConnectionDeps {
   creds: SwitchCredentials;
   roomId: string;
   roomName: string | null;
-  /** The switchdash conversation id of the session this connection drives, so
+  /** The switchdash session id of the session this connection drives, so
    * the deeplink can resolve to the exact session on any client (the shared
-   * conversation id is the same across clients; the local room mapping is not). */
-  conversationId: string;
+   * session id is the same across clients; the local room mapping is not). */
+  sessionId: string;
   sink: InjectionSink;
   injector: PromptInjector;
   /** Per-agent-type session-control support + keystroke recipes (reset /
@@ -192,7 +192,7 @@ export class RoomConnection {
   private readonly creds: SwitchCredentials;
   private readonly roomId: string;
   private readonly roomName: string | null;
-  private readonly conversationId: string;
+  private readonly sessionId: string;
   private readonly sink: InjectionSink;
   private readonly injector: PromptInjector;
   private readonly control: SessionControl;
@@ -234,7 +234,7 @@ export class RoomConnection {
     this.creds = deps.creds;
     this.roomId = deps.roomId;
     this.roomName = deps.roomName;
-    this.conversationId = deps.conversationId;
+    this.sessionId = deps.sessionId;
     this.sink = deps.sink;
     this.injector = deps.injector;
     this.control = deps.control;
@@ -293,9 +293,9 @@ export class RoomConnection {
       server: this.creds.apiEndpoint,
       agent: this.creds.agentId,
       room: this.roomId,
-      // The shared conversation id resolves to the exact session on any client
+      // The shared session id resolves to the exact session on any client
       // (a client that only adopted the session has no room mapping to match on).
-      conversation: this.conversationId,
+      session: this.sessionId,
     });
     return `${this.deeplinkScheme}://session?${params.toString()}`;
   }

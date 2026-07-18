@@ -19,7 +19,7 @@ import { switchRoomService } from './switch-room-service';
  * to deliver room messages to an unopened session.
  */
 export async function restoreSwitchRoomSessions(): Promise<void> {
-  const sessionIds = await switchRoomService.listPersistedConversationIds();
+  const sessionIds = await switchRoomService.listPersistedSessionIds();
   if (sessionIds.length === 0) return;
 
   const stale: string[] = [];

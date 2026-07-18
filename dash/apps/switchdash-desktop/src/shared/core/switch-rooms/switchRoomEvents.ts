@@ -6,7 +6,7 @@ import { defineEvent } from '@shared/lib/ipc/events';
  * or exited).
  */
 export const sessionRoomChangedChannel = defineEvent<{
-  conversationId: string;
+  sessionId: string;
   roomId: string | null;
   agentId: string | null;
 }>('switch-room:session-room-changed');
@@ -21,7 +21,7 @@ export const sessionDeeplinkChannel = defineEvent<{
   server: string;
   agentId: string;
   roomId: string;
-  /** Shared conversation id, preferred for resolution (resolves on any client);
+  /** Shared session id, preferred for resolution (resolves on any client);
    * empty string for links from older builds that only carried the room. */
-  conversationId: string;
+  sessionId: string;
 }>('switch-room:session-deeplink');

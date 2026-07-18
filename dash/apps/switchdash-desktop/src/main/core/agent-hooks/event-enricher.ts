@@ -4,8 +4,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { AgentEvent } from '@shared/core/providers/agentEvents';
 import type { RawHookRequest } from './hook-server';
 
-export type ConversationContext = {
-  conversationId: string;
+export type AgentHookContext = {
   sessionId: string;
   projectId: string;
   providerId: string;
@@ -13,19 +12,19 @@ export type ConversationContext = {
 };
 
 /**
- * Resolves the conversation context for an incoming hook's `ptyId`. Injected so
+ * Resolves the session context for an incoming hook's `ptyId`. Injected so
  * the parser stays free of the database: the local main process supplies a
  * DB-backed resolver, the remote sidecar a fixed one for its single agent.
  */
-export type ContextResolver = (ptyId: string) => Promise<ConversationContext | null>;
+export type ContextResolver = (ptyId: string) => Promise<AgentHookContext | null>;
 
 export type ParsedHookEvent =
   | { kind: 'status'; event: AgentEvent }
-  | { kind: 'session'; ctx: ConversationContext; providerSessionId: string }
-  | { kind: 'activity'; ctx: ConversationContext; detail: string }
+  | { kind: 'session'; ctx: AgentHookContext; providerSessionId: string }
+  | { kind: 'activity'; ctx: AgentHookContext; detail: string }
   | {
       kind: 'switch-room';
-      ctx: ConversationContext;
+      ctx: AgentHookContext;
       roomId: string;
       agentId: string;
       roomName: string | null;
@@ -67,7 +66,7 @@ function parseBody(raw: RawHookRequest): Record<string, unknown> {
 
 function canonicalToAgentEvent(
   canonical: CanonicalHookEvent & { kind: 'status' },
-  ctx: ConversationContext
+  ctx: AgentHookContext
 ): AgentEvent {
   return {
     type: canonical.type,
@@ -75,7 +74,6 @@ function canonicalToAgentEvent(
     ptyId: ctx.ptyId,
     providerId: ctx.providerId,
     projectId: ctx.projectId,
-    conversationId: ctx.conversationId,
     sessionId: ctx.sessionId,
     timestamp: Date.now(),
     payload: {

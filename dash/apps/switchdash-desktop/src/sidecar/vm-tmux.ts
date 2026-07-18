@@ -16,24 +16,23 @@ export function makeTmuxSessionName(sessionId: string): string {
 }
 
 /**
- * Agent conversation pane name, keyed on the shared conversationId alone.
- * Mirrors switchdash's `makeAgentTmuxSessionName` so the sidecar and every
- * attached client converge on ONE pane per conversation (CHOO-1181). Must not
- * fold in projectId — it is switchdash-instance-local and would diverge per
- * client.
+ * Agent pane name, keyed on the shared session id alone. Mirrors switchdash's
+ * `makeAgentTmuxSessionName` so the sidecar and every attached client converge
+ * on ONE pane per session (CHOO-1181). Must not fold in projectId — it is
+ * switchdash-instance-local and would diverge per client.
  */
-export function makeAgentTmuxSessionName(conversationId: string): string {
-  return makeTmuxSessionName(`conv-${conversationId}`);
+export function makeAgentTmuxSessionName(sessionId: string): string {
+  return makeTmuxSessionName(`session-${sessionId}`);
 }
 
-const AGENT_PANE_PREFIX = 'conv-';
+const AGENT_PANE_PREFIX = 'session-';
 
 /**
- * Inverse of `makeAgentTmuxSessionName`: recover the conversationId from a tmux
- * session name, or null if the name isn't an agent conversation pane (the
- * sidecar's own `switchdash-sidecar-*` session, a terminal pane, or anything else).
- * Lets the sidecar enumerate live agent panes to report sessions that never
- * joined a room (CHOO-1181).
+ * Inverse of `makeAgentTmuxSessionName`: recover the session id from a tmux
+ * session name, or null if the name isn't an agent pane (the sidecar's own
+ * `switchdash-sidecar-*` session, a terminal pane, or anything else). Lets the
+ * sidecar enumerate live agent panes to report sessions that never joined a
+ * room (CHOO-1181).
  */
 export function parseAgentTmuxSessionName(sessionName: string): string | null {
   if (!sessionName.startsWith('switchdash-')) return null;
@@ -45,6 +44,6 @@ export function parseAgentTmuxSessionName(sessionName: string): string | null {
     return null;
   }
   if (!decoded.startsWith(AGENT_PANE_PREFIX)) return null;
-  const conversationId = decoded.slice(AGENT_PANE_PREFIX.length);
-  return conversationId || null;
+  const sessionId = decoded.slice(AGENT_PANE_PREFIX.length);
+  return sessionId || null;
 }

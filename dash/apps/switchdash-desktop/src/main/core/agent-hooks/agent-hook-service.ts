@@ -39,7 +39,7 @@ function determineSoundEvent(
 }
 
 async function handleSessionEvent(
-  ctx: { conversationId: string; sessionId: string; projectId: string; providerId: string },
+  ctx: { sessionId: string; projectId: string; providerId: string },
   providerSessionId: string
 ): Promise<void> {
   if (!isValidProviderSessionId(ctx.providerId, providerSessionId)) return;
@@ -117,7 +117,7 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
       // Surface the running turn's activity on the bridged channel by refreshing
       // the "working on it…" message. A no-op unless a room-triggered turn is
       // live. In-process call: the `events` bus is renderer-bound (see below).
-      switchNotificationPoller.onAgentActivity(parsed.ctx.conversationId, parsed.detail);
+      switchNotificationPoller.onAgentActivity(parsed.ctx.sessionId, parsed.detail);
       return;
     }
 
@@ -147,7 +147,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
           providerId,
           projectId,
           sessionId,
-          conversationId: sessionId,
           timestamp: Date.now(),
           payload: {},
         };
@@ -174,7 +173,7 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
         event.type === 'notification' ? event.payload.notificationType : undefined;
 
       log.debug('AgentHookService: agent status change', {
-        conversationId: event.conversationId,
+        sessionId: event.sessionId,
         status,
         eventType: event.type,
         ...(notificationType ? { notificationType } : {}),
@@ -186,12 +185,12 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
       // ipcMain), so an in-process emit never reaches an in-process listener — the
       // poller would otherwise never observe a turn finishing and would release
       // its gate only via the 60s fallback.
-      switchNotificationPoller.onAgentStatusChange(event.conversationId, status, notificationType);
+      switchNotificationPoller.onAgentStatusChange(event.sessionId, status, notificationType);
 
       await db
         .update(sessions)
         .set({ agentStatus: status, agentStatusSeen: seen })
-        .where(eq(sessions.id, event.conversationId));
+        .where(eq(sessions.id, event.sessionId));
 
       events.emit(sessionAgentStatusChangedChannel, {
         sessionId: event.sessionId,

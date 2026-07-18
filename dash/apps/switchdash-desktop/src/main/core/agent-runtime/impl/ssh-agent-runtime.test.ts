@@ -3,7 +3,7 @@ import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
 import { SshAgentRuntime } from './ssh-agent-runtime';
 
@@ -203,14 +203,14 @@ describe('SshAgentRuntime', () => {
     httpPostJsonOverChannel.mockClear();
     vi.mocked(events.emit).mockClear();
     connectionListeners.length = 0;
-    ptySessionRegistry.unregister('project-1:session-1:session-1');
+    ptySessionRegistry.unregister('project-1:session-1');
   });
 
   it('spawns the agent over SSH and registers a remote pty', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const item = session();
-    const sessionId = makePtySessionId('project-1', item.id, item.id);
+    const sessionId = makeAgentPtySessionId('project-1', item.id);
 
     await sshProvider().start(item);
 
@@ -358,7 +358,7 @@ describe('SshAgentRuntime', () => {
       expect.anything(),
       expect.objectContaining({
         path: '/disconnect',
-        body: { conversationId: item.id, terminated: true },
+        body: { sessionId: item.id, terminated: true },
       })
     );
   });

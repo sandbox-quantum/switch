@@ -58,34 +58,30 @@ describe('buildTmuxShellLine', () => {
 });
 
 describe('makeAgentTmuxSessionName', () => {
-  const conversationId = 'c1fc96ca-d642-4a5e-a392-8205391e2d11';
+  const sessionId = 'c1fc96ca-d642-4a5e-a392-8205391e2d11';
 
-  it('derives the pane name from the conversationId alone (no projectId/scopeId)', () => {
+  it('derives the pane name from the sessionId alone (no projectId)', () => {
     // The core CHOO-1181 guarantee: two switchdash clients with DIFFERENT local
     // projectIds/scopeIds must compute the SAME tmux name for the same shared
     // conversation, so they attach to one pane instead of each spawning a blank
-    // one. So the name must be a pure function of the conversationId.
-    const name = makeAgentTmuxSessionName(conversationId);
+    // one. So the name must be a pure function of the sessionId.
+    const name = makeAgentTmuxSessionName(sessionId);
     expect(name).toBe(
-      `switchdash-${Buffer.from(`conv-${conversationId}`, 'utf8').toString('base64url')}`
+      `switchdash-${Buffer.from(`session-${sessionId}`, 'utf8').toString('base64url')}`
     );
   });
 
   it('matches the sidecar (VM) derivation so a client attaches to the sidecar-spawned pane', () => {
-    expect(makeAgentTmuxSessionName(conversationId)).toBe(
-      makeSidecarAgentTmuxSessionName(conversationId)
-    );
+    expect(makeAgentTmuxSessionName(sessionId)).toBe(makeSidecarAgentTmuxSessionName(sessionId));
   });
 
   it('round-trips through parseAgentTmuxSessionName (lets the sidecar enumerate panes)', () => {
-    expect(parseAgentTmuxSessionName(makeAgentTmuxSessionName(conversationId))).toBe(
-      conversationId
-    );
+    expect(parseAgentTmuxSessionName(makeAgentTmuxSessionName(sessionId))).toBe(sessionId);
   });
 
   it('parseAgentTmuxSessionName ignores non-agent tmux sessions', () => {
     expect(parseAgentTmuxSessionName('switchdash-sidecar-320390b87bfaee19')).toBeNull();
-    // A terminal / legacy pane whose decoded payload is not `conv-<id>`.
+    // A terminal / legacy pane whose decoded payload is not `session-<id>`.
     expect(
       parseAgentTmuxSessionName(
         `switchdash-${Buffer.from('proj:scope:leaf').toString('base64url')}`

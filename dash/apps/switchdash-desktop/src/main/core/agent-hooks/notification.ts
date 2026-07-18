@@ -78,7 +78,6 @@ export async function maybeShowNotification(event: AgentEvent, appFocused: boole
         events.emit(notificationFocusSessionChannel, {
           projectId: event.projectId,
           sessionId: event.sessionId,
-          conversationId: event.conversationId,
         });
       }
     });

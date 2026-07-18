@@ -62,7 +62,7 @@ interface SessionConnection {
  * credentials come from its `.claude/settings.local.json`.
  */
 export class SidecarRuntime {
-  /** conversationId → its live room connection. */
+  /** sessionId → its live room connection. */
   private readonly sessions = new Map<string, SessionConnection>();
   /** Every conversation id that has posted a hook to this sidecar — i.e. the
    * sessions it owns, used to scope the VM-wide tmux enumeration in `/sessions`. */
@@ -74,8 +74,7 @@ export class SidecarRuntime {
       const parsed = parsePtyId(ptyId);
       if (!parsed) return null;
       return {
-        conversationId: parsed.conversationId,
-        sessionId: parsed.conversationId,
+        sessionId: parsed.sessionId,
         projectId: deps.projectId,
         providerId: parsed.providerId,
         ptyId,
@@ -91,7 +90,7 @@ export class SidecarRuntime {
     // panes — tmux session names carry no repo/agent, so without this a sidecar
     // would report other agents' sessions on the same host.
     const pid = parsePtyId(raw.ptyId);
-    if (pid) this.seen.add(pid.conversationId);
+    if (pid) this.seen.add(pid.sessionId);
 
     let parsed: ParsedHookEvent;
     try {
@@ -105,12 +104,7 @@ export class SidecarRuntime {
     }
 
     if (parsed.kind === 'switch-room') {
-      this.connectRoom(
-        parsed.ctx.conversationId,
-        parsed.ctx.providerId,
-        parsed.roomId,
-        parsed.roomName
-      );
+      this.connectRoom(parsed.ctx.sessionId, parsed.ctx.providerId, parsed.roomId, parsed.roomName);
       return;
     }
 
@@ -120,13 +114,13 @@ export class SidecarRuntime {
       const notificationType =
         parsed.event.type === 'notification' ? parsed.event.payload.notificationType : undefined;
       // Route to the session the event came from — not every connection.
-      const session = this.sessions.get(parsed.event.conversationId);
+      const session = this.sessions.get(parsed.event.sessionId);
       session?.connection.onAgentStatusChange(status, notificationType);
       return;
     }
 
     if (parsed.kind === 'activity') {
-      const session = this.sessions.get(parsed.ctx.conversationId);
+      const session = this.sessions.get(parsed.ctx.sessionId);
       session?.connection.reportActivity(parsed.detail);
       return;
     }
@@ -135,12 +129,12 @@ export class SidecarRuntime {
   }
 
   private connectRoom(
-    conversationId: string,
+    sessionId: string,
     providerId: string,
     roomId: string,
     roomName: string | null
   ): void {
-    const existing = this.sessions.get(conversationId);
+    const existing = this.sessions.get(sessionId);
     // A repeat connect to the same room by the same session is a no-op so the
     // in-flight queue and renew loop are preserved.
     if (existing && existing.roomId === roomId) return;
@@ -149,12 +143,12 @@ export class SidecarRuntime {
     // connect_to_room re-targeting independently).
     if (existing) existing.connection.stop();
 
-    const tmuxTarget = makeAgentTmuxSessionName(conversationId);
+    const tmuxTarget = makeAgentTmuxSessionName(sessionId);
     const connection = this.deps.createConnection({
       creds: this.deps.creds,
       roomId,
       roomName,
-      conversationId,
+      sessionId,
       sink: new TmuxInjectionSink(tmuxTarget, this.deps.tmuxRun, () =>
         this.deps.isPaneLive(tmuxTarget)
       ),
@@ -165,11 +159,11 @@ export class SidecarRuntime {
       // keystrokes (those go through switchdash's main process over SSH), so it
       // can't gate on human typing yet — a known follow-up for the attached case.
       isHumanTyping: () => false,
-      mediaDir: path.join(os.tmpdir(), 'switchdash-switch-media', conversationId),
+      mediaDir: path.join(os.tmpdir(), 'switchdash-switch-media', sessionId),
       log: this.deps.log,
     });
-    this.sessions.set(conversationId, { connection, roomId, tmuxTarget });
-    this.deps.log.debug('SidecarRuntime: room connected', { conversationId, roomId, roomName });
+    this.sessions.set(sessionId, { connection, roomId, tmuxTarget });
+    this.deps.log.debug('SidecarRuntime: room connected', { sessionId, roomId, roomName });
     connection.start();
   }
 
@@ -178,12 +172,12 @@ export class SidecarRuntime {
    * poll + renew heartbeat that keeps the agent marked live) and forget it, so
    * `/sessions` no longer reports it. Called when switchdash deletes the session.
    */
-  stopSession(conversationId: string): void {
-    const session = this.sessions.get(conversationId);
+  stopSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
     if (!session) return;
     session.connection.stop();
-    this.sessions.delete(conversationId);
-    this.deps.log.debug('SidecarRuntime: session stopped', { conversationId });
+    this.sessions.delete(sessionId);
+    this.deps.log.debug('SidecarRuntime: session stopped', { sessionId });
   }
 
   /** Agent tmux targets the runtime is currently injecting into (for pane-liveness polling). */
@@ -196,11 +190,11 @@ export class SidecarRuntime {
    * into its UI. Only panes that are still live are reported so a session whose
    * agent has exited does not surface as a ghost row.
    */
-  connectedSessions(): Array<{ conversationId: string; roomId: string }> {
-    const out: Array<{ conversationId: string; roomId: string }> = [];
-    for (const [conversationId, session] of this.sessions) {
+  connectedSessions(): Array<{ sessionId: string; roomId: string }> {
+    const out: Array<{ sessionId: string; roomId: string }> = [];
+    for (const [sessionId, session] of this.sessions) {
       if (this.deps.isPaneLive(session.tmuxTarget)) {
-        out.push({ conversationId, roomId: session.roomId });
+        out.push({ sessionId, roomId: session.roomId });
       }
     }
     return out;
@@ -208,8 +202,8 @@ export class SidecarRuntime {
 
   /** Whether a conversation has ever posted a hook to this sidecar (i.e. it is
    * one of this agent's own sessions, not another agent's pane on the host). */
-  hasSeen(conversationId: string): boolean {
-    return this.seen.has(conversationId);
+  hasSeen(sessionId: string): boolean {
+    return this.seen.has(sessionId);
   }
 
   /** True when a live session is attending the room and its pane is up (watcher gate). */

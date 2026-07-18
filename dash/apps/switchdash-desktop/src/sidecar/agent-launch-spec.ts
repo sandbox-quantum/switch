@@ -50,10 +50,10 @@ export interface MaterializedAgentCommand {
  */
 export function materializeAgentCommand(
   spec: AgentLaunchSpec,
-  params: { conversationId: string; initialPrompt: string; extraEnv: Record<string, string> }
+  params: { sessionId: string; initialPrompt: string; extraEnv: Record<string, string> }
 ): MaterializedAgentCommand {
   const substitutions: Record<string, string> = {
-    [SESSION_ID_PLACEHOLDER]: params.conversationId,
+    [SESSION_ID_PLACEHOLDER]: params.sessionId,
     [INITIAL_PROMPT_PLACEHOLDER]: params.initialPrompt,
   };
 

@@ -4,7 +4,7 @@ import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { ptyExitChannel } from '@shared/core/pty/ptyEvents';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
 import { LocalAgentRuntime } from './local-agent-runtime';
 
@@ -228,7 +228,7 @@ function mockSettings(): void {
   });
 }
 
-describe('conversation provider respawn state', () => {
+describe('local agent runtime respawn state', () => {
   beforeEach(() => {
     vi.useRealTimers();
     spawnLocalPty.mockReset();
@@ -242,7 +242,7 @@ describe('conversation provider respawn state', () => {
     vi.mocked(events.emit).mockClear();
     vi.mocked(agentHookService.getPort).mockReturnValue(0);
     vi.mocked(agentHookService.getToken).mockReturnValue('token');
-    ptySessionRegistry.unregister('project-1:session-1:session-1');
+    ptySessionRegistry.unregister('project-1:session-1');
   });
 
   it('passes global editor variables to local agent sessions', async () => {
@@ -422,7 +422,7 @@ describe('conversation provider respawn state', () => {
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     const provider = localProvider();
     const item = session();
-    const sessionId = makePtySessionId('project-1', item.id, item.id);
+    const sessionId = makeAgentPtySessionId('project-1', item.id);
 
     await provider.start(item);
     vi.mocked(events.emit).mockClear();
@@ -442,7 +442,7 @@ describe('conversation provider respawn state', () => {
       });
       const provider = localProvider();
       const item = session();
-      const sessionId = makePtySessionId('project-1', item.id, item.id);
+      const sessionId = makeAgentPtySessionId('project-1', item.id);
 
       await provider.start(item, { cols: 100, rows: 40 }, true);
       ptySessionRegistry.resize(sessionId, 68, 42);
@@ -587,7 +587,7 @@ describe('conversation provider respawn state', () => {
     expect(ctx.exec).toHaveBeenCalledWith('tmux', [
       'kill-session',
       '-t',
-      expect.stringContaining(Buffer.from(`conv-${item.id}`, 'utf8').toString('base64url')),
+      expect.stringContaining(Buffer.from(`session-${item.id}`, 'utf8').toString('base64url')),
     ]);
     expect((provider as unknown as RespawnState).known).toBe(false);
   });

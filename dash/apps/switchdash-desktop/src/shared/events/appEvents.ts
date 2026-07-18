@@ -27,7 +27,6 @@ export const tabNavigationShortcutChannel = defineEvent<{
 export const notificationFocusSessionChannel = defineEvent<{
   projectId: string;
   sessionId: string;
-  conversationId?: string;
 }>('notification:focus-session');
 
 export const ptyStartedChannel = defineEvent<{

@@ -16,10 +16,10 @@ class SwitchRoomsStore {
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
 
-    events.on(sessionRoomChangedChannel, ({ conversationId, roomId }) => {
+    events.on(sessionRoomChangedChannel, ({ sessionId, roomId }) => {
       runInAction(() => {
-        if (roomId) this.roomBySession.set(conversationId, roomId);
-        else this.roomBySession.delete(conversationId);
+        if (roomId) this.roomBySession.set(sessionId, roomId);
+        else this.roomBySession.delete(sessionId);
       });
     });
   }
@@ -30,8 +30,8 @@ class SwitchRoomsStore {
     this.loaded = true;
     void rpc.switchRooms.getConnections().then((connections) => {
       runInAction(() => {
-        for (const { conversationId, roomId } of connections) {
-          this.roomBySession.set(conversationId, roomId);
+        for (const { sessionId, roomId } of connections) {
+          this.roomBySession.set(sessionId, roomId);
         }
       });
     });

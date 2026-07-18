@@ -8,7 +8,7 @@ import { db } from '@main/db/client';
 import { projects, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import { PtyInjectionSink } from './injection-sink';
 import { PluginPromptInjector } from './plugin-prompt-injector';
 import { RoomConnection } from './room-connection';
@@ -43,28 +43,28 @@ class SwitchNotificationPoller {
    * queue and renew loop are preserved.
    */
   connect(ctx: SessionRoomContext, roomId: string, roomName: string | null): void {
-    const existing = this.connections.get(ctx.conversationId);
+    const existing = this.connections.get(ctx.sessionId);
     if (existing && existing.room === roomId) return;
-    this.disconnect(ctx.conversationId);
+    this.disconnect(ctx.sessionId);
     void this.start(ctx, roomId, roomName).catch((error) => {
       log.warn('SwitchNotificationPoller: failed to start poller', {
-        conversationId: ctx.conversationId,
+        sessionId: ctx.sessionId,
         error: String(error),
       });
     });
   }
 
   /** Stop polling for a session (room switch-away or session exit). */
-  disconnect(conversationId: string): void {
-    const conn = this.connections.get(conversationId);
+  disconnect(sessionId: string): void {
+    const conn = this.connections.get(sessionId);
     if (!conn) return;
     conn.stop();
-    this.connections.delete(conversationId);
-    log.debug('SwitchNotificationPoller: poll stopped', { conversationId });
+    this.connections.delete(sessionId);
+    log.debug('SwitchNotificationPoller: poll stopped', { sessionId });
   }
 
   dispose(): void {
-    for (const conversationId of [...this.connections.keys()]) this.disconnect(conversationId);
+    for (const sessionId of [...this.connections.keys()]) this.disconnect(sessionId);
   }
 
   private async start(
@@ -79,7 +79,7 @@ class SwitchNotificationPoller {
       .limit(1);
     if (!project) {
       log.warn('SwitchNotificationPoller: no project dir for session; cannot read credentials', {
-        conversationId: ctx.conversationId,
+        sessionId: ctx.sessionId,
         projectId: ctx.projectId,
       });
       return;
@@ -88,7 +88,7 @@ class SwitchNotificationPoller {
       // Remote agents poll from their on-host sidecar (CHOO-1059); the local
       // poller reads local credential files, which a remote-only agent has none of.
       log.debug('SwitchNotificationPoller: remote-only project; local poller does not apply', {
-        conversationId: ctx.conversationId,
+        sessionId: ctx.sessionId,
         projectId: ctx.projectId,
       });
       return;
@@ -101,7 +101,7 @@ class SwitchNotificationPoller {
     const [sessionRow] = await db
       .select({ config: sessions.config })
       .from(sessions)
-      .where(eq(sessions.id, ctx.conversationId))
+      .where(eq(sessions.id, ctx.sessionId))
       .limit(1);
     const subagentName = sessionRow?.config?.subagentName;
 
@@ -114,29 +114,29 @@ class SwitchNotificationPoller {
     if (!creds) {
       log.warn(
         'SwitchNotificationPoller: missing Switch credentials (SWITCH_API_TOKEN/ENDPOINT/AGENT_ID) — cannot poll room',
-        { conversationId: ctx.conversationId, dir: project.path, roomId, subagentName }
+        { sessionId: ctx.sessionId, dir: project.path, roomId, subagentName }
       );
       return;
     }
 
-    const ptySessionId = makePtySessionId(ctx.projectId, ctx.conversationId, ctx.conversationId);
+    const ptySessionId = makeAgentPtySessionId(ctx.projectId, ctx.sessionId);
     const connection = new RoomConnection({
       creds,
       roomId,
       roomName,
-      conversationId: ctx.conversationId,
+      sessionId: ctx.sessionId,
       sink: new PtyInjectionSink(ptySessionId),
       injector: new PluginPromptInjector(ctx.providerId),
       control: resolveSessionControl(ctx.providerId),
       deeplinkScheme: DEEPLINK_SCHEME,
       isHumanTyping: () => isHumanInputRecent(ptySessionId),
-      mediaDir: path.join(os.tmpdir(), 'switchdash-switch-media', ctx.conversationId),
+      mediaDir: path.join(os.tmpdir(), 'switchdash-switch-media', ctx.sessionId),
       log,
     });
-    this.connections.set(ctx.conversationId, connection);
+    this.connections.set(ctx.sessionId, connection);
 
     log.debug('SwitchNotificationPoller: poll started', {
-      conversationId: ctx.conversationId,
+      sessionId: ctx.sessionId,
       roomId,
       roomName,
       agentId: creds.agentId,
@@ -152,11 +152,11 @@ class SwitchNotificationPoller {
    * polling.
    */
   onAgentStatusChange(
-    conversationId: string,
+    sessionId: string,
     status: AgentStatus,
     notificationType?: NotificationType
   ): void {
-    const connection = this.connections.get(conversationId);
+    const connection = this.connections.get(sessionId);
     if (!connection) return;
     connection.onAgentStatusChange(status, notificationType);
   }
@@ -167,8 +167,8 @@ class SwitchNotificationPoller {
    * directly by AgentHookService for the same renderer-bound-bus reason as
    * `onAgentStatusChange`. A no-op for sessions we aren't polling.
    */
-  onAgentActivity(conversationId: string, detail: string): void {
-    const connection = this.connections.get(conversationId);
+  onAgentActivity(sessionId: string, detail: string): void {
+    const connection = this.connections.get(sessionId);
     if (!connection) return;
     connection.reportActivity(detail);
   }

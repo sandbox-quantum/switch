@@ -90,7 +90,7 @@ export type HookHandler = (raw: RawHookRequest) => Promise<void>;
 
 /** One VM-side session switchdash can reconcile into its UI. */
 export interface SidecarSessionInfo {
-  conversationId: string;
+  sessionId: string;
   /** The Switch room the agent is attending, or null for a session that has
    * not joined a room (still discoverable so it can be attached to). */
   roomId: string | null;
@@ -106,7 +106,7 @@ export type SidecarSessionsProvider = () => SidecarSessionInfo[] | Promise<Sidec
  * and false when a single client is merely stepping away (app quit / teardown)
  * and the session should survive for others.
  */
-export type SidecarDisconnectHandler = (conversationId: string, terminated: boolean) => void;
+export type SidecarDisconnectHandler = (sessionId: string, terminated: boolean) => void;
 
 export class HookServer {
   private server: http.Server | null = null;
@@ -285,23 +285,23 @@ export class HookServer {
       if (body.length > 1_000_000) req.destroy();
     });
     req.on('end', () => {
-      let conversationId = '';
+      let sessionId = '';
       let terminated = false;
       try {
-        const parsed = JSON.parse(body) as { conversationId?: unknown; terminated?: unknown };
-        if (typeof parsed.conversationId === 'string') conversationId = parsed.conversationId;
+        const parsed = JSON.parse(body) as { sessionId?: unknown; terminated?: unknown };
+        if (typeof parsed.sessionId === 'string') sessionId = parsed.sessionId;
         terminated = parsed.terminated === true;
       } catch {
-        conversationId = '';
+        sessionId = '';
       }
-      if (!conversationId) {
-        this.log.warn('HookServer: /disconnect missing conversationId');
+      if (!sessionId) {
+        this.log.warn('HookServer: /disconnect missing sessionId');
         res.writeHead(400);
         res.end();
         return;
       }
       try {
-        handler(conversationId, terminated);
+        handler(sessionId, terminated);
       } catch (err) {
         this.log.warn('HookServer: /disconnect handler error', { error: String(err) });
         res.writeHead(500);

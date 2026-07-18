@@ -5,8 +5,8 @@
  * and is removed when it switches away or the session exits.
  */
 export interface SessionRoomConnection {
-  /** The switchdash session id (conversation id) the connection belongs to. */
-  conversationId: string;
+  /** The switchdash session id the connection belongs to. */
+  sessionId: string;
   /** The Switch room the session is currently connected to. */
   roomId: string;
   /** The Switch agent id that connected (from the agent's SWITCH_AGENT_ID). */

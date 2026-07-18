@@ -27,7 +27,6 @@ export interface AgentEvent {
   providerId?: string;
   projectId: string;
   sessionId: string;
-  conversationId: string;
   timestamp: number;
   payload: {
     notificationType?: NotificationType;

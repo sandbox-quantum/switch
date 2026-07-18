@@ -67,7 +67,7 @@ describe('AutoSessionWatcher.handleNotification', () => {
 
   it('does not spawn when a live session already attends the room', async () => {
     getConnections.mockReturnValue([
-      { conversationId: 'c1', roomId: 'room-x', agentId: 'switch-agent-1' },
+      { sessionId: 'c1', roomId: 'room-x', agentId: 'switch-agent-1' },
     ]);
     const watcher = fakeWatcher();
 
@@ -88,7 +88,7 @@ describe('AutoSessionWatcher.handleNotification', () => {
 
   it('treats a live session in a different room as not attending', async () => {
     getConnections.mockReturnValue([
-      { conversationId: 'c1', roomId: 'other-room', agentId: 'switch-agent-1' },
+      { sessionId: 'c1', roomId: 'other-room', agentId: 'switch-agent-1' },
     ]);
     const watcher = fakeWatcher();
 
