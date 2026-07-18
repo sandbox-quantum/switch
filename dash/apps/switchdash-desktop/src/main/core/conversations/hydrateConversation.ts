@@ -30,7 +30,7 @@ export async function hydrateConversation(
   const config = row.config ?? {};
   const isResuming = !isFirstSpawn;
 
-  await session.conversations.startSession(
+  await session.agent.start(
     mapSessionRowToConversation(row, loaded.projectId, loaded.providerId, isResuming),
     undefined,
     isResuming,

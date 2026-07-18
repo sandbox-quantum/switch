@@ -1,6 +1,4 @@
 import { getAgentById } from '@main/core/agents/getAgentById';
-import type { ConversationProvider } from '@main/core/conversations/types';
-import type { TerminalProvider } from '@main/core/terminals/terminal-provider';
 import { resolveAgentWorkspace } from '@main/core/workspaces/resolve-agent-workspace';
 import type { Workspace } from '@main/core/workspaces/workspace';
 import { workspaceRegistry } from '@main/core/workspaces/workspace-registry';
@@ -83,7 +81,7 @@ export async function provisionSessionRuntime(
 
   let buildSucceeded = false;
   try {
-    const buildResult = await buildSessionFromWorkspace(
+    const sessionProvider = await buildSessionFromWorkspace(
       session,
       workspace,
       type,
@@ -96,7 +94,7 @@ export async function provisionSessionRuntime(
       path: workDir,
       workspaceId,
       worktreeGitDir: undefined,
-      sessionProvider: buildResult.sessionProvider,
+      sessionProvider,
     };
   } finally {
     if (!buildSucceeded) {
@@ -115,18 +113,9 @@ export function emitSessionProvisionProgress(data: {
   sessionProvisionEvents.emitProgress(data);
 }
 
-export type BuildSessionResult = {
-  sessionProvider: SessionProvider;
-  conversationProvider: ConversationProvider;
-  terminalProvider: TerminalProvider;
-};
-
 /**
  * Shared tail of the provision flow — builds a SessionProvider from an already-acquired
  * workspace. Works for both local and SSH transports.
- *
- * Returns all three provider objects so callers can keep references for
- * reconnect rehydration.
  */
 export async function buildSessionFromWorkspace(
   session: Session,
@@ -135,7 +124,7 @@ export async function buildSessionFromWorkspace(
   projectId: string,
   projectPath: string,
   settings: ProjectSettingsProvider
-): Promise<BuildSessionResult> {
+): Promise<SessionProvider> {
   const { sessionEnvVars, tmuxEnabled, shellSetup } = await resolveSessionEnv(
     session,
     workspace,
@@ -143,24 +132,21 @@ export async function buildSessionFromWorkspace(
     settings
   );
 
-  const { conversations: conversationProvider, terminals: terminalProvider } =
-    await buildSessionProviders(type, {
-      projectId,
-      sessionId: session.id,
-      workspaceId: workspace.id,
-      sessionPath: workspace.path,
-      tmuxEnabled,
-      shellSetup,
-      sessionEnvVars,
-    });
+  const { agent, terminals } = await buildSessionProviders(type, {
+    projectId,
+    sessionId: session.id,
+    workspaceId: workspace.id,
+    sessionPath: workspace.path,
+    tmuxEnabled,
+    shellSetup,
+    sessionEnvVars,
+  });
 
-  const sessionProvider: SessionProvider = {
+  return {
     sessionId: session.id,
     sessionBranch: undefined,
     sessionEnvVars,
-    conversations: conversationProvider,
-    terminals: terminalProvider,
+    agent,
+    terminals,
   };
-
-  return { sessionProvider, conversationProvider, terminalProvider };
 }

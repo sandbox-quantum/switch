@@ -5,7 +5,7 @@ import type { FileSystemProvider } from '@main/core/fs/types';
 import type { MachineRef } from '@main/core/runtime/types';
 import { workspaceRegistry } from '@main/core/workspaces/workspace-registry';
 import type { WorkspaceProviderData } from '@shared/core/workspaces/workspace-provider-data';
-import type { ConversationProvider } from '../conversations/types';
+import type { AgentRuntimeProvider } from '../conversations/types';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
 import type { TerminalProvider } from '../terminals/terminal-provider';
 import type { WorkspaceType } from '../workspaces/workspace-factory';
@@ -26,7 +26,7 @@ export interface SessionProvider {
   readonly sessionId: string;
   readonly sessionBranch: string | undefined;
   readonly sessionEnvVars: Record<string, string>;
-  readonly conversations: ConversationProvider;
+  readonly agent: AgentRuntimeProvider;
   readonly terminals: TerminalProvider;
 }
 

@@ -1,6 +1,6 @@
-import { LocalConversationProvider } from '@main/core/conversations/impl/local-conversation';
-import { SshConversationProvider } from '@main/core/conversations/impl/ssh-conversation';
-import type { ConversationProvider } from '@main/core/conversations/types';
+import { LocalAgentRuntime } from '@main/core/conversations/impl/local-agent-runtime';
+import { SshAgentRuntime } from '@main/core/conversations/impl/ssh-agent-runtime';
+import type { AgentRuntimeProvider } from '@main/core/conversations/types';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -234,32 +234,27 @@ type SessionProviderOpts = {
   sessionEnvVars: Record<string, string>;
 };
 
-async function resolveLocalConversationShellProfile(
-  sessionId: string
-): Promise<ResolvedShellProfile> {
+async function resolveLocalAgentShellProfile(sessionId: string): Promise<ResolvedShellProfile> {
   const { defaultShell } = await appSettingsService.get('terminal');
   return await resolveLocalAutomationShellWithSystemFallback({
     intent: defaultShell,
     onFallback: (error) => {
-      log.warn(
-        'buildSessionProviders: preferred local conversation shell unavailable, using fallback',
-        {
-          shell: error.shell,
-          sessionId,
-        }
-      );
+      log.warn('buildSessionProviders: preferred local agent shell unavailable, using fallback', {
+        shell: error.shell,
+        sessionId,
+      });
     },
   });
 }
 
 /**
- * Creates session-scoped conversation and terminal providers for the given transport type.
- * The exec function is derived internally from the WorkspaceType.
+ * Creates the session-scoped agent runtime and terminal provider for the given
+ * transport type. The exec function is derived internally from the WorkspaceType.
  */
 export async function buildSessionProviders(
   _type: WorkspaceType,
   opts: SessionProviderOpts
-): Promise<{ conversations: ConversationProvider; terminals: TerminalProvider }> {
+): Promise<{ agent: AgentRuntimeProvider; terminals: TerminalProvider }> {
   if (_type.kind === 'ssh') {
     const proxy = await connectSshWorkspace(_type);
     const ctx = new SshExecutionContext(proxy, { root: _type.remoteRepoDir });
@@ -270,7 +265,7 @@ export async function buildSessionProviders(
     // Remote sessions always run under tmux — it persists the agent's PTY and
     // is the pane the sidecar injects into and reattaches to.
     return {
-      conversations: new SshConversationProvider({
+      agent: new SshAgentRuntime({
         projectId: opts.projectId,
         sessionPath: opts.sessionPath,
         sessionId: opts.sessionId,
@@ -298,15 +293,15 @@ export async function buildSessionProviders(
   }
 
   const ctx = new LocalExecutionContext();
-  const conversationShellProfile = await resolveLocalConversationShellProfile(opts.sessionId);
+  const agentShellProfile = await resolveLocalAgentShellProfile(opts.sessionId);
   return {
-    conversations: new LocalConversationProvider({
+    agent: new LocalAgentRuntime({
       projectId: opts.projectId,
       sessionPath: opts.sessionPath,
       sessionId: opts.sessionId,
       tmux: opts.tmuxEnabled,
       shellSetup: opts.shellSetup,
-      shellProfile: conversationShellProfile,
+      shellProfile: agentShellProfile,
       ctx,
       sessionEnvVars: opts.sessionEnvVars,
     }),

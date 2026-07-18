@@ -1,9 +1,9 @@
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
+import { AgentRuntimeSupervisor } from '@main/core/conversations/agent-runtime-supervisor';
 import { conversationEvents } from '@main/core/conversations/conversation-events';
-import { ConversationSessionSupervisor } from '@main/core/conversations/conversation-session-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/conversations/resolve-agent-session-command';
-import type { ConversationProvider } from '@main/core/conversations/types';
+import type { AgentRuntimeProvider } from '@main/core/conversations/types';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { FileSystemProvider } from '@main/core/fs/types';
@@ -45,15 +45,16 @@ function parseExtraArgs(value: string | undefined): string[] {
   return value.trim().split(/\s+/);
 }
 
-export class SshConversationProvider implements ConversationProvider {
-  private sessions = new Map<string, Pty>();
-  private knownSessionIds = new Set<string>();
-  private conversations = new Map<string, Conversation>();
-  private relays = new Map<string, RemoteHookEventRelay>();
+export class SshAgentRuntime implements AgentRuntimeProvider {
+  private pty: Pty | null = null;
+  private known = false;
+  /** The conversation this runtime last started — kept for reconnect rehydration. */
+  private conversation: Conversation | null = null;
+  private relay: RemoteHookEventRelay | null = null;
   /** Last resolved sidecar endpoint (agent-scoped, shared by all sessions on the
    * VM), captured at launch so a delete can POST /disconnect without re-ensuring. */
   private sidecarEndpoint: { port: number; token: string } | null = null;
-  private supervisor = new ConversationSessionSupervisor();
+  private supervisor = new AgentRuntimeSupervisor();
   private readonly handleConnectionEvent: (evt: SshConnectionManagerEvent) => void;
   private readonly projectId: string;
   private readonly sessionPath: string;
@@ -102,7 +103,7 @@ export class SshConversationProvider implements ConversationProvider {
     this.handleConnectionEvent = (evt: SshConnectionManagerEvent) => {
       if (evt.type === 'reconnected' && evt.connectionId === this.connectionId) {
         this.rehydrate().catch((e: unknown) => {
-          log.error('SshConversationProvider: rehydrate after reconnect failed', {
+          log.error('SshAgentRuntime: rehydrate after reconnect failed', {
             connectionId: this.connectionId,
             error: String(e),
           });
@@ -112,35 +113,38 @@ export class SshConversationProvider implements ConversationProvider {
     sshConnectionManager.on('connection-event', this.handleConnectionEvent);
   }
 
+  /** The registry key of this session's agent PTY (session id == conversation id). */
+  private get ptySessionId(): string {
+    return makePtySessionId(this.projectId, this.sessionId, this.sessionId);
+  }
+
   /**
-   * Re-attach every remote session that was live before an SSH drop but whose
+   * Re-attach the remote session if it was live before an SSH drop but its
    * interactive PTY died with the connection. On tmux hosts the agent process
    * survives inside its pane and the on-VM sidecar keeps running, so this only
    * re-opens the local PTY onto the existing pane — the sidecar and its
    * self-healing event relay are reused rather than relaunched.
    */
   private async rehydrate(): Promise<void> {
-    for (const sessionId of this.knownSessionIds) {
-      if (this.sessions.has(sessionId)) continue;
-      if (!this.supervisor.isDesired(sessionId)) continue;
-      const conversation = this.conversations.get(sessionId);
-      if (!conversation) continue;
-      const size = ptySessionRegistry.getLastSize(sessionId) ?? {
-        cols: DEFAULT_COLS,
-        rows: DEFAULT_ROWS,
-      };
-      log.info('SshConversationProvider: re-attaching session after reconnect', {
-        conversationId: conversation.id,
+    if (!this.known || this.pty) return;
+    if (!this.supervisor.isDesired()) return;
+    const conversation = this.conversation;
+    if (!conversation) return;
+    const size = ptySessionRegistry.getLastSize(this.ptySessionId) ?? {
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+    };
+    log.info('SshAgentRuntime: re-attaching session after reconnect', {
+      sessionId: this.sessionId,
+    });
+    await this.startInternal(conversation, size, true, undefined, true, {
+      shellRefreshRetried: false,
+    }).catch((e: unknown) => {
+      log.error('SshAgentRuntime: re-attach failed', {
+        sessionId: this.sessionId,
+        error: String(e),
       });
-      await this.startSessionInternal(conversation, size, true, undefined, true, {
-        shellRefreshRetried: false,
-      }).catch((e: unknown) => {
-        log.error('SshConversationProvider: re-attach failed', {
-          conversationId: conversation.id,
-          error: String(e),
-        });
-      });
-    }
+    });
   }
 
   private createSidecarHost(): SidecarHost {
@@ -151,7 +155,7 @@ export class SshConversationProvider implements ConversationProvider {
       putFile: (localAbsPath, remoteRelPath) => {
         if (!fs.copyLocalFile) {
           throw new Error(
-            'SshConversationProvider: remote filesystem does not support copyLocalFile; cannot deploy sidecar bundle'
+            'SshAgentRuntime: remote filesystem does not support copyLocalFile; cannot deploy sidecar bundle'
           );
         }
         return fs.copyLocalFile(localAbsPath, remoteRelPath);
@@ -172,7 +176,7 @@ export class SshConversationProvider implements ConversationProvider {
     const hooks = plugin.capabilities.hooks;
     if (hooks.kind !== 'config' || !plugin.behavior.hooks) return;
     if (hooks.scope !== 'workspace') {
-      log.warn('SshConversationProvider: skipping non-workspace-scoped remote hooks', {
+      log.warn('SshAgentRuntime: skipping non-workspace-scoped remote hooks', {
         providerId,
         scope: hooks.scope,
       });
@@ -180,9 +184,9 @@ export class SshConversationProvider implements ConversationProvider {
     }
     try {
       await plugin.behavior.hooks.writeHooks(createRemotePluginFs(this.fs), []);
-      log.info('SshConversationProvider: installed remote agent hooks', { providerId });
+      log.info('SshAgentRuntime: installed remote agent hooks', { providerId });
     } catch (error) {
-      log.warn('SshConversationProvider: failed to install remote agent hooks', {
+      log.warn('SshAgentRuntime: failed to install remote agent hooks', {
         providerId,
         error: String(error),
       });
@@ -190,8 +194,7 @@ export class SshConversationProvider implements ConversationProvider {
   }
 
   private async launchSidecar(
-    conversation: Conversation,
-    sessionId: string
+    conversation: Conversation
   ): Promise<{ port: number; token: string }> {
     // One agent-scoped sidecar serves every session on the VM (this one and any
     // the sidecar's own watcher auto-starts) — ensure it is running and point
@@ -206,12 +209,12 @@ export class SshConversationProvider implements ConversationProvider {
       host: this.createSidecarHost(),
     });
     this.sidecarEndpoint = endpoint;
-    this.startRelay(sessionId, endpoint);
+    this.startRelay(endpoint);
     return endpoint;
   }
 
   /**
-   * Tell the on-VM sidecar to drop this conversation's room connection so its
+   * Tell the on-VM sidecar to drop this session's room connection so its
    * poll + renew heartbeat stops — otherwise the agent keeps renewing and shows
    * `live` in the room with no session behind it (CHOO-1106). Best-effort: a
    * failure is logged, not thrown (the reconciler tombstone is the backstop). No
@@ -236,7 +239,7 @@ export class SshConversationProvider implements ConversationProvider {
     try {
       await Promise.race([this.postDisconnect(endpoint, conversationId, terminated), timeout]);
     } catch (error) {
-      log.warn('SshConversationProvider: failed to disconnect sidecar session', {
+      log.warn('SshAgentRuntime: failed to disconnect sidecar session', {
         conversationId,
         error: String(error),
       });
@@ -270,8 +273,8 @@ export class SshConversationProvider implements ConversationProvider {
    * local sessions, but with `startLocalPoller: false` — the sidecar already
    * polls and injects on the VM.
    */
-  private startRelay(sessionId: string, endpoint: { port: number; token: string }): void {
-    this.relays.get(sessionId)?.stop();
+  private startRelay(endpoint: { port: number; token: string }): void {
+    this.relay?.stop();
     const proxy = this.proxy;
     const relay = new RemoteHookEventRelay({
       opener: { openChannel: (port) => proxy.forwardOut(port) },
@@ -286,26 +289,26 @@ export class SshConversationProvider implements ConversationProvider {
       },
       log,
     });
-    this.relays.set(sessionId, relay);
+    this.relay = relay;
     relay.start();
   }
 
-  private stopRelay(sessionId: string): void {
-    const relay = this.relays.get(sessionId);
+  private stopRelay(): void {
+    const relay = this.relay;
     if (!relay) return;
-    this.relays.delete(sessionId);
+    this.relay = null;
     relay.stop();
   }
 
-  private stopSidecar(sessionId: string): void {
+  private stopSidecar(): void {
     // Only detach this session's relay. The sidecar is agent-scoped and shared
     // (other sessions + its notification watcher rely on it), so ending one
     // session must not kill it — it is torn down when auto_session is disabled
     // or the agent is removed (see stopRemoteWatcher).
-    this.stopRelay(sessionId);
+    this.stopRelay();
   }
 
-  async startSession(
+  async start(
     conversation: Conversation,
     initialSize: { cols: number; rows: number } = {
       cols: DEFAULT_COLS,
@@ -314,12 +317,12 @@ export class SshConversationProvider implements ConversationProvider {
     isResuming: boolean = false,
     initialPrompt?: string
   ): Promise<void> {
-    return this.startSessionInternal(conversation, initialSize, isResuming, initialPrompt, false, {
+    return this.startInternal(conversation, initialSize, isResuming, initialPrompt, false, {
       shellRefreshRetried: false,
     });
   }
 
-  private async startSessionInternal(
+  private async startInternal(
     conversation: Conversation,
     initialSize: { cols: number; rows: number },
     isResuming: boolean,
@@ -327,16 +330,12 @@ export class SshConversationProvider implements ConversationProvider {
     requireDesired: boolean,
     options: { shellRefreshRetried: boolean }
   ): Promise<void> {
-    const sessionId = makePtySessionId(
-      conversation.projectId,
-      conversation.sessionId,
-      conversation.id
-    );
-    this.knownSessionIds.add(sessionId);
-    this.conversations.set(sessionId, conversation);
+    const ptySessionId = this.ptySessionId;
+    this.known = true;
+    this.conversation = conversation;
 
-    const spawnSize = ptySessionRegistry.getLastSize(sessionId) ?? initialSize;
-    const spawnToken = this.supervisor.beginStart(sessionId, {
+    const spawnSize = ptySessionRegistry.getLastSize(ptySessionId) ?? initialSize;
+    const spawnToken = this.supervisor.beginStart({
       requireDesired,
       mode: isResuming ? 'resume' : 'fresh',
     });
@@ -371,11 +370,11 @@ export class SshConversationProvider implements ConversationProvider {
       const customEnv = providerConfig?.env ?? {};
       const providerEnv: Record<string, string> = { ...agentCommand.env, ...customEnv };
 
-      const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(conversation.id) : undefined;
+      const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 
       const cfg: AgentSessionConfig = {
         sessionId: this.sessionId,
-        conversationId: conversation.id,
+        conversationId: this.sessionId,
         providerId: conversation.providerId,
         command: agentCommand.command,
         args: agentCommand.args,
@@ -391,28 +390,28 @@ export class SshConversationProvider implements ConversationProvider {
       // It therefore requires tmux, must be up before the agent so the agent's
       // hook env can point at it, and shares the tmux session as its inject target.
       let hookEnv: Record<string, string> = {};
-      if (tmuxSessionName && this.relays.has(sessionId)) {
+      if (tmuxSessionName && this.relay) {
         // Re-attach path (e.g. after an SSH reconnect): the agent is still
         // running in its tmux pane and the sidecar + its self-healing relay are
         // already live, so re-open the PTY onto the existing pane and skip the
         // hook install + sidecar launch. The running agent keeps its original
         // hook env, so we need not re-supply it.
-        log.info('SshConversationProvider: re-attaching to running tmux session + sidecar', {
-          conversationId: conversation.id,
+        log.info('SshAgentRuntime: re-attaching to running tmux session + sidecar', {
+          sessionId: this.sessionId,
         });
       } else if (tmuxSessionName) {
-        const ptyId = makePtyId(conversation.providerId, conversation.id);
+        const ptyId = makePtyId(conversation.providerId, this.sessionId);
         // Install the agent's hooks into the remote workspace before launch so
         // the hook env below actually has commands to run — without this the
         // remote agent posts nothing to the sidecar (local sessions get this via
         // ensureHooksInstalled).
         await this.installRemoteHooks(conversation.providerId);
-        const endpoint = await this.launchSidecar(conversation, sessionId);
+        const endpoint = await this.launchSidecar(conversation);
         hookEnv = buildAgentHookEnv({ port: endpoint.port, ptyId, token: endpoint.token });
       } else {
         log.warn(
-          'SshConversationProvider: tmux disabled — remote agent will not stay connected to Switch while detached',
-          { conversationId: conversation.id }
+          'SshAgentRuntime: tmux disabled — remote agent will not stay connected to Switch while detached',
+          { sessionId: this.sessionId }
         );
       }
 
@@ -428,15 +427,15 @@ export class SshConversationProvider implements ConversationProvider {
       );
 
       const result = await openSsh2Pty(this.proxy, {
-        id: sessionId,
+        id: ptySessionId,
         command: sshCommand,
         cols: spawnSize.cols,
         rows: spawnSize.rows,
       });
 
       if (!result.success) {
-        log.error('SshConversationProvider: failed to open SSH channel', {
-          sessionId,
+        log.error('SshAgentRuntime: failed to open SSH channel', {
+          sessionId: ptySessionId,
           error: result.error.message,
         });
         throw new Error(result.error.message);
@@ -446,22 +445,21 @@ export class SshConversationProvider implements ConversationProvider {
 
       pty.onExit((info) => {
         const { exitCode } = info;
-        const decision = this.supervisor.handleExit(sessionId, pty);
+        const decision = this.supervisor.handleExit(pty);
         if (decision.kind === 'stale') return;
-        const replacementSize = ptySessionRegistry.getLastSize(sessionId) ?? spawnSize;
+        const replacementSize = ptySessionRegistry.getLastSize(ptySessionId) ?? spawnSize;
 
-        ptySessionRegistry.unregister(sessionId, { pty, exitInfo: info });
-        this.sessions.delete(sessionId);
+        ptySessionRegistry.unregister(ptySessionId, { pty, exitInfo: info });
+        this.pty = null;
         if (decision.kind === 'stopped') return;
 
-        this.emitExited(conversation);
+        this.emitExited();
 
         if (this.tmux) return;
 
         if (exitCode === SHELL_NOT_FOUND_EXIT_CODE && !options.shellRefreshRetried) {
           this.scheduleShellRefreshRetry({
             conversation,
-            sessionId,
             initialSize: replacementSize,
             isResuming: decision.kind === 'respawnResume',
             initialPrompt,
@@ -469,7 +467,7 @@ export class SshConversationProvider implements ConversationProvider {
           return;
         }
 
-        if (this.supervisor.isDesired(sessionId)) {
+        if (this.supervisor.isDesired()) {
           this.scheduleReplacement({
             conversation,
             initialSize: replacementSize,
@@ -478,24 +476,24 @@ export class SshConversationProvider implements ConversationProvider {
         }
       });
 
-      if (!this.supervisor.acceptSpawn(sessionId, spawnToken, pty)) {
+      if (!this.supervisor.acceptSpawn(spawnToken, pty)) {
         try {
           pty.kill();
         } catch {}
-        if (ptySessionRegistry.get(sessionId) === pty) {
-          ptySessionRegistry.unregister(sessionId);
+        if (ptySessionRegistry.get(ptySessionId) === pty) {
+          ptySessionRegistry.unregister(ptySessionId);
         }
         return;
       }
 
-      ptySessionRegistry.register(sessionId, pty, {
+      ptySessionRegistry.register(ptySessionId, pty, {
         metadata: {
           providerId: conversation.providerId,
           title: conversation.title,
           isRemote: true,
         },
       });
-      this.sessions.set(sessionId, pty);
+      this.pty = pty;
       scheduleInitialPromptInjection({
         pty,
         conversation,
@@ -503,53 +501,52 @@ export class SshConversationProvider implements ConversationProvider {
         isResuming: agentSession.isResuming,
       });
     } catch (error) {
-      this.supervisor.failSpawn(sessionId, spawnToken);
+      this.supervisor.failSpawn(spawnToken);
       throw error;
     }
   }
 
-  private emitExited(conversation: Conversation): void {
+  private emitExited(): void {
     events.emit(agentSessionExitedChannel, {
-      conversationId: conversation.id,
-      sessionId: conversation.sessionId,
+      conversationId: this.sessionId,
+      sessionId: this.sessionId,
     });
     conversationEvents._emit('conversation:session-exited', {
-      conversationId: conversation.id,
-      sessionId: conversation.sessionId,
+      conversationId: this.sessionId,
+      sessionId: this.sessionId,
     });
   }
 
-  private detachPty(sessionId: string): void {
-    const pty = this.supervisor.stop(sessionId) ?? this.sessions.get(sessionId);
-    this.sessions.delete(sessionId);
-    ptySessionRegistry.unregister(sessionId);
+  private detachPty(): void {
+    const pty = this.supervisor.stop() ?? this.pty;
+    this.pty = null;
+    ptySessionRegistry.unregister(this.ptySessionId);
     if (pty) {
       try {
         pty.kill();
       } catch (e) {
-        log.warn('SshConversationProvider: error killing PTY', {
-          sessionId,
+        log.warn('SshAgentRuntime: error killing PTY', {
+          sessionId: this.sessionId,
           error: String(e),
         });
       }
     }
   }
 
-  async detachSession(conversationId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.projectId, this.sessionId, conversationId);
-    this.detachPty(sessionId);
+  async dehydrate(): Promise<void> {
+    this.detachPty();
     if (!this.tmux) {
-      this.knownSessionIds.delete(sessionId);
-      this.supervisor.forget(sessionId);
+      this.known = false;
+      this.supervisor.forget();
     }
   }
 
-  async stopSession(conversationId: string): Promise<void> {
-    await this.teardownSession(conversationId, { disconnectSidecar: true, killTmux: true });
+  async stop(): Promise<void> {
+    await this.teardownSession({ disconnectSidecar: true, killTmux: true });
   }
 
   /**
-   * Tear down this client's local state for a session. `disconnectSidecar` +
+   * Tear down this client's local state for the session. `disconnectSidecar` +
    * `killTmux` are true for a deliberate delete/kill originating here (which also
    * makes the sidecar broadcast a `session-terminated` event). They are false on
    * the receiving side of that broadcast (`onRemoteTerminated`): the initiator
@@ -557,41 +554,30 @@ export class SshConversationProvider implements ConversationProvider {
    * repeating either here would be wasteful and — for the disconnect — would
    * re-broadcast in a loop.
    */
-  private async teardownSession(
-    conversationId: string,
-    opts: { disconnectSidecar: boolean; killTmux: boolean }
-  ): Promise<void> {
-    const sessionId = makePtySessionId(this.projectId, this.sessionId, conversationId);
-    this.knownSessionIds.delete(sessionId);
-    this.conversations.delete(sessionId);
-    if (this.tmux && opts.disconnectSidecar)
-      await this.disconnectSidecarSession(conversationId, true);
-    this.stopSidecar(sessionId);
-    const pty = this.supervisor.stop(sessionId) ?? this.sessions.get(sessionId);
-    this.sessions.delete(sessionId);
-    ptySessionRegistry.unregister(sessionId);
-    if (pty) {
-      try {
-        pty.kill();
-      } catch (e) {
-        log.warn('SshConversationProvider: error killing PTY', {
-          sessionId,
-          error: String(e),
-        });
-      }
+  private async teardownSession(opts: {
+    disconnectSidecar: boolean;
+    killTmux: boolean;
+  }): Promise<void> {
+    this.known = false;
+    this.conversation = null;
+    if (this.tmux && opts.disconnectSidecar) {
+      await this.disconnectSidecarSession(this.sessionId, true);
     }
+    this.stopSidecar();
+    this.detachPty();
     if (this.tmux && opts.killTmux) {
-      await killTmuxSession(this.ctx, makeAgentTmuxSessionName(conversationId));
+      await killTmuxSession(this.ctx, makeAgentTmuxSessionName(this.sessionId));
     }
-    this.supervisor.forget(sessionId);
+    this.supervisor.forget();
   }
 
   /**
    * Handle a `session-terminated` broadcast from the sidecar: another client (or
-   * this one) deliberately deleted the session. Tear down local state without
-   * re-killing tmux or re-disconnecting the sidecar, then signal the DB-level
-   * cleanup so the session row is removed everywhere and cannot be re-attached
-   * into a blank session. Idempotent — safe if this client never had the session.
+   * this one) deliberately deleted a session on this VM. The shared sidecar
+   * broadcasts to every session's relay, so the terminated id may belong to a
+   * different session — local state is only torn down when it is ours, but the
+   * DB-level cleanup is signalled either way so the session row is removed
+   * everywhere and cannot be re-attached into a blank session.
    */
   private onRemoteTerminated(rawBody: string): void {
     let conversationId = '';
@@ -602,17 +588,19 @@ export class SshConversationProvider implements ConversationProvider {
       conversationId = '';
     }
     if (!conversationId) {
-      log.warn('SshConversationProvider: session-terminated event missing conversationId');
+      log.warn('SshAgentRuntime: session-terminated event missing conversationId');
       return;
     }
-    void this.teardownSession(conversationId, { disconnectSidecar: false, killTmux: false }).catch(
-      (e: unknown) => {
-        log.warn('SshConversationProvider: error tearing down terminated session', {
-          conversationId,
-          error: String(e),
-        });
-      }
-    );
+    if (conversationId === this.sessionId) {
+      void this.teardownSession({ disconnectSidecar: false, killTmux: false }).catch(
+        (e: unknown) => {
+          log.warn('SshAgentRuntime: error tearing down terminated session', {
+            conversationId,
+            error: String(e),
+          });
+        }
+      );
+    }
     conversationEvents._emit('conversation:remote-terminated', {
       projectId: this.projectId,
       sessionId: this.sessionId,
@@ -620,78 +608,58 @@ export class SshConversationProvider implements ConversationProvider {
     });
   }
 
-  async destroyAll(): Promise<void> {
+  async destroy(): Promise<void> {
     sshConnectionManager.off('connection-event', this.handleConnectionEvent);
-    const sessionIds = Array.from(this.knownSessionIds);
-    await this.detachAll();
-    if (this.tmux) {
-      await Promise.all(
-        sessionIds.map((id) => {
-          const conversation = this.conversations.get(id);
-          return conversation
-            ? this.disconnectSidecarSession(conversation.id, true)
-            : Promise.resolve();
-        })
-      );
+    const wasKnown = this.known;
+    await this.detach();
+    if (this.tmux && wasKnown) {
+      await this.disconnectSidecarSession(this.sessionId, true);
     }
-    for (const id of sessionIds) this.stopSidecar(id);
-    const conversationIds = sessionIds
-      .map((id) => this.conversations.get(id)?.id)
-      .filter((id): id is string => id !== undefined);
-    for (const id of sessionIds) this.conversations.delete(id);
-    if (this.tmux) {
-      await Promise.all(
-        conversationIds.map((id) => killTmuxSession(this.ctx, makeAgentTmuxSessionName(id)))
-      );
+    this.stopSidecar();
+    this.conversation = null;
+    if (this.tmux && wasKnown) {
+      await killTmuxSession(this.ctx, makeAgentTmuxSessionName(this.sessionId));
     }
-    for (const sessionId of sessionIds) {
-      this.supervisor.forget(sessionId);
-    }
-    this.knownSessionIds.clear();
+    this.supervisor.forget();
+    this.known = false;
   }
 
-  async detachAll(): Promise<void> {
-    for (const [sessionId, pty] of this.sessions) {
-      this.supervisor.stop(sessionId);
+  async detach(): Promise<void> {
+    if (this.pty) {
+      const pty = this.pty;
+      this.supervisor.stop();
       try {
         pty.kill();
       } catch {}
-      ptySessionRegistry.unregister(sessionId);
+      ptySessionRegistry.unregister(this.ptySessionId);
+      this.pty = null;
     }
-    this.sessions.clear();
   }
 
   private scheduleShellRefreshRetry({
     conversation,
-    sessionId,
     initialSize,
     isResuming,
     initialPrompt,
   }: {
     conversation: Conversation;
-    sessionId: string;
     initialSize: { cols: number; rows: number };
     isResuming: boolean;
     initialPrompt: string | undefined;
   }): void {
     setTimeout(() => {
-      if (!this.supervisor.isDesired(sessionId)) return;
+      if (!this.supervisor.isDesired()) return;
       this.proxy
         .refreshRemoteShellProfile()
         .then(() => {
-          if (!this.supervisor.isDesired(sessionId)) return;
-          return this.startSessionInternal(
-            conversation,
-            initialSize,
-            isResuming,
-            initialPrompt,
-            true,
-            { shellRefreshRetried: true }
-          );
+          if (!this.supervisor.isDesired()) return;
+          return this.startInternal(conversation, initialSize, isResuming, initialPrompt, true, {
+            shellRefreshRetried: true,
+          });
         })
         .catch((e) => {
-          log.error('SshConversationProvider: shell refresh retry failed', {
-            conversationId: conversation.id,
+          log.error('SshAgentRuntime: shell refresh retry failed', {
+            sessionId: this.sessionId,
             error: String(e),
           });
         });
@@ -708,11 +676,11 @@ export class SshConversationProvider implements ConversationProvider {
     isResuming: boolean;
   }): void {
     setTimeout(() => {
-      this.startSessionInternal(conversation, initialSize, isResuming, undefined, true, {
+      this.startInternal(conversation, initialSize, isResuming, undefined, true, {
         shellRefreshRetried: false,
       }).catch((e) => {
-        log.error('SshConversationProvider: replacement failed', {
-          conversationId: conversation.id,
+        log.error('SshAgentRuntime: replacement failed', {
+          sessionId: this.sessionId,
           error: String(e),
         });
       });

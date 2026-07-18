@@ -85,33 +85,28 @@ export const ptyController = createRPCController({
   },
 
   /**
-   * Stop a session for good without deleting its conversation/terminal record.
+   * Stop a terminal or lifecycle-script PTY for good.
    *
-   * Unlike `kill`, which only terminates the OS process, this routes through
-   * the owning provider so the session is removed from its respawn tracking
-   * (`knownSessionIds`/`sessions`). A bare `kill` leaves those intact, so the
-   * provider's `onExit` handler respawns the PTY ~500ms later — which is what
-   * made killing from the resource monitor appear to do nothing. The tab and
-   * its history are preserved; the session simply stays stopped until the session
-   * is remounted or the user starts a new one.
+   * Unlike `kill`, which only terminates the OS process, this routes a terminal
+   * through its owning provider so it leaves respawn tracking and stays stopped.
+   * Agent PTYs are session lifecycle, not raw PTY I/O — stop those through
+   * `rpc.sessions.stopAgent` instead; this rejects them.
    */
   stopSession: async (sessionId: string) => {
     const parsed = parsePtySessionId(sessionId);
     if (!parsed) return err({ type: 'invalid_session' as const });
     const { scopeId, leafId } = parsed;
 
-    // Agents and terminals are scoped by session id, so the session lookup resolves
-    // the owning provider. Conversation PTYs carry a providerId in their
-    // registry metadata; plain terminals do not — that distinguishes the two.
+    // Agent PTYs carry a providerId in their registry metadata; plain terminals
+    // and lifecycle scripts do not — that distinguishes the two.
+    if (ptySessionRegistry.getMetadata(sessionId)?.providerId !== undefined) {
+      return err({ type: 'invalid_session' as const });
+    }
+
     const session = sessionRuntimeManager.getSession(scopeId);
     if (session) {
-      const isConversation = ptySessionRegistry.getMetadata(sessionId)?.providerId !== undefined;
       try {
-        if (isConversation) {
-          await session.conversations.stopSession(leafId);
-        } else {
-          await session.terminals.killTerminal(leafId);
-        }
+        await session.terminals.killTerminal(leafId);
       } catch (e) {
         log.warn('ptyController.stopSession: error stopping session PTY', {
           sessionId,

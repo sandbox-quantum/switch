@@ -66,7 +66,7 @@ export async function createSession(
     await sessionRuntimeManager.registerSession(session.id, built, project.projectId, project.ctx);
 
     const conversation = mapSessionRowToConversation(row, project.projectId, agent.providerId);
-    await built.sessionProvider.conversations.startSession(
+    await built.sessionProvider.agent.start(
       conversation,
       params.initialSize,
       false,

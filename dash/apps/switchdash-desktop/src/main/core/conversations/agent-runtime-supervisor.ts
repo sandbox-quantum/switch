@@ -1,28 +1,28 @@
 import type { Pty } from '@main/core/pty/pty';
 
-type ConversationSpawnToken = {
-  mode: ConversationSpawnMode;
+type AgentSpawnToken = {
+  mode: AgentSpawnMode;
   freshRecovery: boolean;
 };
 
-type ConversationSpawnMode = 'fresh' | 'resume';
+type AgentSpawnMode = 'fresh' | 'resume';
 
-type ActiveConversationPty = {
+type ActiveAgentPty = {
   pty: Pty;
-  mode: ConversationSpawnMode;
+  mode: AgentSpawnMode;
   freshRecovery: boolean;
 };
 
-type ConversationRuntime = {
+type AgentRuntimeState = {
   desired: boolean;
-  active?: ActiveConversationPty;
-  spawnInFlight?: ConversationSpawnToken;
+  active?: ActiveAgentPty;
+  spawnInFlight?: AgentSpawnToken;
   consecutiveResumeExits: number;
   recoveryGraceTimer?: ReturnType<typeof setTimeout>;
 };
 
-export const MAX_CONVERSATION_RESUME_ATTEMPTS = 1;
-export const CONVERSATION_FRESH_RECOVERY_GRACE_MS = 5_000;
+export const MAX_AGENT_RESUME_ATTEMPTS = 1;
+export const AGENT_FRESH_RECOVERY_GRACE_MS = 5_000;
 
 export type ExitDecision =
   | { kind: 'stale' }
@@ -31,14 +31,19 @@ export type ExitDecision =
   | { kind: 'respawnFresh' }
   | { kind: 'respawnResume' };
 
-export class ConversationSessionSupervisor {
-  private runtimes = new Map<string, ConversationRuntime>();
+/**
+ * Desired-vs-actual supervisor for the single agent PTY of one session.
+ * Owns the crash-recovery ladder: resume → (a resume exit) → fresh →
+ * (dies within the startup grace) → fail; a fresh replacement that survives
+ * the grace period resets the ladder.
+ */
+export class AgentRuntimeSupervisor {
+  private runtime: AgentRuntimeState | null = null;
 
   beginStart(
-    sessionId: string,
-    options: { requireDesired?: boolean; mode?: ConversationSpawnMode } = {}
-  ): ConversationSpawnToken | undefined {
-    const runtime = this.getOrCreateRuntime(sessionId);
+    options: { requireDesired?: boolean; mode?: AgentSpawnMode } = {}
+  ): AgentSpawnToken | undefined {
+    const runtime = this.getOrCreateRuntime();
     if (runtime.active || runtime.spawnInFlight) return undefined;
     if (options.requireDesired === true && !runtime.desired) return undefined;
 
@@ -47,14 +52,14 @@ export class ConversationSessionSupervisor {
     const token = {
       mode,
       freshRecovery:
-        mode === 'fresh' && runtime.consecutiveResumeExits >= MAX_CONVERSATION_RESUME_ATTEMPTS,
+        mode === 'fresh' && runtime.consecutiveResumeExits >= MAX_AGENT_RESUME_ATTEMPTS,
     };
     runtime.spawnInFlight = token;
     return token;
   }
 
-  acceptSpawn(sessionId: string, token: ConversationSpawnToken, pty: Pty): boolean {
-    const runtime = this.runtimes.get(sessionId);
+  acceptSpawn(token: AgentSpawnToken, pty: Pty): boolean {
+    const runtime = this.runtime;
     if (!runtime || runtime.spawnInFlight !== token) return false;
 
     runtime.spawnInFlight = undefined;
@@ -66,19 +71,19 @@ export class ConversationSessionSupervisor {
       freshRecovery: token.freshRecovery,
     };
     if (token.freshRecovery) {
-      this.scheduleRecoveryReset(sessionId, runtime, pty);
+      this.scheduleRecoveryReset(runtime, pty);
     }
     return true;
   }
 
-  failSpawn(sessionId: string, token: ConversationSpawnToken): void {
-    const runtime = this.runtimes.get(sessionId);
+  failSpawn(token: AgentSpawnToken): void {
+    const runtime = this.runtime;
     if (!runtime || runtime.spawnInFlight !== token) return;
     runtime.spawnInFlight = undefined;
   }
 
-  stop(sessionId: string): Pty | undefined {
-    const runtime = this.runtimes.get(sessionId);
+  stop(): Pty | undefined {
+    const runtime = this.runtime;
     if (!runtime) return undefined;
 
     runtime.desired = false;
@@ -91,12 +96,12 @@ export class ConversationSessionSupervisor {
     return pty;
   }
 
-  isDesired(sessionId: string): boolean {
-    return this.runtimes.get(sessionId)?.desired === true;
+  isDesired(): boolean {
+    return this.runtime?.desired === true;
   }
 
-  handleExit(sessionId: string, pty: Pty): ExitDecision {
-    const runtime = this.runtimes.get(sessionId);
+  handleExit(pty: Pty): ExitDecision {
+    const runtime = this.runtime;
     if (!runtime || runtime.active?.pty !== pty) return { kind: 'stale' };
 
     const exitedMode = runtime.active.mode;
@@ -109,14 +114,14 @@ export class ConversationSessionSupervisor {
 
     if (exitedMode === 'resume') {
       runtime.consecutiveResumeExits += 1;
-      if (runtime.consecutiveResumeExits >= MAX_CONVERSATION_RESUME_ATTEMPTS) {
-        runtime.consecutiveResumeExits = MAX_CONVERSATION_RESUME_ATTEMPTS;
+      if (runtime.consecutiveResumeExits >= MAX_AGENT_RESUME_ATTEMPTS) {
+        runtime.consecutiveResumeExits = MAX_AGENT_RESUME_ATTEMPTS;
         return { kind: 'respawnFresh' };
       }
       return { kind: 'respawnResume' };
     }
 
-    if (freshRecovery && runtime.consecutiveResumeExits >= MAX_CONVERSATION_RESUME_ATTEMPTS) {
+    if (freshRecovery && runtime.consecutiveResumeExits >= MAX_AGENT_RESUME_ATTEMPTS) {
       runtime.desired = false;
       runtime.consecutiveResumeExits = 0;
       return { kind: 'failed' };
@@ -126,16 +131,16 @@ export class ConversationSessionSupervisor {
     return { kind: 'respawnResume' };
   }
 
-  forget(sessionId: string): void {
-    const runtime = this.runtimes.get(sessionId);
+  forget(): void {
+    const runtime = this.runtime;
     if (runtime) this.clearRecoveryGraceTimer(runtime);
-    this.runtimes.delete(sessionId);
+    this.runtime = null;
   }
 
-  private scheduleRecoveryReset(sessionId: string, runtime: ConversationRuntime, pty: Pty): void {
+  private scheduleRecoveryReset(runtime: AgentRuntimeState, pty: Pty): void {
     this.clearRecoveryGraceTimer(runtime);
     runtime.recoveryGraceTimer = setTimeout(() => {
-      if (this.runtimes.get(sessionId) !== runtime) return;
+      if (this.runtime !== runtime) return;
       if (runtime.active?.pty !== pty || !runtime.active.freshRecovery) return;
 
       runtime.active = {
@@ -144,24 +149,22 @@ export class ConversationSessionSupervisor {
       };
       runtime.consecutiveResumeExits = 0;
       runtime.recoveryGraceTimer = undefined;
-    }, CONVERSATION_FRESH_RECOVERY_GRACE_MS);
+    }, AGENT_FRESH_RECOVERY_GRACE_MS);
   }
 
-  private clearRecoveryGraceTimer(runtime: ConversationRuntime): void {
+  private clearRecoveryGraceTimer(runtime: AgentRuntimeState): void {
     if (!runtime.recoveryGraceTimer) return;
     clearTimeout(runtime.recoveryGraceTimer);
     runtime.recoveryGraceTimer = undefined;
   }
 
-  private getOrCreateRuntime(sessionId: string): ConversationRuntime {
-    let runtime = this.runtimes.get(sessionId);
-    if (!runtime) {
-      runtime = {
+  private getOrCreateRuntime(): AgentRuntimeState {
+    if (!this.runtime) {
+      this.runtime = {
         desired: false,
         consecutiveResumeExits: 0,
       };
-      this.runtimes.set(sessionId, runtime);
     }
-    return runtime;
+    return this.runtime;
   }
 }

@@ -47,7 +47,7 @@ export function scheduleInitialPromptInjection(args: {
       }
       args.pty.write(`${payload}${submitSequence}`);
     } catch (error) {
-      log.warn('ConversationProvider: failed to inject initial prompt', {
+      log.warn('AgentRuntime: failed to inject initial prompt', {
         providerId: args.conversation.providerId,
         conversationId: args.conversation.id,
         error: String(error),
@@ -70,7 +70,7 @@ export function scheduleInitialPromptInjection(args: {
     if (quietTimer) clearTimeout(quietTimer);
     clearTimeout(maxWaitTimer);
     if (!promptWasInjected) {
-      log.warn('ConversationProvider: PTY exited before initial prompt could be injected', {
+      log.warn('AgentRuntime: PTY exited before initial prompt could be injected', {
         providerId: args.conversation.providerId,
         conversationId: args.conversation.id,
         sawAnyOutput,

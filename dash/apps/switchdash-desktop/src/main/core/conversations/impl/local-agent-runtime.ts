@@ -2,10 +2,10 @@ import { homedir } from 'node:os';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
 import { workspaceTrustService } from '@main/core/agent-hooks/workspace-trust-service';
+import { AgentRuntimeSupervisor } from '@main/core/conversations/agent-runtime-supervisor';
 import { conversationEvents } from '@main/core/conversations/conversation-events';
-import { ConversationSessionSupervisor } from '@main/core/conversations/conversation-session-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/conversations/resolve-agent-session-command';
-import type { ConversationProvider } from '@main/core/conversations/types';
+import type { AgentRuntimeProvider } from '@main/core/conversations/types';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -27,7 +27,7 @@ import { log } from '@main/lib/logger';
 import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
-import { makePtySessionId, parsePtySessionId } from '@shared/core/pty/ptySessionId';
+import { makePtySessionId } from '@shared/core/pty/ptySessionId';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { resolveAgentExecutable } from './resolve-agent-executable';
 
@@ -40,10 +40,10 @@ function parseExtraArgs(value: string | undefined): string[] {
   return value.trim().split(/\s+/);
 }
 
-export class LocalConversationProvider implements ConversationProvider {
-  private sessions = new Map<string, Pty>();
-  private knownSessionIds = new Set<string>();
-  private supervisor = new ConversationSessionSupervisor();
+export class LocalAgentRuntime implements AgentRuntimeProvider {
+  private pty: Pty | null = null;
+  private known = false;
+  private supervisor = new AgentRuntimeSupervisor();
   private readonly projectId: string;
   private readonly sessionPath: string;
   private readonly sessionId: string;
@@ -81,7 +81,12 @@ export class LocalConversationProvider implements ConversationProvider {
     this.sessionEnvVars = sessionEnvVars;
   }
 
-  async startSession(
+  /** The registry key of this session's agent PTY (session id == conversation id). */
+  private get ptySessionId(): string {
+    return makePtySessionId(this.projectId, this.sessionId, this.sessionId);
+  }
+
+  async start(
     conversation: Conversation,
     initialSize: { cols: number; rows: number } = {
       cols: DEFAULT_COLS,
@@ -90,25 +95,21 @@ export class LocalConversationProvider implements ConversationProvider {
     isResuming: boolean = false,
     initialPrompt?: string
   ): Promise<void> {
-    return this.startSessionInternal(conversation, initialSize, isResuming, initialPrompt, false);
+    return this.startInternal(conversation, initialSize, isResuming, initialPrompt, false);
   }
 
-  private async startSessionInternal(
+  private async startInternal(
     conversation: Conversation,
     initialSize: { cols: number; rows: number },
     isResuming: boolean,
     initialPrompt: string | undefined,
     requireDesired: boolean
   ): Promise<void> {
-    const sessionId = makePtySessionId(
-      conversation.projectId,
-      conversation.sessionId,
-      conversation.id
-    );
-    this.knownSessionIds.add(sessionId);
+    const ptySessionId = this.ptySessionId;
+    this.known = true;
 
-    const spawnSize = ptySessionRegistry.getLastSize(sessionId) ?? initialSize;
-    const spawnToken = this.supervisor.beginStart(sessionId, {
+    const spawnSize = ptySessionRegistry.getLastSize(ptySessionId) ?? initialSize;
+    const spawnToken = this.supervisor.beginStart({
       requireDesired,
       mode: isResuming ? 'resume' : 'fresh',
     });
@@ -162,7 +163,7 @@ export class LocalConversationProvider implements ConversationProvider {
       const customEnv = providerConfig?.env ?? {};
       const providerVars: Record<string, string> = { ...agentCommand.env, ...customEnv };
 
-      const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(conversation.id) : undefined;
+      const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 
       const resolved = resolveLocalPtySpawn({
         platform: process.platform,
@@ -177,12 +178,11 @@ export class LocalConversationProvider implements ConversationProvider {
         },
       });
 
-      logLocalPtySpawnWarnings('LocalConversationProvider', resolved.warnings, {
-        conversationId: conversation.id,
-        sessionId,
+      logLocalPtySpawnWarnings('LocalAgentRuntime', resolved.warnings, {
+        sessionId: ptySessionId,
       });
 
-      const ptyId = makePtyId(conversation.providerId, conversation.id);
+      const ptyId = makePtyId(conversation.providerId, this.sessionId);
       const port = agentHookService.getPort();
       const token = agentHookService.getToken();
       const colorEnv = await getTerminalColorEnv();
@@ -198,7 +198,7 @@ export class LocalConversationProvider implements ConversationProvider {
             )
           : {};
       const pty = spawnLocalPty({
-        id: sessionId,
+        id: ptySessionId,
         command: resolved.command,
         args: resolved.args,
         cwd: resolved.cwd,
@@ -217,30 +217,30 @@ export class LocalConversationProvider implements ConversationProvider {
       });
 
       pty.onExit((info) => {
-        const decision = this.supervisor.handleExit(sessionId, pty);
+        const decision = this.supervisor.handleExit(pty);
         if (decision.kind === 'stale') return;
-        const replacementSize = ptySessionRegistry.getLastSize(sessionId) ?? spawnSize;
+        const replacementSize = ptySessionRegistry.getLastSize(ptySessionId) ?? spawnSize;
 
-        ptySessionRegistry.unregister(sessionId, { pty, exitInfo: info });
-        this.sessions.delete(sessionId);
+        ptySessionRegistry.unregister(ptySessionId, { pty, exitInfo: info });
+        this.pty = null;
         if (decision.kind === 'stopped') return;
 
         events.emit(agentSessionExitedChannel, {
-          conversationId: conversation.id,
-          sessionId: conversation.sessionId,
+          conversationId: this.sessionId,
+          sessionId: this.sessionId,
         });
         // In-process counterpart for main-process consumers — `events` only
         // reaches the renderer (see conversation-events).
         conversationEvents._emit('conversation:session-exited', {
-          conversationId: conversation.id,
-          sessionId: conversation.sessionId,
+          conversationId: this.sessionId,
+          sessionId: this.sessionId,
         });
 
         if (this.tmux) {
           return;
         }
 
-        if (this.supervisor.isDesired(sessionId)) {
+        if (this.supervisor.isDesired()) {
           this.scheduleReplacement({
             conversation,
             initialSize: replacementSize,
@@ -249,23 +249,23 @@ export class LocalConversationProvider implements ConversationProvider {
         }
       });
 
-      if (!this.supervisor.acceptSpawn(sessionId, spawnToken, pty)) {
+      if (!this.supervisor.acceptSpawn(spawnToken, pty)) {
         try {
           pty.kill();
         } catch {}
-        if (ptySessionRegistry.get(sessionId) === pty) {
-          ptySessionRegistry.unregister(sessionId);
+        if (ptySessionRegistry.get(ptySessionId) === pty) {
+          ptySessionRegistry.unregister(ptySessionId);
         }
         return;
       }
 
-      ptySessionRegistry.register(sessionId, pty, {
+      ptySessionRegistry.register(ptySessionId, pty, {
         metadata: {
           providerId: conversation.providerId,
           title: conversation.title,
         },
       });
-      this.sessions.set(sessionId, pty);
+      this.pty = pty;
       scheduleInitialPromptInjection({
         pty,
         conversation,
@@ -277,107 +277,82 @@ export class LocalConversationProvider implements ConversationProvider {
       // live tool call, so a resumed session would otherwise go silent.
       void switchRoomService
         .restorePoller({
-          conversationId: conversation.id,
-          projectId: conversation.projectId,
+          conversationId: this.sessionId,
+          projectId: this.projectId,
           providerId: conversation.providerId,
           ptyId,
         })
         .catch((error) => {
-          log.warn('LocalConversationProvider: failed to restore Switch room poller', {
-            conversationId: conversation.id,
+          log.warn('LocalAgentRuntime: failed to restore Switch room poller', {
+            sessionId: this.sessionId,
             error: String(error),
           });
         });
     } catch (error) {
-      this.supervisor.failSpawn(sessionId, spawnToken);
+      this.supervisor.failSpawn(spawnToken);
       throw error;
     }
   }
 
-  private detachPty(sessionId: string): void {
-    const pty = this.supervisor.stop(sessionId) ?? this.sessions.get(sessionId);
-    this.sessions.delete(sessionId);
-    ptySessionRegistry.unregister(sessionId);
+  private detachPty(): void {
+    const pty = this.supervisor.stop() ?? this.pty;
+    this.pty = null;
+    ptySessionRegistry.unregister(this.ptySessionId);
     if (pty) {
       try {
         pty.kill();
       } catch (e) {
-        log.warn('LocalAgentProvider: error killing PTY', {
-          sessionId,
+        log.warn('LocalAgentRuntime: error killing PTY', {
+          sessionId: this.sessionId,
           error: String(e),
         });
       }
     }
   }
 
-  async detachSession(conversationId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.projectId, this.sessionId, conversationId);
-    this.detachPty(sessionId);
-    switchNotificationPoller.disconnect(conversationId);
-    switchRoomService.clearSession(conversationId);
+  async dehydrate(): Promise<void> {
+    this.detachPty();
+    switchNotificationPoller.disconnect(this.sessionId);
+    switchRoomService.clearSession(this.sessionId);
     if (!this.tmux) {
-      this.knownSessionIds.delete(sessionId);
-      this.supervisor.forget(sessionId);
+      this.known = false;
+      this.supervisor.forget();
     }
   }
 
-  async stopSession(conversationId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.projectId, this.sessionId, conversationId);
-    switchNotificationPoller.disconnect(conversationId);
-    switchRoomService.clearSession(conversationId);
-    this.knownSessionIds.delete(sessionId);
-    const pty = this.supervisor.stop(sessionId) ?? this.sessions.get(sessionId);
-    this.sessions.delete(sessionId);
-    ptySessionRegistry.unregister(sessionId);
-    if (pty) {
-      try {
-        pty.kill();
-      } catch (e) {
-        log.warn('LocalAgentProvider: error killing PTY', {
-          sessionId,
-          error: String(e),
-        });
-      }
-    }
+  async stop(): Promise<void> {
+    switchNotificationPoller.disconnect(this.sessionId);
+    switchRoomService.clearSession(this.sessionId);
+    this.known = false;
+    this.detachPty();
     if (this.tmux) {
-      await killTmuxSession(this.ctx, makeAgentTmuxSessionName(conversationId));
+      await killTmuxSession(this.ctx, makeAgentTmuxSessionName(this.sessionId));
     }
-    this.supervisor.forget(sessionId);
+    this.supervisor.forget();
   }
 
-  async destroyAll(): Promise<void> {
-    const sessionIds = Array.from(this.knownSessionIds);
-    await this.detachAll();
-    if (this.tmux) {
-      await Promise.all(
-        sessionIds.map((id) => {
-          const conversationId = parsePtySessionId(id)?.leafId;
-          return conversationId
-            ? killTmuxSession(this.ctx, makeAgentTmuxSessionName(conversationId))
-            : Promise.resolve();
-        })
-      );
+  async destroy(): Promise<void> {
+    const wasKnown = this.known;
+    await this.detach();
+    if (this.tmux && wasKnown) {
+      await killTmuxSession(this.ctx, makeAgentTmuxSessionName(this.sessionId));
     }
-    for (const sessionId of sessionIds) {
-      this.supervisor.forget(sessionId);
-    }
-    this.knownSessionIds.clear();
+    this.supervisor.forget();
+    this.known = false;
   }
 
-  async detachAll(): Promise<void> {
-    for (const [sessionId, pty] of this.sessions) {
-      this.supervisor.stop(sessionId);
-      const conversationId = parsePtySessionId(sessionId)?.leafId;
-      if (conversationId) {
-        switchNotificationPoller.disconnect(conversationId);
-        switchRoomService.clearSession(conversationId);
-      }
+  async detach(): Promise<void> {
+    if (this.pty) {
+      const pty = this.pty;
+      this.supervisor.stop();
+      switchNotificationPoller.disconnect(this.sessionId);
+      switchRoomService.clearSession(this.sessionId);
       try {
         pty.kill();
       } catch {}
-      ptySessionRegistry.unregister(sessionId);
+      ptySessionRegistry.unregister(this.ptySessionId);
+      this.pty = null;
     }
-    this.sessions.clear();
   }
 
   private scheduleReplacement({
@@ -390,14 +365,12 @@ export class LocalConversationProvider implements ConversationProvider {
     isResuming: boolean;
   }): void {
     setTimeout(() => {
-      this.startSessionInternal(conversation, initialSize, isResuming, undefined, true).catch(
-        (e) => {
-          log.error('LocalConversationProvider: replacement failed', {
-            conversationId: conversation.id,
-            error: String(e),
-          });
-        }
-      );
+      this.startInternal(conversation, initialSize, isResuming, undefined, true).catch((e) => {
+        log.error('LocalAgentRuntime: replacement failed', {
+          sessionId: this.sessionId,
+          error: String(e),
+        });
+      });
     }, RESPAWN_DELAY_MS);
   }
 }

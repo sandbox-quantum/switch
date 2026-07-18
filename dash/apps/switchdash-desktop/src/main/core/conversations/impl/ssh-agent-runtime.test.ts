@@ -5,7 +5,7 @@ import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
-import { SshConversationProvider } from './ssh-conversation';
+import { SshAgentRuntime } from './ssh-agent-runtime';
 
 const openSsh2Pty = vi.hoisted(() => vi.fn());
 const buildCommandMock = vi.hoisted(() =>
@@ -113,8 +113,8 @@ function emitReconnected(connectionId: string): void {
 const { events } = await import('@main/lib/events');
 
 type ProviderState = {
-  knownSessionIds: Set<string>;
-  sessions: Map<string, Pty>;
+  known: boolean;
+  pty: Pty | null;
 };
 
 function makeProxy(overrides: Partial<SshClientProxy> = {}): SshClientProxy {
@@ -129,7 +129,7 @@ function makeProxy(overrides: Partial<SshClientProxy> = {}): SshClientProxy {
   } as unknown as SshClientProxy;
 }
 
-function makeCtx(): ConstructorParameters<typeof SshConversationProvider>[0]['ctx'] {
+function makeCtx(): ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'] {
   return { exec: vi.fn(async () => ({ stdout: '', stderr: '' })) } as never;
 }
 
@@ -140,9 +140,9 @@ function sshProvider({
 }: {
   proxy?: SshClientProxy;
   tmux?: boolean;
-  ctx?: ConstructorParameters<typeof SshConversationProvider>[0]['ctx'];
+  ctx?: ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'];
 } = {}) {
-  return new SshConversationProvider({
+  return new SshAgentRuntime({
     projectId: 'project-1',
     sessionId: 'session-1',
     sessionPath: '/repo',
@@ -156,7 +156,7 @@ function sshProvider({
 
 function conversation(): Conversation {
   return {
-    id: 'conversation-1',
+    id: 'session-1',
     projectId: 'project-1',
     sessionId: 'session-1',
     providerId: 'codex',
@@ -185,7 +185,7 @@ function mockSpawn(exitHandlers: Array<Array<(info: PtyExitInfo) => void>>): voi
   });
 }
 
-describe('SshConversationProvider', () => {
+describe('SshAgentRuntime', () => {
   beforeEach(() => {
     vi.useRealTimers();
     openSsh2Pty.mockReset();
@@ -197,7 +197,7 @@ describe('SshConversationProvider', () => {
     httpPostJsonOverChannel.mockClear();
     vi.mocked(events.emit).mockClear();
     connectionListeners.length = 0;
-    ptySessionRegistry.unregister('project-1:session-1:conversation-1');
+    ptySessionRegistry.unregister('project-1:session-1:session-1');
   });
 
   it('spawns the agent over SSH and registers a remote pty', async () => {
@@ -206,7 +206,7 @@ describe('SshConversationProvider', () => {
     const item = conversation();
     const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-    await sshProvider().startSession(item);
+    await sshProvider().start(item);
 
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
     expect(resolveSshCommand).toHaveBeenCalledWith(
@@ -221,7 +221,7 @@ describe('SshConversationProvider', () => {
   it('propagates a failed SSH channel open as an error', async () => {
     openSsh2Pty.mockResolvedValue({ success: false, error: new Error('channel refused') });
 
-    await expect(sshProvider().startSession(conversation())).rejects.toThrow('channel refused');
+    await expect(sshProvider().start(conversation())).rejects.toThrow('channel refused');
   });
 
   it('restarts a resumed session fresh after it exits', async () => {
@@ -231,7 +231,7 @@ describe('SshConversationProvider', () => {
       mockSpawn(exitHandlers);
       const item = conversation();
 
-      await sshProvider().startSession(item, { cols: 80, rows: 24 }, true, 'continue');
+      await sshProvider().start(item, { cols: 80, rows: 24 }, true, 'continue');
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
 
@@ -252,7 +252,7 @@ describe('SshConversationProvider', () => {
       const proxy = makeProxy();
       const item = conversation();
 
-      await sshProvider({ proxy }).startSession(item);
+      await sshProvider({ proxy }).start(item);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 127 });
       await vi.advanceTimersByTimeAsync(500);
 
@@ -271,9 +271,9 @@ describe('SshConversationProvider', () => {
       const provider = sshProvider();
       const item = conversation();
 
-      await provider.startSession(item);
+      await provider.start(item);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
-      await provider.stopSession(item.id);
+      await provider.stop();
       await vi.advanceTimersByTimeAsync(500);
 
       expect(openSsh2Pty).toHaveBeenCalledTimes(1);
@@ -288,7 +288,7 @@ describe('SshConversationProvider', () => {
     const provider = sshProvider();
     const item = conversation();
 
-    await provider.startSession(item);
+    await provider.start(item);
     vi.mocked(events.emit).mockClear();
     for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 1 });
 
@@ -303,7 +303,7 @@ describe('SshConversationProvider', () => {
     mockSpawn(exitHandlers);
     const item = conversation();
 
-    await sshProvider({ tmux: true }).startSession(item);
+    await sshProvider({ tmux: true }).start(item);
 
     expect(deployAndLaunch).toHaveBeenCalledTimes(1);
     const env = (resolveSshCommand.mock.calls[0] as unknown[])[2] as Record<string, string>;
@@ -318,7 +318,7 @@ describe('SshConversationProvider', () => {
     const proxy = makeProxy();
     const item = conversation();
 
-    await sshProvider({ proxy, tmux: true }).startSession(item);
+    await sshProvider({ proxy, tmux: true }).start(item);
     await vi.waitFor(() => expect(proxy.forwardOut).toHaveBeenCalledWith(9999));
   });
 
@@ -332,8 +332,8 @@ describe('SshConversationProvider', () => {
     const provider = sshProvider({ proxy, tmux: true });
     const item = conversation();
 
-    await provider.startSession(item);
-    await provider.stopSession(item.id);
+    await provider.start(item);
+    await provider.stop();
 
     expect(sidecarStop).not.toHaveBeenCalled();
   });
@@ -345,8 +345,8 @@ describe('SshConversationProvider', () => {
     const provider = sshProvider({ proxy, tmux: true });
     const item = conversation();
 
-    await provider.startSession(item);
-    await provider.stopSession(item.id);
+    await provider.start(item);
+    await provider.stop();
 
     expect(httpPostJsonOverChannel).toHaveBeenCalledWith(
       expect.anything(),
@@ -363,8 +363,8 @@ describe('SshConversationProvider', () => {
     const provider = sshProvider({ tmux: false });
     const item = conversation();
 
-    await provider.startSession(item);
-    await provider.stopSession(item.id);
+    await provider.start(item);
+    await provider.stop();
 
     expect(httpPostJsonOverChannel).not.toHaveBeenCalled();
   });
@@ -374,7 +374,7 @@ describe('SshConversationProvider', () => {
     mockSpawn(exitHandlers);
     const item = conversation();
 
-    await sshProvider({ tmux: true }).startSession(item);
+    await sshProvider({ tmux: true }).start(item);
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
     expect(deployAndLaunch).toHaveBeenCalledTimes(1);
 
@@ -393,7 +393,7 @@ describe('SshConversationProvider', () => {
     mockSpawn(exitHandlers);
     const item = conversation();
 
-    await sshProvider({ tmux: true }).startSession(item);
+    await sshProvider({ tmux: true }).start(item);
     for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 1 });
 
     emitReconnected('ssh-OTHER');
@@ -406,13 +406,12 @@ describe('SshConversationProvider', () => {
     mockSpawn(exitHandlers);
     const provider = sshProvider();
     const item = conversation();
-    const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-    await provider.startSession(item);
-    const pty = (provider as unknown as ProviderState).sessions.get(sessionId)!;
-    await provider.stopSession(item.id);
+    await provider.start(item);
+    const pty = (provider as unknown as ProviderState).pty!;
+    await provider.stop();
 
     expect(pty.kill).toHaveBeenCalled();
-    expect((provider as unknown as ProviderState).knownSessionIds.has(sessionId)).toBe(false);
+    expect((provider as unknown as ProviderState).known).toBe(false);
   });
 });

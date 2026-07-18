@@ -193,24 +193,19 @@ function AgentRow({ entry }: { entry: Entry }) {
         >
           {norm.toFixed(0)}% · {formatBytes(entry.memory)}
         </span>
-        <StopButton
-          sessionId={entry.sessionId}
-          label={label}
-          armed={armed}
-          onArmedChange={setArmed}
-        />
+        <StopButton entry={entry} label={label} armed={armed} onArmedChange={setArmed} />
       </div>
     </div>
   );
 }
 
 function StopButton({
-  sessionId,
+  entry,
   label,
   armed,
   onArmedChange,
 }: {
-  sessionId: string;
+  entry: Entry;
   label: string;
   armed: boolean;
   onArmedChange: (armed: boolean) => void;
@@ -244,7 +239,13 @@ function StopButton({
       clearReset();
       setStopping(true);
       try {
-        await rpc.pty.stopSession(sessionId);
+        // Agent PTYs are session lifecycle (routed through the agent runtime so
+        // they stay stopped); terminals and lifecycle scripts are raw PTY stops.
+        if (entry.providerId) {
+          await rpc.sessions.stopAgent(entry.scopeId);
+        } else {
+          await rpc.pty.stopSession(entry.sessionId);
+        }
         await appState.resourceMonitor.refresh();
         setStopping(false);
         onArmedChange(false);
@@ -253,7 +254,7 @@ function StopButton({
         onArmedChange(false);
       }
     },
-    [armed, stopping, sessionId, clearReset, onArmedChange]
+    [armed, stopping, entry, clearReset, onArmedChange]
   );
 
   if (armed) {

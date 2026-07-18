@@ -54,10 +54,10 @@ async function executeTeardown(
   mode: TeardownMode
 ): Promise<void> {
   if (mode === 'detach') {
-    await session.conversations.detachAll();
+    await session.agent.detach();
     await session.terminals.detachAll();
   } else {
-    await session.conversations.destroyAll();
+    await session.agent.destroy();
     await session.terminals.destroyAll();
   }
   await workspaceRegistry.release(workspaceId, mode);
@@ -179,7 +179,7 @@ class SessionRuntimeManager {
           const stored = this._lifecycle.get(id);
           if (!stored) return [];
           return [
-            stored.sessionProvider.conversations.detachAll(),
+            stored.sessionProvider.agent.detach(),
             stored.sessionProvider.terminals.detachAll(),
           ];
         })

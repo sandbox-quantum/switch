@@ -22,7 +22,7 @@ export async function deleteConversation(
 
   const session = resolveSession(projectId, sessionId);
   if (session) {
-    await session.conversations.stopSession(conversationId);
+    await session.agent.stop();
   } else {
     const project = projectManager.getProject(projectId);
     if (project) {

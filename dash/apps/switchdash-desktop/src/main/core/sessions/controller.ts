@@ -51,6 +51,9 @@ export const sessionController = createRPCController({
   async teardownSession(_projectId: string, sessionId: string) {
     return sessionService.teardown(sessionId, 'terminate');
   },
+  async stopAgent(sessionId: string) {
+    return sessionService.stopAgent(sessionId);
+  },
   async provisionWorkspace(sessionId: string) {
     return sessionService.provisionWorkspace(sessionId);
   },

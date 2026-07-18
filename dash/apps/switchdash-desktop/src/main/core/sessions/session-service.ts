@@ -153,6 +153,18 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     return sessionRuntimeManager.teardownSession(sessionId, mode);
   }
 
+  /**
+   * Stop a session's agent for good without deleting the session row. Routes
+   * through the agent runtime so the PTY leaves respawn tracking and stays
+   * stopped (a bare `pty.kill` would be respawned by the supervisor ~500ms
+   * later). No-op when the session has no live runtime.
+   */
+  async stopAgent(sessionId: string): Promise<void> {
+    const session = sessionRuntimeManager.getSession(sessionId);
+    if (!session) return;
+    await session.agent.stop();
+  }
+
   async deleteSession(projectId: string, sessionId: string): Promise<void> {
     await deleteSession(projectId, sessionId);
     this._hooks.callHookBackground('session:deleted', sessionId, projectId);

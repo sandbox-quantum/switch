@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CONVERSATION_FRESH_RECOVERY_GRACE_MS } from '@main/core/conversations/conversation-session-supervisor';
+import { AGENT_FRESH_RECOVERY_GRACE_MS } from '@main/core/conversations/agent-runtime-supervisor';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { ptyExitChannel } from '@shared/core/pty/ptyEvents';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
-import { LocalConversationProvider } from './local-conversation';
+import { LocalAgentRuntime } from './local-agent-runtime';
 
 const spawnLocalPty = vi.hoisted(() => vi.fn());
 const buildCommandMock = vi.hoisted(() =>
@@ -154,8 +154,8 @@ const { agentHookService } = await import('@main/core/agent-hooks/agent-hook-ser
 const { appSettingsService } = await import('@main/core/settings/settings-service');
 
 type RespawnState = {
-  knownSessionIds: Set<string>;
-  sessions: Map<string, Pty>;
+  known: boolean;
+  pty: Pty | null;
 };
 
 function localProvider({
@@ -173,10 +173,10 @@ function localProvider({
   ctx = {} as never,
 }: {
   tmux?: boolean;
-  shellProfile?: ConstructorParameters<typeof LocalConversationProvider>[0]['shellProfile'];
-  ctx?: ConstructorParameters<typeof LocalConversationProvider>[0]['ctx'];
+  shellProfile?: ConstructorParameters<typeof LocalAgentRuntime>[0]['shellProfile'];
+  ctx?: ConstructorParameters<typeof LocalAgentRuntime>[0]['ctx'];
 } = {}) {
-  return new LocalConversationProvider({
+  return new LocalAgentRuntime({
     projectId: 'project-1',
     sessionId: 'session-1',
     sessionPath: '/tmp/session-1',
@@ -188,7 +188,7 @@ function localProvider({
 
 function conversation(): Conversation {
   return {
-    id: 'conversation-1',
+    id: 'session-1',
     projectId: 'project-1',
     sessionId: 'session-1',
     providerId: 'codex',
@@ -236,7 +236,7 @@ describe('conversation provider respawn state', () => {
     vi.mocked(events.emit).mockClear();
     vi.mocked(agentHookService.getPort).mockReturnValue(0);
     vi.mocked(agentHookService.getToken).mockReturnValue('token');
-    ptySessionRegistry.unregister('project-1:session-1:conversation-1');
+    ptySessionRegistry.unregister('project-1:session-1:session-1');
   });
 
   it('passes global editor variables to local agent sessions', async () => {
@@ -248,7 +248,7 @@ describe('conversation provider respawn state', () => {
       const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
       spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
 
-      await localProvider().startSession(conversation());
+      await localProvider().start(conversation());
 
       const request = spawnLocalPty.mock.calls[0][0] as { env: Record<string, string> };
       expect(request.env.EDITOR).toBe('zed');
@@ -268,21 +268,20 @@ describe('conversation provider respawn state', () => {
   });
 
   it('uses the injected shell profile for local agent sessions', async () => {
-    const shellProfile: ConstructorParameters<typeof LocalConversationProvider>[0]['shellProfile'] =
-      {
-        id: 'bash',
-        resolvedShellId: 'bash',
-        resolvedFromSystem: false,
-        executable: 'bash',
-        available: true,
-        family: 'posix',
-        interactiveArgs: ['-il'],
-        commandArgs: ['-lc'],
-      };
+    const shellProfile: ConstructorParameters<typeof LocalAgentRuntime>[0]['shellProfile'] = {
+      id: 'bash',
+      resolvedShellId: 'bash',
+      resolvedFromSystem: false,
+      executable: 'bash',
+      available: true,
+      family: 'posix',
+      interactiveArgs: ['-il'],
+      commandArgs: ['-lc'],
+    };
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
 
-    await localProvider({ shellProfile }).startSession(conversation());
+    await localProvider({ shellProfile }).start(conversation());
 
     expect(spawnLocalPty).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -293,21 +292,20 @@ describe('conversation provider respawn state', () => {
   });
 
   it('sets SHELL to the injected POSIX shell for local agent sessions', async () => {
-    const shellProfile: ConstructorParameters<typeof LocalConversationProvider>[0]['shellProfile'] =
-      {
-        id: 'bash',
-        resolvedShellId: 'bash',
-        resolvedFromSystem: false,
-        executable: '/bin/bash',
-        available: true,
-        family: 'posix',
-        interactiveArgs: ['-il'],
-        commandArgs: ['-lc'],
-      };
+    const shellProfile: ConstructorParameters<typeof LocalAgentRuntime>[0]['shellProfile'] = {
+      id: 'bash',
+      resolvedShellId: 'bash',
+      resolvedFromSystem: false,
+      executable: '/bin/bash',
+      available: true,
+      family: 'posix',
+      interactiveArgs: ['-il'],
+      commandArgs: ['-lc'],
+    };
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
 
-    await localProvider({ shellProfile }).startSession(conversation());
+    await localProvider({ shellProfile }).start(conversation());
 
     expect(spawnLocalPty).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -321,7 +319,7 @@ describe('conversation provider respawn state', () => {
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     const item = { ...conversation(), providerId: 'opencode' as const };
 
-    await localProvider().startSession(item);
+    await localProvider().start(item);
 
     expect(installPluginMock).toHaveBeenCalledWith(expect.anything(), {
       kind: 'workspace',
@@ -343,7 +341,7 @@ describe('conversation provider respawn state', () => {
       const initialPrompt = 'continue';
       const item = conversation();
 
-      await provider.startSession(item, size, true, initialPrompt);
+      await provider.start(item, size, true, initialPrompt);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
 
@@ -368,7 +366,7 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider();
       const item = conversation();
 
-      await provider.startSession(item, undefined, true);
+      await provider.start(item, undefined, true);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
       for (const handler of exitHandlers[1] ?? []) handler({ exitCode: 0 });
@@ -399,10 +397,10 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider();
       const item = conversation();
 
-      await provider.startSession(item, undefined, true);
+      await provider.start(item, undefined, true);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
-      await vi.advanceTimersByTimeAsync(CONVERSATION_FRESH_RECOVERY_GRACE_MS);
+      await vi.advanceTimersByTimeAsync(AGENT_FRESH_RECOVERY_GRACE_MS);
       for (const handler of exitHandlers[1] ?? []) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
 
@@ -423,7 +421,7 @@ describe('conversation provider respawn state', () => {
     const item = conversation();
     const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-    await provider.startSession(item);
+    await provider.start(item);
     vi.mocked(events.emit).mockClear();
     for (const handler of exitHandlers) handler(exitInfo);
 
@@ -443,7 +441,7 @@ describe('conversation provider respawn state', () => {
       const item = conversation();
       const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-      await provider.startSession(item, { cols: 100, rows: 40 }, true);
+      await provider.start(item, { cols: 100, rows: 40 }, true);
       ptySessionRegistry.resize(sessionId, 68, 42);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
@@ -469,7 +467,7 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider();
       const item = conversation();
 
-      await provider.startSession(item);
+      await provider.start(item);
 
       for (let index = 0; index < 2; index += 1) {
         for (const handler of exitHandlers[index] ?? []) handler({ exitCode: 1 });
@@ -497,7 +495,7 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider();
       const item = conversation();
 
-      await provider.startSession(item);
+      await provider.start(item);
       for (const handler of exitHandlers) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
 
@@ -515,9 +513,9 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider();
       const item = conversation();
 
-      await provider.startSession(item);
+      await provider.start(item);
       for (const handler of exitHandlers) handler({ exitCode: 0 });
-      await provider.stopSession(item.id);
+      await provider.stop();
       await vi.advanceTimersByTimeAsync(500);
 
       expect(spawnLocalPty).toHaveBeenCalledTimes(1);
@@ -534,7 +532,7 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider({ tmux: true });
       const item = conversation();
 
-      await provider.startSession(item);
+      await provider.start(item);
       vi.mocked(events.emit).mockClear();
       for (const handler of exitHandlers) handler({ exitCode: 0 });
       await vi.advanceTimersByTimeAsync(500);
@@ -561,17 +559,16 @@ describe('conversation provider respawn state', () => {
     };
     const provider = localProvider({ tmux: true, ctx: ctx as never });
     const item = conversation();
-    const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-    await provider.startSession(item);
+    await provider.start(item);
     vi.mocked(events.emit).mockClear();
-    await provider.detachSession(item.id);
+    await provider.dehydrate();
     for (const handler of exitHandlers) handler({ exitCode: 0 });
 
     expect(pty.kill).toHaveBeenCalledTimes(1);
     expect(ctx.exec).not.toHaveBeenCalled();
     expect(events.emit).not.toHaveBeenCalledWith(agentSessionExitedChannel, expect.anything());
-    expect((provider as unknown as RespawnState).knownSessionIds.has(sessionId)).toBe(true);
+    expect((provider as unknown as RespawnState).known).toBe(true);
   });
 
   it('kills tmux when explicitly stopping a detached local conversation', async () => {
@@ -582,18 +579,17 @@ describe('conversation provider respawn state', () => {
     };
     const provider = localProvider({ tmux: true, ctx: ctx as never });
     const item = conversation();
-    const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-    await provider.startSession(item);
-    await provider.detachSession(item.id);
-    await provider.stopSession(item.id);
+    await provider.start(item);
+    await provider.dehydrate();
+    await provider.stop();
 
     expect(ctx.exec).toHaveBeenCalledWith('tmux', [
       'kill-session',
       '-t',
       expect.stringContaining(Buffer.from(`conv-${item.id}`, 'utf8').toString('base64url')),
     ]);
-    expect((provider as unknown as RespawnState).knownSessionIds.has(sessionId)).toBe(false);
+    expect((provider as unknown as RespawnState).known).toBe(false);
   });
 
   it('ignores stale local attach exits after a tmux conversation is rehydrated', async () => {
@@ -604,15 +600,14 @@ describe('conversation provider respawn state', () => {
     spawnLocalPty.mockReturnValueOnce(firstPty).mockReturnValueOnce(secondPty);
     const provider = localProvider({ tmux: true });
     const item = conversation();
-    const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
 
-    await provider.startSession(item);
-    await provider.detachSession(item.id);
-    await provider.startSession(item);
+    await provider.start(item);
+    await provider.dehydrate();
+    await provider.start(item);
     vi.mocked(events.emit).mockClear();
     for (const handler of firstExitHandlers) handler({ exitCode: 0 });
 
-    expect((provider as unknown as RespawnState).sessions.get(sessionId)).toBe(secondPty);
+    expect((provider as unknown as RespawnState).pty).toBe(secondPty);
     expect(events.emit).not.toHaveBeenCalledWith(agentSessionExitedChannel, expect.anything());
   });
 });
