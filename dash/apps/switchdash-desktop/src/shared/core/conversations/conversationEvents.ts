@@ -9,10 +9,6 @@ export const conversationChangedChannel = defineEvent<{
   changes: Partial<Pick<Conversation, 'lastInteractedAt' | 'title' | 'providerSessionId'>>;
 }>('conversation:changed');
 
-export const conversationCreatedChannel = defineEvent<{
-  conversation: Conversation;
-}>('conversation:created');
-
 export const conversationAgentStatusChangedChannel = defineEvent<{
   conversationId: string;
   sessionId: string;

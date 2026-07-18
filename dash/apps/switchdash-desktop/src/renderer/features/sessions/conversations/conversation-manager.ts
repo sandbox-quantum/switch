@@ -9,12 +9,8 @@ import { soundPlayer } from '@renderer/utils/soundPlayer';
 import {
   conversationAgentStatusChangedChannel,
   conversationChangedChannel,
-  conversationCreatedChannel,
 } from '@shared/core/conversations/conversationEvents';
-import {
-  type Conversation,
-  type CreateConversationParams,
-} from '@shared/core/conversations/conversations';
+import { type Conversation } from '@shared/core/conversations/conversations';
 import {
   agentSessionExitedChannel,
   type AgentStatus,
@@ -25,7 +21,6 @@ import { makePtySessionId } from '@shared/core/pty/ptySessionId';
 export class ConversationManagerStore implements IDisposable {
   private offAgentStatusChanged: (() => void) | null = null;
   private offSessionExited: (() => void) | null = null;
-  private offConversationCreated: (() => void) | null = null;
   private offConversationChanges: (() => void) | null = null;
   private readonly _disposeReaction: () => void;
 
@@ -94,17 +89,7 @@ export class ConversationManagerStore implements IDisposable {
 
     this.offAgentStatusChanged = this.listenToAgentStatusChanged();
     this.offSessionExited = this.listenToSessionExited();
-    this.offConversationCreated = this.listenToConversationCreated();
     this.offConversationChanges = this.listenToConversationChanges();
-  }
-
-  private addConversation(conversation: Conversation): void {
-    if (!this.conversations.has(conversation.id)) {
-      this.conversations.set(conversation.id, new ConversationStore(conversation));
-    }
-    if (!this.sessions.has(conversation.id)) {
-      this.sessions.set(conversation.id, this.createSession(conversation));
-    }
   }
 
   private listenToAgentStatusChanged(): () => void {
@@ -136,16 +121,6 @@ export class ConversationManagerStore implements IDisposable {
     });
   }
 
-  private listenToConversationCreated(): () => void {
-    return events.on(conversationCreatedChannel, ({ conversation }) => {
-      if (conversation.sessionId !== this.sessionId || conversation.projectId !== this.projectId)
-        return;
-      runInAction(() => {
-        this.addConversation(conversation);
-      });
-    });
-  }
-
   private listenToConversationChanges(): () => void {
     return events.on(conversationChangedChannel, (event) => {
       if (event.sessionId !== this.sessionId) return;
@@ -171,17 +146,6 @@ export class ConversationManagerStore implements IDisposable {
     if (hasUnseenError) return 'error';
     if (hasUnseenCompleted) return 'completed';
     return null;
-  }
-
-  async createConversation(params: CreateConversationParams): Promise<Conversation> {
-    const conversation = await rpc.sessions.createConversation(params);
-    runInAction(() => {
-      this.addConversation(conversation);
-      if (params.initialPrompt?.trim()) {
-        this.conversations.get(conversation.id)?.setWorking();
-      }
-    });
-    return conversation;
   }
 
   async markConversationWorking(conversationId: string): Promise<void> {
@@ -260,8 +224,6 @@ export class ConversationManagerStore implements IDisposable {
     this.offAgentStatusChanged = null;
     this.offSessionExited?.();
     this.offSessionExited = null;
-    this.offConversationCreated?.();
-    this.offConversationCreated = null;
     this.offConversationChanges?.();
     this.offConversationChanges = null;
     for (const session of this.sessions.values()) {

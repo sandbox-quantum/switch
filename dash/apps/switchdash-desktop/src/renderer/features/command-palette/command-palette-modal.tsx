@@ -65,7 +65,6 @@ const GROUP_CLASS = cn(
 // Ordered allowlists for the "Suggested Actions" empty-state group. Defined at
 // module scope so the arrays keep stable references across renders.
 const SESSION_SUGGESTED = [
-  'session.newConversation',
   'session.sidebarChanges',
   'session.sidebarFiles',
   'session.sidebarConversations',

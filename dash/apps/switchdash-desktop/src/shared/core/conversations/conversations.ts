@@ -25,15 +25,3 @@ export type RenameConversationParams = {
   conversationId: string;
   newTitle: string;
 };
-
-export type CreateConversationParams = {
-  id: string;
-  projectId: string;
-  sessionId: string;
-  provider: AgentProviderId;
-  title: string;
-  autoApprove?: boolean;
-  isInitialConversation?: boolean;
-  initialSize?: { cols: number; rows: number };
-  initialPrompt?: string;
-};

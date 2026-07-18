@@ -2,7 +2,6 @@ import { app, clipboard, Menu, shell } from 'electron';
 import { events } from '@main/lib/events';
 import {
   menuCheckForUpdatesChannel,
-  menuCloseTabChannel,
   menuGiveFeedbackChannel,
   menuOpenSettingsChannel,
   menuQuitRequestedChannel,
@@ -94,11 +93,7 @@ export function setupApplicationMenu(): void {
             ]
           : []),
         isMac
-          ? {
-              label: 'Close Tab',
-              accelerator: 'CmdOrCtrl+W',
-              click: () => events.emit(menuCloseTabChannel, undefined),
-            }
+          ? { role: 'close' as const }
           : {
               label: 'Quit',
               accelerator: 'CmdOrCtrl+Q',

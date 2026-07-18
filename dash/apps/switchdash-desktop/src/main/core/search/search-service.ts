@@ -3,7 +3,6 @@ import { db, sqlite } from '@main/db/client';
 import { agents, projects, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS } from '@shared/commands';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import type { CommandPaletteQuery, SearchItem, SearchItemKind } from '@shared/core/search';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { Project } from '@shared/projects';
@@ -44,9 +43,6 @@ class SearchService {
     projectEvents.on('project:created', (project) => this.upsertProject(project));
     projectEvents.on('project:deleted', (projectId) => this.removeByType('project', projectId));
 
-    conversationEvents.on('conversation:created', (conversation) =>
-      this.upsertConversation(conversation)
-    );
     conversationEvents.on(
       'conversation:renamed',
       (conversationId, projectId, sessionId, newTitle) => {
@@ -222,22 +218,6 @@ class SearchService {
     } catch (e) {
       log.warn('SearchService: upsertProject failed', {
         projectId: project.id,
-        error: String(e),
-      });
-    }
-  }
-
-  private upsertConversation(conversation: Conversation): void {
-    try {
-      sqlite
-        .prepare(
-          `INSERT OR REPLACE INTO search_index(item_type, item_id, project_id, session_id, title, keywords)
-           VALUES ('conversation', ?, ?, ?, ?, '')`
-        )
-        .run(conversation.id, conversation.projectId, conversation.sessionId, conversation.title);
-    } catch (e) {
-      log.warn('SearchService: upsertConversation failed', {
-        conversationId: conversation.id,
         error: String(e),
       });
     }

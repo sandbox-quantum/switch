@@ -203,25 +203,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     category: 'Session View',
     ignoreWhenMonacoFocused: true,
   },
-  tabClose: {
-    defaultHotkey: 'Mod+W',
-    label: 'Close Tab',
-    description: 'Close the active tab',
-    category: 'Tab Navigation',
-    conflictBehavior: 'allow',
-  },
-  newConversation: {
-    defaultHotkey: 'Mod+T',
-    label: 'New Conversation',
-    description: 'Create a new conversation in the current session',
-    category: 'Session View',
-  },
-  newConversationSplitRight: {
-    defaultHotkey: 'Mod+D',
-    label: 'New Conversation in Right Split',
-    description: 'Create a new conversation in a split pane to the right',
-    category: 'Session View',
-  },
   newTerminal: {
     defaultHotkey: 'Mod+Shift+T',
     label: 'New Terminal',

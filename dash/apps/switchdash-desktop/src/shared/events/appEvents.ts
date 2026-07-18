@@ -12,7 +12,6 @@ export const menuOpenSettingsChannel = defineEvent<void>('menu:open-settings');
 export const menuCheckForUpdatesChannel = defineEvent<void>('menu:check-for-updates');
 export const menuUndoChannel = defineEvent<void>('menu:undo');
 export const menuRedoChannel = defineEvent<void>('menu:redo');
-export const menuCloseTabChannel = defineEvent<void>('menu:close-tab');
 export const menuQuitRequestedChannel = defineEvent<void>('menu:quit-requested');
 export const menuGiveFeedbackChannel = defineEvent<void>('menu:give-feedback');
 

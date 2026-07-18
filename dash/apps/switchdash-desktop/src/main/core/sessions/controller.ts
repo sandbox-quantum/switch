@@ -1,4 +1,3 @@
-import { createConversation } from '@main/core/conversations/createConversation';
 import { dehydrateConversation } from '@main/core/conversations/dehydrateConversation';
 import { deleteConversation } from '@main/core/conversations/deleteConversation';
 import { getConversations } from '@main/core/conversations/getConversations';
@@ -15,7 +14,6 @@ import { sessionService } from './session-service';
 export const sessionController = createRPCController({
   // Ex-conversation engine ops (a conversation is a session in switchdash).
   getConversations,
-  createConversation,
   deleteConversation,
   hydrateConversation,
   dehydrateConversation,

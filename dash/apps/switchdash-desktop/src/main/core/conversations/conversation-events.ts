@@ -1,10 +1,8 @@
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 export type ConversationCrudHooks = {
-  'conversation:created': (conversation: Conversation) => void | Promise<void>;
   'conversation:renamed': (
     conversationId: string,
     projectId: string,
