@@ -1,9 +1,9 @@
 import { eq, inArray } from 'drizzle-orm';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
-import { conversationEvents } from '@main/core/conversations/conversation-events';
-import { probeAgentSidecar } from '@main/core/conversations/impl/ensure-agent-sidecar';
-import type { SidecarEndpoint } from '@main/core/conversations/impl/remote-sidecar-launcher';
-import { httpGetJsonOverChannel } from '@main/core/conversations/impl/sidecar-http';
+import { probeAgentSidecar } from '@main/core/agent-runtime/impl/ensure-agent-sidecar';
+import type { SidecarEndpoint } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
+import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-http';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
@@ -86,8 +86,8 @@ class RemoteSessionReconciler {
     // sidecar and surfaced here (the owning provider has already torn down its
     // PTY). Delete the local row + tombstone it so this client stops showing a
     // ghost and the next reconcile tick cannot re-adopt it from a stale snapshot.
-    conversationEvents.on('conversation:remote-terminated', ({ conversationId }) => {
-      void this.handleRemoteTerminated(conversationId);
+    sessionHooks.on('session:remote-terminated', ({ terminatedSessionId }) => {
+      void this.handleRemoteTerminated(terminatedSessionId);
     });
   }
 
@@ -100,7 +100,7 @@ class RemoteSessionReconciler {
   /**
    * Delete a session's local row, tombstone it (so the next reconcile tick cannot
    * re-adopt it from a stale snapshot), drop it from the adopted/missing tracking,
-   * and emit `conversation:deleted` so the UI updates. Returns false (and does not
+   * and emit `session:deleted` so the UI updates. Returns false (and does not
    * emit) if the DB delete fails. Idempotent — deleting an already-gone row is a
    * no-op. Shared by the `session-terminated` push and the vanished-session prune.
    */
@@ -128,7 +128,7 @@ class RemoteSessionReconciler {
     // `session-terminated`) still "succeeds", so gate the event + log on an
     // actual row removal to avoid redundant deleted-events and log spam.
     if (deleted.changes === 0) return false;
-    conversationEvents._emit('conversation:deleted', conversationId);
+    sessionHooks._emit('session:deleted', conversationId);
     // Tell the renderer to drop the row too. Unlike a user-initiated delete
     // (the renderer removes it itself), this removal originates in the main
     // process, so without an IPC event every attached window shows a ghost row

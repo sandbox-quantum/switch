@@ -3,7 +3,6 @@ import { toast } from 'sonner';
 import { getProjectManagerStore } from '@renderer/features/projects/stores/project-selectors';
 import type { ProjectSettingsStore } from '@renderer/features/projects/stores/project-settings-store';
 import { events, rpc } from '@renderer/lib/ipc';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
   lifecycleScriptStatusChannel,
@@ -16,6 +15,7 @@ import {
 import type {
   CreateSessionError,
   CreateSessionParams,
+  Session,
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
 import { conversationRegistry } from './conversation-registry';
@@ -177,26 +177,15 @@ export class SessionManagerStore {
 
   loadSessions(): Promise<void> {
     if (!this._loadPromise) {
-      this._loadPromise = Promise.all([
-        rpc.sessions.getSessions(this.projectId),
-        rpc.sessions.getConversationsForProject(this.projectId),
-      ])
-        .then(([sessions, allConversations]) => {
-          const conversationsBySession = new Map<string, Conversation[]>();
-          for (const conv of allConversations) {
-            const list = conversationsBySession.get(conv.sessionId) ?? [];
-            list.push(conv);
-            conversationsBySession.set(conv.sessionId, list);
-          }
+      this._loadPromise = rpc.sessions
+        .getSessions(this.projectId)
+        .then((sessions) => {
           runInAction(() => {
             for (const t of sessions) {
               this.sessions.set(t.id, createUnprovisionedSession(this.projectId, t));
-              // Preload conversations for each session so sidebar badges are available immediately.
-              conversationRegistry.acquire(
-                t.id,
-                this.projectId,
-                conversationsBySession.get(t.id) ?? []
-              );
+              // A session is its own (single) conversation — seed the manager with
+              // the session record so sidebar badges are available immediately.
+              conversationRegistry.acquire(t.id, this.projectId, [t]);
               terminalRegistry.acquire(t.id, this.projectId);
             }
           });
@@ -245,17 +234,23 @@ export class SessionManagerStore {
 
     runInAction(() => {
       // A session is its own (single) conversation in switchdash; create the
-      // optimistic conversation record keyed by the session id.
-      const optimistic: Conversation = {
+      // optimistic session record keyed by the session id.
+      const now = new Date().toISOString();
+      const optimistic: Session = {
         id: params.id,
-        projectId: this.projectId,
-        sessionId: params.id,
+        agentId: params.agentId,
         providerId: providerId as AgentProviderId,
         title: params.title,
-        lastInteractedAt: null,
+        shellId: params.shellId ?? 'system',
+        status: 'in_progress',
+        statusChangedAt: now,
+        agentSessionId: null,
+        isInitialSession: true,
+        isPinned: false,
         autoApprove: params.autoApprove ?? false,
         subagentName: params.subagentName,
-        isInitialConversation: true,
+        createdAt: now,
+        updatedAt: now,
       };
       const conversationManager = conversationRegistry.acquire(params.id, this.projectId, [
         optimistic,

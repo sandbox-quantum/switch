@@ -11,7 +11,7 @@ export type SessionWithAgent = {
 
 /**
  * Loads a session row joined with its owning agent, exposing the agent's
- * `projectId` and `providerId` (denormalised onto the conversation/session view).
+ * `projectId` and `providerId` (denormalised onto the session view).
  */
 export async function loadSessionWithAgent(
   sessionId: string

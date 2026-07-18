@@ -2,8 +2,8 @@ import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { versionedJsonColumn } from '@main/db/versioned-column';
 import { agentRemoteConfig, type AgentConnectionKind } from '@shared/core/agents/agent-connection';
-import { conversationConfig } from '@shared/core/conversations/conversation-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { sessionConfig } from '@shared/core/sessions/session-config';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
 // ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ export const sessions = sqliteTable(
       .notNull()
       .references(() => agents.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
-    config: versionedJsonColumn(conversationConfig)('config'),
+    config: versionedJsonColumn(sessionConfig)('config'),
     shellId: text('shell_id').$type<TerminalShellId>().notNull().default('system'),
     status: text('status'),
     agentSessionId: text('agent_session_id'),

@@ -1,6 +1,6 @@
-import { LocalAgentRuntime } from '@main/core/conversations/impl/local-agent-runtime';
-import { SshAgentRuntime } from '@main/core/conversations/impl/ssh-agent-runtime';
-import type { AgentRuntimeProvider } from '@main/core/conversations/types';
+import { LocalAgentRuntime } from '@main/core/agent-runtime/impl/local-agent-runtime';
+import { SshAgentRuntime } from '@main/core/agent-runtime/impl/ssh-agent-runtime';
+import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';

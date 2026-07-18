@@ -1,18 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
-import type { Conversation } from '@shared/core/conversations/conversations';
+import type { Session } from '@shared/core/sessions/sessions';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 
-function makeConversation(providerId: Conversation['providerId']): Conversation {
+function makeSession(providerId: Session['providerId']): Session {
+  const now = '2024-01-01T00:00:00.000Z';
   return {
-    id: 'conv-1',
-    projectId: 'proj-1',
-    sessionId: 'session-1',
+    id: 'session-1',
+    agentId: 'agent-1',
     providerId,
     title: '',
+    shellId: 'system',
+    status: 'in_progress',
+    statusChangedAt: now,
+    agentSessionId: null,
+    isInitialSession: false,
+    isPinned: false,
     autoApprove: false,
-    lastInteractedAt: null,
-    isInitialConversation: false,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -57,7 +63,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('hermes'),
+      session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
     });
@@ -75,7 +81,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('hermes'),
+      session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
     });
@@ -88,7 +94,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('hermes'),
+      session: makeSession('hermes'),
       initialPrompt: 'line one\nline two',
       isResuming: false,
     });
@@ -102,7 +108,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('opencode'),
+      session: makeSession('opencode'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
     });
@@ -116,7 +122,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('grok'),
+      session: makeSession('grok'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
     });
@@ -130,7 +136,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('claude'),
+      session: makeSession('claude'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
     });
@@ -144,7 +150,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('hermes'),
+      session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: true,
     });
@@ -158,7 +164,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('hermes'),
+      session: makeSession('hermes'),
       initialPrompt: '   ',
       isResuming: false,
     });
@@ -172,7 +178,7 @@ describe('scheduleInitialPromptInjection', () => {
     const { pty, write, emitData, emitExit } = makePty();
     scheduleInitialPromptInjection({
       pty,
-      conversation: makeConversation('hermes'),
+      session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
     });

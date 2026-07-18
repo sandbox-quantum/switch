@@ -32,10 +32,10 @@ vi.mock('./connect-remote-agent', () => ({
     host: {},
   }),
 }));
-vi.mock('@main/core/conversations/impl/ensure-agent-sidecar', () => ({
+vi.mock('@main/core/agent-runtime/impl/ensure-agent-sidecar', () => ({
   probeAgentSidecar: () => probeAgentSidecar(),
 }));
-vi.mock('@main/core/conversations/impl/sidecar-http', () => ({
+vi.mock('@main/core/agent-runtime/impl/sidecar-http', () => ({
   httpGetJsonOverChannel: () => httpGetJsonOverChannel(),
 }));
 vi.mock('@main/core/sessions/session-service', () => ({
@@ -58,7 +58,7 @@ vi.mock('@main/lib/events', () => ({
   events: { emit: (...args: unknown[]) => eventsEmit(...args) },
 }));
 
-import { conversationEvents } from '@main/core/conversations/conversation-events';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
 import { remoteSessionReconciler } from './remote-session-reconciler';
 
@@ -132,11 +132,11 @@ describe('RemoteSessionReconciler', () => {
   });
 
   it('removes a remotely-terminated session row, emits deletion, and refuses re-adoption', async () => {
-    const emitSpy = vi.spyOn(conversationEvents, '_emit');
+    const emitSpy = vi.spyOn(sessionHooks, '_emit');
     await handleRemoteTerminated('conv-term');
 
     expect(deleteWhere).toHaveBeenCalledTimes(1);
-    expect(emitSpy).toHaveBeenCalledWith('conversation:deleted', 'conv-term');
+    expect(emitSpy).toHaveBeenCalledWith('session:deleted', 'conv-term');
 
     // The tombstone set during teardown must block re-adoption from a stale snapshot.
     knownRows = [];
@@ -161,20 +161,20 @@ describe('RemoteSessionReconciler', () => {
     });
   });
 
-  it('does not emit conversation:deleted when the row was already gone (no-op delete)', async () => {
+  it('does not emit session:deleted when the row was already gone (no-op delete)', async () => {
     // Every relay/instance delivers the same session-terminated; only the first
     // delete removes a row, the rest are no-ops and must stay silent.
     deleteWhere.mockResolvedValueOnce({ changes: 0 });
-    const emitSpy = vi.spyOn(conversationEvents, '_emit');
+    const emitSpy = vi.spyOn(sessionHooks, '_emit');
     await handleRemoteTerminated('conv-already-gone');
 
     expect(deleteWhere).toHaveBeenCalledTimes(1);
-    expect(emitSpy).not.toHaveBeenCalledWith('conversation:deleted', 'conv-already-gone');
+    expect(emitSpy).not.toHaveBeenCalledWith('session:deleted', 'conv-already-gone');
     emitSpy.mockRestore();
   });
 
   it('prunes an adopted session only after it stays absent for the threshold', async () => {
-    const emitSpy = vi.spyOn(conversationEvents, '_emit');
+    const emitSpy = vi.spyOn(sessionHooks, '_emit');
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
       sessions: [{ conversationId: 'conv-a', roomId: 'room-1' }],
@@ -190,7 +190,7 @@ describe('RemoteSessionReconciler', () => {
     expect(deleteWhere).not.toHaveBeenCalled();
     await reconcile('agent-1'); // streak 3 → prune
     expect(deleteWhere).toHaveBeenCalledTimes(1);
-    expect(emitSpy).toHaveBeenCalledWith('conversation:deleted', 'conv-a');
+    expect(emitSpy).toHaveBeenCalledWith('session:deleted', 'conv-a');
     emitSpy.mockRestore();
   });
 

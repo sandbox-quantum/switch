@@ -1,4 +1,4 @@
-import { type Conversation } from '@shared/core/conversations/conversations';
+import { type Session } from '@shared/core/sessions/sessions';
 
 /**
  * Runtime handle for the single agent process of one session (session =
@@ -7,7 +7,7 @@ import { type Conversation } from '@shared/core/conversations/conversations';
  */
 export interface AgentRuntimeProvider {
   start(
-    conversation: Conversation,
+    session: Session,
     initialSize?: { cols: number; rows: number },
     isResuming?: boolean,
     initialPrompt?: string
@@ -28,9 +28,3 @@ export interface AgentRuntimeProvider {
   /** Terminate teardown: stop everything and release agent-scoped listeners. */
   destroy(): Promise<void>;
 }
-
-export type ConversationConfig = {
-  autoApprove?: boolean;
-  /** Provider-native session id (e.g. Codex rollout UUID) used when resuming. */
-  providerSessionId?: string;
-};

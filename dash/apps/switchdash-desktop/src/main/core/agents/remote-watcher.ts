@@ -1,6 +1,6 @@
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
-import { ensureAgentSidecar } from '@main/core/conversations/impl/ensure-agent-sidecar';
-import { writeWatchEnabled } from '@main/core/conversations/impl/remote-sidecar-launcher';
+import { ensureAgentSidecar } from '@main/core/agent-runtime/impl/ensure-agent-sidecar';
+import { writeWatchEnabled } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { log } from '@main/lib/logger';
 import { connectRemoteAgent } from './connect-remote-agent';

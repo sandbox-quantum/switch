@@ -35,6 +35,12 @@ export type Session = {
   statusChangedAt: string;
   /** Provider-native session id captured at runtime for resume. */
   agentSessionId: string | null;
+  /**
+   * Provider-native chat id stored in the session's `config` JSON (e.g. the
+   * Codex rollout / Droid UUID) used to resume the correct chat. Distinct from
+   * `agentSessionId`, which is the `agent_session_id` column.
+   */
+  providerSessionId?: string;
   agentStatus?: AgentStatus | null;
   agentStatusSeen?: boolean;
   isInitialSession: boolean | null;

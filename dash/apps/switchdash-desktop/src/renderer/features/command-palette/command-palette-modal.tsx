@@ -1,16 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Command } from 'cmdk';
-import {
-  Activity,
-  File,
-  FolderOpen,
-  GitBranch,
-  MessageSquare,
-  type LucideIcon,
-} from 'lucide-react';
+import { Activity, File, FolderOpen, GitBranch, type LucideIcon } from 'lucide-react';
 import { useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { conversationRegistry } from '@renderer/features/sessions/stores/conversation-registry';
 import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { commandRegistry } from '@renderer/lib/commands/registry';
@@ -25,7 +17,6 @@ import { cn } from '@renderer/utils/utils';
 import { ALL_COMMAND_DEFS, type CommandDef } from '@shared/commands';
 import type { SearchItem } from '@shared/core/search';
 import { getCommandIcon } from './command-icons';
-import { PaletteConversationItem } from './palette-conversation-item';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
 import { PaletteNotificationsGroup } from './palette-notifications-group';
 import { PaletteProjectsGroup } from './palette-projects-group';
@@ -53,7 +44,6 @@ const KIND_ICON: Record<string, React.ReactNode> = {
   action: null,
   session: <GitBranch size={14} className="shrink-0 text-foreground/40" />,
   project: <FolderOpen size={14} className="shrink-0 text-foreground/40" />,
-  conversation: <MessageSquare size={14} className="shrink-0 text-foreground/40" />,
 };
 
 const GROUP_CLASS = cn(
@@ -247,7 +237,6 @@ export function CommandPaletteModal({
       ? resourceMonitorAction
       : null;
   const sessionResults = rankedDb.filter((r): r is SearchItem => r.kind === 'session');
-  const conversationResults = rankedDb.filter((r): r is SearchItem => r.kind === 'conversation');
 
   const handleNavigateToSession = (item: SearchItem) => {
     if (!item.projectId) return;
@@ -260,12 +249,6 @@ export function CommandPaletteModal({
     navigate('project', { projectId: item.id });
   };
 
-  const handleNavigateToConversation = (item: SearchItem) => {
-    if (!item.projectId || !item.sessionId) return;
-    handleClose();
-    navigate('session', { projectId: item.projectId, sessionId: item.sessionId });
-  };
-
   const handleOpenFile = (item: SearchItem) => {
     if (!item.projectId || !item.sessionId) return;
     handleClose();
@@ -275,7 +258,6 @@ export function CommandPaletteModal({
   const handleSelect = (item: SearchItem) => {
     if (item.kind === 'session') return handleNavigateToSession(item);
     if (item.kind === 'project') return handleNavigateToProject(item);
-    if (item.kind === 'conversation') return handleNavigateToConversation(item);
     if (item.kind === 'file') return handleOpenFile(item);
   };
 
@@ -382,21 +364,6 @@ export function CommandPaletteModal({
                   );
                 }
               }
-              if (item.kind === 'conversation' && item.projectId && item.sessionId) {
-                const convStore = conversationRegistry
-                  .get(item.sessionId)
-                  ?.conversations.get(item.id);
-                if (convStore) {
-                  return (
-                    <PaletteConversationItem
-                      key={`conversation:${item.id}`}
-                      conv={convStore}
-                      value={`conversation:${item.id}`}
-                      onSelect={() => handleNavigateToConversation(item)}
-                    />
-                  );
-                }
-              }
               if (item.kind === 'file') {
                 return (
                   <PaletteFileItem
@@ -463,30 +430,6 @@ export function CommandPaletteModal({
                 onClose={handleClose}
                 navigate={navigate}
               />
-            )}
-            {sessionId && conversationResults.length > 0 && (
-              <Command.Group heading="Recent Conversations" className={GROUP_CLASS}>
-                {conversationResults.slice(0, 5).map((item) => {
-                  const convStore = item.sessionId
-                    ? conversationRegistry.get(item.sessionId)?.conversations.get(item.id)
-                    : undefined;
-                  return convStore ? (
-                    <PaletteConversationItem
-                      key={item.id}
-                      conv={convStore}
-                      value={item.id}
-                      onSelect={() => handleNavigateToConversation(item)}
-                    />
-                  ) : (
-                    <PaletteItem
-                      key={item.id}
-                      value={item.id}
-                      item={item}
-                      onSelect={() => handleNavigateToConversation(item)}
-                    />
-                  );
-                })}
-              </Command.Group>
             )}
           </>
         )}

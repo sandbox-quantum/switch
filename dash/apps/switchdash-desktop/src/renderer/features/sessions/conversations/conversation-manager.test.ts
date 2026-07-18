@@ -45,20 +45,26 @@ describe('ConversationManagerStore session hydration', () => {
     frontendConnect.mockResolvedValue(undefined);
   });
 
-  it('does not hydrate conversations from the PTY session connect path', async () => {
+  it('does not hydrate sessions from the PTY session connect path', async () => {
+    const now = '2024-01-01T00:00:00.000Z';
     const store = new ConversationManagerStore('project-1', 'session-1', [
       {
-        id: 'conversation-1',
-        projectId: 'project-1',
-        sessionId: 'session-1',
+        id: 'session-1',
+        agentId: 'agent-1',
         providerId: 'codex',
-        title: 'Conversation 1',
-        lastInteractedAt: null,
-        isInitialConversation: false,
+        title: 'Session 1',
+        shellId: 'system',
+        status: 'in_progress',
+        statusChangedAt: now,
+        agentSessionId: null,
+        isInitialSession: false,
+        isPinned: false,
+        createdAt: now,
+        updatedAt: now,
       },
     ]);
 
-    const session = store.sessions.get('conversation-1');
+    const session = store.sessions.get('session-1');
     expect(session).toBeDefined();
 
     await session?.connect();

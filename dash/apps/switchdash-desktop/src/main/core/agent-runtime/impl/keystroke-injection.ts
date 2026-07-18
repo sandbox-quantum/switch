@@ -1,7 +1,7 @@
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import type { Pty } from '@main/core/pty/pty';
 import { log } from '@main/lib/logger';
-import type { Conversation } from '@shared/core/conversations/conversations';
+import type { Session } from '@shared/core/sessions/sessions';
 import { buildPromptInjectionPayload } from '@shared/prompt-injection';
 
 // Inject only after the TUI has produced output and stayed idle for a beat;
@@ -11,14 +11,14 @@ const MAX_WAIT_MS = 15_000;
 
 export function scheduleInitialPromptInjection(args: {
   pty: Pty;
-  conversation: Conversation;
+  session: Session;
   initialPrompt: string | undefined;
   isResuming: boolean;
 }): void {
   if (args.isResuming) return;
   if (!args.initialPrompt?.trim()) return;
 
-  const plugin = getPlugin(args.conversation.providerId);
+  const plugin = getPlugin(args.session.providerId);
   const promptDelivery = plugin.capabilities.prompt;
   if (promptDelivery.kind !== 'keystroke') return;
 
@@ -26,7 +26,7 @@ export function scheduleInitialPromptInjection(args: {
   const submitDelayMs = promptDelivery.submitDelayMs;
 
   const payload = buildPromptInjectionPayload({
-    providerId: args.conversation.providerId,
+    providerId: args.session.providerId,
     text: args.initialPrompt,
   });
 
@@ -48,8 +48,8 @@ export function scheduleInitialPromptInjection(args: {
       args.pty.write(`${payload}${submitSequence}`);
     } catch (error) {
       log.warn('AgentRuntime: failed to inject initial prompt', {
-        providerId: args.conversation.providerId,
-        conversationId: args.conversation.id,
+        providerId: args.session.providerId,
+        sessionId: args.session.id,
         error: String(error),
       });
     }
@@ -71,8 +71,8 @@ export function scheduleInitialPromptInjection(args: {
     clearTimeout(maxWaitTimer);
     if (!promptWasInjected) {
       log.warn('AgentRuntime: PTY exited before initial prompt could be injected', {
-        providerId: args.conversation.providerId,
-        conversationId: args.conversation.id,
+        providerId: args.session.providerId,
+        sessionId: args.session.id,
         sawAnyOutput,
       });
     }

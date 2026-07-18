@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { err, ok } from '@switchdash/shared';
-import { conversationEvents } from '@main/core/conversations/conversation-events';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { log } from '@main/lib/logger';
 import { parsePtySessionId } from '@shared/core/pty/ptySessionId';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -33,10 +33,9 @@ export const ptyController = createRPCController({
       if (meta?.providerId && !meta.isRemote) {
         const parsed = parsePtySessionId(sessionId);
         if (parsed) {
-          conversationEvents._emit('conversation:input-submitted', {
+          sessionHooks._emit('session:input-submitted', {
             projectId: parsed.projectId,
             sessionId: parsed.scopeId,
-            conversationId: parsed.leafId,
             providerId: meta.providerId,
           });
         }

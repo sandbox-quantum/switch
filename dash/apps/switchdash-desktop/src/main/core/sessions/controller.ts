@@ -1,26 +1,17 @@
-import { dehydrateConversation } from '@main/core/conversations/dehydrateConversation';
-import { deleteConversation } from '@main/core/conversations/deleteConversation';
-import { getConversations } from '@main/core/conversations/getConversations';
-import { getConversationsForProject } from '@main/core/conversations/getConversationsForProject';
-import { getConversationsForSession } from '@main/core/conversations/getConversationsForSession';
-import { hydrateConversation } from '@main/core/conversations/hydrateConversation';
-import { markConversationSeen } from '@main/core/conversations/markConversationSeen';
-import { renameConversation } from '@main/core/conversations/renameConversation';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { generateSessionName } from './name-generation/generateSessionName';
+import { dehydrateSession } from './operations/dehydrateSession';
+import { getSession } from './operations/getSession';
+import { hydrateSession } from './operations/hydrateSession';
+import { markSessionSeen } from './operations/markSessionSeen';
 import { sessionService } from './session-service';
 
 export const sessionController = createRPCController({
-  // Ex-conversation engine ops (a conversation is a session in switchdash).
-  getConversations,
-  deleteConversation,
-  hydrateConversation,
-  dehydrateConversation,
-  renameConversation,
-  getConversationsForSession,
-  getConversationsForProject,
-  markConversationSeen,
+  getSession,
+  hydrateSession,
+  dehydrateSession,
+  markSessionSeen,
   async createSession(params: CreateSessionParams) {
     return sessionService.createSession(params);
   },

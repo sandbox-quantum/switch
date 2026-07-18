@@ -1,4 +1,4 @@
-export type SearchItemKind = 'session' | 'project' | 'conversation' | 'command' | 'file';
+export type SearchItemKind = 'session' | 'project' | 'command' | 'file';
 
 export interface SearchItem {
   kind: SearchItemKind;

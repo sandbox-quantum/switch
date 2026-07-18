@@ -25,6 +25,7 @@ export function mapSessionRowToSession(row: SessionRow, providerId: AgentProvide
     archivedAt: row.archivedAt ?? undefined,
     lastInteractedAt: row.lastInteractedAt ?? undefined,
     autoApprove: config.autoApprove,
+    providerSessionId: config.providerSessionId,
     subagentName: config.subagentName,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

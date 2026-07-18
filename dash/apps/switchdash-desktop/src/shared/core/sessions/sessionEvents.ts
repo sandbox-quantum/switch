@@ -1,7 +1,29 @@
+import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
 import type { Session } from '@shared/core/sessions/sessions';
 import { defineEvent } from '@shared/lib/ipc/events';
 
 export const sessionCreatedChannel = defineEvent<{ session: Session }>('session:created');
+
+export const sessionChangedChannel = defineEvent<{
+  sessionId: string;
+  projectId: string;
+  changes: Partial<Pick<Session, 'lastInteractedAt' | 'title' | 'providerSessionId'>>;
+}>('session:changed');
+
+export const sessionAgentStatusChangedChannel = defineEvent<{
+  sessionId: string;
+  projectId: string;
+  status: AgentStatus;
+  seen: boolean;
+  soundEvent?: 'needs_attention' | 'session_complete';
+  /**
+   * For status changes driven by a notification hook, the specific kind. Lets
+   * consumers distinguish an idle agent waiting at its prompt (`idle_prompt`)
+   * from one genuinely blocked on a dialog (`permission_prompt`), which both map
+   * to the `awaiting-input` status.
+   */
+  notificationType?: NotificationType;
+}>('session:agent-status-changed');
 
 /**
  * A session was removed by the main process out-of-band — i.e. NOT by this

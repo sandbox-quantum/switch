@@ -1,4 +1,4 @@
-import type { SidecarHost } from '@main/core/conversations/impl/remote-sidecar-launcher';
+import type { SidecarHost } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';

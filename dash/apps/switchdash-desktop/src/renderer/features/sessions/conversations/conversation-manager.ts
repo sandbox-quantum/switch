@@ -7,16 +7,16 @@ import { Resource } from '@renderer/lib/stores/resource';
 import { log } from '@renderer/utils/logger';
 import { soundPlayer } from '@renderer/utils/soundPlayer';
 import {
-  conversationAgentStatusChangedChannel,
-  conversationChangedChannel,
-} from '@shared/core/conversations/conversationEvents';
-import { type Conversation } from '@shared/core/conversations/conversations';
-import {
   agentSessionExitedChannel,
   type AgentStatus,
   type NotificationType,
 } from '@shared/core/providers/agentEvents';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import {
+  sessionAgentStatusChangedChannel,
+  sessionChangedChannel,
+} from '@shared/core/sessions/sessionEvents';
+import { type Session } from '@shared/core/sessions/sessions';
 
 export class ConversationManagerStore implements IDisposable {
   private offAgentStatusChanged: (() => void) | null = null;
@@ -24,8 +24,8 @@ export class ConversationManagerStore implements IDisposable {
   private offConversationChanges: (() => void) | null = null;
   private readonly _disposeReaction: () => void;
 
-  /** Data layer: plain Conversation records loaded from the main process. */
-  readonly list: Resource<Conversation[]>;
+  /** Data layer: the session record loaded from the main process (1:1 with this store). */
+  readonly list: Resource<Session[]>;
   /** Runtime state stores keyed by conversation id — populated by reaction on list.data. */
   conversations = observable.map<string, ConversationStore>();
   /** Session layer keyed by conversation id — created alongside data, connected lazily. */
@@ -34,7 +34,7 @@ export class ConversationManagerStore implements IDisposable {
   constructor(
     private readonly projectId: string,
     private readonly sessionId: string,
-    preloaded?: Conversation[]
+    preloaded?: Session[]
   ) {
     makeObservable(this, {
       conversations: observable,
@@ -43,8 +43,8 @@ export class ConversationManagerStore implements IDisposable {
     });
 
     const hasPreloaded = preloaded !== undefined;
-    this.list = new Resource<Conversation[]>(
-      hasPreloaded ? null : () => rpc.sessions.getConversationsForSession(projectId, sessionId),
+    this.list = new Resource<Session[]>(
+      hasPreloaded ? null : () => rpc.sessions.getSession(sessionId).then((s) => (s ? [s] : [])),
       hasPreloaded ? [] : [{ kind: 'demand' }],
       hasPreloaded ? { init: preloaded } : undefined
     );
@@ -93,9 +93,9 @@ export class ConversationManagerStore implements IDisposable {
   }
 
   private listenToAgentStatusChanged(): () => void {
-    return events.on(conversationAgentStatusChangedChannel, (payload) => {
+    return events.on(sessionAgentStatusChangedChannel, (payload) => {
       if (payload.sessionId !== this.sessionId) return;
-      const conversationStore = this.conversations.get(payload.conversationId);
+      const conversationStore = this.conversations.get(payload.sessionId);
       if (!conversationStore) return;
 
       runInAction(() => {
@@ -115,16 +115,16 @@ export class ConversationManagerStore implements IDisposable {
   private listenToSessionExited(): () => void {
     return events.on(agentSessionExitedChannel, (event) => {
       if (event.sessionId !== this.sessionId) return;
-      const conversationStore = this.conversations.get(event.conversationId);
+      const conversationStore = this.conversations.get(event.sessionId);
       if (!conversationStore) return;
       conversationStore.clearWorking();
     });
   }
 
   private listenToConversationChanges(): () => void {
-    return events.on(conversationChangedChannel, (event) => {
+    return events.on(sessionChangedChannel, (event) => {
       if (event.sessionId !== this.sessionId) return;
-      const store = this.conversations.get(event.conversationId);
+      const store = this.conversations.get(event.sessionId);
       if (!store) return;
       runInAction(() => {
         Object.assign(store.data, event.changes);
@@ -166,56 +166,14 @@ export class ConversationManagerStore implements IDisposable {
     });
   }
 
-  async hydrateConversation(conversationId: string): Promise<void> {
-    await rpc.sessions.hydrateConversation(this.projectId, this.sessionId, conversationId);
+  async hydrateConversation(_conversationId: string): Promise<void> {
+    await rpc.sessions.hydrateSession(this.projectId, this.sessionId);
   }
 
   async dehydrateConversation(conversationId: string): Promise<void> {
     const session = this.sessions.get(conversationId);
     session?.dispose();
-    await rpc.sessions.dehydrateConversation(this.projectId, this.sessionId, conversationId);
-  }
-
-  async deleteConversation(conversationId: string): Promise<void> {
-    const store = this.conversations.get(conversationId);
-    const session = this.sessions.get(conversationId);
-    if (!store) return;
-
-    runInAction(() => {
-      this.conversations.delete(conversationId);
-      this.sessions.delete(conversationId);
-    });
-
-    try {
-      await rpc.sessions.deleteConversation(this.projectId, this.sessionId, conversationId);
-      session?.destroy();
-    } catch (err) {
-      runInAction(() => {
-        this.conversations.set(conversationId, store);
-        if (session) this.sessions.set(conversationId, session);
-      });
-      throw err;
-    }
-  }
-
-  async renameConversation(conversationId: string, name: string): Promise<void> {
-    const store = this.conversations.get(conversationId);
-    if (!store) return;
-
-    const previousTitle = store.data.title;
-
-    runInAction(() => {
-      store.data.title = name;
-    });
-
-    try {
-      await rpc.sessions.renameConversation(conversationId, name);
-    } catch (err) {
-      runInAction(() => {
-        store.data.title = previousTitle;
-      });
-      throw err;
-    }
+    await rpc.sessions.dehydrateSession(this.projectId, this.sessionId);
   }
 
   dispose(): void {
@@ -231,10 +189,10 @@ export class ConversationManagerStore implements IDisposable {
     }
   }
 
-  private createSession(conversation: Conversation): PtySession {
-    const handlers = makeFileLinkHandlers(conversation.projectId, conversation.sessionId);
+  private createSession(session: Session): PtySession {
+    const handlers = makeFileLinkHandlers(this.projectId, this.sessionId);
     return new PtySession(
-      makePtySessionId(conversation.projectId, conversation.sessionId, conversation.id),
+      makePtySessionId(this.projectId, this.sessionId, session.id),
       undefined,
       handlers.onOpenFile,
       handlers.onOpenExternal,
@@ -244,15 +202,15 @@ export class ConversationManagerStore implements IDisposable {
 }
 
 export class ConversationStore {
-  data: Conversation;
+  data: Session;
   status: AgentStatus;
   seen: boolean;
   lastNotificationType: NotificationType | null = null;
 
-  constructor(conversation: Conversation) {
-    this.data = conversation;
-    this.status = conversation.agentStatus ?? 'idle';
-    this.seen = conversation.agentStatusSeen ?? true;
+  constructor(session: Session) {
+    this.data = session;
+    this.status = session.agentStatus ?? 'idle';
+    this.seen = session.agentStatusSeen ?? true;
     makeObservable(this, {
       data: observable,
       status: observable,
@@ -269,7 +227,7 @@ export class ConversationStore {
   }
 
   get isInitialConversation(): boolean {
-    return this.data.isInitialConversation === true;
+    return this.data.isInitialSession === true;
   }
 
   get indicatorStatus(): AgentStatus | null {
@@ -310,7 +268,7 @@ export class ConversationStore {
 
   markSeen() {
     this.seen = true;
-    void rpc.sessions.markConversationSeen(this.data.id);
+    void rpc.sessions.markSessionSeen(this.data.id);
   }
 
   dispose() {

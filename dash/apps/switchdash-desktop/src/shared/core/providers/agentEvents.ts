@@ -40,7 +40,6 @@ export interface AgentEvent {
 export type SoundEvent = 'needs_attention' | 'session_complete';
 
 export interface AgentSessionExited {
-  conversationId: string;
   sessionId: string;
 }
 

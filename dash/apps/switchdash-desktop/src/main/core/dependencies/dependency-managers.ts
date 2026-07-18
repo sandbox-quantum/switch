@@ -1,5 +1,5 @@
 import { HostDependencyManager, type DependencyId } from '@switchdash/core/deps/runtime';
-import { clearResolvedPathCache } from '@main/core/conversations/impl/resolve-agent-executable';
+import { clearResolvedPathCache } from '@main/core/agent-runtime/impl/resolve-agent-executable';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { resolveLocalAutomationShellWithSystemFallback } from '@main/core/terminal-shell/resolver';

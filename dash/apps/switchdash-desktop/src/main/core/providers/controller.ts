@@ -8,7 +8,7 @@ import type {
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { clearResolvedPathCache } from '../conversations/impl/resolve-agent-executable';
+import { clearResolvedPathCache } from '../agent-runtime/impl/resolve-agent-executable';
 import { agentUpdateService } from '../dependencies/agent-update-service';
 import { getDependencyManager } from '../dependencies/dependency-managers';
 import { hostDependencyStore } from '../dependencies/host-dependency-store';

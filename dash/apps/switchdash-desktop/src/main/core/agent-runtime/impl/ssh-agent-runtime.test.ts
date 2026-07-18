@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import type { Session } from '@shared/core/sessions/sessions';
 import { SshAgentRuntime } from './ssh-agent-runtime';
 
 const openSsh2Pty = vi.hoisted(() => vi.fn());
@@ -154,16 +154,22 @@ function sshProvider({
   });
 }
 
-function conversation(): Conversation {
+function session(): Session {
+  const now = '2024-01-01T00:00:00.000Z';
   return {
     id: 'session-1',
-    projectId: 'project-1',
-    sessionId: 'session-1',
+    agentId: 'agent-1',
     providerId: 'codex',
-    title: 'Conversation 1',
-    lastInteractedAt: null,
+    title: 'Session 1',
+    shellId: 'system',
+    status: 'in_progress',
+    statusChangedAt: now,
+    agentSessionId: null,
     providerSessionId: 'provider-session-1',
-    isInitialConversation: false,
+    isInitialSession: false,
+    isPinned: false,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -203,8 +209,8 @@ describe('SshAgentRuntime', () => {
   it('spawns the agent over SSH and registers a remote pty', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
-    const item = conversation();
-    const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
+    const item = session();
+    const sessionId = makePtySessionId('project-1', item.id, item.id);
 
     await sshProvider().start(item);
 
@@ -221,7 +227,7 @@ describe('SshAgentRuntime', () => {
   it('propagates a failed SSH channel open as an error', async () => {
     openSsh2Pty.mockResolvedValue({ success: false, error: new Error('channel refused') });
 
-    await expect(sshProvider().start(conversation())).rejects.toThrow('channel refused');
+    await expect(sshProvider().start(session())).rejects.toThrow('channel refused');
   });
 
   it('restarts a resumed session fresh after it exits', async () => {
@@ -229,7 +235,7 @@ describe('SshAgentRuntime', () => {
     try {
       const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
       mockSpawn(exitHandlers);
-      const item = conversation();
+      const item = session();
 
       await sshProvider().start(item, { cols: 80, rows: 24 }, true, 'continue');
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
@@ -250,7 +256,7 @@ describe('SshAgentRuntime', () => {
       const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
       mockSpawn(exitHandlers);
       const proxy = makeProxy();
-      const item = conversation();
+      const item = session();
 
       await sshProvider({ proxy }).start(item);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 127 });
@@ -269,7 +275,7 @@ describe('SshAgentRuntime', () => {
       const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
       mockSpawn(exitHandlers);
       const provider = sshProvider();
-      const item = conversation();
+      const item = session();
 
       await provider.start(item);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
@@ -286,7 +292,7 @@ describe('SshAgentRuntime', () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const provider = sshProvider();
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     vi.mocked(events.emit).mockClear();
@@ -294,14 +300,14 @@ describe('SshAgentRuntime', () => {
 
     expect(events.emit).toHaveBeenCalledWith(
       agentSessionExitedChannel,
-      expect.objectContaining({ conversationId: item.id, sessionId: item.sessionId })
+      expect.objectContaining({ sessionId: item.id })
     );
   });
 
   it('launches the sidecar and points the agent hook env at it when tmux is on', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
-    const item = conversation();
+    const item = session();
 
     await sshProvider({ tmux: true }).start(item);
 
@@ -316,7 +322,7 @@ describe('SshAgentRuntime', () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const proxy = makeProxy();
-    const item = conversation();
+    const item = session();
 
     await sshProvider({ proxy, tmux: true }).start(item);
     await vi.waitFor(() => expect(proxy.forwardOut).toHaveBeenCalledWith(9999));
@@ -330,7 +336,7 @@ describe('SshAgentRuntime', () => {
     mockSpawn(exitHandlers);
     const proxy = makeProxy({ forwardOut: vi.fn(async () => ({ destroy: vi.fn() }) as never) });
     const provider = sshProvider({ proxy, tmux: true });
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     await provider.stop();
@@ -343,7 +349,7 @@ describe('SshAgentRuntime', () => {
     mockSpawn(exitHandlers);
     const proxy = makeProxy({ forwardOut: vi.fn(async () => ({ destroy: vi.fn() }) as never) });
     const provider = sshProvider({ proxy, tmux: true });
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     await provider.stop();
@@ -361,7 +367,7 @@ describe('SshAgentRuntime', () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const provider = sshProvider({ tmux: false });
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     await provider.stop();
@@ -372,7 +378,7 @@ describe('SshAgentRuntime', () => {
   it('re-attaches a remote tmux session on reconnect without relaunching the sidecar', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
-    const item = conversation();
+    const item = session();
 
     await sshProvider({ tmux: true }).start(item);
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
@@ -391,7 +397,7 @@ describe('SshAgentRuntime', () => {
   it('ignores reconnect events for other connections', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
-    const item = conversation();
+    const item = session();
 
     await sshProvider({ tmux: true }).start(item);
     for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 1 });
@@ -405,7 +411,7 @@ describe('SshAgentRuntime', () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const provider = sshProvider();
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     const pty = (provider as unknown as ProviderState).pty!;

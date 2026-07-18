@@ -18,7 +18,7 @@ vi.mock('@main/core/sessions/remote-session-preflight', () => ({
   preflightRemoteSession: vi.fn(async () => {}),
 }));
 
-vi.mock('@main/core/conversations/impl/ssh-agent-runtime', () => ({
+vi.mock('@main/core/agent-runtime/impl/ssh-agent-runtime', () => ({
   SshAgentRuntime: vi.fn(function (args: unknown) {
     sshAgentRuntimeCtor(args);
   }),

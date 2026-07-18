@@ -3,7 +3,7 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 
 export async function setProviderSessionId(
-  conversationId: string,
+  sessionId: string,
   providerSessionId: string
 ): Promise<boolean> {
   const trimmed = providerSessionId.trim();
@@ -12,7 +12,7 @@ export async function setProviderSessionId(
   const [row] = await db
     .select({ config: sessions.config })
     .from(sessions)
-    .where(eq(sessions.id, conversationId))
+    .where(eq(sessions.id, sessionId))
     .limit(1);
 
   if (!row) return false;
@@ -23,7 +23,7 @@ export async function setProviderSessionId(
   await db
     .update(sessions)
     .set({ config: { ...config, providerSessionId: trimmed } })
-    .where(eq(sessions.id, conversationId));
+    .where(eq(sessions.id, sessionId));
 
   return true;
 }

@@ -2,10 +2,9 @@ import { homedir } from 'node:os';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
 import { workspaceTrustService } from '@main/core/agent-hooks/workspace-trust-service';
-import { AgentRuntimeSupervisor } from '@main/core/conversations/agent-runtime-supervisor';
-import { conversationEvents } from '@main/core/conversations/conversation-events';
-import { resolveAgentSessionCommandArgs } from '@main/core/conversations/resolve-agent-session-command';
-import type { AgentRuntimeProvider } from '@main/core/conversations/types';
+import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
+import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
+import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -18,16 +17,17 @@ import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { logLocalPtySpawnWarnings, resolveLocalPtySpawn } from '@main/core/pty/pty-spawn-platform';
 import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import type { Session } from '@shared/core/sessions/sessions';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { resolveAgentExecutable } from './resolve-agent-executable';
 
@@ -81,13 +81,13 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     this.sessionEnvVars = sessionEnvVars;
   }
 
-  /** The registry key of this session's agent PTY (session id == conversation id). */
+  /** The registry key of this session's agent PTY (session id == session id). */
   private get ptySessionId(): string {
     return makePtySessionId(this.projectId, this.sessionId, this.sessionId);
   }
 
   async start(
-    conversation: Conversation,
+    session: Session,
     initialSize: { cols: number; rows: number } = {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
@@ -95,11 +95,11 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     isResuming: boolean = false,
     initialPrompt?: string
   ): Promise<void> {
-    return this.startInternal(conversation, initialSize, isResuming, initialPrompt, false);
+    return this.startInternal(session, initialSize, isResuming, initialPrompt, false);
   }
 
   private async startInternal(
-    conversation: Conversation,
+    session: Session,
     initialSize: { cols: number; rows: number },
     isResuming: boolean,
     initialPrompt: string | undefined,
@@ -117,26 +117,25 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
     try {
       await workspaceTrustService.maybeAutoTrustLocal({
-        providerId: conversation.providerId,
+        providerId: session.providerId,
         cwd: this.sessionPath,
         homedir: homedir(),
-        force: conversation.autoApprove === true,
+        force: session.autoApprove === true,
       });
       await ensureHooksInstalled({
-        providerId: conversation.providerId,
+        providerId: session.providerId,
         sessionPath: this.sessionPath,
       });
 
-      const providerConfig = await providerOverrideSettings.getItem(conversation.providerId);
-      const agentSession = resolveAgentSessionCommandArgs(conversation, isResuming);
-      const plugin = getPlugin(conversation.providerId);
+      const providerConfig = await providerOverrideSettings.getItem(session.providerId);
+      const agentSession = resolveAgentSessionCommandArgs(session, isResuming);
+      const plugin = getPlugin(session.providerId);
       const subagentsBehavior = plugin.behavior.subagents;
 
-      const binaryName =
-        plugin.capabilities.hostDependency.binaryNames[0] ?? conversation.providerId;
-      const cachedStatePath = localDependencyManager.get(conversation.providerId as never)?.path;
+      const binaryName = plugin.capabilities.hostDependency.binaryNames[0] ?? session.providerId;
+      const cachedStatePath = localDependencyManager.get(session.providerId as never)?.path;
       const executableCli = await resolveAgentExecutable({
-        providerId: conversation.providerId,
+        providerId: session.providerId,
         binaryName,
         ctx: this.ctx,
         hostDependencyStore,
@@ -145,17 +144,17 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
       const extraArgs = [
         ...parseExtraArgs(providerConfig?.extraArgs),
-        ...(conversation.subagentName && subagentsBehavior
-          ? subagentsBehavior.launchArgs(this.sessionPath, conversation.subagentName)
+        ...(session.subagentName && subagentsBehavior
+          ? subagentsBehavior.launchArgs(this.sessionPath, session.subagentName)
           : []),
       ];
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
         extraArgs,
-        autoApprove: conversation.autoApprove ?? false,
+        autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
-        providerSessionId: conversation.providerSessionId ?? undefined,
+        providerSessionId: session.providerSessionId ?? undefined,
         isResuming: agentSession.isResuming,
         model: '',
       });
@@ -182,7 +181,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         sessionId: ptySessionId,
       });
 
-      const ptyId = makePtyId(conversation.providerId, this.sessionId);
+      const ptyId = makePtyId(session.providerId, this.sessionId);
       const port = agentHookService.getPort();
       const token = agentHookService.getToken();
       const colorEnv = await getTerminalColorEnv();
@@ -191,10 +190,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // every settings file and reach the spawned MCP server, so inject them
       // last (highest precedence).
       const subagentVars =
-        conversation.subagentName && subagentsBehavior
+        session.subagentName && subagentsBehavior
           ? await subagentsBehavior.readLaunchEnv(
               createPluginFs(this.sessionPath),
-              conversation.subagentName
+              session.subagentName
             )
           : {};
       const pty = spawnLocalPty({
@@ -225,16 +224,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         this.pty = null;
         if (decision.kind === 'stopped') return;
 
-        events.emit(agentSessionExitedChannel, {
-          conversationId: this.sessionId,
-          sessionId: this.sessionId,
-        });
+        events.emit(agentSessionExitedChannel, { sessionId: this.sessionId });
         // In-process counterpart for main-process consumers — `events` only
-        // reaches the renderer (see conversation-events).
-        conversationEvents._emit('conversation:session-exited', {
-          conversationId: this.sessionId,
-          sessionId: this.sessionId,
-        });
+        // reaches the renderer (see session-hooks).
+        sessionHooks._emit('session:agent-exited', { sessionId: this.sessionId });
 
         if (this.tmux) {
           return;
@@ -242,7 +235,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
         if (this.supervisor.isDesired()) {
           this.scheduleReplacement({
-            conversation,
+            session,
             initialSize: replacementSize,
             isResuming: decision.kind === 'respawnResume',
           });
@@ -261,14 +254,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
       ptySessionRegistry.register(ptySessionId, pty, {
         metadata: {
-          providerId: conversation.providerId,
-          title: conversation.title,
+          providerId: session.providerId,
+          title: session.title,
         },
       });
       this.pty = pty;
       scheduleInitialPromptInjection({
         pty,
-        conversation,
+        session,
         initialPrompt,
         isResuming: agentSession.isResuming,
       });
@@ -279,7 +272,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         .restorePoller({
           conversationId: this.sessionId,
           projectId: this.projectId,
-          providerId: conversation.providerId,
+          providerId: session.providerId,
           ptyId,
         })
         .catch((error) => {
@@ -356,16 +349,16 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
   }
 
   private scheduleReplacement({
-    conversation,
+    session,
     initialSize,
     isResuming,
   }: {
-    conversation: Conversation;
+    session: Session;
     initialSize: { cols: number; rows: number };
     isResuming: boolean;
   }): void {
     setTimeout(() => {
-      this.startInternal(conversation, initialSize, isResuming, undefined, true).catch((e) => {
+      this.startInternal(session, initialSize, isResuming, undefined, true).catch((e) => {
         log.error('LocalAgentRuntime: replacement failed', {
           sessionId: this.sessionId,
           error: String(e),

@@ -1,14 +1,10 @@
 import { ConversationManagerStore } from '@renderer/features/sessions/conversations/conversation-manager';
-import type { Conversation } from '@shared/core/conversations/conversations';
+import type { Session } from '@shared/core/sessions/sessions';
 
 export class ConversationRegistry {
   private readonly entries = new Map<string, ConversationManagerStore>();
 
-  acquire(
-    sessionId: string,
-    projectId: string,
-    preloaded?: Conversation[]
-  ): ConversationManagerStore {
+  acquire(sessionId: string, projectId: string, preloaded?: Session[]): ConversationManagerStore {
     const existing = this.entries.get(sessionId);
     if (existing) return existing;
     const store = new ConversationManagerStore(projectId, sessionId, preloaded);

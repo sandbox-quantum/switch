@@ -1,7 +1,7 @@
-import { hydrateConversation } from '@main/core/conversations/hydrateConversation';
-import { loadSessionWithAgent } from '@main/core/conversations/session-join';
 import { getProjectById } from '@main/core/projects/operations/getProjects';
 import { projectManager } from '@main/core/projects/project-manager';
+import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
+import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
 import { switchRoomService } from './switch-room-service';
@@ -10,32 +10,32 @@ import { switchRoomService } from './switch-room-service';
  * Launch every session that was connected to a Switch room before the last
  * shutdown, so it receives and responds to room events without the user opening
  * its terminal. Replays the renderer's open sequence from the main process:
- * mount the project → provision the session runtime → hydrate the conversation
+ * mount the project → provision the session runtime → hydrate the session
  * (which spawns the PTY and, via the session-launch path, restarts the room
- * poller). Sessions whose conversation or project no longer exist are pruned.
+ * poller). Sessions whose row or project no longer exist are pruned.
  *
  * This deliberately spawns the agent process for each room-connected session at
  * startup — keystroke injection requires a live TUI, so there is no lighter way
  * to deliver room messages to an unopened session.
  */
 export async function restoreSwitchRoomSessions(): Promise<void> {
-  const conversationIds = await switchRoomService.listPersistedConversationIds();
-  if (conversationIds.length === 0) return;
+  const sessionIds = await switchRoomService.listPersistedConversationIds();
+  if (sessionIds.length === 0) return;
 
   const stale: string[] = [];
   let launched = 0;
 
-  for (const conversationId of conversationIds) {
+  for (const sessionId of sessionIds) {
     try {
-      const loaded = await loadSessionWithAgent(conversationId);
+      const loaded = await loadSessionWithAgent(sessionId);
       if (!loaded) {
-        stale.push(conversationId);
+        stale.push(sessionId);
         continue;
       }
 
       const project = await getProjectById(loaded.projectId);
       if (!project) {
-        stale.push(conversationId);
+        stale.push(sessionId);
         continue;
       }
 
@@ -43,7 +43,7 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         const opened = await projectManager.openProject(project);
         if (!opened.success) {
           log.warn('restoreSwitchRoomSessions: failed to open project; skipping session', {
-            conversationId,
+            sessionId,
             projectId: loaded.projectId,
             error: opened.error,
           });
@@ -51,13 +51,12 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         }
       }
 
-      await sessionService.provisionWorkspace(conversationId);
-      // sessionId === conversationId in this data model.
-      await hydrateConversation(loaded.projectId, conversationId, conversationId);
+      await sessionService.provisionWorkspace(sessionId);
+      await hydrateSession(loaded.projectId, sessionId);
       launched += 1;
     } catch (error) {
       log.warn('restoreSwitchRoomSessions: failed to launch room-connected session', {
-        conversationId,
+        sessionId,
         error: String(error),
       });
     }

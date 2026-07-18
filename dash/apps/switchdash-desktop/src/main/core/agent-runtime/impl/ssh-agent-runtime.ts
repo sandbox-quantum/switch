@@ -1,9 +1,8 @@
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
-import { AgentRuntimeSupervisor } from '@main/core/conversations/agent-runtime-supervisor';
-import { conversationEvents } from '@main/core/conversations/conversation-events';
-import { resolveAgentSessionCommandArgs } from '@main/core/conversations/resolve-agent-session-command';
-import type { AgentRuntimeProvider } from '@main/core/conversations/types';
+import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
+import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
+import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { FileSystemProvider } from '@main/core/fs/types';
@@ -15,17 +14,18 @@ import { resolveSshCommand } from '@main/core/pty/spawn-utils';
 import { openSsh2Pty } from '@main/core/pty/ssh2-pty';
 import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import type { SshConnectionManagerEvent } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import type { AgentSessionConfig } from '@shared/core/providers/agent-session';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import type { Session } from '@shared/core/sessions/sessions';
 import { ensureAgentSidecar } from './ensure-agent-sidecar';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { RemoteHookEventRelay } from './remote-hook-event-relay';
@@ -48,8 +48,8 @@ function parseExtraArgs(value: string | undefined): string[] {
 export class SshAgentRuntime implements AgentRuntimeProvider {
   private pty: Pty | null = null;
   private known = false;
-  /** The conversation this runtime last started — kept for reconnect rehydration. */
-  private conversation: Conversation | null = null;
+  /** The session this runtime last started — kept for reconnect rehydration. */
+  private session: Session | null = null;
   private relay: RemoteHookEventRelay | null = null;
   /** Last resolved sidecar endpoint (agent-scoped, shared by all sessions on the
    * VM), captured at launch so a delete can POST /disconnect without re-ensuring. */
@@ -113,7 +113,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     sshConnectionManager.on('connection-event', this.handleConnectionEvent);
   }
 
-  /** The registry key of this session's agent PTY (session id == conversation id). */
+  /** The registry key of this session's agent PTY (leaf == session id in the 1:1 model). */
   private get ptySessionId(): string {
     return makePtySessionId(this.projectId, this.sessionId, this.sessionId);
   }
@@ -128,8 +128,8 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   private async rehydrate(): Promise<void> {
     if (!this.known || this.pty) return;
     if (!this.supervisor.isDesired()) return;
-    const conversation = this.conversation;
-    if (!conversation) return;
+    const session = this.session;
+    if (!session) return;
     const size = ptySessionRegistry.getLastSize(this.ptySessionId) ?? {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
@@ -137,7 +137,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     log.info('SshAgentRuntime: re-attaching session after reconnect', {
       sessionId: this.sessionId,
     });
-    await this.startInternal(conversation, size, true, undefined, true, {
+    await this.startInternal(session, size, true, undefined, true, {
       shellRefreshRetried: false,
     }).catch((e: unknown) => {
       log.error('SshAgentRuntime: re-attach failed', {
@@ -193,15 +193,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     }
   }
 
-  private async launchSidecar(
-    conversation: Conversation
-  ): Promise<{ port: number; token: string }> {
+  private async launchSidecar(session: Session): Promise<{ port: number; token: string }> {
     // One agent-scoped sidecar serves every session on the VM (this one and any
     // the sidecar's own watcher auto-starts) — ensure it is running and point
     // this session's hooks at its shared hook server. Reattaches if already up.
     const endpoint = await ensureAgentSidecar({
-      providerId: conversation.providerId,
-      projectId: conversation.projectId,
+      providerId: session.providerId,
+      projectId: this.projectId,
       repoDir: this.sessionPath,
       deeplinkScheme: DEEPLINK_SCHEME,
       ctx: this.ctx,
@@ -309,7 +307,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   async start(
-    conversation: Conversation,
+    session: Session,
     initialSize: { cols: number; rows: number } = {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
@@ -317,13 +315,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     isResuming: boolean = false,
     initialPrompt?: string
   ): Promise<void> {
-    return this.startInternal(conversation, initialSize, isResuming, initialPrompt, false, {
+    return this.startInternal(session, initialSize, isResuming, initialPrompt, false, {
       shellRefreshRetried: false,
     });
   }
 
   private async startInternal(
-    conversation: Conversation,
+    session: Session,
     initialSize: { cols: number; rows: number },
     isResuming: boolean,
     initialPrompt: string | undefined,
@@ -332,7 +330,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   ): Promise<void> {
     const ptySessionId = this.ptySessionId;
     this.known = true;
-    this.conversation = conversation;
+    this.session = session;
 
     const spawnSize = ptySessionRegistry.getLastSize(ptySessionId) ?? initialSize;
     const spawnToken = this.supervisor.beginStart({
@@ -342,14 +340,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     if (!spawnToken) return;
 
     try {
-      const providerConfig = await providerOverrideSettings.getItem(conversation.providerId);
-      const agentSession = resolveAgentSessionCommandArgs(conversation, isResuming);
-      const plugin = getPlugin(conversation.providerId);
+      const providerConfig = await providerOverrideSettings.getItem(session.providerId);
+      const agentSession = resolveAgentSessionCommandArgs(session, isResuming);
+      const plugin = getPlugin(session.providerId);
 
-      const binaryName =
-        plugin.capabilities.hostDependency.binaryNames[0] ?? conversation.providerId;
+      const binaryName = plugin.capabilities.hostDependency.binaryNames[0] ?? session.providerId;
       const executableCli = await resolveAgentExecutable({
-        providerId: conversation.providerId,
+        providerId: session.providerId,
         binaryName,
         ctx: this.ctx,
         hostDependencyStore,
@@ -359,10 +356,10 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
         extraArgs: parseExtraArgs(providerConfig?.extraArgs),
-        autoApprove: conversation.autoApprove ?? false,
+        autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
-        providerSessionId: conversation.providerSessionId ?? undefined,
+        providerSessionId: session.providerSessionId ?? undefined,
         isResuming: agentSession.isResuming,
         model: '',
       });
@@ -375,13 +372,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       const cfg: AgentSessionConfig = {
         sessionId: this.sessionId,
         conversationId: this.sessionId,
-        providerId: conversation.providerId,
+        providerId: session.providerId,
         command: agentCommand.command,
         args: agentCommand.args,
         cwd: this.sessionPath,
         shellSetup: this.shellSetup,
         tmuxSessionName,
-        autoApprove: conversation.autoApprove ?? false,
+        autoApprove: session.autoApprove ?? false,
         resume: agentSession.isResuming,
       };
 
@@ -400,13 +397,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           sessionId: this.sessionId,
         });
       } else if (tmuxSessionName) {
-        const ptyId = makePtyId(conversation.providerId, this.sessionId);
+        const ptyId = makePtyId(session.providerId, this.sessionId);
         // Install the agent's hooks into the remote workspace before launch so
         // the hook env below actually has commands to run — without this the
         // remote agent posts nothing to the sidecar (local sessions get this via
         // ensureHooksInstalled).
-        await this.installRemoteHooks(conversation.providerId);
-        const endpoint = await this.launchSidecar(conversation);
+        await this.installRemoteHooks(session.providerId);
+        const endpoint = await this.launchSidecar(session);
         hookEnv = buildAgentHookEnv({ port: endpoint.port, ptyId, token: endpoint.token });
       } else {
         log.warn(
@@ -459,7 +456,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
         if (exitCode === SHELL_NOT_FOUND_EXIT_CODE && !options.shellRefreshRetried) {
           this.scheduleShellRefreshRetry({
-            conversation,
+            session,
             initialSize: replacementSize,
             isResuming: decision.kind === 'respawnResume',
             initialPrompt,
@@ -469,7 +466,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
         if (this.supervisor.isDesired()) {
           this.scheduleReplacement({
-            conversation,
+            session,
             initialSize: replacementSize,
             isResuming: decision.kind === 'respawnResume',
           });
@@ -488,15 +485,15 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
       ptySessionRegistry.register(ptySessionId, pty, {
         metadata: {
-          providerId: conversation.providerId,
-          title: conversation.title,
+          providerId: session.providerId,
+          title: session.title,
           isRemote: true,
         },
       });
       this.pty = pty;
       scheduleInitialPromptInjection({
         pty,
-        conversation,
+        session,
         initialPrompt,
         isResuming: agentSession.isResuming,
       });
@@ -507,14 +504,8 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   private emitExited(): void {
-    events.emit(agentSessionExitedChannel, {
-      conversationId: this.sessionId,
-      sessionId: this.sessionId,
-    });
-    conversationEvents._emit('conversation:session-exited', {
-      conversationId: this.sessionId,
-      sessionId: this.sessionId,
-    });
+    events.emit(agentSessionExitedChannel, { sessionId: this.sessionId });
+    sessionHooks._emit('session:agent-exited', { sessionId: this.sessionId });
   }
 
   private detachPty(): void {
@@ -559,7 +550,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     killTmux: boolean;
   }): Promise<void> {
     this.known = false;
-    this.conversation = null;
+    this.session = null;
     if (this.tmux && opts.disconnectSidecar) {
       await this.disconnectSidecarSession(this.sessionId, true);
     }
@@ -580,31 +571,31 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
    * everywhere and cannot be re-attached into a blank session.
    */
   private onRemoteTerminated(rawBody: string): void {
-    let conversationId = '';
+    let terminatedSessionId = '';
     try {
       const parsed = JSON.parse(rawBody) as { conversationId?: unknown };
-      if (typeof parsed.conversationId === 'string') conversationId = parsed.conversationId;
+      if (typeof parsed.conversationId === 'string') terminatedSessionId = parsed.conversationId;
     } catch {
-      conversationId = '';
+      terminatedSessionId = '';
     }
-    if (!conversationId) {
+    if (!terminatedSessionId) {
       log.warn('SshAgentRuntime: session-terminated event missing conversationId');
       return;
     }
-    if (conversationId === this.sessionId) {
+    if (terminatedSessionId === this.sessionId) {
       void this.teardownSession({ disconnectSidecar: false, killTmux: false }).catch(
         (e: unknown) => {
           log.warn('SshAgentRuntime: error tearing down terminated session', {
-            conversationId,
+            sessionId: terminatedSessionId,
             error: String(e),
           });
         }
       );
     }
-    conversationEvents._emit('conversation:remote-terminated', {
+    sessionHooks._emit('session:remote-terminated', {
       projectId: this.projectId,
       sessionId: this.sessionId,
-      conversationId,
+      terminatedSessionId,
     });
   }
 
@@ -616,7 +607,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       await this.disconnectSidecarSession(this.sessionId, true);
     }
     this.stopSidecar();
-    this.conversation = null;
+    this.session = null;
     if (this.tmux && wasKnown) {
       await killTmuxSession(this.ctx, makeAgentTmuxSessionName(this.sessionId));
     }
@@ -637,12 +628,12 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   private scheduleShellRefreshRetry({
-    conversation,
+    session,
     initialSize,
     isResuming,
     initialPrompt,
   }: {
-    conversation: Conversation;
+    session: Session;
     initialSize: { cols: number; rows: number };
     isResuming: boolean;
     initialPrompt: string | undefined;
@@ -653,7 +644,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         .refreshRemoteShellProfile()
         .then(() => {
           if (!this.supervisor.isDesired()) return;
-          return this.startInternal(conversation, initialSize, isResuming, initialPrompt, true, {
+          return this.startInternal(session, initialSize, isResuming, initialPrompt, true, {
             shellRefreshRetried: true,
           });
         })
@@ -667,16 +658,16 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   private scheduleReplacement({
-    conversation,
+    session,
     initialSize,
     isResuming,
   }: {
-    conversation: Conversation;
+    session: Session;
     initialSize: { cols: number; rows: number };
     isResuming: boolean;
   }): void {
     setTimeout(() => {
-      this.startInternal(conversation, initialSize, isResuming, undefined, true, {
+      this.startInternal(session, initialSize, isResuming, undefined, true, {
         shellRefreshRetried: false,
       }).catch((e) => {
         log.error('SshAgentRuntime: replacement failed', {

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AGENT_FRESH_RECOVERY_GRACE_MS } from '@main/core/conversations/agent-runtime-supervisor';
+import { AGENT_FRESH_RECOVERY_GRACE_MS } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
-import type { Conversation } from '@shared/core/conversations/conversations';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { ptyExitChannel } from '@shared/core/pty/ptyEvents';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
+import type { Session } from '@shared/core/sessions/sessions';
 import { LocalAgentRuntime } from './local-agent-runtime';
 
 const spawnLocalPty = vi.hoisted(() => vi.fn());
@@ -186,16 +186,22 @@ function localProvider({
   });
 }
 
-function conversation(): Conversation {
+function session(): Session {
+  const now = '2024-01-01T00:00:00.000Z';
   return {
     id: 'session-1',
-    projectId: 'project-1',
-    sessionId: 'session-1',
+    agentId: 'agent-1',
     providerId: 'codex',
-    title: 'Conversation 1',
-    lastInteractedAt: null,
+    title: 'Session 1',
+    shellId: 'system',
+    status: 'in_progress',
+    statusChangedAt: now,
+    agentSessionId: null,
     providerSessionId: 'provider-session-1',
-    isInitialConversation: false,
+    isInitialSession: false,
+    isPinned: false,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -248,7 +254,7 @@ describe('conversation provider respawn state', () => {
       const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
       spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
 
-      await localProvider().start(conversation());
+      await localProvider().start(session());
 
       const request = spawnLocalPty.mock.calls[0][0] as { env: Record<string, string> };
       expect(request.env.EDITOR).toBe('zed');
@@ -281,7 +287,7 @@ describe('conversation provider respawn state', () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
 
-    await localProvider({ shellProfile }).start(conversation());
+    await localProvider({ shellProfile }).start(session());
 
     expect(spawnLocalPty).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -305,7 +311,7 @@ describe('conversation provider respawn state', () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
 
-    await localProvider({ shellProfile }).start(conversation());
+    await localProvider({ shellProfile }).start(session());
 
     expect(spawnLocalPty).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -317,7 +323,7 @@ describe('conversation provider respawn state', () => {
   it('prepares OpenCode hooks when hook config is available', async () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
-    const item = { ...conversation(), providerId: 'opencode' as const };
+    const item = { ...session(), providerId: 'opencode' as const };
 
     await localProvider().start(item);
 
@@ -339,7 +345,7 @@ describe('conversation provider respawn state', () => {
       const provider = localProvider();
       const size = { cols: 100, rows: 40 };
       const initialPrompt = 'continue';
-      const item = conversation();
+      const item = session();
 
       await provider.start(item, size, true, initialPrompt);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
@@ -364,7 +370,7 @@ describe('conversation provider respawn state', () => {
         return fakePty(handlers);
       });
       const provider = localProvider();
-      const item = conversation();
+      const item = session();
 
       await provider.start(item, undefined, true);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
@@ -375,10 +381,7 @@ describe('conversation provider respawn state', () => {
       expect(spawnLocalPty).toHaveBeenCalledTimes(2);
       expect(events.emit).toHaveBeenCalledWith(
         agentSessionExitedChannel,
-        expect.objectContaining({
-          conversationId: item.id,
-          sessionId: item.sessionId,
-        })
+        expect.objectContaining({ sessionId: item.id })
       );
     } finally {
       vi.useRealTimers();
@@ -395,7 +398,7 @@ describe('conversation provider respawn state', () => {
         return fakePty(handlers);
       });
       const provider = localProvider();
-      const item = conversation();
+      const item = session();
 
       await provider.start(item, undefined, true);
       for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 0 });
@@ -418,8 +421,8 @@ describe('conversation provider respawn state', () => {
     const exitInfo = { exitCode: 0 };
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     const provider = localProvider();
-    const item = conversation();
-    const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
+    const item = session();
+    const sessionId = makePtySessionId('project-1', item.id, item.id);
 
     await provider.start(item);
     vi.mocked(events.emit).mockClear();
@@ -438,8 +441,8 @@ describe('conversation provider respawn state', () => {
         return fakePty(handlers);
       });
       const provider = localProvider();
-      const item = conversation();
-      const sessionId = makePtySessionId(item.projectId, item.sessionId, item.id);
+      const item = session();
+      const sessionId = makePtySessionId('project-1', item.id, item.id);
 
       await provider.start(item, { cols: 100, rows: 40 }, true);
       ptySessionRegistry.resize(sessionId, 68, 42);
@@ -465,7 +468,7 @@ describe('conversation provider respawn state', () => {
         return fakePty(handlers);
       });
       const provider = localProvider();
-      const item = conversation();
+      const item = session();
 
       await provider.start(item);
 
@@ -493,7 +496,7 @@ describe('conversation provider respawn state', () => {
         throw new Error('spawn failed');
       });
       const provider = localProvider();
-      const item = conversation();
+      const item = session();
 
       await provider.start(item);
       for (const handler of exitHandlers) handler({ exitCode: 0 });
@@ -511,7 +514,7 @@ describe('conversation provider respawn state', () => {
       const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
       spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
       const provider = localProvider();
-      const item = conversation();
+      const item = session();
 
       await provider.start(item);
       for (const handler of exitHandlers) handler({ exitCode: 0 });
@@ -530,7 +533,7 @@ describe('conversation provider respawn state', () => {
       const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
       spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
       const provider = localProvider({ tmux: true });
-      const item = conversation();
+      const item = session();
 
       await provider.start(item);
       vi.mocked(events.emit).mockClear();
@@ -540,10 +543,7 @@ describe('conversation provider respawn state', () => {
       expect(spawnLocalPty).toHaveBeenCalledTimes(1);
       expect(events.emit).toHaveBeenCalledWith(
         agentSessionExitedChannel,
-        expect.objectContaining({
-          conversationId: item.id,
-          sessionId: item.sessionId,
-        })
+        expect.objectContaining({ sessionId: item.id })
       );
     } finally {
       vi.useRealTimers();
@@ -558,7 +558,7 @@ describe('conversation provider respawn state', () => {
       exec: vi.fn(async () => ({ stdout: '', stderr: '' })),
     };
     const provider = localProvider({ tmux: true, ctx: ctx as never });
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     vi.mocked(events.emit).mockClear();
@@ -578,7 +578,7 @@ describe('conversation provider respawn state', () => {
       exec: vi.fn(async () => ({ stdout: '', stderr: '' })),
     };
     const provider = localProvider({ tmux: true, ctx: ctx as never });
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     await provider.dehydrate();
@@ -599,7 +599,7 @@ describe('conversation provider respawn state', () => {
     const secondPty = fakePty(secondExitHandlers);
     spawnLocalPty.mockReturnValueOnce(firstPty).mockReturnValueOnce(secondPty);
     const provider = localProvider({ tmux: true });
-    const item = conversation();
+    const item = session();
 
     await provider.start(item);
     await provider.dehydrate();

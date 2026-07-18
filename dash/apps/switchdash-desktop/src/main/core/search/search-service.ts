@@ -6,8 +6,8 @@ import { ALL_COMMAND_DEFS } from '@shared/commands';
 import type { CommandPaletteQuery, SearchItem, SearchItemKind } from '@shared/core/search';
 import type { Session } from '@shared/core/sessions/sessions';
 import type { Project } from '@shared/projects';
-import { conversationEvents } from '../conversations/conversation-events';
 import { projectEvents } from '../projects/project-events';
+import { sessionHooks } from '../sessions/session-hooks';
 import { sessionService } from '../sessions/session-service';
 import { workspaceFileIndexService } from './workspace-file-index-service';
 
@@ -22,15 +22,8 @@ type FtsRow = {
 
 type RecentSessionRow = {
   id: string;
-  name: string;
-  project_id: string;
-};
-
-type RecentConversationRow = {
-  id: string;
   title: string;
   project_id: string;
-  session_id: string;
 };
 
 class SearchService {
@@ -39,19 +32,12 @@ class SearchService {
     sessionService.on('session:updated', (session) => this.upsertSession(session));
     sessionService.on('session:archived', (sessionId) => this.removeByType('session', sessionId));
     sessionService.on('session:deleted', (sessionId) => this.removeByType('session', sessionId));
+    // Row deletions outside the sessionService path (e.g. the remote-session
+    // reconciler pruning a VM session) must also leave the index.
+    sessionHooks.on('session:deleted', (sessionId) => this.removeByType('session', sessionId));
 
     projectEvents.on('project:created', (project) => this.upsertProject(project));
     projectEvents.on('project:deleted', (projectId) => this.removeByType('project', projectId));
-
-    conversationEvents.on(
-      'conversation:renamed',
-      (conversationId, projectId, sessionId, newTitle) => {
-        this.upsertConversationById(conversationId, projectId, sessionId, newTitle);
-      }
-    );
-    conversationEvents.on('conversation:deleted', (conversationId) =>
-      this.removeByType('conversation', conversationId)
-    );
 
     this.backfill();
     this.seedCommands();
@@ -74,29 +60,15 @@ class SearchService {
 
     let rows: FtsRow[];
     try {
-      if (context?.sessionId) {
-        rows = sqlite
-          .prepare(
-            `SELECT item_type, item_id, project_id, session_id, title, bm25(search_index) AS rank
-             FROM search_index
-             WHERE search_index MATCH ?
-               AND (item_type != 'conversation' OR session_id = ?)
-             ORDER BY rank
-             LIMIT 30`
-          )
-          .all(ftsQuery, context.sessionId) as FtsRow[];
-      } else {
-        rows = sqlite
-          .prepare(
-            `SELECT item_type, item_id, project_id, session_id, title, bm25(search_index) AS rank
-             FROM search_index
-             WHERE search_index MATCH ?
-               AND item_type != 'conversation'
-             ORDER BY rank
-             LIMIT 30`
-          )
-          .all(ftsQuery) as FtsRow[];
-      }
+      rows = sqlite
+        .prepare(
+          `SELECT item_type, item_id, project_id, session_id, title, bm25(search_index) AS rank
+           FROM search_index
+           WHERE search_index MATCH ?
+           ORDER BY rank
+           LIMIT 30`
+        )
+        .all(ftsQuery) as FtsRow[];
     } catch (e) {
       log.warn('SearchService: FTS query failed', { query, error: String(e) });
       return [];
@@ -133,59 +105,41 @@ class SearchService {
   private recents(context?: CommandPaletteQuery['context']): SearchItem[] {
     const sessionStmt = context?.projectId
       ? sqlite.prepare(
-          `SELECT t.id, t.name, t.project_id
-           FROM sessions t
-           WHERE t.archived_at IS NULL AND t.project_id = ?
-           ORDER BY t.last_interacted_at DESC
+          `SELECT s.id, s.title, a.project_id
+           FROM sessions s
+           JOIN agents a ON a.id = s.agent_id
+           WHERE s.archived_at IS NULL AND a.project_id = ?
+           ORDER BY s.last_interacted_at DESC
            LIMIT 10`
         )
       : sqlite.prepare(
-          `SELECT t.id, t.name, t.project_id
-           FROM sessions t
-           WHERE t.archived_at IS NULL
-           ORDER BY t.last_interacted_at DESC
+          `SELECT s.id, s.title, a.project_id
+           FROM sessions s
+           JOIN agents a ON a.id = s.agent_id
+           WHERE s.archived_at IS NULL
+           ORDER BY s.last_interacted_at DESC
            LIMIT 10`
         );
 
-    const sessionRows = (
-      context?.projectId ? sessionStmt.all(context.projectId) : sessionStmt.all()
-    ) as RecentSessionRow[];
+    let sessionRows: RecentSessionRow[];
+    try {
+      sessionRows = (
+        context?.projectId ? sessionStmt.all(context.projectId) : sessionStmt.all()
+      ) as RecentSessionRow[];
+    } catch (e) {
+      log.warn('SearchService: recents query failed', { error: String(e) });
+      return [];
+    }
 
-    const results: SearchItem[] = sessionRows.map((r) => ({
+    return sessionRows.map((r) => ({
       kind: 'session' as const,
       id: r.id,
       projectId: r.project_id,
       sessionId: null,
-      title: r.name,
+      title: r.title,
       subtitle: '',
       score: 0,
     }));
-
-    if (context?.sessionId) {
-      const conversationRows = sqlite
-        .prepare(
-          `SELECT c.id, c.title, c.project_id, c.session_id
-           FROM conversations c
-           WHERE c.session_id = ?
-           ORDER BY c.last_interacted_at DESC
-           LIMIT 10`
-        )
-        .all(context.sessionId) as RecentConversationRow[];
-
-      for (const r of conversationRows) {
-        results.push({
-          kind: 'conversation',
-          id: r.id,
-          projectId: r.project_id,
-          sessionId: r.session_id,
-          title: r.title,
-          subtitle: '',
-          score: 0,
-        });
-      }
-    }
-
-    return results;
   }
 
   private upsertSession(session: Session): void {
@@ -218,27 +172,6 @@ class SearchService {
     } catch (e) {
       log.warn('SearchService: upsertProject failed', {
         projectId: project.id,
-        error: String(e),
-      });
-    }
-  }
-
-  private upsertConversationById(
-    conversationId: string,
-    projectId: string,
-    sessionId: string,
-    title: string
-  ): void {
-    try {
-      sqlite
-        .prepare(
-          `INSERT OR REPLACE INTO search_index(item_type, item_id, project_id, session_id, title, keywords)
-           VALUES ('conversation', ?, ?, ?, ?, '')`
-        )
-        .run(conversationId, projectId, sessionId, title);
-    } catch (e) {
-      log.warn('SearchService: upsertConversationById failed', {
-        conversationId,
         error: String(e),
       });
     }
@@ -300,9 +233,7 @@ class SearchService {
       sqlite.transaction(() => {
         for (const t of allSessions) {
           if (t.archivedAt) continue;
-          // A session is also its own conversation (1:1) in switchdash.
           upsertStmt.run('session', t.id, t.projectId, null, t.title, '');
-          upsertStmt.run('conversation', t.id, t.projectId, t.id, t.title, '');
         }
         for (const p of allProjects) {
           upsertStmt.run('project', p.id, null, null, p.name, p.path);

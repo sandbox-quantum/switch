@@ -1,4 +1,4 @@
-import { loadSessionWithAgent } from '@main/core/conversations/session-join';
+import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { parsePtyId } from '@shared/core/pty/ptyId';
 import type { ContextResolver } from './event-enricher';
 
