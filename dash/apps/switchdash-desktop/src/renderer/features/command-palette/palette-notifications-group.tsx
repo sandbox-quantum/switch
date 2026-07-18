@@ -4,7 +4,7 @@ import {
   asMounted,
   getProjectManagerStore,
 } from '@renderer/features/projects/stores/project-selectors';
-import { conversationRegistry } from '@renderer/features/sessions/stores/conversation-registry';
+import { sessionAgentRegistry } from '@renderer/features/sessions/stores/session-agent-registry';
 import { isRegistered, type SessionStore } from '@renderer/features/sessions/stores/session-store';
 import type { NavigateFnTyped } from '@renderer/lib/layout/navigation-provider';
 import { cn } from '@renderer/utils/utils';
@@ -41,10 +41,10 @@ export function PaletteNotificationsGroup({
 
       for (const [tid, sessionStore] of mounted.sessionManager.sessions) {
         if (!isRegistered(sessionStore)) continue;
-        const conversations = conversationRegistry.get(tid);
-        if (!conversations) continue;
+        const agent = sessionAgentRegistry.get(tid);
+        if (!agent) continue;
 
-        const status = conversations.sessionStatus;
+        const status = agent.sessionStatus;
         // Only surface awaiting-input, error, completed — not working or idle.
         if (!status || status === 'idle' || status === 'working') continue;
 

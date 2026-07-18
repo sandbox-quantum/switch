@@ -12,17 +12,14 @@ type MockViewModel = {
 
 const mocks = vi.hoisted(() => ({
   archiveSession: vi.fn(),
-  conversationAcquire: vi.fn(),
-  conversationRelease: vi.fn(),
-  getConversationsForProject: vi.fn(),
+  agentAcquire: vi.fn(),
+  agentRelease: vi.fn(),
   getProjectManagerStore: vi.fn(),
   getSessionGitWorktreeStore: vi.fn(),
   getSessions: vi.fn(),
   mountProject: vi.fn(),
   provisionWorkspace: vi.fn(),
   teardownSession: vi.fn(),
-  terminalAcquire: vi.fn(),
-  terminalRelease: vi.fn(),
   viewModels: [] as MockViewModel[],
   viewStateGet: vi.fn(),
   workspaceActivate: vi.fn(),
@@ -41,7 +38,6 @@ vi.mock('@renderer/lib/ipc', () => ({
     },
     sessions: {
       archiveSession: mocks.archiveSession,
-      getConversationsForProject: mocks.getConversationsForProject,
       getSessions: mocks.getSessions,
       provisionWorkspace: mocks.provisionWorkspace,
       teardownSession: mocks.teardownSession,
@@ -91,19 +87,11 @@ vi.mock('./workspace-registry', () => ({
   },
 }));
 
-vi.mock('./conversation-registry', () => ({
-  conversationRegistry: {
-    acquire: mocks.conversationAcquire,
+vi.mock('./session-agent-registry', () => ({
+  sessionAgentRegistry: {
+    acquire: mocks.agentAcquire,
     get: vi.fn(),
-    release: mocks.conversationRelease,
-  },
-}));
-
-vi.mock('./terminal-registry', () => ({
-  terminalRegistry: {
-    acquire: mocks.terminalAcquire,
-    get: vi.fn(),
-    release: mocks.terminalRelease,
+    release: mocks.agentRelease,
   },
 }));
 
@@ -134,7 +122,6 @@ describe('SessionManagerStore archive lifecycle', () => {
     vi.clearAllMocks();
     mocks.viewModels.length = 0;
     mocks.archiveSession.mockResolvedValue(undefined);
-    mocks.getConversationsForProject.mockResolvedValue([]);
     mocks.getProjectManagerStore.mockReturnValue({ mountProject: mocks.mountProject });
     mocks.getSessions.mockResolvedValue([]);
     mocks.mountProject.mockResolvedValue(undefined);
@@ -160,8 +147,7 @@ describe('SessionManagerStore archive lifecycle', () => {
 
     expect(mocks.archiveSession).toHaveBeenCalledWith('project-1', 'session-1');
     expect(mocks.teardownSession).not.toHaveBeenCalled();
-    expect(mocks.conversationRelease).toHaveBeenCalledWith('session-1');
-    expect(mocks.terminalRelease).toHaveBeenCalledWith('session-1');
+    expect(mocks.agentRelease).toHaveBeenCalledWith('session-1');
     expect(viewModel.dispose).toHaveBeenCalledOnce();
     expect(store.state).toBe('unprovisioned');
     expect(store.phase).toBe('idle');
@@ -181,8 +167,7 @@ describe('SessionManagerStore archive lifecycle', () => {
 
     await manager.provisionSession(session.id);
 
-    expect(mocks.conversationAcquire).toHaveBeenCalledWith('session-1', 'project-1');
-    expect(mocks.terminalAcquire).toHaveBeenCalledWith('session-1', 'project-1');
+    expect(mocks.agentAcquire).toHaveBeenCalledWith('session-1', 'project-1');
     expect(store.state).toBe('provisioned');
     expect(store.viewModel).toBe(mocks.viewModels[1]);
     expect(mocks.viewModels[1].initialize).toHaveBeenCalledOnce();

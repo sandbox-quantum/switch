@@ -9,15 +9,15 @@ import { switchRoomsStore } from './switch-rooms-store';
  * room. Renders nothing when the session is not connected to any room.
  */
 export const SessionRoomBadge = observer(function SessionRoomBadge({
-  conversationId,
+  sessionId,
 }: {
-  conversationId: string;
+  sessionId: string;
 }) {
   useEffect(() => {
     switchRoomsStore.ensureLoaded();
   }, []);
 
-  const roomId = switchRoomsStore.roomForSession(conversationId);
+  const roomId = switchRoomsStore.roomForSession(sessionId);
   if (!roomId) return null;
 
   return (

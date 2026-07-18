@@ -1,18 +1,16 @@
 import { observer } from 'mobx-react-lite';
 import { createContext, useContext, type ReactNode } from 'react';
 import { ProjectViewWrapper } from '@renderer/features/projects/components/project-view-wrapper';
-import type { ConversationManagerStore } from '@renderer/features/sessions/conversations/conversation-manager';
+import type { SessionAgentStore } from '@renderer/features/sessions/stores/session-agent-store';
 import {
-  getConversationsForSession,
+  getSessionAgent,
   getSessionStore,
-  getTerminalsForSession,
   getWorkspaceForSession,
   sessionViewKind,
   type SessionViewKind,
 } from '@renderer/features/sessions/stores/session-selectors';
 import type { WorkspaceStore } from '@renderer/features/sessions/stores/workspace';
 import type { WorkspaceViewModel } from '@renderer/features/sessions/stores/workspace-view-model';
-import type { TerminalManagerStore } from '@renderer/features/sessions/terminals/terminal-manager';
 
 interface SessionViewContext {
   projectId: string;
@@ -82,22 +80,12 @@ export function useWorkspaceViewModel(): WorkspaceViewModel {
   return viewModel;
 }
 
-/** Returns the ConversationManagerStore for the session. Throws if not registered. */
-export function useConversations(): ConversationManagerStore {
+/** Returns the SessionAgentStore for the session. Throws if not registered. */
+export function useSessionAgent(): SessionAgentStore {
   const { sessionId } = useSessionViewContext();
-  const mgr = getConversationsForSession(sessionId);
-  if (!mgr) {
-    throw new Error('useConversations: session is not registered (no conversation manager)');
+  const store = getSessionAgent(sessionId);
+  if (!store) {
+    throw new Error('useSessionAgent: session is not registered (no session-agent store)');
   }
-  return mgr;
-}
-
-/** Returns the TerminalManagerStore for the session. Throws if not registered. */
-export function useTerminals(): TerminalManagerStore {
-  const { sessionId } = useSessionViewContext();
-  const mgr = getTerminalsForSession(sessionId);
-  if (!mgr) {
-    throw new Error('useTerminals: session is not registered (no terminal manager)');
-  }
-  return mgr;
+  return store;
 }

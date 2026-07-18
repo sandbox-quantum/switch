@@ -3,7 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
 import { useIsActiveSession } from '@renderer/features/sessions/hooks/use-is-active-session';
 import {
-  useConversations,
+  useSessionAgent,
   useSessionViewContext,
   useWorkspaceId,
   useWorkspaceViewModel,
@@ -15,21 +15,20 @@ import { useTerminalSearch } from '@renderer/lib/pty/use-terminal-search';
 
 /**
  * The entire session view: one `claude` terminal. A switchdash session has
- * exactly one conversation, so we mount its PTY directly — no tabs, no panes,
+ * exactly one agent, so we mount its PTY directly — no tabs, no panes,
  * no context bar.
  */
 export const SessionTerminal = observer(function SessionTerminal() {
   const { sessionId } = useSessionViewContext();
   const sessionView = useWorkspaceViewModel();
-  const conversations = useConversations();
+  const agentStore = useSessionAgent();
   const workspaceId = useWorkspaceId();
   const isActive = useIsActiveSession(sessionId);
 
   const autoFocus = isActive && sessionView.focusedRegion === 'main';
 
-  // A session has a single conversation — take the first one.
-  const conversation = conversations.conversations.values().next().value;
-  const session = conversation ? (conversations.sessions.get(conversation.data.id) ?? null) : null;
+  const agent = agentStore.agent;
+  const session = agentStore.pty;
   const ptySessionId = session?.sessionId ?? null;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,7 +70,7 @@ export const SessionTerminal = observer(function SessionTerminal() {
     }
   }, [sessionStatus]);
 
-  const onInterruptPress = conversation ? () => conversation.clearWorking() : undefined;
+  const onInterruptPress = agent ? () => agent.clearWorking() : undefined;
 
   return (
     <div

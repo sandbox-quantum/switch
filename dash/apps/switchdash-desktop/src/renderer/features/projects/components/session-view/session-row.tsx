@@ -8,7 +8,7 @@ import {
 } from '@renderer/features/sessions/stores/session-selectors';
 import { type SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { SessionRoomBadge } from '@renderer/features/switch-rooms/session-room-badge';
-import { StackedAgentLogos } from '@renderer/lib/components/stacked-agent-logos';
+import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Checkbox } from '@renderer/lib/ui/checkbox';
@@ -101,8 +101,15 @@ export const SessionRow = observer(function SessionRow({
             <span className="min-w-0 truncate text-left text-sm">{session.data.title}</span>
           </div>
         </div>
-        <SessionRoomBadge conversationId={session.data.id} />
-        <StackedAgentLogos stats={session.conversationStats} />
+        <SessionRoomBadge sessionId={session.data.id} />
+        {session.agentProviderId && (
+          <span
+            className="relative flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-background-2 ring-2 ring-background"
+            title={session.agentProviderId}
+          >
+            <AgentIcon id={session.agentProviderId} size={14} />
+          </span>
+        )}
         <div
           className={cn(
             'flex min-w-8 shrink-0 items-center justify-end',

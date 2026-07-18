@@ -18,7 +18,7 @@ import type {
   Session,
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
-import { conversationRegistry } from './conversation-registry';
+import { sessionAgentRegistry } from './session-agent-registry';
 import {
   createUnprovisionedSession,
   createUnregisteredSession,
@@ -28,7 +28,6 @@ import {
   isUnregistered,
   type SessionStore,
 } from './session-store';
-import { terminalRegistry } from './terminal-registry';
 import { workspaceRegistry } from './workspace-registry';
 
 function formatCreateSessionError(error: CreateSessionError): string {
@@ -73,17 +72,10 @@ export class SessionManagerStore {
         if (!agent || agent.projectId !== this.projectId || this.sessions.has(session.id)) return;
         runInAction(() => {
           this.sessions.set(session.id, createUnprovisionedSession(this.projectId, session));
-          // Acquire conversation/terminal managers inside the same action so the
-          // WorkspaceViewModel's reaction on `conversations.size` registers the
-          // manager's observable map as a dependency on its first evaluation.
-          // Pass no preloaded list: this session was created elsewhere (the
-          // auto-session watcher / another window), so there is no optimistic
-          // conversation to seed. An empty array would mark the manager as fully
-          // preloaded with zero conversations and disable its demand fetch,
-          // leaving the terminal stuck on a spinner; omitting it lets the manager
-          // load the real conversation via getConversationsForSession.
-          conversationRegistry.acquire(session.id, this.projectId);
-          terminalRegistry.acquire(session.id, this.projectId);
+          // This session was created elsewhere (the auto-session watcher /
+          // another window), so there is no record to seed — omit the preloaded
+          // list so the store demand-fetches the real session record.
+          sessionAgentRegistry.acquire(session.id, this.projectId);
           // A provisioned event for this session may have arrived first (the
           // automation path emits created→provisioned back-to-back). Apply it
           // now so the session reaches 'ready' without waiting for a restart.
@@ -171,8 +163,7 @@ export class SessionManagerStore {
   }
 
   private _releaseSessionRegistries(sessionId: string): void {
-    conversationRegistry.release(sessionId);
-    terminalRegistry.release(sessionId);
+    sessionAgentRegistry.release(sessionId);
   }
 
   loadSessions(): Promise<void> {
@@ -183,10 +174,9 @@ export class SessionManagerStore {
           runInAction(() => {
             for (const t of sessions) {
               this.sessions.set(t.id, createUnprovisionedSession(this.projectId, t));
-              // A session is its own (single) conversation — seed the manager with
-              // the session record so sidebar badges are available immediately.
-              conversationRegistry.acquire(t.id, this.projectId, [t]);
-              terminalRegistry.acquire(t.id, this.projectId);
+              // Seed the agent store with the session record so sidebar badges
+              // are available immediately.
+              sessionAgentRegistry.acquire(t.id, this.projectId, [t]);
             }
           });
         })
@@ -224,12 +214,9 @@ export class SessionManagerStore {
     }
     const providerId = agent.providerId;
 
-    const clearOptimisticInitialConversationWorking = () => {
+    const clearOptimisticInitialWorking = () => {
       if (!params.initialPrompt?.trim()) return;
-      conversationRegistry
-        .acquire(params.id, this.projectId)
-        .conversations.get(params.id)
-        ?.clearWorking();
+      sessionAgentRegistry.acquire(params.id, this.projectId).agent?.clearWorking();
     };
 
     runInAction(() => {
@@ -252,20 +239,17 @@ export class SessionManagerStore {
         createdAt: now,
         updatedAt: now,
       };
-      const conversationManager = conversationRegistry.acquire(params.id, this.projectId, [
-        optimistic,
-      ]);
+      const agentStore = sessionAgentRegistry.acquire(params.id, this.projectId, [optimistic]);
       if (params.initialPrompt?.trim()) {
-        void conversationManager.markConversationWorking(params.id);
+        void agentStore.markWorking();
       }
-      terminalRegistry.acquire(params.id, this.projectId);
     });
 
     const result = await rpc.sessions
       .createSession(JSON.parse(JSON.stringify(toJS(params))) as typeof params)
       .catch((e: unknown) => {
         const message = e instanceof Error ? e.message : String(e);
-        clearOptimisticInitialConversationWorking();
+        clearOptimisticInitialWorking();
         runInAction(() => {
           const current = this.sessions.get(params.id);
           if (current && isUnregistered(current)) {
@@ -278,7 +262,7 @@ export class SessionManagerStore {
 
     if (!result.success) {
       const message = formatCreateSessionError(result.error);
-      clearOptimisticInitialConversationWorking();
+      clearOptimisticInitialWorking();
       runInAction(() => {
         const current = this.sessions.get(params.id);
         if (current && isUnregistered(current)) {
@@ -293,7 +277,7 @@ export class SessionManagerStore {
       const current = this.sessions.get(params.id);
       if (current && isUnregistered(current)) {
         current.transitionToUnprovisioned(result.data.session, 'provision');
-        // Conversation and terminal registries already acquired in the optimistic phase.
+        // The session-agent registry entry was already acquired in the optimistic phase.
       }
     });
 
@@ -347,8 +331,7 @@ export class SessionManagerStore {
     runInAction(() => {
       const current = this.sessions.get(sessionId);
       if (current && isUnprovisioned(current)) {
-        conversationRegistry.acquire(sessionId, this.projectId);
-        terminalRegistry.acquire(sessionId, this.projectId);
+        sessionAgentRegistry.acquire(sessionId, this.projectId);
         current.ensureRegisteredStores();
         current.transitionToProvisioned(
           { ...current.data, lastInteractedAt: new Date().toISOString() },
@@ -383,8 +366,7 @@ export class SessionManagerStore {
   private _applyProvisioned(sessionId: string, path: string, workspaceId: string): void {
     const current = this.sessions.get(sessionId);
     if (current && isUnprovisioned(current)) {
-      conversationRegistry.acquire(sessionId, this.projectId);
-      terminalRegistry.acquire(sessionId, this.projectId);
+      sessionAgentRegistry.acquire(sessionId, this.projectId);
       current.ensureRegisteredStores();
       current.transitionToProvisioned(
         { ...current.data, lastInteractedAt: new Date().toISOString() },
@@ -519,7 +501,7 @@ export class SessionManagerStore {
     });
 
     try {
-      // Release conversation and terminal registries before disposing each session.
+      // Release the session-agent registry entry before disposing each session.
       removed.forEach((t, id) => {
         this._releaseSessionRegistries(id);
         t.dispose();

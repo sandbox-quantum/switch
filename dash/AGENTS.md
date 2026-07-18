@@ -299,8 +299,8 @@ pnpm run lint
 - Access session and project MobX stores through selectors and session view hooks:
   `getSessionStore`, `asProvisioned`, `sessionViewKind`, `getSessionManagerStore`,
   `getProjectStore`, `asMounted`, `useSessionViewKind`, `useWorkspace`,
-  `useWorkspaceId`, `useDevServers`, `useWorkspaceViewModel`, `useConversations`,
-  and `useTerminals`.
+  `useWorkspaceId`, `useDevServers`, `useWorkspaceViewModel`, and
+  `useSessionAgent`.
 - Never use `asProvisioned(...)!` or `asMounted(...)!`; use explicit null checks.
 - State guards must check `kind !== 'ready'` rather than enumerating non-ready states.
 - Access session managers through `getSessionManagerStore(projectId)`, not `project.sessionManager`.

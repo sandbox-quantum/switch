@@ -1,17 +1,11 @@
 import { ok, type Result } from '@switchdash/shared';
 import type { IExecutionContext } from '@main/core/execution-context/types';
-import {
-  killTmuxSession,
-  makeAgentTmuxSessionName,
-  makeTmuxSessionName,
-} from '@main/core/pty/tmux-session-name';
+import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import type { SessionRuntimeResult } from '@main/core/sessions/session-builder';
-import { getSessionSessionLeafIds } from '@main/core/sessions/session-targets';
 import { workspaceRegistry, type TeardownMode } from '@main/core/workspaces/workspace-registry';
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { LifecycleMap } from '@main/lib/lifecycle-map';
 import { log } from '@main/lib/logger';
-import { makePtySessionId } from '@shared/core/pty/ptySessionId';
 import type { SessionBootstrapStatus } from '@shared/core/sessions/sessions';
 import type { WorkspaceType as SharedWorkspaceType } from '@shared/core/workspaces/workspaces';
 import type { ProvisionResult, SessionProvider } from '../projects/project-provider';
@@ -64,21 +58,13 @@ async function executeTeardown(
 }
 
 async function cleanupDetachedSessions(
-  projectId: string,
+  _projectId: string,
   sessionId: string,
   ctx: IExecutionContext
 ): Promise<void> {
-  const { conversationIds, terminalIds } = await getSessionSessionLeafIds(projectId, sessionId);
-  // Agent conversations key their pane on the shared conversationId (so all
-  // clients converge on one tmux session); terminals stay on the instance-local
-  // pty-session-id scheme.
-  const tmuxNames = [
-    ...conversationIds.map((conversationId) => makeAgentTmuxSessionName(conversationId)),
-    ...terminalIds.map((terminalId) =>
-      makeTmuxSessionName(makePtySessionId(projectId, sessionId, terminalId))
-    ),
-  ];
-  await Promise.all(tmuxNames.map((name) => killTmuxSession(ctx, name)));
+  // The agent pane is keyed on the shared session id, so all clients converge
+  // on one tmux session.
+  await killTmuxSession(ctx, makeAgentTmuxSessionName(sessionId));
 }
 
 class SessionRuntimeManager {

@@ -2,7 +2,7 @@ import { isUnmountedProject } from '@renderer/features/projects/stores/project';
 import { getProjectManagerStore } from '@renderer/features/projects/stores/project-selectors';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
 import type { Session } from '@shared/core/sessions/sessions';
-import { conversationRegistry } from './conversation-registry';
+import { sessionAgentRegistry } from './session-agent-registry';
 import type { SessionManagerStore } from './session-manager';
 import {
   isProvisioned,
@@ -11,7 +11,6 @@ import {
   registeredSessionData,
   type SessionStore,
 } from './session-store';
-import { terminalRegistry } from './terminal-registry';
 import { workspaceRegistry } from './workspace-registry';
 import type { WorkspaceViewModel } from './workspace-view-model';
 
@@ -45,8 +44,8 @@ export function getSessionView(
 }
 
 export function sessionAgentStatus(store: SessionStore): AgentStatus | null {
-  const mgr = conversationRegistry.get(store.data.id);
-  return mgr?.sessionStatus ?? null;
+  const agent = sessionAgentRegistry.get(store.data.id);
+  return agent?.sessionStatus ?? null;
 }
 
 export type SessionViewKind =
@@ -125,12 +124,8 @@ export function getWorkspaceViewModel(
   return getSessionStore(projectId, sessionId)?.viewModel ?? undefined;
 }
 
-export function getConversationsForSession(sessionId: string) {
-  return conversationRegistry.get(sessionId);
-}
-
-export function getTerminalsForSession(sessionId: string) {
-  return terminalRegistry.get(sessionId);
+export function getSessionAgent(sessionId: string) {
+  return sessionAgentRegistry.get(sessionId);
 }
 
 /** Returns the display name from any session store variant. */

@@ -8,7 +8,6 @@ import type {
   Session,
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
-import { conversationRegistry } from './conversation-registry';
 import { workspaceRegistry } from './workspace-registry';
 import { WorkspaceViewModel } from './workspace-view-model';
 
@@ -156,22 +155,10 @@ export class SessionStore {
     }
   }
 
-  get conversationStats(): Record<string, number> {
-    if (this.state === 'unregistered') {
-      return {};
-    }
-    if (this.state === 'provisioned') {
-      const mgr = conversationRegistry.get(this.data.id);
-      if (mgr) {
-        const counts: Record<string, number> = {};
-        for (const conv of mgr.conversations.values()) {
-          const id = conv.data.providerId;
-          counts[id] = (counts[id] ?? 0) + 1;
-        }
-        return counts;
-      }
-    }
-    return {};
+  /** The provider of this session's agent, for the sidebar row logo. */
+  get agentProviderId(): string | null {
+    if (!isRegistered(this)) return null;
+    return this.data.providerId ?? null;
   }
 
   async rename(name: string): Promise<Result<RenameSessionSuccess, RenameSessionError>> {

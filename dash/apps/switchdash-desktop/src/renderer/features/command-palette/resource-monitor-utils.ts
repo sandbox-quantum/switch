@@ -1,7 +1,4 @@
-import {
-  getConversationsForSession,
-  getTerminalsForSession,
-} from '@renderer/features/sessions/stores/session-selectors';
+import { getSessionAgent } from '@renderer/features/sessions/stores/session-selectors';
 import { appState } from '@renderer/lib/stores/app-state';
 import { formatBytes } from '@renderer/utils/formatBytes';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -155,10 +152,9 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
       if (session) {
         bucketKey = sessionId;
         sessionName = session.displayName;
-        const conv = getConversationsForSession(sessionId)?.conversations.get(entry.leafId);
-        const terminal = getTerminalsForSession(sessionId)?.terminals.get(entry.leafId);
-        providerId = conv?.data.providerId;
-        displayTitle = conv?.data.title ?? terminal?.data.name;
+        const agent = entry.leafId === sessionId ? getSessionAgent(sessionId)?.agent : undefined;
+        providerId = agent?.data.providerId;
+        displayTitle = agent?.data.title;
       }
     }
 
