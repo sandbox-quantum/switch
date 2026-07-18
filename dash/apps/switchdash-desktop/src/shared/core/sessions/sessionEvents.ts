@@ -6,13 +6,11 @@ export const sessionCreatedChannel = defineEvent<{ session: Session }>('session:
 
 export const sessionChangedChannel = defineEvent<{
   sessionId: string;
-  projectId: string;
   changes: Partial<Pick<Session, 'lastInteractedAt' | 'title' | 'providerSessionId'>>;
 }>('session:changed');
 
 export const sessionAgentStatusChangedChannel = defineEvent<{
   sessionId: string;
-  projectId: string;
   status: AgentStatus;
   seen: boolean;
   soundEvent?: 'needs_attention' | 'session_complete';
@@ -34,26 +32,21 @@ export const sessionAgentStatusChangedChannel = defineEvent<{
  */
 export const sessionDeletedChannel = defineEvent<{
   sessionId: string;
-  projectId: string;
 }>('session:deleted');
 
 export const sessionStatusUpdatedChannel = defineEvent<{
   sessionId: string;
-  projectId: string;
   status: string;
 }>('session:status-updated');
 
 export type ProvisionStep =
-  | 'resolving-worktree'
-  | 'initialising-workspace'
+  | 'initialising-location'
   | 'running-provision-script'
   | 'connecting'
-  | 'setting-up-workspace'
   | 'starting-sessions';
 
 export const sessionProvisionProgressChannel = defineEvent<{
   sessionId: string;
-  projectId: string;
   step: ProvisionStep;
   message: string;
 }>('session:provision-progress');
@@ -63,8 +56,7 @@ export type LifecycleScriptOrigin = 'auto-setup' | 'auto-run' | 'manual' | 'work
 
 export type LifecycleScriptStatusEvent = {
   sessionId: string;
-  projectId: string;
-  workspaceId: string;
+  locationId: string;
   type: LifecycleScriptType;
   origin: LifecycleScriptOrigin;
 } & (
@@ -86,8 +78,7 @@ export const lifecycleScriptStatusChannel = defineEvent<LifecycleScriptStatusEve
 
 export const sessionProvisionedChannel = defineEvent<{
   sessionId: string;
-  projectId: string;
   path: string;
-  workspaceId: string;
+  locationId: string;
   sshConnectionId?: string;
 }>('session:provisioned');

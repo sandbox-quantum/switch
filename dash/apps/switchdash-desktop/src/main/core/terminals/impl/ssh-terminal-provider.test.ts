@@ -47,7 +47,7 @@ vi.mock('@main/core/pty/terminal-color-scheme', () => ({
 
 const terminal: Terminal = {
   id: 'terminal-1',
-  projectId: 'project-1',
+  locationId: 'project-1',
   sessionId: 'session-1',
   shellId: 'system',
   name: 'Terminal 1',
@@ -87,7 +87,7 @@ describe('SshTerminalProvider', () => {
 
   it('re-attaches a terminal whose stale session is still mapped after a reconnect', async () => {
     const provider = new SshTerminalProvider({
-      projectId: terminal.projectId,
+      locationId: terminal.locationId,
       scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
@@ -98,7 +98,7 @@ describe('SshTerminalProvider', () => {
     await provider.spawnTerminal(terminal);
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
     const stalePty = await ptyFromCall(0);
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
 
     // The dead channel's `close` has not fired, so the session is still mapped.
     await provider.rehydrate();
@@ -112,7 +112,7 @@ describe('SshTerminalProvider', () => {
 
   it('ignores a late exit from a discarded pty so it does not tear down the replacement', async () => {
     const provider = new SshTerminalProvider({
-      projectId: terminal.projectId,
+      locationId: terminal.locationId,
       scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
@@ -123,7 +123,7 @@ describe('SshTerminalProvider', () => {
     await provider.spawnTerminal(terminal); // pty A, exit handler [0]
     await provider.rehydrate(); // discards A, spawns pty B, exit handler [1]
 
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     const sessions = (provider as unknown as { sessions: Map<string, unknown> }).sessions;
     const replacement = sessions.get(sessionId);
     expect(replacement).toBeDefined();
@@ -137,7 +137,7 @@ describe('SshTerminalProvider', () => {
 
   it('registers user terminals with their display name for resource monitor labels', async () => {
     const provider = new SshTerminalProvider({
-      projectId: terminal.projectId,
+      locationId: terminal.locationId,
       scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
@@ -147,7 +147,7 @@ describe('SshTerminalProvider', () => {
 
     await provider.spawnTerminal(terminal);
 
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     expect(ptySessionRegistry.register).toHaveBeenCalledWith(
       sessionId,
       expect.anything(),
@@ -157,7 +157,7 @@ describe('SshTerminalProvider', () => {
 
   it('cleans up cached shell profiles after a non-respawned exit', async () => {
     const provider = new SshTerminalProvider({
-      projectId: terminal.projectId,
+      locationId: terminal.locationId,
       scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
@@ -170,7 +170,7 @@ describe('SshTerminalProvider', () => {
       command: 'echo ready',
     });
 
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     expect(
       (provider as unknown as { shellProfiles: Map<string, unknown> }).shellProfiles.has(sessionId)
     ).toBe(true);

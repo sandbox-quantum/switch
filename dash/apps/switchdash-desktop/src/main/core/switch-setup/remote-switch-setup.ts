@@ -2,7 +2,7 @@ import { resolveCommandPath } from '@switchdash/core/deps/runtime';
 import semver from 'semver';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { log } from '@main/lib/logger';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import type {
@@ -268,7 +268,7 @@ export class RemoteSwitchSetupService {
 const serviceCache = new Map<string, Promise<RemoteSwitchSetupService>>();
 
 async function build(sshHost: string): Promise<RemoteSwitchSetupService> {
-  const proxy = await ensureSshConnected(agentSshConnectionId(sshHost), sshHost);
+  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   return new RemoteSwitchSetupService(new SshExecutionContext(proxy));
 }
 

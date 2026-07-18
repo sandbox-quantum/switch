@@ -39,7 +39,7 @@ function determineSoundEvent(
 }
 
 async function handleSessionEvent(
-  ctx: { sessionId: string; projectId: string; providerId: string },
+  ctx: { sessionId: string; providerId: string },
   providerSessionId: string
 ): Promise<void> {
   if (!isValidProviderSessionId(ctx.providerId, providerSessionId)) return;
@@ -54,7 +54,6 @@ async function handleSessionEvent(
 
   events.emit(sessionChangedChannel, {
     sessionId: ctx.sessionId,
-    projectId: ctx.projectId,
     changes: { providerSessionId },
   });
 }
@@ -130,7 +129,7 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
   async initialize(): Promise<void> {
     await this.server.start(async (raw) => this.handleRawHook(raw, { startLocalPoller: true }));
 
-    sessionHooks.on('session:input-submitted', ({ projectId, sessionId, providerId }) => {
+    sessionHooks.on('session:input-submitted', ({ sessionId, providerId }) => {
       // Only synthesise a 'start' event when the plugin does not supply its own
       // start hook (e.g. UserPromptSubmit). Providers with start-capable hooks
       // get 'working' from the real hook event instead.
@@ -145,7 +144,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
           type: 'start',
           source: 'input',
           providerId,
-          projectId,
           sessionId,
           timestamp: Date.now(),
           payload: {},
@@ -157,7 +155,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
       void touchSession(sessionId, now).then(() => {
         events.emit(sessionChangedChannel, {
           sessionId,
-          projectId,
           changes: { lastInteractedAt: now },
         });
       });
@@ -194,7 +191,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
 
       events.emit(sessionAgentStatusChangedChannel, {
         sessionId: event.sessionId,
-        projectId: event.projectId,
         status,
         seen: seen === 1,
         soundEvent: determineSoundEvent(event, status),
@@ -223,7 +219,6 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
 
           events.emit(sessionAgentStatusChangedChannel, {
             sessionId,
-            projectId: loaded.projectId,
             status: 'idle',
             seen: true,
             soundEvent: undefined,

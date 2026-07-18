@@ -33,8 +33,8 @@ vi.mock('@main/core/agent-hooks/agent-hook-service', () => ({
   },
 }));
 
-vi.mock('@main/core/agent-hooks/workspace-trust-service', () => ({
-  workspaceTrustService: {
+vi.mock('@main/core/agent-hooks/dir-trust-service', () => ({
+  dirTrustService: {
     maybeAutoTrustLocal: vi.fn(),
   },
 }));
@@ -177,7 +177,7 @@ function localProvider({
   ctx?: ConstructorParameters<typeof LocalAgentRuntime>[0]['ctx'];
 } = {}) {
   return new LocalAgentRuntime({
-    projectId: 'project-1',
+    locationId: 'project-1',
     sessionId: 'session-1',
     sessionPath: '/tmp/session-1',
     tmux,

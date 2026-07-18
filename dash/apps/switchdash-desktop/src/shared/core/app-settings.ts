@@ -15,7 +15,7 @@ import {
 } from '@main/core/settings/schema';
 
 export type LocalProjectSettings = z.infer<typeof localProjectSettingsSchema>;
-export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
+export type LocationSettings = z.infer<typeof projectSettingsSchema>;
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export type SessionSettings = z.infer<typeof sessionSettingsSchema>;
 export type AgentAutoApproveDefaults = z.infer<typeof agentAutoApproveDefaultsSchema>;

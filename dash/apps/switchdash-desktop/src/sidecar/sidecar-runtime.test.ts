@@ -43,7 +43,7 @@ function makeRuntime() {
   };
   const runtime = new SidecarRuntime({
     creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
-    projectId: 'proj-1',
+    locationId: 'proj-1',
     deeplinkScheme: 'switchdash',
     tmuxRun: vi.fn(),
     isPaneLive: () => true,
@@ -147,7 +147,7 @@ describe('SidecarRuntime (multi-session)', () => {
     let paneLive = true;
     const runtime = new SidecarRuntime({
       creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
-      projectId: 'proj-1',
+      locationId: 'proj-1',
       deeplinkScheme: 'switchdash',
       tmuxRun: vi.fn(),
       isPaneLive: () => paneLive,

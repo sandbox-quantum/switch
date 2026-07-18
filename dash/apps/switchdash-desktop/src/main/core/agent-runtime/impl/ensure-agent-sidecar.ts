@@ -18,7 +18,6 @@ import { resolveSidecarBundlePath } from './resolve-sidecar-bundle';
  */
 export async function ensureAgentSidecar(params: {
   providerId: string;
-  projectId: string;
   /** Absolute remote repo dir; the agent's Switch creds + bundle live under it. */
   repoDir: string;
   deeplinkScheme: string;
@@ -26,7 +25,7 @@ export async function ensureAgentSidecar(params: {
   connectionId: string;
   host: SidecarHost;
 }): Promise<SidecarEndpoint> {
-  const { providerId, projectId, repoDir, deeplinkScheme, ctx, connectionId, host } = params;
+  const { providerId, repoDir, deeplinkScheme, ctx, connectionId, host } = params;
   const launchSpec = await generateAgentLaunchSpec({
     providerId,
     remoteRepoDir: repoDir,
@@ -38,7 +37,7 @@ export async function ensureAgentSidecar(params: {
     host,
     bundlePath: resolveSidecarBundlePath(),
     sidecarTmuxName: agentSidecarTmuxName(repoDir),
-    config: { projectId, repoDir, deeplinkScheme, launchSpec },
+    config: { repoDir, deeplinkScheme, launchSpec },
     log,
   });
   return launcher.deployAndLaunch();
@@ -53,14 +52,13 @@ export async function ensureAgentSidecar(params: {
  */
 export async function probeAgentSidecar(params: {
   providerId: string;
-  projectId: string;
   repoDir: string;
   deeplinkScheme: string;
   ctx: IExecutionContext;
   connectionId: string;
   host: SidecarHost;
 }): Promise<SidecarEndpoint | null> {
-  const { providerId, projectId, repoDir, deeplinkScheme, ctx, connectionId, host } = params;
+  const { providerId, repoDir, deeplinkScheme, ctx, connectionId, host } = params;
   const launchSpec = await generateAgentLaunchSpec({
     providerId,
     remoteRepoDir: repoDir,
@@ -72,7 +70,7 @@ export async function probeAgentSidecar(params: {
     host,
     bundlePath: resolveSidecarBundlePath(),
     sidecarTmuxName: agentSidecarTmuxName(repoDir),
-    config: { projectId, repoDir, deeplinkScheme, launchSpec },
+    config: { repoDir, deeplinkScheme, launchSpec },
     log,
   });
   return launcher.probeExisting();

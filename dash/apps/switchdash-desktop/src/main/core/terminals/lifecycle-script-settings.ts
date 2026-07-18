@@ -1,19 +1,19 @@
-import type { Workspace } from '@main/core/workspaces/workspace';
+import type { LocationRuntime } from '@main/core/locations/location-runtime';
 import type { LifecycleScriptType } from '@shared/core/sessions/sessionEvents';
-import { getEffectiveSessionSettings } from '../projects/settings/effective-session-settings';
-import { resolveWorkspace } from '../projects/utils';
+import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
+import { resolveLocationRuntime } from '../locations/utils';
 
 /**
- * Reads the effective lifecycle script config for an already-resolved workspace.
- * This is used by callers that already have a Workspace, such as workspace setup/teardown hooks.
+ * Reads the effective lifecycle script config for an already-resolved location
+ * runtime. Used by callers that already have one, such as setup/teardown hooks.
  */
-export async function resolveLifecycleScriptForWorkspace(
-  workspace: Workspace,
+export async function resolveLifecycleScriptForRuntime(
+  runtime: LocationRuntime,
   type: LifecycleScriptType
 ): Promise<{ script?: string; shellSetup?: string }> {
   const settings = await getEffectiveSessionSettings({
-    projectSettings: workspace.settings,
-    sessionFs: workspace.fs,
+    locationSettings: runtime.settings,
+    sessionFs: runtime.fs,
   });
   return {
     script: settings.scripts?.[type],
@@ -22,21 +22,19 @@ export async function resolveLifecycleScriptForWorkspace(
 }
 
 /**
- * Resolves a workspace by id, then reads the effective lifecycle script config for it.
- * This is used by RPC adapters that only receive ids from the renderer.
+ * Resolves a location runtime by id, then reads the effective lifecycle script
+ * config for it. Used by RPC adapters that only receive ids from the renderer.
  */
 export async function resolveLifecycleScript({
-  projectId,
-  workspaceId,
+  locationId,
   type,
 }: {
-  projectId: string;
-  workspaceId: string;
+  locationId: string;
   type: LifecycleScriptType;
-}): Promise<{ workspace: Workspace; script?: string; shellSetup?: string }> {
-  const workspace = resolveWorkspace(projectId, workspaceId);
-  if (!workspace) throw new Error('Workspace not found');
+}): Promise<{ runtime: LocationRuntime; script?: string; shellSetup?: string }> {
+  const runtime = resolveLocationRuntime(locationId);
+  if (!runtime) throw new Error(`No live runtime for location ${locationId}`);
 
-  const settings = await resolveLifecycleScriptForWorkspace(workspace, type);
-  return { workspace, ...settings };
+  const settings = await resolveLifecycleScriptForRuntime(runtime, type);
+  return { runtime, ...settings };
 }

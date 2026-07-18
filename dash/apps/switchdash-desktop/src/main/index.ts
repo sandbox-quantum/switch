@@ -14,15 +14,15 @@ import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agen
 import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
-import { projectManager } from './core/projects/project-manager';
-import { projectSettingsService } from './core/projects/settings/project-settings-service';
+import { locationManager } from './core/locations/location-manager';
+import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { promptLibraryService } from './core/prompt-library/service';
 import {
   reconcileResourceSampler,
   stopResourceSampler,
 } from './core/resource-monitor/resource-sampler';
 import { searchService } from './core/search/search-service';
-import { workspaceFileIndexService } from './core/search/workspace-file-index-service';
+import { locationFileIndexService } from './core/search/location-file-index-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
@@ -91,7 +91,7 @@ void app.whenReady().then(async () => {
   try {
     await initializeDatabase();
     searchService.initialize();
-    workspaceFileIndexService.initialize();
+    locationFileIndexService.initialize();
     try {
       viewStateService.pruneOrphans();
     } catch (e: unknown) {
@@ -107,7 +107,7 @@ void app.whenReady().then(async () => {
     return;
   }
 
-  projectSettingsService.initialize();
+  locationSettingsService.initialize();
   appService.initialize();
   await appSettingsService.initialize();
   await promptLibraryService.initialize();
@@ -192,7 +192,7 @@ app.on('before-quit', (event) => {
   agentHookService.dispose();
   stopResourceSampler();
   updateService.dispose();
-  void projectManager.dispose().catch((e) => {
+  void locationManager.dispose().catch((e) => {
     log.error('Failed to shutdown project manager:', e);
   });
   app.exit(0);

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getEffectiveSessionSettings } from '../projects/settings/effective-session-settings';
-import { resolveWorkspace } from '../projects/utils';
+import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
+import { resolveLocationRuntime } from '../locations/utils';
 import { runLifecycleScript } from './runLifecycleScript';
 
 const runCoordinator = vi.hoisted(() =>
-  vi.fn(async ({ workspace, type, script, shellSetup, policy }) => {
-    await workspace.lifecycleService.runLifecycleScript(
+  vi.fn(async ({ runtime, type, script, shellSetup, policy }) => {
+    await runtime.lifecycleService.runLifecycleScript(
       { type, script, shellSetup },
       {
         exit: policy.exit ?? true,
@@ -16,12 +16,12 @@ const runCoordinator = vi.hoisted(() =>
   })
 );
 
-vi.mock('../projects/settings/effective-session-settings', () => ({
+vi.mock('../locations/settings/effective-session-settings', () => ({
   getEffectiveSessionSettings: vi.fn(),
 }));
 
-vi.mock('../projects/utils', () => ({
-  resolveWorkspace: vi.fn(),
+vi.mock('../locations/utils', () => ({
+  resolveLocationRuntime: vi.fn(),
 }));
 
 vi.mock('./lifecycle-script-coordinator', () => ({
@@ -35,7 +35,7 @@ describe('runLifecycleScript', () => {
 
   it('runs manual lifecycle scripts with exit and restores the prompt afterward', async () => {
     const lifecycleRun = vi.fn(async () => {});
-    vi.mocked(resolveWorkspace).mockReturnValue({
+    vi.mocked(resolveLocationRuntime).mockReturnValue({
       settings: {},
       fs: {},
       lifecycleService: {
@@ -50,9 +50,8 @@ describe('runLifecycleScript', () => {
     } as never);
 
     await runLifecycleScript({
-      projectId: 'project-1',
+      locationId: 'loc-1',
       sessionId: 'session-1',
-      workspaceId: 'branch:feature',
       type: 'run',
     });
 
@@ -61,10 +60,9 @@ describe('runLifecycleScript', () => {
       { exit: true, waitForExit: true, respawnAfterExit: true }
     );
     expect(runCoordinator).toHaveBeenCalledWith({
-      workspace: expect.any(Object),
-      projectId: 'project-1',
+      runtime: expect.any(Object),
+      locationId: 'loc-1',
       sessionId: 'session-1',
-      workspaceId: 'branch:feature',
       type: 'run',
       script: 'pnpm dev',
       shellSetup: 'source .envrc',

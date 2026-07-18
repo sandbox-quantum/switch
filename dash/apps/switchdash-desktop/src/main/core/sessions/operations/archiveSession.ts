@@ -4,7 +4,7 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 
-export async function archiveSession(projectId: string, sessionId: string): Promise<void> {
+export async function archiveSession(sessionId: string): Promise<void> {
   const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
   if (!session) return;
 

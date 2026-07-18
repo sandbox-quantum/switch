@@ -1,22 +1,19 @@
 import { resolveLifecycleScript } from './lifecycle-script-settings';
 
 export async function prepareLifecycleScript({
-  projectId,
-  workspaceId,
+  locationId,
   type,
 }: {
-  projectId: string;
-  workspaceId: string;
+  locationId: string;
   type: 'setup' | 'run' | 'teardown';
 }): Promise<void> {
-  const { workspace, script, shellSetup } = await resolveLifecycleScript({
-    projectId,
-    workspaceId,
+  const { runtime, script, shellSetup } = await resolveLifecycleScript({
+    locationId,
     type,
   });
   if (!script) return;
 
-  await workspace.lifecycleService.prepareLifecycleScript({
+  await runtime.lifecycleService.prepareLifecycleScript({
     type,
     script,
     shellSetup,

@@ -59,7 +59,6 @@ async function main(): Promise<void> {
   const log = createSidecarLogger(process.env.SWITCHDASH_SIDECAR_LOG_LEVEL, 'sidecar');
 
   const repoDir = requireEnv('SWITCHDASH_SIDECAR_REPO_DIR');
-  const projectId = requireEnv('SWITCHDASH_SIDECAR_PROJECT_ID');
   const deeplinkScheme = process.env.SWITCHDASH_SIDECAR_DEEPLINK_SCHEME?.trim() || 'switchdash';
 
   const creds = await readSwitchAgentCredentials(repoDir, log);
@@ -101,7 +100,6 @@ async function main(): Promise<void> {
 
   const runtime = new SidecarRuntime({
     creds,
-    projectId,
     deeplinkScheme,
     tmuxRun: createTmuxRun(log),
     isPaneLive,

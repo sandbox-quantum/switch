@@ -5,23 +5,23 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 
 export type SessionWithAgent = {
   row: SessionRow;
-  projectId: string;
+  locationId: string;
   providerId: AgentProviderId;
 };
 
 /**
  * Loads a session row joined with its owning agent, exposing the agent's
- * `projectId` and `providerId` (denormalised onto the session view).
+ * `locationId` and `providerId` (denormalised onto the session view).
  */
 export async function loadSessionWithAgent(
   sessionId: string
 ): Promise<SessionWithAgent | undefined> {
   const [joined] = await db
-    .select({ session: sessions, projectId: agents.projectId, providerId: agents.providerId })
+    .select({ session: sessions, locationId: agents.locationId, providerId: agents.providerId })
     .from(sessions)
     .innerJoin(agents, eq(sessions.agentId, agents.id))
     .where(eq(sessions.id, sessionId))
     .limit(1);
   if (!joined) return undefined;
-  return { row: joined.session, projectId: joined.projectId, providerId: joined.providerId };
+  return { row: joined.session, locationId: joined.locationId, providerId: joined.providerId };
 }

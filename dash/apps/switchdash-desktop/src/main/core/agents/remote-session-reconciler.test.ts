@@ -5,7 +5,7 @@ const REMOTE_AGENT = {
   connection: 'remote',
   remoteConfig: { sshHost: 'vm', remoteRepoDir: '/home/dev/repo' },
   providerId: 'claude',
-  projectId: 'proj-1',
+  locationId: 'proj-1',
   switchAgentId: 'switch-1',
 };
 
@@ -23,6 +23,16 @@ let knownRows: Array<{ id: string; agentId?: string }> = [];
 const deleteWhere = vi.fn(async (_arg?: unknown) => ({ changes: 1 }));
 
 vi.mock('./getAgentById', () => ({ getAgentById: () => getAgentById() }));
+vi.mock('./agent-location', () => ({
+  getRemoteAgentLocation: async () => ({
+    id: 'loc-1',
+    name: 'loc',
+    sshHost: 'vm',
+    dir: '/home/dev/repo',
+    createdAt: '',
+    updatedAt: '',
+  }),
+}));
 vi.mock('./connect-remote-agent', () => ({
   connectRemoteAgent: async () => ({
     proxy: { forwardOut: async () => ({ destroy: vi.fn() }) },
@@ -149,7 +159,7 @@ describe('RemoteSessionReconciler', () => {
     emitSpy.mockRestore();
   });
 
-  it('notifies the renderer (session:deleted) with the resolved projectId when a row is removed', async () => {
+  it('notifies the renderer (session:deleted) when a row is removed', async () => {
     // The removal originates in the main process, so the renderer needs an IPC
     // event to drop the sidebar row (a user-initiated delete removes it itself).
     knownRows = [{ id: 'conv-term', agentId: 'agent-1' }];
@@ -157,7 +167,6 @@ describe('RemoteSessionReconciler', () => {
 
     expect(eventsEmit).toHaveBeenCalledWith(sessionDeletedChannel, {
       sessionId: 'conv-term',
-      projectId: 'proj-1',
     });
   });
 

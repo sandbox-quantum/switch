@@ -32,7 +32,6 @@ export async function saveProviderSessionId(
 
   events.emit(sessionChangedChannel, {
     sessionId,
-    projectId: loaded.projectId,
     changes: { providerSessionId },
   });
 }

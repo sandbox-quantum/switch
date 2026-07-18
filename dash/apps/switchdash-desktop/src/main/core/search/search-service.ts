@@ -1,20 +1,20 @@
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '@main/db/client';
-import { agents, projects, sessions } from '@main/db/schema';
+import { agents, locations, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS } from '@shared/commands';
 import type { CommandPaletteQuery, SearchItem, SearchItemKind } from '@shared/core/search';
 import type { Session } from '@shared/core/sessions/sessions';
-import type { Project } from '@shared/projects';
-import { projectEvents } from '../projects/project-events';
+import type { Location } from '@shared/core/locations/locations';
+import { locationEvents } from '../locations/location-events';
 import { sessionHooks } from '../sessions/session-hooks';
 import { sessionService } from '../sessions/session-service';
-import { workspaceFileIndexService } from './workspace-file-index-service';
+import { locationFileIndexService } from './location-file-index-service';
 
 type FtsRow = {
   item_type: string;
   item_id: string;
-  project_id: string | null;
+  location_id: string | null;
   session_id: string | null;
   title: string;
   rank: number;
@@ -23,7 +23,7 @@ type FtsRow = {
 type RecentSessionRow = {
   id: string;
   title: string;
-  project_id: string;
+  location_id: string;
 };
 
 class SearchService {
@@ -36,8 +36,8 @@ class SearchService {
     // reconciler pruning a VM session) must also leave the index.
     sessionHooks.on('session:deleted', (sessionId) => this.removeByType('session', sessionId));
 
-    projectEvents.on('project:created', (project) => this.upsertProject(project));
-    projectEvents.on('project:deleted', (projectId) => this.removeByType('project', projectId));
+    locationEvents.on('location:created', (location) => this.upsertLocation(location));
+    locationEvents.on('location:deleted', (locationId) => this.removeByType('location', locationId));
 
     this.backfill();
     this.seedCommands();
@@ -62,7 +62,7 @@ class SearchService {
     try {
       rows = sqlite
         .prepare(
-          `SELECT item_type, item_id, project_id, session_id, title, bm25(search_index) AS rank
+          `SELECT item_type, item_id, location_id, session_id, title, bm25(search_index) AS rank
            FROM search_index
            WHERE search_index MATCH ?
            ORDER BY rank
@@ -77,20 +77,20 @@ class SearchService {
     const results: SearchItem[] = rows.map((r) => ({
       kind: r.item_type as SearchItemKind,
       id: r.item_id,
-      projectId: r.project_id,
+      locationId: r.location_id,
       sessionId: r.session_id,
       title: r.title,
       subtitle: '',
       score: r.rank,
     }));
 
-    if (context?.workspaceId) {
-      const fileHits = workspaceFileIndexService.search(context.workspaceId, query);
+    if (context?.locationId) {
+      const fileHits = locationFileIndexService.search(context.locationId, query);
       for (const h of fileHits) {
         results.push({
           kind: 'file',
           id: h.path,
-          projectId: context.projectId ?? null,
+          locationId: context.locationId ?? null,
           sessionId: context.sessionId ?? null,
           title: h.filename,
           subtitle: h.path,
@@ -103,17 +103,17 @@ class SearchService {
   }
 
   private recents(context?: CommandPaletteQuery['context']): SearchItem[] {
-    const sessionStmt = context?.projectId
+    const sessionStmt = context?.locationId
       ? sqlite.prepare(
-          `SELECT s.id, s.title, a.project_id
+          `SELECT s.id, s.title, a.location_id
            FROM sessions s
            JOIN agents a ON a.id = s.agent_id
-           WHERE s.archived_at IS NULL AND a.project_id = ?
+           WHERE s.archived_at IS NULL AND a.location_id = ?
            ORDER BY s.last_interacted_at DESC
            LIMIT 10`
         )
       : sqlite.prepare(
-          `SELECT s.id, s.title, a.project_id
+          `SELECT s.id, s.title, a.location_id
            FROM sessions s
            JOIN agents a ON a.id = s.agent_id
            WHERE s.archived_at IS NULL
@@ -124,7 +124,7 @@ class SearchService {
     let sessionRows: RecentSessionRow[];
     try {
       sessionRows = (
-        context?.projectId ? sessionStmt.all(context.projectId) : sessionStmt.all()
+        context?.locationId ? sessionStmt.all(context.locationId) : sessionStmt.all()
       ) as RecentSessionRow[];
     } catch (e) {
       log.warn('SearchService: recents query failed', { error: String(e) });
@@ -134,7 +134,7 @@ class SearchService {
     return sessionRows.map((r) => ({
       kind: 'session' as const,
       id: r.id,
-      projectId: r.project_id,
+      locationId: r.location_id,
       sessionId: null,
       title: r.title,
       subtitle: '',
@@ -145,33 +145,33 @@ class SearchService {
   private upsertSession(session: Session): void {
     try {
       const [agent] = db
-        .select({ projectId: agents.projectId })
+        .select({ locationId: agents.locationId })
         .from(agents)
         .where(eq(agents.id, session.agentId))
         .all();
       if (!agent) return;
       sqlite
         .prepare(
-          `INSERT OR REPLACE INTO search_index(item_type, item_id, project_id, session_id, title, keywords)
+          `INSERT OR REPLACE INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
            VALUES ('session', ?, ?, NULL, ?, '')`
         )
-        .run(session.id, agent.projectId, session.title);
+        .run(session.id, agent.locationId, session.title);
     } catch (e) {
       log.warn('SearchService: upsertSession failed', { sessionId: session.id, error: String(e) });
     }
   }
 
-  private upsertProject(project: Project): void {
+  private upsertLocation(location: Location): void {
     try {
       sqlite
         .prepare(
-          `INSERT OR REPLACE INTO search_index(item_type, item_id, project_id, session_id, title, keywords)
-           VALUES ('project', ?, NULL, NULL, ?, ?)`
+          `INSERT OR REPLACE INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
+           VALUES ('location', ?, NULL, NULL, ?, ?)`
         )
-        .run(project.id, project.name, project.path);
+        .run(location.id, location.name, location.dir);
     } catch (e) {
-      log.warn('SearchService: upsertProject failed', {
-        projectId: project.id,
+      log.warn('SearchService: upsertLocation failed', {
+        locationId: location.id,
         error: String(e),
       });
     }
@@ -192,7 +192,7 @@ class SearchService {
       sqlite.transaction(() => {
         sqlite.prepare(`DELETE FROM search_index WHERE item_type = 'command'`).run();
         const stmt = sqlite.prepare(
-          `INSERT INTO search_index (item_type, item_id, project_id, session_id, title, keywords)
+          `INSERT INTO search_index (item_type, item_id, location_id, session_id, title, keywords)
            VALUES ('command', ?, NULL, NULL, ?, ?)`
         );
         for (const def of ALL_COMMAND_DEFS) {
@@ -216,33 +216,33 @@ class SearchService {
       const allSessions = db
         .select({
           id: sessions.id,
-          projectId: agents.projectId,
+          locationId: agents.locationId,
           title: sessions.title,
           archivedAt: sessions.archivedAt,
         })
         .from(sessions)
         .innerJoin(agents, eq(sessions.agentId, agents.id))
         .all();
-      const allProjects = db.select().from(projects).all();
+      const allLocations = db.select().from(locations).all();
 
       const upsertStmt = sqlite.prepare(
-        `INSERT OR REPLACE INTO search_index(item_type, item_id, project_id, session_id, title, keywords)
+        `INSERT OR REPLACE INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
          VALUES (?, ?, ?, ?, ?, ?)`
       );
 
       sqlite.transaction(() => {
         for (const t of allSessions) {
           if (t.archivedAt) continue;
-          upsertStmt.run('session', t.id, t.projectId, null, t.title, '');
+          upsertStmt.run('session', t.id, t.locationId, null, t.title, '');
         }
-        for (const p of allProjects) {
-          upsertStmt.run('project', p.id, null, null, p.name, p.path);
+        for (const l of allLocations) {
+          upsertStmt.run('location', l.id, null, null, l.name, l.dir);
         }
       })();
 
       log.info('SearchService: backfilled search index', {
         sessions: allSessions.filter((t) => !t.archivedAt).length,
-        projects: allProjects.length,
+        locations: allLocations.length,
       });
     } catch (e) {
       log.warn('SearchService: backfill failed', { error: String(e) });

@@ -143,7 +143,7 @@ function sshProvider({
   ctx?: ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'];
 } = {}) {
   return new SshAgentRuntime({
-    projectId: 'project-1',
+    locationId: 'project-1',
     sessionId: 'session-1',
     sessionPath: '/repo',
     tmux,

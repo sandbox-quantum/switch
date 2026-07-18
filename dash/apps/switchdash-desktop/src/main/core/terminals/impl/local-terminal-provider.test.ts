@@ -35,7 +35,7 @@ vi.mock('@main/core/pty/terminal-color-scheme', () => ({
 
 const terminal: Terminal = {
   id: 'terminal-1',
-  projectId: 'project-1',
+  locationId: 'project-1',
   sessionId: 'session-1',
   shellId: 'system',
   name: 'Terminal 1',
@@ -56,7 +56,7 @@ describe('LocalTerminalProvider', () => {
 
   it('registers user terminals with their display name for resource monitor labels', async () => {
     const provider = new LocalTerminalProvider({
-      projectId: terminal.projectId,
+      locationId: terminal.locationId,
       scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
@@ -64,7 +64,7 @@ describe('LocalTerminalProvider', () => {
 
     await provider.spawnTerminal(terminal);
 
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     expect(ptySessionRegistry.register).toHaveBeenCalledWith(
       sessionId,
       expect.anything(),
@@ -74,7 +74,7 @@ describe('LocalTerminalProvider', () => {
 
   it('cleans up cached shell profiles after a non-respawned exit', async () => {
     const provider = new LocalTerminalProvider({
-      projectId: terminal.projectId,
+      locationId: terminal.locationId,
       scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
@@ -85,7 +85,7 @@ describe('LocalTerminalProvider', () => {
       command: 'echo ready',
     });
 
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     expect(
       (provider as unknown as { shellProfiles: Map<string, unknown> }).shellProfiles.has(sessionId)
     ).toBe(true);

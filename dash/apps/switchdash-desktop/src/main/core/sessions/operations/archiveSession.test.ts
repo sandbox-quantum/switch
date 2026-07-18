@@ -40,13 +40,13 @@ describe('archiveSession', () => {
     mocks.selectLimit.mockResolvedValueOnce([
       {
         id: 'session-1',
-        workspaceId: 'workspace-1',
+        locationId: 'workspace-1',
         status: 'done',
       },
     ]);
     mocks.teardownSession.mockResolvedValue({ success: true });
 
-    await archiveSession('project-1', 'session-1');
+    await archiveSession('session-1');
 
     expect(mocks.updateSet).toHaveBeenCalledWith(
       expect.objectContaining({

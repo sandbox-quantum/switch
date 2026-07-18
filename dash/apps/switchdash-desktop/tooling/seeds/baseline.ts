@@ -1,12 +1,14 @@
 import type { AppDb } from '@main/db/client';
-import { agents, messages, projects, projectSettings, sessions } from '@main/db/schema';
+import { agents, locations, locationSettings, messages, sessions } from '@main/db/schema';
 
 // Fixed UUIDs so fixture content is stable across regenerations.
-const PROJECT_A_ID = '11111111-1111-1111-1111-111111111111';
-const PROJECT_B_ID = '22222222-2222-2222-2222-222222222222';
+const LOCATION_A_ID = '11111111-1111-1111-1111-111111111111';
+const LOCATION_B_ID = '22222222-2222-2222-2222-222222222222';
+const LOCATION_C_ID = '33333333-3333-3333-3333-333333333333';
 
 const AGENT_A_ID = 'a9e70001-0000-0000-0000-000000000000';
 const AGENT_B_ID = 'a9e70002-0000-0000-0000-000000000000';
+const AGENT_C_ID = 'a9e70003-0000-0000-0000-000000000000';
 
 const TASK_A1_ID = 'aaaa0001-0000-0000-0000-000000000000';
 const TASK_A2_ID = 'aaaa0002-0000-0000-0000-000000000000';
@@ -18,32 +20,40 @@ const MSG_A2_ID = 'dddd0002-0000-0000-0000-000000000000';
 
 /**
  * Realistic but fully synthetic dataset — no sensitive data.
- * Represents a developer's day-to-day switchdash state: two projects, each with
- * a Switch agent, four sessions across various lifecycle statuses, and a couple
- * of messages.
+ * Represents a developer's day-to-day switchdash state: two local locations and
+ * one remote, each with a Switch agent, four sessions across various lifecycle
+ * statuses, and a couple of messages.
  */
 export async function baseline(db: AppDb): Promise<void> {
-  await db.insert(projects).values([
+  await db.insert(locations).values([
     {
-      id: PROJECT_A_ID,
+      id: LOCATION_A_ID,
       name: 'switchdash',
-      path: '/home/dev/projects/switchdash',
+      sshHost: '',
+      dir: '/home/dev/projects/switchdash',
     },
     {
-      id: PROJECT_B_ID,
+      id: LOCATION_B_ID,
       name: 'my-api',
-      path: '/home/dev/projects/my-api',
+      sshHost: '',
+      dir: '/home/dev/projects/my-api',
+    },
+    {
+      id: LOCATION_C_ID,
+      name: 'remote-worker',
+      sshHost: 'build-vm',
+      dir: '/srv/agents/remote-worker',
     },
   ]);
 
   await db
-    .insert(projectSettings)
-    .values([{ projectId: PROJECT_A_ID }, { projectId: PROJECT_B_ID }]);
+    .insert(locationSettings)
+    .values([{ locationId: LOCATION_A_ID }, { locationId: LOCATION_B_ID }]);
 
   await db.insert(agents).values([
     {
       id: AGENT_A_ID,
-      projectId: PROJECT_A_ID,
+      locationId: LOCATION_A_ID,
       name: 'switchdash',
       providerId: 'claude',
       switchAgentId: 'switch-agent-a',
@@ -51,10 +61,18 @@ export async function baseline(db: AppDb): Promise<void> {
     },
     {
       id: AGENT_B_ID,
-      projectId: PROJECT_B_ID,
+      locationId: LOCATION_B_ID,
       name: 'my-api',
       providerId: 'claude',
       switchAgentId: 'switch-agent-b',
+      apiEndpoint: 'https://switch.example.com',
+    },
+    {
+      id: AGENT_C_ID,
+      locationId: LOCATION_C_ID,
+      name: 'remote-worker',
+      providerId: 'claude',
+      switchAgentId: 'switch-agent-c',
       apiEndpoint: 'https://switch.example.com',
     },
   ]);

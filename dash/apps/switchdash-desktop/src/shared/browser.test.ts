@@ -105,7 +105,7 @@ describe('browser session identity', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'Browser One',
       projectId: 'Project/One',
-      workspaceId: 'Workspace.One',
+      locationId: 'Workspace.One',
       sessionId: 'Session One',
     });
 
@@ -119,7 +119,7 @@ describe('browser session identity', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'Browser One',
       projectId: 'Project/One',
-      workspaceId: 'Workspace.One',
+      locationId: 'Workspace.One',
       sessionId: 'Session One',
     });
 
@@ -142,7 +142,7 @@ describe('browser session identity', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'browser-1',
       projectId: 'project-1',
-      workspaceId: 'workspace-1',
+      locationId: 'workspace-1',
       sessionId: 'session-1',
     });
 
@@ -164,7 +164,7 @@ describe('browser session identity', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'browser-1',
       projectId: 'project-1',
-      workspaceId: 'workspace-1',
+      locationId: 'workspace-1',
       sessionId: 'session-1',
     });
 

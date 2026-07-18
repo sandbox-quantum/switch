@@ -40,8 +40,7 @@ export class SshTerminalProvider implements TerminalProvider {
   private shellProfiles = new Map<string, ResolvedShellProfile>();
   private respawnCounts = new Map<string, number>();
   private terminals = new Map<string, Terminal>();
-  private readonly projectId: string;
-  private readonly workspaceId: string;
+  private readonly locationId: string;
   private readonly scopeId: string;
   private readonly sessionPath: string;
   private readonly sessionEnvVars: Record<string, string>;
@@ -53,8 +52,7 @@ export class SshTerminalProvider implements TerminalProvider {
   private readonly _handleReconnect: (evt: SshConnectionManagerEvent) => void;
 
   constructor({
-    projectId,
-    workspaceId,
+    locationId,
     scopeId,
     sessionPath,
     sessionEnvVars = {},
@@ -64,8 +62,7 @@ export class SshTerminalProvider implements TerminalProvider {
     proxy,
     connectionId,
   }: {
-    projectId: string;
-    workspaceId?: string;
+    locationId: string;
     scopeId: string;
     sessionPath: string;
     sessionEnvVars?: Record<string, string>;
@@ -75,8 +72,7 @@ export class SshTerminalProvider implements TerminalProvider {
     proxy: SshClientProxy;
     connectionId: string;
   }) {
-    this.projectId = projectId;
-    this.workspaceId = workspaceId ?? scopeId;
+    this.locationId = locationId;
     this.scopeId = scopeId;
     this.sessionPath = sessionPath;
     this.sessionEnvVars = sessionEnvVars;
@@ -151,7 +147,7 @@ export class SshTerminalProvider implements TerminalProvider {
     metadata: PtySessionMetadata | undefined,
     policy: SpawnPolicy
   ): Promise<void> {
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     this.knownSessionIds.add(sessionId);
     if (this.sessions.has(sessionId)) return;
     if (policy.trackForRehydrate) {
@@ -284,7 +280,7 @@ export class SshTerminalProvider implements TerminalProvider {
     let reattached = 0;
     await Promise.all(
       terminals.map(async (terminal) => {
-        const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+        const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
         this.discardLocalSession(sessionId);
         try {
           await this.spawnTerminal(terminal);
@@ -322,7 +318,7 @@ export class SshTerminalProvider implements TerminalProvider {
   }
 
   async killTerminal(terminalId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.projectId, this.scopeId, terminalId);
+    const sessionId = makePtySessionId(this.locationId, this.scopeId, terminalId);
     this.knownSessionIds.delete(sessionId);
     const pty = this.sessions.get(sessionId);
     if (pty) {

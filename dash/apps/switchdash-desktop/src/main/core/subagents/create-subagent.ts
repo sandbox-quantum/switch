@@ -1,4 +1,5 @@
 import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
+import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -55,8 +56,8 @@ export async function createSubagent(params: CreateSubagentParams): Promise<{ na
     await behavior.writeDefinition(workspace.fs, params.attributes);
 
     // Subagents of remote parents register with auto_session off: neither the
-    // local watcher (no project path) nor the on-VM sidecar watches subagents.
-    const autoSession = agent.connection !== 'remote';
+    // local watcher (no local dir) nor the on-VM sidecar watches subagents.
+    const autoSession = (await getRemoteAgentLocation(agent)) === null;
     try {
       const server = await getServer(agent.serverId);
       if (!server) throw new Error(`No Switch server with id ${agent.serverId}`);

@@ -1,5 +1,5 @@
 import type { ProvisionStep } from '@shared/core/sessions/sessionEvents';
-import { TimeoutSignal } from '../projects/utils';
+import { TimeoutSignal } from '../locations/utils';
 
 export const SESSION_TIMEOUT_MS = 600_000;
 export const TEARDOWN_SCRIPT_WAIT_MS = 10_000;

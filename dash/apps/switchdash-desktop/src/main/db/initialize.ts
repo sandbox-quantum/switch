@@ -67,7 +67,7 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
 function ensureSearchIndex(connection: BetterSqlite3.Database): void {
   // Bump this version string whenever the FTS schema changes — the table is
   // dropped and recreated, and backfill() + seedCommands() repopulate it.
-  const SEARCH_INDEX_VERSION = '3';
+  const SEARCH_INDEX_VERSION = '4';
 
   const row = connection.prepare(`SELECT value FROM kv WHERE key = 'fts_version'`).get() as
     | { value: string }
@@ -78,9 +78,9 @@ function ensureSearchIndex(connection: BetterSqlite3.Database): void {
     connection.exec(`
       CREATE VIRTUAL TABLE search_index USING fts5(
         item_type,
-        item_id    UNINDEXED,
-        project_id UNINDEXED,
-        session_id    UNINDEXED,
+        item_id     UNINDEXED,
+        location_id UNINDEXED,
+        session_id  UNINDEXED,
         title,
         keywords,
         tokenize = 'trigram case_sensitive 0'
@@ -95,13 +95,13 @@ function ensureSearchIndex(connection: BetterSqlite3.Database): void {
 }
 
 /**
- * Creates the FTS5 virtual table and companion meta table used for workspace
+ * Creates the FTS5 virtual table and companion meta table used for location
  * file indexing. Managed outside Drizzle (same reason as ensureSearchIndex).
  * Version-gated via `kv` so the tables can be dropped and recreated on schema
  * changes without a full Drizzle migration.
  */
 function ensureFileIndex(connection: BetterSqlite3.Database): void {
-  const FILE_INDEX_VERSION = '1';
+  const FILE_INDEX_VERSION = '2';
 
   const row = connection.prepare(`SELECT value FROM kv WHERE key = 'file_index_version'`).get() as
     | { value: string }
@@ -109,20 +109,21 @@ function ensureFileIndex(connection: BetterSqlite3.Database): void {
 
   if (row?.value === FILE_INDEX_VERSION) return;
 
-  connection.exec(`DROP TABLE IF EXISTS workspace_file_index`);
+  connection.exec(`DROP TABLE IF EXISTS location_file_index`);
   connection.exec(`DROP TABLE IF EXISTS workspace_file_index_meta`);
+  connection.exec(`DROP TABLE IF EXISTS location_file_index_meta`);
   connection.exec(`
-    CREATE VIRTUAL TABLE workspace_file_index USING fts5(
-      workspace_id UNINDEXED,
+    CREATE VIRTUAL TABLE location_file_index USING fts5(
+      location_id UNINDEXED,
       path,
       filename,
       tokenize = 'trigram case_sensitive 0'
     )
   `);
   connection.exec(`
-    CREATE TABLE workspace_file_index_meta (
-      workspace_id TEXT PRIMARY KEY,
-      indexed_at   INTEGER NOT NULL
+    CREATE TABLE location_file_index_meta (
+      location_id TEXT PRIMARY KEY,
+      indexed_at  INTEGER NOT NULL
     )
   `);
   connection

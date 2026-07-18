@@ -25,7 +25,7 @@ export const tabNavigationShortcutChannel = defineEvent<{
 }>('tab-navigation:shortcut');
 
 export const notificationFocusSessionChannel = defineEvent<{
-  projectId: string;
+  agentId: string;
   sessionId: string;
 }>('notification:focus-session');
 

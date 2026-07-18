@@ -41,8 +41,7 @@ export class LocalTerminalProvider implements TerminalProvider {
   private knownSessionIds = new Set<string>();
   private shellProfiles = new Map<string, ResolvedShellProfile>();
   private respawnCounts = new Map<string, number>();
-  private readonly projectId: string;
-  private readonly workspaceId: string;
+  private readonly locationId: string;
   private readonly scopeId: string;
   private readonly sessionPath: string;
   private readonly tmux: boolean;
@@ -51,8 +50,7 @@ export class LocalTerminalProvider implements TerminalProvider {
   private readonly sessionEnvVars: Record<string, string>;
 
   constructor({
-    projectId,
-    workspaceId,
+    locationId,
     scopeId,
     sessionPath,
     tmux = false,
@@ -60,8 +58,7 @@ export class LocalTerminalProvider implements TerminalProvider {
     ctx,
     sessionEnvVars = {},
   }: {
-    projectId: string;
-    workspaceId?: string;
+    locationId: string;
     scopeId: string;
     sessionPath: string;
     tmux?: boolean;
@@ -69,8 +66,7 @@ export class LocalTerminalProvider implements TerminalProvider {
     ctx: IExecutionContext;
     sessionEnvVars?: Record<string, string>;
   }) {
-    this.projectId = projectId;
-    this.workspaceId = workspaceId ?? scopeId;
+    this.locationId = locationId;
     this.scopeId = scopeId;
     this.sessionPath = sessionPath;
     this.tmux = tmux;
@@ -134,7 +130,7 @@ export class LocalTerminalProvider implements TerminalProvider {
     metadata: PtySessionMetadata | undefined,
     policy: SpawnPolicy
   ): Promise<void> {
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
+    const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     this.knownSessionIds.add(sessionId);
     if (this.sessions.has(sessionId)) return;
     const shellProfile = await this.getSessionShellProfile(sessionId, shellIntent);
@@ -253,7 +249,7 @@ export class LocalTerminalProvider implements TerminalProvider {
   }
 
   async killTerminal(terminalId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.projectId, this.scopeId, terminalId);
+    const sessionId = makePtySessionId(this.locationId, this.scopeId, terminalId);
     this.knownSessionIds.delete(sessionId);
     const pty = this.sessions.get(sessionId);
     if (pty) {

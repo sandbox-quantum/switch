@@ -3,6 +3,7 @@ import { ensureAgentSidecar } from '@main/core/agent-runtime/impl/ensure-agent-s
 import { writeWatchEnabled } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { log } from '@main/lib/logger';
+import { getRemoteAgentLocation } from './agent-location';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
@@ -37,8 +38,10 @@ export async function initializeRemoteWatchers(): Promise<void> {
   const remote: string[] = [];
   for (const agentId of ids) {
     const agent = await getAgentById(agentId);
-    if (agent?.connection !== 'remote' || !agent.remoteConfig) continue;
-    const key = `${agent.remoteConfig.sshHost}::${agent.remoteConfig.remoteRepoDir}`;
+    if (!agent) continue;
+    const location = await getRemoteAgentLocation(agent);
+    if (!location) continue;
+    const key = location.id;
     if (seen.has(key)) {
       log.info('initializeRemoteWatchers: skipping agent sharing a sidecar dir at boot', {
         agentId,
@@ -75,7 +78,8 @@ export async function initializeRemoteWatchers(): Promise<void> {
 export async function initializeRemoteDiscovery(): Promise<void> {
   const agents = await getAgents();
   for (const agent of agents) {
-    if (agent.connection === 'remote' && agent.remoteConfig && agent.switchAgentId) {
+    if (!agent.switchAgentId) continue;
+    if (await getRemoteAgentLocation(agent)) {
       remoteSessionReconciler.start(agent.id);
     }
   }
@@ -84,7 +88,7 @@ export async function initializeRemoteDiscovery(): Promise<void> {
 /** Start discovery for one remote agent (e.g. just added). Idempotent; no-op for non-remote. */
 export async function startRemoteDiscovery(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
-  if (agent?.connection === 'remote' && agent.remoteConfig && agent.switchAgentId) {
+  if (agent?.switchAgentId && (await getRemoteAgentLocation(agent))) {
     remoteSessionReconciler.start(agentId);
   }
 }
@@ -92,7 +96,7 @@ export async function startRemoteDiscovery(agentId: string): Promise<void> {
 export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error(`No agent with id ${agentId}`);
-  if (agent.connection !== 'remote' || !agent.remoteConfig) return;
+  if (!(await getRemoteAgentLocation(agent))) return;
   if (!agent.switchAgentId) {
     log.warn('ensureRemoteWatcher: agent has no Switch id; cannot watch', { agentId });
     return;
@@ -107,7 +111,6 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
   const { ctx, connectionId, remoteRepoDir, host } = await connectRemoteAgent(agent);
   await ensureAgentSidecar({
     providerId: agent.providerId,
-    projectId: agent.projectId,
     repoDir: remoteRepoDir,
     deeplinkScheme: DEEPLINK_SCHEME,
     ctx,
@@ -133,7 +136,7 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
  */
 export async function stopRemoteWatcher(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
-  if (!agent || agent.connection !== 'remote' || !agent.remoteConfig) return;
+  if (!agent || !(await getRemoteAgentLocation(agent))) return;
   remoteSessionReconciler.stop(agentId);
   const { host } = await connectRemoteAgent(agent);
   await writeWatchEnabled(host, false);

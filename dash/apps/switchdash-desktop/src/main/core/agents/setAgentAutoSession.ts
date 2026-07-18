@@ -11,6 +11,7 @@ import {
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher, stopRemoteWatcher } from './remote-watcher';
 
@@ -26,7 +27,7 @@ export type AgentAutoSessionParams = { agentId: string; enabled: boolean };
  */
 async function applyLocalAutoSessionState(agent: Agent, enabled: boolean): Promise<void> {
   await setAutoSessionAgent(agent.id, enabled);
-  if (agent.connection === 'remote') {
+  if ((await getRemoteAgentLocation(agent)) !== null) {
     if (enabled) await ensureRemoteWatcher(agent.id);
     else await stopRemoteWatcher(agent.id);
   } else {

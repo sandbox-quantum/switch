@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { eq } from 'drizzle-orm';
+import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { getLocationById } from '@main/core/locations/store';
 import { SWITCH_SUBAGENTS_DIR_RELATIVE } from '@main/core/agents/switch-settings-paths';
 import { sessionService } from '@main/core/sessions/session-service';
-import { db } from '@main/db/client';
-import { projects } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
@@ -57,16 +56,13 @@ function subagentWatcherKey(parentAgentId: string, name: string): string {
   return `${parentAgentId}::${name}`;
 }
 
-/** Resolve the working-directory path of a local agent's project. */
-async function getAgentProjectPath(localAgentId: string): Promise<string | null> {
+/** Resolve the working-directory path of a local agent's location. */
+async function getAgentLocalDir(localAgentId: string): Promise<string | null> {
   const agent = await getAgentById(localAgentId);
   if (!agent) return null;
-  const [project] = await db
-    .select({ path: projects.path })
-    .from(projects)
-    .where(eq(projects.id, agent.projectId))
-    .limit(1);
-  return project?.path ?? null;
+  const location = await getLocationById(agent.locationId);
+  if (!location || location.sshHost !== null) return null;
+  return location.dir;
 }
 
 /** Refresh the agent's global "watching" heartbeat. Throws on non-OK. */
@@ -188,23 +184,23 @@ class AutoSessionWatcher {
     // it keeps auto-starting sessions while switchdash is closed. Watching them
     // here too would double-poll the agent's notification stream, so skip.
     const agent = await getAgentById(localAgentId);
-    if (agent?.connection === 'remote') {
+    if (agent && (await getRemoteAgentLocation(agent))) {
       log.debug('AutoSessionWatcher: skipping remote agent (watched on its VM)', { localAgentId });
       return;
     }
 
-    const projectPath = await getAgentProjectPath(localAgentId);
-    if (!projectPath) {
-      log.warn('AutoSessionWatcher: no project dir for agent; cannot read credentials', {
+    const rootPath = await getAgentLocalDir(localAgentId);
+    if (!rootPath) {
+      log.warn('AutoSessionWatcher: no local dir for agent; cannot read credentials', {
         localAgentId,
       });
       return;
     }
-    const creds = await readSwitchAgentCredentials(projectPath, log);
+    const creds = await readSwitchAgentCredentials(rootPath, log);
     if (!creds) {
       log.warn('AutoSessionWatcher: missing Switch credentials; cannot watch', {
         localAgentId,
-        dir: projectPath,
+        dir: rootPath,
       });
       return;
     }
@@ -221,16 +217,16 @@ class AutoSessionWatcher {
     const key = subagentWatcherKey(parentAgentId, name);
     if (this.watchers.has(key)) return;
 
-    const projectPath = await getAgentProjectPath(parentAgentId);
-    if (!projectPath) {
-      log.warn('AutoSessionWatcher: no project dir for parent agent; cannot watch subagent', {
+    const rootPath = await getAgentLocalDir(parentAgentId);
+    if (!rootPath) {
+      log.warn('AutoSessionWatcher: no local dir for parent agent; cannot watch subagent', {
         parentAgentId,
         name,
       });
       return;
     }
     const settingsPath = path.join(
-      projectPath,
+      rootPath,
       SWITCH_SUBAGENTS_DIR_RELATIVE,
       `${name}.settings.json`
     );

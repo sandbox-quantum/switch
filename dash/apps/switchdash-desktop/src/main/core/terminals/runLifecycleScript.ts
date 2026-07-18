@@ -2,27 +2,23 @@ import { runLifecycleScriptWithPolicy } from './lifecycle-script-coordinator';
 import { resolveLifecycleScript } from './lifecycle-script-settings';
 
 export async function runLifecycleScript({
-  projectId,
+  locationId,
   sessionId,
-  workspaceId,
   type,
 }: {
-  projectId: string;
+  locationId: string;
   sessionId: string;
-  workspaceId: string;
   type: 'setup' | 'run' | 'teardown';
 }) {
-  const { workspace, script, shellSetup } = await resolveLifecycleScript({
-    projectId,
-    workspaceId,
+  const { runtime, script, shellSetup } = await resolveLifecycleScript({
+    locationId,
     type,
   });
   if (!script) return;
   await runLifecycleScriptWithPolicy({
-    workspace,
-    projectId,
+    runtime,
+    locationId,
     sessionId,
-    workspaceId,
     type,
     script,
     shellSetup,

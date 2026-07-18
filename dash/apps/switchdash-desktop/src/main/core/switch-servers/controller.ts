@@ -5,7 +5,7 @@ import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch
 import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
 import type {
   AddServerParams,
@@ -237,7 +237,7 @@ export const switchServersController = createRPCController({
     });
     if (registered.kind !== 'created') return registered;
 
-    const proxy = await ensureSshConnected(agentSshConnectionId(params.sshHost), params.sshHost);
+    const proxy = await ensureSshConnected(sshConnectionIdForHost(params.sshHost), params.sshHost);
     const fs = new SshFileSystem(proxy, params.remoteRepoDir);
     try {
       await writeRemoteSwitchSettings(fs, {

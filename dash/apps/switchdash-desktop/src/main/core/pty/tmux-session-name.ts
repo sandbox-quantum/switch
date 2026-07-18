@@ -69,7 +69,7 @@ export function makeTmuxSessionName(sessionId: string): string {
  * the session) and is shared verbatim across every switchdash client and the
  * sidecar, so all of them compute the identical tmux name and attach to the
  * SAME pane — enabling concurrent multi-client access (CHOO-1181). It must NOT
- * fold in projectId: that is a switchdash-instance-local id that differs per
+ * fold in locationId: that is a switchdash-instance-local id that differs per
  * client, which would give each client a different pane name and silently
  * spawn a fresh blank session on attach.
  */

@@ -1,7 +1,7 @@
 import { ok, type Result } from '@switchdash/shared';
 import { eq, sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
-import { projectManager } from '@main/core/projects/project-manager';
+import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -34,14 +34,14 @@ import { mapSessionRowToSession } from './utils/utils';
 
 export type ProvisionResult = {
   path: string;
-  workspaceId: string;
+  locationId: string;
 };
 
 export type SessionLifecycleHooks = {
   'session:created': (session: Session, params: CreateSessionParams) => void | Promise<void>;
   'session:updated': (session: Session) => void | Promise<void>;
-  'session:archived': (sessionId: string, projectId: string) => void | Promise<void>;
-  'session:deleted': (sessionId: string, projectId: string) => void | Promise<void>;
+  'session:archived': (sessionId: string) => void | Promise<void>;
+  'session:deleted': (sessionId: string) => void | Promise<void>;
   'session:workspace-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
 };
 
@@ -81,35 +81,26 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     sessionId: string
   ): Promise<Result<ProvisionResult, TeardownSessionError>> {
     const session = await this._loadSession(sessionId);
-    const project = projectManager.getProject(session.agentProjectId);
-    if (!project) throw new Error(`Project not found: ${session.agentProjectId}`);
+    const location = locationManager.getLocation(session.agentLocationId);
+    if (!location) throw new Error(`Location not open: ${session.agentLocationId}`);
 
     // Idempotency: session is already live — return current state.
     if (sessionRuntimeManager.getSession(sessionId)) {
-      const pd = sessionRuntimeManager.getPersistData(sessionId);
       const provisionResult: ProvisionResult = {
-        path: project.repoPath,
-        workspaceId: pd?.workspaceId ?? project.projectId,
+        path: location.dir,
+        locationId: sessionRuntimeManager.getLocationId(sessionId) ?? location.locationId,
       };
       this._hooks.callHookBackground('session:workspace-ready', sessionId, provisionResult);
-      events.emit(sessionProvisionedChannel, {
-        sessionId,
-        projectId: project.projectId,
-        ...provisionResult,
-      });
+      events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
       return ok(provisionResult);
     }
 
-    const built = await provisionSessionRuntime(session.session, project);
-    await this._registerAndPersist(sessionId, project.projectId, built);
+    const built = await provisionSessionRuntime(session.session, location);
+    await this._registerAndPersist(sessionId, built);
 
-    const provisionResult: ProvisionResult = { path: built.path, workspaceId: built.workspaceId };
+    const provisionResult: ProvisionResult = { path: built.path, locationId: built.locationId };
     this._hooks.callHookBackground('session:workspace-ready', sessionId, provisionResult);
-    events.emit(sessionProvisionedChannel, {
-      sessionId,
-      projectId: project.projectId,
-      ...provisionResult,
-    });
+    events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
     return ok(provisionResult);
   }
 
@@ -119,26 +110,25 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
   private async _loadSession(
     sessionId: string
-  ): Promise<{ session: Session; agentProjectId: string }> {
+  ): Promise<{ session: Session; agentLocationId: string }> {
     const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
     if (!row) throw new Error(`Session not found: ${sessionId}`);
     const agent = await getAgentById(row.agentId);
     if (!agent) throw new Error(`Agent not found: ${row.agentId}`);
     return {
       session: mapSessionRowToSession(row, agent.providerId),
-      agentProjectId: agent.projectId,
+      agentLocationId: agent.locationId,
     };
   }
 
   private async _registerAndPersist(
     sessionId: string,
-    projectId: string,
     data: SessionRuntimeResult
   ): Promise<void> {
-    const project = projectManager.getProject(projectId);
-    if (!project) throw new Error(`Project not found: ${projectId}`);
+    const location = locationManager.getLocation(data.locationId);
+    if (!location) throw new Error(`Location not open: ${data.locationId}`);
 
-    await sessionRuntimeManager.registerSession(sessionId, data, projectId, project.ctx);
+    await sessionRuntimeManager.registerSession(sessionId, data, location.ctx);
 
     await db
       .update(sessions)
@@ -165,19 +155,19 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     await session.agent.stop();
   }
 
-  async deleteSession(projectId: string, sessionId: string): Promise<void> {
-    await deleteSession(projectId, sessionId);
-    this._hooks.callHookBackground('session:deleted', sessionId, projectId);
+  async deleteSession(sessionId: string): Promise<void> {
+    await deleteSession(sessionId);
+    this._hooks.callHookBackground('session:deleted', sessionId);
   }
 
-  async deleteSessions(projectId: string, sessionIds: string[]): Promise<void> {
-    await Promise.all(sessionIds.map((id) => deleteSession(projectId, id)));
-    sessionIds.forEach((id) => this._hooks.callHookBackground('session:deleted', id, projectId));
+  async deleteSessions(sessionIds: string[]): Promise<void> {
+    await Promise.all(sessionIds.map((id) => deleteSession(id)));
+    sessionIds.forEach((id) => this._hooks.callHookBackground('session:deleted', id));
   }
 
-  async archiveSession(projectId: string, sessionId: string): Promise<void> {
-    await archiveSession(projectId, sessionId);
-    this._hooks.callHookBackground('session:archived', sessionId, projectId);
+  async archiveSession(sessionId: string): Promise<void> {
+    await archiveSession(sessionId);
+    this._hooks.callHookBackground('session:archived', sessionId);
   }
 
   async restoreSession(id: string): Promise<void> {
@@ -186,11 +176,10 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
   }
 
   async renameSession(
-    projectId: string,
     sessionId: string,
     newTitle: string
   ): Promise<Result<RenameSessionSuccess, RenameSessionError>> {
-    const result = await renameSession(projectId, sessionId, newTitle);
+    const result = await renameSession(sessionId, newTitle);
     if (result.success) this._hooks.callHookBackground('session:updated', result.data.session);
     return result;
   }

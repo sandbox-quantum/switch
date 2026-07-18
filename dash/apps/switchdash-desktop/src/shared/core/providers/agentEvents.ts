@@ -25,7 +25,6 @@ export interface AgentEvent {
   source?: 'hook' | 'input';
   ptyId?: string;
   providerId?: string;
-  projectId: string;
   sessionId: string;
   timestamp: number;
   payload: {

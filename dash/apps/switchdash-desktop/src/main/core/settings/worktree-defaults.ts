@@ -9,6 +9,6 @@ export function getDefaultLocalWorktreeDirectory(homeDirectory: string = homedir
   return path.join(homeDirectory, LOCAL_WORKTREE_ROOT_DIR_NAME, WORKTREE_POOL_DIR_NAME);
 }
 
-export function getDefaultSshWorktreeDirectory(projectPath: string): string {
-  return path.posix.join(projectPath, SSH_PROJECT_STATE_DIR_NAME, WORKTREE_POOL_DIR_NAME);
+export function getDefaultSshWorktreeDirectory(rootPath: string): string {
+  return path.posix.join(rootPath, SSH_PROJECT_STATE_DIR_NAME, WORKTREE_POOL_DIR_NAME);
 }

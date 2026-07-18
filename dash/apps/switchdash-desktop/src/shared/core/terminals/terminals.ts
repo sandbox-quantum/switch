@@ -2,7 +2,7 @@ import type { TerminalShellId } from './terminal-settings';
 
 export type Terminal = {
   id: string;
-  projectId: string;
+  locationId: string;
   sessionId: string;
   shellId: TerminalShellId;
   name: string;
@@ -10,7 +10,7 @@ export type Terminal = {
 
 export type CreateTerminalParams = {
   id: string;
-  projectId: string;
+  locationId: string;
   sessionId: string;
   name: string;
   shell?: TerminalShellId;

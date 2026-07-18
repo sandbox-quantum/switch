@@ -4,7 +4,7 @@ import { createSession } from './createSession';
 
 const mocks = vi.hoisted(() => ({
   getAgentById: vi.fn(),
-  getProject: vi.fn(),
+  getLocation: vi.fn(),
   insert: vi.fn(),
   deleteFn: vi.fn(),
   provisionSessionRuntime: vi.fn(),
@@ -16,8 +16,8 @@ vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: mocks.getAgentById,
 }));
 
-vi.mock('@main/core/projects/project-manager', () => ({
-  projectManager: { getProject: mocks.getProject },
+vi.mock('@main/core/locations/location-manager', () => ({
+  locationManager: { getLocation: mocks.getLocation },
 }));
 
 vi.mock('@main/db/client', () => ({
@@ -78,13 +78,13 @@ describe('createSession', () => {
     vi.clearAllMocks();
     mocks.getAgentById.mockResolvedValue({
       id: 'agent-1',
-      projectId: 'project-1',
+      locationId: 'loc-1',
       providerId: 'claude',
     });
-    mocks.getProject.mockReturnValue({ projectId: 'project-1', repoPath: '/repo', ctx: {} });
+    mocks.getLocation.mockReturnValue({ locationId: 'loc-1', dir: '/repo', ctx: {} });
     mocks.provisionSessionRuntime.mockResolvedValue({
       path: '/repo',
-      workspaceId: 'project-1',
+      locationId: 'loc-1',
       sessionProvider: { agent: { start: mocks.startSession } },
     });
     mocks.registerSession.mockResolvedValue(undefined);

@@ -2,7 +2,7 @@ import type { Platform } from '@switchdash/core/deps';
 import { HostDependencyManager } from '@switchdash/core/deps/runtime';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { log } from '@main/lib/logger';
 import { agentUpdateService } from './agent-update-service';
 import { CORE_DEPENDENCIES } from './core-dependencies';
@@ -37,7 +37,7 @@ async function detectRemotePlatform(ctx: SshExecutionContext): Promise<Platform>
 const managerCache = new Map<string, Promise<HostDependencyManager>>();
 
 async function buildRemoteDependencyManager(sshHost: string): Promise<HostDependencyManager> {
-  const connectionId = agentSshConnectionId(sshHost);
+  const connectionId = sshConnectionIdForHost(sshHost);
   const proxy = await ensureSshConnected(connectionId, sshHost);
   const ctx = new SshExecutionContext(proxy);
   const platform = await detectRemotePlatform(ctx);

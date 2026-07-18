@@ -9,7 +9,7 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
     .insert(agents)
     .values({
       id: params.id,
-      projectId: params.projectId,
+      locationId: params.locationId,
       name: params.name,
       providerId: params.providerId,
       switchAgentId: params.switchAgentId,

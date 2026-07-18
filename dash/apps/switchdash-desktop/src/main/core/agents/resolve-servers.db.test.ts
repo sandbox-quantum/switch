@@ -2,7 +2,7 @@ import { openFixture } from '@tooling/utils/db';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
-import { agents, projects, switchServers } from '@main/db/schema';
+import { agents, locations, switchServers } from '@main/db/schema';
 import { resolveAgentServers } from './resolve-servers';
 
 const mocks = vi.hoisted(() => ({
@@ -48,8 +48,8 @@ describe('resolveAgentServers', () => {
     fixture.sqlite.pragma('foreign_keys = OFF');
 
     await fixture.db
-      .insert(projects)
-      .values({ id: 'project-1', name: 'Project', path: '/repo/project-1' });
+      .insert(locations)
+      .values({ id: 'location-1', name: 'Location', sshHost: '', dir: '/repo/location-1' });
     await fixture.db.insert(switchServers).values([
       {
         id: 'pilot',
@@ -76,7 +76,7 @@ describe('resolveAgentServers', () => {
       // Explicitly linked to a registered server -> kept (not re-derived).
       {
         id: 'agent-pilot',
-        projectId: 'project-1',
+        locationId: 'location-1',
         name: 'pilot',
         providerId: 'claude',
         apiEndpoint: 'https://pilot.example.com/agent-bridge',
@@ -85,7 +85,7 @@ describe('resolveAgentServers', () => {
       // Linked to a server that is no longer registered -> unlinked.
       {
         id: 'agent-dangling',
-        projectId: 'project-1',
+        locationId: 'location-1',
         name: 'dangling',
         providerId: 'claude',
         apiEndpoint: 'https://gone.example.com',
@@ -94,7 +94,7 @@ describe('resolveAgentServers', () => {
       // Never assigned -> stays null.
       {
         id: 'agent-none',
-        projectId: 'project-1',
+        locationId: 'location-1',
         name: 'none',
         providerId: 'claude',
         apiEndpoint: null,
@@ -114,7 +114,7 @@ describe('resolveAgentServers', () => {
     // behavior would auto-link; the new behavior must leave it unassigned.
     await fixture.db.insert(agents).values({
       id: 'agent-origin-match',
-      projectId: 'project-1',
+      locationId: 'location-1',
       name: 'origin-match',
       providerId: 'claude',
       apiEndpoint: 'http://localhost:8080',

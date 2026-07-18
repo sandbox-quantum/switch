@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
-import { workspaceTrustService } from '@main/core/agent-hooks/workspace-trust-service';
+import { dirTrustService } from '@main/core/agent-hooks/dir-trust-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
@@ -44,7 +44,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
   private pty: Pty | null = null;
   private known = false;
   private supervisor = new AgentRuntimeSupervisor();
-  private readonly projectId: string;
+  private readonly locationId: string;
   private readonly sessionPath: string;
   private readonly sessionId: string;
   private readonly tmux: boolean;
@@ -53,7 +53,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
   private readonly ctx: IExecutionContext;
   private readonly sessionEnvVars: Record<string, string>;
   constructor({
-    projectId,
+    locationId,
     sessionPath,
     sessionId,
     tmux = false,
@@ -62,7 +62,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     ctx,
     sessionEnvVars = {},
   }: {
-    projectId: string;
+    locationId: string;
     sessionPath: string;
     sessionId: string;
     tmux?: boolean;
@@ -71,7 +71,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     ctx: IExecutionContext;
     sessionEnvVars?: Record<string, string>;
   }) {
-    this.projectId = projectId;
+    this.locationId = locationId;
     this.sessionPath = sessionPath;
     this.sessionId = sessionId;
     this.tmux = tmux;
@@ -83,7 +83,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
   /** The registry key of this session's agent PTY (session id == session id). */
   private get ptySessionId(): string {
-    return makeAgentPtySessionId(this.projectId, this.sessionId);
+    return makeAgentPtySessionId(this.locationId, this.sessionId);
   }
 
   async start(
@@ -116,7 +116,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     if (!spawnToken) return;
 
     try {
-      await workspaceTrustService.maybeAutoTrustLocal({
+      await dirTrustService.maybeAutoTrustLocal({
         providerId: session.providerId,
         cwd: this.sessionPath,
         homedir: homedir(),
@@ -271,7 +271,6 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       void switchRoomService
         .restorePoller({
           sessionId: this.sessionId,
-          projectId: this.projectId,
           providerId: session.providerId,
           ptyId,
         })

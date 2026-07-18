@@ -6,7 +6,7 @@ import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-ht
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -14,6 +14,7 @@ import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
 import { connectRemoteAgent } from './connect-remote-agent';
+import { getRemoteAgentLocation } from './agent-location';
 import { getAgentById } from './getAgentById';
 
 const RECONCILE_INTERVAL_MS = 2_000;
@@ -132,21 +133,11 @@ class RemoteSessionReconciler {
     // Tell the renderer to drop the row too. Unlike a user-initiated delete
     // (the renderer removes it itself), this removal originates in the main
     // process, so without an IPC event every attached window shows a ghost row
-    // until restart. Resolve the project the deleted session belonged to so the
-    // per-project session manager can route it.
-    const projectId = agentId ? (await getAgentById(agentId))?.projectId : undefined;
-    if (projectId) {
-      log.info('RemoteSessionReconciler: notifying UI to remove session (remote-driven delete)', {
-        sessionId,
-        projectId,
-      });
-      events.emit(sessionDeletedChannel, { sessionId: sessionId, projectId });
-    } else {
-      log.warn(
-        'RemoteSessionReconciler: could not resolve projectId for removed session — sidebar row may linger until restart',
-        { sessionId, agentId }
-      );
-    }
+    // until restart; stores that own the session drop it by id.
+    log.info('RemoteSessionReconciler: notifying UI to remove session (remote-driven delete)', {
+      sessionId,
+    });
+    events.emit(sessionDeletedChannel, { sessionId });
     return true;
   }
 
@@ -230,20 +221,21 @@ class RemoteSessionReconciler {
 
   private async reconcileOnce(agentId: string): Promise<void> {
     const agent = await getAgentById(agentId);
-    if (!agent || agent.connection !== 'remote' || !agent.remoteConfig) {
+    const location = agent ? await getRemoteAgentLocation(agent) : null;
+    if (!agent || !location) {
       this.stop(agentId);
       this.endpoints.delete(agentId);
       return;
     }
 
-    if (!this.claimSidecar(agentId, agent)) return;
+    if (!this.claimSidecar(agentId, location)) return;
 
     // The manager is mid-backoff rebuilding the transport: let it finish
     // rather than racing it with connect attempts every tick. Disconnected and
     // suspended states DO proceed — connectRemoteAgent's connect() is what
     // revives them.
     const connectionState = sshConnectionManager.getConnectionState(
-      agentSshConnectionId(agent.remoteConfig.sshHost)
+      sshConnectionIdForHost(location.sshHost)
     );
     if (connectionState === 'reconnecting') return;
 
@@ -281,9 +273,8 @@ class RemoteSessionReconciler {
    * the same sidecar, so shared-dir agents cannot double-poll one snapshot and
    * race each other's adoptions.
    */
-  private claimSidecar(agentId: string, agent: Agent): boolean {
-    const remote = agent.remoteConfig!;
-    const key = `${remote.sshHost}::${remote.remoteRepoDir}`;
+  private claimSidecar(agentId: string, location: { id: string }): boolean {
+    const key = location.id;
     const holder = this.sidecarKeys.get(key);
     if (holder !== undefined && holder !== agentId && this.timers.has(holder)) {
       log.info('RemoteSessionReconciler: sidecar already reconciled by another agent — stopping', {
@@ -354,7 +345,6 @@ class RemoteSessionReconciler {
     // to be started. When none is running there is nothing to discover.
     const endpoint = await probeAgentSidecar({
       providerId: agent.providerId,
-      projectId: agent.projectId,
       repoDir: conn.remoteRepoDir,
       deeplinkScheme: DEEPLINK_SCHEME,
       ctx: conn.ctx,

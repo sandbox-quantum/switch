@@ -56,7 +56,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   private sidecarEndpoint: { port: number; token: string } | null = null;
   private supervisor = new AgentRuntimeSupervisor();
   private readonly handleConnectionEvent: (evt: SshConnectionManagerEvent) => void;
-  private readonly projectId: string;
+  private readonly locationId: string;
   private readonly sessionPath: string;
   private readonly sessionId: string;
   private readonly sessionEnvVars: Record<string, string>;
@@ -68,7 +68,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   private readonly connectionId: string;
 
   constructor({
-    projectId,
+    locationId,
     sessionPath,
     sessionId,
     sessionEnvVars = {},
@@ -79,7 +79,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     proxy,
     connectionId,
   }: {
-    projectId: string;
+    locationId: string;
     sessionPath: string;
     sessionId: string;
     sessionEnvVars?: Record<string, string>;
@@ -90,7 +90,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     proxy: SshClientProxy;
     connectionId: string;
   }) {
-    this.projectId = projectId;
+    this.locationId = locationId;
     this.sessionPath = sessionPath;
     this.sessionId = sessionId;
     this.sessionEnvVars = sessionEnvVars;
@@ -115,7 +115,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
   /** The registry key of this session's agent PTY. */
   private get ptySessionId(): string {
-    return makeAgentPtySessionId(this.projectId, this.sessionId);
+    return makeAgentPtySessionId(this.locationId, this.sessionId);
   }
 
   /**
@@ -199,7 +199,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     // this session's hooks at its shared hook server. Reattaches if already up.
     const endpoint = await ensureAgentSidecar({
       providerId: session.providerId,
-      projectId: this.projectId,
       repoDir: this.sessionPath,
       deeplinkScheme: DEEPLINK_SCHEME,
       ctx: this.ctx,
@@ -589,7 +588,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       );
     }
     sessionHooks._emit('session:remote-terminated', {
-      projectId: this.projectId,
+      locationId: this.locationId,
       sessionId: this.sessionId,
       terminatedSessionId,
     });

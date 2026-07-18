@@ -5,10 +5,12 @@ const getServer = vi.hoisted(() => vi.fn());
 const registerSubagentsCore = vi.hoisted(() => vi.fn());
 const resolveSubagentWorkspace = vi.hoisted(() => vi.fn());
 const applyLocalSubagentAutoSessionState = vi.hoisted(() => vi.fn(async () => {}));
+const getRemoteAgentLocation = vi.hoisted(() => vi.fn(async () => null));
 const logWarn = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer }));
+vi.mock('@main/core/agents/agent-location', () => ({ getRemoteAgentLocation }));
 vi.mock('./register-subagents', () => ({ registerSubagentsCore }));
 vi.mock('./resolve-workspace', () => ({ resolveSubagentWorkspace }));
 vi.mock('./setSubagentAutoSession', () => ({ applyLocalSubagentAutoSessionState }));
@@ -31,7 +33,7 @@ const LOCAL_PARENT = {
   providerId: 'claude',
   serverId: 'srv-1',
   switchAgentId: 'sw-parent',
-  connection: 'local',
+  locationId: 'loc-1',
 };
 
 const PARAMS = {
@@ -46,6 +48,7 @@ describe('createSubagent', () => {
     getServer.mockResolvedValue({ id: 'srv-1', apiUrl: 'https://switch.example.com' });
     behavior.readDefinition.mockResolvedValue(null);
     registerSubagentsCore.mockResolvedValue({ registered: ['code-reviewer'] });
+    getRemoteAgentLocation.mockResolvedValue(null);
   });
 
   it('registers with auto_session on and starts the watcher for a local parent', async () => {
@@ -69,7 +72,15 @@ describe('createSubagent', () => {
   });
 
   it('registers with auto_session off and starts no watcher for a remote parent', async () => {
-    mockWorkspace({ ...LOCAL_PARENT, connection: 'remote' });
+    mockWorkspace(LOCAL_PARENT);
+    getRemoteAgentLocation.mockResolvedValueOnce({
+      id: 'loc-remote',
+      name: 'r',
+      sshHost: 'vm',
+      dir: '/home/dev/r',
+      createdAt: '',
+      updatedAt: '',
+    } as never);
 
     await createSubagent(PARAMS);
 

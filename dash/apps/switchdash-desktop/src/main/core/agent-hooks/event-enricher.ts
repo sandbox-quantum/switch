@@ -6,7 +6,6 @@ import type { RawHookRequest } from './hook-server';
 
 export type AgentHookContext = {
   sessionId: string;
-  projectId: string;
   providerId: string;
   ptyId: string;
 };
@@ -73,7 +72,6 @@ function canonicalToAgentEvent(
     source: 'hook',
     ptyId: ctx.ptyId,
     providerId: ctx.providerId,
-    projectId: ctx.projectId,
     sessionId: ctx.sessionId,
     timestamp: Date.now(),
     payload: {

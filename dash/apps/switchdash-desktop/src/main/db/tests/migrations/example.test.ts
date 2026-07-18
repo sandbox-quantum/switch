@@ -26,7 +26,7 @@
 import { openFixture } from '@tooling/utils/db';
 import { count } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
-import { projects, sessions } from '@main/db/schema';
+import { locations, sessions } from '@main/db/schema';
 
 describe('baseline fixture integrity', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
@@ -43,27 +43,27 @@ describe('baseline fixture integrity', () => {
       .all() as { name: string }[];
 
     const tableNames = tables.map((t) => t.name);
-    expect(tableNames).toContain('projects');
+    expect(tableNames).toContain('locations');
     expect(tableNames).toContain('agents');
     expect(tableNames).toContain('sessions');
     expect(tableNames).toContain('__drizzle_migrations');
   });
 
-  it('has seeded projects and sessions in the baseline fixture', async () => {
+  it('has seeded locations and sessions in the baseline fixture', async () => {
     fixture = await openFixture('baseline');
 
-    const [{ value: projectCount }] = await fixture.db.select({ value: count() }).from(projects);
+    const [{ value: locationCount }] = await fixture.db.select({ value: count() }).from(locations);
     const [{ value: sessionCount }] = await fixture.db.select({ value: count() }).from(sessions);
 
-    expect(projectCount).toBe(2);
+    expect(locationCount).toBe(3);
     expect(sessionCount).toBe(4);
   });
 
   it('starts clean with the empty fixture', async () => {
     fixture = await openFixture('empty');
 
-    const [{ value: projectCount }] = await fixture.db.select({ value: count() }).from(projects);
+    const [{ value: locationCount }] = await fixture.db.select({ value: count() }).from(locations);
 
-    expect(projectCount).toBe(0);
+    expect(locationCount).toBe(0);
   });
 });

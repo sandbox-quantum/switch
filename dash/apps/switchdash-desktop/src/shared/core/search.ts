@@ -1,9 +1,9 @@
-export type SearchItemKind = 'session' | 'project' | 'command' | 'file';
+export type SearchItemKind = 'session' | 'location' | 'command' | 'file';
 
 export interface SearchItem {
   kind: SearchItemKind;
   id: string;
-  projectId: string | null;
+  locationId: string | null;
   sessionId: string | null;
   title: string;
   subtitle: string;
@@ -13,8 +13,7 @@ export interface SearchItem {
 export interface CommandPaletteQuery {
   query: string;
   context?: {
-    projectId?: string;
     sessionId?: string;
-    workspaceId?: string;
+    locationId?: string;
   };
 }

@@ -1,5 +1,5 @@
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
-import type { Workspace } from '@main/core/workspaces/workspace';
+import type { LocationRuntime } from '@main/core/locations/location-runtime';
 import { events } from '@main/lib/events';
 import { redactDiagnosticLog } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
@@ -10,7 +10,7 @@ import {
   type LifecycleScriptType,
 } from '@shared/core/sessions/sessionEvents';
 import { createLifecycleScriptTerminalId } from '@shared/core/terminals/terminals';
-import type { LifecycleScriptExecutionResult } from '../workspaces/workspace-lifecycle-service';
+import type { LifecycleScriptExecutionResult } from '../locations/lifecycle-service';
 
 export type LifecycleScriptPolicy = {
   exit?: boolean;
@@ -46,31 +46,27 @@ function withLifecycleTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 function lifecycleScriptSessionId({
-  projectId,
-  workspaceId,
+  locationId,
   type,
 }: {
-  projectId: string;
-  workspaceId: string;
+  locationId: string;
   type: LifecycleScriptType;
 }): string {
-  return makePtySessionId(projectId, workspaceId, createLifecycleScriptTerminalId(type));
+  return makePtySessionId(locationId, locationId, createLifecycleScriptTerminalId(type));
 }
 
 export function stopLifecycleScriptSession({
-  projectId,
+  locationId,
   sessionId,
-  workspaceId,
   type,
   origin,
 }: {
-  projectId: string;
+  locationId: string;
   sessionId: string;
-  workspaceId: string;
   type: LifecycleScriptType;
   origin: LifecycleScriptOrigin;
 }): boolean {
-  const ptySessionId = lifecycleScriptSessionId({ projectId, workspaceId, type });
+  const ptySessionId = lifecycleScriptSessionId({ locationId, type });
   const pty = ptySessionRegistry.get(ptySessionId);
   if (!pty) return false;
   if (!activeSessions.has(ptySessionId)) return false;
@@ -79,9 +75,8 @@ export function stopLifecycleScriptSession({
   stoppedSessions.add(ptySessionId);
   pty.kill();
   events.emit(lifecycleScriptStatusChannel, {
-    projectId,
+    locationId,
     sessionId,
-    workspaceId,
     type,
     origin,
     status: 'stopped',
@@ -107,10 +102,9 @@ function failureMessage(type: LifecycleScriptType, result: LifecycleScriptExecut
 }
 
 export async function runLifecycleScriptWithPolicy({
-  workspace,
-  projectId,
+  runtime,
+  locationId,
   sessionId,
-  workspaceId,
   type,
   script,
   shellSetup,
@@ -118,10 +112,9 @@ export async function runLifecycleScriptWithPolicy({
   policy,
   logPrefix,
 }: {
-  workspace: Workspace;
-  projectId: string;
+  runtime: LocationRuntime;
+  locationId: string;
   sessionId: string;
-  workspaceId: string;
   type: LifecycleScriptType;
   script: string;
   shellSetup?: string;
@@ -129,16 +122,15 @@ export async function runLifecycleScriptWithPolicy({
   policy: LifecycleScriptPolicy;
   logPrefix: string;
 }): Promise<LifecycleScriptCoordinatorResult> {
-  const ptySessionId = lifecycleScriptSessionId({ projectId, workspaceId, type });
+  const ptySessionId = lifecycleScriptSessionId({ locationId, type });
   if (activeSessions.has(ptySessionId)) {
     return { kind: 'already-running' };
   }
 
   activeSessions.add(ptySessionId);
   events.emit(lifecycleScriptStatusChannel, {
-    projectId,
+    locationId,
     sessionId,
-    workspaceId,
     type,
     origin,
     status: 'running',
@@ -146,7 +138,7 @@ export async function runLifecycleScriptWithPolicy({
 
   let result: LifecycleScriptExecutionResult | undefined;
   try {
-    const execution = workspace.lifecycleService.runLifecycleScript(
+    const execution = runtime.lifecycleService.runLifecycleScript(
       { type, script, shellSetup },
       {
         exit: policy.exit ?? true,
@@ -169,9 +161,8 @@ export async function runLifecycleScriptWithPolicy({
 
     if (isSuccessfulResult(result)) {
       events.emit(lifecycleScriptStatusChannel, {
-        projectId,
+        locationId,
         sessionId,
-        workspaceId,
         type,
         origin,
         status: 'succeeded',
@@ -181,9 +172,8 @@ export async function runLifecycleScriptWithPolicy({
     }
 
     return handleFailure({
-      projectId,
+      locationId,
       sessionId,
-      workspaceId,
       type,
       origin,
       policy,
@@ -204,9 +194,8 @@ export async function runLifecycleScriptWithPolicy({
           : `${labelFor(type)} script failed to run.`;
 
     return handleFailure({
-      projectId,
+      locationId,
       sessionId,
-      workspaceId,
       type,
       origin,
       policy,
@@ -222,9 +211,8 @@ export async function runLifecycleScriptWithPolicy({
 }
 
 function handleFailure({
-  projectId,
+  locationId,
   sessionId,
-  workspaceId,
   type,
   origin,
   policy,
@@ -233,9 +221,8 @@ function handleFailure({
   result,
   error,
 }: {
-  projectId: string;
+  locationId: string;
   sessionId: string;
-  workspaceId: string;
   type: LifecycleScriptType;
   origin: LifecycleScriptOrigin;
   policy: LifecycleScriptPolicy;
@@ -252,7 +239,7 @@ function handleFailure({
   if (policy.logFailure) {
     log.error(`${logPrefix}: ${type} script failed`, {
       sessionId,
-      workspaceId,
+      locationId,
       error: message,
       exitCode: result?.kind === 'exited' ? result.exitCode : undefined,
       signal: result?.kind === 'exited' ? result.signal : undefined,
@@ -261,9 +248,8 @@ function handleFailure({
   }
 
   events.emit(lifecycleScriptStatusChannel, {
-    projectId,
+    locationId,
     sessionId,
-    workspaceId,
     type,
     origin,
     status: 'failed',

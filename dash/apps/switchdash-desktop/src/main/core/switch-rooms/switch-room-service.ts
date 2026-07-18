@@ -10,14 +10,12 @@ import { switchNotificationPoller } from './switch-notification-poller';
 
 export type SessionRoomContext = {
   sessionId: string;
-  projectId: string;
   providerId: string;
   ptyId: string;
 };
 
 type ConnectionState = SessionRoomConnection & {
   roomName: string | null;
-  projectId: string;
   providerId: string;
   ptyId: string;
 };
@@ -62,7 +60,6 @@ class SwitchRoomService implements IDisposable {
       roomId,
       agentId,
       roomName,
-      projectId: ctx.projectId,
       providerId: ctx.providerId,
       ptyId: ctx.ptyId,
     });

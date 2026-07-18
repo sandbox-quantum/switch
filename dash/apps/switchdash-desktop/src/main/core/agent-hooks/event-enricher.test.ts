@@ -4,7 +4,6 @@ import type { RawHookRequest } from './hook-server';
 
 const ctx: AgentHookContext = {
   sessionId: 'conv-1',
-  projectId: 'proj-1',
   providerId: 'claude-code',
   ptyId: 'claude-code::conv-1',
 };

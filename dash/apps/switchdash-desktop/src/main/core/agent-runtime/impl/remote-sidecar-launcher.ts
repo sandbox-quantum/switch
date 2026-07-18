@@ -30,7 +30,6 @@ const READY_POLL_INTERVAL_MS = 250;
 const READY_MAX_ATTEMPTS = 80; // ~20s
 
 export interface SidecarLaunchConfig {
-  projectId: string;
   /** Absolute remote repo dir; the bundle, spec, ready file, and log live under .switchdash/. */
   repoDir: string;
   deeplinkScheme: string;
@@ -62,7 +61,6 @@ export interface SidecarLauncherLogger {
 
 function sidecarEnv(config: SidecarLaunchConfig): Record<string, string> {
   return {
-    SWITCHDASH_SIDECAR_PROJECT_ID: config.projectId,
     SWITCHDASH_SIDECAR_REPO_DIR: config.repoDir,
     SWITCHDASH_SIDECAR_DEEPLINK_SCHEME: config.deeplinkScheme,
   };

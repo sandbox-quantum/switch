@@ -6,7 +6,6 @@ import { agents, sessions } from '@main/db/schema';
 import type { RenameSessionError, RenameSessionSuccess } from '@shared/core/sessions/sessions';
 
 export async function renameSession(
-  _projectId: string,
   sessionId: string,
   newTitle: string
 ): Promise<Result<RenameSessionSuccess, RenameSessionError>> {

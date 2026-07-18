@@ -6,7 +6,7 @@ function event(partial: Partial<AgentEvent> & Pick<AgentEvent, 'type'>): AgentEv
   return {
     source: 'hook',
     providerId: 'claude-code',
-    projectId: 'p',
+    locationId: 'p',
     conversationId: 'c',
     sessionId: 'c',
     timestamp: 1,

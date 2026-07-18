@@ -2,7 +2,8 @@ import { createRPCNamespace, createRPCRouter } from '../shared/lib/ipc/rpc';
 import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
 import { filesController } from './core/fs/controller';
-import { projectController } from './core/projects/controller';
+import { locationsController } from './core/locations/controller';
+import { locationRuntimeSettingsController } from './core/locations/location-runtime-settings-controller';
 import { promptLibraryController } from './core/prompt-library/controller';
 import { providersController } from './core/providers/controller';
 import { ptyController } from './core/pty/controller';
@@ -18,7 +19,6 @@ import { switchServersController } from './core/switch-servers/controller';
 import { switchSetupController } from './core/switch-setup/controller';
 import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
-import { projectSettingsController } from './core/workspaces/project-settings-controller';
 
 export const rpcRouter = createRPCRouter({
   providers: providersController,
@@ -30,18 +30,18 @@ export const rpcRouter = createRPCRouter({
   pty: ptyController,
   resourceMonitor: resourceMonitorController,
   promptLibrary: promptLibraryController,
-  projects: projectController,
+  locations: locationsController,
   sessions: sessionController,
   viewState: viewStateController,
   search: searchController,
   switchRooms: switchRoomsController,
   subagents: subagentsController,
-  projectSettings: projectSettingsController,
+  locationRuntimeSettings: locationRuntimeSettingsController,
   switchServers: switchServersController,
   switchSetup: switchSetupController,
   remoteHosts: remoteHostsController,
-  workspace: createRPCNamespace({
-    fs: filesController,
+  fs: createRPCNamespace({
+    watch: filesController,
   }),
 });
 

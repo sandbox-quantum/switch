@@ -22,7 +22,7 @@ import {
   getRemoteSwitchSetupService,
   type RemoteSwitchSetupService,
 } from '@main/core/switch-setup/remote-switch-setup';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import type { ConnectionState, SshHealthState } from '@shared/core/ssh/ssh';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import type { SwitchAgentConfig } from '@shared/switch-agents';
@@ -60,7 +60,7 @@ export type HostConnectionStatus = {
 };
 
 function hostConnectionStatus(sshHost: string): HostConnectionStatus {
-  const connectionId = agentSshConnectionId(sshHost);
+  const connectionId = sshConnectionIdForHost(sshHost);
   return {
     state: sshConnectionManager.getConnectionState(connectionId),
     health: sshConnectionManager.getAllHealthStates()[connectionId] ?? { status: 'ok' },
@@ -77,7 +77,7 @@ const GH_AUTH_ACCOUNT_RE = /Logged in to \S+ (?:account|as) (\S+)/;
  * connection is not evidence of a missing login.
  */
 async function probeGhAuth(sshHost: string): Promise<GhAuthStatus> {
-  const proxy = await ensureSshConnected(agentSshConnectionId(sshHost), sshHost);
+  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const ctx = new SshExecutionContext(proxy);
   try {
     const { stdout, stderr } = await ctx.exec('gh', ['auth', 'status']);
@@ -91,7 +91,7 @@ async function probeGhAuth(sshHost: string): Promise<GhAuthStatus> {
 
 async function testConnection(sshHost: string): Promise<TestConnectionResult> {
   try {
-    const proxy = await ensureSshConnected(agentSshConnectionId(sshHost), sshHost);
+    const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
     const ctx = new SshExecutionContext(proxy);
     await ctx.exec('uname', ['-s']);
     return { ok: true };
@@ -204,7 +204,7 @@ async function getHostSetup(sshHost: string): Promise<HostSetupStatus> {
  * URL in their own browser and enters the code. Returns the PTY session id.
  */
 async function startGhAuth(sshHost: string): Promise<{ sessionId: string }> {
-  const proxy = await ensureSshConnected(agentSshConnectionId(sshHost), sshHost);
+  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const profile = await proxy.getRemoteShellProfile();
   const remoteCommand = buildRemoteShellCommand(
     profile,
@@ -247,7 +247,7 @@ export const remoteHostsController = createRPCController({
    * post-rebuild status.
    */
   reconnectHost: async (sshHost: string): Promise<HostConnectionStatus> => {
-    await forceSshReconnect(agentSshConnectionId(sshHost), sshHost);
+    await forceSshReconnect(sshConnectionIdForHost(sshHost), sshHost);
     return hostConnectionStatus(sshHost);
   },
 

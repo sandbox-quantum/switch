@@ -63,7 +63,7 @@ describe('renameSession', () => {
     mockSelectRows([{ providerId: 'claude' }]);
     const update = mockUpdateRows([updatedRow]);
 
-    const result = await renameSession('project-1', 'session-1', 'new-title');
+    const result = await renameSession('session-1', 'new-title');
 
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -74,7 +74,7 @@ describe('renameSession', () => {
   it('returns session-not-found when the session does not exist', async () => {
     mockSelectRows([]);
 
-    const result = await renameSession('project-1', 'missing-session', 'new-title');
+    const result = await renameSession('missing-session', 'new-title');
 
     expect(result).toEqual({
       success: false,

@@ -4,7 +4,6 @@ import type { ProvisionStep } from '@shared/core/sessions/sessionEvents';
 
 type SessionProvisionProgress = {
   sessionId: string;
-  projectId: string;
   step: ProvisionStep;
   message: string;
 };

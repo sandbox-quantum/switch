@@ -33,8 +33,6 @@ export const defaultRoomConnectionFactory: RoomConnectionFactory = (deps) =>
 
 export interface SidecarRuntimeDeps {
   creds: SwitchCredentials;
-  /** switchdash project id, used to derive each session's tmux target. */
-  projectId: string;
   deeplinkScheme: string;
   tmuxRun: TmuxRun;
   /** Whether a given agent tmux target is currently live (poller-backed cache). */
@@ -75,7 +73,6 @@ export class SidecarRuntime {
       if (!parsed) return null;
       return {
         sessionId: parsed.sessionId,
-        projectId: deps.projectId,
         providerId: parsed.providerId,
         ptyId,
       };

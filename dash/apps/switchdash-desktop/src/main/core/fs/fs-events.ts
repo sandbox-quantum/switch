@@ -4,8 +4,7 @@ import type { FileWatchEvent } from '@shared/core/fs/fs';
 
 export type FsHooks = {
   'watch:event': (event: {
-    projectId: string;
-    workspaceId: string;
+    locationId: string;
     events: FileWatchEvent[];
   }) => void | Promise<void>;
 };
@@ -20,8 +19,7 @@ class FsEvents implements Hookable<FsHooks> {
   }
 
   emitWatchEvent(event: {
-    projectId: string;
-    workspaceId: string;
+    locationId: string;
     events: FileWatchEvent[];
   }): void {
     this._core.callHookBackground('watch:event', event);

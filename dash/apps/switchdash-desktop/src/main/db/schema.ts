@@ -1,32 +1,43 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { versionedJsonColumn } from '@main/db/versioned-column';
-import { agentRemoteConfig, type AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
 // ---------------------------------------------------------------------------
-// Data model (switchdash rework — diverges from switchdash; see
-// agents/architecture/data-model.md for the full switchdash → switchdash map):
+// Data model (switchdash rework — diverges from upstream; see
+// agents/architecture/data-model.md for the full map):
 //
-//   projects  — a directory on disk
-//     └─ agents    — a Switch agent identity (one provider each; many per dir)
+//   locations — a working directory on a host (this machine or an SSH host)
+//     └─ agents    — a Switch agent identity (one provider each; many per
+//          │         location)
 //          └─ sessions  — an instantiation/run of an agent (was "conversation";
 //          │              one session == one terminal, folded in)
 //               └─ messages
 //
-// Dropped from switchdash: the worktree-era `sessions` grouping, the `terminals`
-// table (folded 1:1 into a session), and the `workspaces` execution-location
-// abstraction (switchdash runs every session in the project root).
+// Dropped from upstream: the worktree-era `sessions` grouping, the `terminals`
+// table (folded 1:1 into a session), and the project/workspace split (a
+// `projects` identity table plus a runtime workspace keyed off it) — both
+// collapsed into `locations` (CHOO-1426). Every session runs in its agent's
+// location dir.
 // ---------------------------------------------------------------------------
 
-export const projects = sqliteTable(
-  'projects',
+/**
+ * A Location: where an agent's sessions run — a working directory on a host.
+ * `sshHost` is the `~/.ssh/config` Host alias for remote locations and the
+ * empty string for the local machine (a sentinel rather than NULL so the
+ * (ssh_host, dir) unique index actually enforces one row per place — SQLite
+ * treats NULLs as distinct in unique indexes). Multiple agents may share one
+ * location.
+ */
+export const locations = sqliteTable(
+  'locations',
   {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
-    path: text('path'),
+    sshHost: text('ssh_host').notNull().default(''),
+    dir: text('dir').notNull(),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -35,16 +46,16 @@ export const projects = sqliteTable(
       .default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => ({
-    pathIdx: uniqueIndex('idx_projects_path').on(table.path),
+    hostDirIdx: uniqueIndex('idx_locations_host_dir').on(table.sshHost, table.dir),
   })
 );
 
-export const projectSettings = sqliteTable('project_settings', {
-  projectId: text('project_id')
+export const locationSettings = sqliteTable('location_settings', {
+  locationId: text('location_id')
     .primaryKey()
-    .references(() => projects.id, { onDelete: 'cascade' }),
-  baseProjectSettingsJson: text('base_project_settings_json').notNull().default('{}'),
-  shareableProjectSettingsJson: text('shareable_project_settings_json').notNull().default('{}'),
+    .references(() => locations.id, { onDelete: 'cascade' }),
+  baseSettingsJson: text('base_settings_json').notNull().default('{}'),
+  shareableSettingsJson: text('shareable_settings_json').notNull().default('{}'),
   legacyConfigMigratedAt: text('legacy_config_migrated_at'),
   createdAt: text('created_at')
     .notNull()
@@ -105,10 +116,10 @@ export const switchServers = sqliteTable(
 );
 
 /**
- * A Switch agent: an agent identity bound to a single provider, living in a
- * project directory. Many agents may share a directory (e.g. a Claude Code and
- * a Codex agent in the same repo). `switchAgentId` / `apiEndpoint` are populated
- * when the directory is configured as a Switch agent (detected from
+ * A Switch agent: an agent identity bound to a single provider, living at a
+ * location. Many agents may share a location (e.g. a Claude Code and a Codex
+ * agent in the same repo). `switchAgentId` / `apiEndpoint` are populated when
+ * the location dir is configured as a Switch agent (detected from
  * `.claude/settings.local.json`); they are null for a plain local agent.
  *
  * `serverId` binds the agent to the one registered Switch server it belongs to.
@@ -121,19 +132,15 @@ export const agents = sqliteTable(
   'agents',
   {
     id: text('id').primaryKey(),
-    projectId: text('project_id')
+    locationId: text('location_id')
       .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
+      .references(() => locations.id),
     name: text('name').notNull(),
     providerId: text('provider_id').$type<AgentProviderId>().notNull(),
     switchAgentId: text('switch_agent_id'),
     apiEndpoint: text('api_endpoint'),
     serverId: text('server_id').references(() => switchServers.id, { onDelete: 'set null' }),
     status: text('status'),
-    /** Where this agent's sessions run: `local` (default) or `remote` over SSH. */
-    connection: text('connection').$type<AgentConnectionKind>().notNull().default('local'),
-    /** SSH host + remote working dir; null for local agents. See agent-connection.ts. */
-    remoteConfigJson: versionedJsonColumn(agentRemoteConfig)('remote_config_json'),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -142,7 +149,7 @@ export const agents = sqliteTable(
       .default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => ({
-    projectIdIdx: index('idx_agents_project_id').on(table.projectId),
+    locationIdIdx: index('idx_agents_location_id').on(table.locationId),
     serverIdIdx: index('idx_agents_server_id').on(table.serverId),
   })
 );
@@ -250,9 +257,10 @@ export const appSecrets = sqliteTable(
   })
 );
 
-export type ProjectRow = typeof projects.$inferSelect;
-export type ProjectSettingsRow = typeof projectSettings.$inferSelect;
-export type ProjectSettingsInsert = typeof projectSettings.$inferInsert;
+export type LocationRow = typeof locations.$inferSelect;
+export type LocationInsert = typeof locations.$inferInsert;
+export type LocationSettingsRow = typeof locationSettings.$inferSelect;
+export type LocationSettingsInsert = typeof locationSettings.$inferInsert;
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentInsert = typeof agents.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;

@@ -42,7 +42,7 @@ export async function sampleOnce(): Promise<ResourceSnapshot> {
     if (isStaleLocalPty(a.pid, u)) continue;
     entries.push({
       sessionId: a.sessionId,
-      projectId: parsed.projectId,
+      locationId: parsed.locationId,
       scopeId: parsed.scopeId,
       leafId: parsed.leafId,
       pid: a.pid,

@@ -6,7 +6,7 @@ import { log } from '@main/lib/logger';
 import { parsePtySessionId } from '@shared/core/pty/ptySessionId';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
-import { workspaceRegistry } from '../workspaces/workspace-registry';
+import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
 import { recordHumanInput } from './human-activity';
 import {
   cleanupExpiredDroppedBlobs,
@@ -34,7 +34,6 @@ export const ptyController = createRPCController({
         const parsed = parsePtySessionId(sessionId);
         if (parsed) {
           sessionHooks._emit('session:input-submitted', {
-            projectId: parsed.projectId,
             sessionId: parsed.scopeId,
             providerId: meta.providerId,
           });
@@ -135,7 +134,7 @@ export const ptyController = createRPCController({
    * and return their remote paths.  Uses the SFTP subsystem of the already-
    * connected ssh2 client — no local ssh/scp binaries are involved.
    *
-   * The session ID encodes the project and scope (`projectId:scopeId:leafId`),
+   * The session ID encodes the project and scope (`locationId:scopeId:leafId`),
    * where `scopeId` is a session ID for conversation uploads.
    */
   uploadFiles: async (args: { sessionId: string; localPaths: string[] }) => {
@@ -149,8 +148,8 @@ export const ptyController = createRPCController({
       const sessionProvider = sessionRuntimeManager.getSession(scopeId);
       if (!sessionProvider) return err({ type: 'not_ssh' as const });
 
-      const workspaceId = sessionRuntimeManager.getWorkspaceId(scopeId) ?? '';
-      const workspace = workspaceRegistry.get(workspaceId);
+      const locationId = sessionRuntimeManager.getLocationId(scopeId) ?? '';
+      const workspace = locationRuntimeRegistry.get(locationId);
       if (!workspace?.fs.copyLocalFile) return err({ type: 'not_ssh' as const });
 
       const remotePaths = await Promise.all(

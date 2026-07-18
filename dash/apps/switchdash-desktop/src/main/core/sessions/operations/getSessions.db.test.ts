@@ -23,15 +23,15 @@ describe('getSessions', () => {
 
     fixture.sqlite
       .prepare(
-        `INSERT INTO projects (id, name, path, created_at, updated_at)
-         VALUES ('project-1', 'Project', '/repo', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        `INSERT INTO locations (id, name, ssh_host, dir, created_at, updated_at)
+         VALUES ('loc-1', 'Location', '', '/repo', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       )
       .run();
 
     fixture.sqlite
       .prepare(
-        `INSERT INTO agents (id, project_id, name, provider_id, created_at, updated_at)
-         VALUES ('agent-1', 'project-1', 'Agent', 'claude', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        `INSERT INTO agents (id, location_id, name, provider_id, created_at, updated_at)
+         VALUES ('agent-1', 'loc-1', 'Agent', 'claude', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       )
       .run();
   });
@@ -65,7 +65,7 @@ describe('getSessions', () => {
       )
       .run();
 
-    const rows = await getSessions('project-1');
+    const rows = await getSessions('loc-1');
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.title).toBe('My Session');

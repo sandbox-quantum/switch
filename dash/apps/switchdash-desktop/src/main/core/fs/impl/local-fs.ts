@@ -143,11 +143,11 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 export class LocalFileSystem implements FileSystemProvider {
   private listAbort: AbortController | null = null;
 
-  constructor(private projectPath: string) {
-    if (!projectPath) {
+  constructor(private rootPath: string) {
+    if (!rootPath) {
       throw new FileSystemError('Project path is required', FileSystemErrorCodes.INVALID_PATH);
     }
-    this.projectPath = resolve(projectPath);
+    this.rootPath = resolve(rootPath);
   }
 
   /**
@@ -167,15 +167,15 @@ export class LocalFileSystem implements FileSystemProvider {
   private resolvePath(relPath: string): string {
     // Normalize the path and resolve it against project root
     const normalizedRelPath = relPath.replace(/\\/g, '/').replace(/^\//, '');
-    const fullPath = resolve(join(this.projectPath, normalizedRelPath));
+    const fullPath = resolve(join(this.rootPath, normalizedRelPath));
 
-    // Security: ensure path is within projectPath (handle trailing separator edge cases)
-    const projectPathWithSep = this.projectPath.endsWith(sep)
-      ? this.projectPath
-      : this.projectPath + sep;
+    // Security: ensure path is within rootPath (handle trailing separator edge cases)
+    const projectPathWithSep = this.rootPath.endsWith(sep)
+      ? this.rootPath
+      : this.rootPath + sep;
     const fullPathWithSep = fullPath.endsWith(sep) ? fullPath : fullPath + sep;
 
-    if (!fullPathWithSep.startsWith(projectPathWithSep) && fullPath !== this.projectPath) {
+    if (!fullPathWithSep.startsWith(projectPathWithSep) && fullPath !== this.rootPath) {
       throw new FileSystemError(
         `Path traversal detected: ${relPath}`,
         FileSystemErrorCodes.PATH_ESCAPE,
@@ -190,7 +190,7 @@ export class LocalFileSystem implements FileSystemProvider {
    * Get relative path from absolute path
    */
   private relPath(fullPath: string): string {
-    return relative(this.projectPath, fullPath).replace(/\\/g, '/');
+    return relative(this.rootPath, fullPath).replace(/\\/g, '/');
   }
 
   /**
@@ -436,7 +436,7 @@ export class LocalFileSystem implements FileSystemProvider {
 
     let gitIgnore: ReturnType<typeof ignore> | undefined;
     try {
-      const gitIgnorePath = join(this.projectPath, '.gitignore');
+      const gitIgnorePath = join(this.rootPath, '.gitignore');
       const content = await fs.readFile(gitIgnorePath, 'utf-8');
       gitIgnore = ignore().add(content);
     } catch {
@@ -543,7 +543,7 @@ export class LocalFileSystem implements FileSystemProvider {
       }
     };
 
-    await searchDir(this.projectPath);
+    await searchDir(this.rootPath);
 
     return {
       matches,
@@ -629,7 +629,7 @@ export class LocalFileSystem implements FileSystemProvider {
         return { success: false, error: 'Unsupported attachment type' };
       }
 
-      const destDir = join(this.projectPath, '.switchdash', subdir ?? 'attachments');
+      const destDir = join(this.rootPath, '.switchdash', subdir ?? 'attachments');
       await fs.mkdir(destDir, { recursive: true });
 
       const baseName = basename(srcPath);
@@ -652,7 +652,7 @@ export class LocalFileSystem implements FileSystemProvider {
       }
 
       await fs.copyFile(srcPath, destAbs);
-      const relPath = relative(this.projectPath, destAbs);
+      const relPath = relative(this.rootPath, destAbs);
       return { success: true, absPath: destAbs, relPath, fileName: destName };
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -723,7 +723,7 @@ export class LocalFileSystem implements FileSystemProvider {
   }
 
   async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
-    const cwd = options?.cwd ? this.resolvePath(options.cwd) : this.projectPath;
+    const cwd = options?.cwd ? this.resolvePath(options.cwd) : this.rootPath;
     return glob(pattern, { cwd, dot: options?.dot ?? false, absolute: false });
   }
 
@@ -759,11 +759,11 @@ export class LocalFileSystem implements FileSystemProvider {
       flushTimer = setTimeout(flush, stabilityMs);
     };
 
-    const toRel = (absPath: string) => relative(this.projectPath, absPath).replace(/\\/g, '/');
+    const toRel = (absPath: string) => relative(this.rootPath, absPath).replace(/\\/g, '/');
 
     void parcelWatcher
       .subscribe(
-        this.projectPath,
+        this.rootPath,
         (err, events) => {
           if (err) return;
           for (const e of events) {

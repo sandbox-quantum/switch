@@ -1,14 +1,13 @@
 import { homedir } from 'node:os';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
-import { eq } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { createRemotePluginFs } from '@main/core/providers/remote-plugin-fs';
+import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
+import { getLocationById } from '@main/core/locations/store';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
-import { db } from '@main/db/client';
-import { projects } from '@main/db/schema';
 import type { Agent } from '@shared/core/agents/agents';
 
 /**
@@ -44,17 +43,9 @@ export async function openRemoteSubagentFs(
   sshHost: string,
   remoteRepoDir: string
 ): Promise<{ fs: PluginFs; close: () => void }> {
-  const proxy = await ensureSshConnected(agentSshConnectionId(sshHost), sshHost);
+  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const sshFs = new SshFileSystem(proxy, remoteRepoDir);
   return { fs: createRemotePluginFs(sshFs), close: () => sshFs.close() };
-}
-
-async function getProjectPath(projectId: string): Promise<string | null> {
-  const [row] = await db
-    .select({ path: projects.path })
-    .from(projects)
-    .where(eq(projects.id, projectId));
-  return row?.path ?? null;
 }
 
 /**
@@ -72,22 +63,19 @@ export async function resolveSubagentWorkspace(parentAgentId: string): Promise<S
   const agent = await getAgentById(parentAgentId);
   if (!agent) throw new Error(`No agent with id ${parentAgentId}`);
 
-  if (agent.connection === 'remote') {
-    if (!agent.remoteConfig) {
-      throw new Error(`Remote agent ${parentAgentId} has no remote config.`);
-    }
-    const { sshHost, remoteRepoDir } = agent.remoteConfig;
-    const remote = await openRemoteSubagentFs(sshHost, remoteRepoDir);
+  const remoteLocation = await getRemoteAgentLocation(agent);
+  if (remoteLocation) {
+    const remote = await openRemoteSubagentFs(remoteLocation.sshHost, remoteLocation.dir);
     return { agent, fs: remote.fs, homeFs: EMPTY_PLUGIN_FS, close: remote.close };
   }
 
-  const projectPath = await getProjectPath(agent.projectId);
-  if (!projectPath) {
-    throw new Error(`Local agent ${parentAgentId} has no project directory on disk.`);
+  const location = await getLocationById(agent.locationId);
+  if (!location) {
+    throw new Error(`Agent ${parentAgentId} has no location on disk.`);
   }
   return {
     agent,
-    fs: createPluginFs(projectPath),
+    fs: createPluginFs(location.dir),
     homeFs: createPluginFs(homedir()),
     close: () => {},
   };

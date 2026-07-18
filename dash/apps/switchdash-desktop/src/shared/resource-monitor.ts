@@ -13,7 +13,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  */
 export interface ResourcePtyEntry {
   sessionId: string;
-  projectId: string;
+  locationId: string;
   scopeId: string;
   leafId: string;
   pid: number | undefined;

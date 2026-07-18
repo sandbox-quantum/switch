@@ -19,7 +19,7 @@ export type SessionHookMap = {
    * row does not linger and get re-attached into a blank tmux session.
    */
   'session:remote-terminated': (params: {
-    projectId: string;
+    locationId: string;
     sessionId: string;
     terminatedSessionId: string;
   }) => void | Promise<void>;
@@ -29,7 +29,6 @@ export type SessionHookMap = {
    */
   'session:agent-exited': (params: { sessionId: string }) => void | Promise<void>;
   'session:input-submitted': (params: {
-    projectId: string;
     sessionId: string;
     providerId: AgentProviderId;
   }) => void | Promise<void>;

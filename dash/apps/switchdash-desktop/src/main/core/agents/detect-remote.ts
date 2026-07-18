@@ -1,7 +1,7 @@
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { agentSshConnectionId } from '@main/core/workspaces/resolve-agent-workspace';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { log } from '@main/lib/logger';
 import type { SwitchAgentConfig } from '@shared/switch-agents';
 import { parseSwitchAgentSettings } from './detect';
@@ -27,7 +27,7 @@ export async function detectSwitchAgentRemote(
   sshHost: string,
   remoteRepoDir: string
 ): Promise<SwitchAgentConfig | null> {
-  const proxy = await ensureSshConnected(agentSshConnectionId(sshHost), sshHost);
+  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const fs = new SshFileSystem(proxy, remoteRepoDir);
 
   let raw: string;

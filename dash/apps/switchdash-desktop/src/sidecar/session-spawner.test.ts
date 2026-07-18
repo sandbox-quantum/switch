@@ -31,7 +31,7 @@ function makeSpawner(over: Partial<InProcessSessionSpawnerDeps> = {}) {
   const runtime = { hasLiveRoom: vi.fn(() => false) };
   const spawner = new InProcessSessionSpawner({
     spec: SPEC,
-    projectId: 'proj-1',
+    locationId: 'proj-1',
     hookPort: 4321,
     hookToken: 'hooktok',
     runtime,

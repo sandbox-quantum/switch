@@ -1,7 +1,7 @@
 import { err, ok, type Result } from '@switchdash/shared';
 import { eq, sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
-import { projectManager } from '@main/core/projects/project-manager';
+import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import type { SessionConfig } from '@shared/core/sessions/session-config';
@@ -16,9 +16,8 @@ import { mapSessionRowToSession } from '../utils/utils';
 
 /**
  * Eager create (decision A): inserts the session row and immediately provisions
- * the runtime in the project root, then spawns the agent. There is no separate
- * workspace to provision — every session runs in the project directory resolved
- * via session → agent → project.
+ * the runtime in the location dir, then spawns the agent. Every session runs in
+ * the directory resolved via session → agent → location.
  */
 export async function createSession(
   params: CreateSessionParams
@@ -26,8 +25,8 @@ export async function createSession(
   const agent = await getAgentById(params.agentId);
   if (!agent) return err({ type: 'agent-not-found' });
 
-  const project = projectManager.getProject(agent.projectId);
-  if (!project) return err({ type: 'agent-not-found' });
+  const location = locationManager.getLocation(agent.locationId);
+  if (!location) return err({ type: 'agent-not-found' });
 
   const configObj: SessionConfig = {};
   if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
@@ -61,8 +60,8 @@ export async function createSession(
   const session = mapSessionRowToSession(row, agent.providerId);
 
   try {
-    const built = await provisionSessionRuntime(session, project);
-    await sessionRuntimeManager.registerSession(session.id, built, project.projectId, project.ctx);
+    const built = await provisionSessionRuntime(session, location);
+    await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
     await built.sessionProvider.agent.start(
       session,

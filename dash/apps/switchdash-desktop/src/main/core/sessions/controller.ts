@@ -15,23 +15,23 @@ export const sessionController = createRPCController({
   async createSession(params: CreateSessionParams) {
     return sessionService.createSession(params);
   },
-  async getSessions(projectId?: string) {
-    return sessionService.getSessions(projectId);
+  async getSessions(locationId?: string) {
+    return sessionService.getSessions(locationId);
   },
-  async deleteSession(projectId: string, sessionId: string) {
-    return sessionService.deleteSession(projectId, sessionId);
+  async deleteSession(sessionId: string) {
+    return sessionService.deleteSession(sessionId);
   },
-  async deleteSessions(projectId: string, sessionIds: string[]) {
-    return sessionService.deleteSessions(projectId, sessionIds);
+  async deleteSessions(sessionIds: string[]) {
+    return sessionService.deleteSessions(sessionIds);
   },
-  async archiveSession(projectId: string, sessionId: string) {
-    return sessionService.archiveSession(projectId, sessionId);
+  async archiveSession(sessionId: string) {
+    return sessionService.archiveSession(sessionId);
   },
   async restoreSession(id: string) {
     return sessionService.restoreSession(id);
   },
-  async renameSession(projectId: string, sessionId: string, newTitle: string) {
-    return sessionService.renameSession(projectId, sessionId, newTitle);
+  async renameSession(sessionId: string, newTitle: string) {
+    return sessionService.renameSession(sessionId, newTitle);
   },
   async updateSessionStatus(sessionId: string, status: SessionLifecycleStatus) {
     return sessionService.updateSessionStatus(sessionId, status);
@@ -39,7 +39,7 @@ export const sessionController = createRPCController({
   async setSessionPinned(sessionId: string, isPinned: boolean) {
     return sessionService.setSessionPinned(sessionId, isPinned);
   },
-  async teardownSession(_projectId: string, sessionId: string) {
+  async teardownSession(sessionId: string) {
     return sessionService.teardown(sessionId, 'terminate');
   },
   async stopAgent(sessionId: string) {

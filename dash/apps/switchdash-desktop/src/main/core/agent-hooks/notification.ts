@@ -4,6 +4,7 @@ import { getMainWindow } from '@main/app/window';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
+import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -75,9 +76,12 @@ export async function maybeShowNotification(event: AgentEvent, appFocused: boole
 
       releaseNotification();
       if (event.sessionId) {
-        events.emit(notificationFocusSessionChannel, {
-          projectId: event.projectId,
-          sessionId: event.sessionId,
+        void loadSessionWithAgent(event.sessionId).then((loaded) => {
+          if (!loaded) return;
+          events.emit(notificationFocusSessionChannel, {
+            agentId: loaded.row.agentId,
+            sessionId: event.sessionId,
+          });
         });
       }
     });
