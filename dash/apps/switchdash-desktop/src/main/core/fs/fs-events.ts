@@ -3,10 +3,7 @@ import { log } from '@main/lib/logger';
 import type { FileWatchEvent } from '@shared/core/fs/fs';
 
 export type FsHooks = {
-  'watch:event': (event: {
-    locationId: string;
-    events: FileWatchEvent[];
-  }) => void | Promise<void>;
+  'watch:event': (event: { locationId: string; events: FileWatchEvent[] }) => void | Promise<void>;
 };
 
 class FsEvents implements Hookable<FsHooks> {
@@ -18,10 +15,7 @@ class FsEvents implements Hookable<FsHooks> {
     return this._core.on(name, handler);
   }
 
-  emitWatchEvent(event: {
-    locationId: string;
-    events: FileWatchEvent[];
-  }): void {
+  emitWatchEvent(event: { locationId: string; events: FileWatchEvent[] }): void {
     this._core.callHookBackground('watch:event', event);
   }
 }

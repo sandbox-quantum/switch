@@ -8,12 +8,12 @@ import {
   type ProvisionStep,
 } from '@shared/core/sessions/sessionEvents';
 import type { Session } from '@shared/core/sessions/sessions';
-import type { LocationSettingsProvider } from '../locations/settings/provider';
 import {
   buildSessionProviders,
   createLocationRuntimeFactory,
   resolveSessionEnv,
 } from '../locations/location-runtime-factory';
+import type { LocationSettingsProvider } from '../locations/settings/provider';
 import { sessionProvisionEvents } from './session-provision-events';
 
 /**

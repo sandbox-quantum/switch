@@ -82,7 +82,7 @@ describe('resource sampler', () => {
     setPlatform('linux');
     registryState.active = [
       {
-        sessionId: 'project-1:session-1:conversation-1',
+        sessionId: 'location-1:session-1:conversation-1',
         pid: 100,
         metadata: { providerId: 'amp', title: 'Amp' },
       },
@@ -111,7 +111,7 @@ describe('resource sampler', () => {
     expect(pidusageMock).toHaveBeenCalledWith([100, 101, 102]);
     expect(snapshot.entries).toHaveLength(1);
     expect(snapshot.entries[0]).toMatchObject({
-      sessionId: 'project-1:session-1:conversation-1',
+      sessionId: 'location-1:session-1:conversation-1',
       pid: 100,
       ppid: 1,
       cpu: 7,
@@ -142,12 +142,12 @@ describe('resource sampler', () => {
   it('attributes separate process trees to separate active sessions', async () => {
     registryState.active = [
       {
-        sessionId: 'project-1:session-1:conversation-1',
+        sessionId: 'location-1:session-1:conversation-1',
         pid: 100,
         metadata: { providerId: 'amp', title: 'Amp 1' },
       },
       {
-        sessionId: 'project-2:session-2:conversation-2',
+        sessionId: 'location-2:session-2:conversation-2',
         pid: 200,
         metadata: { providerId: 'amp', title: 'Amp 2' },
       },
@@ -166,7 +166,7 @@ describe('resource sampler', () => {
     expect(pidusageMock).toHaveBeenCalledWith([100, 102, 101, 200, 201]);
     expect(snapshot.entries).toHaveLength(2);
     expect(snapshot.entries[0]).toMatchObject({
-      sessionId: 'project-1:session-1:conversation-1',
+      sessionId: 'location-1:session-1:conversation-1',
       pid: 100,
       ppid: 1,
       cpu: 6,
@@ -174,7 +174,7 @@ describe('resource sampler', () => {
       title: 'Amp 1',
     });
     expect(snapshot.entries[1]).toMatchObject({
-      sessionId: 'project-2:session-2:conversation-2',
+      sessionId: 'location-2:session-2:conversation-2',
       pid: 200,
       ppid: 1,
       cpu: 9,

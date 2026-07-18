@@ -18,7 +18,7 @@ export function hasLegacyShareableConfigMigrated(raw: string): boolean {
   return readLegacyShareableConfigMigratedAt(raw) !== undefined;
 }
 
-export function serializeShareableProjectSettings(
+export function serializeShareableLocationSettings(
   settings: ShareableLocationSettings,
   options: {
     previousRaw?: string;

@@ -1,18 +1,18 @@
 import { homedir } from 'node:os';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
+import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { getLocationById } from '@main/core/locations/store';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { createRemotePluginFs } from '@main/core/providers/remote-plugin-fs';
-import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
-import { getLocationById } from '@main/core/locations/store';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type { Agent } from '@shared/core/agents/agents';
 
 /**
  * A PluginFs that resolves nothing. Used for the user (home) scope of a remote
- * agent, whose VM home dir is not mounted here — project-scoped subagent IO,
+ * agent, whose VM home dir is not mounted here — location-scoped subagent IO,
  * which is what switchdash authors, is unaffected.
  */
 const EMPTY_PLUGIN_FS: PluginFs = {
@@ -51,7 +51,7 @@ export async function openRemoteSubagentFs(
 /**
  * Resolve the filesystem where a parent agent's subagent definitions and
  * credentials live, transparently for local and remote agents. Local agents use
- * their project dir on disk; remote agents use their SSH host's repo dir over
+ * their location dir on disk; remote agents use their SSH host's repo dir over
  * SFTP (the same connect seam the remote credential shipping in setupRemoteAgent
  * uses).
  *

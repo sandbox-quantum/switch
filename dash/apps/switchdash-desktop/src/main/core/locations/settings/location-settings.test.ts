@@ -4,11 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PRESERVE_PATTERNS } from '@shared/core/location-settings/location-settings';
-import type { ProjectSettingsStorage } from './location-settings-storage';
+import type { LocationSettingsStorage } from './location-settings-storage';
 import { LocalLocationSettingsProvider } from './providers/local-location-settings-provider';
 
 const storageMockState = vi.hoisted(() => ({
-  storage: undefined as ProjectSettingsStorage | undefined,
+  storage: undefined as LocationSettingsStorage | undefined,
 }));
 
 function makeTrackingGit(isFileCleanlyTracked: boolean) {
@@ -20,7 +20,7 @@ function makeTrackingGit(isFileCleanlyTracked: boolean) {
 vi.mock('@main/core/settings/settings-service', () => ({
   appSettingsService: {
     get: vi.fn().mockImplementation((key: string) => {
-      if (key === 'project') return Promise.resolve({ tmuxByDefault: false });
+      if (key === 'location') return Promise.resolve({ tmuxByDefault: false });
       return Promise.resolve({
         defaultWorktreeDirectory: '/tmp/switchdash/worktrees',
       });
@@ -33,9 +33,9 @@ vi.mock('@main/db/client', () => ({
 }));
 
 vi.mock('./location-settings-storage', () => ({
-  ProjectSettingsRepository: vi.fn(function ProjectSettingsRepository() {
+  LocationSettingsRepository: vi.fn(function LocationSettingsRepository() {
     if (!storageMockState.storage) {
-      throw new Error('ProjectSettingsRepository test storage was not configured');
+      throw new Error('LocationSettingsRepository test storage was not configured');
     }
     return storageMockState.storage;
   }),
@@ -49,7 +49,7 @@ vi.mock('electron', () => ({
 
 describe('LocationSettingsProvider worktreeDirectory validation', () => {
   const tempDirs: string[] = [];
-  const createStorage = (): ProjectSettingsStorage => {
+  const createStorage = (): LocationSettingsStorage => {
     const rows = new Map<
       string,
       {
@@ -69,7 +69,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     };
   };
 
-  const locationId = () => `project-${randomUUID()}`;
+  const locationId = () => `location-${randomUUID()}`;
 
   beforeEach(() => {
     storageMockState.storage = createStorage();
@@ -170,10 +170,10 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       shareableSettingsJson: '{}',
       legacyConfigMigratedAt: new Date().toISOString(),
     };
-    const settingsStorage: ProjectSettingsStorage = {
+    const settingsStorage: LocationSettingsStorage = {
       get: async () => row,
       insertIfMissing: vi.fn(),
-      update: async (_projectId, settings) => {
+      update: async (_locationId, settings) => {
         Object.assign(row, settings);
       },
     };
@@ -221,7 +221,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     await expect(provider.get()).resolves.not.toHaveProperty('scripts');
   });
 
-  it('does not seed computed worktreeDirectory into project settings', async () => {
+  it('does not seed computed worktreeDirectory into location settings', async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switchdash-settings-local-'));
     tempDirs.push(rootPath);
 
@@ -249,7 +249,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     await expect(provider.getWorktreeDirectory()).resolves.toBe(expectedOverride);
   });
 
-  it('stores the selected GitHub account as base project settings', async () => {
+  it('stores the selected GitHub account as base location settings', async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switchdash-settings-local-'));
     tempDirs.push(rootPath);
     const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
@@ -263,7 +263,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     await expect(provider.get()).resolves.toMatchObject({ githubAccountId: 'github.com:42' });
   });
 
-  it('stores null GitHub account selection as an explicit project override', async () => {
+  it('stores null GitHub account selection as an explicit location override', async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switchdash-settings-local-'));
     tempDirs.push(rootPath);
     const provider = new LocalLocationSettingsProvider(locationId(), rootPath);
@@ -289,10 +289,10 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       }),
       legacyConfigMigratedAt: new Date().toISOString(),
     };
-    const settingsStorage: ProjectSettingsStorage = {
+    const settingsStorage: LocationSettingsStorage = {
       get: async () => row,
       insertIfMissing: vi.fn(),
-      update: async (_projectId, settings) => {
+      update: async (_locationId, settings) => {
         Object.assign(row, settings);
       },
     };
@@ -322,10 +322,10 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       legacyConfigMigratedAt: null,
     };
     let updateAttempts = 0;
-    const settingsStorage: ProjectSettingsStorage = {
+    const settingsStorage: LocationSettingsStorage = {
       get: async () => row,
       insertIfMissing: vi.fn(),
-      update: async (_projectId, settings) => {
+      update: async (_locationId, settings) => {
         updateAttempts += 1;
         if (updateAttempts === 1) throw new Error('db write failed');
         Object.assign(row, settings);
@@ -357,10 +357,10 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
       }),
       legacyConfigMigratedAt: new Date().toISOString(),
     };
-    const settingsStorage: ProjectSettingsStorage = {
+    const settingsStorage: LocationSettingsStorage = {
       get: async () => row,
       insertIfMissing: vi.fn(),
-      update: async (_projectId, settings) => {
+      update: async (_locationId, settings) => {
         Object.assign(row, settings);
       },
     };
@@ -408,7 +408,7 @@ describe('LocationSettingsProvider worktreeDirectory validation', () => {
     });
   });
 
-  it('rejects foreign absolute worktreeDirectory values for local projects', async () => {
+  it('rejects foreign absolute worktreeDirectory values for local locations', async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'switchdash-settings-local-'));
     tempDirs.push(rootPath);
 

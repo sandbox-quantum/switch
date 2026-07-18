@@ -16,10 +16,10 @@ const PROJECT_ACTIONS = [
 ] as const;
 
 export function HomeMainPanel() {
-  const showAddProjectModal = useShowModal('addAgentModal');
+  const showAddLocationModal = useShowModal('addAgentModal');
   const { selectedIndex, setSelectedIndex } = useArrowKeyNavigation(
     PROJECT_ACTIONS.length,
-    (index) => showAddProjectModal(PROJECT_ACTIONS[index].modalArgs)
+    (index) => showAddLocationModal(PROJECT_ACTIONS[index].modalArgs)
   );
   const { effectiveTheme } = useTheme();
   const isDark = effectiveTheme === 'emdark';
@@ -43,14 +43,14 @@ export function HomeMainPanel() {
         </div>
         <div className="mx-auto mt-8 flex w-full max-w-md flex-col gap-1">
           {PROJECT_ACTIONS.map((action, i) => (
-            <HomeProjectAction
+            <HomeLocationAction
               key={action.label}
               label={action.label}
               description={action.description}
               icon={action.icon}
               isSelected={i === selectedIndex}
               onMouseEnter={() => setSelectedIndex(i)}
-              onClick={() => showAddProjectModal(action.modalArgs)}
+              onClick={() => showAddLocationModal(action.modalArgs)}
             />
           ))}
         </div>
@@ -59,7 +59,7 @@ export function HomeMainPanel() {
   );
 }
 
-function HomeProjectAction({
+function HomeLocationAction({
   label,
   description,
   icon,

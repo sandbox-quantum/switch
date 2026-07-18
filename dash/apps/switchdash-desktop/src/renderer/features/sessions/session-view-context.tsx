@@ -2,6 +2,7 @@ import { observer } from 'mobx-react-lite';
 import { createContext, useContext, type ReactNode } from 'react';
 import { LocationViewWrapper } from '@renderer/features/locations/components/location-view-wrapper';
 import type { SessionAgentStore } from '@renderer/features/sessions/stores/session-agent-store';
+import type { SessionRuntimeStore } from '@renderer/features/sessions/stores/session-runtime-store';
 import {
   getSessionAgent,
   getSessionStore,
@@ -9,7 +10,6 @@ import {
   sessionViewKind,
   type SessionViewKind,
 } from '@renderer/features/sessions/stores/session-selectors';
-import type { SessionRuntimeStore } from '@renderer/features/sessions/stores/session-runtime-store';
 import type { SessionViewModel } from '@renderer/features/sessions/stores/session-view-model';
 
 interface SessionViewContext {

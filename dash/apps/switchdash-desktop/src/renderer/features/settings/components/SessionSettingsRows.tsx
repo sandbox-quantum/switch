@@ -168,15 +168,15 @@ export const IncludeIssueContextByDefaultRow: React.FC = () => {
 
 export const EnableTmuxRow: React.FC = () => {
   const {
-    value: projects,
+    value: locations,
     update,
     isLoading: loading,
     isSaving: saving,
     isFieldOverridden,
     resetField,
-  } = useAppSettingsKey('project');
+  } = useAppSettingsKey('location');
 
-  const tmuxByDefault = projects?.tmuxByDefault ?? false;
+  const tmuxByDefault = locations?.tmuxByDefault ?? false;
 
   return (
     <SettingRow

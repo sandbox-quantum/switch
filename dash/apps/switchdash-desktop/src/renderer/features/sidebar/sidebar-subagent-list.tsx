@@ -42,14 +42,14 @@ function subagentRoomKey(locationId: string, name: string, roomKey: string): str
 }
 
 /**
- * The Claude Code subagents of a project's agent, rendered as first-class agent
+ * The Claude Code subagents of a location's agent, rendered as first-class agent
  * rows (same size/icon/affordances as the parent) nested under it. Each row
  * starts a session that runs as that subagent and, when expanded, lists the
  * sessions launched as it — grouped by room exactly like the parent agent. A
  * subagent discovered locally but not registered on the gateway is flagged
  * "local" so the drift is visible.
  *
- * `sessions` is the project's subagent-launched sessions; pass them in the
+ * `sessions` is the location's subagent-launched sessions; pass them in the
  * agent-focused view so they nest here. Omit them (room-focused view) to render
  * only the launcher rows.
  */
@@ -75,14 +75,14 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
   const showCreateSessionModal = useShowModal('sessionModal');
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
-  const { params: projectParams } = useParams('location');
+  const { params: locationParams } = useParams('location');
   const activeSubagent =
-    currentView === 'location' && projectParams.locationId === locationId
-      ? projectParams.subagentName
+    currentView === 'location' && locationParams.locationId === locationId
+      ? locationParams.subagentName
       : undefined;
 
   const agentQuery = useQuery({
-    queryKey: ['projectAgent', locationId],
+    queryKey: ['locationAgent', locationId],
     queryFn: async () => (await rpc.agents.getAgents(locationId))[0] ?? null,
     enabled: !!locationId,
   });
@@ -99,7 +99,7 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
   });
   const discovered = subagentsQuery.data?.subagents ?? [];
 
-  // Group the project's subagent sessions by the subagent they ran as.
+  // Group the location's subagent sessions by the subagent they ran as.
   const sessionsByName = new Map<string, SessionStore[]>();
   for (const session of sessions) {
     const name = subagentNameOf(session);

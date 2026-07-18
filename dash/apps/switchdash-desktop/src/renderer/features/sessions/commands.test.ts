@@ -7,8 +7,8 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   setPinned: vi.fn(),
   visibleSessionEntries: [
-    { locationId: 'project-1', sessionId: 'session-1' },
-    { locationId: 'project-1', sessionId: 'session-2' },
+    { locationId: 'location-1', sessionId: 'session-1' },
+    { locationId: 'location-1', sessionId: 'session-2' },
   ],
 }));
 
@@ -42,19 +42,19 @@ describe('createSessionCommandProvider', () => {
       isPinned: false,
     });
     mocks.visibleSessionEntries = [
-      { locationId: 'project-1', sessionId: 'session-1' },
-      { locationId: 'project-1', sessionId: 'session-2' },
+      { locationId: 'location-1', sessionId: 'session-1' },
+      { locationId: 'location-1', sessionId: 'session-2' },
     ];
   });
 
   it('returns no commands when the session is not provisioned', () => {
     mocks.getSessionStore.mockReturnValue({ state: 'unprovisioned' });
-    const provider = createSessionCommandProvider('project-1', 'session-1');
+    const provider = createSessionCommandProvider('location-1', 'session-1');
     expect(provider.getCommands()).toEqual([]);
   });
 
   it('exposes a pin command that toggles the pinned state', () => {
-    const provider = createSessionCommandProvider('project-1', 'session-1');
+    const provider = createSessionCommandProvider('location-1', 'session-1');
 
     const command = provider.getCommands().find((candidate) => candidate.id === 'session.pin');
 
@@ -63,12 +63,12 @@ describe('createSessionCommandProvider', () => {
     expect(mocks.setPinned).toHaveBeenCalledWith(true);
   });
 
-  it('navigates to the next visible session across project boundaries', () => {
+  it('navigates to the next visible session across location boundaries', () => {
     mocks.visibleSessionEntries = [
-      { locationId: 'project-1', sessionId: 'session-1' },
-      { locationId: 'project-2', sessionId: 'session-2' },
+      { locationId: 'location-1', sessionId: 'session-1' },
+      { locationId: 'location-2', sessionId: 'session-2' },
     ];
-    const provider = createSessionCommandProvider('project-1', 'session-1');
+    const provider = createSessionCommandProvider('location-1', 'session-1');
 
     const command = provider
       .getCommands()
@@ -78,17 +78,17 @@ describe('createSessionCommandProvider', () => {
     command?.execute();
 
     expect(mocks.navigate).toHaveBeenCalledWith('session', {
-      locationId: 'project-2',
+      locationId: 'location-2',
       sessionId: 'session-2',
     });
   });
 
-  it('navigates to the previous visible session across project boundaries', () => {
+  it('navigates to the previous visible session across location boundaries', () => {
     mocks.visibleSessionEntries = [
-      { locationId: 'project-1', sessionId: 'session-1' },
-      { locationId: 'project-2', sessionId: 'session-2' },
+      { locationId: 'location-1', sessionId: 'session-1' },
+      { locationId: 'location-2', sessionId: 'session-2' },
     ];
-    const provider = createSessionCommandProvider('project-2', 'session-2');
+    const provider = createSessionCommandProvider('location-2', 'session-2');
 
     const command = provider
       .getCommands()
@@ -98,7 +98,7 @@ describe('createSessionCommandProvider', () => {
     command?.execute();
 
     expect(mocks.navigate).toHaveBeenCalledWith('session', {
-      locationId: 'project-1',
+      locationId: 'location-1',
       sessionId: 'session-1',
     });
   });

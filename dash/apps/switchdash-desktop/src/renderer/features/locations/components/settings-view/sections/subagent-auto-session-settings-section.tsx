@@ -11,7 +11,7 @@ import { log } from '@renderer/utils/logger';
  * {@link AutoSessionSettingsSection} but is keyed by the subagent's own Switch
  * agent id: toggling flips its gateway connection model and starts/stops a
  * watcher that spawns sessions launched as that subagent. Hidden when the
- * project's agent is not linked to a Switch server.
+ * location's agent is not linked to a Switch server.
  */
 export function SubagentAutoSessionSettingsSection({
   locationId,
@@ -21,7 +21,7 @@ export function SubagentAutoSessionSettingsSection({
   subagentName: string;
 }) {
   const { data: agents, isLoading: agentsLoading } = useQuery({
-    queryKey: ['project-agents', locationId],
+    queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 

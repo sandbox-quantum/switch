@@ -13,13 +13,13 @@ import { paseoConfigMigrator } from './paseo-config-migration';
 import { supersetConfigMigrator } from './superset-config-migration';
 import { CONFIG_FILE } from './switchdash-config-file';
 
-export type ProjectConfigMigrator = {
+export type LocationConfigMigrator = {
   provider: LocationConfigMigration['provider'];
   inspect: (
     fs: Pick<FileSystemProvider, 'exists' | 'read'>
   ) => Promise<LocationConfigMigration | null>;
   migrate: (
-    project: LocationProvider,
+    location: LocationProvider,
     request: MigrateLocationConfigRequest
   ) => Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>>;
 };
@@ -35,7 +35,7 @@ function writeConfigFailed(message: string): Result<never, UpdateLocationSetting
   return err({ type: 'write-config-failed', message });
 }
 
-export async function inspectProjectConfigMigrations(
+export async function inspectLocationConfigMigrations(
   fs: Pick<FileSystemProvider, 'exists' | 'read'>
 ): Promise<LocationConfigMigration[]> {
   try {
@@ -59,12 +59,12 @@ export async function inspectProjectConfigMigrations(
   return migrations.filter((migration): migration is LocationConfigMigration => migration !== null);
 }
 
-export async function migrateProjectConfigFromProvider(
-  project: LocationProvider,
+export async function migrateLocationConfigFromProvider(
+  location: LocationProvider,
   request: MigrateLocationConfigRequest
 ): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
-    if (await project.fs.exists(CONFIG_FILE)) {
+    if (await location.fs.exists(CONFIG_FILE)) {
       return writeConfigFailed(`${CONFIG_FILE} already exists.`);
     }
 
@@ -73,9 +73,9 @@ export async function migrateProjectConfigFromProvider(
     );
     if (!migrator) return writeConfigFailed('Unsupported config provider.');
 
-    return await migrator.migrate(project, request);
+    return await migrator.migrate(location, request);
   } catch (error) {
-    log.warn(`Failed to migrate ${request.provider} config to project config`, error);
+    log.warn(`Failed to migrate ${request.provider} config to location config`, error);
     return writeConfigFailed(error instanceof Error ? error.message : String(error));
   }
 }

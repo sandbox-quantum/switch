@@ -11,7 +11,7 @@ export function basenameFromAnyPath(input: string): string {
   );
 }
 
-export function safePathSegment(input: string, fallback = 'project'): string {
+export function safePathSegment(input: string, fallback = 'location'): string {
   const segment = basenameFromAnyPath(input)
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
     .trim();

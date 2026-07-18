@@ -51,13 +51,7 @@ export class LifecycleScriptService implements IDisposable {
   private readonly latestRespawnRequest = new Map<string, LifecycleRespawnRequest>();
   private disposed = false;
 
-  constructor({
-    locationId,
-    terminals,
-  }: {
-    locationId: string;
-    terminals: TerminalProvider;
-  }) {
+  constructor({ locationId, terminals }: { locationId: string; terminals: TerminalProvider }) {
     this.locationId = locationId;
     this.terminals = terminals;
   }

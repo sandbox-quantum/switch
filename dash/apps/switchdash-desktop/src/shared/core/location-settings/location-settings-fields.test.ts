@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESERVE_PATTERNS, type LocationSettings } from './location-settings';
-import { hasConfiguredShareableProjectSettings } from './location-settings-fields';
+import { hasConfiguredShareableLocationSettings } from './location-settings-fields';
 
-describe('hasConfiguredShareableProjectSettings', () => {
+describe('hasConfiguredShareableLocationSettings', () => {
   it('does not treat seeded default preserve patterns as configured settings', () => {
     expect(
-      hasConfiguredShareableProjectSettings({
+      hasConfiguredShareableLocationSettings({
         preservePatterns: [...DEFAULT_PRESERVE_PATTERNS],
       })
     ).toBe(false);
@@ -13,7 +13,7 @@ describe('hasConfiguredShareableProjectSettings', () => {
 
   it('does not treat reordered default preserve patterns as configured settings', () => {
     expect(
-      hasConfiguredShareableProjectSettings({
+      hasConfiguredShareableLocationSettings({
         preservePatterns: [...DEFAULT_PRESERVE_PATTERNS].reverse(),
       })
     ).toBe(false);
@@ -21,7 +21,7 @@ describe('hasConfiguredShareableProjectSettings', () => {
 
   it('treats non-default preserve patterns as configured settings', () => {
     expect(
-      hasConfiguredShareableProjectSettings({
+      hasConfiguredShareableLocationSettings({
         preservePatterns: ['.env*'],
       })
     ).toBe(true);
@@ -36,6 +36,6 @@ describe('hasConfiguredShareableProjectSettings', () => {
       },
     };
 
-    expect(hasConfiguredShareableProjectSettings(settings)).toBe(true);
+    expect(hasConfiguredShareableLocationSettings(settings)).toBe(true);
   });
 });

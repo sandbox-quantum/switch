@@ -1,11 +1,11 @@
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
-  defaultShareableProjectSettings,
+  defaultShareableLocationSettings,
   shareableLocationSettingsSchema,
   type LocationSettings,
 } from '@shared/core/location-settings/location-settings';
-import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
+import { mergeShareableLocationSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { LocationSettingsProvider } from './provider';
 
 export async function getEffectiveSessionSettings(args: {
@@ -15,18 +15,18 @@ export async function getEffectiveSessionSettings(args: {
   const { locationSettings, sessionFs } = args;
   const parsedSettings = shareableLocationSettingsSchema.safeParse(await locationSettings.get());
   const localShareableSettings = parsedSettings.success ? parsedSettings.data : {};
-  const defaults = defaultShareableProjectSettings();
+  const defaults = defaultShareableLocationSettings();
   const exists = await sessionFs.exists('.switchdash.json');
   if (!exists) {
-    return mergeShareableProjectSettings(defaults, localShareableSettings);
+    return mergeShareableLocationSettings(defaults, localShareableSettings);
   }
 
   try {
     const { content } = await sessionFs.read('.switchdash.json');
-    const projectFileSettings = shareableLocationSettingsSchema.parse(JSON.parse(content));
-    return mergeShareableProjectSettings(defaults, projectFileSettings, localShareableSettings);
+    const locationFileSettings = shareableLocationSettingsSchema.parse(JSON.parse(content));
+    return mergeShareableLocationSettings(defaults, locationFileSettings, localShareableSettings);
   } catch (err) {
-    log.warn('Failed to parse session .switchdash.json, falling back to project settings', err);
-    return mergeShareableProjectSettings(defaults, localShareableSettings);
+    log.warn('Failed to parse session .switchdash.json, falling back to location settings', err);
+    return mergeShareableLocationSettings(defaults, localShareableSettings);
   }
 }

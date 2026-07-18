@@ -20,8 +20,8 @@ import { depthIndent } from './sidebar-store';
 interface SidebarSessionItemProps {
   sessionId: string;
   locationId: string;
-  /** Pinned strip uses tighter padding than sessions nested under a project. */
-  rowVariant?: 'underProject' | 'pinned';
+  /** Pinned strip uses tighter padding than sessions nested under a location. */
+  rowVariant?: 'underLocation' | 'pinned';
   /** Tree depth of this row (ignored for the pinned strip). Drives the row's
    * left indent so a session aligns with the other entities at its depth. */
   depth?: number;
@@ -30,7 +30,7 @@ interface SidebarSessionItemProps {
 export const SidebarSessionItem = observer(function SidebarSessionItem({
   sessionId,
   locationId,
-  rowVariant = 'underProject',
+  rowVariant = 'underLocation',
   depth = 0,
 }: SidebarSessionItemProps) {
   const { navigate } = useNavigate();

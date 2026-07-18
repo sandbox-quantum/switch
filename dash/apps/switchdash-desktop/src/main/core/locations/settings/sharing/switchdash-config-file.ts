@@ -23,7 +23,7 @@ function setNested(obj: Record<string, unknown>, path: string[], value: unknown)
   cursor[path[path.length - 1]] = value;
 }
 
-export function patchShareableProjectSettingsFields(
+export function patchShareableLocationSettingsFields(
   config: Record<string, unknown>,
   settings: LocationSettings,
   fields: ShareableLocationSettingsWriteField[]

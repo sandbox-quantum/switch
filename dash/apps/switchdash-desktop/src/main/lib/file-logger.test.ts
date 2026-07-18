@@ -108,7 +108,7 @@ describe('redactDiagnosticLog', () => {
     const redacted = redactDiagnosticLog(
       [
         'email person@example.com',
-        'mac /Users/alice/projects/switchdash',
+        'mac /Users/alice/locations/switchdash',
         'linux /home/bob/work/repo',
         'win C:\\Users\\carol\\repo',
         'ipv4 192.168.1.25',
@@ -120,7 +120,7 @@ describe('redactDiagnosticLog', () => {
     );
 
     expect(redacted).toContain('[REDACTED_EMAIL]');
-    expect(redacted).toContain('/Users/[REDACTED_USER]/projects/switchdash');
+    expect(redacted).toContain('/Users/[REDACTED_USER]/locations/switchdash');
     expect(redacted).toContain('/home/[REDACTED_USER]/work/repo');
     expect(redacted).toContain('C:\\Users\\[REDACTED_USER]\\repo');
     expect(redacted).toContain('ipv4 [REDACTED_IP]');

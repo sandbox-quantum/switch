@@ -5,7 +5,7 @@ const MAX_STACK_SIZE = 50;
 
 export type HistoryEntry =
   | { kind: 'view'; viewId: ViewId; params: WrapParams<ViewId> }
-  | { kind: 'tab'; projectId: string; taskId: string; tabId: string };
+  | { kind: 'tab'; locationId: string; taskId: string; tabId: string };
 
 function entriesEqual(a: HistoryEntry, b: HistoryEntry): boolean {
   if (a.kind !== b.kind) return false;

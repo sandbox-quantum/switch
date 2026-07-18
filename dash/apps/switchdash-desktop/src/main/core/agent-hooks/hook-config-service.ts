@@ -50,8 +50,8 @@ export async function ensureHooksInstalled({
   sessionPath: string;
 }): Promise<boolean> {
   try {
-    const localProjectSettings = await appSettingsService.get('localProject');
-    const writeGitIgnoreEntries = localProjectSettings.writeAgentConfigToGitIgnore ?? true;
+    const localLocationSettings = await appSettingsService.get('localLocation');
+    const writeGitIgnoreEntries = localLocationSettings.writeAgentConfigToGitIgnore ?? true;
 
     const plugin = getPlugin(providerId);
     const hooksDescriptor = plugin.capabilities.hooks;

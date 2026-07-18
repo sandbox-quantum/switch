@@ -33,7 +33,7 @@ export async function computeLocationSettingsOverrideState(
         });
       }
     } catch (error) {
-      log.warn('Failed to inspect project settings override source', error);
+      log.warn('Failed to inspect location settings override source', error);
     }
   }
 

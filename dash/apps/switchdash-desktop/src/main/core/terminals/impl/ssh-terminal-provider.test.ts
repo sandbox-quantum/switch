@@ -47,7 +47,7 @@ vi.mock('@main/core/pty/terminal-color-scheme', () => ({
 
 const terminal: Terminal = {
   id: 'terminal-1',
-  locationId: 'project-1',
+  locationId: 'location-1',
   sessionId: 'session-1',
   shellId: 'system',
   name: 'Terminal 1',

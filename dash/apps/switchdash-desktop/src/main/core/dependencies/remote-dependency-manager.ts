@@ -1,8 +1,8 @@
 import type { Platform } from '@switchdash/core/deps';
 import { HostDependencyManager } from '@switchdash/core/deps/runtime';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
 import { agentUpdateService } from './agent-update-service';
 import { CORE_DEPENDENCIES } from './core-dependencies';

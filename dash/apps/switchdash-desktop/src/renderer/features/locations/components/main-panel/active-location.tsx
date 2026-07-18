@@ -3,14 +3,17 @@ import { observer } from 'mobx-react-lite';
 import { SessionList } from '@renderer/features/locations/components/session-view/session-list';
 import { SettingsPanel } from '@renderer/features/locations/components/settings-view/settings-panel';
 import { SubagentsPanel } from '@renderer/features/locations/components/subagents-view/subagents-panel';
-import { asMounted, getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import {
+  asMounted,
+  getLocationStore,
+} from '@renderer/features/locations/stores/location-selectors';
 import type { LocationView } from '@renderer/features/locations/stores/location-view';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useAgent } from '@renderer/lib/stores/use-agents';
 import { cn } from '@renderer/utils/utils';
 
-function ProjectViewNav({
+function LocationViewNav({
   items,
   activeView,
   onChange,
@@ -21,7 +24,7 @@ function ProjectViewNav({
 }) {
   return (
     <div className="py-10">
-      <nav className="flex min-h-0 w-52 flex-col gap-0.5 overflow-y-auto" aria-label="Project">
+      <nav className="flex min-h-0 w-52 flex-col gap-0.5 overflow-y-auto" aria-label="Location">
         {items.map((item) => {
           const isActive = item.id === activeView;
 
@@ -46,14 +49,14 @@ function ProjectViewNav({
   );
 }
 
-export const ActiveProject = observer(function ActiveProject() {
+export const ActiveLocation = observer(function ActiveLocation() {
   const {
     params: { locationId, subagentName },
   } = useParams('location');
   const store = asMounted(getLocationStore(locationId));
 
   const { data: agents } = useQuery({
-    queryKey: ['project-agents', locationId],
+    queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
   const agent = agents?.[0] ?? null;
@@ -81,10 +84,10 @@ export const ActiveProject = observer(function ActiveProject() {
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
       <div className="mx-auto flex h-full min-h-0 w-full max-w-[1060px] flex-col gap-6 px-8">
         <div className="grid min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] gap-8 overflow-hidden">
-          <ProjectViewNav
+          <LocationViewNav
             items={items}
             activeView={activeView}
-            onChange={(view) => store.view.setProjectView(view)}
+            onChange={(view) => store.view.setLocationView(view)}
           />
           <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
             <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-1 py-10">

@@ -62,7 +62,7 @@ describe('SessionAgentStore hydration', () => {
   };
 
   it('does not hydrate the session from the PTY session connect path', async () => {
-    const store = new SessionAgentStore('project-1', 'session-1', [sessionRecord]);
+    const store = new SessionAgentStore('location-1', 'session-1', [sessionRecord]);
 
     const session = store.pty;
     expect(session).toBeDefined();
@@ -76,7 +76,7 @@ describe('SessionAgentStore hydration', () => {
   });
 
   it('hydrates when desired and dehydrates when released', async () => {
-    const store = new SessionAgentStore('project-1', 'session-1', [sessionRecord]);
+    const store = new SessionAgentStore('location-1', 'session-1', [sessionRecord]);
 
     store.setHydrationDesired(true);
     await vi.waitFor(() => expect(hydrateSession).toHaveBeenCalledTimes(1));
@@ -95,7 +95,7 @@ describe('SessionAgentStore hydration', () => {
           resolveHydrate = resolve;
         })
     );
-    const store = new SessionAgentStore('project-1', 'session-1', [sessionRecord]);
+    const store = new SessionAgentStore('location-1', 'session-1', [sessionRecord]);
 
     store.setHydrationDesired(true);
     await vi.waitFor(() => expect(hydrateSession).toHaveBeenCalledTimes(1));

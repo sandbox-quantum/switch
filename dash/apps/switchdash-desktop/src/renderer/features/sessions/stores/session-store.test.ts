@@ -81,7 +81,7 @@ describe('SessionStore frontend runtime lifecycle', () => {
 
   it('can transition a provisioned session back to a dry unprovisioned state', () => {
     const session = makeSession();
-    const store = createUnprovisionedSession('project-1', session);
+    const store = createUnprovisionedSession('location-1', session);
 
     store.transitionToProvisioned(session, '/tmp/loc-1');
     const viewModel = mocks.viewModels[0];
@@ -89,7 +89,7 @@ describe('SessionStore frontend runtime lifecycle', () => {
     store.transitionToDryUnprovisioned({ ...session, archivedAt: '2026-01-02T00:00:00.000Z' });
 
     expect(viewModel.dispose).toHaveBeenCalledOnce();
-    expect(mocks.workspaceRelease).toHaveBeenCalledWith('project-1');
+    expect(mocks.workspaceRelease).toHaveBeenCalledWith('location-1');
     expect(store.state).toBe('unprovisioned');
     expect(store.phase).toBe('idle');
     expect(store.viewModel).toBeNull();
@@ -98,7 +98,7 @@ describe('SessionStore frontend runtime lifecycle', () => {
 
   it('recreates registered stores before reprovisioning a dry session', () => {
     const session = makeSession();
-    const store = createUnprovisionedSession('project-1', session);
+    const store = createUnprovisionedSession('location-1', session);
     const firstViewModel = mocks.viewModels[0];
 
     store.transitionToDryUnprovisioned(session);

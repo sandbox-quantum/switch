@@ -3,8 +3,8 @@ import * as path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { subagentSettingsPath } from '@main/core/agents/switch-settings-paths';
-import { isHumanInputRecent } from '@main/core/pty/human-activity';
 import { getLocationById } from '@main/core/locations/store';
+import { isHumanInputRecent } from '@main/core/pty/human-activity';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -30,7 +30,7 @@ import type { SessionRoomContext } from './switch-room-service';
  * channel's own poll loop).
  *
  * This is a thin manager over per-room `RoomConnection`s: it resolves the
- * session's Switch credentials from the project's settings file, wires a
+ * session's Switch credentials from the location's settings file, wires a
  * PTY-backed injection sink, and routes agent status changes to the matching
  * connection. The transport-agnostic poll/queue/runtime-state logic lives in
  * `RoomConnection`, which the on-VM sidecar reuses over a tmux-backed sink.

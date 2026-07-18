@@ -39,7 +39,7 @@ async function bootstrap() {
   if (sidebarResult) {
     appState.sidebar.restoreSnapshot(sidebarResult as Partial<SidebarSnapshot>);
   } else {
-    appState.sidebar.expandAllProjects();
+    appState.sidebar.expandAllLocations();
   }
 
   // Avoid double-mount in dev which can duplicate PTY sessions

@@ -3,9 +3,9 @@ import { db, sqlite } from '@main/db/client';
 import { agents, locations, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS } from '@shared/commands';
+import type { Location } from '@shared/core/locations/locations';
 import type { CommandPaletteQuery, SearchItem, SearchItemKind } from '@shared/core/search';
 import type { Session } from '@shared/core/sessions/sessions';
-import type { Location } from '@shared/core/locations/locations';
 import { locationEvents } from '../locations/location-events';
 import { sessionHooks } from '../sessions/session-hooks';
 import { sessionService } from '../sessions/session-service';
@@ -37,7 +37,9 @@ class SearchService {
     sessionHooks.on('session:deleted', (sessionId) => this.removeByType('session', sessionId));
 
     locationEvents.on('location:created', (location) => this.upsertLocation(location));
-    locationEvents.on('location:deleted', (locationId) => this.removeByType('location', locationId));
+    locationEvents.on('location:deleted', (locationId) =>
+      this.removeByType('location', locationId)
+    );
 
     this.backfill();
     this.seedCommands();

@@ -192,7 +192,7 @@ export async function registerSubagentsRemote(
       );
     }
     // Subagents of remote parents register with auto_session off: neither the
-    // local watcher (no project path) nor the on-VM sidecar watches subagents,
+    // local watcher (no location path) nor the on-VM sidecar watches subagents,
     // so an auto_session profile would advertise a capability nothing serves.
     return await registerSubagentsCore({
       behavior,

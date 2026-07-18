@@ -8,7 +8,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  * `providerId` is populated for agent-conversation PTYs. `title` is populated
  * for conversations and user-created shell terminals. They are sourced from
  * the registry at register-time so the renderer can label entries even when
- * the owning project isn't mounted (in which case the renderer-side store join
+ * the owning location isn't mounted (in which case the renderer-side store join
  * would fail and the row would fall back to a leafId hex).
  */
 export interface ResourcePtyEntry {

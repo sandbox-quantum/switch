@@ -3,22 +3,22 @@ import { ok, type Result } from '@switchdash/shared';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import {
-  DbProjectSettingsProvider,
-  type DbProjectSettingsProviderOptions,
+  DbLocationSettingsProvider,
+  type DbLocationSettingsProviderOptions,
 } from './db-location-settings-provider';
 
 /**
- * DB-backed project settings for a remote (SSH) agent. Its working directory
+ * DB-backed location settings for a remote (SSH) agent. Its working directory
  * lives on the host, so there is no local path to read/validate; the config
  * reader is backed by the SSH filesystem. switchdash runs every session in the
  * remote working dir (no worktrees), so worktree-directory handling is a no-op.
  */
-export class RemoteLocationSettingsProvider extends DbProjectSettingsProvider {
+export class RemoteLocationSettingsProvider extends DbLocationSettingsProvider {
   constructor(
     locationId: string,
     remoteRepoDir: string,
     fs: Pick<FileSystemProvider, 'exists' | 'read'>,
-    options: DbProjectSettingsProviderOptions = {}
+    options: DbLocationSettingsProviderOptions = {}
   ) {
     super(locationId, remoteRepoDir, fs, options);
   }

@@ -3,7 +3,10 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { Archive, RotateCcw, Trash2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useRef } from 'react';
-import { asMounted, getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import {
+  asMounted,
+  getLocationStore,
+} from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { ListPopoverCard } from '@renderer/lib/components/list-popover-card';

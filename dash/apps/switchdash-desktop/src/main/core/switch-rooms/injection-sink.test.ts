@@ -15,15 +15,15 @@ describe('PtyInjectionSink', () => {
     const pty = { write: vi.fn() };
     vi.mocked(ptySessionRegistry.get).mockReturnValue(pty as never);
 
-    const sink = new PtyInjectionSink('project:session:conversation');
+    const sink = new PtyInjectionSink('location:session:conversation');
     expect(sink.acquire()).toBe(pty);
-    expect(ptySessionRegistry.get).toHaveBeenCalledWith('project:session:conversation');
+    expect(ptySessionRegistry.get).toHaveBeenCalledWith('location:session:conversation');
   });
 
   it('returns null when no PTY is live', () => {
     vi.mocked(ptySessionRegistry.get).mockReturnValue(undefined as never);
 
-    const sink = new PtyInjectionSink('project:session:conversation');
+    const sink = new PtyInjectionSink('location:session:conversation');
     expect(sink.acquire()).toBeNull();
   });
 });

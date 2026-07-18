@@ -52,7 +52,7 @@ const UNREGISTERED_PHASE_LABEL: Record<UnregisteredLocation['phase'], string> = 
   error: 'Failed',
 };
 
-export const SidebarProjectItem = observer(function SidebarProjectItem({
+export const SidebarLocationItem = observer(function SidebarLocationItem({
   locationId,
   depth = 0,
 }: {
@@ -61,7 +61,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
 }) {
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
-  const { params: projectParams } = useParams('location');
+  const { params: locationParams } = useParams('location');
   const { params: sessionParams } = useParams('session');
   const showCreateSessionModal = useShowModal('sessionModal');
   const showAssignServerModal = useShowModal('assignServerModal');
@@ -70,50 +70,50 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
   // Resolve the agent's Switch identity so the "go to" button can open its
   // detail page in the gateway web app (parallel to a room's "go to" button).
   const agentQuery = useQuery({
-    queryKey: ['projectAgent', locationId],
+    queryKey: ['locationAgent', locationId],
     queryFn: async () => (await rpc.agents.getAgents(locationId))[0] ?? null,
     enabled: !!locationId,
   });
 
-  const project = getLocationStore(locationId);
+  const location = getLocationStore(locationId);
 
   const currentLocationId =
     currentView === 'session'
       ? sessionParams.locationId
       : currentView === 'location'
-        ? projectParams.locationId
+        ? locationParams.locationId
         : null;
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : null;
-  // A subagent of this project is scoped by subagentName on the project view;
+  // A subagent of this location is scoped by subagentName on the location view;
   // the parent row is active only when no subagent is selected.
-  const currentSubagentName = currentView === 'location' ? projectParams.subagentName : undefined;
+  const currentSubagentName = currentView === 'location' ? locationParams.subagentName : undefined;
 
-  const isProjectActive =
+  const isLocationActive =
     currentLocationId === locationId && !currentSessionId && !currentSubagentName;
 
-  const isExpanded = sidebarStore.expandedProjectIds.has(locationId);
+  const isExpanded = sidebarStore.expandedLocationIds.has(locationId);
 
-  if (!project) return null;
+  if (!location) return null;
 
   const iconClass =
     'absolute h-4 w-4 opacity-100 transition-opacity duration-150 group-hover/row:opacity-0';
-  const projectLabel = project.name ?? 'agent';
-  const toggleExpanded = () => sidebarStore.toggleProjectExpanded(locationId);
+  const locationLabel = location.name ?? 'agent';
+  const toggleExpanded = () => sidebarStore.toggleLocationExpanded(locationId);
 
   // Clicking the row opens the agent's page (Sessions / Subagents / Settings),
   // mirroring subagent rows; the chevron button below toggles expansion. An
   // unregistered agent has no page yet, so there we just expand.
-  const openProject = () => {
-    if (isUnregisteredLocation(project)) {
+  const openLocation = () => {
+    if (isUnregisteredLocation(location)) {
       toggleExpanded();
       return;
     }
-    sidebarStore.ensureProjectExpanded(locationId);
+    sidebarStore.ensureLocationExpanded(locationId);
     navigate('location', { locationId });
   };
 
   const agent = agentQuery.data ?? null;
-  // The project's agent type drives its icon; fall back to a generic icon until
+  // The location's agent type drives its icon; fall back to a generic icon until
   // the agent (and its providerId) is available.
   const providerId = agent?.providerId ?? null;
   const gatewayUrl =
@@ -125,8 +125,8 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
   };
 
   const renderSpinnerWithTooltip = () => {
-    if (!isUnregisteredLocation(project)) return null;
-    const label = UNREGISTERED_PHASE_LABEL[project.phase] ?? 'Loading…';
+    if (!isUnregisteredLocation(location)) return null;
+    const label = UNREGISTERED_PHASE_LABEL[location.phase] ?? 'Loading…';
     return (
       <Tooltip>
         <TooltipTrigger>
@@ -145,22 +145,22 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
         <SidebarMenuRow
           className={cn('group/row h-8 justify-between flex px-1')}
           style={depthIndent(depth)}
-          data-active={isProjectActive || undefined}
-          isActive={isProjectActive}
+          data-active={isLocationActive || undefined}
+          isActive={isLocationActive}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={openProject}
+          onClick={openLocation}
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
-            {project.state === 'unregistered' ? (
+            {location.state === 'unregistered' ? (
               renderSpinnerWithTooltip()
             ) : (
               <SidebarItemMiniButton
                 type="button"
-                aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${projectLabel}`}
+                aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${locationLabel}`}
                 className="relative"
                 onClick={(e) => {
                   e.stopPropagation();
-                  sidebarStore.toggleProjectExpanded(locationId);
+                  sidebarStore.toggleLocationExpanded(locationId);
                 }}
               >
                 {providerId ? (
@@ -177,7 +177,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
               </SidebarItemMiniButton>
             )}
             <SidebarMenuAction
-              aria-label={`Open agent ${projectLabel}`}
+              aria-label={`Open agent ${locationLabel}`}
               className={cn(
                 'truncate transition-colors select-none',
                 locationViewKind(getLocationStore(locationId)) === 'bootstrapping' &&
@@ -185,16 +185,16 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
               )}
             >
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate">{project.name}</span>
-                {project.data?.sshHost != null && (
+                <span className="truncate">{location.name}</span>
+                {location.data?.sshHost != null && (
                   <Tooltip>
                     <TooltipTrigger>
                       <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
                     </TooltipTrigger>
-                    <TooltipContent>Runs remotely on {project.data.sshHost}</TooltipContent>
+                    <TooltipContent>Runs remotely on {location.data.sshHost}</TooltipContent>
                   </Tooltip>
                 )}
-                {locationViewKind(project) === 'path_not_found' && (
+                {locationViewKind(location) === 'path_not_found' && (
                   <Tooltip>
                     <TooltipTrigger>
                       <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
@@ -211,7 +211,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
                 render={
                   <SidebarItemMiniButton
                     type="button"
-                    aria-label={`Open ${projectLabel} in gateway`}
+                    aria-label={`Open ${locationLabel} in gateway`}
                     className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -231,7 +231,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
               render={
                 <SidebarItemMiniButton
                   type="button"
-                  aria-label={`New session for ${projectLabel}`}
+                  aria-label={`New session for ${locationLabel}`}
                   className={
                     'opacity-0 transition-opacity duration-150 group-hover/row:opacity-100'
                   }
@@ -239,7 +239,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
                     e.stopPropagation();
                     showCreateSessionModal({ locationId });
                   }}
-                  disabled={project.state === 'unregistered'}
+                  disabled={location.state === 'unregistered'}
                 >
                   <Plus className="h-4 w-4" />
                 </SidebarItemMiniButton>
@@ -262,9 +262,9 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
           onClick={() => {
             void confirmDeleteAgent({
               locationId,
-              projectLabel: project.name ?? 'this agent',
+              locationLabel: location.name ?? 'this agent',
               onDeleted: () => {
-                if (isProjectActive) navigate('home');
+                if (isLocationActive) navigate('home');
               },
             });
           }}
@@ -277,11 +277,11 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
   );
 });
 
-interface BaseProjectItemProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+interface BaseLocationItemProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   isActive: boolean;
 }
 
-export function BaseProjectItem({ isActive, className, ...props }: BaseProjectItemProps) {
+export function BaseLocationItem({ isActive, className, ...props }: BaseLocationItemProps) {
   return (
     <SidebarMenuButton
       className={cn('justify-between flex item px-1 py-1', className)}

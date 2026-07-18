@@ -27,8 +27,8 @@ export class LocationSettingsStore {
       if (!result.success) {
         throw new Error(
           result.error.type === 'location-not-found'
-            ? `Project ${locationId} not found`
-            : 'Failed to load project settings'
+            ? `Location ${locationId} not found`
+            : 'Failed to load location settings'
         );
       }
       return result.data;
@@ -103,7 +103,7 @@ export class LocationSettingsStore {
     return result;
   }
 
-  async migrateProjectConfig(
+  async migrateLocationConfig(
     request: MigrateLocationConfigRequest
   ): Promise<Result<MigrateLocationConfigResult, UpdateLocationSettingsError>> {
     const result = await rpc.locations.migrateLocationConfig(this.locationId, request);

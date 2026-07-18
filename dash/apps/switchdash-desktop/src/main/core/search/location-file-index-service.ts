@@ -189,9 +189,7 @@ class LocationFileIndexService {
 
       if (stale.length > 0) {
         sqlite.transaction(() => {
-          const delIndex = sqlite.prepare(
-            `DELETE FROM location_file_index WHERE location_id = ?`
-          );
+          const delIndex = sqlite.prepare(`DELETE FROM location_file_index WHERE location_id = ?`);
           const delMeta = sqlite.prepare(
             `DELETE FROM location_file_index_meta WHERE location_id = ?`
           );

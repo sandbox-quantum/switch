@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
-import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
 import { dirTrustService } from '@main/core/agent-hooks/dir-trust-service';
+import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';

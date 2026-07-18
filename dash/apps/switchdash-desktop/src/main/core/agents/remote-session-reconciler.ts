@@ -3,18 +3,18 @@ import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { probeAgentSidecar } from '@main/core/agent-runtime/impl/ensure-agent-sidecar';
 import type { SidecarEndpoint } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-http';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
-import { connectRemoteAgent } from './connect-remote-agent';
 import { getRemoteAgentLocation } from './agent-location';
+import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 
 const RECONCILE_INTERVAL_MS = 2_000;
@@ -110,13 +110,7 @@ class RemoteSessionReconciler {
     for (const ids of this.adopted.values()) ids.delete(sessionId);
     this.missingStreak.delete(sessionId);
     let deleted: { changes: number };
-    let agentId: string | undefined;
     try {
-      const [row] = await db
-        .select({ agentId: sessions.agentId })
-        .from(sessions)
-        .where(eq(sessions.id, sessionId));
-      agentId = row?.agentId;
       deleted = await db.delete(sessions).where(eq(sessions.id, sessionId));
     } catch (error) {
       log.warn('RemoteSessionReconciler: failed to delete session row', {

@@ -2,20 +2,20 @@ import { getLocationManagerStore } from '@renderer/features/locations/stores/loc
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 
 export function useConfirmDeleteAgent() {
-  const showConfirmDeleteProject = useShowModal('confirmActionModal');
+  const showConfirmDeleteLocation = useShowModal('confirmActionModal');
 
   return async ({
     locationId,
-    projectLabel,
+    locationLabel,
     onDeleted,
   }: {
     locationId: string;
-    projectLabel: string;
+    locationLabel: string;
     onDeleted?: () => void;
   }) => {
-    showConfirmDeleteProject({
+    showConfirmDeleteLocation({
       title: 'Remove agent',
-      description: `"${projectLabel}" will be removed from switchdash. The folder stays on the filesystem.`,
+      description: `"${locationLabel}" will be removed from switchdash. The folder stays on the filesystem.`,
       confirmLabel: 'Remove',
       onSuccess: () => {
         void getLocationManagerStore().removeLocation(locationId);

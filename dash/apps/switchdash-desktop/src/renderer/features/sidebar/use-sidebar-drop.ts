@@ -93,29 +93,29 @@ export function useSidebarDrop() {
               providerId: 'claude',
             });
           } catch (err) {
-            log.error('Failed to add dropped project:', err);
+            log.error('Failed to add dropped location:', err);
             toast({
-              title: 'Cannot add project',
-              description: `Failed to add ${basenameFromAnyPath(filePath)} as a project.`,
+              title: 'Cannot add location',
+              description: `Failed to add ${basenameFromAnyPath(filePath)} as a location.`,
               variant: 'destructive',
             });
             return null;
           }
         })
       ).then((results) => {
-        const projectIds = results.flatMap((r) =>
+        const locationIds = results.flatMap((r) =>
           r.status === 'fulfilled' && r.value != null ? [r.value] : []
         );
-        const firstProjectId = projectIds[0];
+        const firstLocationId = locationIds[0];
 
-        if (firstProjectId) {
-          navigate('location', { locationId: firstProjectId });
+        if (firstLocationId) {
+          navigate('location', { locationId: firstLocationId });
         }
 
-        if (projectIds.length > 1) {
+        if (locationIds.length > 1) {
           toast({
-            title: 'Projects added',
-            description: `${projectIds.length} projects added.`,
+            title: 'Locations added',
+            description: `${locationIds.length} locations added.`,
           });
         }
       });

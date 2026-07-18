@@ -4,6 +4,7 @@ import type { AgentStatus } from '@shared/core/providers/agentEvents';
 import type { Session } from '@shared/core/sessions/sessions';
 import { sessionAgentRegistry } from './session-agent-registry';
 import type { SessionManagerStore } from './session-manager';
+import { sessionRuntimeRegistry } from './session-runtime-registry';
 import {
   isProvisioned,
   isUnprovisioned,
@@ -11,7 +12,6 @@ import {
   registeredSessionData,
   type SessionStore,
 } from './session-store';
-import { sessionRuntimeRegistry } from './session-runtime-registry';
 import type { SessionViewModel } from './session-view-model';
 
 /** Call only inside `observer` components (or other MobX reactions). */
@@ -50,8 +50,8 @@ export function sessionAgentStatus(store: SessionStore): AgentStatus | null {
 
 export type SessionViewKind =
   | 'missing'
-  | 'project-mounting' // project is still opening — session data not yet available
-  | 'project-error' // project failed to open
+  | 'location-mounting' // location is still opening — session data not yet available
+  | 'location-error' // location failed to open
   | 'creating'
   | 'create-error'
   | 'provisioning'
@@ -62,26 +62,26 @@ export type SessionViewKind =
   | 'ready';
 
 /**
- * Derives the session view kind from the project + session store state.
+ * Derives the session view kind from the location + session store state.
  *
- * Pass `locationId` so that "project still opening" can be distinguished from
+ * Pass `locationId` so that "location still opening" can be distinguished from
  * "session genuinely missing". Call only inside `observer` components.
  */
 export function sessionViewKind(
   store: SessionStore | undefined,
   locationId: string
 ): SessionViewKind {
-  const projectStore = getLocationManagerStore().locations.get(locationId);
+  const locationStore = getLocationManagerStore().locations.get(locationId);
 
-  if (!projectStore) return 'missing';
+  if (!locationStore) return 'missing';
 
-  if (isUnmountedLocation(projectStore)) {
-    if (projectStore.phase === 'opening') return 'project-mounting';
-    if (projectStore.phase === 'error') return 'project-error';
-    return 'project-mounting';
+  if (isUnmountedLocation(locationStore)) {
+    if (locationStore.phase === 'opening') return 'location-mounting';
+    if (locationStore.phase === 'error') return 'location-error';
+    return 'location-mounting';
   }
 
-  if (projectStore.state === 'unregistered') return 'missing';
+  if (locationStore.state === 'unregistered') return 'missing';
 
   if (!store) return 'missing';
 
@@ -151,11 +151,11 @@ export function sessionErrorMessage(store: SessionStore | undefined): string | u
   return undefined;
 }
 
-/** Returns the mount error message for the project. */
-export function projectMountErrorMessage(locationId: string): string {
+/** Returns the mount error message for the location. */
+export function locationMountErrorMessage(locationId: string): string {
   const store = getLocationManagerStore().locations.get(locationId);
   if (store && isUnmountedLocation(store) && store.phase === 'error') {
-    return store.error ?? 'Failed to open project';
+    return store.error ?? 'Failed to open location';
   }
-  return 'Failed to open project';
+  return 'Failed to open location';
 }

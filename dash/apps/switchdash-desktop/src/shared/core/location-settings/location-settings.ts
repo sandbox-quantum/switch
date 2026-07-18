@@ -15,7 +15,7 @@ const preservePatternsSchema = z
   .array(z.string())
   .transform((patterns) => patterns.filter((pattern) => pattern !== LOCATION_CONFIG_FILE));
 
-export const shareableProjectScriptsSettingsSchema = z.object({
+export const shareableLocationScriptsSettingsSchema = z.object({
   setup: z.string().optional(),
   run: z.string().optional(),
   teardown: z.string().optional(),
@@ -24,16 +24,16 @@ export const shareableProjectScriptsSettingsSchema = z.object({
 export const shareableLocationSettingsSchema = z.object({
   preservePatterns: preservePatternsSchema.optional(),
   shellSetup: z.string().optional(),
-  scripts: shareableProjectScriptsSettingsSchema.optional(),
+  scripts: shareableLocationScriptsSettingsSchema.optional(),
 });
 
-export const shareableProjectSettingsWithDefaultsSchema = shareableLocationSettingsSchema.extend({
+export const shareableLocationSettingsWithDefaultsSchema = shareableLocationSettingsSchema.extend({
   preservePatterns: preservePatternsSchema.default([...DEFAULT_PRESERVE_PATTERNS]),
 });
 
 export type ShareableLocationSettings = z.infer<typeof shareableLocationSettingsSchema>;
 
-export const baseProjectSettingsSchema = z.object({
+export const baseLocationSettingsSchema = z.object({
   worktreeDirectory: z.string().trim().optional(),
   githubAccountId: z.string().trim().min(1).nullable().optional(),
   tmux: z.boolean().optional(),
@@ -48,25 +48,25 @@ export const baseProjectSettingsSchema = z.object({
     .optional(),
 });
 
-export type BaseLocationSettings = z.infer<typeof baseProjectSettingsSchema>;
+export type BaseLocationSettings = z.infer<typeof baseLocationSettingsSchema>;
 
-export const legacyBaseProjectSettingsSchema = baseProjectSettingsSchema.extend({
+export const legacyBaseLocationSettingsSchema = baseLocationSettingsSchema.extend({
   remote: z.string().optional(),
 });
 
-export const projectSettingsSchema = baseProjectSettingsSchema.merge(
+export const locationSettingsSchema = baseLocationSettingsSchema.merge(
   shareableLocationSettingsSchema
 );
 
-export const legacyProjectConfigSchema = legacyBaseProjectSettingsSchema.merge(
+export const legacyLocationConfigSchema = legacyBaseLocationSettingsSchema.merge(
   shareableLocationSettingsSchema
 );
 
-export function defaultShareableProjectSettings(): ShareableLocationSettings {
-  return shareableProjectSettingsWithDefaultsSchema.parse({});
+export function defaultShareableLocationSettings(): ShareableLocationSettings {
+  return shareableLocationSettingsWithDefaultsSchema.parse({});
 }
 
-export type LocationSettings = z.infer<typeof projectSettingsSchema>;
+export type LocationSettings = z.infer<typeof locationSettingsSchema>;
 
 export type LocationSettingsPatch = {
   clearShareableFields?: ShareableLocationSettingsWriteField[];
@@ -85,7 +85,7 @@ export type LocationSettingsPage = {
 };
 
 export type LocationSettingsWriteTarget =
-  | { type: 'project' }
+  | { type: 'location' }
   | { type: 'session'; sessionId: string }
   | { type: 'workspace'; locationId: string };
 
@@ -135,11 +135,11 @@ export type LocationConfigMigration = {
   unsupportedFields: string[];
 };
 
-export type ProjectConfigMigrationDestination = 'local' | 'shared';
+export type LocationConfigMigrationDestination = 'local' | 'shared';
 
 export type MigrateLocationConfigRequest = {
   provider: LocationConfigMigrationProvider;
-  destination: ProjectConfigMigrationDestination;
+  destination: LocationConfigMigrationDestination;
 };
 
 export type MigrateLocationConfigResult = {

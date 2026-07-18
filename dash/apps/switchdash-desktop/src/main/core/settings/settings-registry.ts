@@ -13,11 +13,11 @@ type SettingsDefaultsMap = {
 };
 
 export const SETTINGS_DEFAULTS = {
-  project: {
+  location: {
     tmuxByDefault: false,
   },
-  localProject: () => ({
-    defaultProjectsDirectory: join(homedir(), 'switchdash', 'repositories'),
+  localLocation: () => ({
+    defaultLocationsDirectory: join(homedir(), 'switchdash', 'repositories'),
     defaultWorktreeDirectory: getDefaultLocalWorktreeDirectory(),
     writeAgentConfigToGitIgnore: true,
   }),

@@ -65,7 +65,7 @@ export class ClaudeTrustService {
     return {
       configName: CLAUDE_CONFIG_NAME,
       parseWarningName: 'Claude',
-      withTrustedPath: withClaudeTrustedProject,
+      withTrustedPath: withClaudeTrustedLocation,
     };
   }
 
@@ -129,26 +129,26 @@ function parseConfig(raw: string | null, warningName: string): Record<string, un
   }
 }
 
-function withClaudeTrustedProject(
+function withClaudeTrustedLocation(
   config: Record<string, unknown>,
   worktreePath: string
 ): Record<string, unknown> | null {
-  const projects = isPlainObject(config.projects) ? config.projects : {};
-  const existing = isPlainObject(projects[worktreePath]) ? projects[worktreePath] : {};
+  const locations = isPlainObject(config.locations) ? config.locations : {};
+  const existing = isPlainObject(locations[worktreePath]) ? locations[worktreePath] : {};
 
   const alreadyTrusted =
     existing['hasTrustDialogAccepted'] === true &&
-    existing['hasCompletedProjectOnboarding'] === true;
+    existing['hasCompletedLocationOnboarding'] === true;
   if (alreadyTrusted) return null;
 
   return {
     ...config,
-    projects: {
-      ...projects,
+    locations: {
+      ...locations,
       [worktreePath]: {
         ...existing,
         hasTrustDialogAccepted: true,
-        hasCompletedProjectOnboarding: true,
+        hasCompletedLocationOnboarding: true,
       },
     },
   };

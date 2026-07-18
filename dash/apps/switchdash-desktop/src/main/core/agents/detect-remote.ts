@@ -1,7 +1,7 @@
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
 import type { SwitchAgentConfig } from '@shared/switch-agents';
 import { parseSwitchAgentSettings } from './detect';

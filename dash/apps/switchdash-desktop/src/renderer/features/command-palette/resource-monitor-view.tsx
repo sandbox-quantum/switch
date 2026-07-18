@@ -33,7 +33,7 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
   const groups = useMemo(() => buildGroups(snapshot?.entries ?? []), [snapshot]);
   const processes = useMemo(() => sortAppProcesses(snapshot?.appProcesses ?? []), [snapshot]);
 
-  const hasProjects = groups.length > 0;
+  const hasLocations = groups.length > 0;
   const hasProcesses = processes.length > 0;
 
   return (
@@ -67,10 +67,10 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
         )}
 
         <Section heading="Active sessions">
-          {hasProjects ? (
+          {hasLocations ? (
             <div className="flex flex-col gap-1">
               {groups.map((g) => (
-                <ProjectRow key={g.locationId} group={g} />
+                <LocationRow key={g.locationId} group={g} />
               ))}
             </div>
           ) : (
@@ -121,13 +121,13 @@ function ProcessRow({ process, cpuCount }: { process: ResourceAppProcess; cpuCou
   );
 }
 
-const ProjectRow = observer(function ProjectRow({ group }: { group: Group }) {
+const LocationRow = observer(function LocationRow({ group }: { group: Group }) {
   return (
     <div className="flex flex-col">
       <div className="flex items-center gap-2 rounded-md px-2 py-1">
         <Folder size={12} className="shrink-0 text-foreground/40" />
         <span className="flex-1 truncate text-xs font-medium text-foreground">
-          {group.projectName}
+          {group.locationName}
         </span>
         <span className="text-[10px] text-foreground/40 tabular-nums">{group.entryCount}</span>
       </div>

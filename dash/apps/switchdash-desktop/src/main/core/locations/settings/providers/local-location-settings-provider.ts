@@ -9,21 +9,21 @@ import {
   resolveAndValidateWorktreeDirectory,
 } from '../worktree-directory';
 import {
-  DbProjectSettingsProvider,
-  type DbProjectSettingsProviderOptions,
+  DbLocationSettingsProvider,
+  type DbLocationSettingsProviderOptions,
 } from './db-location-settings-provider';
 
 async function getLocalDefaultWorktreeDirectory(): Promise<string> {
-  return (await appSettingsService.get('localProject')).defaultWorktreeDirectory;
+  return (await appSettingsService.get('localLocation')).defaultWorktreeDirectory;
 }
 
 const localPathPlatform = process.platform === 'win32' ? 'win32' : 'posix';
 
-export class LocalLocationSettingsProvider extends DbProjectSettingsProvider {
+export class LocalLocationSettingsProvider extends DbLocationSettingsProvider {
   constructor(
     locationId: string,
     rootPath: string,
-    options: DbProjectSettingsProviderOptions = {}
+    options: DbLocationSettingsProviderOptions = {}
   ) {
     super(
       locationId,

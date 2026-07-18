@@ -83,7 +83,7 @@ describe('CursorTrustService', () => {
     });
 
     expect(mockAccess).toHaveBeenCalledWith(
-      '/home/local-user/.cursor/projects/tmp-worktree/.workspace-trusted'
+      '/home/local-user/.cursor/locations/tmp-worktree/.workspace-trusted'
     );
     expect(mockWriteFile).toHaveBeenCalledTimes(1);
   });
@@ -97,9 +97,9 @@ describe('CursorTrustService', () => {
       homedir: '/home/local-user',
     });
 
-    const markerPath = '/home/local-user/.cursor/projects/tmp-worktree/.workspace-trusted';
+    const markerPath = '/home/local-user/.cursor/locations/tmp-worktree/.workspace-trusted';
     expect(mockAccess).toHaveBeenCalledWith(markerPath);
-    expect(mockMkdir).toHaveBeenCalledWith('/home/local-user/.cursor/projects/tmp-worktree', {
+    expect(mockMkdir).toHaveBeenCalledWith('/home/local-user/.cursor/locations/tmp-worktree', {
       recursive: true,
     });
     expect(mockWriteFile).toHaveBeenCalledWith(markerPath, expect.any(String), 'utf8');
@@ -136,7 +136,7 @@ describe('CursorTrustService', () => {
     });
 
     expect(mockWriteFile).toHaveBeenCalledWith(
-      '/Users/janburzinski/.cursor/projects/Users-janburzinski-switchdash-worktrees-switchdash-official-tough-falcons-notice/.workspace-trusted',
+      '/Users/janburzinski/.cursor/locations/Users-janburzinski-switchdash-worktrees-switchdash-official-tough-falcons-notice/.workspace-trusted',
       expect.any(String),
       'utf8'
     );

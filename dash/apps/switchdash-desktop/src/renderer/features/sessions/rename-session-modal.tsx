@@ -56,7 +56,7 @@ export const RenameSessionModal = observer(function RenameSessionModal({
   const isValid = !isEmpty && !isDuplicate && !isUnchanged;
 
   const validationMessage = isDuplicate
-    ? 'A session with this name already exists in this project.'
+    ? 'A session with this name already exists in this location.'
     : isEmpty
       ? 'Session name cannot be empty.'
       : undefined;

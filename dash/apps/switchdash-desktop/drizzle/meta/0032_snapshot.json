@@ -105,16 +105,12 @@
       "indexes": {
         "idx_agents_project_id": {
           "name": "idx_agents_project_id",
-          "columns": [
-            "project_id"
-          ],
+          "columns": ["project_id"],
           "isUnique": false
         },
         "idx_agents_server_id": {
           "name": "idx_agents_server_id",
-          "columns": [
-            "server_id"
-          ],
+          "columns": ["server_id"],
           "isUnique": false
         }
       },
@@ -122,39 +118,27 @@
         "agents_project_id_projects_id_fk": {
           "name": "agents_project_id_projects_id_fk",
           "tableFrom": "agents",
-          "columnsFrom": [
-            "project_id"
-          ],
+          "columnsFrom": ["project_id"],
           "tableTo": "projects",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "cascade"
         },
         "agents_location_id_locations_id_fk": {
           "name": "agents_location_id_locations_id_fk",
           "tableFrom": "agents",
-          "columnsFrom": [
-            "location_id"
-          ],
+          "columnsFrom": ["location_id"],
           "tableTo": "locations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "agents_server_id_switch_servers_id_fk": {
           "name": "agents_server_id_switch_servers_id_fk",
           "tableFrom": "agents",
-          "columnsFrom": [
-            "server_id"
-          ],
+          "columnsFrom": ["server_id"],
           "tableTo": "switch_servers",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "set null"
         }
@@ -183,9 +167,7 @@
       "indexes": {
         "idx_app_secrets_key": {
           "name": "idx_app_secrets_key",
-          "columns": [
-            "key"
-          ],
+          "columns": ["key"],
           "isUnique": true
         }
       },
@@ -222,9 +204,7 @@
       "indexes": {
         "idx_app_settings_key": {
           "name": "idx_app_settings_key",
-          "columns": [
-            "key"
-          ],
+          "columns": ["key"],
           "isUnique": true
         }
       },
@@ -261,9 +241,7 @@
       "indexes": {
         "idx_kv_key": {
           "name": "idx_kv_key",
-          "columns": [
-            "key"
-          ],
+          "columns": ["key"],
           "isUnique": true
         }
       },
@@ -326,13 +304,9 @@
         "location_settings_location_id_locations_id_fk": {
           "name": "location_settings_location_id_locations_id_fk",
           "tableFrom": "location_settings",
-          "columnsFrom": [
-            "location_id"
-          ],
+          "columnsFrom": ["location_id"],
           "tableTo": "locations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "cascade"
         }
@@ -392,10 +366,7 @@
       "indexes": {
         "idx_locations_host_dir": {
           "name": "idx_locations_host_dir",
-          "columns": [
-            "ssh_host",
-            "dir"
-          ],
+          "columns": ["ssh_host", "dir"],
           "isUnique": true
         }
       },
@@ -453,16 +424,12 @@
       "indexes": {
         "idx_messages_session_id": {
           "name": "idx_messages_session_id",
-          "columns": [
-            "session_id"
-          ],
+          "columns": ["session_id"],
           "isUnique": false
         },
         "idx_messages_timestamp": {
           "name": "idx_messages_timestamp",
-          "columns": [
-            "timestamp"
-          ],
+          "columns": ["timestamp"],
           "isUnique": false
         }
       },
@@ -470,13 +437,9 @@
         "messages_session_id_sessions_id_fk": {
           "name": "messages_session_id_sessions_id_fk",
           "tableFrom": "messages",
-          "columnsFrom": [
-            "session_id"
-          ],
+          "columnsFrom": ["session_id"],
           "tableTo": "sessions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "cascade"
         }
@@ -539,13 +502,9 @@
         "project_settings_project_id_projects_id_fk": {
           "name": "project_settings_project_id_projects_id_fk",
           "tableFrom": "project_settings",
-          "columnsFrom": [
-            "project_id"
-          ],
+          "columnsFrom": ["project_id"],
           "tableTo": "projects",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "cascade"
         }
@@ -597,9 +556,7 @@
       "indexes": {
         "idx_projects_path": {
           "name": "idx_projects_path",
-          "columns": [
-            "path"
-          ],
+          "columns": ["path"],
           "isUnique": true
         }
       },
@@ -771,9 +728,7 @@
       "indexes": {
         "idx_sessions_agent_id": {
           "name": "idx_sessions_agent_id",
-          "columns": [
-            "agent_id"
-          ],
+          "columns": ["agent_id"],
           "isUnique": false
         }
       },
@@ -781,13 +736,9 @@
         "sessions_agent_id_agents_id_fk": {
           "name": "sessions_agent_id_agents_id_fk",
           "tableFrom": "sessions",
-          "columnsFrom": [
-            "agent_id"
-          ],
+          "columnsFrom": ["agent_id"],
           "tableTo": "agents",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "cascade"
         }
@@ -846,9 +797,7 @@
       "indexes": {
         "idx_switch_servers_gateway_url": {
           "name": "idx_switch_servers_gateway_url",
-          "columns": [
-            "gateway_url"
-          ],
+          "columns": ["gateway_url"],
           "isUnique": true
         }
       },

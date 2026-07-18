@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  inspectProjectConfigMigrations,
-  migrateProjectConfigFromProvider,
+  inspectLocationConfigMigrations,
+  migrateLocationConfigFromProvider,
 } from './config-migration';
 
 vi.mock('@main/lib/logger', () => ({
@@ -56,7 +56,7 @@ describe('config migration', () => {
       `,
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([
       {
         provider: 'conductor',
         label: 'Conductor',
@@ -80,7 +80,7 @@ describe('config migration', () => {
     });
     const patch = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -118,7 +118,7 @@ describe('config migration', () => {
       }),
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([
       {
         provider: 'conductor',
         label: 'Conductor',
@@ -129,7 +129,7 @@ describe('config migration', () => {
     ]);
 
     const patch = vi.fn().mockResolvedValue({ success: true });
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -150,7 +150,7 @@ describe('config migration', () => {
     });
   });
 
-  it('imports Conductor settings into local project settings', async () => {
+  it('imports Conductor settings into local location settings', async () => {
     const fs = createFs({
       'conductor.json': JSON.stringify({
         scripts: {
@@ -161,7 +161,7 @@ describe('config migration', () => {
     });
     const update = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -198,7 +198,7 @@ describe('config migration', () => {
       }),
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([
       {
         provider: 'superset',
         label: 'Superset',
@@ -219,7 +219,7 @@ describe('config migration', () => {
     });
     const patch = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -242,7 +242,7 @@ describe('config migration', () => {
     });
   });
 
-  it('imports Superset settings into local project settings', async () => {
+  it('imports Superset settings into local location settings', async () => {
     const fs = createFs({
       '.superset/config.json': JSON.stringify({
         run: ['./.superset/run.sh'],
@@ -250,7 +250,7 @@ describe('config migration', () => {
     });
     const update = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -288,9 +288,9 @@ describe('config migration', () => {
       }),
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([]);
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([]);
     await expect(
-      migrateProjectConfigFromProvider({ fs } as never, {
+      migrateLocationConfigFromProvider({ fs } as never, {
         provider: 'superset',
         destination: 'shared',
       })
@@ -318,7 +318,7 @@ describe('config migration', () => {
       }),
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([
       {
         provider: 'paseo',
         label: 'Paseo',
@@ -350,7 +350,7 @@ describe('config migration', () => {
     });
     const patch = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -372,7 +372,7 @@ describe('config migration', () => {
     });
   });
 
-  it('imports Paseo settings into local project settings', async () => {
+  it('imports Paseo settings into local location settings', async () => {
     const fs = createFs({
       'paseo.json': JSON.stringify({
         worktree: {
@@ -385,7 +385,7 @@ describe('config migration', () => {
     });
     const update = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -420,9 +420,9 @@ describe('config migration', () => {
       }),
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([]);
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([]);
     await expect(
-      migrateProjectConfigFromProvider({ fs } as never, {
+      migrateLocationConfigFromProvider({ fs } as never, {
         provider: 'paseo',
         destination: 'shared',
       })
@@ -457,7 +457,7 @@ describe('config migration', () => {
       `,
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([
       {
         provider: 'codex',
         label: 'Codex',
@@ -484,7 +484,7 @@ describe('config migration', () => {
     });
     const patch = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -506,7 +506,7 @@ describe('config migration', () => {
     });
   });
 
-  it('imports Codex local environment settings into local project settings', async () => {
+  it('imports Codex local environment settings into local location settings', async () => {
     const fs = createFs({
       '.codex/environments/environment.toml': `
         [setup]
@@ -515,7 +515,7 @@ describe('config migration', () => {
     });
     const update = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await migrateProjectConfigFromProvider(
+    const result = await migrateLocationConfigFromProvider(
       {
         fs,
         settings: {
@@ -550,9 +550,9 @@ describe('config migration', () => {
       `,
     });
 
-    await expect(inspectProjectConfigMigrations(fs)).resolves.toEqual([]);
+    await expect(inspectLocationConfigMigrations(fs)).resolves.toEqual([]);
     await expect(
-      migrateProjectConfigFromProvider({ fs } as never, {
+      migrateLocationConfigFromProvider({ fs } as never, {
         provider: 'codex',
         destination: 'shared',
       })
@@ -574,7 +574,7 @@ describe('config migration', () => {
     });
 
     await expect(
-      migrateProjectConfigFromProvider({ fs } as never, {
+      migrateLocationConfigFromProvider({ fs } as never, {
         provider: 'conductor',
         destination: 'shared',
       })
@@ -597,7 +597,7 @@ describe('config migration', () => {
       '.switchdash.json': JSON.stringify({ scripts: { run: 'pnpm dev' } }),
     });
 
-    const result = await migrateProjectConfigFromProvider({ fs } as never, {
+    const result = await migrateLocationConfigFromProvider({ fs } as never, {
       provider: 'conductor',
       destination: 'shared',
     });
@@ -617,7 +617,7 @@ describe('config migration', () => {
     const fs = createFs({});
 
     await expect(
-      migrateProjectConfigFromProvider({ fs } as never, {
+      migrateLocationConfigFromProvider({ fs } as never, {
         provider: 'unknown' as never,
         destination: 'shared',
       })

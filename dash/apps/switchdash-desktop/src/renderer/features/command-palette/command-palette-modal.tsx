@@ -18,8 +18,8 @@ import { ALL_COMMAND_DEFS, type CommandDef } from '@shared/commands';
 import type { SearchItem } from '@shared/core/search';
 import { getCommandIcon } from './command-icons';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
+import { PaletteLocationsGroup } from './palette-locations-group';
 import { PaletteNotificationsGroup } from './palette-notifications-group';
-import { PaletteProjectsGroup } from './palette-projects-group';
 import { PaletteSessionItem } from './palette-session-item';
 import { ResourceMonitorView } from './resource-monitor-view';
 import { applyContextAffinity } from './search-utils';
@@ -67,7 +67,7 @@ const PROJECT_SUGGESTED = [
   'resource-monitor',
   'app.giveFeedback',
 ];
-const APP_SUGGESTED = ['app.newProject', 'app.settings', 'resource-monitor', 'app.giveFeedback'];
+const APP_SUGGESTED = ['app.newLocation', 'app.settings', 'resource-monitor', 'app.giveFeedback'];
 
 function PaletteItem({
   value,
@@ -148,8 +148,7 @@ export function CommandPaletteModal({
   useEffect(() => {
     void queryClient.prefetchQuery({
       queryKey: ['cmdk-search', '', locationId, sessionId],
-      queryFn: () =>
-        rpc.search.commandPalette({ query: '', context: { locationId, sessionId } }),
+      queryFn: () => rpc.search.commandPalette({ query: '', context: { locationId, sessionId } }),
       staleTime: 5_000,
     });
     // oxlint-disable-next-line react/exhaustive-deps
@@ -242,7 +241,7 @@ export function CommandPaletteModal({
     navigate('session', { locationId: item.locationId, sessionId: item.id });
   };
 
-  const handleNavigateToProject = (item: SearchItem) => {
+  const handleNavigateToLocation = (item: SearchItem) => {
     handleClose();
     navigate('location', { locationId: item.id });
   };
@@ -255,7 +254,7 @@ export function CommandPaletteModal({
 
   const handleSelect = (item: SearchItem) => {
     if (item.kind === 'session') return handleNavigateToSession(item);
-    if (item.kind === 'location') return handleNavigateToProject(item);
+    if (item.kind === 'location') return handleNavigateToLocation(item);
     if (item.kind === 'file') return handleOpenFile(item);
   };
 
@@ -297,7 +296,7 @@ export function CommandPaletteModal({
         <Command.Input
           value={query}
           onValueChange={setQuery}
-          placeholder="Search sessions, projects, actions…"
+          placeholder="Search sessions, locations, actions…"
           className="w-full bg-transparent px-3 py-3 text-sm outline-none placeholder:text-foreground/40"
           autoFocus
         />
@@ -422,7 +421,7 @@ export function CommandPaletteModal({
               </Command.Group>
             )}
             {!sessionId && (
-              <PaletteProjectsGroup
+              <PaletteLocationsGroup
                 currentLocationId={locationId}
                 limit={5}
                 onClose={handleClose}

@@ -19,13 +19,13 @@ describe('LocalFileSystem', () => {
   });
 
   describe('constructor', () => {
-    it('should throw error when project path is empty', () => {
+    it('should throw error when location path is empty', () => {
       expect(() => new LocalFileSystem('')).toThrow(FileSystemError);
-      expect(() => new LocalFileSystem('')).toThrow('Project path is required');
+      expect(() => new LocalFileSystem('')).toThrow('Location path is required');
     });
 
-    it('should resolve project path', () => {
-      const relativePath = 'relative/project';
+    it('should resolve location path', () => {
+      const relativePath = 'relative/location';
       const service = new LocalFileSystem(relativePath);
       expect(service).toBeDefined();
     });

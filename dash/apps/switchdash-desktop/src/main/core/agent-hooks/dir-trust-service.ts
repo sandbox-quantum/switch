@@ -23,7 +23,4 @@ export class DirTrustService {
   }
 }
 
-export const dirTrustService = new DirTrustService([
-  claudeTrustService,
-  cursorTrustService,
-]);
+export const dirTrustService = new DirTrustService([claudeTrustService, cursorTrustService]);

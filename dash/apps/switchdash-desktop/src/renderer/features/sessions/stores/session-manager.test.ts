@@ -114,7 +114,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 function makeSessionManager(): SessionManagerStore {
-  return new SessionManagerStore('project-1', { pageData: { invalidate: vi.fn() } } as never);
+  return new SessionManagerStore('location-1', { pageData: { invalidate: vi.fn() } } as never);
 }
 
 describe('SessionManagerStore archive lifecycle', () => {
@@ -138,7 +138,7 @@ describe('SessionManagerStore archive lifecycle', () => {
   it('archives by disposing frontend runtime instead of soft-tearing down the session', async () => {
     const manager = makeSessionManager();
     const session = makeSession();
-    const store = createUnprovisionedSession('project-1', session);
+    const store = createUnprovisionedSession('location-1', session);
     store.transitionToProvisioned(session, '/tmp/loc-1');
     const viewModel = mocks.viewModels[0];
     manager.sessions.set(session.id, store);
@@ -160,13 +160,13 @@ describe('SessionManagerStore archive lifecycle', () => {
   it('reacquires frontend managers before provisioning a dry restored session', async () => {
     const manager = makeSessionManager();
     const session = makeSession({ archivedAt: undefined });
-    const store = createUnprovisionedSession('project-1', session);
+    const store = createUnprovisionedSession('location-1', session);
     store.transitionToDryUnprovisioned(session);
     manager.sessions.set(session.id, store);
 
     await manager.provisionSession(session.id);
 
-    expect(mocks.agentAcquire).toHaveBeenCalledWith('session-1', 'project-1');
+    expect(mocks.agentAcquire).toHaveBeenCalledWith('session-1', 'location-1');
     expect(store.state).toBe('provisioned');
     expect(store.viewModel).toBe(mocks.viewModels[1]);
     expect(mocks.viewModels[1].initialize).toHaveBeenCalledOnce();

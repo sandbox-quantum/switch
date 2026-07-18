@@ -21,8 +21,8 @@ import {
   reconcileResourceSampler,
   stopResourceSampler,
 } from './core/resource-monitor/resource-sampler';
-import { searchService } from './core/search/search-service';
 import { locationFileIndexService } from './core/search/location-file-index-service';
+import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
@@ -193,7 +193,7 @@ app.on('before-quit', (event) => {
   stopResourceSampler();
   updateService.dispose();
   void locationManager.dispose().catch((e) => {
-    log.error('Failed to shutdown project manager:', e);
+    log.error('Failed to shutdown location manager:', e);
   });
   app.exit(0);
 });

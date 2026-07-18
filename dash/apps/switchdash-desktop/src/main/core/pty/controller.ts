@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { err, ok } from '@switchdash/shared';
+import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { log } from '@main/lib/logger';
 import { parsePtySessionId } from '@shared/core/pty/ptySessionId';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
-import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
 import { recordHumanInput } from './human-activity';
 import {
   cleanupExpiredDroppedBlobs,
@@ -134,7 +134,7 @@ export const ptyController = createRPCController({
    * and return their remote paths.  Uses the SFTP subsystem of the already-
    * connected ssh2 client — no local ssh/scp binaries are involved.
    *
-   * The session ID encodes the project and scope (`locationId:scopeId:leafId`),
+   * The session ID encodes the location and scope (`locationId:scopeId:leafId`),
    * where `scopeId` is a session ID for conversation uploads.
    */
   uploadFiles: async (args: { sessionId: string; localPaths: string[] }) => {

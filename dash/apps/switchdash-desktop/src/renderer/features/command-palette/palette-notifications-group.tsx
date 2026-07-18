@@ -34,8 +34,8 @@ export function PaletteNotificationsGroup({
   const items = useObserver((): NotificationItem[] => {
     const result: NotificationItem[] = [];
 
-    for (const projectStore of getLocationManagerStore().locations.values()) {
-      const mounted = asMounted(projectStore);
+    for (const locationStore of getLocationManagerStore().locations.values()) {
+      const mounted = asMounted(locationStore);
       if (!mounted) continue;
       const pid = mounted.data.id;
 

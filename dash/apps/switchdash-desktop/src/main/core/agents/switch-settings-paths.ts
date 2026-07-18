@@ -10,7 +10,7 @@ import path from 'node:path';
 /**
  * Relative path, from an agent's working directory, to the Claude Code settings
  * file that the switch-connector `configure` skill writes the `SWITCH_*` env
- * block into for a per-project agent.
+ * block into for a per-location agent.
  */
 export const SWITCH_SETTINGS_RELATIVE_PATH = path.join('.claude', 'settings.local.json');
 

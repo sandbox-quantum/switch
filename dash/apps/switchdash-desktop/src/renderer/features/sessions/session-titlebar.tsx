@@ -20,7 +20,7 @@ export const SessionTitlebar = observer(function SessionTitlebar() {
   const { locationId, sessionId } = useSessionViewContext();
   const sessionStore = getSessionStore(locationId, sessionId);
   const sessionPayload = getRegisteredSessionData(locationId, sessionId);
-  const projectName = locationDisplayName(getLocationStore(locationId));
+  const locationName = locationDisplayName(getLocationStore(locationId));
   const { navigate } = useNavigate();
 
   return (
@@ -32,7 +32,7 @@ export const SessionTitlebar = observer(function SessionTitlebar() {
             className="text-sm text-foreground-passive hover:text-foreground"
             onClick={() => navigate('location', { locationId })}
           >
-            {projectName}
+            {locationName}
           </button>
           <span className="text-sm text-foreground-passive">/</span>
           <span className="max-w-56 truncate">{sessionDisplayName(sessionStore)}</span>

@@ -1,6 +1,6 @@
 import type { Result } from '@switchdash/shared';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 interface BaseModeData {
   name: string;

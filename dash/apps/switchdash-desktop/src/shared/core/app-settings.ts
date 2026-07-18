@@ -5,17 +5,17 @@ import {
   type browserSettingsSchema,
   type changesViewModeSchema,
   type interfaceSettingsSchema,
-  type localProjectSettingsSchema,
+  type localLocationSettingsSchema,
   type notificationSettingsSchema,
-  type projectSettingsSchema,
+  type locationSettingsSchema,
   type providerCustomConfigEntrySchema,
   type sessionSettingsSchema,
   type terminalSettingsSchema,
   type themeSchema,
 } from '@main/core/settings/schema';
 
-export type LocalProjectSettings = z.infer<typeof localProjectSettingsSchema>;
-export type LocationSettings = z.infer<typeof projectSettingsSchema>;
+export type LocalLocationSettings = z.infer<typeof localLocationSettingsSchema>;
+export type LocationSettings = z.infer<typeof locationSettingsSchema>;
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export type SessionSettings = z.infer<typeof sessionSettingsSchema>;
 export type AgentAutoApproveDefaults = z.infer<typeof agentAutoApproveDefaultsSchema>;

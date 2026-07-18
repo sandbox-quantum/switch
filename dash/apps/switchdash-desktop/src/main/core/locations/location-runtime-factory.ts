@@ -7,6 +7,9 @@ import type { IExecutionContext } from '@main/core/execution-context/types';
 import { LocalFileSystem } from '@main/core/fs/impl/local-fs';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import type { FileSystemProvider } from '@main/core/fs/types';
+import { LifecycleScriptService } from '@main/core/locations/lifecycle-service';
+import type { LocationRuntime } from '@main/core/locations/location-runtime';
+import { type LocationRuntimeFactoryResult } from '@main/core/locations/location-runtime-registry';
 import { locationFileIndexService } from '@main/core/search/location-file-index-service';
 import { preflightRemoteSession } from '@main/core/sessions/remote-session-preflight';
 import { appSettingsService } from '@main/core/settings/settings-service';
@@ -18,17 +21,13 @@ import { LocalTerminalProvider } from '@main/core/terminals/impl/local-terminal-
 import { SshTerminalProvider } from '@main/core/terminals/impl/ssh-terminal-provider';
 import { runLifecycleScriptWithPolicy } from '@main/core/terminals/lifecycle-script-coordinator';
 import type { TerminalProvider } from '@main/core/terminals/terminal-provider';
-import type { LocationRuntime } from '@main/core/locations/location-runtime';
-import { LifecycleScriptService } from '@main/core/locations/lifecycle-service';
-import { type LocationRuntimeFactoryResult } from '@main/core/locations/location-runtime-registry';
 import { log } from '@main/lib/logger';
 import type { Session } from '@shared/core/sessions/sessions';
 import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
 import type { LocationSettingsProvider } from '../locations/settings/provider';
 import { TEARDOWN_SCRIPT_WAIT_MS } from '../sessions/provision-session-error';
-import { getSessionEnvVars } from './session-env';
-
 import type { LocationTransport } from './location-transport';
+import { getSessionEnvVars } from './session-env';
 
 type SshTransport = Extract<LocationTransport, { kind: 'ssh' }>;
 

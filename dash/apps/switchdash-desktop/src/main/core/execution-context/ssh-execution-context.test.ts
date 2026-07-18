@@ -33,10 +33,10 @@ function makeProxy(
 
 describe('buildSshCommand', () => {
   it('uses the shared remote shell command builder for fallback SSH exec commands', () => {
-    const command = buildSshCommand('/workspace/project', 'which', ['claude']);
+    const command = buildSshCommand('/workspace/location', 'which', ['claude']);
 
     expect(command).toBe(
-      "'/bin/sh' -c 'cd '\\''/workspace/project'\\'' && which '\\''claude'\\'''"
+      "'/bin/sh' -c 'cd '\\''/workspace/location'\\'' && which '\\''claude'\\'''"
     );
   });
 
@@ -48,24 +48,24 @@ describe('buildSshCommand', () => {
       },
     };
 
-    const command = buildSshCommand('/workspace/project', 'which', ['claude'], profile);
+    const command = buildSshCommand('/workspace/location', 'which', ['claude'], profile);
 
     expect(command).toBe(
-      "'/bin/zsh' -lc 'export PATH='\\''/Users/jona/.local/bin:/opt/homebrew/bin:/usr/bin'\\''; cd '\\''/workspace/project'\\'' && which '\\''claude'\\'''"
+      "'/bin/zsh' -lc 'export PATH='\\''/Users/jona/.local/bin:/opt/homebrew/bin:/usr/bin'\\''; cd '\\''/workspace/location'\\'' && which '\\''claude'\\'''"
     );
   });
 
   it('disables interactive Git credential prompts for SSH exec commands', () => {
-    const command = buildSshCommand('/workspace/project', 'git', ['fetch', 'origin']);
+    const command = buildSshCommand('/workspace/location', 'git', ['fetch', 'origin']);
 
     expect(command).toBe(
-      "'/bin/sh' -c 'cd '\\''/workspace/project'\\'' && GIT_ASKPASS='\\'''\\'' GIT_TERMINAL_PROMPT='\\''0'\\'' GCM_INTERACTIVE='\\''never'\\'' SSH_ASKPASS='\\'''\\'' git '\\''fetch'\\'' '\\''origin'\\'''"
+      "'/bin/sh' -c 'cd '\\''/workspace/location'\\'' && GIT_ASKPASS='\\'''\\'' GIT_TERMINAL_PROMPT='\\''0'\\'' GCM_INTERACTIVE='\\''never'\\'' SSH_ASKPASS='\\'''\\'' git '\\''fetch'\\'' '\\''origin'\\'''"
     );
   });
 
   it('prepends the stdout marker after the cd when a marker is given', () => {
     const command = buildSshCommand(
-      '/workspace/project',
+      '/workspace/location',
       'which',
       ['claude'],
       undefined,

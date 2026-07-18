@@ -6,7 +6,7 @@ import { rpc } from '@renderer/lib/ipc';
  * After the bulk `getAll()` load at bootstrap, every subsequent `get` call is
  * a synchronous Map lookup (returned as a resolved Promise). Writes update the
  * cache immediately and then fire the async IPC save. Eviction happens when a
- * SnapshotRegistry disposer is called (task or project teardown/deletion).
+ * SnapshotRegistry disposer is called (task or location teardown/deletion).
  */
 class ViewStateCache {
   private readonly map = new Map<string, unknown>();

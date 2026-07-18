@@ -42,7 +42,7 @@ export function hasDefaultPreservePatterns(settings: ShareableLocationSettings):
   return DEFAULT_PRESERVE_PATTERNS.every((pattern) => patternSet.has(pattern));
 }
 
-export function hasConfiguredShareableProjectSettings(settings: LocationSettings): boolean {
+export function hasConfiguredShareableLocationSettings(settings: LocationSettings): boolean {
   return SHAREABLE_LOCATION_SETTINGS_WRITE_FIELDS.some((field) => {
     if (field === 'preservePatterns') {
       const patterns = normalizePatterns(settings.preservePatterns);
@@ -116,7 +116,7 @@ export const SHAREABLE_FIELD_ACCESSORS = {
   },
 } satisfies Record<ShareableLocationSettingsWriteField, ShareableFieldAccessor>;
 
-export function clearShareableProjectSettingsFields<T extends LocationSettings>(
+export function clearShareableLocationSettingsFields<T extends LocationSettings>(
   settings: T,
   fields: ShareableLocationSettingsWriteField[]
 ): T {
@@ -133,7 +133,7 @@ export function clearShareableProjectSettingsFields<T extends LocationSettings>(
   return next as T;
 }
 
-export function mergeShareableProjectSettings(
+export function mergeShareableLocationSettings(
   ...sources: ShareableLocationSettings[]
 ): ShareableLocationSettings {
   const next: ShareableLocationSettings = {};

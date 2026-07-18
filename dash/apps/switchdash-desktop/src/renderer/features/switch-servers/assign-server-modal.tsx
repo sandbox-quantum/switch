@@ -37,7 +37,7 @@ export const AssignServerModal = observer(function AssignServerModal({
   const [submitState, setSubmitState] = useState<'idle' | 'saving'>('idle');
 
   const agentQuery = useQuery({
-    queryKey: ['projectAgent', locationId],
+    queryKey: ['locationAgent', locationId],
     queryFn: async () => {
       const agents = await rpc.agents.getAgents(locationId);
       return agents[0] ?? null;

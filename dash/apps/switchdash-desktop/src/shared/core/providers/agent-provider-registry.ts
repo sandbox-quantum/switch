@@ -99,7 +99,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'codex',
     name: 'Codex',
     description:
-      'CLI that connects to OpenAI models for project-aware code assistance and terminal workflows.',
+      'CLI that connects to OpenAI models for location-aware code assistance and terminal workflows.',
     docUrl: 'https://github.com/openai/codex',
     installCommand: 'npm install -g @openai/codex',
     commands: ['codex'],
@@ -187,7 +187,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'cursor',
     name: 'Cursor',
     description:
-      "Cursor's agent CLI; provides editor-style, project-aware assistance from the shell.",
+      "Cursor's agent CLI; provides editor-style, location-aware assistance from the shell.",
     docUrl: 'https://cursor.com/docs/cli/overview',
     installCommand: 'curl https://cursor.com/install -fsS | bash',
     commands: ['cursor-agent'],
@@ -296,7 +296,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'commandcode',
     name: 'Command Code',
     description:
-      'Command Code CLI for terminal-first coding sessions that learn project and personal coding taste.',
+      'Command Code CLI for terminal-first coding sessions that learn location and personal coding taste.',
     docUrl: 'https://commandcode.ai/docs/reference/cli',
     installCommand: 'npm install -g command-code@latest',
     commands: ['command-code'],
@@ -538,7 +538,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'codebuff',
     name: 'Codebuff',
     description:
-      'Codebuff is an AI coding agent for project-directory assistance and day-to-day development sessions.',
+      'Codebuff is an AI coding agent for location-directory assistance and day-to-day development sessions.',
     docUrl: 'https://www.codebuff.com/docs/help/quick-start',
     installCommand: 'npm install -g codebuff',
     commands: ['codebuff'],
@@ -553,7 +553,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'freebuff',
     name: 'Freebuff',
     description:
-      'Freebuff is a standalone Codebuff package for project-directory assistance and day-to-day development sessions.',
+      'Freebuff is a standalone Codebuff package for location-directory assistance and day-to-day development sessions.',
     docUrl: 'https://freebuff.com',
     installCommand: 'npm install -g freebuff',
     commands: ['freebuff'],
@@ -601,7 +601,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'junie',
     name: 'Junie',
     description:
-      'JetBrains agentic coding CLI for interactive terminal and headless project workflows.',
+      'JetBrains agentic coding CLI for interactive terminal and headless location workflows.',
     docUrl: 'https://junie.jetbrains.com/docs/junie-cli.html',
     installCommand: 'curl -fsSL https://junie.jetbrains.com/install.sh | bash',
     commands: ['junie'],

@@ -11,42 +11,42 @@ import {
   type LocationSettingsPage,
   type WriteLocationConfigRequest,
 } from '@shared/core/location-settings/location-settings';
-import { hasConfiguredShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
+import { hasConfiguredShareableLocationSettings } from '@shared/core/location-settings/location-settings-fields';
 import { locationSettingsChangedChannel } from '@shared/core/locations/locationEvents';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import { locationManager } from '../location-manager';
 import type { LocationProvider } from '../location-provider';
 import {
-  inspectProjectConfigMigrations,
-  migrateProjectConfigFromProvider,
+  inspectLocationConfigMigrations,
+  migrateLocationConfigFromProvider,
 } from './sharing/config-migration';
 import { computeLocationSettingsOverrideState } from './sharing/location-settings-override-state';
 import {
   getLocationSettingsWriteTargets,
   resolveAllLocationSettingsTargets,
 } from './sharing/location-settings-target-resolver';
-import { shareLocationSettingsToConfig as writeSharedProjectSettingsToConfig } from './sharing/share-location-settings-to-config';
+import { shareLocationSettingsToConfig as writeSharedLocationSettingsToConfig } from './sharing/share-location-settings-to-config';
 
-export type ProjectSettingsHooks = {
-  'project-settings:changed': (event: {
+export type LocationSettingsHooks = {
+  'location-settings:changed': (event: {
     locationId: string;
     settings: LocationSettings;
   }) => void | Promise<void>;
 };
 
-export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, IInitializable {
-  private readonly _hooks = new HookCore<ProjectSettingsHooks>((name, e) =>
+export class LocationSettingsService implements Hookable<LocationSettingsHooks>, IInitializable {
+  private readonly _hooks = new HookCore<LocationSettingsHooks>((name, e) =>
     log.error(`LocationSettingsService: ${String(name)} hook error`, e)
   );
   private _disposeRendererBridge: (() => void) | null = null;
 
-  on<K extends keyof ProjectSettingsHooks>(name: K, handler: ProjectSettingsHooks[K]) {
+  on<K extends keyof LocationSettingsHooks>(name: K, handler: LocationSettingsHooks[K]) {
     return this._hooks.on(name, handler);
   }
 
   initialize(): void {
     this._disposeRendererBridge?.();
-    this._disposeRendererBridge = this.on('project-settings:changed', ({ locationId }) => {
+    this._disposeRendererBridge = this.on('location-settings:changed', ({ locationId }) => {
       events.emit(locationSettingsChangedChannel, { locationId });
     });
   }
@@ -54,22 +54,22 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
   async getLocationSettingsPage(
     locationId: string
   ): Promise<Result<LocationSettingsPage, UpdateLocationSettingsError>> {
-    const project = this.requireProject(locationId);
-    if (!project.success) return project;
-    return ok(await this.getProjectSettingsPageForProject(project.data));
+    const location = this.requireLocation(locationId);
+    if (!location.success) return location;
+    return ok(await this.getLocationSettingsPageForLocation(location.data));
   }
 
   async updateLocationSettings(
     locationId: string,
     settings: LocationSettings
   ): Promise<Result<LocationSettings, UpdateLocationSettingsError>> {
-    const project = this.requireProject(locationId);
-    if (!project.success) return project;
+    const location = this.requireLocation(locationId);
+    if (!location.success) return location;
 
-    const result = await project.data.settings.update(settings);
+    const result = await location.data.settings.update(settings);
     if (!result.success) return result;
 
-    const updatedSettings = await project.data.settings.get();
+    const updatedSettings = await location.data.settings.get();
     this.emitSettingsChanged(locationId, updatedSettings);
     return ok(updatedSettings);
   }
@@ -78,13 +78,13 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
     locationId: string,
     patch: LocationSettingsPatch
   ): Promise<Result<LocationSettings, UpdateLocationSettingsError>> {
-    const project = this.requireProject(locationId);
-    if (!project.success) return project;
+    const location = this.requireLocation(locationId);
+    if (!location.success) return location;
 
-    const result = await project.data.settings.patch(patch);
+    const result = await location.data.settings.patch(patch);
     if (!result.success) return result;
 
-    const updatedSettings = await project.data.settings.get();
+    const updatedSettings = await location.data.settings.get();
     this.emitSettingsChanged(locationId, updatedSettings);
     return ok(updatedSettings);
   }
@@ -93,14 +93,18 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
     locationId: string,
     request: WriteLocationConfigRequest
   ): Promise<Result<LocationSettingsPage, UpdateLocationSettingsError>> {
-    const project = this.requireProject(locationId);
-    if (!project.success) return project;
+    const location = this.requireLocation(locationId);
+    if (!location.success) return location;
 
-    const resolvedTargets = await resolveAllLocationSettingsTargets(project.data);
-    const result = await writeSharedProjectSettingsToConfig(project.data, request, resolvedTargets);
+    const resolvedTargets = await resolveAllLocationSettingsTargets(location.data);
+    const result = await writeSharedLocationSettingsToConfig(
+      location.data,
+      request,
+      resolvedTargets
+    );
     if (!result.success) return result;
 
-    const page = await this.getProjectSettingsPageForProject(project.data);
+    const page = await this.getLocationSettingsPageForLocation(location.data);
     this.emitSettingsChanged(locationId, page.settings);
     return ok(page);
   }
@@ -109,43 +113,45 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
     locationId: string,
     request: MigrateLocationConfigRequest
   ): Promise<Result<MigrateLocationConfigResult, UpdateLocationSettingsError>> {
-    const project = this.requireProject(locationId);
-    if (!project.success) return project;
+    const location = this.requireLocation(locationId);
+    if (!location.success) return location;
 
-    const settings = await project.data.settings.get();
-    if (hasConfiguredShareableProjectSettings(settings)) {
+    const settings = await location.data.settings.get();
+    if (hasConfiguredShareableLocationSettings(settings)) {
       return err({
         type: 'write-config-failed',
-        message: 'Shareable project settings are already configured.',
+        message: 'Shareable location settings are already configured.',
       });
     }
 
-    const result = await migrateProjectConfigFromProvider(project.data, request);
+    const result = await migrateLocationConfigFromProvider(location.data, request);
     if (!result.success) return result;
 
-    const page = await this.getProjectSettingsPageForProject(project.data);
+    const page = await this.getLocationSettingsPageForLocation(location.data);
     this.emitSettingsChanged(locationId, page.settings);
     return ok({ page, migration: result.data });
   }
 
-  private requireProject(locationId: string): Result<LocationProvider, UpdateLocationSettingsError> {
-    const project = locationManager.getLocation(locationId);
-    return project ? ok(project) : err({ type: 'location-not-found' });
+  private requireLocation(
+    locationId: string
+  ): Result<LocationProvider, UpdateLocationSettingsError> {
+    const location = locationManager.getLocation(locationId);
+    return location ? ok(location) : err({ type: 'location-not-found' });
   }
 
-  private async getProjectSettingsPageForProject(
-    project: LocationProvider
+  private async getLocationSettingsPageForLocation(
+    location: LocationProvider
   ): Promise<LocationSettingsPage> {
-    const settings = await project.settings.get();
+    const settings = await location.settings.get();
     const defaults = {
-      worktreeDirectory: await project.settings.getDefaultWorktreeDirectory(),
+      worktreeDirectory: await location.settings.getDefaultWorktreeDirectory(),
     };
-    const resolvedTargets = await resolveAllLocationSettingsTargets(project);
+    const resolvedTargets = await resolveAllLocationSettingsTargets(location);
     const writeTargets = getLocationSettingsWriteTargets(resolvedTargets);
     const overrideState = await computeLocationSettingsOverrideState(resolvedTargets);
-    const configMigrations = hasConfiguredShareableProjectSettings(settings)
+    const configMigrations = hasConfiguredShareableLocationSettings(settings)
       ? []
-      : await inspectProjectConfigMigrations(project.fs);
+      : await inspectLocationConfigMigrations(location.fs);
     return {
       settings,
       defaults,
@@ -157,7 +163,7 @@ export class LocationSettingsService implements Hookable<ProjectSettingsHooks>, 
   }
 
   private emitSettingsChanged(locationId: string, settings: LocationSettings): void {
-    this._hooks.callHookBackground('project-settings:changed', { locationId, settings });
+    this._hooks.callHookBackground('location-settings:changed', { locationId, settings });
   }
 }
 

@@ -25,13 +25,13 @@ export function AppKeyboardShortcuts() {
 
   const { currentView, lastNonSettingsView } = useWorkspaceSlots();
   const { params: sessionParams } = useParams('session');
-  const { params: projectParams } = useParams('location');
+  const { params: locationParams } = useParams('location');
 
   const currentLocationId =
     currentView === 'session'
       ? sessionParams.locationId
       : currentView === 'location'
-        ? projectParams.locationId
+        ? locationParams.locationId
         : undefined;
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : undefined;
 

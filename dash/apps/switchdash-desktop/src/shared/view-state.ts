@@ -19,9 +19,9 @@ export type SidebarGrouping = 'agent' | 'room';
 
 /** Persisted sidebar UI state; fields may be absent in older DB blobs. */
 export type SidebarSnapshot = {
-  expandedProjectIds?: string[];
-  projectOrder?: string[];
-  sessionOrderByProject?: Record<string, string[]>;
+  expandedLocationIds?: string[];
+  locationOrder?: string[];
+  sessionOrderByLocation?: Record<string, string[]>;
   sessionSortBy?: SidebarSessionSortBy;
   grouping?: SidebarGrouping;
   /** Expanded room keys in room-focused grouping (room id, or '__unassigned__'). */

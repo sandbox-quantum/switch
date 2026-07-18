@@ -73,7 +73,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
   /**
    * Provisions the runtime for a session: builds the conversation + terminal
-   * providers in the project root and registers the session. Idempotent —
+   * providers in the location root and registers the session. Idempotent —
    * fast-paths when already live. Fires the `session:workspace-ready` hook and
    * emits the `session:provisioned` IPC event on success.
    */
@@ -121,10 +121,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     };
   }
 
-  private async _registerAndPersist(
-    sessionId: string,
-    data: SessionRuntimeResult
-  ): Promise<void> {
+  private async _registerAndPersist(sessionId: string, data: SessionRuntimeResult): Promise<void> {
     const location = locationManager.getLocation(data.locationId);
     if (!location) throw new Error(`Location not open: ${data.locationId}`);
 

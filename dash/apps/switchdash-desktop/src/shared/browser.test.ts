@@ -104,8 +104,7 @@ describe('browser session identity', () => {
   it('assigns the default persistent profile partition to new sessions', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'Browser One',
-      projectId: 'Project/One',
-      locationId: 'Workspace.One',
+      locationId: 'Location/One',
       sessionId: 'Session One',
     });
 
@@ -118,13 +117,12 @@ describe('browser session identity', () => {
   it('can assign an isolated persistent session partition', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'Browser One',
-      projectId: 'Project/One',
-      locationId: 'Workspace.One',
+      locationId: 'Location/One',
       sessionId: 'Session One',
     });
 
     expect(makeIsolatedBrowserPartition(identity)).toBe(
-      'persist:switchdash-browser-isolated-Project_One-Workspace_One-Session_One'
+      'persist:switchdash-browser-isolated-Location_One-Session_One'
     );
     expect(
       createBrowserSessionSnapshot({
@@ -134,15 +132,14 @@ describe('browser session identity', () => {
       })
     ).toMatchObject({
       profileId: BROWSER_ISOLATED_PROFILE_ID,
-      partition: 'persist:switchdash-browser-isolated-Project_One-Workspace_One-Session_One',
+      partition: 'persist:switchdash-browser-isolated-Location_One-Session_One',
     });
   });
 
   it('creates safe snapshots with normalized URLs', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'browser-1',
-      projectId: 'project-1',
-      locationId: 'workspace-1',
+      locationId: 'location-1',
       sessionId: 'session-1',
     });
 
@@ -163,8 +160,7 @@ describe('browser session identity', () => {
   it('preserves bare host URLs in snapshots', () => {
     const identity = makeBrowserSessionIdentity({
       browserId: 'browser-1',
-      projectId: 'project-1',
-      locationId: 'workspace-1',
+      locationId: 'location-1',
       sessionId: 'session-1',
     });
 

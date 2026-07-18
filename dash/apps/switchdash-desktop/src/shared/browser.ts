@@ -35,7 +35,6 @@ export type BrowserUrlNormalizeOptions = {
 
 export type BrowserSessionIdentity = {
   browserId: string;
-  projectId: string;
   locationId: string;
   sessionId: string;
 };
@@ -180,14 +179,12 @@ export function normalizeBrowserUrl(
 }
 
 export function makeBrowserSessionIdentity(input: {
-  projectId: string;
   locationId: string;
   sessionId: string;
   browserId?: string;
 }): BrowserSessionIdentity {
   return {
     browserId: input.browserId ?? crypto.randomUUID(),
-    projectId: input.projectId,
     locationId: input.locationId,
     sessionId: input.sessionId,
   };
@@ -202,7 +199,6 @@ export function makeIsolatedBrowserPartition(identity: BrowserSessionIdentity): 
   return [
     BROWSER_PARTITION_PREFIX,
     'isolated',
-    partitionComponent(identity.projectId),
     partitionComponent(identity.locationId),
     partitionComponent(identity.sessionId),
   ].join('-');

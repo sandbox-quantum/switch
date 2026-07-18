@@ -20,7 +20,7 @@ import { stopRemoteWatcher } from './remote-watcher';
  * Agent routes here). Tears down everything a bare row delete would leak:
  *
  * 1. The agent's running sessions (runtime + view-state), which previously
- *    only the project-delete path handled.
+ *    only the location-delete path handled.
  * 2. Its auto_session watcher (or, for a remote agent, the on-VM sidecar's
  *    watch flag + reconciler) and the local auto_session mirror. The watcher
  *    caches the agent's Switch credentials in memory, so without an explicit

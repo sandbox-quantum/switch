@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '@main/db/client';
-import { locationSettings as projectSettingsTable } from '@main/db/schema';
+import { locationSettings as locationSettingsTable } from '@main/db/schema';
 
 export type StoredLocationSettings = {
   baseSettingsJson: string;
@@ -8,18 +8,18 @@ export type StoredLocationSettings = {
   legacyConfigMigratedAt: string | null;
 };
 
-export interface ProjectSettingsStorage {
+export interface LocationSettingsStorage {
   get(locationId: string): Promise<StoredLocationSettings | undefined>;
   insertIfMissing(locationId: string, settings: StoredLocationSettings): Promise<void>;
   update(locationId: string, settings: Partial<StoredLocationSettings>): Promise<void>;
 }
 
-export class ProjectSettingsRepository implements ProjectSettingsStorage {
+export class LocationSettingsRepository implements LocationSettingsStorage {
   async get(locationId: string): Promise<StoredLocationSettings | undefined> {
     const row = db
       .select()
-      .from(projectSettingsTable)
-      .where(eq(projectSettingsTable.locationId, locationId))
+      .from(locationSettingsTable)
+      .where(eq(locationSettingsTable.locationId, locationId))
       .get();
     if (!row) return undefined;
     return {
@@ -31,7 +31,7 @@ export class ProjectSettingsRepository implements ProjectSettingsStorage {
 
   async insertIfMissing(locationId: string, settings: StoredLocationSettings): Promise<void> {
     await db
-      .insert(projectSettingsTable)
+      .insert(locationSettingsTable)
       .values({
         locationId,
         baseSettingsJson: settings.baseSettingsJson,
@@ -44,11 +44,11 @@ export class ProjectSettingsRepository implements ProjectSettingsStorage {
 
   async update(locationId: string, settings: Partial<StoredLocationSettings>): Promise<void> {
     await db
-      .update(projectSettingsTable)
+      .update(locationSettingsTable)
       .set({
         ...settings,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
-      .where(eq(projectSettingsTable.locationId, locationId));
+      .where(eq(locationSettingsTable.locationId, locationId));
   }
 }

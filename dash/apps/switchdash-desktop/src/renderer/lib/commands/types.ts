@@ -39,7 +39,7 @@ export interface CommandProvider {
  */
 export const SCOPE_LEVELS = {
   app: 0,
-  project: 1,
+  location: 1,
   session: 2,
 } as const;
 

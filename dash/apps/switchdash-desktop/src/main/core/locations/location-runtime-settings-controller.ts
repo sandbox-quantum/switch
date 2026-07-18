@@ -1,5 +1,5 @@
-import { getEffectiveSessionSettings } from '@main/core/locations/settings/effective-session-settings';
 import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
+import { getEffectiveSessionSettings } from '@main/core/locations/settings/effective-session-settings';
 import type { LocationSettings } from '@shared/core/location-settings/location-settings';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 

@@ -45,10 +45,7 @@ export class LifecycleScriptStore {
       undefined
     );
     this.offStatus = events.on(lifecycleScriptStatusChannel, (event) => {
-      if (
-        event.locationId !== locationId ||
-        event.type !== this.data.type
-      ) {
+      if (event.locationId !== locationId || event.type !== this.data.type) {
         return;
       }
       this.setStatus(event.status);

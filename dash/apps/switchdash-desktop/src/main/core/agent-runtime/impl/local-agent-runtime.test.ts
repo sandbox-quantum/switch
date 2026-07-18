@@ -141,7 +141,7 @@ vi.mock('@main/core/settings/settings-service', () => ({
             fontSize: 13,
           }
         : {
-            defaultProjectsDirectory: '',
+            defaultLocationsDirectory: '',
             defaultWorktreeDirectory: '',
             writeAgentConfigToGitIgnore: true,
           }
@@ -177,7 +177,7 @@ function localProvider({
   ctx?: ConstructorParameters<typeof LocalAgentRuntime>[0]['ctx'];
 } = {}) {
   return new LocalAgentRuntime({
-    locationId: 'project-1',
+    locationId: 'location-1',
     sessionId: 'session-1',
     sessionPath: '/tmp/session-1',
     tmux,
@@ -217,9 +217,9 @@ function fakePty(exitHandlers: Array<(info: PtyExitInfo) => void>): Pty {
 
 function mockSettings(): void {
   vi.mocked(appSettingsService.get).mockImplementation(async (key) => {
-    if (key === 'localProject') {
+    if (key === 'localLocation') {
       return {
-        defaultProjectsDirectory: '',
+        defaultLocationsDirectory: '',
         defaultWorktreeDirectory: '',
         writeAgentConfigToGitIgnore: true,
       } as never;
@@ -242,7 +242,7 @@ describe('local agent runtime respawn state', () => {
     vi.mocked(events.emit).mockClear();
     vi.mocked(agentHookService.getPort).mockReturnValue(0);
     vi.mocked(agentHookService.getToken).mockReturnValue('token');
-    ptySessionRegistry.unregister('project-1:session-1');
+    ptySessionRegistry.unregister('location-1:session-1');
   });
 
   it('passes global editor variables to local agent sessions', async () => {
@@ -422,7 +422,7 @@ describe('local agent runtime respawn state', () => {
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     const provider = localProvider();
     const item = session();
-    const sessionId = makeAgentPtySessionId('project-1', item.id);
+    const sessionId = makeAgentPtySessionId('location-1', item.id);
 
     await provider.start(item);
     vi.mocked(events.emit).mockClear();
@@ -442,7 +442,7 @@ describe('local agent runtime respawn state', () => {
       });
       const provider = localProvider();
       const item = session();
-      const sessionId = makeAgentPtySessionId('project-1', item.id);
+      const sessionId = makeAgentPtySessionId('location-1', item.id);
 
       await provider.start(item, { cols: 100, rows: 40 }, true);
       ptySessionRegistry.resize(sessionId, 68, 42);

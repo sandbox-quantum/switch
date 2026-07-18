@@ -70,11 +70,11 @@ export function SessionDeeplinkListener(): null {
           });
           return;
         }
-        // Scope the sidebar to the session's server first; otherwise its project
+        // Scope the sidebar to the session's server first; otherwise its location
         // is filtered out of the server-scoped tree and the reveal has nothing
         // to expand.
         if (!agentsStore.loaded) await agentsStore.load();
-        const serverId = agentsStore.serverIdForProject(match.locationId);
+        const serverId = agentsStore.serverIdForLocation(match.locationId);
         if (serverId) await switchServersStore.setActive(serverId);
         sidebarStore.revealSessionInRoom(match.locationId, roomId);
         appState.navigation.navigate('session', match);

@@ -6,7 +6,7 @@ export interface GeneralSession {
 export interface GeneralSessionConfig {
   sessionId?: string;
   cwd: string;
-  projectPath?: string;
+  locationPath?: string;
   shellSetup?: string;
   tmuxSessionName?: string;
   command?: string;

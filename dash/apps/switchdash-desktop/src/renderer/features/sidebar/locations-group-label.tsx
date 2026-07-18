@@ -205,8 +205,8 @@ const FilterDropdown = observer(function FilterDropdown() {
   );
 });
 
-export const ProjectsGroupLabel = observer(function ProjectsGroupLabel() {
-  const showAddProjectModal = useShowModal('addAgentModal');
+export const LocationsGroupLabel = observer(function LocationsGroupLabel() {
+  const showAddLocationModal = useShowModal('addAgentModal');
 
   return (
     <div className="flex h-[40px] items-center justify-between pr-2.5 pl-5">
@@ -263,7 +263,7 @@ export const ProjectsGroupLabel = observer(function ProjectsGroupLabel() {
             render={
               <button
                 type="button"
-                onClick={() => showAddProjectModal({})}
+                onClick={() => showAddLocationModal({})}
                 aria-label="Add Agent"
                 className={buttonVariants({
                   size: 'icon-xs',
@@ -277,7 +277,7 @@ export const ProjectsGroupLabel = observer(function ProjectsGroupLabel() {
           />
           <TooltipContent>
             Add Agent
-            <BoundShortcut settingsKey="newProject" variant="badge" />
+            <BoundShortcut settingsKey="newLocation" variant="badge" />
           </TooltipContent>
         </Tooltip>
       </div>

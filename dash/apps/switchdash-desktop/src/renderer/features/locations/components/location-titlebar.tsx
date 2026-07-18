@@ -17,14 +17,14 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 
-const MountedProjectTitlebarLeft = observer(function ProjectTitlebarLeft({
+const MountedLocationTitlebarLeft = observer(function LocationTitlebarLeft({
   locationId,
 }: {
   locationId: string;
 }) {
   const { navigate } = useNavigate();
   const store = getLocationStore(locationId);
-  const displayName = locationDisplayName(store) ?? 'this project';
+  const displayName = locationDisplayName(store) ?? 'this location';
   const confirmDeleteAgent = useConfirmDeleteAgent();
 
   return (
@@ -46,7 +46,7 @@ const MountedProjectTitlebarLeft = observer(function ProjectTitlebarLeft({
             onClick={() => {
               void confirmDeleteAgent({
                 locationId,
-                projectLabel: displayName,
+                locationLabel: displayName,
                 onDeleted: () => navigate('home'),
               });
             }}
@@ -60,7 +60,7 @@ const MountedProjectTitlebarLeft = observer(function ProjectTitlebarLeft({
   );
 });
 
-const ProjectTitlebarLeft = observer(function ProjectTitlebarLeft({
+const LocationTitlebarLeft = observer(function LocationTitlebarLeft({
   locationId,
 }: {
   locationId: string;
@@ -82,15 +82,15 @@ export const LocationTitlebar = observer(function LocationTitlebar() {
   const kind = locationViewKind(store);
 
   if (kind !== 'ready') {
-    return <Titlebar leftSlot={<ProjectTitlebarLeft locationId={locationId} />} />;
+    return <Titlebar leftSlot={<LocationTitlebarLeft locationId={locationId} />} />;
   }
 
   const mounted = asMounted(store);
-  if (!mounted) return <Titlebar leftSlot={<ProjectTitlebarLeft locationId={locationId} />} />;
+  if (!mounted) return <Titlebar leftSlot={<LocationTitlebarLeft locationId={locationId} />} />;
 
   return (
     <Titlebar
-      leftSlot={<MountedProjectTitlebarLeft locationId={locationId} />}
+      leftSlot={<MountedLocationTitlebarLeft locationId={locationId} />}
       rightSlot={
         <div className="mr-2 flex items-center gap-2">
           {mounted.data.sshHost === null && (

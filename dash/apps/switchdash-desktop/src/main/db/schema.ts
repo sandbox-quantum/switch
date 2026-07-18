@@ -17,8 +17,8 @@ import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 //               └─ messages
 //
 // Dropped from upstream: the worktree-era `sessions` grouping, the `terminals`
-// table (folded 1:1 into a session), and the project/workspace split (a
-// `projects` identity table plus a runtime workspace keyed off it) — both
+// table (folded 1:1 into a session), and the location/workspace split (a
+// `locations` identity table plus a runtime workspace keyed off it) — both
 // collapsed into `locations` (CHOO-1426). Every session runs in its agent's
 // location dir.
 // ---------------------------------------------------------------------------

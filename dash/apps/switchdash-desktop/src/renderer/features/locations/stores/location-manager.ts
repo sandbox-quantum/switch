@@ -5,13 +5,6 @@ import { appState } from '@renderer/lib/stores/app-state';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
 import { type Location } from '@shared/core/locations/locations';
 import type { LocationViewSnapshot } from '@shared/view-state';
-import {
-  createUnmountedLocation,
-  createUnregisteredLocation,
-  isUnmountedLocation,
-  isUnregisteredLocation,
-  type LocationStore,
-} from './location';
 import type {
   AgentOnboardingCompletion,
   AgentOnboardingError,
@@ -19,6 +12,13 @@ import type {
   StartAgentOnboardingOptions,
   StartAgentOnboardingResult,
 } from './agent-onboarding-types';
+import {
+  createUnmountedLocation,
+  createUnregisteredLocation,
+  isUnmountedLocation,
+  isUnregisteredLocation,
+  type LocationStore,
+} from './location';
 
 export class LocationManagerStore {
   locations = observable.map<string, LocationStore>();
@@ -124,7 +124,8 @@ export class LocationManagerStore {
         const location = (await rpc.locations.getLocations()).find(
           (l) => l.id === onboarded.data.locationId
         );
-        if (!location) throw new Error(`Onboarded agent's location ${onboarded.data.locationId} not found`);
+        if (!location)
+          throw new Error(`Onboarded agent's location ${onboarded.data.locationId} not found`);
         // Drop the optimistic placeholder; key the store by the real location id.
         runInAction(() => this.locations.delete(placeholderId));
         this._setAndOpenLocation(location.id, location);

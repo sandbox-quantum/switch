@@ -10,7 +10,7 @@ import {
 import {
   CONFIG_FILE,
   parseWorkspaceConfigObject,
-  patchShareableProjectSettingsFields,
+  patchShareableLocationSettingsFields,
 } from './switchdash-config-file';
 
 function writeConfigFailed(message: string): Result<void, UpdateLocationSettingsError> {
@@ -22,17 +22,17 @@ function errorMessage(error: unknown): string {
 }
 
 export async function shareLocationSettingsToConfig(
-  project: LocationProvider,
+  location: LocationProvider,
   request: WriteLocationConfigRequest,
   resolvedTargets: LocationSettingsResolvedTarget[]
 ): Promise<Result<void, UpdateLocationSettingsError>> {
   try {
-    const target = await resolveLocationSettingsTarget(project, request, resolvedTargets);
+    const target = await resolveLocationSettingsTarget(location, request, resolvedTargets);
     if (!target) {
       return writeConfigFailed('Could not resolve the selected working copy.');
     }
 
-    const localSettings = await project.settings.get();
+    const localSettings = await location.settings.get();
     let config: Record<string, unknown>;
     try {
       if (await target.fs.exists(CONFIG_FILE)) {
@@ -43,11 +43,11 @@ export async function shareLocationSettingsToConfig(
       }
     } catch (error) {
       const message = `Could not read existing ${CONFIG_FILE}: ${errorMessage(error)}`;
-      log.warn('Failed to read project config before writing', error);
+      log.warn('Failed to read location config before writing', error);
       return writeConfigFailed(message);
     }
 
-    const writtenFields = patchShareableProjectSettingsFields(
+    const writtenFields = patchShareableLocationSettingsFields(
       config,
       localSettings,
       request.fields
@@ -55,21 +55,21 @@ export async function shareLocationSettingsToConfig(
 
     const writeResult = await target.fs.write(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`);
     if (!writeResult.success) {
-      log.warn('Failed to write project config file', writeResult.error);
+      log.warn('Failed to write location config file', writeResult.error);
       return writeConfigFailed(writeResult.error ?? `Failed to write ${CONFIG_FILE}.`);
     }
 
-    const clearResult = await project.settings.patch({ clearShareableFields: writtenFields });
+    const clearResult = await location.settings.patch({ clearShareableFields: writtenFields });
     if (!clearResult.success) {
-      log.warn('Failed to clear shareable project settings', clearResult.error);
+      log.warn('Failed to clear shareable location settings', clearResult.error);
       return writeConfigFailed(
-        `Wrote ${CONFIG_FILE}, but failed to clear shared project settings.`
+        `Wrote ${CONFIG_FILE}, but failed to clear shared location settings.`
       );
     }
 
     return ok();
   } catch (error) {
-    log.warn('Failed to write project config to repo', error);
+    log.warn('Failed to write location config to repo', error);
     return writeConfigFailed(errorMessage(error));
   }
 }

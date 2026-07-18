@@ -18,7 +18,7 @@ export interface FileWatcher {
  * File entry metadata returned by filesystem operations
  */
 export interface FileEntry {
-  /** Relative path from the project root */
+  /** Relative path from the location root */
   path: string;
   /** Entry type - file or directory */
   type: 'file' | 'dir';
@@ -143,7 +143,7 @@ export interface SearchMatch {
 export interface FileSystemProvider {
   /**
    * List directory contents
-   * @param path - Directory path relative to project root
+   * @param path - Directory path relative to location root
    * @param options - Listing options
    * @returns Promise resolving to file list result
    */
@@ -151,7 +151,7 @@ export interface FileSystemProvider {
 
   /**
    * Read file contents
-   * @param path - File path relative to project root
+   * @param path - File path relative to location root
    * @param maxBytes - Maximum bytes to read (default: 200KB)
    * @returns Promise resolving to read result
    */
@@ -159,7 +159,7 @@ export interface FileSystemProvider {
 
   /**
    * Write file contents
-   * @param path - File path relative to project root
+   * @param path - File path relative to location root
    * @param content - Content to write
    * @returns Promise resolving to write result
    */
@@ -167,14 +167,14 @@ export interface FileSystemProvider {
 
   /**
    * Check if a path exists
-   * @param path - Path to check relative to project root
+   * @param path - Path to check relative to location root
    * @returns Promise resolving to true if exists
    */
   exists(path: string): Promise<boolean>;
 
   /**
    * Get file/directory metadata
-   * @param path - Path to stat relative to project root
+   * @param path - Path to stat relative to location root
    * @returns Promise resolving to file entry or null if not found
    */
   stat(path: string): Promise<FileEntry | null>;
@@ -189,7 +189,7 @@ export interface FileSystemProvider {
 
   /**
    * Remove a file or directory.
-   * @param path - Path relative to project root
+   * @param path - Path relative to location root
    * @param options - Pass `{ recursive: true }` to remove directories and all contents
    * @returns Promise resolving to success status
    */
@@ -200,7 +200,7 @@ export interface FileSystemProvider {
 
   /**
    * Resolve a path to its absolute, canonical form (resolving symlinks).
-   * @param path - Path relative to project root
+   * @param path - Path relative to location root
    * @returns Promise resolving to the absolute path
    */
   realPath(path: string): Promise<string>;
@@ -214,7 +214,7 @@ export interface FileSystemProvider {
   glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]>;
 
   /**
-   * Copy a file from src to dest (both paths relative to project root).
+   * Copy a file from src to dest (both paths relative to location root).
    * Does not create parent directories — caller must ensure they exist.
    * @param src - Source path
    * @param dest - Destination path
@@ -223,7 +223,7 @@ export interface FileSystemProvider {
 
   /**
    * Read image file as base64 data URL
-   * @param path - Image file path relative to project root
+   * @param path - Image file path relative to location root
    * @returns Promise resolving to image data
    */
   readImage?(path: string): Promise<{
@@ -235,7 +235,7 @@ export interface FileSystemProvider {
   }>;
 
   /**
-   * Copy a local file into the project's .switchdash attachments directory.
+   * Copy a local file into the location's .switchdash attachments directory.
    * Only supported on local filesystems (srcPath is an absolute local path).
    * @param srcPath - Absolute local path of the source file
    * @param subdir - Subdirectory inside .switchdash/ (defaults to "attachments")

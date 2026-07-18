@@ -2,45 +2,45 @@ import type { Result } from '@switchdash/shared';
 import type { FileSystemProvider } from '@main/core/fs/types';
 import { log } from '@main/lib/logger';
 import {
-  baseProjectSettingsSchema,
-  legacyBaseProjectSettingsSchema,
-  legacyProjectConfigSchema,
+  baseLocationSettingsSchema,
+  legacyBaseLocationSettingsSchema,
+  legacyLocationConfigSchema,
   shareableLocationSettingsSchema,
   type BaseLocationSettings,
   type ShareableLocationSettings,
 } from '@shared/core/location-settings/location-settings';
-import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
+import { mergeShareableLocationSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import {
   hasLegacyShareableConfigMigrated,
-  serializeShareableProjectSettings,
+  serializeShareableLocationSettings,
 } from './legacy-shareable-migration-marker';
 import { compactUndefined, parseJsonObject, readJson } from './location-settings-json';
-import type { ProjectSettingsStorage, StoredLocationSettings } from './location-settings-storage';
+import type { LocationSettingsStorage, StoredLocationSettings } from './location-settings-storage';
 
-export type LegacyProjectSettingsMigrationArgs = {
+export type LegacyLocationSettingsMigrationArgs = {
   locationId: string;
   row: StoredLocationSettings | undefined;
   configReader: Pick<FileSystemProvider, 'exists' | 'read'> | undefined;
-  storage: ProjectSettingsStorage;
-  git?: ProjectSettingsGitInspector;
+  storage: LocationSettingsStorage;
+  git?: LocationSettingsGitInspector;
   normalizeStoredWorktreeDirectory: (
     worktreeDirectory: string
   ) => Promise<Result<string, UpdateLocationSettingsError>>;
 };
 
-export type ProjectSettingsGitInspector = {
+export type LocationSettingsGitInspector = {
   isFileCleanlyTracked(filePath: string): Promise<boolean>;
 };
 
-async function readLegacyProjectConfig(
+async function readLegacyLocationConfig(
   configReader: Pick<FileSystemProvider, 'exists' | 'read'> | undefined
 ): Promise<BaseLocationSettings | undefined> {
   if (!configReader) return undefined;
   try {
     if (!(await configReader.exists('.switchdash.json'))) return undefined;
     const { content } = await configReader.read('.switchdash.json');
-    const parsed = legacyProjectConfigSchema.safeParse(parseJsonObject(content));
+    const parsed = legacyLocationConfigSchema.safeParse(parseJsonObject(content));
     if (!parsed.success) {
       log.warn('Failed to parse legacy .switchdash.json for migration', parsed.error);
       return undefined;
@@ -52,34 +52,32 @@ async function readLegacyProjectConfig(
   }
 }
 
-export async function migrateLegacyProjectSettingsIfNeeded({
+export async function migrateLegacyLocationSettingsIfNeeded({
   locationId,
   row,
   configReader,
   storage,
   git,
   normalizeStoredWorktreeDirectory,
-}: LegacyProjectSettingsMigrationArgs): Promise<void> {
+}: LegacyLocationSettingsMigrationArgs): Promise<void> {
   if (!row) return;
 
   const baseAlreadyMigrated = Boolean(row.legacyConfigMigratedAt);
-  const shareableAlreadyMigrated = hasLegacyShareableConfigMigrated(
-    row.shareableSettingsJson
-  );
+  const shareableAlreadyMigrated = hasLegacyShareableConfigMigrated(row.shareableSettingsJson);
   if (baseAlreadyMigrated && shareableAlreadyMigrated) return;
 
   const current = readJson(
     row.baseSettingsJson,
-    legacyBaseProjectSettingsSchema,
-    'base project settings'
+    legacyBaseLocationSettingsSchema,
+    'base location settings'
   );
   const currentShareable = readJson(
     row.shareableSettingsJson,
     shareableLocationSettingsSchema,
-    'shareable project settings'
+    'shareable location settings'
   );
-  const legacy = await readLegacyProjectConfig(configReader);
-  const next: BaseLocationSettings = baseProjectSettingsSchema.parse(current);
+  const legacy = await readLegacyLocationConfig(configReader);
+  const next: BaseLocationSettings = baseLocationSettingsSchema.parse(current);
   let nextShareable: ShareableLocationSettings | undefined;
 
   if (legacy && !baseAlreadyMigrated) {
@@ -96,14 +94,14 @@ export async function migrateLegacyProjectSettingsIfNeeded({
   if (legacy && !shareableAlreadyMigrated) {
     if ((await git?.isFileCleanlyTracked('.switchdash.json')) === false) {
       const legacyShareable = shareableLocationSettingsSchema.parse(legacy);
-      nextShareable = mergeShareableProjectSettings(currentShareable, legacyShareable);
+      nextShareable = mergeShareableLocationSettings(currentShareable, legacyShareable);
     }
   }
 
   const update: Partial<StoredLocationSettings> = {
     ...(nextShareable
       ? {
-          shareableSettingsJson: serializeShareableProjectSettings(nextShareable, {
+          shareableSettingsJson: serializeShareableLocationSettings(nextShareable, {
             previousRaw: row.shareableSettingsJson,
             markLegacyShareableConfigMigrated: true,
           }),

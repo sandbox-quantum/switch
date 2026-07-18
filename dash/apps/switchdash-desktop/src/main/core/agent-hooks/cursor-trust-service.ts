@@ -6,7 +6,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 
 const CURSOR_PROVIDER_ID: AgentProviderId = 'cursor';
 const CURSOR_DATA_DIR_NAME = '.cursor';
-const CURSOR_PROJECTS_DIR_NAME = 'projects';
+const CURSOR_PROJECTS_DIR_NAME = 'locations';
 const CURSOR_TRUST_MARKER_NAME = '.workspace-trusted';
 
 export class CursorTrustService {
@@ -33,7 +33,7 @@ export class CursorTrustService {
     const workspacePath = path.resolve(cwd);
     const dataDir = path.join(homedir, CURSOR_DATA_DIR_NAME);
     const markerPath = path.join(
-      cursorProjectDir(workspacePath, dataDir, path),
+      cursorLocationDir(workspacePath, dataDir, path),
       CURSOR_TRUST_MARKER_NAME
     );
 
@@ -84,7 +84,7 @@ function createTrustMarker(workspacePath: string): Record<string, string> {
   };
 }
 
-function cursorProjectDir(
+function cursorLocationDir(
   workspacePath: string,
   dataDir: string,
   pathImpl: Pick<typeof path, 'join'>

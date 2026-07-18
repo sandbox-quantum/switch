@@ -21,7 +21,7 @@ export const viewStateService = {
       sql`DELETE FROM kv WHERE key LIKE 'view-state:session:%' AND SUBSTR(key, LENGTH('view-state:session:') + 1) NOT IN (SELECT id FROM sessions)`
     );
     db.run(
-      sql`DELETE FROM kv WHERE key LIKE 'view-state:project:%' AND SUBSTR(key, LENGTH('view-state:project:') + 1) NOT IN (SELECT id FROM projects)`
+      sql`DELETE FROM kv WHERE key LIKE 'view-state:location:%' AND SUBSTR(key, LENGTH('view-state:location:') + 1) NOT IN (SELECT id FROM locations)`
     );
   },
 };

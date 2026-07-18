@@ -1,5 +1,5 @@
-import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import type { LocationRuntime } from '@main/core/locations/location-runtime';
+import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { events } from '@main/lib/events';
 import { redactDiagnosticLog } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';

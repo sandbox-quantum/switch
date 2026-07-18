@@ -37,7 +37,7 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
     );
   }
 
-  if (kind === 'project-mounting' || kind === 'provisioning') {
+  if (kind === 'location-mounting' || kind === 'provisioning') {
     const progressMessage = sessionStore?.provisionProgressMessage ?? 'Setting up workspace…';
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3">
@@ -47,7 +47,7 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
     );
   }
 
-  if (kind === 'provision-error' || kind === 'project-error') {
+  if (kind === 'provision-error' || kind === 'location-error') {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center p-8">
         <div className="flex max-w-xs flex-col items-center gap-2 text-center">

@@ -110,9 +110,9 @@ describe('createRPCClient', () => {
     const invoke = vi.fn().mockResolvedValue([]);
     const rpc = createRPCClient<Router>(invoke);
 
-    await rpc.workspace.fs.list('projects');
+    await rpc.workspace.fs.list('locations');
 
-    expect(invoke).toHaveBeenCalledWith('workspace.fs.list', 'projects');
+    expect(invoke).toHaveBeenCalledWith('workspace.fs.list', 'locations');
   });
 });
 

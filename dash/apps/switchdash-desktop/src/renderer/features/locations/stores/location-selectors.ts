@@ -20,7 +20,7 @@ export function getLocationStore(locationId: string): LocationStore | undefined 
   return getLocationManagerStore().locations.get(locationId);
 }
 
-/** Summary for routing the project shell; call only inside `observer` (or other MobX reactions). */
+/** Summary for routing the location shell; call only inside `observer` (or other MobX reactions). */
 export type LocationViewKind =
   | 'missing'
   | 'creating'
@@ -44,12 +44,12 @@ export function locationViewKind(store: LocationStore | undefined): LocationView
   return 'ready';
 }
 
-/** Returns the mounted project payload if ready, otherwise undefined. */
+/** Returns the mounted location payload if ready, otherwise undefined. */
 export function asMounted(store: LocationStore | undefined): MountedLocation | undefined {
   return store?.mountedLocation ?? undefined;
 }
 
-/** Returns the id of the first mounted project, or undefined if none are mounted. */
+/** Returns the id of the first mounted location, or undefined if none are mounted. */
 export function firstMountedLocationId(): string | undefined {
   for (const [id, store] of getLocationManagerStore().locations.entries()) {
     if (asMounted(store)) return id;
@@ -61,7 +61,7 @@ export function mountedLocationData(store: LocationStore | undefined): Location 
   return store?.mountedLocation?.data ?? null;
 }
 
-/** Returns the display name from any project store variant. */
+/** Returns the display name from any location store variant. */
 export function locationDisplayName(store: LocationStore | undefined): string | undefined {
   return store?.name ?? undefined;
 }
@@ -69,19 +69,19 @@ export function locationDisplayName(store: LocationStore | undefined): string | 
 export function unmountedMountErrorMessage(store: LocationStore | undefined): string {
   if (store && isUnmountedLocation(store) && store.phase === 'error') {
     if (store.errorCode === 'path-not-found') {
-      return `No project found at ${store.error ?? 'the configured path'}`;
+      return `No location found at ${store.error ?? 'the configured path'}`;
     }
-    return store.error ?? 'Failed to open project';
+    return store.error ?? 'Failed to open location';
   }
-  return 'Failed to open project';
+  return 'Failed to open location';
 }
 
-/** Returns the LocationSettingsStore for a mounted project, or undefined if not ready. */
+/** Returns the LocationSettingsStore for a mounted location, or undefined if not ready. */
 export function getLocationSettingsStore(locationId: string): LocationSettingsStore | undefined {
   return asMounted(getLocationStore(locationId))?.settings;
 }
 
-/** Returns the LocationViewStore for a mounted project, or undefined if not ready. */
+/** Returns the LocationViewStore for a mounted location, or undefined if not ready. */
 export function getLocationViewStore(locationId: string): LocationViewStore | undefined {
   return asMounted(getLocationStore(locationId))?.view;
 }

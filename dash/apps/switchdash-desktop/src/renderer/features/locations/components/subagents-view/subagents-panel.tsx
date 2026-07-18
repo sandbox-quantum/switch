@@ -3,7 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useMemo, useState } from 'react';
-import { asMounted, getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import {
+  asMounted,
+  getLocationStore,
+} from '@renderer/features/locations/stores/location-selectors';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -99,7 +102,7 @@ export const SubagentsPanel = observer(function SubagentsPanel() {
   const mounted = asMounted(getLocationStore(locationId));
 
   const { data: agents, isLoading: agentsLoading } = useQuery({
-    queryKey: ['project-agents', locationId],
+    queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 

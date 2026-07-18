@@ -9,8 +9,8 @@ import {
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
 import { ServersSidebarSection } from '../switch-servers/ServersSidebarSection';
+import { LocationsGroupLabel } from './locations-group-label';
 import { SidebarPinnedSessionList } from './pinned-session-list';
-import { ProjectsGroupLabel } from './projects-group-label';
 import { SidebarGroupedList } from './sidebar-grouped-list';
 import {
   SidebarContainer,
@@ -55,7 +55,7 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
           <SidebarPinnedSessionList />
           <ServersSidebarSection />
           <SidebarGroup className="mb-0 flex min-h-0 flex-1 flex-col">
-            <ProjectsGroupLabel />
+            <LocationsGroupLabel />
             <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
               <SidebarMenu className="flex min-h-0 flex-1 flex-col">
                 <SidebarGroupedList />

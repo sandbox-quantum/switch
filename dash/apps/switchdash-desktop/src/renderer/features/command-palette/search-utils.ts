@@ -1,7 +1,7 @@
 import type { SearchItem } from '@shared/core/search';
 
 /**
- * Re-ranks FTS5 results by boosting items belonging to the active project.
+ * Re-ranks FTS5 results by boosting items belonging to the active location.
  * Applied to DB results only — actions are already ordered by context relevance.
  */
 export function applyContextAffinity(

@@ -19,29 +19,29 @@ const STAGES_BY_MODE: Record<'pick' | 'clone' | 'new', Stage[]> = {
   new: ['creating-repo', 'cloning', 'registering'],
 };
 
-export const PendingProjectStatus = observer(function PendingProjectStatus({
-  project,
+export const PendingLocationStatus = observer(function PendingLocationStatus({
+  location,
 }: {
-  project: UnregisteredLocation;
+  location: UnregisteredLocation;
 }) {
   const { navigate } = useNavigate();
-  const stages = STAGES_BY_MODE[project.mode];
-  const currentStageIndex = stages.indexOf(project.phase as Stage);
-  const isError = project.phase === 'error';
+  const stages = STAGES_BY_MODE[location.mode];
+  const currentStageIndex = stages.indexOf(location.phase as Stage);
+  const isError = location.phase === 'error';
 
   const handleDismiss = () => {
-    getLocationManagerStore().removeUnregisteredLocation(project.id);
+    getLocationManagerStore().removeUnregisteredLocation(location.id);
     navigate('home');
   };
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-6 p-8">
       <div className="flex w-full max-w-sm min-w-0 flex-col items-center gap-3 text-center">
-        <h2 className="mb-2 text-base">{project.name}</h2>
+        <h2 className="mb-2 text-base">{location.name}</h2>
 
         {stages.map((stage, i) => {
           const isDone = !isError && i < currentStageIndex;
-          const isActive = !isError && stage === project.phase;
+          const isActive = !isError && stage === location.phase;
           return (
             <div key={stage} className="flex items-center justify-center gap-3">
               <div className="flex h-5 w-5 shrink-0 items-center justify-center">
@@ -73,7 +73,7 @@ export const PendingProjectStatus = observer(function PendingProjectStatus({
             <div className="flex min-w-0 items-start gap-2 text-left">
               <AlertCircle className="text-destructive mt-0.5 h-4 w-4 shrink-0" />
               <span className="text-destructive min-w-0 text-sm break-words">
-                {project.error ?? 'An error occurred'}
+                {location.error ?? 'An error occurred'}
               </span>
             </div>
             <Button size="sm" variant="outline" className="self-center" onClick={handleDismiss}>

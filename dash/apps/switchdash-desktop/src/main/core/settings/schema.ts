@@ -10,12 +10,12 @@ import { openInAppIdSchema } from '@shared/openInApps';
 import { APP_SHORTCUTS } from '@shared/shortcuts';
 import { DEFAULT_AGENT_ID } from './settings-registry';
 
-export const projectSettingsSchema = z.object({
+export const locationSettingsSchema = z.object({
   tmuxByDefault: z.boolean(),
 });
 
-export const localProjectSettingsSchema = z.object({
-  defaultProjectsDirectory: z.string(),
+export const localLocationSettingsSchema = z.object({
+  defaultLocationsDirectory: z.string(),
   defaultWorktreeDirectory: z.string(),
   writeAgentConfigToGitIgnore: z.boolean(),
 });
@@ -133,8 +133,8 @@ export const openInSettingsSchema = z.object({
 });
 
 export const APP_SETTINGS_SCHEMA_MAP = {
-  localProject: localProjectSettingsSchema,
-  project: projectSettingsSchema,
+  localLocation: localLocationSettingsSchema,
+  location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   agentAutoApproveDefaults: agentAutoApproveDefaultsSchema,
   defaultAgent: defaultAgentSchema,
@@ -151,8 +151,8 @@ export const APP_SETTINGS_SCHEMA_MAP = {
 } as const;
 
 export const appSettingsSchema = z.object({
-  localProject: localProjectSettingsSchema,
-  project: projectSettingsSchema,
+  localLocation: localLocationSettingsSchema,
+  location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   agentAutoApproveDefaults: agentAutoApproveDefaultsSchema,
   defaultAgent: defaultAgentSchema,

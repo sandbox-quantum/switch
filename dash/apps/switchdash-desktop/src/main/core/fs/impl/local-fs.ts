@@ -145,7 +145,7 @@ export class LocalFileSystem implements FileSystemProvider {
 
   constructor(private rootPath: string) {
     if (!rootPath) {
-      throw new FileSystemError('Project path is required', FileSystemErrorCodes.INVALID_PATH);
+      throw new FileSystemError('Location path is required', FileSystemErrorCodes.INVALID_PATH);
     }
     this.rootPath = resolve(rootPath);
   }
@@ -162,20 +162,18 @@ export class LocalFileSystem implements FileSystemProvider {
   }
 
   /**
-   * Resolve and validate a relative path, ensuring it doesn't escape the project root
+   * Resolve and validate a relative path, ensuring it doesn't escape the location root
    */
   private resolvePath(relPath: string): string {
-    // Normalize the path and resolve it against project root
+    // Normalize the path and resolve it against location root
     const normalizedRelPath = relPath.replace(/\\/g, '/').replace(/^\//, '');
     const fullPath = resolve(join(this.rootPath, normalizedRelPath));
 
     // Security: ensure path is within rootPath (handle trailing separator edge cases)
-    const projectPathWithSep = this.rootPath.endsWith(sep)
-      ? this.rootPath
-      : this.rootPath + sep;
+    const locationPathWithSep = this.rootPath.endsWith(sep) ? this.rootPath : this.rootPath + sep;
     const fullPathWithSep = fullPath.endsWith(sep) ? fullPath : fullPath + sep;
 
-    if (!fullPathWithSep.startsWith(projectPathWithSep) && fullPath !== this.rootPath) {
+    if (!fullPathWithSep.startsWith(locationPathWithSep) && fullPath !== this.rootPath) {
       throw new FileSystemError(
         `Path traversal detected: ${relPath}`,
         FileSystemErrorCodes.PATH_ESCAPE,
@@ -768,7 +766,7 @@ export class LocalFileSystem implements FileSystemProvider {
           if (err) return;
           for (const e of events) {
             const rel = toRel(e.path);
-            // Skip paths outside the project root (shouldn't happen, but guard anyway).
+            // Skip paths outside the location root (shouldn't happen, but guard anyway).
             if (rel.startsWith('..')) continue;
 
             let entryType: 'file' | 'directory' = 'file';
@@ -793,7 +791,7 @@ export class LocalFileSystem implements FileSystemProvider {
         }
       })
       .catch(() => {
-        // Subscription failed (e.g. project path removed before watch started).
+        // Subscription failed (e.g. location path removed before watch started).
       });
 
     return {

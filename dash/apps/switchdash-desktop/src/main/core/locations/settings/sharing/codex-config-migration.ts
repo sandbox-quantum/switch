@@ -9,10 +9,10 @@ import {
   type ShareableLocationSettings,
   type ShareableLocationSettingsWriteField,
 } from '@shared/core/location-settings/location-settings';
-import { mergeShareableProjectSettings } from '@shared/core/location-settings/location-settings-fields';
+import { mergeShareableLocationSettings } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import type { LocationProvider } from '../../location-provider';
-import type { ProjectConfigMigrator } from './config-migration';
+import type { LocationConfigMigrator } from './config-migration';
 import { CONFIG_FILE } from './switchdash-config-file';
 
 const CODEX_ENVIRONMENT_FILE = '.codex/environments/environment.toml';
@@ -128,20 +128,20 @@ async function readCodexMigrationData(
 }
 
 async function migrateCodexConfig(
-  project: LocationProvider,
+  location: LocationProvider,
   request: MigrateLocationConfigRequest
 ): Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>> {
   try {
-    const data = await readCodexMigrationData(project.fs);
+    const data = await readCodexMigrationData(location.fs);
     const migration = toCodexMigration(data);
     if (!migration) {
       return writeConfigFailed('No supported Codex settings were found.');
     }
 
     if (request.destination === 'local') {
-      const currentSettings = await project.settings.get();
-      const shareableSettings = mergeShareableProjectSettings(currentSettings, data.settings);
-      const updateResult = await project.settings.update({
+      const currentSettings = await location.settings.get();
+      const shareableSettings = mergeShareableLocationSettings(currentSettings, data.settings);
+      const updateResult = await location.settings.update({
         ...currentSettings,
         ...shareableSettings,
       });
@@ -149,29 +149,31 @@ async function migrateCodexConfig(
       return ok(migration);
     }
 
-    const writeResult = await project.fs.write(
+    const writeResult = await location.fs.write(
       CONFIG_FILE,
       `${JSON.stringify(data.settings, null, 2)}\n`
     );
     if (!writeResult.success) {
-      log.warn('Failed to write migrated project config file', writeResult.error);
+      log.warn('Failed to write migrated location config file', writeResult.error);
       return writeConfigFailed(writeResult.error ?? `Failed to write ${CONFIG_FILE}.`);
     }
 
-    const clearResult = await project.settings.patch({ clearShareableFields: data.fields });
+    const clearResult = await location.settings.patch({ clearShareableFields: data.fields });
     if (!clearResult.success) {
-      log.warn('Failed to clear imported local project settings', clearResult.error);
-      return writeConfigFailed(`Wrote ${CONFIG_FILE}, but failed to clear local project settings.`);
+      log.warn('Failed to clear imported local location settings', clearResult.error);
+      return writeConfigFailed(
+        `Wrote ${CONFIG_FILE}, but failed to clear local location settings.`
+      );
     }
 
     return ok(migration);
   } catch (error) {
-    log.warn('Failed to migrate Codex config to project config', error);
+    log.warn('Failed to migrate Codex config to location config', error);
     return writeConfigFailed(error instanceof Error ? error.message : String(error));
   }
 }
 
-export const codexConfigMigrator: ProjectConfigMigrator = {
+export const codexConfigMigrator: LocationConfigMigrator = {
   provider: 'codex',
   inspect: async (fs) => toCodexMigration(await readCodexMigrationData(fs)),
   migrate: migrateCodexConfig,

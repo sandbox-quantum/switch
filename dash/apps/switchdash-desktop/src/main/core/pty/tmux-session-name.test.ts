@@ -62,7 +62,7 @@ describe('makeAgentTmuxSessionName', () => {
 
   it('derives the pane name from the sessionId alone (no locationId)', () => {
     // The core CHOO-1181 guarantee: two switchdash clients with DIFFERENT local
-    // projectIds/scopeIds must compute the SAME tmux name for the same shared
+    // locationIds/scopeIds must compute the SAME tmux name for the same shared
     // conversation, so they attach to one pane instead of each spawning a blank
     // one. So the name must be a pure function of the sessionId.
     const name = makeAgentTmuxSessionName(sessionId);

@@ -111,9 +111,9 @@ describe('ClaudeTrustService', () => {
     expect(renameTo).toBe('/home/local-user/.claude.json');
 
     const written = JSON.parse(String(content));
-    expect(written.projects[path.resolve(relPath)]).toEqual({
+    expect(written.locations[path.resolve(relPath)]).toEqual({
       hasTrustDialogAccepted: true,
-      hasCompletedProjectOnboarding: true,
+      hasCompletedLocationOnboarding: true,
     });
   });
 
@@ -158,10 +158,10 @@ describe('ClaudeTrustService', () => {
     const trustedPath = '/already/trusted';
     mockReadFile.mockResolvedValue(
       JSON.stringify({
-        projects: {
+        locations: {
           [trustedPath]: {
             hasTrustDialogAccepted: true,
-            hasCompletedProjectOnboarding: true,
+            hasCompletedLocationOnboarding: true,
           },
         },
       })
@@ -237,13 +237,13 @@ describe('ClaudeTrustService', () => {
 
     expect(mockWriteFile).toHaveBeenCalledTimes(2);
     const secondWriteContent = JSON.parse(String(mockWriteFile.mock.calls[1][1]));
-    expect(secondWriteContent.projects[path.resolve('/worktree/a')]).toEqual({
+    expect(secondWriteContent.locations[path.resolve('/worktree/a')]).toEqual({
       hasTrustDialogAccepted: true,
-      hasCompletedProjectOnboarding: true,
+      hasCompletedLocationOnboarding: true,
     });
-    expect(secondWriteContent.projects[path.resolve('/worktree/b')]).toEqual({
+    expect(secondWriteContent.locations[path.resolve('/worktree/b')]).toEqual({
       hasTrustDialogAccepted: true,
-      hasCompletedProjectOnboarding: true,
+      hasCompletedLocationOnboarding: true,
     });
   });
 });

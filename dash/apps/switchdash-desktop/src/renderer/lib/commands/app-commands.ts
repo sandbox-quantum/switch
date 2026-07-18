@@ -20,7 +20,7 @@ function createAppCommandProvider(): CommandProvider {
       // Reads MobX observables — reactions automatically invalidate activeCommands
       // when navigation changes.
       const settingsDef = appDef('app.settings');
-      const newProjectDef = appDef('app.newProject');
+      const newLocationDef = appDef('app.newLocation');
       const giveFeedbackDef = appDef('app.giveFeedback');
       const toggleThemeDef = appDef('app.toggleTheme');
       const navigateBackDef = appDef('app.navigateBack');
@@ -42,11 +42,11 @@ function createAppCommandProvider(): CommandProvider {
           },
         },
         {
-          id: newProjectDef.id,
-          label: newProjectDef.label,
-          description: newProjectDef.description,
-          shortcutKey: newProjectDef.shortcutKey,
-          group: newProjectDef.group,
+          id: newLocationDef.id,
+          label: newLocationDef.label,
+          description: newLocationDef.description,
+          shortcutKey: newLocationDef.shortcutKey,
+          group: newLocationDef.group,
           execute() {
             showModal('addAgentModal', {});
           },

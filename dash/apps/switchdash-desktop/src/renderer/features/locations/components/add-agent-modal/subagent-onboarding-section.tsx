@@ -9,7 +9,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 
 export type SubagentSelection = { name: string; description: string }[];
 
-/** Where to discover subagent definitions: a local project dir, or a remote
+/** Where to discover subagent definitions: a local location dir, or a remote
  * agent's working dir on its SSH host (scanned over SFTP during onboarding). */
 export type SubagentOnboardingSource =
   | { kind: 'local'; dir: string }

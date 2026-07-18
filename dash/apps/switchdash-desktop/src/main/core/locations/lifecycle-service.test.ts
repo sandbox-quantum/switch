@@ -84,7 +84,7 @@ describe('WorkspaceLifecycleService', () => {
   it('respawns an interactive lifecycle shell after an exit-backed script finishes', async () => {
     const { provider, spawned, requests } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-1',
+      locationId: 'location-1',
       terminals: provider,
     });
 
@@ -104,7 +104,7 @@ describe('WorkspaceLifecycleService', () => {
   it('does not prepare a second lifecycle shell when one is already active', async () => {
     const { provider, spawned, requests } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-prepare',
+      locationId: 'location-prepare',
       terminals: provider,
     });
 
@@ -118,7 +118,7 @@ describe('WorkspaceLifecycleService', () => {
   it('keeps the same lifecycle PTY when the script text changes', async () => {
     const { provider, spawned, requests } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-2',
+      locationId: 'location-2',
       terminals: provider,
     });
 
@@ -134,7 +134,7 @@ describe('WorkspaceLifecycleService', () => {
   it('respawns with the latest shell setup after repeated exit-backed runs', async () => {
     const { provider, spawned, requests } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-3',
+      locationId: 'location-3',
       terminals: provider,
     });
 
@@ -157,7 +157,7 @@ describe('WorkspaceLifecycleService', () => {
   it('resolves waitForExit when an exit-backed script exits successfully', async () => {
     const { provider, spawned } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-4',
+      locationId: 'location-4',
       terminals: provider,
     });
 
@@ -182,7 +182,7 @@ describe('WorkspaceLifecycleService', () => {
   it('does not attach another awaited execution to a PTY that is already running', async () => {
     const { provider, spawned } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-concurrent',
+      locationId: 'location-concurrent',
       terminals: provider,
     });
 
@@ -208,7 +208,7 @@ describe('WorkspaceLifecycleService', () => {
   it('can restore an interactive lifecycle shell after an awaited script exits', async () => {
     const { provider, spawned } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-6',
+      locationId: 'location-6',
       terminals: provider,
     });
 
@@ -232,7 +232,7 @@ describe('WorkspaceLifecycleService', () => {
   it('can restore an interactive lifecycle shell after an awaited script is stopped', async () => {
     const { provider, spawned } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-7',
+      locationId: 'location-7',
       terminals: provider,
     });
 
@@ -256,7 +256,7 @@ describe('WorkspaceLifecycleService', () => {
   it('returns the output tail when an exit-backed script fails', async () => {
     const { provider, spawned } = makeTerminalProvider();
     const service = new LifecycleScriptService({
-      locationId: 'project-5',
+      locationId: 'location-5',
       terminals: provider,
     });
 

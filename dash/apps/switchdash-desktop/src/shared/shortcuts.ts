@@ -145,16 +145,16 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Delete the selected sessions',
     category: 'Navigation',
   },
-  newProject: {
+  newLocation: {
     defaultHotkey: 'Mod+Shift+N',
-    label: 'New Project',
-    description: 'Create a new project',
+    label: 'New Location',
+    description: 'Create a new location',
     category: 'Navigation',
   },
   openInEditor: {
     defaultHotkey: 'Mod+O',
     label: 'Open in Editor',
-    description: 'Open the project in the default editor',
+    description: 'Open the location in the default editor',
     category: 'Navigation',
   },
   sidebarChanges: {

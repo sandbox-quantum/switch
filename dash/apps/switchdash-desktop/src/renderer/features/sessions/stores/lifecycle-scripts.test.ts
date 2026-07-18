@@ -131,7 +131,7 @@ describe('LifecycleScriptsStore', () => {
     expect(watchStop).toHaveBeenCalledWith('loc-1', 'lifecycle-scripts');
   });
 
-  it('reloads lifecycle scripts when project settings change', async () => {
+  it('reloads lifecycle scripts when location settings change', async () => {
     getSettings
       .mockResolvedValueOnce({ scripts: { setup: 'pnpm install' } })
       .mockResolvedValueOnce({ scripts: { setup: 'corepack install', run: 'pnpm dev' } });

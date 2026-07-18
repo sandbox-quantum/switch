@@ -2,11 +2,11 @@ import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import type {
   AgentOnboardingError,
   ModeData as AgentOnboardingModeData,
 } from '@renderer/features/locations/stores/agent-onboarding-types';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import type { ServerVerifyState } from '@renderer/features/switch-servers/agent-server-picker';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -49,14 +49,12 @@ import { SubagentOnboardingSection, type SubagentSelection } from './subagent-on
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
 // carries the SWITCH_* env block). The richer switchdash flows — SSH, clone, create
 // new GitHub repo — are out of scope for v0, so this modal is local + pick only.
-export type AddProjectModalProps = BaseModalProps<void>;
+export type AddLocationModalProps = BaseModalProps<void>;
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
 
-export const AddAgentModal = observer(function AddAgentModal({
-  onClose,
-}: AddProjectModalProps) {
+export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLocationModalProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const [verifyState, setVerifyState] = useState<ServerVerifyState>('idle');
   const { navigate } = useNavigate();
@@ -113,7 +111,7 @@ export const AddAgentModal = observer(function AddAgentModal({
 
   const shouldCheckPathStatus = !isRemoteRun && pickState.path.trim().length > 0;
   const pathStatusQuery = useQuery({
-    queryKey: ['projectPathStatus', 'local', pickState.path],
+    queryKey: ['locationPathStatus', 'local', pickState.path],
     queryFn: () => rpc.locations.inspectLocationPath({ path: pickState.path }),
     enabled: shouldCheckPathStatus,
   });
@@ -188,7 +186,7 @@ export const AddAgentModal = observer(function AddAgentModal({
   // Remote configure gate: no agent in the remote dir yet — a valid remote
   // configure form + a chosen server + a provider. The server is not verified
   // here (the agent does not exist yet); it is verified after registration by
-  // the create path (createRemoteProject).
+  // the create path (createRemoteLocation).
   const canSubmitConfigureRemote =
     isMissingRemoteAgent &&
     !isChecking &&
@@ -226,8 +224,8 @@ export const AddAgentModal = observer(function AddAgentModal({
     navigate('location', { locationId });
   };
 
-  /** Run the shared create-project path with the current pick state. Returns the
-   * new/existing project id, or null when there is no chosen server. */
+  /** Run the shared create-location path with the current pick state. Returns the
+   * new/existing location id, or null when there is no chosen server. */
   const startCreate = async (): Promise<string | null> => {
     if (!pickState.serverId || !pickState.providerId) return null;
     const id = crypto.randomUUID();
@@ -248,11 +246,11 @@ export const AddAgentModal = observer(function AddAgentModal({
           providerId: pickState.providerId,
           remote: undefined,
         };
-    // The new project mounts (leaving the always-shown "unregistered" state)
+    // The new location mounts (leaving the always-shown "unregistered" state)
     // before agentsStore re-fetches its agent, which would drop it out of the
-    // server-scoped sidebar. Seed the project→server mapping now so it stays
+    // server-scoped sidebar. Seed the location→server mapping now so it stays
     // visible, and refresh the agent list once creation succeeds.
-    agentsStore.noteProjectServer(id, pickState.serverId);
+    agentsStore.noteLocationServer(id, pickState.serverId);
     const result = await getLocationManagerStore().startAgentOnboarding(data, { id });
     if (result.kind === 'existing') return result.locationId;
     void result.completion
@@ -422,7 +420,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         return;
       }
       // Credentials are now written to the remote dir's .claude/settings.local.json,
-      // so the create path (createRemoteProject) re-detects the agent over SSH and
+      // so the create path (createRemoteLocation) re-detects the agent over SSH and
       // verifies it on the server, and the selected subagents can be registered
       // under the just-created remote parent.
       const locationId = await startCreate();

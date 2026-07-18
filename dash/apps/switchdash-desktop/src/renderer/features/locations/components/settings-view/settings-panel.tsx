@@ -1,7 +1,10 @@
 import { observer } from 'mobx-react-lite';
 import { AutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-session-settings-section';
 import { SubagentAutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/subagent-auto-session-settings-section';
-import { asMounted, getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import {
+  asMounted,
+  getLocationStore,
+} from '@renderer/features/locations/stores/location-selectors';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Spinner } from '@renderer/lib/ui/spinner';
 

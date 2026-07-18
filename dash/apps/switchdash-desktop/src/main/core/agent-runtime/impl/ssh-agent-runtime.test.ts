@@ -143,7 +143,7 @@ function sshProvider({
   ctx?: ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'];
 } = {}) {
   return new SshAgentRuntime({
-    locationId: 'project-1',
+    locationId: 'location-1',
     sessionId: 'session-1',
     sessionPath: '/repo',
     tmux,
@@ -203,14 +203,14 @@ describe('SshAgentRuntime', () => {
     httpPostJsonOverChannel.mockClear();
     vi.mocked(events.emit).mockClear();
     connectionListeners.length = 0;
-    ptySessionRegistry.unregister('project-1:session-1');
+    ptySessionRegistry.unregister('location-1:session-1');
   });
 
   it('spawns the agent over SSH and registers a remote pty', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const item = session();
-    const sessionId = makeAgentPtySessionId('project-1', item.id);
+    const sessionId = makeAgentPtySessionId('location-1', item.id);
 
     await sshProvider().start(item);
 

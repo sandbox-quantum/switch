@@ -1,8 +1,8 @@
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { LocationViewWrapper } from '@renderer/features/locations/components/location-view-wrapper';
 import { appState } from '@renderer/lib/stores/app-state';
-import { LocationMainPanel } from './components/main-panel/main-panel';
 import { LocationTitlebar } from './components/location-titlebar';
+import { LocationMainPanel } from './components/main-panel/main-panel';
 
 export const locationView = {
   WrapView: LocationViewWrapper,

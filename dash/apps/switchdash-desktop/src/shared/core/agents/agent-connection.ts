@@ -3,7 +3,7 @@ import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-sc
 
 /**
  * Where an agent's sessions run. `local` (the default) runs every session in
- * the project directory on this machine, exactly as switchdash always has.
+ * the location directory on this machine, exactly as switchdash always has.
  * `remote` runs them on an SSH-reachable host, so the agent keeps working and
  * listening to its Switch rooms while switchdash is closed (CHOO-1059).
  */

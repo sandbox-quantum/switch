@@ -12,7 +12,7 @@ export class LocationViewStore implements Snapshottable<LocationViewSnapshot> {
     makeAutoObservable(this);
   }
 
-  setProjectView(view: LocationView) {
+  setLocationView(view: LocationView) {
     this.activeView = view;
   }
 

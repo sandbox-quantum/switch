@@ -1,5 +1,5 @@
-import { getLocationById } from '@main/core/locations/store';
 import { locationManager } from '@main/core/locations/location-manager';
+import { getLocationById } from '@main/core/locations/store';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { sessionService } from '@main/core/sessions/session-service';

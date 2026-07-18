@@ -7,7 +7,7 @@ import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
  * `open-file-in-file-editor` handlers.)
  */
 export function makeFileLinkHandlers(
-  _projectId: string,
+  _locationId: string,
   _sessionId: string
 ): { onOpenFile: (filePath: string) => void; onOpenExternal: (filePath: string) => void } {
   return {

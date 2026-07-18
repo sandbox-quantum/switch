@@ -1,5 +1,5 @@
 import { db } from '@main/db/client';
-import { locationSettings as projectSettingsTable } from '@main/db/schema';
+import { locationSettings as locationSettingsTable } from '@main/db/schema';
 import { parseJsonObject } from './location-settings-json';
 
 function readPinnedGithubAccountId(raw: string): string | undefined {
@@ -19,8 +19,8 @@ export async function countLocationsUsingGithubAccount(accountId: string): Promi
   if (!targetAccountId) return 0;
 
   const rows = db
-    .select({ baseSettingsJson: projectSettingsTable.baseSettingsJson })
-    .from(projectSettingsTable)
+    .select({ baseSettingsJson: locationSettingsTable.baseSettingsJson })
+    .from(locationSettingsTable)
     .all();
 
   let count = 0;

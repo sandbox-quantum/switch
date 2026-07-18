@@ -15,21 +15,21 @@ const GROUP_CLASS = cn(
   '[&_[cmdk-group-heading]]:text-foreground/50'
 );
 
-interface PaletteProjectsGroupProps {
-  /** When set, this project is excluded from the list (project scope). Undefined shows all (app scope). */
+interface PaletteLocationsGroupProps {
+  /** When set, this location is excluded from the list (location scope). Undefined shows all (app scope). */
   currentLocationId: string | undefined;
   limit?: number;
   onClose: () => void;
   navigate: NavigateFnTyped;
 }
 
-export function PaletteProjectsGroup({
+export function PaletteLocationsGroup({
   currentLocationId,
   limit,
   onClose,
   navigate,
-}: PaletteProjectsGroupProps) {
-  const projects = useObserver(() => {
+}: PaletteLocationsGroupProps) {
+  const locations = useObserver(() => {
     const result: Array<{ id: string; name: string }> = [];
     for (const store of getLocationManagerStore().locations.values()) {
       const mounted = asMounted(store);
@@ -40,16 +40,16 @@ export function PaletteProjectsGroup({
     return result;
   });
 
-  const visible = limit !== undefined ? projects.slice(0, limit) : projects;
+  const visible = limit !== undefined ? locations.slice(0, limit) : locations;
 
   if (visible.length === 0) return null;
 
   return (
-    <Command.Group heading="Projects" className={GROUP_CLASS}>
+    <Command.Group heading="Locations" className={GROUP_CLASS}>
       {visible.map((p) => (
         <Command.Item
           key={p.id}
-          value={`project:${p.id}`}
+          value={`location:${p.id}`}
           onSelect={() => {
             navigate('location', { locationId: p.id });
             onClose();

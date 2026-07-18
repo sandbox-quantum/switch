@@ -13,6 +13,7 @@ import {
   remoteDependencyDescriptor,
 } from '@main/core/dependencies/remote-dependency-manager';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
+import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { openSsh2Pty } from '@main/core/pty/ssh2-pty';
 import { ensureSshConnected, forceSshReconnect } from '@main/core/ssh/connect/connect-agent-ssh';
@@ -22,7 +23,6 @@ import {
   getRemoteSwitchSetupService,
   type RemoteSwitchSetupService,
 } from '@main/core/switch-setup/remote-switch-setup';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import type { ConnectionState, SshHealthState } from '@shared/core/ssh/ssh';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import type { SwitchAgentConfig } from '@shared/switch-agents';

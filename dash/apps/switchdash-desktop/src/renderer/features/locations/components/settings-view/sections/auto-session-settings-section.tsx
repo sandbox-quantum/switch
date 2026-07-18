@@ -7,14 +7,14 @@ import { log } from '@renderer/utils/logger';
 
 /**
  * Per-Switch-agent "auto-create session on notify" toggle. Unlike the rest of
- * the project settings form (persisted to .switchdash.json / DB on Save), this
+ * the location settings form (persisted to .switchdash.json / DB on Save), this
  * flips the agent's gateway connection model immediately on toggle — there is
  * no local config to stage. Renders one row per Switch-linked agent in the
- * project; hidden entirely when the project has none.
+ * location; hidden entirely when the location has none.
  */
 export function AutoSessionSettingsSection({ locationId }: { locationId: string }) {
   const { data: agents } = useQuery({
-    queryKey: ['project-agents', locationId],
+    queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 

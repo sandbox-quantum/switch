@@ -1,10 +1,10 @@
 import { eq } from 'drizzle-orm';
 import { app, BrowserWindow, Notification } from 'electron';
 import { getMainWindow } from '@main/app/window';
+import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
-import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';

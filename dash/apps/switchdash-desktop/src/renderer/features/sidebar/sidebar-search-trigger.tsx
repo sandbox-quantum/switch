@@ -1,6 +1,5 @@
 import { Search } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
 import { useParams, useWorkspaceSlots } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
@@ -10,13 +9,13 @@ export const SidebarSearchTrigger = observer(function SidebarSearchTrigger() {
   const showCommandPalette = useShowModal('commandPaletteModal');
   const { currentView } = useWorkspaceSlots();
   const { params: sessionParams } = useParams('session');
-  const { params: projectParams } = useParams('location');
+  const { params: locationParams } = useParams('location');
 
   const currentLocationId =
     currentView === 'session'
       ? sessionParams.locationId
       : currentView === 'location'
-        ? projectParams.locationId
+        ? locationParams.locationId
         : undefined;
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : undefined;
 

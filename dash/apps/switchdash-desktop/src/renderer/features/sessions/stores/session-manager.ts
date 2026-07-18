@@ -19,6 +19,7 @@ import type {
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
 import { sessionAgentRegistry } from './session-agent-registry';
+import { sessionRuntimeRegistry } from './session-runtime-registry';
 import {
   createUnprovisionedSession,
   createUnregisteredSession,
@@ -28,7 +29,6 @@ import {
   isUnregistered,
   type SessionStore,
 } from './session-store';
-import { sessionRuntimeRegistry } from './session-runtime-registry';
 
 function formatCreateSessionError(error: CreateSessionError): string {
   switch (error.type) {
@@ -92,32 +92,26 @@ export class SessionManagerStore {
     // terminated a shared session, or the reconciler pruned a vanished VM
     // session). This window did not initiate the delete, so remove the row here
     // — otherwise it lingers as a ghost until restart.
-    this._unsubSessionDeleted = events.on(
-      sessionDeletedChannel,
-      ({ sessionId }) => {
-        const store = this.sessions.get(sessionId);
-        if (!store) return;
-        console.info('SessionManager: removing session (remote-driven delete)', {
-          sessionId,
-          locationId: this.locationId,
-        });
-        runInAction(() => this.sessions.delete(sessionId));
-        this._releaseSessionRegistries(sessionId);
-        store.dispose();
-      }
-    );
+    this._unsubSessionDeleted = events.on(sessionDeletedChannel, ({ sessionId }) => {
+      const store = this.sessions.get(sessionId);
+      if (!store) return;
+      console.info('SessionManager: removing session (remote-driven delete)', {
+        sessionId,
+        locationId: this.locationId,
+      });
+      runInAction(() => this.sessions.delete(sessionId));
+      this._releaseSessionRegistries(sessionId);
+      store.dispose();
+    });
 
-    this._unsubStatusUpdated = events.on(
-      sessionStatusUpdatedChannel,
-      ({ sessionId, status }) => {
-        const store = this.sessions.get(sessionId);
-        if (store && isProvisioned(store)) {
-          runInAction(() => {
-            store.data.status = status as SessionLifecycleStatus;
-          });
-        }
+    this._unsubStatusUpdated = events.on(sessionStatusUpdatedChannel, ({ sessionId, status }) => {
+      const store = this.sessions.get(sessionId);
+      if (store && isProvisioned(store)) {
+        runInAction(() => {
+          store.data.status = status as SessionLifecycleStatus;
+        });
       }
-    );
+    });
 
     this._unsubProvisionProgress = events.on(
       sessionProvisionProgressChannel,
@@ -150,12 +144,9 @@ export class SessionManagerStore {
     // Handles sessions provisioned by the automation path (or any main-process caller)
     // without renderer-initiated RPCs. The `isUnprovisioned` guard prevents a
     // double-transition if the renderer-driven RPC already completed first.
-    this._unsubProvisioned = events.on(
-      sessionProvisionedChannel,
-      ({ sessionId, path }) => {
-        void this._doHandleProvisioned(sessionId, path);
-      }
-    );
+    this._unsubProvisioned = events.on(sessionProvisionedChannel, ({ sessionId, path }) => {
+      void this._doHandleProvisioned(sessionId, path);
+    });
   }
 
   private _releaseSessionRegistries(sessionId: string): void {

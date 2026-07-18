@@ -3,10 +3,10 @@ import type { FileSystemProvider } from '@main/core/fs/types';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { log } from '@main/lib/logger';
 import {
-  baseProjectSettingsSchema,
+  baseLocationSettingsSchema,
   DEFAULT_PRESERVE_PATTERNS,
-  legacyBaseProjectSettingsSchema,
-  projectSettingsSchema,
+  legacyBaseLocationSettingsSchema,
+  locationSettingsSchema,
   shareableLocationSettingsSchema,
   type BaseLocationSettings,
   type LocationSettings,
@@ -15,28 +15,28 @@ import {
 import { SHAREABLE_FIELD_ACCESSORS } from '@shared/core/location-settings/location-settings-fields';
 import type { UpdateLocationSettingsError } from '@shared/core/locations/locations';
 import {
-  migrateLegacyProjectSettingsIfNeeded,
-  type ProjectSettingsGitInspector,
+  migrateLegacyLocationSettingsIfNeeded,
+  type LocationSettingsGitInspector,
 } from '../legacy-location-settings-migration';
-import { serializeShareableProjectSettings } from '../legacy-shareable-migration-marker';
+import { serializeShareableLocationSettings } from '../legacy-shareable-migration-marker';
 import { compactUndefined, parseJsonObject, readJson } from '../location-settings-json';
-import { ProjectSettingsRepository } from '../location-settings-storage';
+import { LocationSettingsRepository } from '../location-settings-storage';
 import type { LocationSettingsPatch, LocationSettingsProvider } from '../provider';
 import { CONFIG_FILE } from '../sharing/switchdash-config-file';
 
-export type DbProjectSettingsProviderOptions = {
-  git?: ProjectSettingsGitInspector;
+export type DbLocationSettingsProviderOptions = {
+  git?: LocationSettingsGitInspector;
 };
 
-export abstract class DbProjectSettingsProvider implements LocationSettingsProvider {
+export abstract class DbLocationSettingsProvider implements LocationSettingsProvider {
   private legacyMigrationPromise: Promise<void> | undefined;
-  private readonly storage = new ProjectSettingsRepository();
+  private readonly storage = new LocationSettingsRepository();
 
   protected constructor(
     private readonly locationId: string,
     protected readonly rootPath: string,
     private readonly configReader: Pick<FileSystemProvider, 'exists' | 'read'> | undefined,
-    private readonly options: DbProjectSettingsProviderOptions = {}
+    private readonly options: DbLocationSettingsProviderOptions = {}
   ) {}
 
   protected abstract defaultWorktreeDirectory(): Promise<string>;
@@ -49,10 +49,10 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
     worktreeDirectory: string
   ): Promise<Result<string, UpdateLocationSettingsError>>;
 
-  protected async initialBaseProjectSettings(): Promise<BaseLocationSettings> {
-    const projectDefaults = await appSettingsService.get('project');
+  protected async initialBaseLocationSettings(): Promise<BaseLocationSettings> {
+    const locationDefaults = await appSettingsService.get('location');
     return {
-      tmux: projectDefaults.tmuxByDefault,
+      tmux: locationDefaults.tmuxByDefault,
     };
   }
 
@@ -63,12 +63,12 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
       const { content } = await this.configReader.read(CONFIG_FILE);
       const parsed = shareableLocationSettingsSchema.safeParse(parseJsonObject(content));
       if (!parsed.success) {
-        log.warn('Failed to inspect shared project settings during initialization', parsed.error);
+        log.warn('Failed to inspect shared location settings during initialization', parsed.error);
         return false;
       }
       return parsed.data.preservePatterns !== undefined;
     } catch (error) {
-      log.warn('Failed to inspect shared project settings during initialization', error);
+      log.warn('Failed to inspect shared location settings during initialization', error);
       return false;
     }
   }
@@ -76,13 +76,13 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
   private async ensureRow(): Promise<void> {
     if (await this.storage.get(this.locationId)) return;
 
-    const baseSettings = await this.initialBaseProjectSettings();
+    const baseSettings = await this.initialBaseLocationSettings();
     const shareableSettings = (await this.hasSharedPreservePatterns())
       ? {}
       : { preservePatterns: [...DEFAULT_PRESERVE_PATTERNS] };
     await this.storage.insertIfMissing(this.locationId, {
       baseSettingsJson: JSON.stringify(compactUndefined(baseSettings)),
-      shareableSettingsJson: serializeShareableProjectSettings(shareableSettings),
+      shareableSettingsJson: serializeShareableLocationSettings(shareableSettings),
       legacyConfigMigratedAt: null,
     });
   }
@@ -97,23 +97,23 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
     const row = await this.storage.get(this.locationId);
     if (!row) {
       return {
-        base: await this.initialBaseProjectSettings(),
+        base: await this.initialBaseLocationSettings(),
         shareable: {},
         legacyConfigMigratedAt: null,
       };
     }
     const baseSettings = readJson(
       row.baseSettingsJson,
-      legacyBaseProjectSettingsSchema,
-      'base project settings'
+      legacyBaseLocationSettingsSchema,
+      'base location settings'
     );
 
     return {
-      base: baseProjectSettingsSchema.parse(baseSettings),
+      base: baseLocationSettingsSchema.parse(baseSettings),
       shareable: readJson(
         row.shareableSettingsJson,
         shareableLocationSettingsSchema,
-        'shareable project settings'
+        'shareable location settings'
       ),
       legacyConfigMigratedAt: row.legacyConfigMigratedAt,
     };
@@ -127,7 +127,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
 
     this.legacyMigrationPromise = (async () => {
       const row = await this.storage.get(this.locationId);
-      await migrateLegacyProjectSettingsIfNeeded({
+      await migrateLegacyLocationSettingsIfNeeded({
         locationId: this.locationId,
         row,
         configReader: this.configReader,
@@ -146,18 +146,18 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
     }
   }
 
-  async ensure(options: DbProjectSettingsProviderOptions = {}): Promise<void> {
+  async ensure(options: DbLocationSettingsProviderOptions = {}): Promise<void> {
     await this.ensureRow();
     await this.migrateLegacyConfigIfNeeded(options.git);
   }
 
   async get(): Promise<LocationSettings> {
     const { base, shareable } = await this.readSettingsRow();
-    return projectSettingsSchema.parse({ ...base, ...shareable });
+    return locationSettingsSchema.parse({ ...base, ...shareable });
   }
 
   async update(settings: LocationSettings): Promise<Result<void, UpdateLocationSettingsError>> {
-    const parsed = projectSettingsSchema.safeParse(settings);
+    const parsed = locationSettingsSchema.safeParse(settings);
     if (!parsed.success) {
       return err({ type: 'invalid-settings' });
     }
@@ -171,7 +171,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
     }
     nextSettings.worktreeDirectory = worktreeDirectoryResult.data;
 
-    const base = baseProjectSettingsSchema.parse(nextSettings);
+    const base = baseLocationSettingsSchema.parse(nextSettings);
     const shareable = shareableLocationSettingsSchema.parse(nextSettings);
 
     try {
@@ -179,13 +179,13 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
       const row = await this.storage.get(this.locationId);
       await this.storage.update(this.locationId, {
         baseSettingsJson: JSON.stringify(compactUndefined(base)),
-        shareableSettingsJson: serializeShareableProjectSettings(shareable, {
+        shareableSettingsJson: serializeShareableLocationSettings(shareable, {
           previousRaw: row?.shareableSettingsJson,
         }),
       });
       return ok();
     } catch (error) {
-      log.warn('Failed to update project settings', error);
+      log.warn('Failed to update location settings', error);
       return err({ type: 'error' });
     }
   }
@@ -195,17 +195,13 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
       await this.ensure();
       const row = await this.storage.get(this.locationId);
       const base = row
-        ? readJson(
-            row.baseSettingsJson,
-            legacyBaseProjectSettingsSchema,
-            'base project settings'
-          )
-        : await this.initialBaseProjectSettings();
+        ? readJson(row.baseSettingsJson, legacyBaseLocationSettingsSchema, 'base location settings')
+        : await this.initialBaseLocationSettings();
       const shareable = row
         ? readJson(
             row.shareableSettingsJson,
             shareableLocationSettingsSchema,
-            'shareable project settings'
+            'shareable location settings'
           )
         : {};
 
@@ -213,7 +209,7 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
         SHAREABLE_FIELD_ACCESSORS[field].clear(shareable);
       }
 
-      const nextBase = baseProjectSettingsSchema.parse({
+      const nextBase = baseLocationSettingsSchema.parse({
         ...base,
         ...(Object.hasOwn(patch, 'githubAccountId')
           ? { githubAccountId: patch.githubAccountId }
@@ -222,13 +218,13 @@ export abstract class DbProjectSettingsProvider implements LocationSettingsProvi
 
       await this.storage.update(this.locationId, {
         baseSettingsJson: JSON.stringify(compactUndefined(nextBase)),
-        shareableSettingsJson: serializeShareableProjectSettings(shareable, {
+        shareableSettingsJson: serializeShareableLocationSettings(shareable, {
           previousRaw: row?.shareableSettingsJson,
         }),
       });
       return ok();
     } catch (error) {
-      log.warn('Failed to clear shareable project settings', error);
+      log.warn('Failed to clear shareable location settings', error);
       return err({ type: 'error' });
     }
   }

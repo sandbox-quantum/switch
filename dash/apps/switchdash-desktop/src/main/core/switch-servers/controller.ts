@@ -4,8 +4,8 @@ import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch-settings';
 import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
 import type {
   AddServerParams,

@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { lifecycleScriptStatusChannel } from '@shared/core/sessions/sessionEvents';
-import type { Pty, PtyExitInfo } from '../pty/pty';
-import type { LifecycleScriptSpawnRequest, TerminalProvider } from '../terminals/terminal-provider';
 import {
   LifecycleScriptService,
   type LifecycleScriptExecutionResult,
 } from '../locations/lifecycle-service';
+import type { Pty, PtyExitInfo } from '../pty/pty';
+import type { LifecycleScriptSpawnRequest, TerminalProvider } from '../terminals/terminal-provider';
 import {
   runLifecycleScriptWithPolicy,
   stopLifecycleScriptSession,

@@ -1,12 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { err, ok } from '@switchdash/shared';
-import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { locationManager } from '@main/core/locations/location-manager';
+import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
-import type { OnboardAgentError, OnboardAgentParams, OnboardAgentResult } from '@shared/core/agents/onboarding';
+import type {
+  OnboardAgentError,
+  OnboardAgentParams,
+  OnboardAgentResult,
+} from '@shared/core/agents/onboarding';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { createAgent } from './createAgent';

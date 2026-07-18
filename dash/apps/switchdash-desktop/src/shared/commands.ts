@@ -5,7 +5,7 @@ export interface CommandDef {
   label: string;
   description?: string;
   group?: string;
-  scope: 'app' | 'project' | 'session' | 'session-sub';
+  scope: 'app' | 'location' | 'session' | 'session-sub';
   shortcutKey?: ShortcutSettingsKey;
   /** Token resolved to a LucideIcon by the renderer's COMMAND_ICONS map. */
   iconKey?: string;
@@ -39,11 +39,11 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'library',
   },
   {
-    id: 'app.newProject',
+    id: 'app.newLocation',
     label: 'Add Switch Agent',
     description: 'Onboard a local directory as a Switch agent — configuring one if needed',
     scope: 'app',
-    shortcutKey: 'newProject',
+    shortcutKey: 'newLocation',
     group: 'App',
     iconKey: 'plus',
   },
