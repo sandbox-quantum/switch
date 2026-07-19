@@ -1,5 +1,3 @@
-import { eq } from 'drizzle-orm';
-import { deleteAgent } from '@main/core/agents/deleteAgent';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { passwordLogin } from '@main/core/switch-servers/auth';
 import {
@@ -7,8 +5,6 @@ import {
   getManagedServer,
   setActiveServerId,
 } from '@main/core/switch-servers/servers-store';
-import { db } from '@main/db/client';
-import { agents } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
@@ -190,39 +186,15 @@ class LocalServerService {
     }
   }
 
-  /** Delete the switchdash agents configured against the managed server. Their
-   * server-side identity is about to be wiped with the stack, so a bare unlink
-   * would leave dangling records; deleteAgent() also tears down each agent's
-   * sessions and watchers. Best-effort per agent so one failure can't block the
-   * reset. */
-  private async deleteManagedAgents(): Promise<void> {
-    const managed = await getManagedServer();
-    if (!managed) return;
-    const rows = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.serverId, managed.id));
-    for (const { id } of rows) {
-      try {
-        await deleteAgent(id);
-      } catch (error) {
-        log.warn('local-switch-server: failed to delete agent during reset', { id, error });
-      }
-    }
-    if (rows.length > 0) {
-      log.info('local-switch-server: deleted agents on reset', { count: rows.length });
-    }
-  }
-
-  /** Destroy the stack AND its data volumes, delete every agent configured
-   * against it, and drop the stored secrets so the next start is a clean
-   * install. Irreversible — the caller must confirm. */
+  /** Destroy the stack AND its data volumes, and drop the stored secrets so the
+   * next start is a clean install. Irreversible — the caller must confirm. The
+   * caller (renderer) removes the managed server's agents first, since their
+   * server-side identity is wiped here. */
   async reset(): Promise<void> {
     if (this.busy) throw new Error('A local-server operation is already in progress.');
     this.busy = true;
     try {
-      this.setStatus({ phase: 'stopping', message: 'Deleting agents and destroying data…' });
-      await this.deleteManagedAgents();
+      this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
       await composeDown(true);
       await clearSecrets();
       await clearPorts();

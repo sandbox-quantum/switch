@@ -1,4 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
   DockerAvailability,
@@ -148,6 +150,11 @@ export class LocalServerStore {
       this.error = null;
     });
     try {
+      // Delete the managed server's agents first (same path as the sidebar's
+      // "Remove agent", so they drop out of the tree), then wipe the stack —
+      // the wipe destroys their server-side identity, so leaving them would
+      // strand them as "Unnamed agent" rows.
+      await this.removeManagedAgents();
       await rpc.localSwitchServer.reset();
       await switchServersStore.init();
     } catch (cause) {
@@ -157,6 +164,22 @@ export class LocalServerStore {
         this.busy = false;
       });
     }
+  }
+
+  /** Remove every location whose agent belongs to the managed local server. */
+  private async removeManagedAgents(): Promise<void> {
+    const managedId = switchServersStore.servers.find((s) => s.managed)?.id;
+    if (!managedId) return;
+    await agentsStore.load();
+    const locationIds = new Set<string>();
+    for (const [locationId, agents] of agentsStore.byLocation) {
+      if (agents.some((a) => a.serverId === managedId)) locationIds.add(locationId);
+    }
+    const manager = getLocationManagerStore();
+    for (const locationId of locationIds) {
+      await manager.removeLocation(locationId);
+    }
+    await agentsStore.load();
   }
 
   private setError(cause: unknown): void {
