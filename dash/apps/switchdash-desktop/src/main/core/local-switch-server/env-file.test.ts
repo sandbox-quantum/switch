@@ -34,6 +34,11 @@ describe('buildEnvFile', () => {
     expect(vars.SWITCH_VERSION).toBe('1.2.3');
   });
 
+  it('publishes the gateway off :3000 to avoid the switchdash dev-server clash', () => {
+    expect(vars.GATEWAY_HOST_PORT).toBe('3300');
+    expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:3300');
+  });
+
   it('injects every secret into its env var', () => {
     expect(vars.DB_PASSWORD).toBe('db-pw');
     expect(vars.MATRIX_REGISTRATION_SHARED_SECRET).toBe('matrix-shared');
@@ -47,6 +52,7 @@ describe('buildEnvFile', () => {
 
   it('defines every var the compose contract interpolates', () => {
     const required = [
+      'GATEWAY_HOST_PORT',
       'DB_HOST',
       'DB_PORT',
       'DB_USER',

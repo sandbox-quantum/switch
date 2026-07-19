@@ -127,7 +127,7 @@ services:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:-latest}
     profiles: ["gateway"]
     ports:
-      - "3000:3000"
+      - "${GATEWAY_HOST_PORT:-3000}:3000"
     depends_on:
       - switch
 
