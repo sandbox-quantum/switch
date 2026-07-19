@@ -63,7 +63,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
       <div className="mx-auto w-full max-w-2xl space-y-6 p-6">
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
-            <h2 className="text-xl text-foreground">{server.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl text-foreground">{server.name}</h2>
+              {server.managed && <Badge variant="secondary">Local</Badge>}
+            </div>
             <p className="truncate text-sm text-foreground-muted">{server.gatewayUrl}</p>
             <p className="truncate text-xs text-foreground-tertiary-passive">
               API: {server.apiUrl}

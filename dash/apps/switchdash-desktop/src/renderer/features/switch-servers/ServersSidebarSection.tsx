@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Plus, Server } from 'lucide-react';
+import { ChevronDown, ChevronRight, HardDrive, Plus, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import {
@@ -121,7 +121,7 @@ const LocalServerPendingEntry = observer(function LocalServerPendingEntry({
   return (
     <SidebarMenuButton onClick={onOpen} className="justify-between">
       <span className="flex min-w-0 items-center gap-2">
-        <Server className="size-4 shrink-0" />
+        <HardDrive className="size-4 shrink-0" />
         <span className="truncate">
           {failed ? 'Local server (setup failed)' : 'Local Switch server'}
         </span>
@@ -160,10 +160,19 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
       className="justify-between"
     >
       <span className="flex min-w-0 items-center gap-2">
-        <Server className={cn('size-4 shrink-0', isScoped && 'text-foreground')} />
+        {server.managed ? (
+          <HardDrive className={cn('size-4 shrink-0', isScoped && 'text-foreground')} />
+        ) : (
+          <Server className={cn('size-4 shrink-0', isScoped && 'text-foreground')} />
+        )}
         <span className={cn('truncate', isScoped && 'font-medium text-foreground')}>
           {server.name}
         </span>
+        {server.managed && (
+          <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
+            Local
+          </span>
+        )}
         <span
           aria-hidden
           className={cn(
