@@ -74,7 +74,7 @@ describe('scheduleInitialPromptInjection', () => {
     expect(write).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(900);
-    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug\x1b[201~\r');
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
   });
 
   it('falls back to a max wait when no output ever arrives', () => {
@@ -87,7 +87,7 @@ describe('scheduleInitialPromptInjection', () => {
     });
 
     vi.advanceTimersByTime(15_000);
-    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug\x1b[201~\r');
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
   });
 
   it('wraps multi-line prompts in bracketed paste sequences', () => {
@@ -101,7 +101,7 @@ describe('scheduleInitialPromptInjection', () => {
 
     emitData('ready');
     vi.advanceTimersByTime(900);
-    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~line one\nline two\x1b[201~\r');
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~line one\nline two \x1b[201~\r');
   });
 
   it('does nothing for OpenCode because its initial prompt is passed with --prompt', () => {
