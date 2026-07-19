@@ -25,10 +25,7 @@ export function scheduleInitialPromptInjection(args: {
   const submitSequence = promptDelivery.submitSequence ?? '\r';
   const submitDelayMs = promptDelivery.submitDelayMs;
 
-  const payload = buildPromptInjectionPayload({
-    providerId: args.session.providerId,
-    text: args.initialPrompt,
-  });
+  const payload = buildPromptInjectionPayload(args.initialPrompt);
 
   let injected = false;
   let sawAnyOutput = false;

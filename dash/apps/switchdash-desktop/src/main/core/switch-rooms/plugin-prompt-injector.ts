@@ -21,13 +21,7 @@ export class PluginPromptInjector implements PromptInjector {
     const submitSequence = prompt.kind === 'keystroke' ? (prompt.submitSequence ?? '\r') : '\r';
     const submitDelayMs =
       (prompt.kind === 'keystroke' ? prompt.submitDelayMs : undefined) ?? DEFAULT_SUBMIT_DELAY_MS;
-    // Bracket multiline bodies as a paste so an embedded newline can't submit
-    // the prompt early — the trailing submitSequence is what submits it.
-    const payload = buildPromptInjectionPayload({
-      providerId: this.providerId,
-      text,
-      forceBracketedPaste: text.includes('\n'),
-    });
+    const payload = buildPromptInjectionPayload(text);
     return { payload, submitSequence, submitDelayMs };
   }
 }
