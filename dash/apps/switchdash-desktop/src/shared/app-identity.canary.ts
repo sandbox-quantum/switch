@@ -10,3 +10,6 @@ export const ARTIFACT_PREFIX = 'switchdash-canary';
 // Keep in sync with RELEASE_REPO_* in ./app-identity.ts (CHOO-1260 flip point).
 export const RELEASE_REPO_OWNER = 'sandbox-quantum';
 export const RELEASE_REPO_NAME = 'switch';
+
+// Keep in sync with COMPATIBLE_SWITCH_VERSION in ./app-identity.ts.
+export const COMPATIBLE_SWITCH_VERSION = '0.3.0';

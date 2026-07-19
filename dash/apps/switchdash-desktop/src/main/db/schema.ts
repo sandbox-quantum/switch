@@ -103,6 +103,10 @@ export const switchServers = sqliteTable(
      * `switch-gateway.*`).
      */
     apiUrl: text('api_url').notNull(),
+    /** True when switchdash provisions and runs this server itself via
+     * local-server mode (`docker compose`). Managed servers get lifecycle
+     * controls (start/stop/reset) and are not user-editable connection records. */
+    managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

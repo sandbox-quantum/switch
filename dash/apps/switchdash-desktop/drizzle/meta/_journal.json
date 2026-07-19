@@ -260,6 +260,13 @@
       "when": 1784451483886,
       "tag": "0036_rename_workspace_provider_setting",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1784456381313,
+      "tag": "0037_curvy_madame_masque",
+      "breakpoints": true
     }
   ]
 }

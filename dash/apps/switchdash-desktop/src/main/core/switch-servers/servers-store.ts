@@ -21,6 +21,7 @@ function mapRow(row: SwitchServerRow): SwitchServer {
     name: row.name,
     gatewayUrl: row.gatewayUrl,
     apiUrl: row.apiUrl,
+    managed: row.managed,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -65,6 +66,57 @@ export async function listServers(): Promise<SwitchServer[]> {
 export async function getServer(id: string): Promise<SwitchServer | null> {
   const [row] = await db.select().from(switchServers).where(eq(switchServers.id, id)).limit(1);
   return row ? mapRow(row) : null;
+}
+
+/** The single server switchdash runs itself (local-server mode), or null. */
+export async function getManagedServer(): Promise<SwitchServer | null> {
+  const [row] = await db
+    .select()
+    .from(switchServers)
+    .where(eq(switchServers.managed, true))
+    .limit(1);
+  return row ? mapRow(row) : null;
+}
+
+/**
+ * Upsert the managed local server record by its gateway URL. If a record with
+ * that URL already exists (e.g. the user had added localhost by hand) it is
+ * adopted and flagged managed; otherwise a new managed record is created. The
+ * gateway URL has a unique index, so keying on it avoids a duplicate-row clash.
+ */
+export async function ensureManagedServer(params: AddServerParams): Promise<SwitchServer> {
+  const gatewayUrl = normaliseUrl(params.gatewayUrl);
+  const apiUrl = normaliseUrl(params.apiUrl);
+  const [existing] = await db
+    .select()
+    .from(switchServers)
+    .where(eq(switchServers.gatewayUrl, gatewayUrl))
+    .limit(1);
+  if (existing) {
+    const [row] = await db
+      .update(switchServers)
+      .set({
+        name: params.name.trim(),
+        apiUrl,
+        managed: true,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(switchServers.id, existing.id))
+      .returning();
+    return mapRow(row);
+  }
+  const [row] = await db
+    .insert(switchServers)
+    .values({
+      id: randomUUID(),
+      name: params.name.trim(),
+      gatewayUrl,
+      apiUrl,
+      managed: true,
+      updatedAt: sql`CURRENT_TIMESTAMP`,
+    })
+    .returning();
+  return mapRow(row);
 }
 
 export async function addServer(params: AddServerParams): Promise<SwitchServer> {

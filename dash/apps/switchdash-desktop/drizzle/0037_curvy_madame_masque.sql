@@ -1,0 +1,1 @@
+ALTER TABLE `switch_servers` ADD `managed` integer DEFAULT false NOT NULL;

@@ -1,0 +1,154 @@
+# BUNDLED COPY — do not hand-edit. This is the standalone compose published to
+# GHCR as `standalone-compose:<version>` by the switch-release workflow, pinned
+# to COMPATIBLE_SWITCH_VERSION (src/shared/app-identity.ts) and bundled into the
+# app so local-server mode needs no runtime OCI puller. Re-sync it from the
+# repo's deploy/local/standalone-docker-compose.yml when bumping the pin
+# (scripts/sync-standalone-compose.mjs).
+#
+# Standalone all-in-one Switch stack, running published GHCR images.
+#
+# This file is a VERSIONED CONTRACT: service names, profiles, and the env vars
+# below are the interface switchdash (and any other consumer) pins against. It
+# is itself published to GHCR as an OCI artifact per `switch-v*` release, tagged
+# with the same version as the images. Change the interface deliberately.
+#
+# Images are pulled from GHCR — nothing is built. Repo users who want the
+# build-from-source flow add the build override (see `just standalone-up`):
+#   docker compose -f standalone-docker-compose.yml -f standalone-docker-compose.build.yml up
+#
+# Profiles keep optional services opt-in:
+#   (core, no profile) postgres, tuwunel, switch  — always started
+#   collab            init-db, mattermost, setup  — Mattermost bridge + seeder
+#   gateway           gateway                      — operator dashboard
+# Select them with `--profile collab --profile gateway` or COMPOSE_PROFILES.
+#
+# Image coordinates are env-interpolated so the same file retargets registries
+# and pins versions without edits:
+#   SWITCH_REGISTRY         (default ghcr.io)
+#   SWITCH_IMAGE_NAMESPACE  (default sandbox-quantum)
+#   SWITCH_VERSION          (default latest)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  init-db:
+    image: postgres:16-alpine
+    profiles: ["collab"]
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+    entrypoint: >
+      sh -c "
+        until pg_isready -h postgres -U ${DB_USER}; do sleep 1; done
+        psql -h postgres -U ${DB_USER} -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
+          psql -h postgres -U ${DB_USER} -c 'CREATE DATABASE mattermost;'
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tuwunel:
+    image: jevolk/tuwunel:v1.7.1
+    volumes:
+      - tuwuneldata:/var/lib/tuwunel
+    environment:
+      TUWUNEL_SERVER_NAME: localhost
+      TUWUNEL_DATABASE_PATH: /var/lib/tuwunel
+      TUWUNEL_ADDRESS: 0.0.0.0
+      TUWUNEL_PORT: "8008"
+      TUWUNEL_ALLOW_FEDERATION: "false"
+      TUWUNEL_ALLOW_REGISTRATION: "false"
+      TUWUNEL_REGISTRATION_SHARED_SECRET: ${MATRIX_REGISTRATION_SHARED_SECRET}
+      TUWUNEL_MAX_REQUEST_SIZE: "20000000"
+
+  mattermost:
+    image: mattermost/mattermost-team-edition:latest
+    profiles: ["collab"]
+    ports:
+      - "8065:8065"
+    volumes:
+      - mmdata:/mattermost/data
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/mattermost?sslmode=disable
+      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      # Lets the bridge hard-delete (permanent=true) an agent's transient
+      # "working on it…" status post instead of soft-deleting it, which would
+      # leave a "(message deleted)" tombstone. Requires Mattermost >= v10.2.
+      MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION: "true"
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+
+  switch:
+    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:-latest}
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      MATRIX_SERVER: http://tuwunel:8008
+      MATRIX_SERVER_NAME: localhost
+      MATRIX_ADMIN_USER: ${MATRIX_ADMIN_USER}
+      MATRIX_ADMIN_PASSWORD: ${MATRIX_ADMIN_PASSWORD}
+      MATRIX_REGISTRATION_SHARED_SECRET: ${MATRIX_REGISTRATION_SHARED_SECRET}
+      AGENT_REGISTRATION_TOKEN: ${AGENT_REGISTRATION_TOKEN}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
+      GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tuwunel:
+        condition: service_started
+
+  gateway:
+    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:-latest}
+    profiles: ["gateway"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - switch
+
+  setup:
+    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/setup:${SWITCH_VERSION:-latest}
+    profiles: ["collab"]
+    restart: on-failure
+    environment:
+      SWITCH_URL: http://switch:8000
+      MATTERMOST_URL: http://mattermost:8065
+      MATTERMOST_URL_FOR_SWITCH: http://mattermost:8065
+      MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER}
+      MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
+      MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME}
+      MATTERMOST_USER: ${MATTERMOST_USER}
+      MATTERMOST_USER_PASSWORD: ${MATTERMOST_USER_PASSWORD}
+    depends_on:
+      - mattermost
+      - switch
+
+volumes:
+  pgdata:
+  mmdata:
+  tuwuneldata:

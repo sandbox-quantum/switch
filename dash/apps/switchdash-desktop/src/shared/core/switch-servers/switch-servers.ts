@@ -20,6 +20,9 @@ export type SwitchServer = {
    * `https://switch-api.example.com` — what an agent's `SWITCH_API_ENDPOINT`
    * points at, and what an onboarded agent is matched to its server by. */
   apiUrl: string;
+  /** True when switchdash runs this server itself (local-server mode). Managed
+   * servers are driven by the lifecycle controls, not the add/edit-server UI. */
+  managed: boolean;
   createdAt: string;
   updatedAt: string;
 };
