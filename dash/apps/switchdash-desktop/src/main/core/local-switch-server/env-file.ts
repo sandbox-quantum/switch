@@ -1,6 +1,10 @@
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { LOCAL_SERVER_GATEWAY_HOST_PORT } from './constants';
+import {
+  LOCAL_SERVER_ADMIN_EMAIL,
+  LOCAL_SERVER_BIND_ADDR,
+  LOCAL_SERVER_GATEWAY_HOST_PORT,
+} from './constants';
 import type { LocalServerSecrets } from './secret-values';
 
 export type LocalServerEnvParams = {
@@ -28,6 +32,7 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `SWITCH_IMAGE_NAMESPACE=${namespace}`,
     `SWITCH_VERSION=${version}`,
     `GATEWAY_HOST_PORT=${LOCAL_SERVER_GATEWAY_HOST_PORT}`,
+    `SWITCH_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
     '',
     'DB_HOST=postgres',
     'DB_PORT=5432',
@@ -43,7 +48,7 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     '',
     `AGENT_REGISTRATION_TOKEN=${secrets.agentRegistrationToken}`,
     `JWT_SECRET_KEY=${secrets.jwtSecretKey}`,
-    'GATEWAY_ADMIN_EMAIL=admin@switch.local',
+    `GATEWAY_ADMIN_EMAIL=${LOCAL_SERVER_ADMIN_EMAIL}`,
     `GATEWAY_ADMIN_PASSWORD=${secrets.gatewayAdminPassword}`,
     `FRONTEND_BASE_URL=http://localhost:${LOCAL_SERVER_GATEWAY_HOST_PORT}`,
     '',

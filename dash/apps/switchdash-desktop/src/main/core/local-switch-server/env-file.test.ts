@@ -39,6 +39,11 @@ describe('buildEnvFile', () => {
     expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:3300');
   });
 
+  it('binds the managed stack to loopback and seeds the admin account', () => {
+    expect(vars.SWITCH_BIND_ADDR).toBe('127.0.0.1');
+    expect(vars.GATEWAY_ADMIN_EMAIL).toBe('admin@switch.local');
+  });
+
   it('injects every secret into its env var', () => {
     expect(vars.DB_PASSWORD).toBe('db-pw');
     expect(vars.MATRIX_REGISTRATION_SHARED_SECRET).toBe('matrix-shared');

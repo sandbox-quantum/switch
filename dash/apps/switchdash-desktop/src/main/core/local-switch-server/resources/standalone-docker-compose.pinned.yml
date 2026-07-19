@@ -32,7 +32,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:5432:5432"
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -78,7 +78,7 @@ services:
     image: mattermost/mattermost-team-edition:latest
     profiles: ["collab"]
     ports:
-      - "8065:8065"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:8065:8065"
     volumes:
       - mmdata:/mattermost/data
     environment:
@@ -100,7 +100,7 @@ services:
   switch:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:-latest}
     ports:
-      - "8000:8000"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:8000:8000"
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -127,7 +127,7 @@ services:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:-latest}
     profiles: ["gateway"]
     ports:
-      - "${GATEWAY_HOST_PORT:-3000}:3000"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${GATEWAY_HOST_PORT:-3000}:3000"
     depends_on:
       - switch
 

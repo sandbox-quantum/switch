@@ -38,3 +38,14 @@ export const LOCAL_SERVER_PROFILES = ['collab', 'gateway'] as const;
 /** Registry the private release images live in until the public-repo flip
  * (CHOO-1260); used for the authenticated `docker login` before pulling. */
 export const GHCR_REGISTRY = 'ghcr.io';
+
+/** The gateway admin account the stack seeds (GATEWAY_ADMIN_EMAIL). switchdash
+ * generates its password, so it also auto-signs-in with these on start rather
+ * than making the user type a secret they never saw. */
+export const LOCAL_SERVER_ADMIN_EMAIL = 'admin@switch.local';
+
+/** Host interface the managed stack's published ports bind to, fed to the
+ * compose `${SWITCH_BIND_ADDR}` interpolation. Loopback so the single-user local
+ * stack is never exposed to the LAN (the standalone compose defaults to all
+ * interfaces for repo users who may want remote access). */
+export const LOCAL_SERVER_BIND_ADDR = '127.0.0.1';

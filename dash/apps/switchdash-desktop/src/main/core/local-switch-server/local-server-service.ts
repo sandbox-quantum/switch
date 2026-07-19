@@ -1,4 +1,5 @@
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
+import { passwordLogin } from '@main/core/switch-servers/auth';
 import {
   ensureManagedServer,
   getManagedServer,
@@ -20,6 +21,7 @@ import { materialiseComposeFile } from './bundled-compose';
 import { composeDown, composeUp, isStackRunning } from './compose';
 import {
   GHCR_REGISTRY,
+  LOCAL_SERVER_ADMIN_EMAIL,
   LOCAL_SERVER_API_URL,
   LOCAL_SERVER_GATEWAY_URL,
   LOCAL_SERVER_NAME,
@@ -137,6 +139,23 @@ class LocalServerService {
         apiUrl: LOCAL_SERVER_API_URL,
       });
       await setActiveServerId(server.id);
+
+      // switchdash generated the admin password, so sign in on the user's behalf
+      // rather than showing a login wall for a secret they never saw. A failure
+      // here does not fail the start — the stack is healthy; the server view just
+      // falls back to its sign-in panel.
+      this.setStatus({ message: 'Signing in…' });
+      const login = await passwordLogin(
+        server,
+        LOCAL_SERVER_ADMIN_EMAIL,
+        secrets.gatewayAdminPassword
+      );
+      if (!login.success) {
+        log.warn('local-switch-server: auto sign-in failed; server will show a sign-in prompt', {
+          error: login.error,
+        });
+      }
+
       await resolveAgentServers();
 
       this.setStatus({ phase: 'running', serverId: server.id, message: null, error: null });
