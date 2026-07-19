@@ -113,7 +113,11 @@ class LocalServerService {
       await composeUp((line) => events.emit(localServerLogChannel, { line }));
 
       this.setStatus({ message: 'Waiting for the server to become healthy…' });
-      const healthy = await waitForHealth(LOCAL_SERVER_API_URL, { signal: this.startAbort.signal });
+      // Probe via the gateway URL (nginx → switch-core), the same path switchdash's
+      // management calls take, so we only register once that whole path answers.
+      const healthy = await waitForHealth(LOCAL_SERVER_GATEWAY_URL, {
+        signal: this.startAbort.signal,
+      });
       if (!healthy) {
         const error = 'The local server did not become healthy in time.';
         this.setStatus({ phase: 'error', error });

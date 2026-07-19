@@ -12,16 +12,19 @@ export const LOCAL_SERVER_PROJECT_NAME = 'switchdash-local';
 /** Display name of the auto-registered server record. */
 export const LOCAL_SERVER_NAME = 'Local Switch server';
 
-/** switch-core (agent bridge) is published on :8000 by the compose file. It also
- * serves the `/gateway` management API, so the gateway and API URLs coincide —
- * switchdash IS the operator frontend, so the compose `gateway` profile (the
- * nginx dashboard) is not brought up. */
+/** The Switch core (agent bridge) API, published on :8000 — what a connector's
+ * `SWITCH_API_ENDPOINT` points at. */
 export const LOCAL_SERVER_API_URL = 'http://localhost:8000';
-export const LOCAL_SERVER_GATEWAY_URL = 'http://localhost:8000';
 
-/** Compose profiles switchdash enables. Mattermost (the `collab` profile) is on
- * by default so the local stack has a working collaboration bridge. */
-export const LOCAL_SERVER_PROFILES = ['collab'] as const;
+/** The operator gateway: the nginx dashboard on :3000 that serves the web UI and
+ * proxies `/gateway` to switch-core. switchdash's management calls go to
+ * `${gatewayUrl}/gateway`, and "Open web app" opens this URL. */
+export const LOCAL_SERVER_GATEWAY_URL = 'http://localhost:3000';
+
+/** Compose profiles switchdash enables: `collab` (Mattermost bridge + seeder) so
+ * the stack has a working collaboration bridge, and `gateway` so the operator
+ * web dashboard is available at :3000. */
+export const LOCAL_SERVER_PROFILES = ['collab', 'gateway'] as const;
 
 /** Registry the private release images live in until the public-repo flip
  * (CHOO-1260); used for the authenticated `docker login` before pulling. */

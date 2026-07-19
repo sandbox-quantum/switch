@@ -43,7 +43,7 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `JWT_SECRET_KEY=${secrets.jwtSecretKey}`,
     'GATEWAY_ADMIN_EMAIL=admin@switch.local',
     `GATEWAY_ADMIN_PASSWORD=${secrets.gatewayAdminPassword}`,
-    'FRONTEND_BASE_URL=http://localhost:8000',
+    'FRONTEND_BASE_URL=http://localhost:3000',
     '',
     'MATTERMOST_ADMIN_USER=admin',
     `MATTERMOST_ADMIN_PASSWORD=${secrets.mattermostAdminPassword}`,
