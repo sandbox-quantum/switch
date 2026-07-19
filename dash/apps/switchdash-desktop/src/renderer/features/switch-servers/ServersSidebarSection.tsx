@@ -81,8 +81,20 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
           {store.servers.map((server) => (
             <ServerEntry key={server.id} serverId={server.id} />
           ))}
-          {!hasManagedServer && (
-            <LocalServerStartRow onOpen={() => showAddServerModal({ mode: 'local' })} />
+          {/* Before the managed record exists (still pulling/starting, or a
+              failed attempt), show a placeholder entry so the local server is
+              always visible in the list — not only once it's healthy. */}
+          {!hasManagedServer && localServerStore.phase !== 'stopped' && (
+            <LocalServerPendingEntry onOpen={() => showAddServerModal({ mode: 'local' })} />
+          )}
+          {!hasManagedServer && localServerStore.phase === 'stopped' && (
+            <button
+              type="button"
+              onClick={() => showAddServerModal({ mode: 'local' })}
+              className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary hover:text-foreground"
+            >
+              Start a local server…
+            </button>
           )}
           {empty && (
             <button
@@ -99,33 +111,27 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   );
 });
 
-const LocalServerStartRow = observer(function LocalServerStartRow({
+const LocalServerPendingEntry = observer(function LocalServerPendingEntry({
   onOpen,
 }: {
   onOpen: () => void;
 }) {
-  const local = localServerStore;
-  // A start kicked off from the modal keeps running if the modal is closed —
-  // reflect that inline so the sidebar still shows progress.
-  const starting = local.phase === 'starting';
-
-  if (starting) {
-    return (
-      <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-foreground-muted">
-        <Spinner className="size-3.5" />
-        <span className="truncate">{local.message ?? 'Starting local server…'}</span>
-      </div>
-    );
-  }
-
+  const phase = localServerStore.phase;
+  const failed = phase === 'error';
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary hover:text-foreground"
-    >
-      Start a local server…
-    </button>
+    <SidebarMenuButton onClick={onOpen} className="justify-between">
+      <span className="flex min-w-0 items-center gap-2">
+        <Server className="size-4 shrink-0" />
+        <span className="truncate">
+          {failed ? 'Local server (setup failed)' : 'Local Switch server'}
+        </span>
+        <span
+          aria-hidden
+          className={cn('size-1.5 shrink-0 rounded-full', failed ? 'bg-red-500' : 'bg-amber-500')}
+        />
+      </span>
+      {phase === 'starting' && <Spinner className="size-3.5 shrink-0" />}
+    </SidebarMenuButton>
   );
 });
 

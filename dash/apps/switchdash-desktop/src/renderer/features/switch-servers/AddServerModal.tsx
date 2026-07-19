@@ -132,6 +132,15 @@ function ChoiceCard({
   );
 }
 
+function SetupStepItem({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      <span aria-hidden className="mt-1.5 size-1 shrink-0 rounded-full bg-foreground-muted" />
+      <span>{children}</span>
+    </li>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Step 2a — local server setup (preflight → progress → done)
 // ---------------------------------------------------------------------------
@@ -157,6 +166,7 @@ const LocalSetupStep = observer(function LocalSetupStep({
   const docker = store.docker;
   const dockerReady = docker?.available ?? false;
   const dockerUnavailable = docker && !docker.available ? docker : null;
+  const idle = !running && !starting;
 
   const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
@@ -170,10 +180,32 @@ const LocalSetupStep = observer(function LocalSetupStep({
         <DialogTitle>Set up a local server</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
-        <p className="text-sm text-foreground-muted">
-          switchdash will run the Switch stack on this machine with Docker (switch-core{' '}
-          {store.status?.version ?? ''}) and register it as a server.
-        </p>
+        <div className="flex items-center gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-background-tertiary text-foreground-muted">
+            <HardDrive className="size-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">Local Switch server</p>
+            <p className="truncate text-xs text-foreground-muted">
+              switch-core {store.status?.version ?? ''} · runs on this machine via Docker
+            </p>
+          </div>
+        </div>
+
+        {idle && (
+          <div className="bg-card space-y-2 rounded-lg border border-border p-3">
+            <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
+            <ul className="space-y-1.5 text-xs text-foreground-muted">
+              <SetupStepItem>
+                Pull the Switch images from GHCR (first run downloads a few GB)
+              </SetupStepItem>
+              <SetupStepItem>Run Postgres, Matrix, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>
+                Register it as your active server, ready to onboard an agent
+              </SetupStepItem>
+            </ul>
+          </div>
+        )}
 
         {!running && (
           <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
@@ -184,7 +216,7 @@ const LocalSetupStep = observer(function LocalSetupStep({
             <CircleCheck className="size-4" />
             <AlertTitle>Local server is running</AlertTitle>
             <AlertDescription>
-              You can now onboard an agent against it from its page.
+              It's now in your servers list — open it to onboard an agent.
             </AlertDescription>
           </Alert>
         )}
@@ -199,7 +231,7 @@ const LocalSetupStep = observer(function LocalSetupStep({
         {(starting || store.logs.length > 0) && !running && (
           <div className="space-y-1.5">
             {store.message && starting && (
-              <div className="flex items-center gap-2 text-sm text-foreground-muted">
+              <div className="flex items-center gap-2 text-sm text-foreground">
                 <Spinner className="size-3.5" />
                 <span>{store.message}</span>
               </div>
