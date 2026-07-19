@@ -7,28 +7,19 @@ import { workspaceRegistry } from '@main/core/workspaces/workspace-registry';
 import type { WorkspaceProviderData } from '@shared/core/workspaces/workspace-provider-data';
 import type { AgentRuntimeProvider } from '../agent-runtime/types';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
-import type { TerminalProvider } from '../terminals/terminal-provider';
 import type { WorkspaceType } from '../workspaces/workspace-factory';
 import type { ProjectSettingsProvider } from './settings/provider';
 
 export type { WorkspaceProviderData };
 
 export type ProvisionResult = {
-  sessionProvider: SessionProvider;
+  agent: AgentRuntimeProvider;
   persistData: {
     workspaceId: string;
     workspaceProviderData?: WorkspaceProviderData;
     worktreeGitDir?: string;
   };
 };
-
-export interface SessionProvider {
-  readonly sessionId: string;
-  readonly sessionBranch: string | undefined;
-  readonly sessionEnvVars: Record<string, string>;
-  readonly agent: AgentRuntimeProvider;
-  readonly terminals: TerminalProvider;
-}
 
 /**
  * Transport-specific dependencies: the only things that differ between local and SSH.

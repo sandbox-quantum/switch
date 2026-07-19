@@ -54,28 +54,8 @@ describe('LocalTerminalProvider', () => {
     vi.mocked(ptySessionRegistry.register).mockClear();
   });
 
-  it('registers user terminals with their display name for resource monitor labels', async () => {
-    const provider = new LocalTerminalProvider({
-      projectId: terminal.projectId,
-      scopeId: terminal.sessionId,
-      sessionPath: '/repo',
-      ctx,
-    });
-
-    await provider.spawnTerminal(terminal);
-
-    const sessionId = makePtySessionId(terminal.projectId, terminal.sessionId, terminal.id);
-    expect(ptySessionRegistry.register).toHaveBeenCalledWith(
-      sessionId,
-      expect.anything(),
-      expect.objectContaining({ metadata: { title: terminal.name } })
-    );
-  });
-
   it('cleans up cached shell profiles after a non-respawned exit', async () => {
     const provider = new LocalTerminalProvider({
-      projectId: terminal.projectId,
-      scopeId: terminal.sessionId,
       sessionPath: '/repo',
       ctx,
     });

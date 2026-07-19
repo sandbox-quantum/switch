@@ -1,4 +1,3 @@
-import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 import type { Terminal } from '@shared/core/terminals/terminals';
 
 export type LifecycleScriptSpawnRequest = {
@@ -11,20 +10,12 @@ export type LifecycleScriptSpawnRequest = {
   watchDevServer?: boolean;
 };
 
-export type TerminalSpawnOptions = {
-  command?: { command: string; args: string[] };
-  shell?: TerminalShellId;
-};
-
+/**
+ * Spawns lifecycle-script PTYs (setup/run/teardown) for a workspace. One
+ * instance per workspace, owned by its LifecycleScriptService.
+ */
 export interface TerminalProvider {
   readonly kind: 'local' | 'ssh';
-  spawnTerminal(
-    terminal: Terminal,
-    initialSize?: { cols: number; rows: number },
-    options?: TerminalSpawnOptions
-  ): Promise<void>;
   spawnLifecycleScript(request: LifecycleScriptSpawnRequest): Promise<void>;
-  killTerminal(terminalId: string): Promise<void>;
   destroyAll(): Promise<void>;
-  detachAll(): Promise<void>;
 }

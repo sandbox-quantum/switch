@@ -85,7 +85,7 @@ describe('createSession', () => {
     mocks.provisionSessionRuntime.mockResolvedValue({
       path: '/repo',
       workspaceId: 'project-1',
-      sessionProvider: { agent: { start: mocks.startSession } },
+      agent: { start: mocks.startSession },
     });
     mocks.registerSession.mockResolvedValue(undefined);
     mocks.startSession.mockResolvedValue(undefined);

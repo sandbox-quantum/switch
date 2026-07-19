@@ -77,7 +77,6 @@ function makeTerminalProvider(): {
   const requests: LifecycleScriptSpawnRequest[] = [];
   const provider: TerminalProvider = {
     kind: 'local',
-    async spawnTerminal() {},
     async spawnLifecycleScript(request) {
       const { terminal } = request;
       const pty = new FakePty();
@@ -91,9 +90,7 @@ function makeTerminalProvider(): {
         }
       );
     },
-    async killTerminal() {},
     async destroyAll() {},
-    async detachAll() {},
   };
 
   return { provider, spawned, requests };

@@ -64,12 +64,7 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, project);
     await sessionRuntimeManager.registerSession(session.id, built, project.projectId, project.ctx);
 
-    await built.sessionProvider.agent.start(
-      session,
-      params.initialSize,
-      false,
-      params.initialPrompt
-    );
+    await built.agent.start(session, params.initialSize, false, params.initialPrompt);
   } catch (e) {
     await db.delete(sessions).where(eq(sessions.id, params.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });

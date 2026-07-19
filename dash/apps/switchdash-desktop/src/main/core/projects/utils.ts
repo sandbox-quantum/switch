@@ -1,8 +1,8 @@
 import { workspaceRegistry } from '@main/core/workspaces/workspace-registry';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
 
-export function resolveSession(_projectId: string, sessionId: string) {
-  return sessionRuntimeManager.getSession(sessionId) ?? null;
+export function resolveSessionAgent(_projectId: string, sessionId: string) {
+  return sessionRuntimeManager.getAgent(sessionId) ?? null;
 }
 
 export function resolveWorkspace(_projectId: string, workspaceId: string) {
