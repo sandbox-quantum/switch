@@ -1,6 +1,8 @@
+import { CircleCheck, HardDrive, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -11,6 +13,8 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
+import { Spinner } from '@renderer/lib/ui/spinner';
+import { localServerStore } from './local-server-store';
 import { switchServersStore } from './switch-servers-store';
 
 type Props = BaseModalProps<void> & {
@@ -22,7 +26,275 @@ type Props = BaseModalProps<void> & {
   initialName?: string;
   /** When set, the modal edits this existing server instead of adding one. */
   serverId?: string;
+  /** Jump straight to a step, skipping the local/remote chooser. */
+  mode?: 'local' | 'remote';
 };
+
+type Step = 'choose' | 'local' | 'remote';
+
+export const AddServerModal = observer(function AddServerModal(props: Props) {
+  const isEdit = props.serverId != null;
+  const [step, setStep] = useState<Step>(isEdit ? 'remote' : (props.mode ?? 'choose'));
+
+  if (step === 'choose') {
+    return (
+      <ChooseStep
+        onLocal={() => setStep('local')}
+        onRemote={() => setStep('remote')}
+        onClose={props.onClose}
+      />
+    );
+  }
+  if (step === 'local') {
+    return (
+      <LocalSetupStep
+        onBack={isEdit ? undefined : () => setStep('choose')}
+        onSuccess={props.onSuccess}
+        onClose={props.onClose}
+      />
+    );
+  }
+  return (
+    <RemoteServerStep
+      {...props}
+      isEdit={isEdit}
+      onBack={isEdit ? undefined : () => setStep('choose')}
+    />
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Step 1 — choose local vs remote
+// ---------------------------------------------------------------------------
+
+function ChooseStep({
+  onLocal,
+  onRemote,
+  onClose,
+}: {
+  onLocal: () => void;
+  onRemote: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <DialogHeader showCloseButton={false}>
+        <DialogTitle>Add a Switch server</DialogTitle>
+      </DialogHeader>
+      <DialogContentArea className="pt-0">
+        <div className="grid gap-3">
+          <ChoiceCard
+            icon={<HardDrive className="size-5" />}
+            title="Local server"
+            description="Run the full Switch stack on this machine with Docker. Best for trying Switch out."
+            onClick={onLocal}
+          />
+          <ChoiceCard
+            icon={<Server className="size-5" />}
+            title="Remote server"
+            description="Connect to an existing Switch gateway by URL."
+            onClick={onRemote}
+          />
+        </div>
+      </DialogContentArea>
+      <DialogFooter>
+        <Button variant="outline" onClick={onClose}>
+          Cancel
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+function ChoiceCard({
+  icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="bg-card hover:border-border-hover flex items-start gap-3 rounded-lg border border-border p-4 text-left hover:bg-background-tertiary-2"
+    >
+      <span className="mt-0.5 text-foreground-muted">{icon}</span>
+      <span className="space-y-1">
+        <span className="block text-sm font-medium text-foreground">{title}</span>
+        <span className="block text-xs text-foreground-muted">{description}</span>
+      </span>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2a — local server setup (preflight → progress → done)
+// ---------------------------------------------------------------------------
+
+const LocalSetupStep = observer(function LocalSetupStep({
+  onBack,
+  onSuccess,
+  onClose,
+}: {
+  onBack?: () => void;
+  onSuccess: () => void;
+  onClose: () => void;
+}) {
+  const store = localServerStore;
+
+  useEffect(() => {
+    void store.init();
+    void store.checkDocker();
+  }, [store]);
+
+  const running = store.isRunning;
+  const starting = store.isTransitioning;
+  const docker = store.docker;
+  const dockerReady = docker?.available ?? false;
+  const dockerUnavailable = docker && !docker.available ? docker : null;
+
+  const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
+  const onPrimary = () => {
+    if (running) onSuccess();
+    else void store.start();
+  };
+
+  return (
+    <>
+      <DialogHeader showCloseButton={false}>
+        <DialogTitle>Set up a local server</DialogTitle>
+      </DialogHeader>
+      <DialogContentArea className="space-y-4 pt-0">
+        <p className="text-sm text-foreground-muted">
+          switchdash will run the Switch stack on this machine with Docker (switch-core{' '}
+          {store.status?.version ?? ''}) and register it as a server.
+        </p>
+
+        {!running && (
+          <DockerStatus ready={dockerReady} unavailable={dockerUnavailable} checking={!docker} />
+        )}
+
+        {running && (
+          <Alert>
+            <CircleCheck className="size-4" />
+            <AlertTitle>Local server is running</AlertTitle>
+            <AlertDescription>
+              You can now onboard an agent against it from its page.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {store.error && !dockerUnavailable && !running && (
+          <Alert variant="destructive">
+            <AlertTitle>Setup failed</AlertTitle>
+            <AlertDescription>{store.error}</AlertDescription>
+          </Alert>
+        )}
+
+        {(starting || store.logs.length > 0) && !running && (
+          <div className="space-y-1.5">
+            {store.message && starting && (
+              <div className="flex items-center gap-2 text-sm text-foreground-muted">
+                <Spinner className="size-3.5" />
+                <span>{store.message}</span>
+              </div>
+            )}
+            <LogTail lines={store.logs} />
+          </div>
+        )}
+      </DialogContentArea>
+      <DialogFooter>
+        {onBack && !starting ? (
+          <Button variant="outline" onClick={onBack}>
+            Back
+          </Button>
+        ) : (
+          <Button variant="outline" onClick={onClose} disabled={starting}>
+            {running ? 'Close' : 'Cancel'}
+          </Button>
+        )}
+        <ConfirmButton onClick={onPrimary} disabled={starting || (!running && !dockerReady)}>
+          {starting ? 'Starting…' : primaryLabel}
+        </ConfirmButton>
+      </DialogFooter>
+    </>
+  );
+});
+
+function DockerStatus({
+  ready,
+  unavailable,
+  checking,
+}: {
+  ready: boolean;
+  unavailable: { reason: 'not-installed' | 'daemon-down'; detail: string } | null;
+  checking: boolean;
+}) {
+  if (checking) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-foreground-muted">
+        <Spinner className="size-3.5" />
+        <span>Checking Docker…</span>
+      </div>
+    );
+  }
+  if (unavailable) {
+    return (
+      <Alert variant="destructive">
+        <TriangleAlert className="size-4" />
+        <AlertTitle>
+          {unavailable.reason === 'not-installed'
+            ? 'Docker is not installed'
+            : 'Docker is not running'}
+        </AlertTitle>
+        <AlertDescription>{unavailable.detail}</AlertDescription>
+      </Alert>
+    );
+  }
+  if (ready) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-foreground">
+        <CircleCheck className="size-4 text-green-500" />
+        <span>Docker is ready.</span>
+      </div>
+    );
+  }
+  return null;
+}
+
+function LogTail({ lines }: { lines: string[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
+  if (lines.length === 0) return null;
+
+  return (
+    <div
+      ref={ref}
+      className="max-h-48 overflow-auto rounded-md border border-border bg-background-tertiary p-2 font-mono text-[11px] leading-relaxed text-foreground-muted"
+    >
+      {lines.map((line, i) => (
+        // Log lines have no stable id; index is fine for an append-only tail.
+        <div key={i} className="break-all whitespace-pre-wrap">
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2b — remote server form (also the edit form)
+// ---------------------------------------------------------------------------
 
 function looksLikeUrl(value: string): boolean {
   try {
@@ -33,15 +305,16 @@ function looksLikeUrl(value: string): boolean {
   }
 }
 
-export const AddServerModal = observer(function AddServerModal({
+const RemoteServerStep = observer(function RemoteServerStep({
   onSuccess,
   onClose,
+  onBack,
   initialGatewayUrl,
   initialApiUrl,
   initialName,
   serverId,
-}: Props) {
-  const isEdit = serverId != null;
+  isEdit,
+}: Props & { isEdit: boolean; onBack?: () => void }) {
   const [name, setName] = useState(initialName ?? '');
   const [gatewayUrl, setGatewayUrl] = useState(initialGatewayUrl ?? '');
   const [apiUrl, setApiUrl] = useState(initialApiUrl ?? '');
@@ -68,9 +341,10 @@ export const AddServerModal = observer(function AddServerModal({
     if (!isValid) return;
     setSubmitting(true);
     setError(null);
-    const saved = isEdit
-      ? await switchServersStore.updateServer(serverId, trimmedName, trimmedGateway, trimmedApi)
-      : await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
+    const saved =
+      isEdit && serverId
+        ? await switchServersStore.updateServer(serverId, trimmedName, trimmedGateway, trimmedApi)
+        : await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
     if (!saved) {
       setError(
         switchServersStore.error ??
@@ -85,7 +359,7 @@ export const AddServerModal = observer(function AddServerModal({
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>{isEdit ? 'Edit Switch server' : 'Add Switch server'}</DialogTitle>
+        <DialogTitle>{isEdit ? 'Edit Switch server' : 'Add a remote server'}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <FieldGroup>
@@ -94,7 +368,7 @@ export const AddServerModal = observer(function AddServerModal({
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Local dev"
+              placeholder="Pilot"
               autoFocus
             />
           </Field>
@@ -123,8 +397,8 @@ export const AddServerModal = observer(function AddServerModal({
         </FieldGroup>
       </DialogContentArea>
       <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          Cancel
+        <Button variant="outline" onClick={onBack ?? onClose}>
+          {onBack ? 'Back' : 'Cancel'}
         </Button>
         <ConfirmButton onClick={() => void handleSubmit()} disabled={!isValid || submitting}>
           {submitting ? (isEdit ? 'Saving…' : 'Adding…') : isEdit ? 'Save changes' : 'Add server'}

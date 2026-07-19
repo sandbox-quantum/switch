@@ -81,7 +81,9 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
           {store.servers.map((server) => (
             <ServerEntry key={server.id} serverId={server.id} />
           ))}
-          {!hasManagedServer && <LocalServerStartRow />}
+          {!hasManagedServer && (
+            <LocalServerStartRow onOpen={() => showAddServerModal({ mode: 'local' })} />
+          )}
           {empty && (
             <button
               type="button"
@@ -97,29 +99,33 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   );
 });
 
-const LocalServerStartRow = observer(function LocalServerStartRow() {
+const LocalServerStartRow = observer(function LocalServerStartRow({
+  onOpen,
+}: {
+  onOpen: () => void;
+}) {
   const local = localServerStore;
+  // A start kicked off from the modal keeps running if the modal is closed —
+  // reflect that inline so the sidebar still shows progress.
   const starting = local.phase === 'starting';
 
+  if (starting) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-foreground-muted">
+        <Spinner className="size-3.5" />
+        <span className="truncate">{local.message ?? 'Starting local server…'}</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-1">
-      {starting ? (
-        <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-foreground-muted">
-          <Spinner className="size-3.5" />
-          <span className="truncate">{local.message ?? 'Starting local server…'}</span>
-        </div>
-      ) : (
-        <button
-          type="button"
-          disabled={local.busy}
-          onClick={() => void local.start()}
-          className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary hover:text-foreground disabled:opacity-50"
-        >
-          Start a local server…
-        </button>
-      )}
-      {local.error && !starting && <p className="px-3 py-1 text-xs text-red-500">{local.error}</p>}
-    </div>
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary hover:text-foreground"
+    >
+      Start a local server…
+    </button>
   );
 });
 

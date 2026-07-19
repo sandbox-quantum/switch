@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { log } from '@main/lib/logger';
 import { LOCAL_SERVER_PROFILES, LOCAL_SERVER_PROJECT_NAME } from './constants';
@@ -43,11 +43,46 @@ async function runCompose(args: string[], timeout: number): Promise<string> {
   }
 }
 
-/** Bring the stack up in the background (`up -d`). Assumes the compose file and
- * `.env` have already been written and GHCR login has run. */
-export async function composeUp(): Promise<void> {
+/**
+ * Bring the stack up in the background (`up -d`), streaming each line of output
+ * to `onLog` so the UI can show a live tail during the (slow) image pull.
+ * Assumes the compose file and `.env` are written and GHCR login has run. docker
+ * compose emits pull/startup progress on stderr, so both streams are forwarded.
+ */
+export function composeUp(onLog: (line: string) => void): Promise<void> {
   log.info('local-switch-server: docker compose up');
-  await runCompose([...baseArgs(), 'up', '-d'], COMPOSE_TIMEOUT_MS);
+  return new Promise((resolve, reject) => {
+    const args = [...baseArgs(), 'up', '-d'];
+    const child = spawn(DOCKER_EXECUTABLE, args, { cwd: localServerDir() });
+    let stderrTail = '';
+
+    const emitLines = (chunk: Buffer) => {
+      for (const raw of chunk.toString('utf8').split('\n')) {
+        const line = raw.replace(/\r$/, '');
+        if (line.length > 0) onLog(line);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`docker compose up timed out after ${COMPOSE_TIMEOUT_MS}ms`));
+    }, COMPOSE_TIMEOUT_MS);
+
+    child.stdout.on('data', emitLines);
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4000);
+      emitLines(chunk);
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`docker compose up failed (exit ${code}): ${stderrTail.trim()}`));
+    });
+  });
 }
 
 /** Stop and remove the stack's containers. `removeVolumes` also destroys the

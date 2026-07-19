@@ -4,8 +4,14 @@ import type {
   DockerAvailability,
   LocalServerStatus,
 } from '@shared/core/local-switch-server/local-switch-server';
-import { localServerStatusChannel } from '@shared/events/localSwitchServerEvents';
+import {
+  localServerLogChannel,
+  localServerStatusChannel,
+} from '@shared/events/localSwitchServerEvents';
 import { switchServersStore } from './switch-servers-store';
+
+/** Cap the retained log tail so a long pull can't grow the buffer unbounded. */
+const MAX_LOG_LINES = 400;
 
 /**
  * Renderer store for local-server mode. Mirrors the main-process supervisor's
@@ -19,8 +25,11 @@ export class LocalServerStore {
   /** True while a start/stop/reset RPC is in flight. */
   busy = false;
   error: string | null = null;
+  /** Live `docker compose` output tail during a start. */
+  logs: string[] = [];
 
   private off: (() => void) | null = null;
+  private offLog: (() => void) | null = null;
 
   constructor() {
     makeAutoObservable(this);
@@ -50,6 +59,16 @@ export class LocalServerStore {
         });
       });
     }
+    if (!this.offLog) {
+      this.offLog = events.on(localServerLogChannel, ({ line }) => {
+        runInAction(() => {
+          this.logs.push(line);
+          if (this.logs.length > MAX_LOG_LINES) {
+            this.logs.splice(0, this.logs.length - MAX_LOG_LINES);
+          }
+        });
+      });
+    }
     try {
       const status = await rpc.localSwitchServer.getStatus();
       runInAction(() => {
@@ -63,6 +82,8 @@ export class LocalServerStore {
   dispose(): void {
     this.off?.();
     this.off = null;
+    this.offLog?.();
+    this.offLog = null;
   }
 
   async checkDocker(): Promise<void> {
@@ -80,6 +101,7 @@ export class LocalServerStore {
     runInAction(() => {
       this.busy = true;
       this.error = null;
+      this.logs = [];
     });
     try {
       const result = await rpc.localSwitchServer.start();

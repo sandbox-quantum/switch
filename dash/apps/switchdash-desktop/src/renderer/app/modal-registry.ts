@@ -37,7 +37,7 @@ export const modalRegistry = {
   feedbackModal: createModal(FeedbackModal),
   renameSessionModal: createModal(RenameSessionModal, { size: 'xs' }),
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
-  addServerModal: createModal(AddServerModal, { size: 'sm' }),
+  addServerModal: createModal(AddServerModal, { size: 'md' }),
   assignServerModal: createModal(AssignServerModal, { size: 'sm' }),
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ModalRegistryEntry<any, any>>;

@@ -12,7 +12,10 @@ import type {
   LocalServerStatus,
   StartLocalServerResult,
 } from '@shared/core/local-switch-server/local-switch-server';
-import { localServerStatusChannel } from '@shared/events/localSwitchServerEvents';
+import {
+  localServerLogChannel,
+  localServerStatusChannel,
+} from '@shared/events/localSwitchServerEvents';
 import { materialiseComposeFile } from './bundled-compose';
 import { composeDown, composeUp, isStackRunning } from './compose';
 import {
@@ -107,7 +110,7 @@ class LocalServerService {
       );
 
       this.setStatus({ message: 'Starting containers (pulling images if needed)…' });
-      await composeUp();
+      await composeUp((line) => events.emit(localServerLogChannel, { line }));
 
       this.setStatus({ message: 'Waiting for the server to become healthy…' });
       const healthy = await waitForHealth(LOCAL_SERVER_API_URL, { signal: this.startAbort.signal });
