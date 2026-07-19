@@ -1,13 +1,4 @@
-import { observable } from 'mobx';
-import type { WorkspaceResolution } from '@shared/core/workspaces/workspaces';
 import { SessionRuntimeStore } from './session-runtime-store';
-
-export type SessionRuntimeBootstrapState =
-  | { kind: 'pending' }
-  | { kind: 'resolving' }
-  | { kind: 'needs-resolution'; resolution: WorkspaceResolution }
-  | { kind: 'ready' }
-  | { kind: 'error'; message: string };
 
 type SessionRuntimeRegistryEntry = {
   store: SessionRuntimeStore;
@@ -21,7 +12,6 @@ type SessionRuntimeRegistryEntry = {
  */
 export class SessionRuntimeRegistryStore {
   private readonly entries = new Map<string, SessionRuntimeRegistryEntry>();
-  private readonly bootstrapStates = observable.map<string, SessionRuntimeBootstrapState>();
 
   acquire(locationId: string, path: string): SessionRuntimeStore {
     const existing = this.entries.get(locationId);
@@ -59,16 +49,7 @@ export class SessionRuntimeRegistryStore {
     if (entry.refCount <= 0) {
       entry.store.dispose();
       this.entries.delete(locationId);
-      this.bootstrapStates.delete(locationId);
     }
-  }
-
-  setBootstrapState(locationId: string, state: SessionRuntimeBootstrapState): void {
-    this.bootstrapStates.set(locationId, state);
-  }
-
-  bootstrapStateFor(locationId: string): SessionRuntimeBootstrapState | undefined {
-    return this.bootstrapStates.get(locationId);
   }
 }
 

@@ -19,7 +19,6 @@ import type {
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
 import { sessionAgentRegistry } from './session-agent-registry';
-import { sessionRuntimeRegistry } from './session-runtime-registry';
 import {
   createUnprovisionedSession,
   createUnregisteredSession,
@@ -312,8 +311,6 @@ export class SessionManagerStore {
       });
       return;
     }
-
-    sessionRuntimeRegistry.setBootstrapState(this.locationId, { kind: 'ready' });
 
     runInAction(() => {
       const current = this.sessions.get(sessionId);
