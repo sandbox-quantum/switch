@@ -12,6 +12,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { LocalServerControls } from './LocalServerControls';
 import { switchServersStore } from './switch-servers-store';
 
 const card = 'rounded-lg border border-border bg-card p-4';
@@ -68,22 +69,24 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               API: {server.apiUrl}
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            onClick={() =>
-              showEditServerModal({
-                serverId,
-                initialName: server.name,
-                initialGatewayUrl: server.gatewayUrl,
-                initialApiUrl: server.apiUrl,
-              })
-            }
-          >
-            <Pencil className="size-3.5" />
-            Edit
-          </Button>
+          {!server.managed && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() =>
+                showEditServerModal({
+                  serverId,
+                  initialName: server.name,
+                  initialGatewayUrl: server.gatewayUrl,
+                  initialApiUrl: server.apiUrl,
+                })
+              }
+            >
+              <Pencil className="size-3.5" />
+              Edit
+            </Button>
+          )}
         </header>
 
         {store.error && (
@@ -92,6 +95,8 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             <AlertDescription>{store.error}</AlertDescription>
           </Alert>
         )}
+
+        {server.managed && <LocalServerControls />}
 
         <div className={`${card} flex items-center justify-between gap-3`}>
           <div className="flex items-center gap-2 text-sm">

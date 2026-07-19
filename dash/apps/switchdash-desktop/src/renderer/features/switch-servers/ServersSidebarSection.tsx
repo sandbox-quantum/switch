@@ -10,9 +10,11 @@ import {
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { buttonVariants } from '@renderer/lib/ui/button';
 import { MicroLabel } from '@renderer/lib/ui/label';
+import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import { SidebarMenu, SidebarMenuButton } from '../sidebar/sidebar-primitives';
+import { localServerStore } from './local-server-store';
 import { switchServersStore } from './switch-servers-store';
 
 export const ServersSidebarSection = observer(function ServersSidebarSection() {
@@ -21,9 +23,13 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
 
   useEffect(() => {
     void store.init();
+    void localServerStore.init();
     const onFocus = () => void store.refreshAllStatuses();
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      localServerStore.dispose();
+    };
   }, [store]);
 
   // Nothing registered yet — keep the sidebar uncluttered, but still expose a
@@ -70,18 +76,45 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
       {store.serversExpanded && (
         <SidebarMenu className="px-2 pb-1">
           {empty ? (
-            <button
-              type="button"
-              onClick={() => showAddServerModal({})}
-              className="px-3 py-1.5 text-left text-xs text-foreground-tertiary-passive hover:text-foreground-tertiary"
-            >
-              Add a Switch server…
-            </button>
+            <EmptyState onAddServer={() => showAddServerModal({})} />
           ) : (
             store.servers.map((server) => <ServerEntry key={server.id} serverId={server.id} />)
           )}
         </SidebarMenu>
       )}
+    </div>
+  );
+});
+
+const EmptyState = observer(function EmptyState({ onAddServer }: { onAddServer: () => void }) {
+  const local = localServerStore;
+  const starting = local.phase === 'starting';
+
+  return (
+    <div className="space-y-1 px-1 py-0.5">
+      {starting ? (
+        <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-foreground-muted">
+          <Spinner className="size-3.5" />
+          <span className="truncate">{local.message ?? 'Starting local server…'}</span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={local.busy}
+          onClick={() => void local.start()}
+          className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary hover:text-foreground disabled:opacity-50"
+        >
+          Start a local server…
+        </button>
+      )}
+      {local.error && !starting && <p className="px-3 py-1 text-xs text-red-500">{local.error}</p>}
+      <button
+        type="button"
+        onClick={onAddServer}
+        className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary-passive hover:text-foreground-tertiary"
+      >
+        Add a remote server…
+      </button>
     </div>
   );
 });
