@@ -28,6 +28,7 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
 import {
   agentExistsOnServer,
+  fetchAgentDetail,
   fetchAgentRooms,
   fetchAgents,
   fetchAuthConfig,
@@ -152,6 +153,12 @@ export const switchServersController = createRPCController({
 
   listRemoteAgents: async (serverId: string): Promise<RemoteAgentSummary[]> =>
     fetchAgents(await requireServer(serverId)),
+
+  getRemoteAgent: async (params: {
+    serverId: string;
+    agentId: string;
+  }): Promise<RemoteAgentSummary> =>
+    fetchAgentDetail(await requireServer(params.serverId), params.agentId),
 
   listRemoteRooms: async (serverId: string): Promise<RemoteRoomSummary[]> =>
     fetchRooms(await requireServer(serverId)),

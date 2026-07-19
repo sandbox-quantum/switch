@@ -21,6 +21,14 @@ below:
 
 ### [Unreleased]
 
+### [0.4.0] - 2026-07-19
+
+#### Added
+- The standalone Docker Compose file is published to GHCR as a versioned OCI
+  artifact (`standalone-compose:<version>`, plus `latest`) on every release,
+  pinned to the same version as the images and chart — switchdash's
+  local-server mode consumes it (CHOO-1428).
+
 ### [0.3.0] - 2026-07-17
 
 #### Added
@@ -64,6 +72,22 @@ below:
 ## switchdash
 
 ### [Unreleased]
+
+### [0.9.2] - 2026-07-19
+
+#### Added
+- Sidebar agents are labelled by their registered Switch name (CHOO-1082).
+
+### [0.9.1] - 2026-07-19
+
+#### Changed
+- Replaced the workspace/project abstraction with first-class Locations —
+  agents attach directly to a location (working directory) (CHOO-1426).
+- Collapsed sessions to a single conversation each and simplified
+  session/conversation management throughout (CHOO-1424).
+
+Existing databases migrate forward automatically on first launch (schema
+migrations 0031–0036, including a locations backfill).
 
 ### [0.9.0] - 2026-07-17
 

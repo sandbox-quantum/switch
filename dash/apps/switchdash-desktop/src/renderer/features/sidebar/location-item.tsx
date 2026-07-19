@@ -75,6 +75,20 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
     enabled: !!locationId,
   });
 
+  // The row is labelled by the agent's registered Switch name (its identity on
+  // the server), not the local directory-derived location name. Resolve it by
+  // id from the gateway, keyed on (server, switch agent id) so it caches and is
+  // shared across rows for the same agent.
+  const remoteAgentQuery = useQuery({
+    queryKey: ['remoteAgentName', agentQuery.data?.serverId, agentQuery.data?.switchAgentId],
+    queryFn: async () =>
+      rpc.switchServers.getRemoteAgent({
+        serverId: agentQuery.data!.serverId!,
+        agentId: agentQuery.data!.switchAgentId!,
+      }),
+    enabled: !!agentQuery.data?.serverId && !!agentQuery.data?.switchAgentId,
+  });
+
   const location = getLocationStore(locationId);
 
   const currentLocationId =
@@ -97,7 +111,13 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
 
   const iconClass =
     'absolute h-4 w-4 opacity-100 transition-opacity duration-150 group-hover/row:opacity-0';
-  const locationLabel = location.name ?? 'agent';
+  // Registered Switch name wins. While the lookup is still in flight, keep the
+  // local name so the row does not flash; once it settles without a name
+  // (server unlinked, agent unregistered, or offline) show a stable placeholder.
+  const switchName = remoteAgentQuery.data?.name?.trim() || null;
+  const locationLabel =
+    switchName ??
+    (remoteAgentQuery.isLoading ? (location.name ?? 'Unnamed agent') : 'Unnamed agent');
   const toggleExpanded = () => sidebarStore.toggleLocationExpanded(locationId);
 
   // Clicking the row opens the agent's page (Sessions / Subagents / Settings),
@@ -185,7 +205,7 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
               )}
             >
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate">{location.name}</span>
+                <span className="truncate">{locationLabel}</span>
                 {location.data?.sshHost != null && (
                   <Tooltip>
                     <TooltipTrigger>
@@ -262,7 +282,7 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
           onClick={() => {
             void confirmDeleteAgent({
               locationId,
-              locationLabel: location.name ?? 'this agent',
+              locationLabel: switchName ?? location.name ?? 'this agent',
               onDeleted: () => {
                 if (isLocationActive) navigate('home');
               },

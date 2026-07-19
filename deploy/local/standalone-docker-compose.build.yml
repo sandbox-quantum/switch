@@ -1,0 +1,28 @@
+# Build-from-source override for the standalone stack.
+#
+# The base standalone-docker-compose.yml pulls published GHCR images. Repo
+# users who want to build the switch-core / gateway / setup images from the
+# working tree layer this override on top, which re-adds the `build:` blocks.
+# Compose still tags the built images with the base file's `image:` name, so
+# `docker compose up` uses the local build instead of pulling.
+#
+#   docker compose -f standalone-docker-compose.yml -f standalone-docker-compose.build.yml \
+#     --project-directory . up -d --build
+#
+# This is what `just standalone-up` runs.
+
+services:
+  switch:
+    build:
+      context: .
+      dockerfile: deploy/shared_resources/images/Dockerfile.switch
+
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/shared_resources/images/Dockerfile.gateway
+
+  setup:
+    build:
+      context: .
+      dockerfile: deploy/shared_resources/images/Dockerfile.setup

@@ -178,6 +178,39 @@ export async function fetchAgents(server: SwitchServer): Promise<RemoteAgentSumm
 }
 
 /**
+ * Fetch one agent's registered detail by id (`GET /agents/{id}`, which returns
+ * the gateway `AgentDetail` — a superset of `AgentSummary`). Used to resolve an
+ * agent's registered Switch name for display. A 404 surfaces as a `GatewayError`
+ * so callers can distinguish "not on this server" from other failures.
+ */
+export async function fetchAgentDetail(
+  server: SwitchServer,
+  agentId: string
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as {
+    id: string;
+    name: string;
+    description: string;
+    connector_type: string;
+    owner_name: string | null;
+    known_agent_type: string | null;
+    created_at: string;
+  };
+  return {
+    id: json.id,
+    name: json.name,
+    description: json.description,
+    connectorType: json.connector_type,
+    ownerName: json.owner_name,
+    knownAgentType: json.known_agent_type,
+    createdAt: json.created_at,
+  };
+}
+
+/**
  * Whether `agentId` is a registered agent on `server`. Used to verify the user's
  * chosen server actually owns the agent before linking it. A 404 from the
  * gateway means "not this server" (returned as false); an unauthorized error

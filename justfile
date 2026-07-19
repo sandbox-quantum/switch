@@ -79,15 +79,18 @@ gateway-build:
     cd gateway && npm run build
 
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
+# Repo users build from source: the build override re-adds the `build:` blocks
+# so images come from the working tree, not GHCR. All profiles are enabled to
+# bring up the full all-in-one stack (Mattermost bridge + gateway).
 standalone-up:
-    docker compose -f deploy/local/standalone-docker-compose.yml --project-directory . up -d --build
+    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile collab --profile gateway --project-directory . up -d --build
 
 standalone-down:
-    docker compose -f deploy/local/standalone-docker-compose.yml --project-directory . down
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down
 
 standalone-reset:
     #!/usr/bin/env bash
     set -euo pipefail
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    docker compose -f deploy/local/standalone-docker-compose.yml --project-directory . down -v
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down -v
