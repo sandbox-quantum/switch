@@ -67,12 +67,19 @@ class LocalServerService {
   }
 
   /** Reconcile status at boot so a stack that survived the last quit shows as
-   * running without the user re-starting it. */
+   * running without the user re-starting it. A surviving stack never goes
+   * through start(), so migrate the managed row to the current URL contract here
+   * too — the compose ports/gateway can change across app versions. */
   async initialize(): Promise<void> {
     try {
       const managed = await getManagedServer();
       if (managed && (await isStackRunning())) {
-        this.setStatus({ phase: 'running', serverId: managed.id, message: null, error: null });
+        const server = await ensureManagedServer({
+          name: LOCAL_SERVER_NAME,
+          gatewayUrl: LOCAL_SERVER_GATEWAY_URL,
+          apiUrl: LOCAL_SERVER_API_URL,
+        });
+        this.setStatus({ phase: 'running', serverId: server.id, message: null, error: null });
       }
     } catch (error) {
       log.warn('local-switch-server: boot status reconcile failed', { error });

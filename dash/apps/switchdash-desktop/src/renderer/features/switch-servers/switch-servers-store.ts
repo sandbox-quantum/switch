@@ -97,12 +97,14 @@ export class SwitchServersStore {
       runInAction(() => {
         this.statuses.set(serverId, status);
       });
-    } catch (cause) {
+    } catch {
       // An unreachable server is a real, displayable state — record it as
-      // disconnected rather than throwing away the whole refresh.
+      // disconnected (the per-server status dot shows it). A background poll
+      // failure must NOT raise the page-level `error` banner: that field is
+      // global, so one unreachable server would paint an error over every
+      // server's view.
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
-        this.error = cause instanceof Error ? cause.message : String(cause);
       });
     } finally {
       runInAction(() => {
