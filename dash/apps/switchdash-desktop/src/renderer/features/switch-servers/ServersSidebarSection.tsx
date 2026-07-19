@@ -35,6 +35,9 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   // Nothing registered yet — keep the sidebar uncluttered, but still expose a
   // way to add the first server.
   const empty = store.servers.length === 0;
+  // Offer to start a local server whenever there isn't one already, even if the
+  // user has remote servers registered.
+  const hasManagedServer = store.servers.some((s) => s.managed);
 
   return (
     <div className="flex flex-col">
@@ -75,10 +78,18 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
 
       {store.serversExpanded && (
         <SidebarMenu className="px-2 pb-1">
-          {empty ? (
-            <EmptyState onAddServer={() => showAddServerModal({})} />
-          ) : (
-            store.servers.map((server) => <ServerEntry key={server.id} serverId={server.id} />)
+          {store.servers.map((server) => (
+            <ServerEntry key={server.id} serverId={server.id} />
+          ))}
+          {!hasManagedServer && <LocalServerStartRow />}
+          {empty && (
+            <button
+              type="button"
+              onClick={() => showAddServerModal({})}
+              className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary-passive hover:text-foreground-tertiary"
+            >
+              Add a remote server…
+            </button>
           )}
         </SidebarMenu>
       )}
@@ -86,14 +97,14 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   );
 });
 
-const EmptyState = observer(function EmptyState({ onAddServer }: { onAddServer: () => void }) {
+const LocalServerStartRow = observer(function LocalServerStartRow() {
   const local = localServerStore;
   const starting = local.phase === 'starting';
 
   return (
-    <div className="space-y-1 px-1 py-0.5">
+    <div className="space-y-1">
       {starting ? (
-        <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-foreground-muted">
+        <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-foreground-muted">
           <Spinner className="size-3.5" />
           <span className="truncate">{local.message ?? 'Starting local server…'}</span>
         </div>
@@ -108,13 +119,6 @@ const EmptyState = observer(function EmptyState({ onAddServer }: { onAddServer: 
         </button>
       )}
       {local.error && !starting && <p className="px-3 py-1 text-xs text-red-500">{local.error}</p>}
-      <button
-        type="button"
-        onClick={onAddServer}
-        className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary-passive hover:text-foreground-tertiary"
-      >
-        Add a remote server…
-      </button>
     </div>
   );
 });
