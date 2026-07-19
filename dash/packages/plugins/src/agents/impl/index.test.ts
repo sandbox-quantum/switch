@@ -156,7 +156,7 @@ describe('pluginRegistry', () => {
       cli: 'grok',
       autoApprove: true,
       initialPrompt: 'Fix the bug',
-      sessionId: 'conv-1',
+      sessionId: 'session-1',
       isResuming: false,
       model: '',
     });

@@ -26,14 +26,14 @@ function spec(overrides: Partial<AgentLaunchSpec> = {}): AgentLaunchSpec {
 describe('materializeAgentCommand', () => {
   it('substitutes the session id and initial prompt tokens', () => {
     const cmd = materializeAgentCommand(spec(), {
-      sessionId: 'conv-9',
+      sessionId: 'session-9',
       initialPrompt: 'connect to switch room room-x',
       extraEnv: {},
     });
     expect(cmd.command).toBe('/usr/bin/claude');
     expect(cmd.args).toEqual([
       '--session-id',
-      'conv-9',
+      'session-9',
       '--dangerously-skip-permissions',
       'connect to switch room room-x',
     ]);

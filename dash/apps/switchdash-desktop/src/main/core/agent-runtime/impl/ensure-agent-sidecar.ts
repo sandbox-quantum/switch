@@ -11,7 +11,7 @@ import { resolveSidecarBundlePath } from './resolve-sidecar-bundle';
 
 /**
  * Deploy + launch (or reattach to) the one agent-scoped remote sidecar and
- * return its hook endpoint. Shared by the SSH conversation provider (which
+ * return its hook endpoint. Shared by the SSH agent runtime (which
  * points a UI-started session's hook env at the endpoint) and the auto-session
  * setup path (which just needs the sidecar — and its watcher — running). One
  * sidecar per remote repo dir, so both callers reattach to the same instance.

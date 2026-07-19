@@ -6,15 +6,12 @@ import { resolveSshCommand } from '@main/core/pty/spawn-utils';
 import { openSsh2Pty } from '@main/core/pty/ssh2-pty';
 import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeTmuxSessionName } from '@main/core/pty/tmux-session-name';
-import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import type { SshConnectionManagerEvent } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { resolveTerminalShellWithSystemFallback } from '@main/core/terminal-shell/resolver';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import {
   type LifecycleScriptSpawnRequest,
   type TerminalProvider,
-  type TerminalSpawnOptions,
 } from '@main/core/terminals/terminal-provider';
 import { log } from '@main/lib/logger';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
@@ -29,7 +26,6 @@ const MAX_RESPAWNS = 2;
 type SpawnPolicy = {
   respawnOnExit: boolean;
   preserveBufferOnExit: boolean;
-  trackForRehydrate: boolean;
 };
 
 export class SshTerminalProvider implements TerminalProvider {
@@ -39,8 +35,6 @@ export class SshTerminalProvider implements TerminalProvider {
   private knownSessionIds = new Set<string>();
   private shellProfiles = new Map<string, ResolvedShellProfile>();
   private respawnCounts = new Map<string, number>();
-  private terminals = new Map<string, Terminal>();
-  private readonly locationId: string;
   private readonly scopeId: string;
   private readonly sessionPath: string;
   private readonly sessionEnvVars: Record<string, string>;
@@ -48,11 +42,8 @@ export class SshTerminalProvider implements TerminalProvider {
   private readonly shellSetup?: string;
   private readonly ctx: IExecutionContext;
   private readonly proxy: SshClientProxy;
-  private readonly connectionId: string;
-  private readonly _handleReconnect: (evt: SshConnectionManagerEvent) => void;
 
   constructor({
-    locationId,
     scopeId,
     sessionPath,
     sessionEnvVars = {},
@@ -60,9 +51,7 @@ export class SshTerminalProvider implements TerminalProvider {
     shellSetup,
     ctx,
     proxy,
-    connectionId,
   }: {
-    locationId: string;
     scopeId: string;
     sessionPath: string;
     sessionEnvVars?: Record<string, string>;
@@ -70,9 +59,7 @@ export class SshTerminalProvider implements TerminalProvider {
     shellSetup?: string;
     ctx: IExecutionContext;
     proxy: SshClientProxy;
-    connectionId: string;
   }) {
-    this.locationId = locationId;
     this.scopeId = scopeId;
     this.sessionPath = sessionPath;
     this.sessionEnvVars = sessionEnvVars;
@@ -80,39 +67,6 @@ export class SshTerminalProvider implements TerminalProvider {
     this.shellSetup = shellSetup;
     this.ctx = ctx;
     this.proxy = proxy;
-    this.connectionId = connectionId;
-    this._handleReconnect = (evt: SshConnectionManagerEvent) => {
-      if (evt.type === 'reconnected' && evt.connectionId === this.connectionId) {
-        this.rehydrate().catch((e: unknown) => {
-          log.error('SshTerminalProvider: rehydrate failed after reconnect', {
-            scopeId: this.scopeId,
-            connectionId: this.connectionId,
-            error: String(e),
-          });
-        });
-      }
-    };
-    sshConnectionManager.on('connection-event', this._handleReconnect);
-  }
-
-  async spawnTerminal(
-    terminal: Terminal,
-    initialSize: { cols: number; rows: number } = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS },
-    options: TerminalSpawnOptions = {}
-  ): Promise<void> {
-    return this.spawnWithPolicy(
-      terminal,
-      initialSize,
-      options.command,
-      undefined,
-      options.shell ?? terminal.shellId,
-      { title: terminal.name, isRemote: true },
-      {
-        respawnOnExit: true,
-        preserveBufferOnExit: false,
-        trackForRehydrate: true,
-      }
-    );
   }
 
   async spawnLifecycleScript({
@@ -133,7 +87,6 @@ export class SshTerminalProvider implements TerminalProvider {
       {
         respawnOnExit,
         preserveBufferOnExit,
-        trackForRehydrate: false,
       }
     );
   }
@@ -150,9 +103,6 @@ export class SshTerminalProvider implements TerminalProvider {
     const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
     this.knownSessionIds.add(sessionId);
     if (this.sessions.has(sessionId)) return;
-    if (policy.trackForRehydrate) {
-      this.terminals.set(terminal.id, terminal);
-    }
 
     const cfg: GeneralSessionConfig = {
       sessionId: this.scopeId,
@@ -267,87 +217,17 @@ export class SshTerminalProvider implements TerminalProvider {
     return profile;
   }
 
-  /**
-   * Re-attach every tracked terminal after an SSH reconnect. The previous
-   * channel is dead once the transport was rebuilt even if its `close` has not
-   * fired yet, so the session may still linger in the map — skipping it (the
-   * old behavior) left the pane frozen. We discard the stale local channel
-   * first (the remote tmux session survives, so the re-spawn re-attaches to it)
-   * and always re-spawn.
-   */
-  async rehydrate(): Promise<void> {
-    const terminals = Array.from(this.terminals.values());
-    let reattached = 0;
-    await Promise.all(
-      terminals.map(async (terminal) => {
-        const sessionId = makePtySessionId(terminal.locationId, terminal.sessionId, terminal.id);
-        this.discardLocalSession(sessionId);
-        try {
-          await this.spawnTerminal(terminal);
-          reattached += 1;
-        } catch (e) {
-          log.error('SshTerminalProvider: rehydrate failed', {
-            terminalId: terminal.id,
-            error: String(e),
-          });
-        }
-      })
-    );
-    log.warn('SshTerminalProvider: rehydrated terminals after reconnect', {
-      connectionId: this.connectionId,
-      scopeId: this.scopeId,
-      total: terminals.length,
-      reattached,
-    });
-  }
-
-  /**
-   * Tear down the local (dead) PTY channel for a session without touching the
-   * remote tmux session, and drop it from the maps so a subsequent spawn is not
-   * skipped by the `sessions.has` guard. `unregister` is pty-scoped so it is a
-   * no-op if the session has already been replaced.
-   */
-  private discardLocalSession(sessionId: string): void {
-    const pty = this.sessions.get(sessionId);
-    if (!pty) return;
-    this.sessions.delete(sessionId);
-    try {
-      pty.kill();
-    } catch {}
-    ptySessionRegistry.unregister(sessionId, { pty });
-  }
-
-  async killTerminal(terminalId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.locationId, this.scopeId, terminalId);
-    this.knownSessionIds.delete(sessionId);
-    const pty = this.sessions.get(sessionId);
-    if (pty) {
-      try {
-        pty.kill();
-      } catch {}
-      this.sessions.delete(sessionId);
-      ptySessionRegistry.unregister(sessionId);
-    }
-    this.terminals.delete(terminalId);
-    this.shellProfiles.delete(sessionId);
-    if (this.tmux) {
-      await killTmuxSession(this.ctx, makeTmuxSessionName(sessionId));
-    }
-  }
-
   async destroyAll(): Promise<void> {
-    sshConnectionManager.off('connection-event', this._handleReconnect);
     const sessionIds = Array.from(this.knownSessionIds);
     await this.detachAll();
     if (this.tmux) {
       await Promise.all(sessionIds.map((id) => killTmuxSession(this.ctx, makeTmuxSessionName(id))));
     }
     this.knownSessionIds.clear();
-    this.terminals.clear();
     this.shellProfiles.clear();
   }
 
-  async detachAll(): Promise<void> {
+  private async detachAll(): Promise<void> {
     for (const [sessionId, pty] of this.sessions) {
       try {
         pty.kill();

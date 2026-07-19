@@ -83,40 +83,24 @@ export const ptyController = createRPCController({
   },
 
   /**
-   * Stop a terminal or lifecycle-script PTY for good.
+   * Stop a lifecycle-script PTY for good. Lifecycle scripts never respawn, so
+   * a raw kill is sufficient and safe.
    *
-   * Unlike `kill`, which only terminates the OS process, this routes a terminal
-   * through its owning provider so it leaves respawn tracking and stays stopped.
    * Agent PTYs are session lifecycle, not raw PTY I/O — stop those through
    * `rpc.sessions.stopAgent` instead; this rejects them.
    */
   stopSession: async (sessionId: string) => {
     const parsed = parsePtySessionId(sessionId);
     if (!parsed) return err({ type: 'invalid_session' as const });
-    const { scopeId, leafId } = parsed;
 
-    // Agent PTYs carry a providerId in their registry metadata; plain terminals
-    // and lifecycle scripts do not — that distinguishes the two.
+    // Agent PTYs carry a providerId in their registry metadata; lifecycle
+    // scripts do not — that distinguishes the two.
     if (ptySessionRegistry.getMetadata(sessionId)?.providerId !== undefined) {
       return err({ type: 'invalid_session' as const });
     }
 
-    const session = sessionRuntimeManager.getSession(scopeId);
-    if (session) {
-      try {
-        await session.terminals.killTerminal(leafId);
-      } catch (e) {
-        log.warn('ptyController.stopSession: error stopping session PTY', {
-          sessionId,
-          error: String(e),
-        });
-        return err({ type: 'stop_failed' as const, message: String((e as Error)?.message || e) });
-      }
-      return ok();
-    }
-
-    // Lifecycle scripts are scoped by location id (no session match) and never
-    // respawn, so a raw kill is sufficient and safe.
+    // Lifecycle scripts are the only PTYs stopped here (no session match) and
+    // never respawn, so a raw kill is sufficient and safe.
     const pty = ptySessionRegistry.get(sessionId);
     if (pty) {
       try {
@@ -135,7 +119,7 @@ export const ptyController = createRPCController({
    * connected ssh2 client — no local ssh/scp binaries are involved.
    *
    * The session ID encodes the location and scope (`locationId:scopeId:leafId`),
-   * where `scopeId` is a session ID for conversation uploads.
+   * where `scopeId` is a session ID for agent-session uploads.
    */
   uploadFiles: async (args: { sessionId: string; localPaths: string[] }) => {
     try {
@@ -145,8 +129,7 @@ export const ptyController = createRPCController({
       }
       const { scopeId } = parsed;
 
-      const sessionProvider = sessionRuntimeManager.getSession(scopeId);
-      if (!sessionProvider) return err({ type: 'not_ssh' as const });
+      if (!sessionRuntimeManager.getAgent(scopeId)) return err({ type: 'not_ssh' as const });
 
       const locationId = sessionRuntimeManager.getLocationId(scopeId) ?? '';
       const runtime = locationRuntimeRegistry.get(locationId);

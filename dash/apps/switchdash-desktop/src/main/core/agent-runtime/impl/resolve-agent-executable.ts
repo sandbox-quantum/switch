@@ -19,7 +19,7 @@ function cacheKey(providerId: string, connectionId?: string): string {
 }
 
 /**
- * Resolve the absolute path of the agent binary to use for conversation spawns.
+ * Resolve the absolute path of the agent binary to use for agent spawns.
  *
  * Resolution order:
  * 1. selection.kind === 'pinned': use selection.realpath if it exists on disk; otherwise fall through.

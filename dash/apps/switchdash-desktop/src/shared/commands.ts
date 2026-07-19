@@ -103,15 +103,6 @@ export const SESSION_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'file-diff',
   },
   {
-    id: 'session.sidebarConversations',
-    label: 'View Conversations',
-    description: 'Open the Conversations panel in the right sidebar',
-    scope: 'session',
-    shortcutKey: 'sidebarConversations',
-    group: 'View',
-    iconKey: 'message-square',
-  },
-  {
     id: 'session.sidebarFiles',
     label: 'View Files',
     description: 'Open the Files panel in the right sidebar',

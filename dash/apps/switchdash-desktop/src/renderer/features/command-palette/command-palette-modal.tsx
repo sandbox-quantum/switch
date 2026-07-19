@@ -56,12 +56,11 @@ const GROUP_CLASS = cn(
 const SESSION_SUGGESTED = [
   'session.sidebarChanges',
   'session.sidebarFiles',
-  'session.sidebarConversations',
   'session.toggleTerminalDrawer',
   'resource-monitor',
   'app.giveFeedback',
 ];
-const PROJECT_SUGGESTED = [
+const LOCATION_SUGGESTED = [
   'app.newSession',
   'app.settings',
   'resource-monitor',
@@ -211,7 +210,7 @@ export function CommandPaletteModal({
     const suggestedIds = sessionId
       ? SESSION_SUGGESTED
       : locationId
-        ? PROJECT_SUGGESTED
+        ? LOCATION_SUGGESTED
         : APP_SUGGESTED;
     const pool = resourceMonitorAction
       ? [...registryActions, resourceMonitorAction]

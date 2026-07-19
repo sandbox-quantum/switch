@@ -46,11 +46,11 @@ export type StandardCommandSpec = {
   sessionIdOnResumeOnly?: boolean;
   /** Resume flag used when sessionIdOnResumeOnly=true but sessionId is absent (no stored session yet). */
   resumeWithoutSessionFlag?: string;
-  /** A flag appended when starting a fresh conversation (e.g. letta's --new). */
-  newConversationFlag?: string;
+  /** A flag appended when starting a fresh session (e.g. letta's --new). */
+  newSessionFlag?: string;
   /**
    * When true, sessionIdFlag is injected on both fresh AND resume sessions.
-   * Use for providers like Antigravity that identify conversations by ID on every invocation.
+   * Use for providers like Antigravity that identify sessions by ID on every invocation.
    */
   sessionIdAlways?: boolean;
   /** When true, skip auto-approve flag on resume (kimi special case). */
@@ -110,8 +110,8 @@ export function buildStandardCommand(ctx: CommandContext, spec: StandardCommandS
     // Fresh session
     if (spec.sessionIdFlag && !spec.sessionIdOnResumeOnly && ctx.sessionId) {
       appendFlagValue(args, spec.sessionIdFlag, ctx.sessionId);
-    } else if (spec.newConversationFlag) {
-      args.push(spec.newConversationFlag);
+    } else if (spec.newSessionFlag) {
+      args.push(spec.newSessionFlag);
     }
   }
 

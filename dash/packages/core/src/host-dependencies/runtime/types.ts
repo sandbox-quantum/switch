@@ -216,7 +216,7 @@ export type Installation = {
 
 /**
  * All installations of one agent on one host, plus which SelectedSource is
- * currently authoritative for conversation spawns.
+ * currently authoritative for agent spawns.
  */
 export type HostDependency = {
   hostId: string;

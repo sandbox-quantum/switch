@@ -6,7 +6,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 
 const CURSOR_PROVIDER_ID: AgentProviderId = 'cursor';
 const CURSOR_DATA_DIR_NAME = '.cursor';
-const CURSOR_PROJECTS_DIR_NAME = 'locations';
+const CURSOR_PROJECTS_DIR_NAME = 'projects';
 const CURSOR_TRUST_MARKER_NAME = '.workspace-trusted';
 
 export class CursorTrustService {

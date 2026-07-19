@@ -86,12 +86,12 @@ describe('httpPostJsonOverChannel', () => {
       port: 1234,
       token: 'tok',
       path: '/disconnect',
-      body: { conversationId: 'conv-1' },
+      body: { sessionId: 'session-1' },
       timeoutMs: 1000,
     });
     expect(channel.written).toContain('POST /disconnect HTTP/1.1');
     expect(channel.written).toContain('x-switchdash-token: tok');
-    expect(channel.written).toContain('{"conversationId":"conv-1"}');
+    expect(channel.written).toContain('{"sessionId":"session-1"}');
     channel.emit('data', Buffer.from('HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n'));
     await expect(promise).resolves.toBeUndefined();
   });

@@ -18,11 +18,7 @@ import { log } from '@main/lib/logger';
 import { makePtySessionId } from '@shared/core/pty/ptySessionId';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 import type { Terminal } from '@shared/core/terminals/terminals';
-import {
-  type LifecycleScriptSpawnRequest,
-  type TerminalProvider,
-  type TerminalSpawnOptions,
-} from '../terminal-provider';
+import { type LifecycleScriptSpawnRequest, type TerminalProvider } from '../terminal-provider';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -41,8 +37,6 @@ export class LocalTerminalProvider implements TerminalProvider {
   private knownSessionIds = new Set<string>();
   private shellProfiles = new Map<string, ResolvedShellProfile>();
   private respawnCounts = new Map<string, number>();
-  private readonly locationId: string;
-  private readonly scopeId: string;
   private readonly sessionPath: string;
   private readonly tmux: boolean;
   private readonly shellSetup?: string;
@@ -50,51 +44,23 @@ export class LocalTerminalProvider implements TerminalProvider {
   private readonly sessionEnvVars: Record<string, string>;
 
   constructor({
-    locationId,
-    scopeId,
     sessionPath,
     tmux = false,
     shellSetup,
     ctx,
     sessionEnvVars = {},
   }: {
-    locationId: string;
-    scopeId: string;
     sessionPath: string;
     tmux?: boolean;
     shellSetup?: string;
     ctx: IExecutionContext;
     sessionEnvVars?: Record<string, string>;
   }) {
-    this.locationId = locationId;
-    this.scopeId = scopeId;
     this.sessionPath = sessionPath;
     this.tmux = tmux;
     this.shellSetup = shellSetup;
     this.ctx = ctx;
     this.sessionEnvVars = sessionEnvVars;
-  }
-
-  async spawnTerminal(
-    terminal: Terminal,
-    initialSize: { cols: number; rows: number } = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS },
-    options: TerminalSpawnOptions = {}
-  ): Promise<void> {
-    return this.spawnWithPolicy(
-      terminal,
-      initialSize,
-      options.command
-        ? { kind: 'argv', command: options.command.command, args: options.command.args }
-        : undefined,
-      undefined,
-      options.shell ?? terminal.shellId,
-      { title: terminal.name },
-      {
-        respawnOnExit: true,
-        preserveBufferOnExit: false,
-        watchDevServer: true,
-      }
-    );
   }
 
   async spawnLifecycleScript({
@@ -248,23 +214,6 @@ export class LocalTerminalProvider implements TerminalProvider {
     return profile;
   }
 
-  async killTerminal(terminalId: string): Promise<void> {
-    const sessionId = makePtySessionId(this.locationId, this.scopeId, terminalId);
-    this.knownSessionIds.delete(sessionId);
-    const pty = this.sessions.get(sessionId);
-    if (pty) {
-      try {
-        pty.kill();
-      } catch {}
-      this.sessions.delete(sessionId);
-      ptySessionRegistry.unregister(sessionId);
-    }
-    this.shellProfiles.delete(sessionId);
-    if (this.tmux) {
-      await killTmuxSession(this.ctx, makeTmuxSessionName(sessionId));
-    }
-  }
-
   async destroyAll(): Promise<void> {
     const sessionIds = Array.from(this.knownSessionIds);
     await this.detachAll();
@@ -275,7 +224,7 @@ export class LocalTerminalProvider implements TerminalProvider {
     this.shellProfiles.clear();
   }
 
-  async detachAll(): Promise<void> {
+  private async detachAll(): Promise<void> {
     for (const [sessionId, pty] of this.sessions) {
       try {
         pty.kill();

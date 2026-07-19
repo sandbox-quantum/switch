@@ -2,7 +2,7 @@
  * Bundle-safe tmux helpers, replicated from switchdash's Electron-bound
  * `tmux-session-name.ts` so the sidecar bundle stays free of the main-process
  * logger. A spawned session's tmux name matches what switchdash would compute
- * for the same conversation, so a later attach reuses the pane.
+ * for the same session, so a later attach reuses the pane.
  */
 
 /** tmux resolves a bare `-t name` by prefix; `=` forces an exact-name match. */

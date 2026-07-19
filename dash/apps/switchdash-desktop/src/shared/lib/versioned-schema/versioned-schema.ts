@@ -337,7 +337,7 @@ export function defineVersionedSchema(versionField = 'version') {
      *
      * @example
      * ```ts
-     * const conversationConfig = defineVersionedSchema()
+     * const sessionConfig = defineVersionedSchema()
      *   .unversioned(v0Schema)               // existing rows: no version field
      *   .version('1', v1Schema, (v0) => ...) // first versioned release
      *   .build();

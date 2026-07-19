@@ -20,7 +20,6 @@ import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { LocalTerminalProvider } from '@main/core/terminals/impl/local-terminal-provider';
 import { SshTerminalProvider } from '@main/core/terminals/impl/ssh-terminal-provider';
 import { runLifecycleScriptWithPolicy } from '@main/core/terminals/lifecycle-script-coordinator';
-import type { TerminalProvider } from '@main/core/terminals/terminal-provider';
 import { log } from '@main/lib/logger';
 import type { Session } from '@shared/core/sessions/sessions';
 import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
@@ -94,8 +93,6 @@ export function createLocationRuntimeFactory(
 
     // Location terminal provider (used only by lifecycle scripts)
     const terminalOpts = {
-      locationId,
-      scopeId: locationId,
       sessionPath: workDir,
       tmux: tmuxEnabled,
       shellSetup,
@@ -106,8 +103,8 @@ export function createLocationRuntimeFactory(
       transport.kind === 'ssh'
         ? new SshTerminalProvider({
             ...terminalOpts,
+            scopeId: locationId,
             proxy: await connectSshTransport(transport),
-            connectionId: transport.connectionId,
           })
         : new LocalTerminalProvider(terminalOpts);
 
@@ -214,7 +211,7 @@ export function createLocationRuntimeFactory(
   };
 }
 
-type SessionProviderOpts = {
+type AgentRuntimeOpts = {
   locationId: string;
   sessionId: string;
   sessionPath: string;
@@ -228,7 +225,7 @@ async function resolveLocalAgentShellProfile(sessionId: string): Promise<Resolve
   return await resolveLocalAutomationShellWithSystemFallback({
     intent: defaultShell,
     onFallback: (error) => {
-      log.warn('buildSessionProviders: preferred local agent shell unavailable, using fallback', {
+      log.warn('buildAgentRuntime: preferred local agent shell unavailable, using fallback', {
         shell: error.shell,
         sessionId,
       });
@@ -237,13 +234,13 @@ async function resolveLocalAgentShellProfile(sessionId: string): Promise<Resolve
 }
 
 /**
- * Creates the session-scoped agent runtime and terminal provider for the given
- * transport. The exec function is derived internally from the LocationTransport.
+ * Creates the session's agent runtime for the given transport. The exec
+ * function is derived internally from the LocationTransport.
  */
-export async function buildSessionProviders(
+export async function buildAgentRuntime(
   transport: LocationTransport,
-  opts: SessionProviderOpts
-): Promise<{ agent: AgentRuntimeProvider; terminals: TerminalProvider }> {
+  opts: AgentRuntimeOpts
+): Promise<AgentRuntimeProvider> {
   if (transport.kind === 'ssh') {
     const proxy = await connectSshTransport(transport);
     const ctx = new SshExecutionContext(proxy, { root: transport.dir });
@@ -253,56 +250,32 @@ export async function buildSessionProviders(
     await preflightRemoteSession({ ctx, fs, log, host: transport.host, workDir: transport.dir });
     // Remote sessions always run under tmux — it persists the agent's PTY and
     // is the pane the sidecar injects into and reattaches to.
-    return {
-      agent: new SshAgentRuntime({
-        locationId: opts.locationId,
-        sessionPath: opts.sessionPath,
-        sessionId: opts.sessionId,
-        tmux: true,
-        shellSetup: opts.shellSetup,
-        ctx,
-        fs,
-        proxy,
-        connectionId: transport.connectionId,
-        sessionEnvVars: opts.sessionEnvVars,
-      }),
-      terminals: new SshTerminalProvider({
-        locationId: opts.locationId,
-        scopeId: opts.sessionId,
-        sessionPath: opts.sessionPath,
-        tmux: true,
-        shellSetup: opts.shellSetup,
-        ctx,
-        proxy,
-        connectionId: transport.connectionId,
-        sessionEnvVars: opts.sessionEnvVars,
-      }),
-    };
+    return new SshAgentRuntime({
+      locationId: opts.locationId,
+      sessionPath: opts.sessionPath,
+      sessionId: opts.sessionId,
+      tmux: true,
+      shellSetup: opts.shellSetup,
+      ctx,
+      fs,
+      proxy,
+      connectionId: transport.connectionId,
+      sessionEnvVars: opts.sessionEnvVars,
+    });
   }
 
   const ctx = new LocalExecutionContext();
   const agentShellProfile = await resolveLocalAgentShellProfile(opts.sessionId);
-  return {
-    agent: new LocalAgentRuntime({
-      locationId: opts.locationId,
-      sessionPath: opts.sessionPath,
-      sessionId: opts.sessionId,
-      tmux: opts.tmuxEnabled,
-      shellSetup: opts.shellSetup,
-      shellProfile: agentShellProfile,
-      ctx,
-      sessionEnvVars: opts.sessionEnvVars,
-    }),
-    terminals: new LocalTerminalProvider({
-      locationId: opts.locationId,
-      scopeId: opts.sessionId,
-      sessionPath: opts.sessionPath,
-      tmux: opts.tmuxEnabled,
-      shellSetup: opts.shellSetup,
-      ctx,
-      sessionEnvVars: opts.sessionEnvVars,
-    }),
-  };
+  return new LocalAgentRuntime({
+    locationId: opts.locationId,
+    sessionPath: opts.sessionPath,
+    sessionId: opts.sessionId,
+    tmux: opts.tmuxEnabled,
+    shellSetup: opts.shellSetup,
+    shellProfile: agentShellProfile,
+    ctx,
+    sessionEnvVars: opts.sessionEnvVars,
+  });
 }
 
 /**

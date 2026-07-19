@@ -1,8 +1,8 @@
 import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
 
-export function resolveSession(sessionId: string) {
-  return sessionRuntimeManager.getSession(sessionId) ?? null;
+export function resolveSessionAgent(sessionId: string) {
+  return sessionRuntimeManager.getAgent(sessionId) ?? null;
 }
 
 export function resolveLocationRuntime(locationId: string) {

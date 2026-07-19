@@ -29,11 +29,11 @@ export type Group = {
   entryCount: number;
 };
 
-const UNKNOWN_PROJECT_ID = '__unknown__';
+const UNKNOWN_LOCATION_ID = '__unknown__';
 
 /**
  * Lifecycle-script PTYs are labelled by their terminal id (see
- * `createLifecycleScriptTerminalId`), which has no provider/conversation
+ * `createLifecycleScriptTerminalId`), which has no provider/session
  * metadata. Map those ids to friendly labels so they don't render as the
  * truncated "script-l…" leaf id.
  */
@@ -129,7 +129,7 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
     let providerId: AgentProviderId | undefined;
     let displayTitle: string | undefined;
     let locationName = 'Other';
-    let locationKey = UNKNOWN_PROJECT_ID;
+    let locationKey = UNKNOWN_LOCATION_ID;
 
     if (locationStore) {
       locationKey = entry.locationId;
@@ -159,7 +159,7 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
     }
 
     // Fall back to metadata supplied by the sampler (covers cases where the
-    // owning location isn't mounted, so the conversation/terminal join above misses).
+    // owning location isn't mounted, so the session/terminal join above misses).
     providerId ??= entry.providerId;
     displayTitle ??= entry.title;
 
@@ -201,8 +201,8 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
 
   // Keep the "Other" bucket at the end so real locations render first.
   groups.sort((a, b) => {
-    if (a.locationId === UNKNOWN_PROJECT_ID) return 1;
-    if (b.locationId === UNKNOWN_PROJECT_ID) return -1;
+    if (a.locationId === UNKNOWN_LOCATION_ID) return 1;
+    if (b.locationId === UNKNOWN_LOCATION_ID) return -1;
     return a.locationName.localeCompare(b.locationName) || a.locationId.localeCompare(b.locationId);
   });
 

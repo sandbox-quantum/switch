@@ -84,7 +84,7 @@ function formatElapsed(ms: number): string {
 
 /**
  * The runtime states switch-core surfaces on bridged channels. The richer
- * per-conversation `AgentStatus` is collapsed onto these before reporting:
+ * per-session `AgentStatus` is collapsed onto these before reporting:
  * `completed` → `idle` (work done, nothing to surface) and `error` →
  * `awaiting-input` (needs the operator's attention).
  */
@@ -130,7 +130,7 @@ interface QueuedInjection {
   /**
    * The triggering message's thread id (its `thread_id`) when it was in a
    * thread, so the bridge surfaces runtime state in that thread. null at the
-   * conversation root.
+   * room root.
    */
   threadId: string | null;
 }

@@ -13,12 +13,12 @@
  * needing a mounted terminal.
  *
  * Usage:
- *   <PaneSizingProvider paneId="conversations" sessionIds={allConversationSessionIds}>
+ *   <PaneSizingProvider paneId="agents" sessionIds={agentPtySessionIds}>
  *     ...
  *     <TerminalPane sessionId={activeSessionId} />
  *   </PaneSizingProvider>
  *
- * For split panes (e.g. conversation pane + right-panel terminal pane), each
+ * For split panes (e.g. agent pane + right-panel terminal pane), each
  * pane gets its own <PaneSizingProvider> with a distinct paneId.  No other
  * changes required.
  */
@@ -122,7 +122,7 @@ export function PaneSizingProvider({ paneId, sessionIds, children }: PaneSizingP
   }, [paneId]);
 
   // When sessionIds change, send the current known dimensions to any sessions
-  // that are newly added (e.g. a conversation was just created).
+  // that are newly added (e.g. a session was just created).
   useEffect(() => {
     const prev = sessionsRef.current;
     const added = sessionIds.filter((id) => !prev.includes(id));

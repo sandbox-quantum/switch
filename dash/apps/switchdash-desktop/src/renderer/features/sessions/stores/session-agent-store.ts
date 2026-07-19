@@ -42,7 +42,7 @@ export class SessionAgentStore implements IDisposable {
   pty: PtySession | null = null;
 
   // Hydration lifecycle: desired-vs-actual for the agent PTY, with the same
-  // stale-flip handling and dehydrate retry the multi-conversation reconciler had.
+  // stale-flip handling and dehydrate retry the old reconciler had.
   private hydrationDesired = false;
   private hydrationState: HydrationState = 'stopped';
   private dehydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;

@@ -24,7 +24,7 @@ export type LocationConfigMigrator = {
   ) => Promise<Result<LocationConfigMigration, UpdateLocationSettingsError>>;
 };
 
-const PROJECT_CONFIG_MIGRATORS = [
+const LOCATION_CONFIG_MIGRATORS = [
   conductorConfigMigrator,
   supersetConfigMigrator,
   paseoConfigMigrator,
@@ -46,7 +46,7 @@ export async function inspectLocationConfigMigrations(
   }
 
   const migrations = await Promise.all(
-    PROJECT_CONFIG_MIGRATORS.map(async (migrator) => {
+    LOCATION_CONFIG_MIGRATORS.map(async (migrator) => {
       try {
         return await migrator.inspect(fs);
       } catch (error) {
@@ -68,7 +68,7 @@ export async function migrateLocationConfigFromProvider(
       return writeConfigFailed(`${CONFIG_FILE} already exists.`);
     }
 
-    const migrator = PROJECT_CONFIG_MIGRATORS.find(
+    const migrator = LOCATION_CONFIG_MIGRATORS.find(
       (candidate) => candidate.provider === request.provider
     );
     if (!migrator) return writeConfigFailed('Unsupported config provider.');

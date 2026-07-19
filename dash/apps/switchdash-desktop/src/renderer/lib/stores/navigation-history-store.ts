@@ -103,7 +103,7 @@ export class NavigationHistoryStore {
    * identical entries so no-op back steps are not created.
    * The cursor is clamped to the surviving entry nearest the removed position.
    *
-   * Hook point for future entity-cleanup (deleted conversations, closed tabs, etc.).
+   * Hook point for future entity-cleanup (deleted sessions, closed tabs, etc.).
    */
   prune(predicate: (entry: HistoryEntry) => boolean): void {
     const currentEntry = this.entries[this.index];

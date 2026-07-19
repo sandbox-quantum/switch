@@ -1,4 +1,4 @@
-import type { LocationProvider, SessionProvider } from '@main/core/locations/location-provider';
+import type { LocationProvider } from '@main/core/locations/location-provider';
 import type { LocationRuntime } from '@main/core/locations/location-runtime';
 import { locationRuntimeRegistry } from '@main/core/locations/location-runtime-registry';
 import type { LocationTransport } from '@main/core/locations/location-transport';
@@ -8,8 +8,9 @@ import {
   type ProvisionStep,
 } from '@shared/core/sessions/sessionEvents';
 import type { Session } from '@shared/core/sessions/sessions';
+import type { AgentRuntimeProvider } from '../agent-runtime/types';
 import {
-  buildSessionProviders,
+  buildAgentRuntime,
   createLocationRuntimeFactory,
   resolveSessionEnv,
 } from '../locations/location-runtime-factory';
@@ -24,13 +25,13 @@ import { sessionProvisionEvents } from './session-provision-events';
 export type SessionRuntimeResult = {
   path: string;
   locationId: string;
-  sessionProvider: SessionProvider;
+  agent: AgentRuntimeProvider;
 };
 
 /**
  * Provisions the runtime for a session: acquires the location runtime (running
- * lifecycle scripts once per location) and builds the session's agent +
- * terminal providers in the location dir.
+ * lifecycle scripts once per location) and builds the session's agent runtime
+ * in the location dir.
  */
 export async function provisionSessionRuntime(
   session: Session,
@@ -64,17 +65,12 @@ export async function provisionSessionRuntime(
 
   let buildSucceeded = false;
   try {
-    const sessionProvider = await buildSessionFromRuntime(
-      session,
-      runtime,
-      transport,
-      location.settings
-    );
+    const agent = await buildSessionFromRuntime(session, runtime, transport, location.settings);
     buildSucceeded = true;
     return {
       path: workDir,
       locationId,
-      sessionProvider,
+      agent,
     };
   } finally {
     if (!buildSucceeded) {
@@ -93,22 +89,22 @@ export function emitSessionProvisionProgress(data: {
 }
 
 /**
- * Shared tail of the provision flow — builds a SessionProvider from an
- * already-acquired location runtime. Works for both local and SSH transports.
+ * Shared tail of the provision flow — builds the session's agent runtime from
+ * an already-acquired location runtime. Works for both local and SSH transports.
  */
 export async function buildSessionFromRuntime(
   session: Session,
   runtime: LocationRuntime,
   transport: LocationTransport,
   settings: LocationSettingsProvider
-): Promise<SessionProvider> {
+): Promise<AgentRuntimeProvider> {
   const { sessionEnvVars, tmuxEnabled, shellSetup } = await resolveSessionEnv(
     session,
     runtime,
     settings
   );
 
-  const { agent, terminals } = await buildSessionProviders(transport, {
+  return buildAgentRuntime(transport, {
     locationId: runtime.id,
     sessionId: session.id,
     sessionPath: runtime.path,
@@ -116,11 +112,4 @@ export async function buildSessionFromRuntime(
     shellSetup,
     sessionEnvVars,
   });
-
-  return {
-    sessionId: session.id,
-    sessionEnvVars,
-    agent,
-    terminals,
-  };
 }

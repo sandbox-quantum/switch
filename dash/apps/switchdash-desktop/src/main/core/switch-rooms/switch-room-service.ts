@@ -107,7 +107,7 @@ class SwitchRoomService implements IDisposable {
     switchNotificationPoller.connect(ctx, persisted.roomId, persisted.roomName);
   }
 
-  /** Conversation ids that had a live room connection before the last shutdown. */
+  /** Session ids that had a live room connection before the last shutdown. */
   async listPersistedSessionIds(): Promise<string[]> {
     return Object.keys(await this.readPersisted());
   }

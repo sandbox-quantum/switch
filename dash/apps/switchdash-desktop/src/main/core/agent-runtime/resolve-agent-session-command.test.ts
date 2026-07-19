@@ -6,7 +6,7 @@ import { resolveAgentSessionCommandArgs } from './resolve-agent-session-command'
 function makeSession(overrides: Partial<Session> = {}): Session {
   const now = '2024-01-01T00:00:00.000Z';
   return {
-    id: 'conv-1',
+    id: 'session-1',
     agentId: 'agent-1',
     providerId: 'droid',
     title: 'Test',
@@ -37,7 +37,7 @@ describe('resolveAgentSessionCommandArgs', () => {
 
   it('starts fresh instead of resuming Codex --last without a stored session id', () => {
     expect(resolveAgentSessionCommandArgs(makeSession({ providerId: 'codex' }), true)).toEqual({
-      sessionId: 'conv-1',
+      sessionId: 'session-1',
       isResuming: false,
     });
   });
@@ -53,7 +53,7 @@ describe('resolveAgentSessionCommandArgs', () => {
 
   it('starts fresh when resuming Droid without a stored session id', () => {
     expect(resolveAgentSessionCommandArgs(makeSession(), true)).toEqual({
-      sessionId: 'conv-1',
+      sessionId: 'session-1',
       isResuming: false,
     });
   });
@@ -62,7 +62,7 @@ describe('resolveAgentSessionCommandArgs', () => {
     expect(
       resolveAgentSessionCommandArgs(makeSession(), true, { requireProviderSessionId: false })
     ).toEqual({
-      sessionId: 'conv-1',
+      sessionId: 'session-1',
       isResuming: true,
     });
   });
@@ -76,15 +76,15 @@ describe('resolveAgentSessionCommandArgs', () => {
         }),
         true
       )
-    ).toEqual({ sessionId: 'conv-1', isResuming: true });
+    ).toEqual({ sessionId: 'session-1', isResuming: true });
   });
 
-  it('builds a Claude replacement resume command from the logical conversation id', () => {
-    const conversation = makeSession({
+  it('builds a Claude replacement resume command from the logical session id', () => {
+    const session = makeSession({
       id: '6fac6620-9fa8-4604-b7e0-1fe361589104',
       providerId: 'claude',
     });
-    const spawnPlan = resolveAgentSessionCommandArgs(conversation, true);
+    const spawnPlan = resolveAgentSessionCommandArgs(session, true);
     const result = pluginRegistry.get('claude')!.behavior.prompt!.buildCommand({
       cli: 'claude',
       autoApprove: false,
@@ -95,22 +95,22 @@ describe('resolveAgentSessionCommandArgs', () => {
 
     expect(result.command).toBe('claude');
     expect(result.args).toContain('--resume');
-    expect(result.args).toContain(conversation.id);
+    expect(result.args).toContain(session.id);
   });
 
   it('builds a Codex replacement resume command from the stored provider session id', () => {
-    const conversation = makeSession({
+    const session = makeSession({
       id: '6fac6620-9fa8-4604-b7e0-1fe361589104',
       providerId: 'codex',
       providerSessionId: 'provider-session-1',
     });
-    const spawnPlan = resolveAgentSessionCommandArgs(conversation, true);
+    const spawnPlan = resolveAgentSessionCommandArgs(session, true);
     const result = pluginRegistry.get('codex')!.behavior.prompt!.buildCommand({
       cli: 'codex',
       autoApprove: false,
       model: '',
       sessionId: spawnPlan.sessionId,
-      providerSessionId: conversation.providerSessionId ?? undefined,
+      providerSessionId: session.providerSessionId ?? undefined,
       isResuming: spawnPlan.isResuming,
     });
 

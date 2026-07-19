@@ -148,7 +148,7 @@ export interface AgentHookEnv {
  * and stands the in-session Switch connector's own poll loop down so it does
  * not race switchdash's poller on the bridge's destructive event queue.
  *
- * Shared by `buildAgentEnv` (local) and the SSH conversation provider (remote)
+ * Shared by `buildAgentEnv` (local) and the SSH agent runtime (remote)
  * so the hook wiring — including the no-double-delivery gate — lives in one
  * place.
  */

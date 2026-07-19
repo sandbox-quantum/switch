@@ -82,7 +82,7 @@ async function main(): Promise<void> {
       return false;
     }
   };
-  // Every live agent conversation pane on this host, whether or not its agent
+  // Every live agent session pane on this host, whether or not its agent
   // joined a Switch room. Lets `/sessions` surface bare sessions so another
   // client can discover and attach to them (CHOO-1181), not just room-attending
   // ones. tmux only lists live sessions, so this never reports a dead pane.
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     {
       eventLog,
       // Snapshot of live VM sessions (connected + just-launched, deduped by
-      // conversation id) so switchdash can reconcile watcher-spawned sessions
+      // session id) so switchdash can reconcile watcher-spawned sessions
       // into its UI. Connected sessions win — they carry the room the agent
       // actually attends after connect_to_room.
       sessionsProvider: async () => {

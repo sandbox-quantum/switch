@@ -4,24 +4,16 @@ import type { FileSystemProvider } from '@main/core/fs/types';
 import type { Location } from '@shared/core/locations/locations';
 import type { AgentRuntimeProvider } from '../agent-runtime/types';
 import { sessionRuntimeManager } from '../sessions/session-runtime-manager';
-import type { TerminalProvider } from '../terminals/terminal-provider';
 import { locationRuntimeRegistry } from './location-runtime-registry';
 import type { LocationTransport } from './location-transport';
 import type { LocationSettingsProvider } from './settings/provider';
 
 export type ProvisionResult = {
-  sessionProvider: SessionProvider;
+  agent: AgentRuntimeProvider;
   persistData: {
     locationId: string;
   };
 };
-
-export interface SessionProvider {
-  readonly sessionId: string;
-  readonly sessionEnvVars: Record<string, string>;
-  readonly agent: AgentRuntimeProvider;
-  readonly terminals: TerminalProvider;
-}
 
 /**
  * The open handle on a location: its execution context, filesystem and

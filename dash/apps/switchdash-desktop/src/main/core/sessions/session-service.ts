@@ -72,9 +72,9 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
   }
 
   /**
-   * Provisions the runtime for a session: builds the conversation + terminal
-   * providers in the location root and registers the session. Idempotent —
-   * fast-paths when already live. Fires the `session:runtime-ready` hook and
+   * Provisions the runtime for a session: builds the agent runtime in the
+   * location root and registers the session. Idempotent — fast-paths when
+   * already live. Fires the `session:runtime-ready` hook and
    * emits the `session:provisioned` IPC event on success.
    */
   async provisionSession(
@@ -85,7 +85,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     if (!location) throw new Error(`Location not open: ${session.agentLocationId}`);
 
     // Idempotency: session is already live — return current state.
-    if (sessionRuntimeManager.getSession(sessionId)) {
+    if (sessionRuntimeManager.getAgent(sessionId)) {
       const provisionResult: ProvisionResult = {
         path: location.dir,
         locationId: sessionRuntimeManager.getLocationId(sessionId) ?? location.locationId,
@@ -147,9 +147,9 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
    * later). No-op when the session has no live runtime.
    */
   async stopAgent(sessionId: string): Promise<void> {
-    const session = sessionRuntimeManager.getSession(sessionId);
-    if (!session) return;
-    await session.agent.stop();
+    const agent = sessionRuntimeManager.getAgent(sessionId);
+    if (!agent) return;
+    await agent.stop();
   }
 
   async deleteSession(sessionId: string): Promise<void> {

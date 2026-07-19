@@ -53,7 +53,7 @@ interface SessionConnection {
  * RoomConnection injecting into that session's own pane. Multi-session — the
  * single agent-scoped sidecar serves every session on the VM (the one switchdash
  * started over SSH, and any the notification watcher auto-starts), each keyed by
- * its conversation id, so there is exactly one sidecar per agent rather than one
+ * its session id, so there is exactly one sidecar per agent rather than one
  * per session.
  *
  * Runs entirely on the VM with no database or Electron — the agent's Switch
@@ -62,7 +62,7 @@ interface SessionConnection {
 export class SidecarRuntime {
   /** sessionId → its live room connection. */
   private readonly sessions = new Map<string, SessionConnection>();
-  /** Every conversation id that has posted a hook to this sidecar — i.e. the
+  /** Every session id that has posted a hook to this sidecar — i.e. the
    * sessions it owns, used to scope the VM-wide tmux enumeration in `/sessions`. */
   private readonly seen = new Set<string>();
   private readonly resolveContext: ContextResolver;
@@ -82,7 +82,7 @@ export class SidecarRuntime {
   /** Handle one raw hook callback from an agent CLI. Never throws. */
   async handleHook(raw: RawHookRequest): Promise<void> {
     // Every hook posted to THIS sidecar comes from a session it owns (the
-    // session's hook env points here), so record its conversation id. This is
+    // session's hook env points here), so record its session id. This is
     // how `/sessions` scopes the VM-wide tmux enumeration to this agent's own
     // panes — tmux session names carry no repo/agent, so without this a sidecar
     // would report other agents' sessions on the same host.
@@ -197,7 +197,7 @@ export class SidecarRuntime {
     return out;
   }
 
-  /** Whether a conversation has ever posted a hook to this sidecar (i.e. it is
+  /** Whether a session has ever posted a hook to this sidecar (i.e. it is
    * one of this agent's own sessions, not another agent's pane on the host). */
   hasSeen(sessionId: string): boolean {
     return this.seen.has(sessionId);

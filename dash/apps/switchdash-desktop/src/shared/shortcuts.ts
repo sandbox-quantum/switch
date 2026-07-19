@@ -163,12 +163,6 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Open the right sidebar to the Changes panel',
     category: 'Session View',
   },
-  sidebarConversations: {
-    defaultHotkey: 'Mod+Shift+3',
-    label: 'View Conversations',
-    description: 'Open the right sidebar to the Conversations panel',
-    category: 'Session View',
-  },
   sidebarFiles: {
     defaultHotkey: 'Mod+Shift+2',
     label: 'View Files',

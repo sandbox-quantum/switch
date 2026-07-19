@@ -1,4 +1,5 @@
 import { ok, type Result } from '@switchdash/shared';
+import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import {
   locationRuntimeRegistry,
@@ -9,7 +10,6 @@ import type { SessionRuntimeResult } from '@main/core/sessions/session-builder';
 import { LifecycleMap } from '@main/lib/lifecycle-map';
 import { log } from '@main/lib/logger';
 import type { SessionBootstrapStatus } from '@shared/core/sessions/sessions';
-import type { SessionProvider } from '../locations/location-provider';
 import { withTimeout } from '../locations/utils';
 import {
   formatProvisionSessionError,
@@ -21,22 +21,20 @@ import {
 } from './provision-session-error';
 
 type StoredSession = {
-  sessionProvider: SessionProvider;
+  agent: AgentRuntimeProvider;
   locationId: string;
   ctx: IExecutionContext;
 };
 
 async function executeTeardown(
-  session: SessionProvider,
+  agent: AgentRuntimeProvider,
   locationId: string,
   mode: TeardownMode
 ): Promise<void> {
   if (mode === 'detach') {
-    await session.agent.detach();
-    await session.terminals.detachAll();
+    await agent.detach();
   } else {
-    await session.agent.destroy();
-    await session.terminals.destroyAll();
+    await agent.destroy();
   }
   await locationRuntimeRegistry.release(locationId, mode);
 }
@@ -69,7 +67,7 @@ class SessionRuntimeManager {
     ctx: IExecutionContext
   ): Promise<void> {
     const stored: StoredSession = {
-      sessionProvider: result.sessionProvider,
+      agent: result.agent,
       locationId: result.locationId,
       ctx,
     };
@@ -86,24 +84,21 @@ class SessionRuntimeManager {
     sessionId: string,
     mode: TeardownMode = 'terminate'
   ): Promise<Result<void, TeardownSessionError>> {
-    const result = this._lifecycle.teardown(
-      sessionId,
-      async ({ sessionProvider, locationId, ctx }) => {
-        try {
-          await withTimeout(executeTeardown(sessionProvider, locationId, mode), SESSION_TIMEOUT_MS);
-          return ok();
-        } catch (e) {
-          log.error('SessionManager: failed to teardown session', { sessionId, error: String(e) });
-          await cleanupDetachedSessions(sessionId, ctx).catch((cleanupError) => {
-            log.warn('SessionManager: fallback cleanup failed', {
-              sessionId,
-              error: String(cleanupError),
-            });
+    const result = this._lifecycle.teardown(sessionId, async ({ agent, locationId, ctx }) => {
+      try {
+        await withTimeout(executeTeardown(agent, locationId, mode), SESSION_TIMEOUT_MS);
+        return ok();
+      } catch (e) {
+        log.error('SessionManager: failed to teardown session', { sessionId, error: String(e) });
+        await cleanupDetachedSessions(sessionId, ctx).catch((cleanupError) => {
+          log.warn('SessionManager: fallback cleanup failed', {
+            sessionId,
+            error: String(cleanupError),
           });
-          return { success: false as const, error: toTeardownError(e) };
-        }
+        });
+        return { success: false as const, error: toTeardownError(e) };
       }
-    );
+    });
 
     return result ?? ok();
   }
@@ -117,10 +112,7 @@ class SessionRuntimeManager {
         sessionIds.flatMap((id) => {
           const stored = this._lifecycle.get(id);
           if (!stored) return [];
-          return [
-            stored.sessionProvider.agent.detach(),
-            stored.sessionProvider.terminals.detachAll(),
-          ];
+          return [stored.agent.detach()];
         })
       );
       // Remove entries from lifecycle maps without running runtime teardown.
@@ -136,8 +128,9 @@ class SessionRuntimeManager {
     }
   }
 
-  getSession(sessionId: string): SessionProvider | undefined {
-    return this._lifecycle.get(sessionId)?.sessionProvider;
+  /** The live agent runtime for a provisioned session, if any. */
+  getAgent(sessionId: string): AgentRuntimeProvider | undefined {
+    return this._lifecycle.get(sessionId)?.agent;
   }
 
   getLocationId(sessionId: string): string | undefined {

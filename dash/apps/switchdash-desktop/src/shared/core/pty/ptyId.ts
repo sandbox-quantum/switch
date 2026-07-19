@@ -1,6 +1,6 @@
 import { AGENT_PROVIDER_IDS, type AgentProviderId } from '../providers/agent-provider-registry';
 
-const SESSION_SEP = '-conv-';
+const SESSION_SEP = '-session-';
 
 // Legacy separators — used only for snapshot migration fallback lookups.
 const LEGACY_MAIN_SEP = '-main-';

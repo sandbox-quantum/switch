@@ -53,8 +53,8 @@ function makeRuntime() {
   return { runtime, created };
 }
 
-const PTY_A = makePtyId('codex', 'conv-a');
-const PTY_B = makePtyId('codex', 'conv-b');
+const PTY_A = makePtyId('codex', 'session-a');
+const PTY_B = makePtyId('codex', 'session-b');
 
 describe('SidecarRuntime (multi-session)', () => {
   beforeEach(() => {
@@ -67,17 +67,17 @@ describe('SidecarRuntime (multi-session)', () => {
 
     expect(created).toHaveLength(1);
     expect(created[0].deps.roomId).toBe('room-1');
-    expect(created[0].deps.sessionId).toBe('conv-a');
+    expect(created[0].deps.sessionId).toBe('session-a');
     expect(created[0].conn.start).toHaveBeenCalledTimes(1);
   });
 
   it('records every hooked session (hasSeen) so /sessions can scope tmux to this agent', async () => {
     const { runtime } = makeRuntime();
-    expect(runtime.hasSeen('conv-a')).toBe(false);
+    expect(runtime.hasSeen('session-a')).toBe(false);
     // A plain status hook (no room connect) still marks the session as owned.
     await runtime.handleHook(statusHook('start', PTY_A));
-    expect(runtime.hasSeen('conv-a')).toBe(true);
-    expect(runtime.hasSeen('conv-b')).toBe(false);
+    expect(runtime.hasSeen('session-a')).toBe(true);
+    expect(runtime.hasSeen('session-b')).toBe(false);
   });
 
   it('serves two sessions concurrently, one connection each', async () => {
@@ -126,14 +126,14 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(runtime.hasLiveRoom('room-2')).toBe(false);
   });
 
-  it('lists connected sessions (conversation id + room) for reconciliation, live panes only', async () => {
+  it('lists connected sessions (session id + room) for reconciliation, live panes only', async () => {
     const { runtime } = makeRuntime();
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
     await runtime.handleHook(switchRoomHook('room-2', PTY_B));
 
     expect(runtime.connectedSessions()).toEqual([
-      { sessionId: 'conv-a', roomId: 'room-1' },
-      { sessionId: 'conv-b', roomId: 'room-2' },
+      { sessionId: 'session-a', roomId: 'room-1' },
+      { sessionId: 'session-b', roomId: 'room-2' },
     ]);
   });
 
@@ -168,25 +168,25 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(created[0].conn.stop).toHaveBeenCalled();
   });
 
-  it('stopSession stops and forgets only that conversation', async () => {
+  it('stopSession stops and forgets only that session', async () => {
     const { runtime, created } = makeRuntime();
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
     await runtime.handleHook(switchRoomHook('room-2', PTY_B));
 
-    runtime.stopSession('conv-a');
+    runtime.stopSession('session-a');
 
     expect(created[0].conn.stop).toHaveBeenCalledTimes(1);
     expect(created[1].conn.stop).not.toHaveBeenCalled();
     // Forgotten: no longer reported and its room is no longer live.
-    expect(runtime.connectedSessions()).toEqual([{ sessionId: 'conv-b', roomId: 'room-2' }]);
+    expect(runtime.connectedSessions()).toEqual([{ sessionId: 'session-b', roomId: 'room-2' }]);
     expect(runtime.hasLiveRoom('room-1')).toBe(false);
   });
 
-  it('stopSession is a no-op for an unknown conversation', async () => {
+  it('stopSession is a no-op for an unknown session', async () => {
     const { runtime, created } = makeRuntime();
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
 
-    runtime.stopSession('conv-unknown');
+    runtime.stopSession('session-unknown');
 
     expect(created[0].conn.stop).not.toHaveBeenCalled();
     expect(runtime.connectedSessions()).toHaveLength(1);

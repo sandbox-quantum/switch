@@ -94,24 +94,24 @@ describe('RemoteSessionReconciler', () => {
     remoteSessionReconciler.dispose();
   });
 
-  it('adopts a VM session switchdash has never seen, keyed by the VM conversation id', async () => {
+  it('adopts a VM session switchdash has never seen, keyed by the VM session id', async () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-new', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-new', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
 
     expect(createSession).toHaveBeenCalledTimes(1);
     expect(createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'conv-new', agentId: 'agent-1', autoApprove: true })
+      expect.objectContaining({ id: 'session-new', agentId: 'agent-1', autoApprove: true })
     );
-    expect(provisionSession).toHaveBeenCalledWith('conv-new');
+    expect(provisionSession).toHaveBeenCalledWith('session-new');
   });
 
   it('skips a VM session that already has a switchdash row', async () => {
-    knownRows = [{ id: 'conv-known' }];
+    knownRows = [{ id: 'session-known' }];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-known', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-known', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     expect(createSession).not.toHaveBeenCalled();
@@ -130,12 +130,12 @@ describe('RemoteSessionReconciler', () => {
     expect(createSession).not.toHaveBeenCalled();
   });
 
-  it('refuses to re-adopt a tombstoned (just-deleted) conversation id', async () => {
+  it('refuses to re-adopt a tombstoned (just-deleted) session id', async () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-deleted', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-deleted', roomId: 'room-1' }],
     });
-    remoteSessionReconciler.tombstone('conv-deleted');
+    remoteSessionReconciler.tombstone('session-deleted');
     await reconcile('agent-1');
 
     expect(createSession).not.toHaveBeenCalled();
@@ -143,15 +143,15 @@ describe('RemoteSessionReconciler', () => {
 
   it('removes a remotely-terminated session row, emits deletion, and refuses re-adoption', async () => {
     const emitSpy = vi.spyOn(sessionHooks, '_emit');
-    await handleRemoteTerminated('conv-term');
+    await handleRemoteTerminated('session-term');
 
     expect(deleteWhere).toHaveBeenCalledTimes(1);
-    expect(emitSpy).toHaveBeenCalledWith('session:deleted', 'conv-term');
+    expect(emitSpy).toHaveBeenCalledWith('session:deleted', 'session-term');
 
     // The tombstone set during teardown must block re-adoption from a stale snapshot.
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-term', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-term', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     expect(createSession).not.toHaveBeenCalled();
@@ -162,11 +162,11 @@ describe('RemoteSessionReconciler', () => {
   it('notifies the renderer (session:deleted) when a row is removed', async () => {
     // The removal originates in the main process, so the renderer needs an IPC
     // event to drop the sidebar row (a user-initiated delete removes it itself).
-    knownRows = [{ id: 'conv-term', agentId: 'agent-1' }];
-    await handleRemoteTerminated('conv-term');
+    knownRows = [{ id: 'session-term', agentId: 'agent-1' }];
+    await handleRemoteTerminated('session-term');
 
     expect(eventsEmit).toHaveBeenCalledWith(sessionDeletedChannel, {
-      sessionId: 'conv-term',
+      sessionId: 'session-term',
     });
   });
 
@@ -175,10 +175,10 @@ describe('RemoteSessionReconciler', () => {
     // delete removes a row, the rest are no-ops and must stay silent.
     deleteWhere.mockResolvedValueOnce({ changes: 0 });
     const emitSpy = vi.spyOn(sessionHooks, '_emit');
-    await handleRemoteTerminated('conv-already-gone');
+    await handleRemoteTerminated('session-already-gone');
 
     expect(deleteWhere).toHaveBeenCalledTimes(1);
-    expect(emitSpy).not.toHaveBeenCalledWith('session:deleted', 'conv-already-gone');
+    expect(emitSpy).not.toHaveBeenCalledWith('session:deleted', 'session-already-gone');
     emitSpy.mockRestore();
   });
 
@@ -186,35 +186,35 @@ describe('RemoteSessionReconciler', () => {
     const emitSpy = vi.spyOn(sessionHooks, '_emit');
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-a', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-a', roomId: 'room-1' }],
     });
-    await reconcile('agent-1'); // adopt conv-a
+    await reconcile('agent-1'); // adopt session-a
     expect(createSession).toHaveBeenCalledTimes(1);
 
     // Row now exists (so it is not re-adopted); VM stops reporting it.
-    knownRows = [{ id: 'conv-a' }];
+    knownRows = [{ id: 'session-a' }];
     httpGetJsonOverChannel.mockResolvedValue({ sessions: [] });
     await reconcile('agent-1'); // streak 1
     await reconcile('agent-1'); // streak 2
     expect(deleteWhere).not.toHaveBeenCalled();
     await reconcile('agent-1'); // streak 3 → prune
     expect(deleteWhere).toHaveBeenCalledTimes(1);
-    expect(emitSpy).toHaveBeenCalledWith('session:deleted', 'conv-a');
+    expect(emitSpy).toHaveBeenCalledWith('session:deleted', 'session-a');
     emitSpy.mockRestore();
   });
 
   it('does not prune an adopted session that keeps being reported', async () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-a', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-a', roomId: 'room-1' }],
     });
     await reconcile('agent-1'); // adopt
-    knownRows = [{ id: 'conv-a' }];
+    knownRows = [{ id: 'session-a' }];
     // Absent once, then present again — streak must reset, no prune.
     httpGetJsonOverChannel.mockResolvedValueOnce({ sessions: [] });
     await reconcile('agent-1');
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-a', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-a', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     await reconcile('agent-1');
@@ -226,23 +226,23 @@ describe('RemoteSessionReconciler', () => {
     knownRows = [];
     httpGetJsonOverChannel.mockResolvedValue({
       sessions: [
-        { sessionId: 'conv-deleted', roomId: 'room-1' },
-        { sessionId: 'conv-new', roomId: 'room-2' },
+        { sessionId: 'session-deleted', roomId: 'room-1' },
+        { sessionId: 'session-new', roomId: 'room-2' },
       ],
     });
-    remoteSessionReconciler.tombstone('conv-deleted');
+    remoteSessionReconciler.tombstone('session-deleted');
     await reconcile('agent-1');
 
     expect(createSession).toHaveBeenCalledTimes(1);
-    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'conv-new' }));
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-new' }));
   });
 
   it('skips a VM session whose row belongs to another agent (global id check)', async () => {
-    // The sessions PK is the conversation id; a row minted under a different
+    // The sessions PK is the session id; a row minted under a different
     // agent must block adoption or the insert would crash with UNIQUE failed.
-    knownRows = [{ id: 'conv-shared', agentId: 'agent-OTHER' }];
+    knownRows = [{ id: 'session-shared', agentId: 'agent-OTHER' }];
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-shared', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-shared', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
     expect(createSession).not.toHaveBeenCalled();
@@ -255,7 +255,7 @@ describe('RemoteSessionReconciler', () => {
       error: { type: 'already-exists' },
     } as never);
     httpGetJsonOverChannel.mockResolvedValue({
-      sessions: [{ sessionId: 'conv-race', roomId: 'room-1' }],
+      sessions: [{ sessionId: 'session-race', roomId: 'room-1' }],
     });
     await reconcile('agent-1');
 

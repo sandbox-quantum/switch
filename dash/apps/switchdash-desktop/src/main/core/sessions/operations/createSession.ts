@@ -53,7 +53,7 @@ export async function createSession(
     .returning();
 
   // Callers with externally-minted ids (the remote session reconciler adopting
-  // a VM conversation) can race another creator for the same id — surface that
+  // a VM session) can race another creator for the same id — surface that
   // as a Result instead of a raw UNIQUE-constraint throw.
   if (!row) return err({ type: 'already-exists' });
 
@@ -63,12 +63,7 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.sessionProvider.agent.start(
-      session,
-      params.initialSize,
-      false,
-      params.initialPrompt
-    );
+    await built.agent.start(session, params.initialSize, false, params.initialPrompt);
   } catch (e) {
     await db.delete(sessions).where(eq(sessions.id, params.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
