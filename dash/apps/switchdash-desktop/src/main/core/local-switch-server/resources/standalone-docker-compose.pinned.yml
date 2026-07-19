@@ -32,7 +32,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:5432:5432"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -78,13 +78,13 @@ services:
     image: mattermost/mattermost-team-edition:latest
     profiles: ["collab"]
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:8065:8065"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${MATTERMOST_HOST_PORT:-8065}:8065"
     volumes:
       - mmdata:/mattermost/data
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/mattermost?sslmode=disable
-      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+      MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTERMOST_HOST_PORT:-8065}
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
@@ -100,7 +100,7 @@ services:
   switch:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:-latest}
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:8000:8000"
+      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${API_HOST_PORT:-8000}:8000"
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"

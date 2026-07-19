@@ -19,18 +19,14 @@ import {
 } from '@shared/events/localSwitchServerEvents';
 import { materialiseComposeFile } from './bundled-compose';
 import { composeDown, composeUp, isStackRunning } from './compose';
-import {
-  GHCR_REGISTRY,
-  LOCAL_SERVER_ADMIN_EMAIL,
-  LOCAL_SERVER_API_URL,
-  LOCAL_SERVER_GATEWAY_URL,
-  LOCAL_SERVER_NAME,
-} from './constants';
+import { GHCR_REGISTRY, LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_NAME } from './constants';
 import { detectDocker } from './docker';
 import { buildEnvFile, writeEnvFile } from './env-file';
+import { apiUrlFor, gatewayUrlFor } from './free-port';
 import { ensureGhcrLogin } from './ghcr-auth';
 import { waitForHealth } from './health';
 import { envFilePath } from './paths';
+import { clearPorts, resolvePorts } from './ports';
 import { clearSecrets, loadOrCreateSecrets } from './secrets';
 
 /**
@@ -69,19 +65,14 @@ class LocalServerService {
   }
 
   /** Reconcile status at boot so a stack that survived the last quit shows as
-   * running without the user re-starting it. A surviving stack never goes
-   * through start(), so migrate the managed row to the current URL contract here
-   * too — the compose ports/gateway can change across app versions. */
+   * running without the user re-starting it. The managed server's URLs are the
+   * per-machine ones persisted at first start, so we reflect the existing record
+   * rather than recomputing — the containers are bound to those ports. */
   async initialize(): Promise<void> {
     try {
       const managed = await getManagedServer();
       if (managed && (await isStackRunning())) {
-        const server = await ensureManagedServer({
-          name: LOCAL_SERVER_NAME,
-          gatewayUrl: LOCAL_SERVER_GATEWAY_URL,
-          apiUrl: LOCAL_SERVER_API_URL,
-        });
-        this.setStatus({ phase: 'running', serverId: server.id, message: null, error: null });
+        this.setStatus({ phase: 'running', serverId: managed.id, message: null, error: null });
       }
     } catch (error) {
       log.warn('local-switch-server: boot status reconcile failed', { error });
@@ -108,12 +99,18 @@ class LocalServerService {
       this.setStatus({ message: 'Preparing configuration…' });
       await materialiseComposeFile();
       const secrets = await loadOrCreateSecrets();
+      // Pick free host ports for this machine (persisted + reused) so the stack
+      // never collides with a dev's existing services on 8000 / 5432 / 3000.
+      const ports = await resolvePorts();
+      const gatewayUrl = gatewayUrlFor(ports);
+      const apiUrl = apiUrlFor(ports);
       await writeEnvFile(
         envFilePath(),
         buildEnvFile({
           version: COMPATIBLE_SWITCH_VERSION,
           registry: GHCR_REGISTRY,
           namespace: RELEASE_REPO_OWNER,
+          ports,
           secrets,
         })
       );
@@ -124,7 +121,7 @@ class LocalServerService {
       this.setStatus({ message: 'Waiting for the server to become healthy…' });
       // Probe via the gateway URL (nginx → switch-core), the same path switchdash's
       // management calls take, so we only register once that whole path answers.
-      const healthy = await waitForHealth(LOCAL_SERVER_GATEWAY_URL, {
+      const healthy = await waitForHealth(gatewayUrl, {
         signal: this.startAbort.signal,
       });
       if (!healthy) {
@@ -135,8 +132,8 @@ class LocalServerService {
 
       const server = await ensureManagedServer({
         name: LOCAL_SERVER_NAME,
-        gatewayUrl: LOCAL_SERVER_GATEWAY_URL,
-        apiUrl: LOCAL_SERVER_API_URL,
+        gatewayUrl,
+        apiUrl,
       });
       await setActiveServerId(server.id);
 
@@ -198,6 +195,7 @@ class LocalServerService {
       this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
       await composeDown(true);
       await clearSecrets();
+      await clearPorts();
       this.setStatus({ phase: 'stopped', message: null, error: null });
     } catch (error) {
       this.setStatus({

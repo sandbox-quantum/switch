@@ -18,6 +18,7 @@ describe('buildEnvFile', () => {
     version: '1.2.3',
     registry: 'ghcr.io',
     namespace: 'sandbox-quantum',
+    ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
     secrets,
   });
   const vars = Object.fromEntries(
@@ -34,9 +35,12 @@ describe('buildEnvFile', () => {
     expect(vars.SWITCH_VERSION).toBe('1.2.3');
   });
 
-  it('publishes the gateway off :3000 to avoid the switchdash dev-server clash', () => {
-    expect(vars.GATEWAY_HOST_PORT).toBe('3300');
-    expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:3300');
+  it('publishes every host port from the chosen (free) port set', () => {
+    expect(vars.GATEWAY_HOST_PORT).toBe('51000');
+    expect(vars.API_HOST_PORT).toBe('51001');
+    expect(vars.MATTERMOST_HOST_PORT).toBe('51002');
+    expect(vars.POSTGRES_HOST_PORT).toBe('51003');
+    expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
   });
 
   it('binds the managed stack to loopback and seeds the admin account', () => {
@@ -57,7 +61,11 @@ describe('buildEnvFile', () => {
 
   it('defines every var the compose contract interpolates', () => {
     const required = [
+      'SWITCH_BIND_ADDR',
       'GATEWAY_HOST_PORT',
+      'API_HOST_PORT',
+      'MATTERMOST_HOST_PORT',
+      'POSTGRES_HOST_PORT',
       'DB_HOST',
       'DB_PORT',
       'DB_USER',

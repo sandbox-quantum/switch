@@ -12,27 +12,14 @@ export const LOCAL_SERVER_PROJECT_NAME = 'switchdash-local';
 /** Display name of the auto-registered server record. */
 export const LOCAL_SERVER_NAME = 'Local Switch server';
 
-/** The Switch core (agent bridge) API, published on :8000 — what a connector's
- * `SWITCH_API_ENDPOINT` points at. */
-export const LOCAL_SERVER_API_URL = 'http://localhost:8000';
-
-/** The operator gateway: the nginx dashboard that serves the web UI and proxies
- * `/gateway` to switch-core. switchdash's management calls go to
- * `${gatewayUrl}/gateway`, and "Open web app" opens this URL. Published on :3300
- * (not the compose default :3000) because switchdash's own renderer dev server
- * binds :3000 — sharing it makes the browser hit switchdash instead of the
- * gateway. The compose maps `${GATEWAY_HOST_PORT:-3000}:3000`; the generated
- * `.env` sets GATEWAY_HOST_PORT=3300 to match this URL. */
-export const LOCAL_SERVER_GATEWAY_URL = 'http://localhost:3300';
-
-/** Host port the gateway container is published on for the managed stack; fed to
- * the compose `${GATEWAY_HOST_PORT}` interpolation. Kept in sync with the port in
- * {@link LOCAL_SERVER_GATEWAY_URL}. */
-export const LOCAL_SERVER_GATEWAY_HOST_PORT = '3300';
+// The managed server's API and gateway URLs are NOT fixed constants: their host
+// ports are chosen from whatever is free on the machine (see ports.ts) so the
+// stack never collides with a dev's existing services. Resolve them via
+// gatewayUrlFor()/apiUrlFor() from the persisted port set.
 
 /** Compose profiles switchdash enables: `collab` (Mattermost bridge + seeder) so
  * the stack has a working collaboration bridge, and `gateway` so the operator
- * web dashboard is available at :3000. */
+ * web dashboard is available. */
 export const LOCAL_SERVER_PROFILES = ['collab', 'gateway'] as const;
 
 /** Registry the private release images live in until the public-repo flip
