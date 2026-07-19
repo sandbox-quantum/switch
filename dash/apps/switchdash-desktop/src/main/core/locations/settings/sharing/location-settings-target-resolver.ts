@@ -17,7 +17,7 @@ export type LocationSettingsResolvedTarget = LocationSettingsWriteTargetOption &
 function stripTarget(target: LocationSettingsWriteTargetOption): LocationSettingsWriteTarget {
   if (target.type === 'location') return { type: 'location' };
   if (target.type === 'session') return { type: 'session', sessionId: target.sessionId };
-  return { type: 'workspace', locationId: target.locationId };
+  return { type: 'location-runtime', locationId: target.locationId };
 }
 
 export function stripResolvedTarget(
@@ -30,7 +30,7 @@ export function stripResolvedTarget(
 function targetKey(target: LocationSettingsWriteTarget): string {
   if (target.type === 'location') return 'location';
   if (target.type === 'session') return `session:${target.sessionId}`;
-  return `workspace:${target.locationId}`;
+  return `location-runtime:${target.locationId}`;
 }
 
 export async function resolveAllLocationSettingsTargets(
@@ -69,15 +69,15 @@ export async function resolveLocationSettingsTarget(
   );
   if (target) return target;
 
-  if (request.target.type === 'workspace') {
-    const workspace = resolveLocationRuntime(request.target.locationId);
-    return workspace
+  if (request.target.type === 'location-runtime') {
+    const runtime = resolveLocationRuntime(request.target.locationId);
+    return runtime
       ? {
-          type: 'workspace',
+          type: 'location-runtime',
           locationId: request.target.locationId,
-          label: 'Workspace',
-          path: workspace.path,
-          fs: workspace.fs,
+          label: 'Location runtime',
+          path: runtime.path,
+          fs: runtime.fs,
         }
       : null;
   }

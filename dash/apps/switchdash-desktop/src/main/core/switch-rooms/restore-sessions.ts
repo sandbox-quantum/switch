@@ -51,7 +51,7 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         }
       }
 
-      await sessionService.provisionWorkspace(sessionId);
+      await sessionService.provisionSession(sessionId);
       await hydrateSession(sessionId);
       launched += 1;
     } catch (error) {

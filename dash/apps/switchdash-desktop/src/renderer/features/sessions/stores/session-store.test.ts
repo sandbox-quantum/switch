@@ -11,8 +11,8 @@ type MockViewModel = {
 
 const mocks = vi.hoisted(() => ({
   viewModels: [] as MockViewModel[],
-  workspaceAcquire: vi.fn(),
-  workspaceRelease: vi.fn(),
+  runtimeAcquire: vi.fn(),
+  runtimeRelease: vi.fn(),
 }));
 
 vi.mock('./session-view-model', () => ({
@@ -30,8 +30,8 @@ vi.mock('./session-view-model', () => ({
 
 vi.mock('./session-runtime-registry', () => ({
   sessionRuntimeRegistry: {
-    acquire: mocks.workspaceAcquire,
-    release: mocks.workspaceRelease,
+    acquire: mocks.runtimeAcquire,
+    release: mocks.runtimeRelease,
   },
 }));
 
@@ -75,8 +75,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 describe('SessionStore frontend runtime lifecycle', () => {
   beforeEach(() => {
     mocks.viewModels.length = 0;
-    mocks.workspaceAcquire.mockReset();
-    mocks.workspaceRelease.mockReset();
+    mocks.runtimeAcquire.mockReset();
+    mocks.runtimeRelease.mockReset();
   });
 
   it('can transition a provisioned session back to a dry unprovisioned state', () => {
@@ -89,7 +89,7 @@ describe('SessionStore frontend runtime lifecycle', () => {
     store.transitionToDryUnprovisioned({ ...session, archivedAt: '2026-01-02T00:00:00.000Z' });
 
     expect(viewModel.dispose).toHaveBeenCalledOnce();
-    expect(mocks.workspaceRelease).toHaveBeenCalledWith('location-1');
+    expect(mocks.runtimeRelease).toHaveBeenCalledWith('location-1');
     expect(store.state).toBe('unprovisioned');
     expect(store.phase).toBe('idle');
     expect(store.viewModel).toBeNull();

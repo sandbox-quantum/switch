@@ -45,8 +45,8 @@ export const sessionController = createRPCController({
   async stopAgent(sessionId: string) {
     return sessionService.stopAgent(sessionId);
   },
-  async provisionWorkspace(sessionId: string) {
-    return sessionService.provisionWorkspace(sessionId);
+  async provisionSession(sessionId: string) {
+    return sessionService.provisionSession(sessionId);
   },
   generateSessionName,
 });

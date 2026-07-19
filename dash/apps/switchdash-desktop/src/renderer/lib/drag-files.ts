@@ -9,24 +9,24 @@ export function getDraggedFilePaths(dataTransfer: DataTransfer): string[] {
 }
 
 /**
- * In-app drags of workspace files (e.g. from the editor file tree) are tagged
+ * In-app drags of location files (e.g. from the editor file tree) are tagged
  * with this MIME type. Custom types must be lowercase; browsers lowercase
  * `DataTransfer.types`.
  */
-export const WORKSPACE_FILE_DRAG_TYPE = 'application/x-switchdash-workspace-file';
+export const LOCATION_FILE_DRAG_TYPE = 'application/x-switchdash-location-file';
 
 export type DraggedLocationFile = {
   locationId: string;
   relPath: string;
-  /** Absolute path in the workspace environment where the target agent runs. */
+  /** Absolute path in the location environment where the target agent runs. */
   targetPath: string;
-  /** Remote workspaces are Linux targets even when the renderer runs elsewhere. */
+  /** Remote locations are Linux targets even when the renderer runs elsewhere. */
   targetPlatform?: NodeJS.Platform;
 };
 
-type DraggedWorkspaceFileInput = {
+type DraggedLocationFileInput = {
   locationId: string;
-  workspaceRootPath: string;
+  locationRootPath: string;
   relPath: string;
   targetPlatform?: NodeJS.Platform;
 };
@@ -47,17 +47,17 @@ export function resolveLocationFileTargetPath(rootPath: string, relPath: string)
 
 export function setDraggedLocationFile(
   dataTransfer: DataTransfer,
-  input: DraggedWorkspaceFileInput
+  input: DraggedLocationFileInput
 ): void {
   const payload: DraggedLocationFile = {
     locationId: input.locationId,
     relPath: input.relPath,
-    targetPath: resolveLocationFileTargetPath(input.workspaceRootPath, input.relPath),
+    targetPath: resolveLocationFileTargetPath(input.locationRootPath, input.relPath),
     targetPlatform: input.targetPlatform,
   };
 
   draggedLocationFile = payload;
-  dataTransfer.setData(WORKSPACE_FILE_DRAG_TYPE, JSON.stringify(payload));
+  dataTransfer.setData(LOCATION_FILE_DRAG_TYPE, JSON.stringify(payload));
   dataTransfer.setData('text/plain', payload.targetPath);
   dataTransfer.effectAllowed = 'copy';
 }
@@ -67,9 +67,9 @@ export function clearDraggedLocationFile(): void {
   draggedLocationFile = null;
 }
 
-/** True when this transfer is tagged as an in-app workspace-file drag. */
+/** True when this transfer is tagged as an in-app location-file drag. */
 export function hasDraggedLocationFile(dataTransfer: DataTransfer): boolean {
-  return dataTransfer.types.includes(WORKSPACE_FILE_DRAG_TYPE);
+  return dataTransfer.types.includes(LOCATION_FILE_DRAG_TYPE);
 }
 
 const NODE_PLATFORMS = new Set<NodeJS.Platform>([
@@ -90,7 +90,7 @@ function isNodePlatform(value: unknown): value is NodeJS.Platform {
   return typeof value === 'string' && NODE_PLATFORMS.has(value as NodeJS.Platform);
 }
 
-function isDraggedWorkspaceFile(value: unknown): value is DraggedLocationFile {
+function isDraggedLocationFile(value: unknown): value is DraggedLocationFile {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<DraggedLocationFile>;
   return (
@@ -106,8 +106,8 @@ export function getDraggedLocationFile(dataTransfer: DataTransfer): DraggedLocat
   if (draggedLocationFile) return draggedLocationFile;
 
   try {
-    const parsed: unknown = JSON.parse(dataTransfer.getData(WORKSPACE_FILE_DRAG_TYPE));
-    return isDraggedWorkspaceFile(parsed) ? parsed : null;
+    const parsed: unknown = JSON.parse(dataTransfer.getData(LOCATION_FILE_DRAG_TYPE));
+    return isDraggedLocationFile(parsed) ? parsed : null;
   } catch {
     return null;
   }

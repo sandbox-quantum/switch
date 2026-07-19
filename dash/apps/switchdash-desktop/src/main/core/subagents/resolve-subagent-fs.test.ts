@@ -24,7 +24,7 @@ vi.mock('@main/core/fs/impl/ssh-fs', () => ({
 vi.mock('@main/core/providers/plugin-fs', () => ({ createPluginFs }));
 vi.mock('@main/core/providers/remote-plugin-fs', () => ({ createRemotePluginFs }));
 
-const { resolveSubagentWorkspace, openRemoteSubagentFs } = await import('./resolve-workspace');
+const { resolveSubagentFs, openRemoteSubagentFs } = await import('./resolve-subagent-fs');
 
 function agent(overrides: Partial<Agent>): Agent {
   return {
@@ -54,7 +54,7 @@ function location(overrides: Partial<Location>): Location {
   };
 }
 
-describe('resolveSubagentWorkspace', () => {
+describe('resolveSubagentFs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     createPluginFs.mockImplementation((root: string) => ({ __local: root }));
@@ -64,7 +64,7 @@ describe('resolveSubagentWorkspace', () => {
 
   it('throws when the agent does not exist', async () => {
     getAgentById.mockResolvedValueOnce(undefined);
-    await expect(resolveSubagentWorkspace('missing')).rejects.toThrow(/No agent with id missing/);
+    await expect(resolveSubagentFs('missing')).rejects.toThrow(/No agent with id missing/);
   });
 
   it('resolves a local agent to its location dir on disk', async () => {
@@ -72,7 +72,7 @@ describe('resolveSubagentWorkspace', () => {
     getRemoteAgentLocation.mockResolvedValueOnce(null);
     getLocationById.mockResolvedValueOnce(location({ dir: '/local/proj' }));
 
-    const ws = await resolveSubagentWorkspace('agent-1');
+    const ws = await resolveSubagentFs('agent-1');
 
     expect(createPluginFs).toHaveBeenCalledWith('/local/proj');
     expect(ws.fs).toEqual({ __local: '/local/proj' });
@@ -85,7 +85,7 @@ describe('resolveSubagentWorkspace', () => {
     getAgentById.mockResolvedValueOnce(agent({}));
     getRemoteAgentLocation.mockResolvedValueOnce(null);
     getLocationById.mockResolvedValueOnce(undefined);
-    await expect(resolveSubagentWorkspace('agent-1')).rejects.toThrow(/no location on disk/);
+    await expect(resolveSubagentFs('agent-1')).rejects.toThrow(/no location on disk/);
   });
 
   it('resolves a remote agent over SFTP and closes the channel', async () => {
@@ -96,7 +96,7 @@ describe('resolveSubagentWorkspace', () => {
       }
     );
 
-    const ws = await resolveSubagentWorkspace('agent-1');
+    const ws = await resolveSubagentFs('agent-1');
 
     expect(ensureSshConnected).toHaveBeenCalledWith('agent-ssh:box', 'box');
     expect(SshFileSystemCtor).toHaveBeenCalledWith(expect.anything(), '/home/dev/r');

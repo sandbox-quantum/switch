@@ -115,7 +115,7 @@ export const ptyController = createRPCController({
       return ok();
     }
 
-    // Lifecycle scripts are scoped by workspace id (no session match) and never
+    // Lifecycle scripts are scoped by location id (no session match) and never
     // respawn, so a raw kill is sufficient and safe.
     const pty = ptySessionRegistry.get(sessionId);
     if (pty) {
@@ -149,14 +149,14 @@ export const ptyController = createRPCController({
       if (!sessionProvider) return err({ type: 'not_ssh' as const });
 
       const locationId = sessionRuntimeManager.getLocationId(scopeId) ?? '';
-      const workspace = locationRuntimeRegistry.get(locationId);
-      if (!workspace?.fs.copyLocalFile) return err({ type: 'not_ssh' as const });
+      const runtime = locationRuntimeRegistry.get(locationId);
+      if (!runtime?.fs.copyLocalFile) return err({ type: 'not_ssh' as const });
 
       const remotePaths = await Promise.all(
         args.localPaths.map(async (localPath) => {
           const remoteName = `${randomUUID()}-${basename(localPath)}`;
-          await workspace.fs.copyLocalFile!(localPath, remoteName);
-          return `${workspace.path}/${remoteName}`;
+          await runtime.fs.copyLocalFile!(localPath, remoteName);
+          return `${runtime.path}/${remoteName}`;
         })
       );
       return ok({ remotePaths });

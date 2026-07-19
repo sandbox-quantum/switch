@@ -407,11 +407,11 @@ class AutoSessionWatcher {
           });
           // createSession provisions the runtime inline but emits only
           // session:created — not session:provisioned. Without the latter an
-          // open renderer leaves the session stuck "Setting up workspace…"
-          // (it never reconciles to ready). provisionWorkspace is idempotent
+          // open renderer leaves the session stuck "Setting up session…"
+          // (it never reconciles to ready). provisionSession is idempotent
           // (fast-paths on the already-registered runtime) and emits the
           // provisioned event the renderer needs.
-          await sessionService.provisionWorkspace(result.data.session.id).catch((error) => {
+          await sessionService.provisionSession(result.data.session.id).catch((error) => {
             log.warn('AutoSessionWatcher: post-spawn provision-reconcile failed', {
               roomId,
               sessionId: result.data.session.id,

@@ -23,7 +23,7 @@ const EMPTY_PLUGIN_FS: PluginFs = {
   list: () => Promise.resolve([]),
 };
 
-export type SubagentWorkspace = {
+export type SubagentFsContext = {
   agent: Agent;
   /** FS rooted at the parent's working dir — local disk or the remote repo dir. */
   fs: PluginFs;
@@ -36,7 +36,7 @@ export type SubagentWorkspace = {
 /**
  * Open a {@link PluginFs} rooted at a remote agent's working dir over SFTP,
  * without needing a switchdash agent record — used at onboarding time (keyed on
- * ssh host + repo dir) as well as by {@link resolveSubagentWorkspace}. Callers
+ * ssh host + repo dir) as well as by {@link resolveSubagentFs}. Callers
  * MUST invoke `close()` in a `finally` to release the SFTP channel.
  */
 export async function openRemoteSubagentFs(
@@ -52,14 +52,13 @@ export async function openRemoteSubagentFs(
  * Resolve the filesystem where a parent agent's subagent definitions and
  * credentials live, transparently for local and remote agents. Local agents use
  * their location dir on disk; remote agents use their SSH host's repo dir over
- * SFTP (the same connect seam the remote credential shipping in setupRemoteAgent
- * uses).
+ * SFTP (the same connect seam remote agents use for their location IO).
  *
  * Callers MUST invoke `close()` in a `finally` — for remote agents it releases
  * the SFTP channel, which otherwise leaks and eventually exhausts the host's
  * MaxSessions.
  */
-export async function resolveSubagentWorkspace(parentAgentId: string): Promise<SubagentWorkspace> {
+export async function resolveSubagentFs(parentAgentId: string): Promise<SubagentFsContext> {
   const agent = await getAgentById(parentAgentId);
   if (!agent) throw new Error(`No agent with id ${parentAgentId}`);
 

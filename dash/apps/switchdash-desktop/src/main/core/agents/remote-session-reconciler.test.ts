@@ -14,7 +14,7 @@ const createSession = vi.fn(async (_p: unknown) => ({
   success: true,
   data: { session: { id: 'x' } },
 }));
-const provisionWorkspace = vi.fn(async (_id: string) => ({ success: true }));
+const provisionSession = vi.fn(async (_id: string) => ({ success: true }));
 const probeAgentSidecar = vi.fn(
   async () => ({ port: 4321, token: 'tok' }) as { port: number; token: string } | null
 );
@@ -51,7 +51,7 @@ vi.mock('@main/core/agent-runtime/impl/sidecar-http', () => ({
 vi.mock('@main/core/sessions/session-service', () => ({
   sessionService: {
     createSession: (p: unknown) => createSession(p as never),
-    provisionWorkspace: (id: string) => provisionWorkspace(id as never),
+    provisionSession: (id: string) => provisionSession(id as never),
   },
 }));
 vi.mock('@main/app/deeplinks', () => ({ DEEPLINK_SCHEME: 'switchdash' }));
@@ -105,7 +105,7 @@ describe('RemoteSessionReconciler', () => {
     expect(createSession).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'conv-new', agentId: 'agent-1', autoApprove: true })
     );
-    expect(provisionWorkspace).toHaveBeenCalledWith('conv-new');
+    expect(provisionSession).toHaveBeenCalledWith('conv-new');
   });
 
   it('skips a VM session that already has a switchdash row', async () => {
@@ -260,7 +260,7 @@ describe('RemoteSessionReconciler', () => {
     await reconcile('agent-1');
 
     expect(createSession).toHaveBeenCalledTimes(1);
-    expect(provisionWorkspace).not.toHaveBeenCalled();
+    expect(provisionSession).not.toHaveBeenCalled();
   });
 
   it('stops a duplicate reconciler whose agent shares an already-claimed sidecar', async () => {

@@ -9,13 +9,13 @@ import { shareLocationSettingsToConfig } from './share-location-settings-to-conf
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
-  workspaceGet: vi.fn(),
+  runtimeGet: vi.fn(),
   listForLocation: vi.fn(),
 }));
 
 vi.mock('@main/core/locations/location-runtime-registry', () => ({
   locationRuntimeRegistry: {
-    get: mocks.workspaceGet,
+    get: mocks.runtimeGet,
     listForLocation: mocks.listForLocation,
   },
 }));
@@ -39,7 +39,7 @@ vi.mock('@main/lib/logger', () => ({
 describe('shareLocationSettingsToConfig', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.workspaceGet.mockReturnValue(undefined);
+    mocks.runtimeGet.mockReturnValue(undefined);
     mocks.listForLocation.mockReturnValue([]);
   });
 
@@ -342,7 +342,6 @@ describe('shareLocationSettingsToConfig', () => {
       locationId: 'location-1',
       dir: '/repo',
       fs: locationRootFs,
-      defaultWorkspaceType: { kind: 'local' },
     };
     mocks.select.mockReturnValueOnce({
       from: () => ({
@@ -368,7 +367,6 @@ describe('shareLocationSettingsToConfig', () => {
       locationId: 'location-1',
       dir: '/repo',
       fs: {},
-      defaultWorkspaceType: { kind: 'local' },
       worktreeService: {
         findBranchAnywhere,
       },
@@ -390,7 +388,7 @@ describe('shareLocationSettingsToConfig', () => {
     expect(findBranchAnywhere).not.toHaveBeenCalled();
   });
 
-  it('detects workspace setting overrides from .switchdash.json files', async () => {
+  it('detects location setting overrides from .switchdash.json files', async () => {
     const location = {
       locationId: 'location-1',
       dir: '/repo',
@@ -408,7 +406,6 @@ describe('shareLocationSettingsToConfig', () => {
           }),
         }),
       },
-      defaultWorkspaceType: { kind: 'local' },
       worktreeService: {
         findBranchAnywhere: vi.fn(),
       },

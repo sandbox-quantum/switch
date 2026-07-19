@@ -201,7 +201,7 @@ describe('runLifecycleScriptWithPolicy', () => {
       ...baseArgs(runLifecycleScript),
       type: 'teardown',
       script: 'pnpm cleanup',
-      origin: 'workspace-destroy',
+      origin: 'location-destroy',
       policy: {
         timeoutMs: 100,
         logFailure: true,

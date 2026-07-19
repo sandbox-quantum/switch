@@ -124,7 +124,7 @@ describe('SshFileSystem.remove', () => {
     expect(proxy.exec).not.toHaveBeenCalled();
   });
 
-  it('removes directories recursively inside the workspace', async () => {
+  it('removes directories recursively inside the location', async () => {
     const { fs, execCommands } = makeRemoveFs();
 
     await expect(fs.remove('subdir', { recursive: true })).resolves.toEqual({ success: true });

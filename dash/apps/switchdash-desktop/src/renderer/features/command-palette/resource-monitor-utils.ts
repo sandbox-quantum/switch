@@ -136,7 +136,7 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
       locationName = locationStore.name ?? locationStore.data?.name ?? entry.locationId.slice(0, 8);
       const mounted = locationStore.mountedLocation;
       // Agent PTYs use the session id as scopeId; lifecycle-script PTYs use the
-      // workspace id. Try the direct lookup first, then fall back to matching
+      // location id. Try the direct lookup first, then fall back to matching
       // a session by its locationId so scripts attach to their owning branch.
       let sessionId = entry.scopeId;
       let session = mounted?.sessionManager.sessions.get(entry.scopeId);

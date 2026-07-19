@@ -329,10 +329,10 @@ pnpm run test
 - View definitions and navigation guards are centralized in `src/renderer/app/view-registry.ts`.
 - MCP types live under `src/shared/core/mcp/`.
 - Skills types and validation live under `src/shared/core/skills/`.
-- Per-project runtime settings can be supplied through `.switchdash.json`:
+- Per-location runtime settings can be supplied through `.switchdash.json`:
   `preservePatterns`, `scripts.setup`, `scripts.run`, `scripts.teardown`, and
   `shellSetup`.
-- Project settings such as `tmux` and `workspaceProvider` are DB-backed, not
+- Location settings such as `tmux` and `locationProvider` are DB-backed, not
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,

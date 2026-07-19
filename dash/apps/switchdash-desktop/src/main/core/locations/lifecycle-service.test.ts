@@ -80,7 +80,7 @@ function makeTerminalProvider(): {
   return { provider, spawned, requests };
 }
 
-describe('WorkspaceLifecycleService', () => {
+describe('LifecycleScriptService', () => {
   it('respawns an interactive lifecycle shell after an exit-backed script finishes', async () => {
     const { provider, spawned, requests } = makeTerminalProvider();
     const service = new LifecycleScriptService({

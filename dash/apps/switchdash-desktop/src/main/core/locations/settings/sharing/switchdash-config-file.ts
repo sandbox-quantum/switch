@@ -7,7 +7,7 @@ import { parseJsonObject } from '../location-settings-json';
 
 export const CONFIG_FILE = '.switchdash.json';
 
-export function parseWorkspaceConfigObject(raw: string): Record<string, unknown> {
+export function parseSwitchdashConfigObject(raw: string): Record<string, unknown> {
   return parseJsonObject(raw) as Record<string, unknown>;
 }
 

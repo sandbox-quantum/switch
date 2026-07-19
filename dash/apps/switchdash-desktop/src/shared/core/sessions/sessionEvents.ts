@@ -52,7 +52,7 @@ export const sessionProvisionProgressChannel = defineEvent<{
 }>('session:provision-progress');
 
 export type LifecycleScriptType = 'setup' | 'run' | 'teardown';
-export type LifecycleScriptOrigin = 'auto-setup' | 'auto-run' | 'manual' | 'workspace-destroy';
+export type LifecycleScriptOrigin = 'auto-setup' | 'auto-run' | 'manual' | 'location-destroy';
 
 export type LifecycleScriptStatusEvent = {
   sessionId: string;

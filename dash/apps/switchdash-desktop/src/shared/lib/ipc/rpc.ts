@@ -43,8 +43,8 @@ export function registerRPCRouter(router: RouterMap, ipcMain: IpcMain): void {
 }
 
 // Recursively maps every leaf function to its async client equivalent.
-// Non-function values recurse, so both 2-level (rpc.gitRepository.fetch) and
-// 3-level (rpc.workspace.gitWorktree.commit) shapes are handled by a single type.
+// Non-function values recurse, so both 2-level (rpc.agents.getAgentById) and
+// 3-level (rpc.fs.watch.watchSetPaths) shapes are handled by a single type.
 type IpcClient<R> = {
   [K in keyof R]: R[K] extends (...args: infer A) => infer Ret
     ? (...args: A) => Promise<Awaited<Ret>>

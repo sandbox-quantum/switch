@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getPlugin = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const registerSubagentsCore = vi.hoisted(() => vi.fn());
-const resolveSubagentWorkspace = vi.hoisted(() => vi.fn());
+const resolveSubagentFs = vi.hoisted(() => vi.fn());
 const applyLocalSubagentAutoSessionState = vi.hoisted(() => vi.fn(async () => {}));
 const getRemoteAgentLocation = vi.hoisted(() => vi.fn(async () => null));
 const logWarn = vi.hoisted(() => vi.fn());
@@ -12,7 +12,7 @@ vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer }));
 vi.mock('@main/core/agents/agent-location', () => ({ getRemoteAgentLocation }));
 vi.mock('./register-subagents', () => ({ registerSubagentsCore }));
-vi.mock('./resolve-workspace', () => ({ resolveSubagentWorkspace }));
+vi.mock('./resolve-subagent-fs', () => ({ resolveSubagentFs }));
 vi.mock('./setSubagentAutoSession', () => ({ applyLocalSubagentAutoSessionState }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn() } }));
 
@@ -24,8 +24,8 @@ const behavior = {
   removeLocal: vi.fn(async () => {}),
 };
 
-function mockWorkspace(agent: Record<string, unknown>) {
-  resolveSubagentWorkspace.mockResolvedValue({ agent, fs: {}, close: vi.fn() });
+function mockSubagentFs(agent: Record<string, unknown>) {
+  resolveSubagentFs.mockResolvedValue({ agent, fs: {}, close: vi.fn() });
 }
 
 const LOCAL_PARENT = {
@@ -52,7 +52,7 @@ describe('createSubagent', () => {
   });
 
   it('registers with auto_session on and starts the watcher for a local parent', async () => {
-    mockWorkspace(LOCAL_PARENT);
+    mockSubagentFs(LOCAL_PARENT);
 
     const result = await createSubagent(PARAMS);
 
@@ -72,7 +72,7 @@ describe('createSubagent', () => {
   });
 
   it('registers with auto_session off and starts no watcher for a remote parent', async () => {
-    mockWorkspace(LOCAL_PARENT);
+    mockSubagentFs(LOCAL_PARENT);
     getRemoteAgentLocation.mockResolvedValueOnce({
       id: 'loc-remote',
       name: 'r',
@@ -91,7 +91,7 @@ describe('createSubagent', () => {
   });
 
   it('does not fail creation when starting the watcher fails', async () => {
-    mockWorkspace(LOCAL_PARENT);
+    mockSubagentFs(LOCAL_PARENT);
     applyLocalSubagentAutoSessionState.mockRejectedValueOnce(new Error('watcher boom'));
 
     const result = await createSubagent(PARAMS);
@@ -104,7 +104,7 @@ describe('createSubagent', () => {
   });
 
   it('removes the written definition when registration fails', async () => {
-    mockWorkspace(LOCAL_PARENT);
+    mockSubagentFs(LOCAL_PARENT);
     registerSubagentsCore.mockRejectedValueOnce(new Error('gateway boom'));
 
     await expect(createSubagent(PARAMS)).rejects.toThrow('gateway boom');

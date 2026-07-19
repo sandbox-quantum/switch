@@ -16,7 +16,7 @@ import {
   type RegisterSubagentsParams,
   type RegisterSubagentsRemoteParams,
 } from './register-subagents';
-import { openRemoteSubagentFs, resolveSubagentWorkspace } from './resolve-workspace';
+import { openRemoteSubagentFs, resolveSubagentFs } from './resolve-subagent-fs';
 import {
   getSubagentAutoSession,
   setSubagentAutoSession,
@@ -65,13 +65,13 @@ async function readDefinition(params: {
   parentAgentId: string;
   name: string;
 }): Promise<SubagentAttributes | null> {
-  const workspace = await resolveSubagentWorkspace(params.parentAgentId);
+  const ctx = await resolveSubagentFs(params.parentAgentId);
   try {
-    const subagents = getPlugin(workspace.agent.providerId).behavior.subagents;
+    const subagents = getPlugin(ctx.agent.providerId).behavior.subagents;
     if (!subagents) return null;
-    return await subagents.readDefinition(workspace.fs, params.name);
+    return await subagents.readDefinition(ctx.fs, params.name);
   } finally {
-    workspace.close();
+    ctx.close();
   }
 }
 

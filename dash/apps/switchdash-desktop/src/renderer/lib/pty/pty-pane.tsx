@@ -260,7 +260,7 @@ const PtyPaneComponent = forwardRef<{ focus: () => void }, Props>(
         if (!dt) return;
 
         // In-app drag from the editor file tree. The drag payload already
-        // carries the path in the workspace environment where this agent runs.
+        // carries the path in the location environment where this agent runs.
         const draggedLocationFile = getDraggedLocationFile(dt);
         if (draggedLocationFile) {
           if (draggedLocationFile.locationId !== locationId) return;

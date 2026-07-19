@@ -298,8 +298,8 @@ export class SessionManagerStore {
     const session = this.sessions.get(sessionId);
     if (!session || !isUnprovisioned(session)) return;
 
-    // Single-phase provision: workspace bootstrap + session provider construction + registration.
-    const result = await rpc.sessions.provisionWorkspace(sessionId);
+    // Single-phase provision: session bootstrap + session provider construction + registration.
+    const result = await rpc.sessions.provisionSession(sessionId);
     if (!result.success) {
       const message = result.error.message;
       runInAction(() => {

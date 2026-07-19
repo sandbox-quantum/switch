@@ -72,7 +72,7 @@ class LocationFileIndexService {
   onRuntimeDestroyed(_locationId: string): void {
     // Intentionally a no-op: the index ages out 14 days after the last provision.
     // Calling touchMeta here would reset the staleness clock on every destroy,
-    // preventing eviction of stale entries for frequently-cycled workspaces.
+    // preventing eviction of stale entries for frequently-cycled locations.
   }
 
   deleteIndex(locationId: string): void {

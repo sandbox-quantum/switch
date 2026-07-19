@@ -142,7 +142,7 @@ export function sessionErrorMessage(store: SessionStore | undefined): string | u
   }
   if (isUnprovisioned(store)) {
     if (store.phase === 'provision-error') {
-      return store.errorMessage ?? 'Failed to set up workspace';
+      return store.errorMessage ?? 'Failed to set up session';
     }
     if (store.phase === 'teardown-error') {
       return store.errorMessage ?? 'Failed to tear down session';

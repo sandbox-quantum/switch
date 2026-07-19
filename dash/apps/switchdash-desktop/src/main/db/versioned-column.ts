@@ -77,12 +77,12 @@ export function serializeVersionedColumn<T>(
  *
  * @example
  * ```ts
- * import { workspaceConfig } from '@shared/workspace-config';
+ * import { sessionConfig } from '@shared/session-config';
  *
- * export const workspaces = sqliteTable('workspaces', {
- *   config: versionedJsonColumn(workspaceConfig)('config'),
+ * export const sessions = sqliteTable('sessions', {
+ *   config: versionedJsonColumn(sessionConfig)('config'),
  * });
- * // workspaces.config is typed as WorkspaceConfig | null
+ * // sessions.config is typed as SessionConfig | null
  * ```
  */
 export function versionedJsonColumn<T>(schema: VersionedSchema<T>) {

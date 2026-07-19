@@ -42,7 +42,7 @@ export type SessionLifecycleHooks = {
   'session:updated': (session: Session) => void | Promise<void>;
   'session:archived': (sessionId: string) => void | Promise<void>;
   'session:deleted': (sessionId: string) => void | Promise<void>;
-  'session:workspace-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
+  'session:runtime-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
 };
 
 export class SessionService implements Hookable<SessionLifecycleHooks> {
@@ -74,10 +74,10 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
   /**
    * Provisions the runtime for a session: builds the conversation + terminal
    * providers in the location root and registers the session. Idempotent —
-   * fast-paths when already live. Fires the `session:workspace-ready` hook and
+   * fast-paths when already live. Fires the `session:runtime-ready` hook and
    * emits the `session:provisioned` IPC event on success.
    */
-  async provisionWorkspace(
+  async provisionSession(
     sessionId: string
   ): Promise<Result<ProvisionResult, TeardownSessionError>> {
     const session = await this._loadSession(sessionId);
@@ -90,7 +90,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
         path: location.dir,
         locationId: sessionRuntimeManager.getLocationId(sessionId) ?? location.locationId,
       };
-      this._hooks.callHookBackground('session:workspace-ready', sessionId, provisionResult);
+      this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);
       events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
       return ok(provisionResult);
     }
@@ -99,13 +99,13 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     await this._registerAndPersist(sessionId, built);
 
     const provisionResult: ProvisionResult = { path: built.path, locationId: built.locationId };
-    this._hooks.callHookBackground('session:workspace-ready', sessionId, provisionResult);
+    this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);
     events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
     return ok(provisionResult);
   }
 
   async launch(sessionId: string): Promise<Result<ProvisionResult, TeardownSessionError>> {
-    return this.provisionWorkspace(sessionId);
+    return this.provisionSession(sessionId);
   }
 
   private async _loadSession(

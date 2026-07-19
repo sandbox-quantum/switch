@@ -144,7 +144,7 @@ export class LifecycleScriptService implements IDisposable {
     const pty = ptySessionRegistry.get(sessionId);
     if (!pty) {
       throw new Error(
-        `Lifecycle script session unavailable for ${script.type} in workspace ${this.locationId}`
+        `Lifecycle script session unavailable for ${script.type} in location ${this.locationId}`
       );
     }
 

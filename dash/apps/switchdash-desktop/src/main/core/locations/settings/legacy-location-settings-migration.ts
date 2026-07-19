@@ -86,8 +86,8 @@ export async function migrateLegacyLocationSettingsIfNeeded({
       if (normalized.success) next.worktreeDirectory = normalized.data;
     }
     if (legacy.tmux !== undefined) next.tmux = legacy.tmux;
-    if (legacy.workspaceProvider !== undefined) {
-      next.workspaceProvider = legacy.workspaceProvider;
+    if (legacy.locationProvider !== undefined) {
+      next.locationProvider = legacy.locationProvider;
     }
   }
 

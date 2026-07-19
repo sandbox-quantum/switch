@@ -194,7 +194,7 @@ export function createLocationRuntimeFactory(
             type: 'teardown',
             script: teardownScript,
             shellSetup: latestShellSetup,
-            origin: 'workspace-destroy',
+            origin: 'location-destroy',
             policy: {
               timeoutMs: TEARDOWN_SCRIPT_WAIT_MS,
               logFailure: true,

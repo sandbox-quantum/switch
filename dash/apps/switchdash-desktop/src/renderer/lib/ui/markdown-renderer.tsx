@@ -25,7 +25,7 @@ interface MarkdownRendererProps {
   allowHtml?: boolean;
   /**
    * Optional callback for resolving non-external image src values (e.g. relative
-   * paths inside a workspace). Should return a `data:` URI string, or `null` to
+   * paths inside a location). Should return a `data:` URI string, or `null` to
    * render a "not found" placeholder. When omitted, local images are not resolved.
    */
   resolveImage?: (src: string) => Promise<string | null>;

@@ -404,9 +404,9 @@ class RemoteSessionReconciler {
     }
     // createSession provisions the runtime inline but emits only session:created,
     // not session:provisioned — without the latter an open renderer leaves the
-    // session stuck "Setting up workspace…". provisionWorkspace is idempotent and
+    // session stuck "Setting up session…". provisionSession is idempotent and
     // emits the provisioned event the renderer needs.
-    await sessionService.provisionWorkspace(sessionId).catch((error) => {
+    await sessionService.provisionSession(sessionId).catch((error) => {
       log.warn('RemoteSessionReconciler: post-adopt provision-reconcile failed', {
         agentId: agent.id,
         sessionId,

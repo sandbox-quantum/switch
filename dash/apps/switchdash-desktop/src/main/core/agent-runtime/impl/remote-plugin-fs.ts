@@ -9,7 +9,7 @@ import {
 /**
  * Adapt a remote SSH `FileSystemProvider` to the `PluginFs` shape that plugin
  * hook/config writers expect, so the same `writeHooks` logic that runs against
- * the local workspace can install an agent's hooks on its VM over SFTP.
+ * a local location can install an agent's hooks on its VM over SFTP.
  *
  * The provider is rooted at the agent's remote repo dir, so paths are relative
  * to it (e.g. `.claude/settings.local.json`). Remote hosts are POSIX, so parent

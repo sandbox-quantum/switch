@@ -6,7 +6,7 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { SubagentListResult } from '@shared/core/subagents/subagents';
 import { reconcileSubagents } from './reconcile';
-import { resolveSubagentWorkspace } from './resolve-workspace';
+import { resolveSubagentFs } from './resolve-subagent-fs';
 
 /**
  * List a parent agent's Claude Code subagents: discover them from the parent's
@@ -27,11 +27,11 @@ export async function listSubagents(parentAgentId: string): Promise<SubagentList
   let local: LocalSubagent[] = [];
   if (subagentsBehavior) {
     try {
-      const workspace = await resolveSubagentWorkspace(parentAgentId);
+      const ctx = await resolveSubagentFs(parentAgentId);
       try {
-        local = await subagentsBehavior.discoverLocal(workspace.fs, workspace.homeFs);
+        local = await subagentsBehavior.discoverLocal(ctx.fs, ctx.homeFs);
       } finally {
-        workspace.close();
+        ctx.close();
       }
     } catch (error) {
       // Discovery is best-effort: an unreachable host or a parent without a

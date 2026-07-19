@@ -39,7 +39,7 @@ export const baseLocationSettingsSchema = z.object({
   tmux: z.boolean().optional(),
   autoRunSetupScriptOnSessionCreation: z.boolean().optional(),
   autoRunRunScriptOnSessionCreation: z.boolean().optional(),
-  workspaceProvider: z
+  locationProvider: z
     .object({
       type: z.literal('script'),
       provisionCommand: z.string().min(1),
@@ -87,7 +87,7 @@ export type LocationSettingsPage = {
 export type LocationSettingsWriteTarget =
   | { type: 'location' }
   | { type: 'session'; sessionId: string }
-  | { type: 'workspace'; locationId: string };
+  | { type: 'location-runtime'; locationId: string };
 
 export type LocationSettingsWriteTargetOption = LocationSettingsWriteTarget & {
   label: string;

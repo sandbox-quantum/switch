@@ -18,14 +18,13 @@ const mocks = vi.hoisted(() => ({
   getSessionGitWorktreeStore: vi.fn(),
   getSessions: vi.fn(),
   mountLocation: vi.fn(),
-  provisionWorkspace: vi.fn(),
+  provisionSession: vi.fn(),
   teardownSession: vi.fn(),
   viewModels: [] as MockViewModel[],
   viewStateGet: vi.fn(),
-  workspaceActivate: vi.fn(),
-  workspaceAcquire: vi.fn(),
-  workspaceRelease: vi.fn(),
-  workspaceSetBootstrapState: vi.fn(),
+  runtimeActivate: vi.fn(),
+  runtimeAcquire: vi.fn(),
+  runtimeRelease: vi.fn(),
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -39,7 +38,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     sessions: {
       archiveSession: mocks.archiveSession,
       getSessions: mocks.getSessions,
-      provisionWorkspace: mocks.provisionWorkspace,
+      provisionSession: mocks.provisionSession,
       teardownSession: mocks.teardownSession,
     },
   },
@@ -80,10 +79,9 @@ vi.mock('./session-view-model', () => ({
 
 vi.mock('./session-runtime-registry', () => ({
   sessionRuntimeRegistry: {
-    activate: mocks.workspaceActivate,
-    acquire: mocks.workspaceAcquire,
-    release: mocks.workspaceRelease,
-    setBootstrapState: mocks.workspaceSetBootstrapState,
+    activate: mocks.runtimeActivate,
+    acquire: mocks.runtimeAcquire,
+    release: mocks.runtimeRelease,
   },
 }));
 
@@ -125,11 +123,11 @@ describe('SessionManagerStore archive lifecycle', () => {
     mocks.getLocationManagerStore.mockReturnValue({ mountLocation: mocks.mountLocation });
     mocks.getSessions.mockResolvedValue([]);
     mocks.mountLocation.mockResolvedValue(undefined);
-    mocks.provisionWorkspace.mockResolvedValue({
+    mocks.provisionSession.mockResolvedValue({
       success: true,
       data: {
-        path: '/tmp/workspace-1',
-        locationId: 'workspace-1',
+        path: '/tmp/location-1',
+        locationId: 'location-1',
       },
     });
     mocks.viewStateGet.mockResolvedValue(undefined);

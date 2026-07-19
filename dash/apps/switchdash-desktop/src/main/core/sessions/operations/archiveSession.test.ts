@@ -36,11 +36,11 @@ describe('archiveSession', () => {
     mocks.updateWhere.mockResolvedValue(undefined);
   });
 
-  it('archives by detaching runtime without deleting workspace assets', async () => {
+  it('archives by detaching runtime without deleting location assets', async () => {
     mocks.selectLimit.mockResolvedValueOnce([
       {
         id: 'session-1',
-        locationId: 'workspace-1',
+        locationId: 'location-1',
         status: 'done',
       },
     ]);

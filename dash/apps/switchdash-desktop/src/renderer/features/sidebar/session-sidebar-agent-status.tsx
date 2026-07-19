@@ -38,7 +38,7 @@ export const SessionSidebarTrailingSlot = observer(function SessionSidebarTraili
               <CLISpinner variant="2" />
             </span>
           </TooltipTrigger>
-          <TooltipContent>Creating session workspace...</TooltipContent>
+          <TooltipContent>Creating session…</TooltipContent>
         </Tooltip>
       </Slot>
     );

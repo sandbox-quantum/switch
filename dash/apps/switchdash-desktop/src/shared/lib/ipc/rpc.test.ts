@@ -29,20 +29,20 @@ const gitRepositoryController = createRPCController({
   branches: () => Promise.resolve(['main']),
 });
 
-const wsFsController = createRPCController({
+const nestedFsController = createRPCController({
   list: (dir: string) => Promise.resolve([dir]),
 });
 
-const workspaceNamespace = createRPCNamespace({
+const nestedNamespace = createRPCNamespace({
   gitWorktree: gitWorktreeController,
-  fs: wsFsController,
+  fs: nestedFsController,
 });
 
 const router = createRPCRouter({
   vcs: vcsController,
   gitRepository: gitRepositoryController,
   fs: fsController,
-  workspace: workspaceNamespace,
+  nested: nestedNamespace,
 });
 
 type Router = typeof router;
@@ -83,9 +83,9 @@ describe('createRPCClient', () => {
     const invoke = vi.fn().mockResolvedValue('ok');
     const rpc = createRPCClient<Router>(invoke);
 
-    await rpc.workspace.gitWorktree.clone('https://example.com/repo');
+    await rpc.nested.gitWorktree.clone('https://example.com/repo');
 
-    expect(invoke).toHaveBeenCalledWith('workspace.gitWorktree.clone', 'https://example.com/repo');
+    expect(invoke).toHaveBeenCalledWith('nested.gitWorktree.clone', 'https://example.com/repo');
   });
 
   it('forwards multiple arguments correctly', async () => {
@@ -110,9 +110,9 @@ describe('createRPCClient', () => {
     const invoke = vi.fn().mockResolvedValue([]);
     const rpc = createRPCClient<Router>(invoke);
 
-    await rpc.workspace.fs.list('locations');
+    await rpc.nested.fs.list('locations');
 
-    expect(invoke).toHaveBeenCalledWith('workspace.fs.list', 'locations');
+    expect(invoke).toHaveBeenCalledWith('nested.fs.list', 'locations');
   });
 });
 
@@ -135,9 +135,9 @@ describe('registerRPCRouter', () => {
     const ipc = makeIpcMainStub();
     registerRPCRouter(router, ipc as never);
 
-    expect(ipc.registeredChannels()).toContain('workspace.gitWorktree.clone');
+    expect(ipc.registeredChannels()).toContain('nested.gitWorktree.clone');
     expect(ipc.registeredChannels()).toContain('gitRepository.branches');
-    expect(ipc.registeredChannels()).toContain('workspace.fs.list');
+    expect(ipc.registeredChannels()).toContain('nested.fs.list');
   });
 
   it('calls through to the original handler function with args', async () => {
@@ -152,7 +152,7 @@ describe('registerRPCRouter', () => {
     const ipc = makeIpcMainStub();
     registerRPCRouter(router, ipc as never);
 
-    const result = await ipc.invoke('workspace.gitWorktree.clone', 'https://example.com');
+    const result = await ipc.invoke('nested.gitWorktree.clone', 'https://example.com');
     expect(result).toBe('cloned https://example.com');
   });
 
@@ -185,11 +185,11 @@ describe('IpcClient type-safety', () => {
   });
 
   it('types a nested procedure as an async function with the original signature', () => {
-    expectTypeOf(rpc.workspace.gitWorktree.clone).toEqualTypeOf<(url: string) => Promise<string>>();
+    expectTypeOf(rpc.nested.gitWorktree.clone).toEqualTypeOf<(url: string) => Promise<string>>();
   });
 
   it('types a nested namespace as a sub-namespace object, not a callable', () => {
-    expectTypeOf(rpc.workspace).toEqualTypeOf<{
+    expectTypeOf(rpc.nested).toEqualTypeOf<{
       fs: { list: (dir: string) => Promise<string[]> };
       gitWorktree: { clone: (url: string) => Promise<string> };
     }>();

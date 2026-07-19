@@ -22,7 +22,7 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
   parseSwitchAgentCredentials,
   readSwitchAgentCredentials,
 }));
-vi.mock('./resolve-workspace', () => ({ openRemoteSubagentFs }));
+vi.mock('./resolve-subagent-fs', () => ({ openRemoteSubagentFs }));
 vi.mock('@main/core/agents/getAgents', () => ({ getAgents }));
 vi.mock('@main/core/locations/store', () => ({ getLocationByHostDir }));
 vi.mock('./setSubagentAutoSession', () => ({ applyLocalSubagentAutoSessionState }));

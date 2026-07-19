@@ -1,6 +1,6 @@
 import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { resolveSubagentWorkspace } from './resolve-workspace';
+import { resolveSubagentFs } from './resolve-subagent-fs';
 
 export type EditSubagentParams = {
   /** The parent agent whose subagent definition to rewrite. */
@@ -20,19 +20,19 @@ export async function editSubagent(params: EditSubagentParams): Promise<void> {
   const name = typeof params.attributes.name === 'string' ? params.attributes.name.trim() : '';
   if (!name) throw new Error('A subagent name is required.');
 
-  const workspace = await resolveSubagentWorkspace(params.parentAgentId);
+  const ctx = await resolveSubagentFs(params.parentAgentId);
   try {
-    const behavior = getPlugin(workspace.agent.providerId).behavior.subagents;
+    const behavior = getPlugin(ctx.agent.providerId).behavior.subagents;
     if (!behavior) {
-      throw new Error(`Provider ${workspace.agent.providerId} does not support subagents.`);
+      throw new Error(`Provider ${ctx.agent.providerId} does not support subagents.`);
     }
 
-    if (!(await behavior.readDefinition(workspace.fs, name))) {
+    if (!(await behavior.readDefinition(ctx.fs, name))) {
       throw new Error(`No subagent definition named "${name}".`);
     }
 
-    await behavior.writeDefinition(workspace.fs, params.attributes);
+    await behavior.writeDefinition(ctx.fs, params.attributes);
   } finally {
-    workspace.close();
+    ctx.close();
   }
 }

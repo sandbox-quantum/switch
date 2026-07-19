@@ -13,7 +13,7 @@ import type {
  * server is active. Managing a server's agents/rooms happens in the gateway web
  * app for now, so this store deliberately does not fetch those — only what the
  * sidebar + the minimal server view need. Modeled on the singleton-store +
- * observable-state pattern (see workspace-registry).
+ * observable-state pattern used across the renderer stores.
  */
 export class SwitchServersStore {
   servers: SwitchServer[] = [];

@@ -11,7 +11,7 @@ import { registerSubagentsBulk } from '@main/core/switch-servers/gateway-client'
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { openRemoteSubagentFs } from './resolve-workspace';
+import { openRemoteSubagentFs } from './resolve-subagent-fs';
 import { applyLocalSubagentAutoSessionState } from './setSubagentAutoSession';
 
 // Remote hosts are POSIX; use a forward-slash literal rather than path.join

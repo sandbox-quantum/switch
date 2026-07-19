@@ -9,7 +9,7 @@ import {
 } from './location-settings-target-resolver';
 import {
   CONFIG_FILE,
-  parseWorkspaceConfigObject,
+  parseSwitchdashConfigObject,
   patchShareableLocationSettingsFields,
 } from './switchdash-config-file';
 
@@ -37,7 +37,7 @@ export async function shareLocationSettingsToConfig(
     try {
       if (await target.fs.exists(CONFIG_FILE)) {
         const { content } = await target.fs.read(CONFIG_FILE);
-        config = parseWorkspaceConfigObject(content);
+        config = parseSwitchdashConfigObject(content);
       } else {
         config = {};
       }

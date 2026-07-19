@@ -1,7 +1,7 @@
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { deleteAgent } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
-import { resolveSubagentWorkspace } from './resolve-workspace';
+import { resolveSubagentFs } from './resolve-subagent-fs';
 
 export type DeleteSubagentParams = {
   /** The parent agent the subagent belongs to. */
@@ -20,24 +20,24 @@ export type DeleteSubagentParams = {
  * surfaces before the local files are removed.
  */
 export async function deleteSubagent(params: DeleteSubagentParams): Promise<void> {
-  const workspace = await resolveSubagentWorkspace(params.parentAgentId);
+  const ctx = await resolveSubagentFs(params.parentAgentId);
   try {
-    const behavior = getPlugin(workspace.agent.providerId).behavior.subagents;
+    const behavior = getPlugin(ctx.agent.providerId).behavior.subagents;
     if (!behavior) {
-      throw new Error(`Provider ${workspace.agent.providerId} does not support subagents.`);
+      throw new Error(`Provider ${ctx.agent.providerId} does not support subagents.`);
     }
 
     if (params.switchAgentId) {
-      if (!workspace.agent.serverId) {
+      if (!ctx.agent.serverId) {
         throw new Error(`Agent ${params.parentAgentId} is not linked to a Switch server.`);
       }
-      const server = await getServer(workspace.agent.serverId);
-      if (!server) throw new Error(`No Switch server with id ${workspace.agent.serverId}`);
+      const server = await getServer(ctx.agent.serverId);
+      if (!server) throw new Error(`No Switch server with id ${ctx.agent.serverId}`);
       await deleteAgent(server, params.switchAgentId);
     }
 
-    await behavior.removeLocal(workspace.fs, params.name);
+    await behavior.removeLocal(ctx.fs, params.name);
   } finally {
-    workspace.close();
+    ctx.close();
   }
 }
