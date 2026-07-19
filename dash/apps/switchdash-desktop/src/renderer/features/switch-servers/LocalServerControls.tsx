@@ -3,6 +3,16 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogContentArea,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { localServerStore } from './local-server-store';
 
@@ -14,7 +24,7 @@ const card = 'rounded-lg border border-border bg-card p-4';
  */
 export const LocalServerControls = observer(function LocalServerControls() {
   const store = localServerStore;
-  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
 
   useEffect(() => {
     void store.checkDocker();
@@ -79,42 +89,77 @@ export const LocalServerControls = observer(function LocalServerControls() {
             {store.phase === 'error' ? 'Retry' : 'Start'}
           </Button>
         )}
-
-        {confirmingReset ? (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-foreground-muted">Delete all local data?</span>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={transitioning}
-              onClick={() => {
-                setConfirmingReset(false);
-                void store.reset();
-              }}
-            >
-              Reset
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmingReset(false)}>
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={transitioning}
-            onClick={() => setConfirmingReset(true)}
-          >
-            Reset…
-          </Button>
-        )}
       </div>
 
       <p className="text-xs text-foreground-tertiary-passive">
-        Reset stops the stack and permanently deletes its data (rooms, messages, agents). The stack
-        keeps running when you close switchdash.
+        The stack keeps running when you close switchdash.
       </p>
+
+      <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-4">
+        <div className="space-y-0.5">
+          <p className="text-xs font-medium text-foreground">Reset</p>
+          <p className="text-xs text-foreground-tertiary-passive">
+            Permanently deletes the stack's data and every agent configured against it.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={transitioning}
+          className="shrink-0 border-red-500/40 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+          onClick={() => setResetOpen(true)}
+        >
+          Reset…
+        </Button>
+      </div>
+
+      <ResetDialog
+        open={resetOpen}
+        onOpenChange={setResetOpen}
+        disabled={transitioning}
+        onConfirm={() => {
+          setResetOpen(false);
+          void store.reset();
+        }}
+      />
     </div>
+  );
+});
+
+const ResetDialog = observer(function ResetDialog({
+  open,
+  onOpenChange,
+  disabled,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  disabled: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <TriangleAlert className="size-4 text-red-500" />
+          <DialogTitle>Reset local server</DialogTitle>
+        </DialogHeader>
+        <DialogContentArea>
+          <DialogDescription>
+            This permanently deletes the local server and everything on it — all rooms, messages,
+            and{' '}
+            <strong className="text-foreground">every agent you've configured against it</strong>.
+            This can't be undone. A fresh Start rebuilds an empty stack from scratch.
+          </DialogDescription>
+        </DialogContentArea>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" size="sm" />}>Cancel</DialogClose>
+          <Button variant="destructive" size="sm" disabled={disabled} onClick={onConfirm}>
+            Reset and delete all agents
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 });
 
