@@ -5,7 +5,7 @@ coding agents in parallel. Each agent runs in its own session at the project roo
 are no Git worktrees). An agent runs either locally or — when configured remote — on an
 SSH host, where it runs inside tmux next to a switchdash-deployed sidecar so it keeps
 working and listening to its Switch rooms while switchdash is closed (CHOO-1059). It
-combines provider-agnostic CLI agent execution, session and conversation management,
+combines provider-agnostic CLI agent execution, session management,
 terminal sessions, MCP and skills, and packaging for desktop releases.
 
 Switchdash is an open-source fork; upstream attribution is recorded in `NOTICE`. The
@@ -226,7 +226,7 @@ Shared IPC primitives, provider metadata, events, MCP types, skills types, and
 domain types live under `src/shared/`.
 
 Major main-process domains live under `src/main/core/`: agent hooks, agents, app,
-conversations, dependencies, execution context, fs, projects, prompt library, PTY,
+agent runtime, dependencies, execution context, fs, projects, prompt library, PTY,
 resource monitor, runtime, search, secrets, sessions, settings, switch agents,
 terminal shell, terminals, updates, view state, and workspaces. Stateful
 main-process concerns use singleton services; expected failures should use the

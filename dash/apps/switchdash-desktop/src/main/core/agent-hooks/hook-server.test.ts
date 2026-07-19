@@ -112,11 +112,11 @@ describe('HookServer /events endpoint', () => {
   it('serves the sessions snapshot as JSON and rejects a bad token', async () => {
     server = new HookServer(noopLog);
     await server.start(async () => {}, {
-      sessionsProvider: () => [{ sessionId: 'conv-1', roomId: 'room-1' }],
+      sessionsProvider: () => [{ sessionId: 'session-1', roomId: 'room-1' }],
     });
     const ok = await get(server.getPort(), '/sessions', server.getToken());
     expect(ok.status).toBe(200);
-    expect(JSON.parse(ok.body).sessions).toEqual([{ sessionId: 'conv-1', roomId: 'room-1' }]);
+    expect(JSON.parse(ok.body).sessions).toEqual([{ sessionId: 'session-1', roomId: 'room-1' }]);
 
     const forbidden = await get(server.getPort(), '/sessions', 'wrong-token');
     expect(forbidden.status).toBe(403);
@@ -165,18 +165,18 @@ describe('HookServer /events endpoint', () => {
     const port = server.getPort();
     const token = server.getToken();
 
-    const ok = await post(port, '/disconnect', token, JSON.stringify({ sessionId: 'conv-1' }));
+    const ok = await post(port, '/disconnect', token, JSON.stringify({ sessionId: 'session-1' }));
     expect(ok.status).toBe(200);
-    expect(disconnectHandler).toHaveBeenCalledWith('conv-1', false);
+    expect(disconnectHandler).toHaveBeenCalledWith('session-1', false);
 
     const terminated = await post(
       port,
       '/disconnect',
       token,
-      JSON.stringify({ sessionId: 'conv-2', terminated: true })
+      JSON.stringify({ sessionId: 'session-2', terminated: true })
     );
     expect(terminated.status).toBe(200);
-    expect(disconnectHandler).toHaveBeenCalledWith('conv-2', true);
+    expect(disconnectHandler).toHaveBeenCalledWith('session-2', true);
 
     const forbidden = await post(port, '/disconnect', 'wrong', JSON.stringify({ sessionId: 'x' }));
     expect(forbidden.status).toBe(403);
@@ -198,7 +198,7 @@ describe('HookServer /events endpoint', () => {
       server.getPort(),
       '/disconnect',
       server.getToken(),
-      JSON.stringify({ sessionId: 'conv-1' })
+      JSON.stringify({ sessionId: 'session-1' })
     );
     expect(res.status).toBe(404);
   });

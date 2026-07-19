@@ -33,7 +33,7 @@ const UNKNOWN_PROJECT_ID = '__unknown__';
 
 /**
  * Lifecycle-script PTYs are labelled by their terminal id (see
- * `createLifecycleScriptTerminalId`), which has no provider/conversation
+ * `createLifecycleScriptTerminalId`), which has no provider/session
  * metadata. Map those ids to friendly labels so they don't render as the
  * truncated "script-l…" leaf id.
  */
@@ -159,7 +159,7 @@ export function buildGroups(entries: ResourcePtyEntry[]): Group[] {
     }
 
     // Fall back to metadata supplied by the sampler (covers cases where the
-    // owning project isn't mounted, so the conversation/terminal join above misses).
+    // owning project isn't mounted, so the session/terminal join above misses).
     providerId ??= entry.providerId;
     displayTitle ??= entry.title;
 

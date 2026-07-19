@@ -33,7 +33,7 @@ export type SessionRuntimeResult = {
 /**
  * Provisions the runtime for a session: acquires the project-dir workspace
  * (running lifecycle scripts once per project dir) and builds the session's
- * conversation + terminal providers in the project root.
+ * agent runtime + terminal providers in the project root.
  */
 export async function provisionSessionRuntime(
   session: Session,

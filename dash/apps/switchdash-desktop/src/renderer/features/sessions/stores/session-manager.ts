@@ -220,8 +220,7 @@ export class SessionManagerStore {
     };
 
     runInAction(() => {
-      // A session is its own (single) conversation in switchdash; create the
-      // optimistic session record keyed by the session id.
+      // Create the optimistic session record keyed by the session id.
       const now = new Date().toISOString();
       const optimistic: Session = {
         id: params.id,

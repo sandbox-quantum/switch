@@ -10,7 +10,7 @@ function adapter(stub: Partial<FileSystemProvider>) {
   return createRemotePluginFs(stub as unknown as FileSystemProvider);
 }
 
-describe('createRemotePluginFs (conversations)', () => {
+describe('createRemotePluginFs (agent runtime)', () => {
   it('read returns the file content', async () => {
     const read = vi.fn(async () => ({ content: 'hello', truncated: false, totalSize: 5 }));
     const fs = adapter({ read });

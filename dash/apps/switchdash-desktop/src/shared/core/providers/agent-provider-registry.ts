@@ -73,11 +73,11 @@ export type AgentProviderDefinition = {
    * CLI flag to assign a unique session ID per chat instance.
    * Used to isolate session state when multiple chats of the same provider
    * run in the same worktree. The flag receives a deterministic UUID
-   * derived from the Switchdash conversation ID.
+   * derived from the Switchdash session ID.
    * e.g. '--session-id' for Claude Code.
    */
   sessionIdFlag?: string;
-  newConversationFlag?: string;
+  newSessionFlag?: string;
   sessionIdOnResumeOnly?: boolean;
   /** Resume flag used when sessionIdOnResumeOnly is set but no provider session id is stored yet. */
   resumeWithoutSessionFlag?: string;
@@ -109,7 +109,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     // SessionStart hook that reports the rollout session id) without an interactive trust
     // prompt. Automations always auto-approve and can't answer that prompt, so without this
     // the session id is never captured and resume falls back to `codex resume --last`,
-    // reattaching the globally-most-recent Codex session instead of this conversation.
+    // reattaching the globally-most-recent Codex session instead of this one.
     autoApproveFlag:
       '-c approval_policy="never" -c sandbox_mode="danger-full-access" --dangerously-bypass-hook-trust',
     initialPromptFlag: '',
@@ -641,9 +641,9 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     cli: 'letta',
     autoApproveFlag: '--yolo',
     initialPromptFlag: '',
-    // Bare `letta` auto-resumes the cwd's last conversation; `--new` is
+    // Bare `letta` auto-resumes the cwd's last session; `--new` is
     // required to start a fresh one when switchdash spins up a new chat.
-    newConversationFlag: '--new',
+    newSessionFlag: '--new',
     useKeystrokeInjection: true,
     icon: 'letta.svg',
     alt: 'Letta Code CLI',

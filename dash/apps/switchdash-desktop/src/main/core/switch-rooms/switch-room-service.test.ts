@@ -26,10 +26,10 @@ vi.mock('@main/db/client', () => {
 const { switchRoomService } = await import('./switch-room-service');
 
 const ctx = {
-  sessionId: 'conv-1',
+  sessionId: 'session-1',
   projectId: 'proj-1',
   providerId: 'claude',
-  ptyId: 'claude-conv-conv-1',
+  ptyId: 'claude-session-session-1',
 };
 
 describe('SwitchRoomService', () => {
@@ -42,10 +42,10 @@ describe('SwitchRoomService', () => {
     switchRoomService.setSessionRoom(ctx, 'room-a', 'agent-1', 'Room A');
 
     expect(switchRoomService.getConnections()).toEqual([
-      { sessionId: 'conv-1', roomId: 'room-a', agentId: 'agent-1' },
+      { sessionId: 'session-1', roomId: 'room-a', agentId: 'agent-1' },
     ]);
     expect(emit).toHaveBeenCalledWith(sessionRoomChangedChannel, {
-      sessionId: 'conv-1',
+      sessionId: 'session-1',
       roomId: 'room-a',
       agentId: 'agent-1',
     });
@@ -63,18 +63,18 @@ describe('SwitchRoomService', () => {
     switchRoomService.setSessionRoom(ctx, 'room-b', 'agent-1', 'Room B');
 
     expect(switchRoomService.getConnections()).toEqual([
-      { sessionId: 'conv-1', roomId: 'room-b', agentId: 'agent-1' },
+      { sessionId: 'session-1', roomId: 'room-b', agentId: 'agent-1' },
     ]);
   });
 
   it('clears a connection and emits nulls', () => {
     switchRoomService.setSessionRoom(ctx, 'room-a', 'agent-1', 'Room A');
     emit.mockClear();
-    switchRoomService.clearSession('conv-1');
+    switchRoomService.clearSession('session-1');
 
     expect(switchRoomService.getConnections()).toEqual([]);
     expect(emit).toHaveBeenCalledWith(sessionRoomChangedChannel, {
-      sessionId: 'conv-1',
+      sessionId: 'session-1',
       roomId: null,
       agentId: null,
     });

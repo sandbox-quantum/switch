@@ -136,7 +136,7 @@ export const ptyController = createRPCController({
    * connected ssh2 client — no local ssh/scp binaries are involved.
    *
    * The session ID encodes the project and scope (`projectId:scopeId:leafId`),
-   * where `scopeId` is a session ID for conversation uploads.
+   * where `scopeId` is a session ID for agent-session uploads.
    */
   uploadFiles: async (args: { sessionId: string; localPaths: string[] }) => {
     try {

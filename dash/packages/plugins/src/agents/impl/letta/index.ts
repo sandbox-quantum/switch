@@ -51,7 +51,7 @@ export const provider = registerPluginBehavior(plugin, {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
         autoApproveFlag: '--yolo',
-        newConversationFlag: '--new',
+        newSessionFlag: '--new',
       }),
   },
 });

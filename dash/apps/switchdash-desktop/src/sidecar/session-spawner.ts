@@ -47,9 +47,9 @@ export class InProcessSessionSpawner implements SessionSpawner {
   }
 
   /**
-   * Forget a launched session by its conversation id (switchdash deleted it), so
+   * Forget a launched session by its session id (switchdash deleted it), so
    * it is no longer reported as pending/spawned and a fresh room notification can
-   * spawn a new one. No-op if we never launched this conversation.
+   * spawn a new one. No-op if we never launched this session.
    */
   drop(sessionId: string): void {
     for (const [roomId, session] of this.launched) {

@@ -6,7 +6,7 @@ export type CommandContext = {
   extraArgs?: string[]; // user-configured in settings
   autoApprove: boolean;
   initialPrompt?: string;
-  /** Switchdash conversation UUID — used as the session token for providers that track their
+  /** Switchdash session UUID — used as the session token for providers that track their
    * own session across the switchdash lifetime (e.g. claude --session-id, opencode --session). */
   sessionId?: string;
   /** Provider-native session identifier stored by the agent classifier. When present, used

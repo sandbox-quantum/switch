@@ -52,7 +52,7 @@ describe('file link provider', () => {
         '  Local agents do not use the terminal shell resolver at all. In src/main/core/'
       ),
       new MockBufferLine(
-        '  conversations/impl/local-conversation.ts:140, agent sessions call resolveLocalPtySpawn'
+        '  agent-runtime/impl/local-agent-runtime.ts:140, agent sessions call resolveLocalPtySpawn'
       ),
     ]);
 
@@ -61,15 +61,15 @@ describe('file link provider', () => {
         start: { x: 66, y: 1 },
         end: { x: 79, y: 1 },
       },
-      text: 'src/main/core/conversations/impl/local-conversation.ts',
+      text: 'src/main/core/agent-runtime/impl/local-agent-runtime.ts',
       isExternal: false,
     };
     const expectedSecondLineLink = {
       range: {
         start: { x: 3, y: 2 },
-        end: { x: 42, y: 2 },
+        end: { x: 43, y: 2 },
       },
-      text: 'src/main/core/conversations/impl/local-conversation.ts',
+      text: 'src/main/core/agent-runtime/impl/local-agent-runtime.ts',
       isExternal: false,
     };
     expect(findFileLinks(buffer, 1)).toEqual([expectedFirstLineLink]);

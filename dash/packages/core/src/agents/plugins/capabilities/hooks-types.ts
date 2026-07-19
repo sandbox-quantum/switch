@@ -27,7 +27,7 @@ export type NotificationType =
  * Normalised hook event produced by a plugin's parseHookEvent method.
  *
  * - kind: 'status'   — maps to an agent lifecycle event (start/stop/error/notification)
- * - kind: 'session'  — carries a provider session id to persist on the conversation
+ * - kind: 'session'  — carries a provider session id to persist on the session
  * - kind: 'activity' — a short line describing what the running turn is doing
  *                      right now (e.g. a tool call); surfaced as incremental
  *                      progress while the coarse status stays 'working'

@@ -36,7 +36,7 @@ async function ensureGitIgnoreEntries(sessionPath: string, entries: string[]): P
 
 /**
  * Ensures hooks and plugins are installed for the given provider on every
- * conversation spawn. Writes are idempotent (small-file merges), so re-writing
+ * agent spawn. Writes are idempotent (small-file merges), so re-writing
  * before every spawn removes the "config got cleaned mid-session" failure mode.
  *
  * Returns true if hooks are available for this provider (i.e. hook env vars

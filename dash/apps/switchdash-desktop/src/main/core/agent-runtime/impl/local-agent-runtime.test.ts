@@ -333,7 +333,7 @@ describe('local agent runtime respawn state', () => {
     });
   });
 
-  it('starts a local conversation fresh after a resumed session exits', async () => {
+  it('starts a local agent fresh after a resumed session exits', async () => {
     vi.useFakeTimers();
     try {
       const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
@@ -416,7 +416,7 @@ describe('local agent runtime respawn state', () => {
     }
   });
 
-  it('emits PTY exit when a local conversation unregisters before the registry exit handler runs', async () => {
+  it('emits PTY exit when a local agent unregisters before the registry exit handler runs', async () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     const exitInfo = { exitCode: 0 };
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
@@ -431,7 +431,7 @@ describe('local agent runtime respawn state', () => {
     expect(events.emit).toHaveBeenCalledWith(ptyExitChannel, exitInfo, sessionId);
   });
 
-  it('uses the last observed terminal size when replacing a local conversation', async () => {
+  it('uses the last observed terminal size when replacing a local agent', async () => {
     vi.useFakeTimers();
     try {
       const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
@@ -458,7 +458,7 @@ describe('local agent runtime respawn state', () => {
     }
   });
 
-  it('starts a local conversation fresh after one resume replacement exits', async () => {
+  it('starts a local agent fresh after one resume replacement exits', async () => {
     vi.useFakeTimers();
     try {
       const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
@@ -550,7 +550,7 @@ describe('local agent runtime respawn state', () => {
     }
   });
 
-  it('detaches local tmux conversations without killing the tmux session', async () => {
+  it('detaches local tmux agents without killing the tmux session', async () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     const pty = fakePty(exitHandlers);
     spawnLocalPty.mockReturnValue(pty);
@@ -571,7 +571,7 @@ describe('local agent runtime respawn state', () => {
     expect((provider as unknown as RespawnState).known).toBe(true);
   });
 
-  it('kills tmux when explicitly stopping a detached local conversation', async () => {
+  it('kills tmux when explicitly stopping a detached local agent', async () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     const ctx = {
@@ -592,7 +592,7 @@ describe('local agent runtime respawn state', () => {
     expect((provider as unknown as RespawnState).known).toBe(false);
   });
 
-  it('ignores stale local attach exits after a tmux conversation is rehydrated', async () => {
+  it('ignores stale local attach exits after a tmux agent is rehydrated', async () => {
     const firstExitHandlers: Array<(info: PtyExitInfo) => void> = [];
     const secondExitHandlers: Array<(info: PtyExitInfo) => void> = [];
     const firstPty = fakePty(firstExitHandlers);

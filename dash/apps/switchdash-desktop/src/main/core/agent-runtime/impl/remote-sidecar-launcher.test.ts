@@ -156,7 +156,6 @@ describe('RemoteSidecarLauncher', () => {
     const inner = launch!.args[6];
     expect(inner).toContain("SWITCHDASH_SIDECAR_REPO_DIR='/home/dev/repo'");
     expect(inner).toContain("SWITCHDASH_SIDECAR_PROJECT_ID='proj-1'");
-    expect(inner).not.toContain('SWITCHDASH_SIDECAR_CONVERSATION_ID');
     expect(inner).not.toContain('SWITCHDASH_SIDECAR_TMUX_TARGET');
     expect(inner).toContain('.switchdash/sidecar.mjs');
   });

@@ -102,7 +102,7 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 /**
  * Deterministic, agent-scoped tmux session name for the sidecar, derived from
- * the remote repo dir so every caller (the SSH conversation provider and the
+ * the remote repo dir so every caller (the SSH agent runtime and the
  * auto-session setup path) computes the same name and reattaches to the one
  * shared sidecar. Deliberately does NOT end in `-sidecar` so the legacy
  * per-session `reapOrphanedSidecars` never mistakes it for an orphan.

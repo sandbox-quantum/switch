@@ -28,7 +28,7 @@ function findSessionForRoom(roomId: string): { projectId: string; sessionId: str
 }
 
 /**
- * Resolve a session directly by its (shared) conversation id, which is the same
+ * Resolve a session directly by its (shared) session id, which is the same
  * across every client — unlike the room mapping, which only exists on a client
  * that has an active relay for the session. This is what makes the deeplink open
  * the right session on a different switchdash client that merely adopted it.
@@ -58,7 +58,7 @@ export function SessionDeeplinkListener(): null {
     void agentsStore.load();
     return events.on(sessionDeeplinkChannel, ({ agentId, roomId, server, sessionId }) => {
       void (async () => {
-        // Prefer the shared conversation id (resolves on any client); fall back
+        // Prefer the shared session id (resolves on any client); fall back
         // to room matching for older links that didn't carry it.
         const match = (sessionId ? findSessionById(sessionId) : null) ?? findSessionForRoom(roomId);
         if (!match) {

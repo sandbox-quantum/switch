@@ -57,7 +57,6 @@ const GROUP_CLASS = cn(
 const SESSION_SUGGESTED = [
   'session.sidebarChanges',
   'session.sidebarFiles',
-  'session.sidebarConversations',
   'session.toggleTerminalDrawer',
   'resource-monitor',
   'app.giveFeedback',

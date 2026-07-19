@@ -50,16 +50,16 @@ export const ptyExitChannel = defineEvent<{
   signal?: number;
 }>('pty:exit');
 
-/** Emitted by main process when a PTY is definitively killed (e.g. on deleteSession/deleteConversation). */
+/** Emitted by main process when a PTY is definitively killed (e.g. on deleteSession). */
 export const ptyKilledChannel = defineEvent<{ id: string }>('pty:killed');
 
 /** Emitted by main process when a lifecycle/dev-server shell session is created.
- *  These sessions are standalone PTYs — they are NOT backed by a DB conversation record.
- *  The renderer uses sessionId (not conversationId) to connect to the PTY terminal.
+ *  These sessions are standalone PTYs — they are NOT backed by a sessions-table row.
+ *  The renderer uses sessionId to connect to the PTY terminal.
  */
 export const shellSessionStartedChannel = defineEvent<{
   sessionId: string;
-  /** Opaque UUID identifying this PTY session — not a DB conversationId. */
+  /** Opaque UUID identifying this PTY session — not a sessions-table id. */
   ptySessionId: string;
   ptyId: string;
   title: string;

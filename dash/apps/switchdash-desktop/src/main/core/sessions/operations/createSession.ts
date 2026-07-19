@@ -54,7 +54,7 @@ export async function createSession(
     .returning();
 
   // Callers with externally-minted ids (the remote session reconciler adopting
-  // a VM conversation) can race another creator for the same id — surface that
+  // a VM session) can race another creator for the same id — surface that
   // as a Result instead of a raw UNIQUE-constraint throw.
   if (!row) return err({ type: 'already-exists' });
 

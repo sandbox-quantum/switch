@@ -35,7 +35,7 @@ export class PtySession {
     });
     // Lazy connect: auto-connects the first time any observer reads status.
     // Sessions are created at data-load time without connecting; this fires
-    // when the session is first rendered as the active conversation or terminal.
+    // when the session is first rendered as the active agent or terminal.
     onBecomeObserved(this, 'status', () => {
       if (this.status === 'disconnected') void this.connect();
     });

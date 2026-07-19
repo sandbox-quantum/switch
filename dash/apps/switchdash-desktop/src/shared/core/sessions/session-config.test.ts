@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { sessionConfig, isDroidProviderSessionId } from './session-config';
 
-describe('conversation-config', () => {
+describe('session-config', () => {
   it('parses autoApprove and providerSessionId', () => {
     const result = sessionConfig.safeParse({
       autoApprove: true,
@@ -37,7 +37,7 @@ describe('conversation-config', () => {
 
   it('validates Droid session ids as UUIDs', () => {
     expect(isDroidProviderSessionId('31477a03-961a-4451-82d4-efded56947fc')).toBe(true);
-    expect(isDroidProviderSessionId('conv-1')).toBe(false);
+    expect(isDroidProviderSessionId('session-1')).toBe(false);
     expect(isDroidProviderSessionId('')).toBe(false);
   });
 });

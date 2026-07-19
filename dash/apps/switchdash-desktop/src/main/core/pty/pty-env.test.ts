@@ -158,7 +158,7 @@ describe('buildAgentEnv provider env forwarding', () => {
     const { buildAgentEnv } = await loadPtyEnv();
     const env = buildAgentEnv({
       agentApiVars: false,
-      hook: { port: 1234, ptyId: 'claude:conv-1', token: 'real-token' },
+      hook: { port: 1234, ptyId: 'claude:session-1', token: 'real-token' },
       providerVars: {
         ANTHROPIC_BASE_URL: 'https://example.test',
         EDITOR: 'vim',
@@ -171,7 +171,7 @@ describe('buildAgentEnv provider env forwarding', () => {
     expect(env.ANTHROPIC_BASE_URL).toBe('https://example.test');
     expect(env.EDITOR).toBe('vim');
     expect(env.SWITCHDASH_HOOK_PORT).toBe('1234');
-    expect(env.SWITCHDASH_PTY_ID).toBe('claude:conv-1');
+    expect(env.SWITCHDASH_PTY_ID).toBe('claude:session-1');
     expect(env.SWITCHDASH_HOOK_TOKEN).toBe('real-token');
   });
 
@@ -180,7 +180,7 @@ describe('buildAgentEnv provider env forwarding', () => {
 
     const managed = buildAgentEnv({
       agentApiVars: false,
-      hook: { port: 1234, ptyId: 'claude:conv-1', token: 'tok' },
+      hook: { port: 1234, ptyId: 'claude:session-1', token: 'tok' },
     });
     expect(managed.SWITCH_CHANNEL_DISABLE_POLL).toBe('1');
 

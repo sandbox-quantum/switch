@@ -3,10 +3,10 @@ import { type ContextResolver, type AgentHookContext, parseHookEvent } from './e
 import type { RawHookRequest } from './hook-server';
 
 const ctx: AgentHookContext = {
-  sessionId: 'conv-1',
+  sessionId: 'session-1',
   projectId: 'proj-1',
   providerId: 'claude-code',
-  ptyId: 'claude-code::conv-1',
+  ptyId: 'claude-code::session-1',
 };
 
 const fixedResolver: ContextResolver = async () => ctx;

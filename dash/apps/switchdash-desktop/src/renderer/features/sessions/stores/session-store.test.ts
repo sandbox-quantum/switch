@@ -35,12 +35,6 @@ vi.mock('./workspace-registry', () => ({
   },
 }));
 
-vi.mock('./conversation-registry', () => ({
-  conversationRegistry: {
-    get: vi.fn(),
-  },
-}));
-
 vi.mock('@renderer/lib/ipc', () => ({
   events: {
     on: vi.fn(() => () => {}),

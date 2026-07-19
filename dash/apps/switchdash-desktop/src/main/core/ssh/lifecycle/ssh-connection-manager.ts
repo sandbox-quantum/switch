@@ -115,7 +115,7 @@ interface ConnectionRecord {
    * True once this record has had a ready connection. Any later ready is
    * surfaced as 'reconnected' — including a manual forceReconnect, which has
    * no backoff state — so consumers that re-attach sessions on a restored
-   * transport (terminal + conversation providers) always get their signal.
+   * transport (terminal + agent runtime providers) always get their signal.
    */
   hasConnectedBefore: boolean;
 }

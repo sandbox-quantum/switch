@@ -1,8 +1,8 @@
 import { type Session } from '@shared/core/sessions/sessions';
 
 /**
- * Runtime handle for the single agent process of one session (session =
- * conversation = one agent run). Implementations own the PTY, the respawn
+ * Runtime handle for the single agent process of one session (one session =
+ * one agent run). Implementations own the PTY, the respawn
  * supervisor, and — for SSH — the sidecar relay for that one agent.
  */
 export interface AgentRuntimeProvider {
@@ -13,7 +13,7 @@ export interface AgentRuntimeProvider {
     initialPrompt?: string
   ): Promise<void>;
   /**
-   * Close the local PTY view of the agent (the `dehydrateConversation` RPC).
+   * Close the local PTY view of the agent (the `dehydrateSession` RPC).
    * On tmux the agent keeps running and stays re-attachable; otherwise the
    * agent is gone and respawn tracking is cleared.
    */

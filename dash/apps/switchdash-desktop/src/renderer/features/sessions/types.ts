@@ -1,5 +1,3 @@
-export type SidebarTab = 'conversations' | 'changes' | 'files';
-
 export type FileRendererData =
   | { kind: 'text' }
   | { kind: 'markdown' }

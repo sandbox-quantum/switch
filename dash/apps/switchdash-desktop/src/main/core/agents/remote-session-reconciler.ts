@@ -23,7 +23,7 @@ const SESSIONS_REQUEST_TIMEOUT_MS = 10_000;
 // should never fire — it is the backstop that guarantees the `inFlight` guard
 // can never wedge permanently and silently stop reconciliation for good.
 const TICK_DEADLINE_MS = 45_000;
-// How long a just-deleted conversation id is refused re-adoption. The delete
+// How long a just-deleted session id is refused re-adoption. The delete
 // path sends the sidecar a /disconnect, but a reconcile tick can race it (both
 // run on a ~2s cadence) and re-adopt the id from a stale /sessions snapshot
 // before the disconnect lands — recreating the ghost row we just deleted. The
@@ -47,17 +47,17 @@ interface SidecarSessionsResponse {
  * notification watcher auto-starting a session when the agent is addressed while
  * switchdash was closed) in the switchdash UI.
  *
- * The VM is the source of truth: it mints the conversation id and runs the agent
+ * The VM is the source of truth: it mints the session id and runs the agent
  * in a tmux pane with no switchdash DB row. This reconciler polls the sidecar's
- * `GET /sessions` snapshot and, for each conversation id switchdash has never
- * seen, creates a session row with `id = the VM's conversation id`. Because the
+ * `GET /sessions` snapshot and, for each session id switchdash has never
+ * seen, creates a session row with `id = the VM's session id`. Because the
  * tmux session name is derived deterministically from that id, the normal
  * session-start path then *attaches* to the already-running pane (same as the
  * post-reconnect rehydrate) rather than spawning a second agent — so the session
  * appears live in the UI, with its real terminal and its hook-event relay.
  *
  * One periodic poll per watched remote agent. Idempotent: an already-known
- * conversation id is skipped, so re-polling only ever adds newly-spawned
+ * session id is skipped, so re-polling only ever adds newly-spawned
  * sessions. The sidecar endpoint (port + token) is resolved fresh each cycle, so
  * a sidecar that restarted — or a VM that rebooted — is re-ensured and its new
  * token picked up automatically.
@@ -71,14 +71,14 @@ class RemoteSessionReconciler {
   private readonly endpoints = new Map<string, SidecarEndpoint>();
   /** sessionId → expiry ts for just-deleted sessions we must not re-adopt. */
   private readonly tombstones = new Map<string, number>();
-  /** agentId → conversation ids this reconciler adopted (candidates for pruning). */
+  /** agentId → session ids this reconciler adopted (candidates for pruning). */
   private readonly adopted = new Map<string, Set<string>>();
   /** sessionId → consecutive reconcile passes it has been absent from `/sessions`. */
   private readonly missingStreak = new Map<string, number>();
   /** sidecar key (host::repoDir) → agentId currently reconciling that sidecar.
    * The sidecar — and its /sessions snapshot — is scoped to host+dir, so two
    * agents sharing a dir would double-poll it and race to adopt the same
-   * conversation ids. One reconciler per sidecar; duplicates stop themselves. */
+   * session ids. One reconciler per sidecar; duplicates stop themselves. */
   private readonly sidecarKeys = new Map<string, string>();
 
   constructor() {
@@ -151,7 +151,7 @@ class RemoteSessionReconciler {
   }
 
   /**
-   * Refuse re-adoption of a conversation id for a short window after switchdash
+   * Refuse re-adoption of a session id for a short window after switchdash
    * deletes it, closing the race where a reconcile tick re-adopts it from a stale
    * sidecar `/sessions` snapshot before the delete's `/disconnect` lands.
    */
@@ -253,7 +253,7 @@ class RemoteSessionReconciler {
     const vmIds = new Set(vmSessions.map((s) => s.sessionId));
 
     // Check adoption candidates against ALL local sessions, not just this
-    // agent's: a conversation id is globally unique (it is the sessions PK),
+    // agent's: a session id is globally unique (it is the sessions PK),
     // and the sidecar snapshot carries no agent attribution — another agent
     // may legitimately own the row already.
     const known = vmIds.size
@@ -384,7 +384,7 @@ class RemoteSessionReconciler {
   }
 
   /**
-   * Create a switchdash session row whose id equals the VM's conversation id, so
+   * Create a switchdash session row whose id equals the VM's session id, so
    * the session-start path attaches to the running tmux pane rather than spawning
    * a fresh agent. No initial prompt — the agent is already connected to the room
    * and processing the waiting message.

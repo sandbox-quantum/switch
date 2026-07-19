@@ -67,10 +67,6 @@ vi.mock('./keystroke-injection', () => ({
   scheduleInitialPromptInjection: vi.fn(),
 }));
 
-vi.mock('@main/core/conversations/conversation-events', () => ({
-  conversationEvents: { _emit: vi.fn() },
-}));
-
 vi.mock('@main/lib/events', () => ({
   events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 }));

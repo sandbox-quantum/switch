@@ -6,7 +6,7 @@ export interface AppCommand {
   description?: string;
   /** Links to APP_SHORTCUTS for hotkey binding and display. */
   shortcutKey?: ShortcutSettingsKey;
-  /** Display group in the command palette (e.g. 'Conversations', 'Panel', 'Tabs'). */
+  /** Display group in the command palette (e.g. 'Session', 'Panel', 'Navigation'). */
   group?: string;
   /**
    * When false the command is visible in the palette but not executable and

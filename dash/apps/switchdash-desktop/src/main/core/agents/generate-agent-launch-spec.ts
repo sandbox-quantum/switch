@@ -17,7 +17,7 @@ function parseExtraArgs(value: string | undefined): string[] {
 /**
  * Precompute the provider-specific launch recipe for a remote agent's
  * auto-started sessions, resolving the agent binary on the VM and baking in
- * placeholder tokens for the two per-spawn values (conversation id + initial
+ * placeholder tokens for the two per-spawn values (session id + initial
  * prompt). The VM watcher — which has no plugin registry — substitutes those
  * tokens per spawn, so all provider knowledge stays here in switchdash.
  *

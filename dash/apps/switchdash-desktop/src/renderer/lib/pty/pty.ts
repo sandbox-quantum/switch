@@ -52,7 +52,7 @@ export function buildTheme(theme?: SessionTheme): ITerminalOptions['theme'] {
  *
  * Lifecycle: created and owned by PtySession (stores/pty-session.ts), one per
  * live session. Survives React component unmounts (e.g. navigating away from a
- * task), and is disposed only when the entity (terminal or conversation) is
+ * task), and is disposed only when the entity (terminal or agent session) is
  * explicitly deleted.
  */
 export class FrontendPty {
@@ -209,7 +209,7 @@ export class FrontendPty {
   }
 
   /**
-   * Permanently dispose this session (terminal or conversation deleted).
+   * Permanently dispose this session (terminal or agent session deleted).
    * Unsubscribes from the main process, tears down the IPC data listener,
    * disposes the xterm Terminal, and removes the owned container from the DOM.
    */
