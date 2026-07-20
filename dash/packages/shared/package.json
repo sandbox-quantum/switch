@@ -29,9 +29,9 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/node": "^20.19.42",
-    "@typescript/native-preview": "7.0.0-dev.20260609.1",
-    "tsdown": "^0.22.2",
-    "vitest": "^4.1.0"
+    "@types/node": "^26.1.1",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "tsdown": "^0.22.7",
+    "vitest": "^4.1.10"
   }
 }
