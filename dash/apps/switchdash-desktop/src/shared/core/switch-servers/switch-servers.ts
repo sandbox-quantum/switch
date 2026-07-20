@@ -40,6 +40,40 @@ export type UpdateServerParams = {
   apiUrl: string;
 };
 
+/**
+ * What happened to one agent when a server's API URL was cascaded to its
+ * members. `updated` — the agent's `SWITCH_API_ENDPOINT` was rewritten.
+ * `not-provisioned` — the agent has no Switch credentials on disk yet, so there
+ * was nothing to update (skipped, not an error). `failed` — the rewrite threw
+ * (e.g. an unreachable SSH host); `error` carries why.
+ */
+export type AgentApiUrlPropagationOutcome = 'updated' | 'not-provisioned' | 'failed';
+
+/** Per-agent result of a server-API-URL cascade. */
+export type AgentApiUrlPropagation = {
+  agentId: string;
+  agentName: string;
+  /** Where the agent's config lives: a local dir vs. an SSH host. */
+  location: 'local' | 'remote';
+  outcome: AgentApiUrlPropagationOutcome;
+  /** Present only when `outcome === 'failed'`. */
+  error?: string;
+};
+
+/** Summary of cascading a server's API-URL edit to its member agents. */
+export type ServerApiUrlPropagation = {
+  /** True when the API URL actually changed, so propagation ran. When false the
+   * `agents` list is empty (the edit was name/gateway-only). */
+  apiUrlChanged: boolean;
+  agents: AgentApiUrlPropagation[];
+};
+
+/** Result of editing a server: the saved record plus the agent-config cascade. */
+export type UpdateServerResult = {
+  server: SwitchServer;
+  propagation: ServerApiUrlPropagation;
+};
+
 /** Which login methods a gateway offers — read unauthenticated from
  * `GET /gateway/auth/config` so the UI shows the right options. */
 export type SwitchAuthConfig = {

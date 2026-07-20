@@ -72,6 +72,57 @@ export function mergeSwitchSettings(
 }
 
 /**
+ * Update ONLY `SWITCH_API_ENDPOINT` in an already-provisioned settings file,
+ * returning the new file text — or `null` when the file is not a provisioned
+ * Switch agent (missing/unparseable, or its `env` lacks the full `SWITCH_*`
+ * credential block). Used to cascade a server's API-URL edit to its agents
+ * without ever reading or rewriting the agent's `SWITCH_API_TOKEN`: the token,
+ * agent id, permissions, and every other key are left byte-for-byte untouched.
+ *
+ * Returning `null` (rather than writing) for an unprovisioned file is deliberate
+ * — the caller skips it instead of creating a token-less config that would look
+ * configured but can't authenticate.
+ *
+ * Pure: takes the existing file text (or null when absent/unreadable) and
+ * returns the text to write. Shared by the local and remote (SFTP) propagation
+ * paths so both produce byte-identical files.
+ */
+export function mergeSwitchApiEndpoint(
+  existingRaw: string | null,
+  apiEndpoint: string
+): string | null {
+  if (existingRaw === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(existingRaw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+  const existing = parsed as Record<string, unknown>;
+  const env =
+    existing.env && typeof existing.env === 'object' && !Array.isArray(existing.env)
+      ? (existing.env as Record<string, unknown>)
+      : null;
+
+  // Only a fully provisioned agent (endpoint + token + id all present) is
+  // propagated to; anything else is "not a Switch agent here" -> skip.
+  if (
+    !env ||
+    typeof env.SWITCH_API_ENDPOINT !== 'string' ||
+    typeof env.SWITCH_API_TOKEN !== 'string' ||
+    typeof env.SWITCH_AGENT_ID !== 'string'
+  ) {
+    return null;
+  }
+
+  const merged = { ...existing, env: { ...env, SWITCH_API_ENDPOINT: apiEndpoint } };
+  return `${JSON.stringify(merged, null, 2)}\n`;
+}
+
+/**
  * Write the `SWITCH_*` env block into a local directory's
  * `.claude/settings.local.json`, the same file the switch-connector
  * `configure` skill writes.

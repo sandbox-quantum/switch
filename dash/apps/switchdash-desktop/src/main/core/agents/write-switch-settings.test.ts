@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { detectSwitchAgent } from './detect';
 import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
-import { writeSwitchSettings } from './write-switch-settings';
+import { mergeSwitchApiEndpoint, writeSwitchSettings } from './write-switch-settings';
 
 let dir: string;
 
@@ -84,5 +84,50 @@ describe('writeSwitchSettings', () => {
       SWITCH_API_TOKEN: 'new-token',
       SWITCH_AGENT_ID: 'agent-999',
     });
+  });
+});
+
+describe('mergeSwitchApiEndpoint', () => {
+  it('rewrites only SWITCH_API_ENDPOINT, preserving token, id, and other keys', () => {
+    const existing = JSON.stringify({
+      permissions: { allow: ['Bash'] },
+      hooks: { PostToolUse: [{ command: 'x' }] },
+      env: {
+        EXISTING_KEY: 'keep-me',
+        SWITCH_API_ENDPOINT: 'https://old.example.com',
+        SWITCH_API_TOKEN: 'secret-token',
+        SWITCH_AGENT_ID: 'agent-123',
+      },
+    });
+
+    const merged = mergeSwitchApiEndpoint(existing, 'https://new.example.com');
+    expect(merged).not.toBeNull();
+    const parsed = JSON.parse(merged as string) as Record<string, unknown>;
+
+    // Endpoint changed; token, id, and every other key untouched.
+    expect(parsed.env).toEqual({
+      EXISTING_KEY: 'keep-me',
+      SWITCH_API_ENDPOINT: 'https://new.example.com',
+      SWITCH_API_TOKEN: 'secret-token',
+      SWITCH_AGENT_ID: 'agent-123',
+    });
+    expect(parsed.permissions).toEqual({ allow: ['Bash'] });
+    expect(parsed.hooks).toEqual({ PostToolUse: [{ command: 'x' }] });
+  });
+
+  it('returns null for a file that is not a provisioned Switch agent', () => {
+    // Absent file.
+    expect(mergeSwitchApiEndpoint(null, 'https://new.example.com')).toBeNull();
+    // Unparseable.
+    expect(mergeSwitchApiEndpoint('{not json', 'https://new.example.com')).toBeNull();
+    // No env block.
+    expect(mergeSwitchApiEndpoint('{}', 'https://new.example.com')).toBeNull();
+    // Partial creds (no token) -> not provisioned, skip rather than half-write.
+    expect(
+      mergeSwitchApiEndpoint(
+        JSON.stringify({ env: { SWITCH_API_ENDPOINT: 'https://old', SWITCH_AGENT_ID: 'a' } }),
+        'https://new.example.com'
+      )
+    ).toBeNull();
   });
 });

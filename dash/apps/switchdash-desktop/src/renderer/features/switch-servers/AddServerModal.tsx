@@ -1,6 +1,7 @@
 import { CircleCheck, HardDrive, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
@@ -14,8 +15,37 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import type { ServerApiUrlPropagation } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { switchServersStore } from './switch-servers-store';
+
+/**
+ * Turn a server-API-URL cascade into a user-facing toast: confirm how many
+ * agents were re-pointed (and that running sessions need a restart), and flag
+ * any that failed so the edit never looks cleanly done when it wasn't.
+ */
+function notifyPropagation(propagation: ServerApiUrlPropagation): void {
+  if (!propagation.apiUrlChanged) return;
+  const updated = propagation.agents.filter((a) => a.outcome === 'updated');
+  const failed = propagation.agents.filter((a) => a.outcome === 'failed');
+
+  if (failed.length > 0) {
+    toast({
+      title: `Couldn't update ${failed.length} agent config${failed.length === 1 ? '' : 's'}`,
+      description: `${failed.map((a) => a.agentName).join(', ')}. ${updated.length} other${updated.length === 1 ? '' : 's'} updated. Check the agent's host is reachable and retry.`,
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  if (updated.length > 0) {
+    toast({
+      title: `Updated ${updated.length} agent config${updated.length === 1 ? '' : 's'}`,
+      description:
+        'Each agent now points at the new API URL. Restart any running sessions to pick it up.',
+    });
+  }
+}
 
 type Props = BaseModalProps<void> & {
   /** Prefill the gateway URL. */
@@ -373,17 +403,26 @@ const RemoteServerStep = observer(function RemoteServerStep({
     if (!isValid) return;
     setSubmitting(true);
     setError(null);
-    const saved =
-      isEdit && serverId
-        ? await switchServersStore.updateServer(serverId, trimmedName, trimmedGateway, trimmedApi)
-        : await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
-    if (!saved) {
-      setError(
-        switchServersStore.error ??
-          (isEdit ? 'Could not save the server.' : 'Could not add the server.')
+    if (isEdit && serverId) {
+      const result = await switchServersStore.updateServer(
+        serverId,
+        trimmedName,
+        trimmedGateway,
+        trimmedApi
       );
-      setSubmitting(false);
-      return;
+      if (!result) {
+        setError(switchServersStore.error ?? 'Could not save the server.');
+        setSubmitting(false);
+        return;
+      }
+      notifyPropagation(result.propagation);
+    } else {
+      const saved = await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
+      if (!saved) {
+        setError(switchServersStore.error ?? 'Could not add the server.');
+        setSubmitting(false);
+        return;
+      }
     }
     onSuccess();
   }, [isValid, isEdit, serverId, trimmedName, trimmedGateway, trimmedApi, onSuccess]);

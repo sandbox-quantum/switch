@@ -4,6 +4,7 @@ import type {
   ServerConnectionStatus,
   SwitchAuthConfig,
   SwitchServer,
+  UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
 
 /**
@@ -150,15 +151,15 @@ export class SwitchServersStore {
     name: string,
     gatewayUrl: string,
     apiUrl: string
-  ): Promise<SwitchServer | null> {
+  ): Promise<UpdateServerResult | null> {
     this.clearError();
     try {
-      const updated = await rpc.switchServers.updateServer({ id, name, gatewayUrl, apiUrl });
+      const result = await rpc.switchServers.updateServer({ id, name, gatewayUrl, apiUrl });
       const servers = await rpc.switchServers.listServers();
       runInAction(() => {
         this.servers = servers;
       });
-      return updated;
+      return result;
     } catch (cause) {
       this.setError(cause);
       return null;

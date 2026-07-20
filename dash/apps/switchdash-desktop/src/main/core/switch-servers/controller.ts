@@ -1,5 +1,6 @@
 import type { Result } from '@switchdash/shared';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
+import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch-settings';
 import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
@@ -23,6 +24,7 @@ import type {
   SwitchAuthConfig,
   SwitchServer,
   UpdateServerParams,
+  UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
@@ -113,10 +115,21 @@ export const switchServersController = createRPCController({
     return server;
   },
 
-  updateServer: async (params: UpdateServerParams): Promise<SwitchServer> => {
+  updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
+    const previous = await requireServer(params.id);
     const server = await updateServer(params);
     await resolveAgentServers();
-    return server;
+
+    // The API URL is what an agent's SWITCH_API_ENDPOINT points at. When it
+    // changes, cascade it to every member agent's stored config so they don't
+    // keep authenticating against the stale endpoint (CHOO-1431). Compare the
+    // saved (normalised) values so a no-op edit doesn't rewrite configs.
+    const apiUrlChanged = previous.apiUrl !== server.apiUrl;
+    const propagatedAgents = apiUrlChanged
+      ? await propagateServerApiUrl(server.id, server.apiUrl)
+      : [];
+
+    return { server, propagation: { apiUrlChanged, agents: propagatedAgents } };
   },
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
