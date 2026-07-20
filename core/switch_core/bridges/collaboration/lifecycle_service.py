@@ -153,6 +153,9 @@ class CollaborationBridgeLifecycleService:
 
         typed_config = config_cls.model_validate(bridge.connection_config or {})
         adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
+        adapter.set_service_url_persister(
+            lambda service_url: self._persist_service_url(bridge_id, service_url)
+        )
 
         async with self._session_factory() as session:
             bridge_client_record = await self._client_store.get(
@@ -202,6 +205,13 @@ class CollaborationBridgeLifecycleService:
         self._tasks[bridge_id] = task
 
         logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
+
+    async def _persist_service_url(self, bridge_id: str, service_url: str) -> None:
+        """Persist an outbound serviceUrl an adapter learned from inbound traffic
+        so outbound survives a restart (used by the Teams adapter)."""
+        async with self._session_factory() as session:
+            await self._bridge_store.set_service_url(session, bridge_id, service_url)
+            await session.commit()
 
     async def _run_bridge(
         self,

@@ -143,8 +143,13 @@ def test_channel_from_group_chat_activity_is_group() -> None:
 # ── Text cleaning + self-mention ─────────────────────────────────────────────
 
 
-def test_clean_text_strips_mention_markup() -> None:
-    assert TeamsAdapter._clean_text("<at>Switch Bot</at> hello there") == "hello there"
+def test_clean_text_renders_mention_markup() -> None:
+    # The mention display text is kept as an `@name` token (not deleted) so the
+    # addressing layer can still see it downstream.
+    assert (
+        TeamsAdapter._clean_text("<at>Switch Bot</at> hello there")
+        == "@Switch Bot hello there"
+    )
 
 
 def test_self_mention_token_set_when_bot_mentioned() -> None:
@@ -165,6 +170,31 @@ def test_self_mention_token_none_when_not_mentioned() -> None:
         "entities": [{"type": "mention", "mentioned": {"id": "29:someone"}}],
     }
     assert adapter._self_mention_token(activity) is None
+
+
+def test_inbound_bot_mention_carries_self_mention_token() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    activity = {
+        "type": "message",
+        "id": "300",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": "<at>Switch Bot</at> please help",
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "recipient": {"id": "28:app-123"},
+        "entities": [{"type": "mention", "mentioned": {"id": "28:app-123"}}],
+        "conversation": {
+            "id": "19:abc@thread.tacv2;messageid=300",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
+    }
+    _run(adapter._dispatch_activity(activity))
+
+    assert len(captured) == 1
+    assert captured[0].content == "@Switch Bot please help"
+    assert captured[0].self_mention_token == "28:app-123"
 
 
 # ── Inbound dispatch ─────────────────────────────────────────────────────────
@@ -194,7 +224,7 @@ def test_inbound_channel_message_top_level_has_no_root() -> None:
     assert msg.channel_type == "channel_public"
     assert msg.sender_id == "aad-1"
     assert msg.sender_name == "Alice"
-    assert msg.content == "hello"
+    assert msg.content == "@Switch hello"
     assert msg.message_ref == "100"
     assert msg.root_id is None
     # serviceUrl + type are learned for later outbound use.
@@ -223,6 +253,60 @@ def test_inbound_channel_reply_sets_root_id() -> None:
     assert captured[0].message_ref == "200"
 
 
+def test_inbound_channel_learns_team_group_guid() -> None:
+    # Graph channel subscriptions require the team's AAD group GUID; the adapter
+    # must learn it from channelData.team.aadGroupId, not the non-GUID thread id.
+    adapter = _adapter()
+    _capture_messages(adapter)
+    activity = {
+        "type": "message",
+        "id": "500",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": "<at>Switch</at> hi",
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "conversation": {
+            "id": "19:chan@thread.tacv2;messageid=500",
+            "conversationType": "channel",
+        },
+        "channelData": {
+            "channel": {"id": "19:chan@thread.tacv2"},
+            "team": {
+                "id": "19:team@thread.tacv2",
+                "aadGroupId": "40013d55-9d89-4e09-b993-4c56dbe8269f",
+            },
+        },
+    }
+    _run(adapter._dispatch_activity(activity))
+    assert (
+        adapter._team_of_channel["19:chan@thread.tacv2"]
+        == "40013d55-9d89-4e09-b993-4c56dbe8269f"
+    )
+
+
+def test_inbound_channel_without_aad_group_falls_back_to_config_team_id() -> None:
+    # No aadGroupId in the payload -> use the configured team_id (also a GUID),
+    # never the non-GUID team thread id.
+    adapter = _adapter()  # config team_id == "team-1"
+    _capture_messages(adapter)
+    activity = {
+        "type": "message",
+        "id": "501",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": "hi",
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "conversation": {
+            "id": "19:chan2@thread.tacv2",
+            "conversationType": "channel",
+        },
+        "channelData": {
+            "channel": {"id": "19:chan2@thread.tacv2"},
+            "team": {"id": "19:team@thread.tacv2"},
+        },
+    }
+    _run(adapter._dispatch_activity(activity))
+    assert adapter._team_of_channel["19:chan2@thread.tacv2"] == "team-1"
+
+
 def test_inbound_command_routes_to_on_command() -> None:
     adapter = _adapter()
     commands = _capture_commands(adapter)
@@ -241,6 +325,62 @@ def test_inbound_command_routes_to_on_command() -> None:
     assert commands[0].command == "reset"
     assert commands[0].args == "worker"
     assert commands[0].channel_type == "direct"
+
+
+def test_inbound_channel_command_after_bot_mention_routes_to_on_command() -> None:
+    # In a Teams channel the Bot Framework only delivers messages that @mention
+    # the bot, so a channel command always arrives as "@Bot !cmd". The leading
+    # bot mention must not hide the "!" command marker.
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+    messages = _capture_messages(adapter)
+
+    activity = {
+        "type": "message",
+        "id": "301",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": "<at>Switch Bot</at> !reset worker",
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "recipient": {"id": "28:app-123"},
+        "entities": [{"type": "mention", "mentioned": {"id": "28:app-123"}}],
+        "conversation": {
+            "id": "19:abc@thread.tacv2;messageid=301",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
+    }
+    _run(adapter._dispatch_activity(activity))
+
+    assert len(commands) == 1
+    assert commands[0].command == "reset"
+    assert commands[0].args == "worker"
+    assert commands[0].channel_type == "channel_public"
+    # The command must not also be bridged as a normal message.
+    assert messages == []
+
+
+def test_graph_channel_command_after_bot_mention_routes_to_on_command() -> None:
+    # Same rule on the Graph capture path: strip the bot's leading <at> mention
+    # (here wrapped in a <p>) before detecting the "!" command.
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+
+    chat_message = {
+        "id": "700",
+        "messageType": "message",
+        "from": {"user": {"id": "user-1", "displayName": "Dave"}},
+        "channelIdentity": {"channelId": "19:abc@thread.tacv2"},
+        "body": {
+            "contentType": "html",
+            "content": '<p><at id="0">Switch Bot</at> !help now</p>',
+        },
+        "mentions": [{"id": 0, "mentioned": {"application": {"id": "app-123"}}}],
+    }
+    _run(adapter._deliver_graph_message(chat_message))
+
+    assert len(commands) == 1
+    assert commands[0].command == "help"
+    assert commands[0].args == "now"
 
 
 def test_inbound_duplicate_activity_is_ignored() -> None:
@@ -390,6 +530,35 @@ def test_admin_message_is_plain_text_no_card() -> None:
     assert "attachments" not in activity
 
 
+def test_send_to_chat_with_thread_root_stays_flat() -> None:
+    # Flat chats (1:1/group) have no channel-style threading: appending
+    # ";messageid=" yields a conversation id Teams cannot decrypt (403), so a
+    # thread root must be ignored for a flat chat.
+    adapter = _adapter()
+    fake = _FakeConnector()
+    _wire_outbound(adapter, fake)
+    adapter._channel_type["a:1chat"] = "direct"
+
+    _run(adapter.send_message("a:1chat", "worker", "hi", thread_root_id="500"))
+
+    assert len(fake.sends) == 1
+    assert fake.sends[0]["conversation_id"] == "a:1chat"
+
+
+def test_admin_message_to_chat_with_thread_root_stays_flat() -> None:
+    # Same invariant for admin/system messages: a no-agents notice threaded under
+    # the triggering message in a 1:1 chat must not become "a:1chat;messageid=…".
+    adapter = _adapter()
+    fake = _FakeConnector()
+    _wire_outbound(adapter, fake)
+    adapter._channel_type["a:1chat"] = "direct"
+
+    _run(adapter.admin_message("a:1chat", "system notice", thread_root_id="500"))
+
+    assert len(fake.sends) == 1
+    assert fake.sends[0]["conversation_id"] == "a:1chat"
+
+
 def test_send_without_known_service_url_raises() -> None:
     adapter = _adapter()
     fake = _FakeConnector()
@@ -401,6 +570,54 @@ def test_send_without_known_service_url_raises() -> None:
     except RuntimeError:
         raised = True
     assert raised
+
+
+def test_configured_service_url_seeds_outbound_after_restart() -> None:
+    # A serviceUrl persisted in config must let outbound work immediately, before
+    # any inbound activity is received (the post-restart case).
+    config = _config()
+    config.service_url = "https://smba.example/amer/"
+    adapter = TeamsAdapter(config=config)
+    fake = _FakeConnector()
+    adapter._connector = fake  # type: ignore[assignment]
+
+    _run(adapter.send_message("19:abc@thread.tacv2", "worker", "hi"))
+
+    assert fake.threads[0]["service_url"] == "https://smba.example/amer/"
+
+
+def test_learned_service_url_is_persisted_once_per_change() -> None:
+    # A newly-learned serviceUrl is persisted so it survives a restart; an
+    # unchanged one is not re-persisted on every subsequent activity.
+    adapter = _adapter()
+    _capture_messages(adapter)
+    persisted: list[str] = []
+
+    async def _persist(url: str) -> None:
+        persisted.append(url)
+
+    adapter.set_service_url_persister(_persist)
+
+    def _activity(msg_id: str, service_url: str) -> dict[str, Any]:
+        return {
+            "type": "message",
+            "id": msg_id,
+            "serviceUrl": service_url,
+            "text": "hi",
+            "from": {"aadObjectId": "aad-1", "name": "Alice"},
+            "conversation": {
+                "id": "19:abc@thread.tacv2;messageid=" + msg_id,
+                "conversationType": "channel",
+            },
+            "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
+        }
+
+    _run(adapter._dispatch_activity(_activity("1", "https://smba.example/amer/")))
+    _run(adapter._dispatch_activity(_activity("2", "https://smba.example/amer/")))
+    _run(adapter._dispatch_activity(_activity("3", "https://smba.example/emea/")))
+
+    assert persisted == ["https://smba.example/amer/", "https://smba.example/emea/"]
+    assert adapter._default_service_url == "https://smba.example/emea/"
 
 
 # ── Edit / delete ────────────────────────────────────────────────────────────
@@ -464,6 +681,18 @@ def test_agent_card_carries_name_and_body() -> None:
     header = card["body"][0]["columns"][1]["items"][0]
     assert header["text"] == "worker"
     assert card["body"][1]["text"] == "the message body"
+
+
+def test_message_activity_carries_notification_summary_and_fallback() -> None:
+    # Without a plain-text summary on the activity and a fallbackText on the card,
+    # Teams renders a "cards.unsupported" placeholder in notifications, mobile, and
+    # link/search previews.
+    adapter = _adapter()
+    activity = adapter._message_activity("worker", "hello world")
+    assert activity["summary"] == "worker: hello world"
+    assert (
+        activity["attachments"][0]["content"]["fallbackText"] == "worker: hello world"
+    )
 
 
 # ── Runtime state ────────────────────────────────────────────────────────────

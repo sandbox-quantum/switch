@@ -7,6 +7,7 @@ import os
 import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from alembic import command as alembic_command
@@ -469,7 +470,8 @@ async def _shutdown(
 
 
 def main() -> None:
-    alembic_cfg = AlembicConfig("alembic.ini")
+    alembic_ini = Path(__file__).resolve().parent.parent / "alembic.ini"
+    alembic_cfg = AlembicConfig(str(alembic_ini))
     alembic_command.upgrade(alembic_cfg, "head")
 
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()

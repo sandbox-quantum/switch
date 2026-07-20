@@ -205,8 +205,72 @@ def test_notification_decrypts_and_delivers_message() -> None:
     assert msg.channel_id == "19:c@thread.tacv2"
     assert msg.sender_id == "aad-u"
     assert msg.sender_name == "Alice"
-    assert msg.content == "hello  team"
+    # The `<at>Bot</at>` mention is kept as an `@name` token, not deleted.
+    assert msg.content == "hello @Bot team"
     assert msg.message_ref == "m100"
+    assert msg.self_mention_token is None
+
+
+def test_notification_sets_self_mention_token_for_bot_mention() -> None:
+    key_pem, cert_pem, cert = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    captured = _capture(adapter)
+    adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+
+    chat_message = {
+        "id": "m300",
+        "messageType": "message",
+        "from": {"user": {"id": "aad-u", "displayName": "Alice"}},
+        "channelIdentity": {"teamId": "t1", "channelId": "19:c@thread.tacv2"},
+        "body": {"contentType": "html", "content": '<p><at id="0">Bot</at> hi</p>'},
+        "mentions": [
+            {
+                "id": 0,
+                "mentionText": "Bot",
+                "mentioned": {"application": {"id": "app-123", "displayName": "Bot"}},
+            }
+        ],
+    }
+    item = {
+        "clientState": "s3cr3t",
+        "encryptedContent": _encrypt_like_graph(chat_message, cert),
+    }
+    _run(adapter._dispatch_graph_notification(item))
+
+    assert len(captured) == 1
+    assert captured[0].content == "@Bot hi"
+    assert captured[0].self_mention_token == "app-123"
+
+
+def test_notification_no_self_mention_token_for_human_mention() -> None:
+    key_pem, cert_pem, cert = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    captured = _capture(adapter)
+    adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+
+    chat_message = {
+        "id": "m400",
+        "messageType": "message",
+        "from": {"user": {"id": "aad-u", "displayName": "Alice"}},
+        "channelIdentity": {"teamId": "t1", "channelId": "19:c@thread.tacv2"},
+        "body": {"contentType": "html", "content": '<p><at id="0">Bob</at> hi</p>'},
+        "mentions": [
+            {
+                "id": 0,
+                "mentionText": "Bob",
+                "mentioned": {"user": {"id": "aad-bob", "displayName": "Bob"}},
+            }
+        ],
+    }
+    item = {
+        "clientState": "s3cr3t",
+        "encryptedContent": _encrypt_like_graph(chat_message, cert),
+    }
+    _run(adapter._dispatch_graph_notification(item))
+
+    assert len(captured) == 1
+    assert captured[0].content == "@Bob hi"
+    assert captured[0].self_mention_token is None
 
 
 def test_notification_rejects_bad_client_state() -> None:
@@ -316,9 +380,11 @@ def test_system_event_message_is_ignored() -> None:
 
 
 class _FakeGraph:
-    def __init__(self) -> None:
+    def __init__(self, existing: list[dict[str, Any]] | None = None) -> None:
         self.created: list[dict[str, Any]] = []
         self.renewed: list[dict[str, Any]] = []
+        self.deleted: list[str] = []
+        self._existing = existing or []
 
     async def create_subscription(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
@@ -327,8 +393,11 @@ class _FakeGraph:
     async def renew_subscription(self, **kwargs: Any) -> None:
         self.renewed.append(kwargs)
 
+    async def delete_subscription(self, *, subscription_id: str) -> None:
+        self.deleted.append(subscription_id)
+
     async def list_subscriptions(self) -> list[dict[str, Any]]:
-        return []
+        return self._existing
 
 
 def test_ensure_channel_subscription_creates_with_expected_resource() -> None:
@@ -368,6 +437,67 @@ def test_ensure_channel_subscription_skips_without_certificate() -> None:
     # No certificate configured → no subscription created (logged, not crashed).
     assert fake.created == []
     assert "19:c@thread.tacv2" not in adapter._subscriptions
+
+
+def test_ensure_channel_subscriptions_recreates_missing_channel_subs() -> None:
+    # Self-heal on startup: create subs for channels that lack one, skip
+    # already-subscribed channels and non-channel (direct) conversations.
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    fake = _FakeGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+    adapter._subscriptions["19:already@thread.tacv2"] = "EXISTING"
+
+    _run(
+        adapter.ensure_channel_subscriptions(
+            [
+                ("19:new@thread.tacv2", "channel_public"),
+                ("19:priv@thread.tacv2", "channel_private"),
+                ("19:already@thread.tacv2", "channel_public"),
+                ("a:1dmchat", "direct"),
+            ]
+        )
+    )
+
+    resources = sorted(c["resource"] for c in fake.created)
+    assert resources == [
+        "teams/team-1/channels/19:new@thread.tacv2/messages",
+        "teams/team-1/channels/19:priv@thread.tacv2/messages",
+    ]
+
+
+def test_adopt_existing_subscriptions_deletes_stale_and_keeps_current() -> None:
+    # A rotated tunnel leaves subs pointing at a dead URL; on start we keep the
+    # ones matching our current URL and delete the stale ones so they can be
+    # recreated cleanly.
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    current = adapter._notification_url
+    fake = _FakeGraph(
+        existing=[
+            {
+                "id": "CUR",
+                "resource": "teams/t/channels/19:keep@thread.tacv2/messages",
+                "notificationUrl": current,
+            },
+            {
+                "id": "OLD",
+                "resource": "teams/t/channels/19:stale@thread.tacv2/messages",
+                "notificationUrl": "https://dead.example/api/teams/notifications",
+            },
+            {
+                "id": "OTHER",
+                "resource": "users/u/messages",
+                "notificationUrl": "https://x.example",
+            },
+        ]
+    )
+    adapter._graph = fake  # type: ignore[assignment]
+
+    _run(adapter._adopt_existing_subscriptions())
+
+    assert adapter._subscriptions == {"19:keep@thread.tacv2": "CUR"}
+    assert fake.deleted == ["OLD"]
 
 
 def test_channel_from_resource_parses_channel_id() -> None:

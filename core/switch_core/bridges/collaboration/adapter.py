@@ -265,3 +265,27 @@ class CollaborationAdapter(ABC):
 
     @abstractmethod
     def translate_inbound(self, raw_message: str) -> str: ...
+
+    async def ensure_channel_subscriptions(
+        self, channels: list[tuple[str, str]]
+    ) -> None:
+        """(Re)establish any server-side message capture for the given
+        ``(channel_id, channel_type)`` pairs.
+
+        Called on bridge startup with the bridge's known channels. Default is a
+        no-op; adapters that rely on expiring server-side subscriptions (Teams,
+        via Microsoft Graph) override this so channel capture self-heals after a
+        restart or a notification-URL change (e.g. a rotated tunnel), without the
+        bot having to be re-added to each channel."""
+        return None
+
+    def set_service_url_persister(
+        self, persist: Callable[[str], Awaitable[None]]
+    ) -> None:
+        """Install a callback the adapter uses to persist an outbound endpoint
+        it learns from inbound traffic, so outbound survives a restart.
+
+        Default is a no-op; adapters whose outbound endpoint is only discovered
+        from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
+        carried on inbound activities) override this to persist it."""
+        return None

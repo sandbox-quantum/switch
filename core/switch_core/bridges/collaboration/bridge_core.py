@@ -14,6 +14,7 @@ from nio import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.models import (
     ChannelType,
@@ -25,6 +26,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.mentions import mention_regex, strip_emphasis
 from switch_core.db.models import BridgeMessageMap, ExternalUser
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -117,6 +119,7 @@ class BridgeCore:
             on_user_joined=self._handle_user_joined_channel,
             on_app_joined=self._handle_app_joined_channel,
         )
+        await self._ensure_channel_captures()
         await self._create_agent_identities()
 
     async def stop(self) -> None:
@@ -173,6 +176,20 @@ class BridgeCore:
             "Created %s identities for %d agents", self._bridge_type, len(agents)
         )
 
+    async def _ensure_channel_captures(self) -> None:
+        """Ask the adapter to (re)establish server-side message capture for this
+        bridge's channels. Runs on startup so capture self-heals after a restart
+        or a notification-URL change (e.g. a rotated tunnel). A no-op for
+        adapters that don't use expiring subscriptions."""
+        async with self._session_factory() as session:
+            rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        channels: list[tuple[str, str]] = []
+        for room in rooms:
+            if room.external_channel_id and room.channel_type:
+                channels.append((room.external_channel_id, room.channel_type))
+        if channels:
+            await self._adapter.ensure_channel_subscriptions(channels)
+
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
     async def _is_registered_agent(self, name: str) -> bool:
@@ -214,11 +231,22 @@ class BridgeCore:
         content = (
             f"👋 You tagged {app_mention} directly — I'm not linked to an agent "
             "in this channel yet.\n\n"
-            f"*Agents you can tag directly:*\n{agent_list}\n\n"
-            "*To make me an agent's entry point*, copy the line below and swap "
-            "in the agent's name — after that, tagging me here routes to that "
-            f"agent:\n!set-alias @agent_name {app_mention}"
+            f"*Agents you can tag directly:*\n{agent_list}"
         )
+        # The `!set-alias` shortcut only makes sense when the bot handle is a
+        # valid alias token. Some platforms (e.g. Teams) use a bot id containing
+        # characters an alias can't hold (a `:`), so we omit the line there —
+        # tagging an agent by name (above) works regardless.
+        try:
+            validate_alias_format(token)
+        except AliasError:
+            pass
+        else:
+            content += (
+                "\n\n*To make me an agent's entry point*, copy the line below and "
+                "swap in the agent's name — after that, tagging me here routes to "
+                f"that agent:\n!set-alias @agent_name {app_mention}"
+            )
         thread_root_id = msg.root_id or msg.message_ref
         await self._adapter.admin_message(
             msg.channel_id,
@@ -226,6 +254,32 @@ class BridgeCore:
             thread_root_id,
             message_type=AdminMessageType.SELF_MENTION_UNALIASED.value,
         )
+
+    async def _resolve_self_mention_target(
+        self, msg: InboundMessage, room_id: str
+    ) -> str | None:
+        """The agent a bot @mention should address, or None.
+
+        A bot mention resolves to an agent when the bot handle is that agent's
+        room alias (matching Slack's behaviour), or — the common single-agent
+        case — when the room holds exactly one agent. Zero or several unaliased
+        agents are ambiguous, so we return None and let the caller post guidance.
+        """
+        token = msg.self_mention_token
+        if token is None:
+            return None
+        async with self._session_factory() as session:
+            agent_id = await self._room_store.get_agent_id_by_alias(
+                session, room_id, token
+            )
+            if agent_id is None:
+                agent_ids = await self._room_store.get_agent_ids(session, room_id)
+                if len(agent_ids) == 1:
+                    agent_id = agent_ids[0]
+            if agent_id is None:
+                return None
+            agent = await self._agent_store.get(session, agent_id)
+        return agent.name if agent is not None else None
 
     async def _handle_lobby_message(self, msg: InboundMessage) -> None:
         """The Slack app's DM ("lobby") is deprecated for talking to agents.
@@ -277,7 +331,15 @@ class BridgeCore:
 
         room_id, matrix_room_id = room_ids
 
-        await self._maybe_guide_self_mention(msg, room_id)
+        # A bot @mention carries no agent name in its text (the platform tags the
+        # bot, not the agent). Resolve which agent it addresses so we can inject
+        # an `@<agent>` the addressing layer matches on; if it can't be resolved,
+        # fall back to guidance.
+        mention_target: str | None = None
+        if msg.self_mention_token is not None:
+            mention_target = await self._resolve_self_mention_target(msg, room_id)
+            if mention_target is None:
+                await self._maybe_guide_self_mention(msg, room_id)
 
         puppet = await self._ensure_user_in_matrix_room(
             external_user_id=msg.sender_id,
@@ -288,6 +350,10 @@ class BridgeCore:
             return
 
         content = self._adapter.translate_inbound(msg.content)
+        if mention_target is not None and (
+            mention_regex(mention_target).search(strip_emphasis(content)) is None
+        ):
+            content = f"@{mention_target} {content}"
         logger.debug(
             "[BRIDGE-IN] sending to matrix room=%s via puppet=%s attachments=%d",
             matrix_room_id,

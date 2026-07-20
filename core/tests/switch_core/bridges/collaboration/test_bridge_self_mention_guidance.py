@@ -130,3 +130,67 @@ async def test_self_mention_threads_under_existing_thread_root() -> None:
     )
 
     assert bridge.notices[0][2] == "C123:100.1"
+
+
+async def test_guidance_omits_set_alias_for_non_alias_safe_token() -> None:
+    # A Teams bot id ("28:<guid>") can't be an alias (aliases forbid ':'), so the
+    # !set-alias shortcut is omitted — but the agent list (tag by name) stays.
+    bridge = _fake_bridge(
+        alias_agent=None,
+        agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
+    )
+
+    await BridgeCore._maybe_guide_self_mention(
+        bridge, _msg(self_mention_token="28:app-123"), "room-uuid"
+    )
+
+    assert len(bridge.notices) == 1
+    _, content, _ = bridge.notices[0]
+    assert "!set-alias" not in content
+    assert "• @agent-a — agent-a does things" in content
+
+
+async def test_resolve_target_single_agent_unaliased() -> None:
+    bridge = _fake_bridge(alias_agent=None, agents={"a1": _agent("agent-a")})
+
+    target = await BridgeCore._resolve_self_mention_target(
+        bridge, _msg(self_mention_token="28:app-123"), "room-uuid"
+    )
+
+    assert target == "agent-a"
+
+
+async def test_resolve_target_uses_alias_even_with_many_agents() -> None:
+    bridge = _fake_bridge(
+        alias_agent="a2",
+        agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
+    )
+
+    target = await BridgeCore._resolve_self_mention_target(
+        bridge, _msg(self_mention_token="UBOT"), "room-uuid"
+    )
+
+    assert target == "agent-b"
+
+
+async def test_resolve_target_ambiguous_returns_none() -> None:
+    bridge = _fake_bridge(
+        alias_agent=None,
+        agents={"a1": _agent("agent-a"), "a2": _agent("agent-b")},
+    )
+
+    target = await BridgeCore._resolve_self_mention_target(
+        bridge, _msg(self_mention_token="28:app-123"), "room-uuid"
+    )
+
+    assert target is None
+
+
+async def test_resolve_target_no_token_returns_none() -> None:
+    bridge = _fake_bridge(alias_agent=None, agents={"a1": _agent("agent-a")})
+
+    target = await BridgeCore._resolve_self_mention_target(
+        bridge, _msg(self_mention_token=None), "room-uuid"
+    )
+
+    assert target is None

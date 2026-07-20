@@ -25,6 +25,10 @@ def agent_message_card(agent_name: str, body: str) -> dict[str, Any]:
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
         "version": "1.4",
+        # Plain-text representation for surfaces that can't render the card
+        # inline (mobile, notification toasts, copy-link/search previews); its
+        # absence is what makes Teams show the "cards.unsupported" placeholder.
+        "fallbackText": f"{agent_name}: {body}",
         "body": [
             {
                 "type": "ColumnSet",

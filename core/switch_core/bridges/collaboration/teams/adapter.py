@@ -40,9 +40,42 @@ from switch_core.bridges.collaboration.teams.graph import GraphClient
 
 logger = logging.getLogger(__name__)
 
-_MENTION_TAG = re.compile(r"<at\b[^>]*>.*?</at>", re.IGNORECASE | re.DOTALL)
+_MENTION_TAG = re.compile(r"<at\b[^>]*>(.*?)</at>", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+def _render_mentions(text: str) -> str:
+    """Rewrite Teams ``<at>Display</at>`` mention markup to ``@Display``.
+
+    Teams sends an @mention as ``<at>Name</at>`` markup, with the addressable id
+    carried separately in the activity ``entities`` / Graph ``mentions``.
+    Deleting the markup would drop the ``@name`` the addressing layer matches on,
+    so we keep the display text as a plain ``@name`` token instead."""
+
+    def _sub(match: re.Match[str]) -> str:
+        inner = html.unescape(match.group(1)).strip()
+        return f"@{inner}" if inner else ""
+
+    return _MENTION_TAG.sub(_sub, text)
+
+
+_LEADING_MENTION_TAG = re.compile(
+    r"^\s*(?:<(?:p|div|span)\b[^>]*>\s*)?<at\b[^>]*>.*?</at>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_leading_mention(text: str) -> str:
+    """Drop a single leading ``<at>…</at>`` mention (optionally inside one wrapper
+    tag) from Teams message markup.
+
+    In a Teams channel the Bot Framework only delivers a message when the bot is
+    @mentioned, so a command typed in a channel always arrives as
+    ``@Bot !command``. Removing the leading bot mention lets the shared
+    ``!``-command detection in ``_deliver`` see the ``!`` marker."""
+    return _LEADING_MENTION_TAG.sub("", text, count=1)
+
 
 # Channel-message subscriptions with resource data live at most 60 minutes; we
 # request 55 and proactively renew well before expiry.
@@ -93,6 +126,15 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     # channel deeplinks are not offered.
     public_url: str | None = None
 
+    # Bot Connector serviceUrl (the per-tenant outbound endpoint). It is learned
+    # from inbound Bot Framework activities and persisted here so outbound
+    # survives a process restart — otherwise, until the bot next receives a
+    # (mention-triggered) activity, no serviceUrl is known and every outbound
+    # message fails. The Graph channel-capture path never carries a serviceUrl,
+    # so a busy channel whose traffic arrives only via capture would never
+    # re-learn it. Refreshed automatically whenever a newer value is observed.
+    service_url: str | None = None
+
 
 class TeamsAdapter(CollaborationAdapter):
     """Microsoft Teams collaboration adapter.
@@ -116,9 +158,14 @@ class TeamsAdapter(CollaborationAdapter):
         self._validator: InboundActivityValidator | None = None
         self._runner: web.AppRunner | None = None
 
-        # Per-tenant Bot Connector endpoint, captured from inbound activities.
+        # Per-tenant Bot Connector endpoint, captured from inbound activities and
+        # seeded from persisted config so outbound works right after a restart,
+        # before the bot next receives a Bot Framework activity.
         self._service_url: dict[str, str] = {}
-        self._default_service_url: str | None = None
+        self._default_service_url: str | None = config.service_url
+        # Installed by the bridge to persist a newly-learned serviceUrl so it
+        # survives a restart. No-op until set.
+        self._persist_service_url: Callable[[str], Awaitable[None]] | None = None
         # channel/chat id -> ChannelType, learned from inbound activities.
         self._channel_type: dict[str, ChannelType] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
@@ -193,10 +240,15 @@ class TeamsAdapter(CollaborationAdapter):
         return f"{base}/api/teams/notifications"
 
     async def _adopt_existing_subscriptions(self) -> None:
-        """Re-attach to subscriptions this bridge already owns after a restart.
+        """Re-attach to subscriptions this bridge already owns after a restart,
+        and delete stale ones left by a previous notification URL.
 
         Graph subscriptions outlive the process, so on start we reclaim any that
-        point at our notification URL rather than blindly creating duplicates."""
+        point at our current notification URL rather than blindly creating
+        duplicates. Subscriptions for our channels that point at a *different*
+        URL (e.g. a rotated tunnel) can never deliver here, so we delete them;
+        ``ensure_channel_subscriptions`` then recreates them against the current
+        URL."""
         if self._graph is None:
             return
         try:
@@ -205,17 +257,46 @@ class TeamsAdapter(CollaborationAdapter):
             logger.warning("Could not list existing Graph subscriptions on start")
             return
         for sub in existing:
-            if sub.get("notificationUrl") != self._notification_url:
-                continue
             resource = str(sub.get("resource", ""))
             channel_id = self._channel_from_resource(resource)
-            if channel_id:
+            if not channel_id:
+                continue
+            if sub.get("notificationUrl") == self._notification_url:
                 self._subscriptions[channel_id] = str(sub.get("id", ""))
+                continue
+            stale_id = str(sub.get("id", ""))
+            if not stale_id:
+                continue
+            try:
+                await self._graph.delete_subscription(subscription_id=stale_id)
+                logger.info(
+                    "Deleted stale Teams subscription %s for channel %s "
+                    "(notification URL changed)",
+                    stale_id,
+                    channel_id,
+                )
+            except Exception:
+                logger.warning("Failed to delete stale Teams subscription %s", stale_id)
         if self._subscriptions:
             logger.info(
                 "Re-attached to %d existing Teams subscriptions",
                 len(self._subscriptions),
             )
+
+    async def ensure_channel_subscriptions(
+        self, channels: list[tuple[str, str]]
+    ) -> None:
+        """Recreate Graph subscriptions for known channels that lack a live one.
+
+        Called on startup with the bridge's channels so capture self-heals after
+        a restart or notification-URL change: ``_adopt_existing_subscriptions``
+        keeps still-valid subscriptions and clears stale ones, then this creates
+        any that are missing. ``_ensure_channel_subscription`` skips channels
+        already subscribed and logs (does not raise) on failure, so one bad
+        channel does not block the rest."""
+        for channel_id, channel_type in channels:
+            if channel_type in ("channel_public", "channel_private"):
+                await self._ensure_channel_subscription(channel_id)
 
     async def _renewal_loop(self) -> None:
         """Proactively renew channel-message subscriptions before they expire.
@@ -269,6 +350,24 @@ class TeamsAdapter(CollaborationAdapter):
             )
         return url
 
+    def set_service_url_persister(
+        self, persist: Callable[[str], Awaitable[None]]
+    ) -> None:
+        self._persist_service_url = persist
+
+    async def _learn_service_url(self, service_url: str) -> None:
+        """Record a serviceUrl observed on an inbound activity, persisting it
+        when it is new or changed so outbound survives the next restart."""
+        if service_url == self._default_service_url:
+            return
+        self._default_service_url = service_url
+        if self._persist_service_url is None:
+            return
+        try:
+            await self._persist_service_url(service_url)
+        except Exception:
+            logger.warning("Failed to persist Teams serviceUrl", exc_info=True)
+
     def _is_channel(self, channel_id: str) -> bool:
         """Whether ``channel_id`` is a Teams channel (threaded) vs a flat chat.
 
@@ -286,6 +385,9 @@ class TeamsAdapter(CollaborationAdapter):
     def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
         return {
             "type": "message",
+            # Notification/preview text; without it Teams renders a
+            # "cards.unsupported" placeholder in toasts, mobile, and link previews.
+            "summary": f"{sender_name}: {body}",
             "attachments": [card_attachment(agent_message_card(sender_name, body))],
         }
 
@@ -312,7 +414,7 @@ class TeamsAdapter(CollaborationAdapter):
         else:
             conversation_id = (
                 self._thread_conversation(channel_id, thread_root_id)
-                if thread_root_id
+                if thread_root_id and self._is_channel(channel_id)
                 else channel_id
             )
             msg_id = await self._connector.send_to_conversation(
@@ -351,7 +453,7 @@ class TeamsAdapter(CollaborationAdapter):
         else:
             conversation_id = (
                 self._thread_conversation(channel_id, thread_root_id)
-                if thread_root_id
+                if thread_root_id and self._is_channel(channel_id)
                 else channel_id
             )
             msg_id = await self._connector.send_to_conversation(
@@ -646,12 +748,17 @@ class TeamsAdapter(CollaborationAdapter):
         channel_id, channel_type = self._channel_from_activity(activity)
         if service_url and channel_id:
             self._service_url[channel_id] = service_url
-            self._default_service_url = service_url
+            await self._learn_service_url(service_url)
             self._channel_type[channel_id] = channel_type
 
-        team_id = ((activity.get("channelData") or {}).get("team") or {}).get("id")
-        if team_id and channel_id:
-            self._team_of_channel[channel_id] = str(team_id)
+        team = (activity.get("channelData") or {}).get("team") or {}
+        # Graph channel subscriptions key on the team's AAD group GUID, which
+        # Teams sends as ``aadGroupId``. ``team.id`` is the non-GUID channel
+        # thread id and Graph rejects it ("TeamGroupId must be ... a valid
+        # GUID"). Fall back to the configured team_id, which is also that GUID.
+        group_id = team.get("aadGroupId") or self._config.team_id
+        if group_id and channel_id:
+            self._team_of_channel[channel_id] = str(group_id)
 
         if activity_type == "message":
             await self._dispatch_message(activity, channel_id, channel_type)
@@ -698,7 +805,14 @@ class TeamsAdapter(CollaborationAdapter):
         sender_id = str(sender.get("aadObjectId") or sender.get("id") or "")
         sender_name = str(sender.get("name") or sender_id)
 
-        text = self._clean_text(str(activity.get("text", "")))
+        raw_text = str(activity.get("text", ""))
+        text = self._clean_text(raw_text)
+        self_mention_token = self._self_mention_token(activity)
+        command_text = (
+            self._clean_text(_strip_leading_mention(raw_text))
+            if self_mention_token is not None
+            else text
+        )
 
         conversation = activity.get("conversation") or {}
         conv_id = str(conversation.get("id", ""))
@@ -719,7 +833,8 @@ class TeamsAdapter(CollaborationAdapter):
             message_ref=activity_id,
             root_id=root_id,
             channel_name=channel_name,
-            self_mention_token=self._self_mention_token(activity),
+            self_mention_token=self_mention_token,
+            command_text=command_text,
         )
 
     async def _deliver(
@@ -734,14 +849,20 @@ class TeamsAdapter(CollaborationAdapter):
         root_id: str | None,
         channel_name: str | None,
         self_mention_token: str | None = None,
+        command_text: str | None = None,
     ) -> None:
         """Route a parsed inbound message to the command or message callback.
 
         Shared by the Bot Framework activity path and the Graph capture path so
-        both apply the same ``!``-command detection and translation."""
-        stripped = text.strip()
-        if stripped.startswith("!") and self._on_command is not None:
-            parts = stripped.split(None, 1)
+        both apply the same ``!``-command detection and translation.
+
+        ``command_text`` is the message with a leading bot @mention removed; it is
+        used only to detect and parse ``!``-commands (a channel command arrives as
+        ``@Bot !cmd``), while ``text`` — mention intact — is what a plain message
+        is bridged as. Defaults to ``text`` when the caller has nothing to strip."""
+        command_probe = (command_text if command_text is not None else text).strip()
+        if command_probe.startswith("!") and self._on_command is not None:
+            parts = command_probe.split(None, 1)
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
@@ -826,8 +947,8 @@ class TeamsAdapter(CollaborationAdapter):
 
     @staticmethod
     def _clean_text(text: str) -> str:
-        """Strip Teams ``<at>…</at>`` mention markup from message text."""
-        return _MENTION_TAG.sub("", text).strip()
+        """Rewrite Teams ``<at>…</at>`` mention markup to ``@<name>`` text."""
+        return _render_mentions(text).strip()
 
     # ── Graph capture (subscriptions + notifications) ────────────────────────
 
@@ -863,7 +984,7 @@ class TeamsAdapter(CollaborationAdapter):
                 channel_id,
             )
             return
-        team_id = self._team_of_channel.get(channel_id)
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
         if not team_id:
             logger.warning(
                 "Cannot subscribe to channel %s: team id unknown", channel_id
@@ -994,9 +1115,16 @@ class TeamsAdapter(CollaborationAdapter):
             return
 
         body = chat_message.get("body") or {}
-        content = str(body.get("content", ""))
-        if str(body.get("contentType", "")).lower() == "html":
-            content = self._graph_text(content)
+        raw_content = str(body.get("content", ""))
+        is_html = str(body.get("contentType", "")).lower() == "html"
+        content = self._graph_text(raw_content) if is_html else raw_content
+
+        self_mention_token = self._graph_self_mention_token(chat_message)
+        if self_mention_token is not None:
+            stripped = _strip_leading_mention(raw_content)
+            command_text = self._graph_text(stripped) if is_html else stripped
+        else:
+            command_text = content
 
         reply_to = chat_message.get("replyToId")
         root_id = str(reply_to) if reply_to and str(reply_to) != message_id else None
@@ -1010,12 +1138,28 @@ class TeamsAdapter(CollaborationAdapter):
             message_ref=message_id,
             root_id=root_id,
             channel_name=None,
+            self_mention_token=self_mention_token,
+            command_text=command_text,
         )
+
+    def _graph_self_mention_token(self, chat_message: dict[str, Any]) -> str | None:
+        """Return a truthy token when a Graph channel message @mentions our bot.
+
+        Graph carries mentions in ``chat_message["mentions"]``; a bot mention is
+        one whose ``mentioned.application.id`` matches our app id. Mirrors the
+        Bot Framework path's ``_self_mention_token`` so both capture paths flag a
+        bot mention identically."""
+        for mention in chat_message.get("mentions") or []:
+            mentioned = mention.get("mentioned") or {}
+            application = mentioned.get("application") or {}
+            if str(application.get("id", "")) == self._config.app_id:
+                return self._config.app_id
+        return None
 
     @staticmethod
     def _graph_text(content: str) -> str:
         """Flatten a Graph channel message's HTML body to plain text."""
         text = _BR_TAG.sub("\n", content)
-        text = _MENTION_TAG.sub("", text)
+        text = _render_mentions(text)
         text = _HTML_TAG.sub("", text)
         return html.unescape(text).strip()

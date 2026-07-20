@@ -46,6 +46,20 @@ class CollaborationBridgeStore:
         await session.flush()
         return bridge
 
+    async def set_service_url(
+        self, session: AsyncSession, bridge_id: str, service_url: str
+    ) -> None:
+        """Persist a learned outbound serviceUrl into ``connection_config`` so it
+        survives a restart. Reassigns the dict so SQLAlchemy tracks the change."""
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        bridge.connection_config = {
+            **(bridge.connection_config or {}),
+            "service_url": service_url,
+        }
+        await session.flush()
+
     async def delete(self, session: AsyncSession, bridge_id: str) -> None:
         bridge = await session.get(CollaborationBridge, bridge_id)
         if bridge:
