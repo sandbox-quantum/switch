@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import patch
 
 import discord
+import pytest
 
+from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -766,3 +769,121 @@ def test_translate_outbound_rewrites_known_usernames() -> None:
     out = adapter.translate_outbound("ping @louis and @unknown-agent")
 
     assert out == "ping <@7> and @unknown-agent"
+
+
+# ── Gateway lifecycle (start / stop) ──────────────────────────────────────────
+
+
+class _BotUser:
+    def __init__(self, user_id: int) -> None:
+        self.id = user_id
+
+    def __str__(self) -> str:
+        return f"bot#{self.id}"
+
+
+class _FakeGatewayClient:
+    """Controllable stand-in for ``discord.Client`` used by ``start()``.
+
+    ``connect_behavior`` selects how the gateway task behaves: ``"hang"`` keeps
+    the connection alive (awaits an event that only ``close()`` sets), while
+    ``"raise"`` fails the connection like a bad token. Readiness is gated on
+    ``ready_event`` so a test decides whether ``wait_until_ready()`` resolves.
+    """
+
+    def __init__(self) -> None:
+        self.user = _BotUser(BOT_USER_ID)
+        self.logged_in = False
+        self.closed = False
+        self.registered_events: list[Any] = []
+        self.connect_behavior = "hang"
+        self.connect_exc: BaseException = RuntimeError("gateway boom")
+        self._ready_event = asyncio.Event()
+        self._closed_event = asyncio.Event()
+
+    def event(self, coro: Any) -> Any:
+        self.registered_events.append(coro)
+        return coro
+
+    async def login(self, token: str) -> None:
+        self.logged_in = True
+
+    async def connect(self) -> None:
+        if self.connect_behavior == "raise":
+            raise self.connect_exc
+        await self._closed_event.wait()
+
+    async def wait_until_ready(self) -> None:
+        await self._ready_event.wait()
+
+    async def close(self) -> None:
+        self.closed = True
+        self._closed_event.set()
+
+
+def _noop_callbacks() -> tuple[Any, ...]:
+    async def _cb(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    return (_cb, _cb, _cb, _cb, _cb)
+
+
+def test_start_becomes_ready_then_stop_closes_client() -> None:
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
+    )
+    fake = _FakeGatewayClient()
+    fake._ready_event.set()  # ready as soon as start() waits
+
+    async def scenario() -> None:
+        with patch.object(adapter_module.discord, "Client", lambda **kw: fake):
+            await adapter.start(*_noop_callbacks())
+            assert adapter._client is fake
+            assert fake.logged_in
+            assert fake.registered_events  # on_message handler registered
+            assert adapter._bot_user_id == BOT_USER_ID
+
+            await adapter.stop()
+            assert fake.closed
+            assert adapter._client is None
+
+    _run(scenario())
+
+
+def test_start_raises_when_gateway_connection_fails() -> None:
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
+    )
+    fake = _FakeGatewayClient()
+    fake.connect_behavior = "raise"
+    fake.connect_exc = RuntimeError("login failed")
+    # ready never fires, so the failing connect task is what completes first.
+
+    async def scenario() -> None:
+        with patch.object(adapter_module.discord, "Client", lambda **kw: fake):
+            with pytest.raises(RuntimeError, match="gateway connection failed") as exc:
+                await adapter.start(*_noop_callbacks())
+            assert isinstance(exc.value.__cause__, RuntimeError)
+            assert str(exc.value.__cause__) == "login failed"
+
+    _run(scenario())
+
+
+def test_start_times_out_when_never_ready_and_stops() -> None:
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
+    )
+    fake = _FakeGatewayClient()  # hangs on connect, never becomes ready
+
+    async def scenario() -> None:
+        with (
+            patch.object(adapter_module.discord, "Client", lambda **kw: fake),
+            patch.object(adapter_module, "_READY_TIMEOUT", 0.05),
+        ):
+            with pytest.raises(RuntimeError, match="not ready"):
+                await adapter.start(*_noop_callbacks())
+            # Timeout path tears the half-open client down.
+            assert fake.closed
+            assert adapter._client is None
+
+    _run(scenario())
