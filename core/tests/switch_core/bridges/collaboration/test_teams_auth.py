@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+import jwt
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from switch_core.bridges.collaboration.teams.auth import (
     BOT_CONNECTOR_SCOPE,
+    InboundActivityValidator,
     TeamsTokenProvider,
 )
+
+_ISSUER = "https://api.botframework.com"
 
 
 def _run(coro: Any) -> Any:
@@ -80,3 +89,106 @@ def test_token_error_raises() -> None:
     except RuntimeError:
         raised = True
     assert raised
+
+
+# ── InboundActivityValidator (Bot Framework JWT verification) ─────────────────
+
+
+def _keypair() -> tuple[str, str]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    pub_pem = (
+        key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    return priv_pem, pub_pem
+
+
+class _FakeSigningKey:
+    def __init__(self, public_pem: str) -> None:
+        self.key = public_pem
+
+
+class _FakeJwks:
+    """Stands in for the network-backed PyJWKClient so decode uses our key."""
+
+    def __init__(self, public_pem: str) -> None:
+        self._public_pem = public_pem
+
+    def get_signing_key_from_jwt(self, token: str) -> _FakeSigningKey:
+        return _FakeSigningKey(self._public_pem)
+
+
+def _validator(public_pem: str, *, app_id: str = "app-1") -> InboundActivityValidator:
+    validator = InboundActivityValidator(app_id=app_id)
+    # Bypass the network JWKS fetch by pre-seeding the signing-key source.
+    validator._jwks = _FakeJwks(public_pem)  # type: ignore[assignment]
+    return validator
+
+
+def _token(priv_pem: str, *, aud: str = "app-1", expired: bool = False) -> str:
+    now = datetime.now(UTC)
+    exp = now - timedelta(minutes=5) if expired else now + timedelta(hours=1)
+    return jwt.encode(
+        {"aud": aud, "iss": _ISSUER, "exp": exp},
+        priv_pem,
+        algorithm="RS256",
+    )
+
+
+def test_validator_accepts_valid_token() -> None:
+    priv, pub = _keypair()
+    validator = _validator(pub)
+
+    # No raise = accepted.
+    validator.validate(f"Bearer {_token(priv)}")
+
+
+def test_validator_rejects_missing_header() -> None:
+    _, pub = _keypair()
+    validator = _validator(pub)
+
+    with pytest.raises(PermissionError):
+        validator.validate(None)
+
+
+def test_validator_rejects_non_bearer_header() -> None:
+    _, pub = _keypair()
+    validator = _validator(pub)
+
+    with pytest.raises(PermissionError):
+        validator.validate("Basic Zm9vOmJhcg==")
+
+
+def test_validator_rejects_wrong_audience() -> None:
+    priv, pub = _keypair()
+    validator = _validator(pub, app_id="app-1")
+
+    with pytest.raises(jwt.InvalidAudienceError):
+        validator.validate(f"Bearer {_token(priv, aud='someone-else')}")
+
+
+def test_validator_rejects_expired_token() -> None:
+    priv, pub = _keypair()
+    validator = _validator(pub)
+
+    with pytest.raises(jwt.ExpiredSignatureError):
+        validator.validate(f"Bearer {_token(priv, expired=True)}")
+
+
+def test_validator_rejects_bad_signature() -> None:
+    priv_signing, _ = _keypair()
+    _, pub_other = _keypair()
+    # Verify with a public key that does NOT match the signing key.
+    validator = _validator(pub_other)
+
+    with pytest.raises(jwt.InvalidSignatureError):
+        validator.validate(f"Bearer {_token(priv_signing)}")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -16,6 +18,7 @@ def _config() -> TeamsConnectionConfig:
         tenant_id="tenant-9",
         team_id="team-7",
         public_base_url="https://switch.example",
+        client_state="s3cr3t",
     )
 
 
@@ -187,3 +190,32 @@ def test_add_users_standard_channel_adds_team_members() -> None:
 
     assert fake.team_members == [{"team_id": "team-7", "user": "aad-b"}]
     assert fake.channel_members == []
+
+
+class _FailingGraph(_FakeGraph):
+    async def add_team_member(self, *, team_id: str, user_aad_id: str) -> None:
+        if user_aad_id == "aad-bad":
+            raise RuntimeError("Graph rejected the member add")
+        await super().add_team_member(team_id=team_id, user_aad_id=user_aad_id)
+
+
+def test_add_users_raises_on_partial_failure() -> None:
+    # A user that fails to add must surface as an error — the caller cannot be
+    # told the add succeeded when it did not (fail-loud). The good user is still
+    # added; the failure is reported afterwards.
+    adapter = _adapter()
+    fake = _FailingGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+    adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+
+    with pytest.raises(RuntimeError, match="aad-bad"):
+        _run(
+            adapter.add_users_to_channel(
+                "19:c@thread.tacv2",
+                ["good", "bad"],
+                ["aad-good", "aad-bad"],
+            )
+        )
+
+    # The user that could be added was still added before the error surfaced.
+    assert fake.team_members == [{"team_id": "team-7", "user": "aad-good"}]

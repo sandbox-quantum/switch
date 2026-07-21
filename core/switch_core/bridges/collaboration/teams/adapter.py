@@ -118,13 +118,12 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     encryption_public_certificate: str | None = None
     encryption_private_key: str | None = None
 
-    # Shared secret echoed back in every change notification, validated on
-    # receipt to reject spoofed callbacks.
-    client_state: str | None = None
-
-    # User-facing deeplink base (https://teams.microsoft.com/l/...). When unset,
-    # channel deeplinks are not offered.
-    public_url: str | None = None
+    # Shared secret echoed back in every change notification and validated on
+    # receipt. Required, and the ONLY control that authenticates a notification's
+    # origin: Graph resource-data encryption proves integrity but NOT origin (the
+    # wrapping key is the public certificate, which anyone can encrypt to), so
+    # without clientState the notification endpoint is spoofable.
+    client_state: str
 
     # Bot Connector serviceUrl (the per-tenant outbound endpoint). It is learned
     # from inbound Bot Framework activities and persisted here so outbound
@@ -678,6 +677,7 @@ class TeamsAdapter(CollaborationAdapter):
         # Private channels have their own membership; standard channels inherit
         # the team's, so a user is added to the team instead.
         is_private = self._channel_type.get(channel_id) == "channel_private"
+        failed: list[str] = []
         for user_id in user_external_ids:
             try:
                 if is_private:
@@ -692,6 +692,12 @@ class TeamsAdapter(CollaborationAdapter):
                 logger.exception(
                     "Failed to add user %s to Teams channel %s", user_id, channel_id
                 )
+                failed.append(user_id)
+        if failed:
+            raise RuntimeError(
+                f"Failed to add {len(failed)} user(s) to Teams channel "
+                f"{channel_id}: {', '.join(failed)}"
+            )
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
@@ -807,6 +813,9 @@ class TeamsAdapter(CollaborationAdapter):
 
         raw_text = str(activity.get("text", ""))
         text = self._clean_text(raw_text)
+        text += self._disclosed_attachment_note(
+            self._activity_attachment_descriptors(activity)
+        )
         self_mention_token = self._self_mention_token(activity)
         command_text = (
             self._clean_text(_strip_leading_mention(raw_text))
@@ -950,6 +959,49 @@ class TeamsAdapter(CollaborationAdapter):
         """Rewrite Teams ``<at>…</at>`` mention markup to ``@<name>`` text."""
         return _render_mentions(text).strip()
 
+    @staticmethod
+    def _disclosed_attachment_note(descriptors: list[str]) -> str:
+        """A visible note naming inbound attachments that were not relayed.
+
+        Teams inbound file/image relay is not yet implemented; rather than drop
+        media silently (which would violate the fail-loud rule and mislead the
+        agent), we bridge the text and append this disclosure. Empty when there
+        is nothing to disclose."""
+        if not descriptors:
+            return ""
+        if len(descriptors) == 1:
+            return f"\n\n_📎 an attachment was not relayed: {descriptors[0]}_"
+        joined = ", ".join(descriptors)
+        return f"\n\n_📎 {len(descriptors)} attachments were not relayed: {joined}_"
+
+    @staticmethod
+    def _activity_attachment_descriptors(activity: dict[str, Any]) -> list[str]:
+        """Names of real file/image attachments on a Bot Framework activity.
+
+        Excludes ``text/*`` attachments, which carry the message's own HTML/text
+        body rather than a user-supplied file."""
+        out: list[str] = []
+        for att in activity.get("attachments") or []:
+            content_type = str(att.get("contentType", ""))
+            if content_type.startswith("text/"):
+                continue
+            name = str(att.get("name") or "").strip()
+            out.append(name or content_type or "attachment")
+        return out
+
+    @staticmethod
+    def _graph_attachment_descriptors(chat_message: dict[str, Any]) -> list[str]:
+        """Names of attachments + inline hosted images on a Graph chat message."""
+        out: list[str] = []
+        for att in chat_message.get("attachments") or []:
+            name = str(att.get("name") or "").strip()
+            content_type = str(att.get("contentType", ""))
+            out.append(name or content_type or "attachment")
+        hosted = chat_message.get("hostedContents") or []
+        if hosted:
+            out.append(f"{len(hosted)} inline image(s)")
+        return out
+
     # ── Graph capture (subscriptions + notifications) ────────────────────────
 
     @staticmethod
@@ -1002,7 +1054,7 @@ class TeamsAdapter(CollaborationAdapter):
                     resource=f"teams/{team_id}/channels/{channel_id}/messages",
                     notification_url=self._notification_url,
                     lifecycle_notification_url=self._notification_url,
-                    client_state=self._config.client_state or "",
+                    client_state=self._config.client_state,
                     expiration_iso=self._expiration_iso(),
                     encryption_certificate=cert_der,
                     encryption_certificate_id=self._config.encryption_certificate_id,
@@ -1042,14 +1094,16 @@ class TeamsAdapter(CollaborationAdapter):
         return web.Response(status=202)
 
     async def _dispatch_graph_notification(self, item: dict[str, Any]) -> None:
-        lifecycle_event = item.get("lifecycleEvent")
-        if lifecycle_event:
-            await self._handle_lifecycle_event(item)
+        # Authenticate origin BEFORE acting on anything — data notifications and
+        # lifecycle events alike. clientState is the only origin control (the
+        # encryption proves integrity, not origin), so an unverified lifecycle
+        # event (e.g. a forged reauthorizationRequired) must not be honoured.
+        if item.get("clientState") != self._config.client_state:
+            logger.warning("Rejected Graph notification: clientState mismatch")
             return
 
-        expected_state = self._config.client_state
-        if expected_state and item.get("clientState") != expected_state:
-            logger.warning("Rejected Graph notification: clientState mismatch")
+        if item.get("lifecycleEvent"):
+            await self._handle_lifecycle_event(item)
             return
 
         encrypted = item.get("encryptedContent")
@@ -1118,6 +1172,9 @@ class TeamsAdapter(CollaborationAdapter):
         raw_content = str(body.get("content", ""))
         is_html = str(body.get("contentType", "")).lower() == "html"
         content = self._graph_text(raw_content) if is_html else raw_content
+        content += self._disclosed_attachment_note(
+            self._graph_attachment_descriptors(chat_message)
+        )
 
         self_mention_token = self._graph_self_mention_token(chat_message)
         if self_mention_token is not None:

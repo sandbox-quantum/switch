@@ -75,11 +75,13 @@ def test_teams_adapter_registers_with_expected_required_fields() -> None:
 
     schema = service.get_config_schema("teams")
     # The credentials + endpoint fields with no default are required; the
-    # subscription/encryption/deeplink fields are optional.
+    # subscription/encryption fields are optional. client_state is required —
+    # it is the only control that authenticates a notification's origin.
     assert set(schema["required"]) == {
         "app_id",
         "app_password",
         "tenant_id",
         "team_id",
         "public_base_url",
+        "client_state",
     }

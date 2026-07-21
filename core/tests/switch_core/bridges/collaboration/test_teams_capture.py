@@ -273,6 +273,37 @@ def test_notification_no_self_mention_token_for_human_mention() -> None:
     assert captured[0].self_mention_token is None
 
 
+def test_graph_message_attachment_is_disclosed() -> None:
+    # A captured channel message carrying an attachment / inline image must
+    # bridge its text and disclose the media rather than dropping it silently.
+    key_pem, cert_pem, cert = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    captured = _capture(adapter)
+    adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+
+    chat_message = {
+        "id": "m-att",
+        "messageType": "message",
+        "from": {"user": {"id": "aad-u", "displayName": "Alice"}},
+        "channelIdentity": {"teamId": "t1", "channelId": "19:c@thread.tacv2"},
+        "body": {"contentType": "html", "content": "<p>see attached</p>"},
+        "attachments": [{"contentType": "reference", "name": "report.pdf"}],
+        "hostedContents": [{"id": "h1"}],
+    }
+    item = {
+        "clientState": "s3cr3t",
+        "encryptedContent": _encrypt_like_graph(chat_message, cert),
+    }
+
+    _run(adapter._dispatch_graph_notification(item))
+
+    assert len(captured) == 1
+    content = captured[0].content
+    assert content.startswith("see attached")
+    assert "report.pdf" in content
+    assert "not relayed" in content
+
+
 def test_notification_rejects_bad_client_state() -> None:
     key_pem, cert_pem, cert = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
@@ -426,6 +457,7 @@ def test_ensure_channel_subscription_skips_without_certificate() -> None:
             tenant_id="tenant-1",
             team_id="team-1",
             public_base_url="https://switch.example",
+            client_state="s3cr3t",
         )
     )
     fake = _FakeGraph()
@@ -520,12 +552,35 @@ def test_lifecycle_reauthorization_renews_subscription() -> None:
             {
                 "lifecycleEvent": "reauthorizationRequired",
                 "subscriptionId": "SUB-42",
+                "clientState": "s3cr3t",
             }
         )
     )
 
     assert len(fake.renewed) == 1
     assert fake.renewed[0]["subscription_id"] == "SUB-42"
+
+
+def test_lifecycle_event_with_bad_client_state_is_rejected() -> None:
+    # A forged lifecycle notification (e.g. reauthorizationRequired) must not be
+    # honoured without a valid clientState — the encryption authenticates only
+    # data notifications, so lifecycle events rely entirely on clientState.
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    fake = _FakeGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+
+    _run(
+        adapter._dispatch_graph_notification(
+            {
+                "lifecycleEvent": "reauthorizationRequired",
+                "subscriptionId": "SUB-42",
+                "clientState": "WRONG",
+            }
+        )
+    )
+
+    assert fake.renewed == []
 
 
 def test_renew_all_subscriptions_renews_each() -> None:

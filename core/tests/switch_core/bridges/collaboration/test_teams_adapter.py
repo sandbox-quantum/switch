@@ -21,6 +21,7 @@ def _config() -> TeamsConnectionConfig:
         tenant_id="tenant-1",
         team_id="team-1",
         public_base_url="https://switch.example",
+        client_state="s3cr3t",
     )
 
 
@@ -198,6 +199,128 @@ def test_inbound_bot_mention_carries_self_mention_token() -> None:
 
 
 # ── Inbound dispatch ─────────────────────────────────────────────────────────
+
+
+def test_inbound_attachment_is_disclosed_not_dropped() -> None:
+    # Inbound file/image relay is not implemented yet; the message text must
+    # still bridge and the dropped attachment must be disclosed (fail-loud), and
+    # the text/html body attachment must NOT be counted as a dropped file.
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    activity = {
+        "type": "message",
+        "id": "att-1",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": "look at this",
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "conversation": {
+            "id": "19:abc@thread.tacv2;messageid=att-1",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
+        "attachments": [
+            {"contentType": "text/html", "content": "<p>look at this</p>"},
+            {"contentType": "image/png", "name": "diagram.png"},
+        ],
+    }
+    _run(adapter._dispatch_activity(activity))
+
+    assert len(captured) == 1
+    content = captured[0].content
+    assert content.startswith("look at this")
+    assert "diagram.png" in content
+    assert "not relayed" in content
+
+
+class _FakeHttpRequest:
+    def __init__(
+        self,
+        *,
+        headers: dict[str, str] | None = None,
+        body: Any = None,
+        json_error: bool = False,
+    ) -> None:
+        self.headers = headers or {}
+        self._body = body
+        self._json_error = json_error
+        self.query: dict[str, str] = {}
+
+    async def json(self) -> Any:
+        if self._json_error:
+            raise ValueError("bad json")
+        return self._body
+
+
+class _RaisingValidator:
+    def validate(self, auth_header: str | None) -> None:
+        raise PermissionError("forged")
+
+
+class _PassValidator:
+    def validate(self, auth_header: str | None) -> None:
+        return None
+
+
+def test_http_messages_rejects_unauthenticated_activity() -> None:
+    adapter = _adapter()
+    adapter._validator = _RaisingValidator()  # type: ignore[assignment]
+
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(  # type: ignore[arg-type]
+                headers={"Authorization": "Bearer forged"},
+                body={"type": "message"},
+            )
+        )
+    )
+
+    assert resp.status == 401
+
+
+def test_http_messages_rejects_invalid_json() -> None:
+    adapter = _adapter()
+    adapter._validator = _PassValidator()  # type: ignore[assignment]
+
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(  # type: ignore[arg-type]
+                headers={"Authorization": "Bearer ok"}, json_error=True
+            )
+        )
+    )
+
+    assert resp.status == 400
+
+
+def test_http_messages_dispatches_authenticated_activity() -> None:
+    adapter = _adapter()
+    adapter._validator = _PassValidator()  # type: ignore[assignment]
+    captured = _capture_messages(adapter)
+
+    activity = {
+        "type": "message",
+        "id": "ok-1",
+        "serviceUrl": "https://smba.example/amer/",
+        "text": "hi",
+        "from": {"aadObjectId": "aad-1", "name": "Alice"},
+        "conversation": {
+            "id": "19:abc@thread.tacv2;messageid=ok-1",
+            "conversationType": "channel",
+        },
+        "channelData": {"channel": {"id": "19:abc@thread.tacv2"}},
+    }
+    resp = _run(
+        adapter._handle_http_messages(
+            _FakeHttpRequest(  # type: ignore[arg-type]
+                headers={"Authorization": "Bearer ok"}, body=activity
+            )
+        )
+    )
+
+    assert resp.status == 200
+    assert len(captured) == 1
+    assert captured[0].content == "hi"
 
 
 def test_inbound_channel_message_top_level_has_no_root() -> None:
