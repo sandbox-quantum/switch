@@ -18,6 +18,8 @@ GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 _BOTFRAMEWORK_OPENID = (
     "https://login.botframework.com/v1/.well-known/openidconfiguration"
 )
+# Expected issuer of Bot Connector tokens (public Azure cloud).
+_BOTFRAMEWORK_ISSUER = "https://api.botframework.com"
 
 
 class TeamsTokenProvider:
@@ -114,6 +116,7 @@ class InboundActivityValidator:
             signing_key.key,
             algorithms=["RS256"],
             audience=self._app_id,
+            issuer=_BOTFRAMEWORK_ISSUER,
             options={"require": ["exp", "iss", "aud"]},
         )
 

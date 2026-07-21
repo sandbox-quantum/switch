@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import httpx
 from aiohttp import web
+from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.models import (
@@ -107,9 +108,13 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     # notifications at ``/api/teams/notifications``, both under this base.
     public_base_url: str
 
-    # Local bind for the inbound listener.
-    listen_host: str = "0.0.0.0"
-    listen_port: int = 3978
+    # Local bind for the inbound listener. This is a Switch-internal deployment
+    # detail, not an admin concern, so it is hidden from the gateway config form
+    # (SkipJsonSchema) and defaults are used; an operator can still override it
+    # via the stored connection_config when running more than one Teams bridge on
+    # a host (one bridge per listener port).
+    listen_host: SkipJsonSchema[str] = "0.0.0.0"
+    listen_port: SkipJsonSchema[int] = 3978
 
     # Graph change-notification resource-data encryption. Graph encrypts message
     # bodies with the public certificate; the private key decrypts them on
@@ -132,7 +137,9 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     # message fails. The Graph channel-capture path never carries a serviceUrl,
     # so a busy channel whose traffic arrives only via capture would never
     # re-learn it. Refreshed automatically whenever a newer value is observed.
-    service_url: str | None = None
+    # Learned at runtime and persisted here — never an admin input, so it is
+    # hidden from the gateway config form (SkipJsonSchema).
+    service_url: SkipJsonSchema[str | None] = None
 
 
 class TeamsAdapter(CollaborationAdapter):
@@ -326,6 +333,10 @@ class TeamsAdapter(CollaborationAdapter):
     async def stop(self) -> None:
         if self._renewal_task is not None:
             self._renewal_task.cancel()
+            try:
+                await self._renewal_task
+            except asyncio.CancelledError:
+                pass
             self._renewal_task = None
         if self._runner is not None:
             await self._runner.cleanup()
@@ -400,8 +411,7 @@ class TeamsAdapter(CollaborationAdapter):
         thread_root_id: str | None = None,
     ) -> str | None:
         if self._connector is None:
-            logger.error("Cannot send message: Teams adapter not started")
-            return None
+            raise RuntimeError("Cannot send message: Teams adapter not started")
 
         service_url = self._service_url_for(channel_id)
         activity = self._message_activity(sender_name, self.translate_outbound(content))
@@ -439,8 +449,7 @@ class TeamsAdapter(CollaborationAdapter):
         # activity, no per-agent Adaptive Card — so they read as the platform
         # speaking rather than an agent.
         if self._connector is None:
-            logger.error("Cannot post admin message: Teams adapter not started")
-            return None
+            raise RuntimeError("Cannot post admin message: Teams adapter not started")
 
         service_url = self._service_url_for(channel_id)
         activity = {"type": "message", "text": self.translate_outbound(content)}
@@ -485,8 +494,7 @@ class TeamsAdapter(CollaborationAdapter):
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
         if self._connector is None:
-            logger.error("Cannot update message: Teams adapter not started")
-            return
+            raise RuntimeError("Cannot update message: Teams adapter not started")
         service_url, conversation_id = self._locate(channel_id, message_ref)
         await self._connector.update_activity(
             service_url=service_url,
@@ -497,8 +505,7 @@ class TeamsAdapter(CollaborationAdapter):
 
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         if self._connector is None:
-            logger.error("Cannot delete message: Teams adapter not started")
-            return
+            raise RuntimeError("Cannot delete message: Teams adapter not started")
         service_url, conversation_id = self._locate(channel_id, message_ref)
         await self._connector.delete_activity(
             service_url=service_url,
@@ -1135,12 +1142,37 @@ class TeamsAdapter(CollaborationAdapter):
                 logger.exception(
                     "Failed to renew Teams subscription %s", subscription_id
                 )
+        elif event == "subscriptionRemoved":
+            # Graph dropped the subscription (e.g. a transient permission/quota
+            # issue). Recreate it rather than only logging — otherwise channel
+            # capture silently lapses until the next full restart.
+            await self._recreate_removed_subscription(subscription_id)
         else:
             logger.info(
                 "Teams subscription %s lifecycle event: %s",
                 subscription_id,
                 event,
             )
+
+    async def _recreate_removed_subscription(self, subscription_id: str) -> None:
+        channel_id = next(
+            (c for c, s in self._subscriptions.items() if s == subscription_id),
+            None,
+        )
+        if channel_id is None:
+            logger.info(
+                "Teams subscriptionRemoved for unknown subscription %s; ignoring",
+                subscription_id,
+            )
+            return
+        logger.warning(
+            "Teams subscription %s for channel %s was removed; recreating",
+            subscription_id,
+            channel_id,
+        )
+        # Drop the dead mapping so _ensure_channel_subscription rebuilds it.
+        self._subscriptions.pop(channel_id, None)
+        await self._ensure_channel_subscription(channel_id)
 
     async def _deliver_graph_message(self, chat_message: dict[str, Any]) -> None:
         if chat_message.get("messageType", "message") != "message":

@@ -134,11 +134,17 @@ def _validator(public_pem: str, *, app_id: str = "app-1") -> InboundActivityVali
     return validator
 
 
-def _token(priv_pem: str, *, aud: str = "app-1", expired: bool = False) -> str:
+def _token(
+    priv_pem: str,
+    *,
+    aud: str = "app-1",
+    iss: str = _ISSUER,
+    expired: bool = False,
+) -> str:
     now = datetime.now(UTC)
     exp = now - timedelta(minutes=5) if expired else now + timedelta(hours=1)
     return jwt.encode(
-        {"aud": aud, "iss": _ISSUER, "exp": exp},
+        {"aud": aud, "iss": iss, "exp": exp},
         priv_pem,
         algorithm="RS256",
     )
@@ -182,6 +188,14 @@ def test_validator_rejects_expired_token() -> None:
 
     with pytest.raises(jwt.ExpiredSignatureError):
         validator.validate(f"Bearer {_token(priv, expired=True)}")
+
+
+def test_validator_rejects_wrong_issuer() -> None:
+    priv, pub = _keypair()
+    validator = _validator(pub)
+
+    with pytest.raises(jwt.InvalidIssuerError):
+        validator.validate(f"Bearer {_token(priv, iss='https://evil.example')}")
 
 
 def test_validator_rejects_bad_signature() -> None:

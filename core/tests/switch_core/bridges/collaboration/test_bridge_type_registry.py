@@ -85,3 +85,20 @@ def test_teams_adapter_registers_with_expected_required_fields() -> None:
         "public_base_url",
         "client_state",
     }
+    # Switch-internal fields (the listener bind, the runtime-learned serviceUrl)
+    # are hidden from the admin config form — the admin only supplies genuine
+    # Teams/Azure credentials + endpoint.
+    assert set(schema["properties"]) == {
+        "app_id",
+        "app_password",
+        "tenant_id",
+        "team_id",
+        "public_base_url",
+        "client_state",
+        "encryption_certificate_id",
+        "encryption_public_certificate",
+        "encryption_private_key",
+    }
+    assert "listen_host" not in schema["properties"]
+    assert "listen_port" not in schema["properties"]
+    assert "service_url" not in schema["properties"]

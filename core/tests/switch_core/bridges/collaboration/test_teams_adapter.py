@@ -776,13 +776,34 @@ def test_update_reconstructs_conversation_when_untracked() -> None:
 # ── Typing (best-effort) ─────────────────────────────────────────────────────
 
 
+class _RecordThenRaiseConnector(_FakeConnector):
+    """Records the attempted activity, then raises — so a test can assert the
+    call was really attempted before its failure was swallowed."""
+
+    async def send_to_conversation(
+        self, *, service_url: str, conversation_id: str, activity: dict[str, Any]
+    ) -> str:
+        self.sends.append(
+            {
+                "service_url": service_url,
+                "conversation_id": conversation_id,
+                "activity": activity,
+            }
+        )
+        raise RuntimeError("boom")
+
+
 def test_typing_failure_is_swallowed() -> None:
     adapter = _adapter()
-    fake = _FakeConnector(raise_on_send=True)
+    fake = _RecordThenRaiseConnector()
     _wire_outbound(adapter, fake)
 
-    # Must not raise even though the connector errors.
+    # Must not raise even though the connector errors...
     _run(adapter.send_typing("a:1chat", "worker", True))
+
+    # ...and the typing activity WAS attempted (not silently skipped).
+    assert len(fake.sends) == 1
+    assert fake.sends[0]["activity"]["type"] == "typing"
 
 
 def test_typing_false_is_noop() -> None:

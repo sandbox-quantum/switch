@@ -583,6 +583,31 @@ def test_lifecycle_event_with_bad_client_state_is_rejected() -> None:
     assert fake.renewed == []
 
 
+def test_lifecycle_subscription_removed_recreates() -> None:
+    # A subscriptionRemoved event must recreate the channel's subscription, not
+    # just log — otherwise capture silently lapses until the next restart.
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    fake = _FakeGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+    adapter._team_of_channel["19:c@thread.tacv2"] = "team-9"
+    adapter._subscriptions["19:c@thread.tacv2"] = "SUB-OLD"
+
+    _run(
+        adapter._dispatch_graph_notification(
+            {
+                "lifecycleEvent": "subscriptionRemoved",
+                "subscriptionId": "SUB-OLD",
+                "clientState": "s3cr3t",
+            }
+        )
+    )
+
+    # The dead subscription was replaced by a freshly created one.
+    assert len(fake.created) == 1
+    assert adapter._subscriptions["19:c@thread.tacv2"] == "SUB-1"
+
+
 def test_renew_all_subscriptions_renews_each() -> None:
     key_pem, cert_pem, _ = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
