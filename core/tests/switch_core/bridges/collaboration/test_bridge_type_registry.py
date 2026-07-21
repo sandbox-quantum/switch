@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.bridges.collaboration.discord.adapter import (
+    DiscordAdapter,
+    DiscordConnectionConfig,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -49,6 +53,16 @@ def test_get_registered_types_lists_registered() -> None:
     )
 
     assert sorted(service.get_registered_types()) == ["mattermost", "slack"]
+
+
+def test_discord_adapter_registers_with_expected_required_fields() -> None:
+    service = _service()
+    service.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
+
+    assert service.get_registered_types() == ["discord"]
+    schema = service.get_config_schema("discord")
+    assert set(schema["properties"]) == {"bot_token", "guild_id"}
+    assert set(schema["required"]) == {"bot_token", "guild_id"}
 
 
 def test_get_config_schema_exposes_required_fields() -> None:

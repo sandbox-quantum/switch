@@ -11,6 +11,7 @@ import type {
   OnboardAgentParams,
   OnboardAgentResult,
 } from '@shared/core/agents/onboarding';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { createAgent } from './createAgent';
@@ -58,6 +59,27 @@ async function verifyAgentOnServer(
 }
 
 /**
+ * Enforce that an agent's run location can actually reach a switchdash-managed
+ * server: a remote-managed server only from this computer or its own host (the
+ * desktop reaches it via the SSH forward; the host on loopback — nothing else
+ * has a route); a local-managed server only from this computer. External servers
+ * are unconstrained. Returns an error message for an out-of-policy pairing, else
+ * null. Mirrors the add-agent modal's picker constraint as a bypass-proof gate.
+ */
+function managedServerLocationError(server: SwitchServer, sshHost: string | null): string | null {
+  if (server.managementKind === 'remote') {
+    if (sshHost !== null && sshHost !== server.sshHost) {
+      return `This server runs on ${server.sshHost}; its agents can only run on this computer or on ${server.sshHost}.`;
+    }
+    return null;
+  }
+  if (server.managementKind === 'local' && sshHost !== null) {
+    return 'This server runs on this computer; its agents can only run on this computer.';
+  }
+  return null;
+}
+
+/**
  * Onboard an agent: resolve the Switch identity already configured in the
  * working dir (locally or over SSH), verify it on the chosen server, and
  * create the agent at its location — creating the location row first if this
@@ -91,6 +113,14 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
 
   const serverError = await verifyAgentOnServer(params.serverId, switchAgent.agentId, params.dir);
   if (serverError) return err(serverError);
+
+  const server = await getServer(params.serverId);
+  if (server) {
+    const locationError = managedServerLocationError(server, sshHost);
+    if (locationError) {
+      return err({ type: 'invalid-directory', dir: params.dir, message: locationError });
+    }
+  }
 
   const location = await ensureLocation({ sshHost, dir: params.dir, name: params.name });
 

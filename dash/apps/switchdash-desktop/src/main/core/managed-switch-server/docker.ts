@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { promisify } from 'node:util';
 import { log } from '@main/lib/logger';
-import type { DockerAvailability } from '@shared/core/local-switch-server/local-switch-server';
+import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 
 const execFileAsync = promisify(execFile);
 

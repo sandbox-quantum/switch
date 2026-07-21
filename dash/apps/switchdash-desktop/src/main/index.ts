@@ -14,9 +14,10 @@ import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agen
 import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
-import { localServerService } from './core/local-switch-server/local-server-service';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
+import { localServerService } from './core/managed-switch-server/local-server-service';
+import { remoteServerService } from './core/managed-switch-server/remote-server-service';
 import { promptLibraryService } from './core/prompt-library/service';
 import {
   reconcileResourceSampler,
@@ -130,6 +131,9 @@ void app.whenReady().then(async () => {
   // Reflect a managed local Switch stack that survived the last quit, so the UI
   // shows it running without the user restarting it.
   void localServerService.initialize();
+  // Re-establish desktop-side forwards for remote-managed stacks that survived
+  // the last quit, restoring their reachability from this machine.
+  void remoteServerService.initialize();
 
   const dependenciesReady = localDependencyManager.probeAll().catch((e: unknown) => {
     log.error('Failed to probe dependencies:', e);
@@ -197,6 +201,7 @@ app.on('before-quit', (event) => {
   agentHookService.dispose();
   stopResourceSampler();
   localServerService.dispose();
+  remoteServerService.dispose();
   updateService.dispose();
   void locationManager.dispose().catch((e) => {
     log.error('Failed to shutdown location manager:', e);

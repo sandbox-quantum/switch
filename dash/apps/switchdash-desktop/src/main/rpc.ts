@@ -2,9 +2,10 @@ import { createRPCNamespace, createRPCRouter } from '../shared/lib/ipc/rpc';
 import { agentsController } from './core/agents/controller';
 import { appController } from './core/app/controller';
 import { filesController } from './core/fs/controller';
-import { localSwitchServerController } from './core/local-switch-server/controller';
 import { locationsController } from './core/locations/controller';
 import { locationRuntimeSettingsController } from './core/locations/location-runtime-settings-controller';
+import { localSwitchServerController } from './core/managed-switch-server/controller';
+import { remoteSwitchServerController } from './core/managed-switch-server/remote-controller';
 import { promptLibraryController } from './core/prompt-library/controller';
 import { providersController } from './core/providers/controller';
 import { ptyController } from './core/pty/controller';
@@ -41,6 +42,7 @@ export const rpcRouter = createRPCRouter({
   switchServers: switchServersController,
   switchSetup: switchSetupController,
   localSwitchServer: localSwitchServerController,
+  remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,
   fs: createRPCNamespace({
     watch: filesController,

@@ -5,7 +5,7 @@ import { events, rpc } from '@renderer/lib/ipc';
 import type {
   DockerAvailability,
   LocalServerStatus,
-} from '@shared/core/local-switch-server/local-switch-server';
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   localServerLogChannel,
   localServerStatusChannel,

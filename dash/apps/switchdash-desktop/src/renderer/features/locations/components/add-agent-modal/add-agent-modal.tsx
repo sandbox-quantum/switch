@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentOnboardingError,
   ModeData as AgentOnboardingModeData,
@@ -75,7 +75,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
   });
-  const onboardedHosts = remoteHosts ?? [];
+  const onboardedHosts = useMemo(() => remoteHosts ?? [], [remoteHosts]);
   const isRemoteRun = runHost !== LOCAL_RUN_LOCATION;
   const remoteRunValid = !isRemoteRun || remoteRepoDir.trim().length > 0;
 
@@ -101,6 +101,31 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       setServerId(targetServerId);
     }
   }, [targetServerId, pickedServerId, setServerId]);
+
+  // A managed server is only reachable from certain run locations, so constrain
+  // the picker to them: a remote-managed server from this computer or its own
+  // host (the desktop reaches it through the SSH forward; the host reaches it on
+  // loopback — nothing else has a route); a local-managed server from this
+  // computer only. External servers are unconstrained — the user owns their
+  // reachability.
+  const targetServer = switchServersStore.servers.find((s) => s.id === targetServerId) ?? null;
+  const targetKind = targetServer?.managementKind ?? null;
+  const targetHost = targetServer?.sshHost ?? null;
+  const allowedHosts = useMemo(
+    () =>
+      onboardedHosts.filter((host) =>
+        targetKind === 'remote' ? host.sshHost === targetHost : targetKind !== 'local'
+      ),
+    [onboardedHosts, targetKind, targetHost]
+  );
+  const runLocationConstrained = targetServer?.managed ?? false;
+  // If the current choice falls outside what the target server allows (e.g. the
+  // server changed), snap back to local.
+  useEffect(() => {
+    if (runHost !== LOCAL_RUN_LOCATION && !allowedHosts.some((h) => h.sshHost === runHost)) {
+      setRunHost(LOCAL_RUN_LOCATION);
+    }
+  }, [allowedHosts, runHost]);
 
   // The subagents the user chose to onboard alongside the parent. Held in a ref
   // (not state) so the section can report changes without re-rendering the modal.
@@ -496,13 +521,20 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={LOCAL_RUN_LOCATION}>Local (this machine)</SelectItem>
-              {onboardedHosts.map((host) => (
+              {allowedHosts.map((host) => (
                 <SelectItem key={host.sshHost} value={host.sshHost}>
                   {host.name} ({host.sshHost})
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {runLocationConstrained && (
+            <p className="text-xs text-foreground-muted">
+              {targetServer?.managementKind === 'remote'
+                ? `This server runs on ${targetServer.sshHost}, so its agents run on this computer or on ${targetServer.sshHost}.`
+                : 'This server runs on this computer, so its agents run here too.'}
+            </p>
+          )}
           {isRemoteRun && (
             <Input
               value={remoteRepoDir}

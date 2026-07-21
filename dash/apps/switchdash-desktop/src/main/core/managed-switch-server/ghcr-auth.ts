@@ -21,6 +21,20 @@ async function getGithubLogin(): Promise<string | null> {
   }
 }
 
+/** The desktop's GitHub identity (username + token) from the `gh` CLI, or null
+ * when unavailable. Used both for the local `docker login` and to forward
+ * credentials to a remote host that has no `gh` of its own. */
+export async function getLocalGithubIdentity(): Promise<{
+  username: string;
+  token: string;
+} | null> {
+  const token = await getGithubTokenFromGhCli();
+  if (!token) return null;
+  const username = await getGithubLogin();
+  if (!username) return null;
+  return { username, token };
+}
+
 /** `docker login <registry> -u <user> --password-stdin`, feeding the token over
  * stdin so it never lands in the process argv / command history. */
 function dockerLoginWithToken(registry: string, username: string, token: string): Promise<void> {
@@ -42,25 +56,21 @@ function dockerLoginWithToken(registry: string, username: string, token: string)
 }
 
 /**
- * Authenticate Docker to GHCR using the user's existing `gh` login, so private
- * release images pull before the public-repo flip (CHOO-1260). When no gh token
- * is available we warn and proceed: if the images are already public this is a
- * no-op, and if they are private the subsequent `docker compose up` fails loudly
- * on the pull — which surfaces the real problem rather than hiding it here.
+ * Authenticate the local Docker to GHCR using the user's existing `gh` login, so
+ * private release images pull before the public-repo flip (CHOO-1260). When no
+ * gh token is available we warn and proceed: if the images are already public
+ * this is a no-op, and if they are private the subsequent `docker compose up`
+ * fails loudly on the pull — which surfaces the real problem rather than hiding
+ * it here.
  */
-export async function ensureGhcrLogin(): Promise<void> {
-  const token = await getGithubTokenFromGhCli();
-  if (!token) {
+export async function ensureLocalGhcrLogin(): Promise<void> {
+  const identity = await getLocalGithubIdentity();
+  if (!identity) {
     log.warn(
-      'local-switch-server: no gh CLI token; skipping GHCR login (private image pulls will fail)'
+      'local-switch-server: no gh CLI token/login; skipping GHCR login (private image pulls will fail)'
     );
     return;
   }
-  const username = await getGithubLogin();
-  if (!username) {
-    log.warn('local-switch-server: could not resolve GitHub login; skipping GHCR login');
-    return;
-  }
-  await dockerLoginWithToken(GHCR_REGISTRY, username, token);
+  await dockerLoginWithToken(GHCR_REGISTRY, identity.username, identity.token);
   log.info('local-switch-server: authenticated Docker to GHCR');
 }

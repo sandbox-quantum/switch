@@ -2,7 +2,7 @@ import type {
   DockerAvailability,
   LocalServerStatus,
   StartLocalServerResult,
-} from '@shared/core/local-switch-server/local-switch-server';
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { localServerService } from './local-server-service';
 

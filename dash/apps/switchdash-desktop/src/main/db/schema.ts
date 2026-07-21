@@ -104,9 +104,15 @@ export const switchServers = sqliteTable(
      */
     apiUrl: text('api_url').notNull(),
     /** True when switchdash provisions and runs this server itself via
-     * local-server mode (`docker compose`). Managed servers get lifecycle
-     * controls (start/stop/reset) and are not user-editable connection records. */
+     * docker compose. Managed servers get lifecycle controls (start/stop/reset)
+     * and are not user-editable connection records. */
     managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
+    /** Where a managed server runs: `local` (this computer) or `remote` (an SSH
+     * host). Null for external servers; a legacy managed row with a null kind is
+     * read as `local`. */
+    managementKind: text('management_kind'),
+    /** SSH alias of the host a remote-managed server runs on; null otherwise. */
+    sshHost: text('ssh_host'),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

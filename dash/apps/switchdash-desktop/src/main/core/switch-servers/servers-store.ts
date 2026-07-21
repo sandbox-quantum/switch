@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import { db } from '@main/db/client';
 import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema';
 import type {
   AddServerParams,
+  ManagedServerRef,
   SwitchServer,
   UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
@@ -16,12 +17,21 @@ function cookieSecretKey(serverId: string): string {
 }
 
 function mapRow(row: SwitchServerRow): SwitchServer {
+  // A legacy managed row predating the discriminator has a null kind — read it
+  // as `local`, the only managed kind that existed then.
+  const managementKind = row.managed
+    ? row.managementKind === 'remote'
+      ? 'remote'
+      : 'local'
+    : null;
   return {
     id: row.id,
     name: row.name,
     gatewayUrl: row.gatewayUrl,
     apiUrl: row.apiUrl,
     managed: row.managed,
+    managementKind,
+    sshHost: row.sshHost ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -68,28 +78,63 @@ export async function getServer(id: string): Promise<SwitchServer | null> {
   return row ? mapRow(row) : null;
 }
 
-/** The single server switchdash runs itself (local-server mode), or null. */
+/** The single LOCAL managed server switchdash runs on this machine, or null.
+ * Legacy managed rows with no kind count as local. */
 export async function getManagedServer(): Promise<SwitchServer | null> {
   const [row] = await db
     .select()
     .from(switchServers)
-    .where(eq(switchServers.managed, true))
+    .where(
+      and(
+        eq(switchServers.managed, true),
+        // A null kind is a legacy local row; only 'remote' is excluded.
+        or(isNull(switchServers.managementKind), ne(switchServers.managementKind, 'remote'))
+      )
+    )
     .limit(1);
   return row ? mapRow(row) : null;
 }
 
+/** The managed server switchdash runs on a given remote host, or null. */
+export async function getRemoteManagedServer(sshHost: string): Promise<SwitchServer | null> {
+  const [row] = await db
+    .select()
+    .from(switchServers)
+    .where(
+      and(
+        eq(switchServers.managed, true),
+        eq(switchServers.managementKind, 'remote'),
+        eq(switchServers.sshHost, sshHost)
+      )
+    )
+    .limit(1);
+  return row ? mapRow(row) : null;
+}
+
+/** Every server switchdash runs itself (local + all remote hosts). */
+export async function listManagedServers(): Promise<SwitchServer[]> {
+  const rows = await db.select().from(switchServers).where(eq(switchServers.managed, true));
+  return rows.map(mapRow);
+}
+
 /**
- * Upsert the single managed local server record. Reuses the existing managed row
- * if there is one (updating its URLs, which can change across app versions),
- * else adopts a row already at this gateway URL (e.g. added by hand), else
- * inserts. Keeps exactly one managed row rather than duplicating on URL changes.
+ * Upsert a managed server record for the given target (the single local stack,
+ * or the stack on a specific remote host). Reuses the existing row for that
+ * target if there is one (updating its URLs, which change when ports are
+ * repicked), else adopts a row already at this gateway URL, else inserts. Keeps
+ * exactly one row per managed target rather than duplicating on URL changes.
  */
-export async function ensureManagedServer(params: AddServerParams): Promise<SwitchServer> {
+export async function ensureManagedServer(
+  params: AddServerParams,
+  ref: ManagedServerRef
+): Promise<SwitchServer> {
   const gatewayUrl = normaliseUrl(params.gatewayUrl);
   const apiUrl = normaliseUrl(params.apiUrl);
-  // Prefer the single existing managed row (its URLs may have changed across app
-  // versions), then any row already at this gateway URL; otherwise insert.
-  const existing = (await getManagedServer()) ?? (await getServerByGatewayUrl(gatewayUrl));
+  const managementKind = ref.kind;
+  const sshHost = ref.kind === 'remote' ? ref.sshHost : null;
+  const existingForTarget =
+    ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
+  const existing = existingForTarget ?? (await getServerByGatewayUrl(gatewayUrl));
   if (existing) {
     const [row] = await db
       .update(switchServers)
@@ -98,6 +143,8 @@ export async function ensureManagedServer(params: AddServerParams): Promise<Swit
         gatewayUrl,
         apiUrl,
         managed: true,
+        managementKind,
+        sshHost,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .where(eq(switchServers.id, existing.id))
@@ -112,6 +159,8 @@ export async function ensureManagedServer(params: AddServerParams): Promise<Swit
       gatewayUrl,
       apiUrl,
       managed: true,
+      managementKind,
+      sshHost,
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();

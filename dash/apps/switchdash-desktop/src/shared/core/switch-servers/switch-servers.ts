@@ -20,9 +20,16 @@ export type SwitchServer = {
    * `https://switch-api.example.com` — what an agent's `SWITCH_API_ENDPOINT`
    * points at, and what an onboarded agent is matched to its server by. */
   apiUrl: string;
-  /** True when switchdash runs this server itself (local-server mode). Managed
+  /** True when switchdash runs this server itself (docker compose). Managed
    * servers are driven by the lifecycle controls, not the add/edit-server UI. */
   managed: boolean;
+  /** Where a managed server runs: `local` (this computer's Docker) or `remote`
+   * (a host's Docker over SSH). Null for external (non-managed) servers. Legacy
+   * managed rows with no kind are read as `local`. */
+  managementKind: 'local' | 'remote' | null;
+  /** SSH alias of the host a remote-managed server runs on. Null for local and
+   * external servers. */
+  sshHost: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -32,6 +39,10 @@ export type AddServerParams = {
   gatewayUrl: string;
   apiUrl: string;
 };
+
+/** Identifies which managed server to upsert/look up: the single local stack,
+ * or the remote stack on a given SSH host. */
+export type ManagedServerRef = { kind: 'local' } | { kind: 'remote'; sshHost: string };
 
 export type UpdateServerParams = {
   id: string;

@@ -1,5 +1,3 @@
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from './constants';
 import type { LocalServerPorts } from './free-port';
 import type { LocalServerSecrets } from './secret-values';
@@ -61,12 +59,4 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `MATTERMOST_USER_PASSWORD=${secrets.mattermostUserPassword}`,
     '',
   ].join('\n');
-}
-
-/** Write the `.env` with owner-only permissions (it holds the stack secrets). */
-export async function writeEnvFile(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
-  // writeFile only applies `mode` when creating; enforce it on rewrite too.
-  await chmod(path, 0o600);
 }

@@ -1,4 +1,4 @@
-import type { LocalServerStatus } from '@shared/core/local-switch-server/local-switch-server';
+import type { LocalServerStatus } from '@shared/core/managed-switch-server/managed-switch-server';
 import { defineEvent } from '@shared/lib/ipc/events';
 
 export const localServerStatusChannel = defineEvent<LocalServerStatus>(

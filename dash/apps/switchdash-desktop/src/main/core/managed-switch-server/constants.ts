@@ -5,9 +5,20 @@
  * switchdash addresses the resulting server.
  */
 
-/** `docker compose --project-name` for the managed stack, so its containers and
- * volumes are isolated and discoverable across app restarts. */
+/** `docker compose --project-name` for the managed stack on this machine, so its
+ * containers and volumes are isolated and discoverable across app restarts. */
 export const LOCAL_SERVER_PROJECT_NAME = 'switchdash-local';
+
+/** `docker compose --project-name` for a managed stack on a remote host. Each
+ * remote host runs its own Docker daemon, so a single fixed name is enough to
+ * isolate + rediscover the stack there. */
+export const REMOTE_SERVER_PROJECT_NAME = 'switchdash-remote';
+
+/** File names of the compose file and generated `.env` inside the host working
+ * dir. Kept relative so `docker compose -f <name>` resolves against the working
+ * dir on either host, independent of its absolute path. */
+export const COMPOSE_FILE_NAME = 'standalone-docker-compose.yml';
+export const ENV_FILE_NAME = '.env';
 
 /** Display name of the auto-registered server record. */
 export const LOCAL_SERVER_NAME = 'Local Switch server';

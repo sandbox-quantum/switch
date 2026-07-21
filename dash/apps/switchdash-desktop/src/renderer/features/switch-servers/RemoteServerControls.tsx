@@ -14,24 +14,39 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { localServerStore } from './local-server-store';
+import { remoteServerStore } from './remote-server-store';
 
 const card = 'rounded-lg border border-border bg-card p-4';
 
 /**
- * Lifecycle controls for the managed local Switch stack: live status, Docker
- * guidance, and start / stop / reset. Rendered inside the managed server's page.
+ * Lifecycle controls for a switchdash-managed Switch stack running on a remote
+ * host: live status, Docker guidance, start / stop / reset — driven over the
+ * host's SSH connection. Rendered inside the managed remote server's page.
  */
-export const LocalServerControls = observer(function LocalServerControls() {
-  const store = localServerStore;
+export const RemoteServerControls = observer(function RemoteServerControls({
+  sshHost,
+  serverId,
+  name,
+}: {
+  sshHost: string;
+  serverId: string;
+  /** The registered server's name, reused when restarting so the record's name
+   * is preserved (not blanked). */
+  name: string;
+}) {
+  const store = remoteServerStore;
   const [resetOpen, setResetOpen] = useState(false);
 
   useEffect(() => {
-    void store.checkDocker();
-  }, [store]);
+    void store.init();
+    void store.checkDocker(sshHost);
+  }, [store, sshHost]);
 
-  const transitioning = store.isTransitioning;
-  const dockerUnavailable = store.docker && !store.docker.available ? store.docker : null;
+  const status = store.statusFor(sshHost);
+  const transitioning = store.isTransitioning(sshHost);
+  const running = store.isRunning(sshHost);
+  const docker = store.dockerFor(sshHost);
+  const dockerUnavailable = docker && !docker.available ? docker : null;
 
   return (
     <div className={`${card} space-y-4`}>
@@ -39,17 +54,16 @@ export const LocalServerControls = observer(function LocalServerControls() {
         <div className="space-y-1">
           <h3 className="text-sm font-medium text-foreground">Managed server</h3>
           <p className="text-xs text-foreground-muted">
-            Runs the full Switch stack on this computer with Docker (switch-core{' '}
-            {store.status?.version ?? ''}).
+            Runs the full Switch stack in Docker on {sshHost}, bridged to this computer over SSH.
           </p>
         </div>
-        <PhaseBadge />
+        <PhaseBadge sshHost={sshHost} />
       </div>
 
-      {store.message && transitioning && (
+      {status.message && transitioning && (
         <div className="flex items-center gap-2 text-sm text-foreground-muted">
           <Spinner className="size-3.5" />
-          <span>{store.message}</span>
+          <span>{status.message}</span>
         </div>
       )}
 
@@ -58,8 +72,8 @@ export const LocalServerControls = observer(function LocalServerControls() {
           <TriangleAlert className="size-4" />
           <AlertTitle>
             {dockerUnavailable.reason === 'not-installed'
-              ? 'Docker is not installed'
-              : 'Docker is not running'}
+              ? 'Docker is not installed on the host'
+              : 'Docker is not running on the host'}
           </AlertTitle>
           <AlertDescription>{dockerUnavailable.detail}</AlertDescription>
         </Alert>
@@ -73,26 +87,31 @@ export const LocalServerControls = observer(function LocalServerControls() {
       )}
 
       <div className="flex items-center gap-2">
-        {store.isRunning ? (
+        {running ? (
           <Button
             variant="outline"
             size="sm"
             disabled={transitioning}
-            onClick={() => void store.stop()}
+            onClick={() => void store.stop(sshHost)}
           >
             <CircleStop className="size-4" />
             Stop
           </Button>
         ) : (
-          <Button size="sm" disabled={transitioning} onClick={() => void store.start()}>
+          <Button
+            size="sm"
+            disabled={transitioning}
+            onClick={() => void store.start(sshHost, name)}
+          >
             <Play className="size-4" />
-            {store.phase === 'error' ? 'Retry' : 'Start'}
+            {status.phase === 'error' ? 'Retry' : 'Start'}
           </Button>
         )}
       </div>
 
       <p className="text-xs text-foreground-tertiary-passive">
-        The stack keeps running when you close switchdash.
+        The stack keeps running on {sshHost} when you close switchdash. Remote-host agents stay
+        connected; agents on this computer can reach it while switchdash is open.
       </p>
 
       <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-4">
@@ -114,12 +133,13 @@ export const LocalServerControls = observer(function LocalServerControls() {
       </div>
 
       <ResetDialog
+        sshHost={sshHost}
         open={resetOpen}
         onOpenChange={setResetOpen}
         disabled={transitioning}
         onConfirm={() => {
           setResetOpen(false);
-          void store.reset();
+          void store.reset(sshHost, serverId);
         }}
       />
     </div>
@@ -127,11 +147,13 @@ export const LocalServerControls = observer(function LocalServerControls() {
 });
 
 const ResetDialog = observer(function ResetDialog({
+  sshHost,
   open,
   onOpenChange,
   disabled,
   onConfirm,
 }: {
+  sshHost: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   disabled: boolean;
@@ -142,7 +164,7 @@ const ResetDialog = observer(function ResetDialog({
       <DialogContent>
         <DialogHeader>
           <TriangleAlert className="size-4 text-red-500" />
-          <DialogTitle>Reset server on this computer</DialogTitle>
+          <DialogTitle>Reset server on {sshHost}</DialogTitle>
         </DialogHeader>
         <DialogContentArea>
           <DialogDescription>
@@ -163,8 +185,8 @@ const ResetDialog = observer(function ResetDialog({
   );
 });
 
-const PhaseBadge = observer(function PhaseBadge() {
-  const phase = localServerStore.phase;
+const PhaseBadge = observer(function PhaseBadge({ sshHost }: { sshHost: string }) {
+  const phase = remoteServerStore.phaseFor(sshHost);
   const label: Record<typeof phase, string> = {
     stopped: 'Stopped',
     starting: 'Starting',

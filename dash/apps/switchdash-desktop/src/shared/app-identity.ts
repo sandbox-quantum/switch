@@ -25,6 +25,6 @@ export const RELEASE_REPO_NAME = 'switch';
 // The switch-core release this app build is compatible with. Local-server mode
 // pulls this version's images and bundles this version's standalone compose
 // artifact. Bump it in lockstep with the bundled compose
-// (src/main/core/local-switch-server/resources/standalone-docker-compose.pinned.yml)
+// (src/main/core/managed-switch-server/resources/standalone-docker-compose.pinned.yml)
 // so a switchdash release pins a known-good switch-core stack.
 export const COMPATIBLE_SWITCH_VERSION = '0.3.0';

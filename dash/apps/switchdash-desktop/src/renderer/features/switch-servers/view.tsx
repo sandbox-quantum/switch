@@ -12,9 +12,28 @@ import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { LocalServerControls } from './LocalServerControls';
+import { remoteServerStore } from './remote-server-store';
+import { RemoteServerControls } from './RemoteServerControls';
 import { switchServersStore } from './switch-servers-store';
+
+/** Short badge label for where a server lives (see CHOO-1432 terminology). */
+function serverLocationLabel(server: SwitchServer): string | null {
+  if (server.managementKind === 'remote') return server.sshHost ?? 'Remote host';
+  if (server.managed) return 'This computer';
+  return 'External';
+}
+
+/** Whether a managed server's stack is currently running (via the store that
+ * owns its lifecycle). Non-managed servers are always "reachable". */
+function isManagedRunning(server: SwitchServer): boolean {
+  if (server.managementKind === 'remote' && server.sshHost) {
+    return remoteServerStore.isRunning(server.sshHost);
+  }
+  return localServerStore.isRunning;
+}
 
 const card = 'rounded-lg border border-border bg-card p-4';
 
@@ -45,7 +64,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // A managed server that isn't running has no gateway to reach — its
   // connection status, sign-in, and web-app links are meaningless until it's up,
   // so we neither fetch nor render them (only the Start/Reset controls show).
-  const detailsVisible = !server?.managed || localServerStore.isRunning;
+  const detailsVisible = !server?.managed || isManagedRunning(server);
 
   useEffect(() => {
     if (!detailsVisible) return;
@@ -72,7 +91,9 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-2">
               <h2 className="text-xl text-foreground">{server.name}</h2>
-              {server.managed && <Badge variant="secondary">Local</Badge>}
+              {serverLocationLabel(server) && (
+                <Badge variant="secondary">{serverLocationLabel(server)}</Badge>
+              )}
             </div>
             <p className="truncate text-sm text-foreground-muted">{server.gatewayUrl}</p>
             <p className="truncate text-xs text-foreground-tertiary-passive">
@@ -106,7 +127,16 @@ const ServerMainPanel = observer(function ServerMainPanel() {
           </Alert>
         )}
 
-        {server.managed && <LocalServerControls />}
+        {server.managed &&
+          (server.managementKind === 'remote' && server.sshHost ? (
+            <RemoteServerControls
+              sshHost={server.sshHost}
+              serverId={server.id}
+              name={server.name}
+            />
+          ) : (
+            <LocalServerControls />
+          ))}
 
         {detailsVisible && (
           <>

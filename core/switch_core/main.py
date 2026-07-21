@@ -26,6 +26,10 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnector,
 )
 from switch_core.bridges.collaboration.app import create_collaboration_bridge_app
+from switch_core.bridges.collaboration.discord.adapter import (
+    DiscordAdapter,
+    DiscordConnectionConfig,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -324,6 +328,9 @@ async def run() -> None:
     )
     collab_lifecycle.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
     collab_lifecycle.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+    collab_lifecycle.register_adapter(
+        "discord", DiscordAdapter, DiscordConnectionConfig
+    )
 
     # Health check and collab bridge mounted on the agent bridge app
     @agent_bridge_app.get("/health")

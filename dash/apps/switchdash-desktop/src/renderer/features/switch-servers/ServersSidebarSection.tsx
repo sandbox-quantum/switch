@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, HardDrive, Plus, Server } from 'lucide-react';
+import { ChevronDown, ChevronRight, Globe, HardDrive, Plus, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import {
@@ -13,8 +13,10 @@ import { MicroLabel } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { SidebarMenu, SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { localServerStore } from './local-server-store';
+import { remoteServerStore } from './remote-server-store';
 import { switchServersStore } from './switch-servers-store';
 
 export const ServersSidebarSection = observer(function ServersSidebarSection() {
@@ -24,11 +26,13 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   useEffect(() => {
     void store.init();
     void localServerStore.init();
+    void remoteServerStore.init();
     const onFocus = () => void store.refreshAllStatuses();
     window.addEventListener('focus', onFocus);
     return () => {
       window.removeEventListener('focus', onFocus);
       localServerStore.dispose();
+      remoteServerStore.dispose();
     };
   }, [store]);
 
@@ -102,7 +106,7 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
               onClick={() => showAddServerModal({})}
               className="w-full px-3 py-1.5 text-left text-xs text-foreground-tertiary-passive hover:text-foreground-tertiary"
             >
-              Add a remote server…
+              Add a server…
             </button>
           )}
         </SidebarMenu>
@@ -135,6 +139,13 @@ const LocalServerPendingEntry = observer(function LocalServerPendingEntry({
   );
 });
 
+function ServerIcon({ server, isScoped }: { server: SwitchServer; isScoped: boolean }) {
+  const className = cn('size-4 shrink-0', isScoped && 'text-foreground');
+  if (server.managementKind === 'remote') return <Server className={className} />;
+  if (server.managed) return <HardDrive className={className} />;
+  return <Globe className={className} />;
+}
+
 const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: string }) {
   const store = switchServersStore;
   const { navigate } = useNavigate();
@@ -150,6 +161,16 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   // a server makes it active and opens its page.
   const isScoped = store.activeServerId === serverId;
 
+  // A managed server that isn't running has no gateway to reach, so it can't be
+  // signed into — show it as dormant (grey dot, no sign-in) until it's started.
+  const managedRunning = !server.managed
+    ? true
+    : server.managementKind === 'remote' && server.sshHost
+      ? remoteServerStore.isRunning(server.sshHost)
+      : localServerStore.isRunning;
+  const dormant = server.managed && !managedRunning;
+  const needsSignIn = !dormant && !connected;
+
   return (
     <SidebarMenuButton
       isActive={isViewing}
@@ -160,28 +181,24 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
       className="justify-between"
     >
       <span className="flex min-w-0 items-center gap-2">
-        {server.managed ? (
-          <HardDrive className={cn('size-4 shrink-0', isScoped && 'text-foreground')} />
-        ) : (
-          <Server className={cn('size-4 shrink-0', isScoped && 'text-foreground')} />
-        )}
+        <ServerIcon server={server} isScoped={isScoped} />
         <span className={cn('truncate', isScoped && 'font-medium text-foreground')}>
           {server.name}
         </span>
         {server.managed && (
           <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
-            Local
+            {server.managementKind === 'remote' ? (server.sshHost ?? 'Remote') : 'This computer'}
           </span>
         )}
         <span
           aria-hidden
           className={cn(
             'size-1.5 shrink-0 rounded-full',
-            connected ? 'bg-green-500' : 'bg-amber-500'
+            dormant ? 'bg-foreground-muted' : connected ? 'bg-green-500' : 'bg-amber-500'
           )}
         />
       </span>
-      {!connected && (
+      {needsSignIn && (
         <span
           role="button"
           tabIndex={0}
@@ -189,7 +206,7 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
             e.stopPropagation();
             navigate('server', { serverId });
           }}
-          className="shrink-0 rounded px-1.5 py-0.5 text-xs text-foreground-muted hover:bg-background-tertiary-2 hover:text-foreground"
+          className="shrink-0 rounded border border-red-500/40 px-1.5 py-0.5 text-xs font-medium text-red-500 hover:bg-red-500/10"
         >
           Sign in
         </span>
