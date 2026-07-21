@@ -259,6 +259,15 @@ class CollaborationBridgeLifecycleService:
                 )
                 for room in dependent_rooms:
                     await self._room_store.clear_bridge(session, room.id)
+            # Each external-user puppet has its own Client; capture those ids
+            # before deleting the external_users rows that reference them, so
+            # the puppet Clients can be torn down too rather than orphaned.
+            puppet_client_ids = [
+                user.client_id
+                for user in await self._external_user_store.get_by_bridge(
+                    session, bridge_id
+                )
+            ]
             await self._external_user_store.delete_by_bridge(session, bridge_id)
             await self._bridge_store.delete(session, bridge_id)
             if bridge is not None:
@@ -266,6 +275,15 @@ class CollaborationBridgeLifecycleService:
                     session, bridge.client_id
                 )
                 await self._client_store.delete(session, bridge.client_id)
+            for client_id in puppet_client_ids:
+                await self._room_store.remove_client_from_all_rooms(session, client_id)
+                await self._client_store.delete(session, client_id)
+            if puppet_client_ids:
+                logger.info(
+                    "Removed %d external-user puppet client(s) for bridge %s",
+                    len(puppet_client_ids),
+                    bridge_id,
+                )
             await session.commit()
         logger.info("Removed collaboration bridge %s", bridge_id)
 

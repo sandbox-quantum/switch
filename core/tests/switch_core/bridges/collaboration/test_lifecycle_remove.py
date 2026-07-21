@@ -167,3 +167,38 @@ async def test_remove_without_dependent_rooms_still_deletes(
     async with session_factory() as session:
         assert await CollaborationBridgeStore().get(session, bridge_id) is None
         assert await ClientStore().get(session, bridge_client_id) is None
+
+
+@pytest.mark.asyncio
+async def test_remove_deletes_external_user_puppet_clients(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """External-user puppet Clients are torn down on remove (CHOO-1492).
+
+    Regression: remove() deleted the external_users rows but left each puppet's
+    own Client (external_users.client_id -> clients.id) — and its client_rooms
+    memberships — orphaned in the DB after every onboard->remove cycle. remove()
+    now clears each puppet client's memberships and deletes the Client row too.
+    """
+    service = _service(session_factory)
+    async with session_factory() as session:
+        bridge_id, _ = await _make_bridge(session)
+        room_id = await _make_bridged_room(session, bridge_id=bridge_id)
+        external_user_id = await _make_external_user(session, bridge_id=bridge_id)
+        puppet = await ExternalUserStore().get(session, external_user_id)
+        assert puppet is not None
+        puppet_client_id = puppet.client_id
+        # The puppet client is a member of the room it speaks in.
+        await RoomStore().add_client(session, puppet_client_id, room_id)
+        await session.commit()
+
+    await service.remove(bridge_id)
+
+    async with session_factory() as session:
+        assert await CollaborationBridgeStore().get(session, bridge_id) is None
+        # The puppet's own Client row is gone (no orphan).
+        assert await ClientStore().get(session, puppet_client_id) is None
+        # Its room membership is gone; the room itself survives (detached).
+        member_ids = await RoomStore().get_client_ids(session, room_id)
+        assert puppet_client_id not in member_ids
+        assert await RoomStore().get(session, room_id) is not None
