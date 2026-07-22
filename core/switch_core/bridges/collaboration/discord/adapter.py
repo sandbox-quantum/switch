@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import re
 from collections import OrderedDict
@@ -235,6 +236,104 @@ class DiscordAdapter(CollaborationAdapter):
                 "Failed to send message to Discord channel %s: %s", channel_id, e
             )
             return None
+
+    async def send_attachment(
+        self,
+        channel_id: str,
+        sender_name: str,
+        filename: str,
+        mimetype: str,
+        data: bytes,
+        caption: str | None = None,
+        thread_root_id: str | None = None,
+    ) -> str | None:
+        """Relay a file into a Discord channel under the agent's identity.
+
+        Unlike Slack/Mattermost, a Discord webhook post carries both a
+        per-message username/avatar override AND a file, so the attachment
+        renders under the agent's name and icon exactly like a normal message
+        (with the image preview intact — embeds are not suppressed). DM
+        ("lobby") channels have no webhook, so the file posts as the bot with
+        the agent name inlined, mirroring send_message. Falls back to the base
+        text notice on failure so the attachment is never silently dropped.
+        """
+        try:
+            target = await self._get_channel(int(channel_id))
+        except Exception:
+            logger.exception("Cannot resolve Discord channel %s", channel_id)
+            return await super().send_attachment(
+                channel_id,
+                sender_name,
+                filename,
+                mimetype,
+                data,
+                caption,
+                thread_root_id,
+            )
+
+        body = self.translate_outbound(caption) if caption else ""
+
+        if self._channel_type_of(target) == "lobby":
+            content = f"**{sender_name}**: {body}" if body else f"**{sender_name}**"
+            try:
+                msg = await target.send(
+                    content, file=discord.File(io.BytesIO(data), filename=filename)
+                )
+                return f"{msg.channel.id}:{msg.id}"
+            except discord.HTTPException:
+                logger.exception(
+                    "Failed to send Discord DM attachment in %s", channel_id
+                )
+                return await super().send_attachment(
+                    channel_id,
+                    sender_name,
+                    filename,
+                    mimetype,
+                    data,
+                    caption,
+                    thread_root_id,
+                )
+
+        thread: Any = None
+        if thread_root_id:
+            try:
+                thread = await self._ensure_thread(int(channel_id), thread_root_id)
+            except Exception:
+                logger.exception(
+                    "Failed to resolve Discord thread for root %s — posting attachment at channel root",
+                    thread_root_id,
+                )
+
+        try:
+            webhook = await self._get_webhook(int(channel_id))
+            kwargs: dict[str, Any] = {}
+            if thread is not None:
+                kwargs["thread"] = thread
+            sent: Any = await webhook.send(
+                content=body,
+                username=sender_name,
+                avatar_url=self._get_agent_icon(sender_name),
+                file=discord.File(io.BytesIO(data), filename=filename),
+                wait=True,
+                **kwargs,
+            )
+            return f"{sent.channel.id}:{sent.id}"
+        except discord.HTTPException as e:
+            logger.error(
+                "Failed to send attachment '%s' to Discord channel %s: %s",
+                filename,
+                channel_id,
+                e,
+            )
+            return await super().send_attachment(
+                channel_id,
+                sender_name,
+                filename,
+                mimetype,
+                data,
+                caption,
+                thread_root_id,
+            )
 
     async def admin_message(
         self,
