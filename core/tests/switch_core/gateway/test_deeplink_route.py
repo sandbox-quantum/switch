@@ -4,14 +4,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from switch_core.gateway.deeplink import router
-from switch_core.gateway.dependencies import get_config
 
 
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
-    # The route only depends on get_config; a stub keeps the test self-contained.
-    app.dependency_overrides[get_config] = lambda: object()
     return TestClient(app, follow_redirects=False)
 
 

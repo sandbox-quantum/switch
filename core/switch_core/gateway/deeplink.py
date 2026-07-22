@@ -1,22 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from switch_core.config import SwitchConfig
 from switch_core.deeplinks import gateway_query_to_switchdash
-from switch_core.gateway.dependencies import get_config
 
 router = APIRouter()
 
 
 @router.get("/deeplink/session")
-async def redirect_session_deeplink(
-    request: Request,
-    _config: Annotated[SwitchConfig, Depends(get_config)],
-) -> RedirectResponse:
+async def redirect_session_deeplink(request: Request) -> RedirectResponse:
     """302-redirect to the `switchdash://session?…` deeplink.
 
     Platforms that only linkify http(s) (Discord, …) can't render the raw
@@ -24,7 +17,7 @@ async def redirect_session_deeplink(
     click lands here. The incoming query string is carried across verbatim; the
     scheme and host of the target are fixed constants, so this cannot be coerced
     into an open redirect. Public by design — the link is followed by whoever
-    clicks it in the external channel.
+    clicks it in the external channel, and it serves no data beyond the redirect.
     """
     target = gateway_query_to_switchdash(request.url.query)
     return RedirectResponse(url=target, status_code=302)

@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -97,6 +99,21 @@ class SwitchConfig(BaseSettings):
                 f"DB_SSL_MODE must be one of {sorted(allowed)}, "
                 f"got {self.db_ssl_mode!r}."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_public_url(self) -> "SwitchConfig":
+        # The deeplink redirect is registered at the gateway root (`/deeplink/
+        # session`), so a public URL carrying a path prefix would build links
+        # that 404. Reject it at startup rather than fail silently at click time.
+        if self.gateway_public_url:
+            parts = urlsplit(self.gateway_public_url)
+            if not parts.scheme or not parts.netloc or parts.path not in ("", "/"):
+                raise ValueError(
+                    "GATEWAY_PUBLIC_URL must be a scheme + host only "
+                    "(e.g. https://gateway.example), with no path, "
+                    f"got {self.gateway_public_url!r}."
+                )
         return self
 
     @model_validator(mode="after")
