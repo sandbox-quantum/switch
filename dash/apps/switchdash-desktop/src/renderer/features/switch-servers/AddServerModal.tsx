@@ -595,7 +595,9 @@ const ExternalServerStep = observer(function ExternalServerStep({
   const trimmedApi = apiUrl.trim();
   const gatewayValid = looksLikeUrl(trimmedGateway);
   const apiValid = looksLikeUrl(trimmedApi);
-  const isValid = trimmedName.length > 0 && gatewayValid && apiValid;
+  // In edit mode the name is owned by the separate Rename action, so this form
+  // only edits the URLs — the name field isn't shown and isn't required.
+  const isValid = (isEdit || trimmedName.length > 0) && gatewayValid && apiValid;
 
   const gatewayMessage =
     trimmedGateway.length > 0 && !gatewayValid
@@ -637,25 +639,28 @@ const ExternalServerStep = observer(function ExternalServerStep({
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>{isEdit ? 'Edit Switch server' : 'Connect to an existing server'}</DialogTitle>
+        <DialogTitle>{isEdit ? 'Edit connection' : 'Connect to an existing server'}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <FieldGroup>
-          <Field>
-            <FieldLabel>Name</FieldLabel>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Pilot"
-              autoFocus
-            />
-          </Field>
+          {!isEdit && (
+            <Field>
+              <FieldLabel>Name</FieldLabel>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Pilot"
+                autoFocus
+              />
+            </Field>
+          )}
           <Field>
             <FieldLabel>Gateway URL</FieldLabel>
             <Input
               value={gatewayUrl}
               onChange={(e) => setGatewayUrl(e.target.value)}
               placeholder="https://switch-gateway.example.com"
+              autoFocus={isEdit}
             />
             {gatewayMessage && <p className="text-destructive mt-1 text-xs">{gatewayMessage}</p>}
           </Field>
