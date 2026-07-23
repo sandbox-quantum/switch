@@ -87,24 +87,27 @@ the first bridged message.
 ## Clickable "Open in SwitchDash" links (`GATEWAY_PUBLIC_URL`)
 
 Discord only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
-renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the
-gateway's public origin (scheme + host only, **no path**):
+renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
+API's public origin — scheme + host only, **no path** — the same host SwitchDash
+reports as its `server` (distinct from the operator UI):
 
 ```dotenv
 # .env / deployment env
-GATEWAY_PUBLIC_URL=https://gateway.acme.com
+GATEWAY_PUBLIC_URL=https://switch-api.acme.com
 ```
 
 When set, Switch rewrites the deeplink to a clickable
-`https://<gateway>/deeplink/session?…` redirect (a `302` back to the
+`https://<switch-api-host>/deeplink/session?…` redirect (a `302` back to the
 `switchdash://` scheme) at runtime-state ingestion — so both the bridged
 working/awaiting-input status message **and** the `!status` command surface a
 clickable link, on every platform at once. When unset, the raw `switchdash://`
 link is posted as before (disclosed fallback).
 
 The value is validated at startup: it must be scheme + host only. A URL carrying
-a path is rejected, because the redirect is registered at the gateway root
-(`/deeplink/session`) and a path prefix would build links that 404.
+a path is rejected, because the redirect is served at `/deeplink/session` on the
+API root (the agent-bridge app, **not** under the `/gateway` mount) and a path
+prefix would build links that 404. Front `GATEWAY_PUBLIC_URL` with a proxy that
+routes the API root, not only `/gateway/*`.
 
 ## Notes
 

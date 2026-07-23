@@ -60,25 +60,28 @@ schema — the per-platform guides below describe the same fields in prose.
 ## Once a bridge is live
 
 - **Rooms.** Depending on the platform, a Switch room is created for a channel
-  either when the bot is added to it (Slack/Mattermost) or lazily on the first
-  bridged message (Discord/Teams). Existing Switch rooms can also be bound to a
-  channel at room-creation time.
+  either when the bot is added to it (Slack, Mattermost, Teams) or lazily on the
+  first bridged message (Discord — it has no "app added to channel" signal).
+  Existing Switch rooms can also be bound to a channel at room-creation time.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
   address it; unaddressed chatter is bridged as context. Bridge in-room commands
   (e.g. `!invite-agent`) and slash commands work per platform.
 - **"Open in SwitchDash" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only linkify `http(s)` (notably Discord)
   need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable
-  `https://<gateway>/deeplink/session?…` redirect. See the Discord guide.
+  `https://<switch-api-host>/deeplink/session?…` redirect. See the Discord guide.
 
 ## Deployment knobs
 
 Most bridge configuration is per-bridge (in `connection_config`). A few things
 are deployment-level environment config on switch-core:
 
-- **`GATEWAY_PUBLIC_URL`** — the gateway's public origin (scheme + host only, no
-  path), used to build the clickable deeplink redirect. Leave unset to post the
-  raw `switchdash://` deeplink (the disclosed fallback). Applies to every
-  platform but matters most for Discord.
+- **`GATEWAY_PUBLIC_URL`** — the Switch API's public origin (scheme + host only,
+  no path): the same host SwitchDash reports as its `server`, and distinct from
+  the operator UI. Used to build the clickable deeplink redirect, which is served
+  at `/deeplink/session` on the API root (the agent-bridge app), **not** under the
+  `/gateway` mount — so front it with a proxy that routes the API root, not only
+  `/gateway/*`. Leave unset to post the raw `switchdash://` deeplink (the
+  disclosed fallback). Applies to every platform but matters most for Discord.
 - **Teams** additionally needs public HTTPS ingress to the bridge's listener —
   see [`TEAMS_SETUP.md`](TEAMS_SETUP.md).

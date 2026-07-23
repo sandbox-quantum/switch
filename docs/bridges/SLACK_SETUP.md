@@ -43,7 +43,10 @@ consumes (delivered over Socket Mode — no request URL needed):
   messages in public/private channels, DMs, and group DMs.
 - `member_joined_channel` — so the bridge notices the app (and users) joining a
   channel and provisions the room.
-- `app_mention` — so a message that tags the app itself is recognised.
+
+A message that tags the app itself is recognised from these `message.*` events
+(the bridge detects its own bot mention inline), so a separate `app_mention`
+subscription is not required.
 
 Enable **Slash Commands** if you want the bridge's `/…` commands in Slack.
 
