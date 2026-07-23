@@ -1,0 +1,59 @@
+{
+  // Security-focused, minimally invasive Renovate for switch. COMPLEMENTARY to
+  // Socket (language packages); Renovate owns only the infra ecosystems below.
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "enabledManagers": ["dockerfile", "docker-compose", "github-actions"],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  // NEVER downgrade. Renovate only ever proposes versions ABOVE the installed one; the sole
+  // mechanism that can move a dependency backwards is rollback PRs — keep them OFF so a CVE
+  // remediation can never roll a package back to a lower version.
+  "rollbackPrs": false,
+  "reviewersFromCodeOwners": true,
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    // Upgrade to the LOWEST released version that resolves the advisory (minimum viable fix) —
+    // smallest, easiest-to-verify change, not a jump to latest. This is chosen from Renovate's
+    // upgrade-only candidate set, so combined with rollbackPrs:false a fix can never land at or
+    // below the currently-installed version.
+    "vulnerabilityFixStrategy": "lowest"
+  },
+  "labels": ["renovate", "dependencies", "security"],
+  "branchPrefix": "renovate/",
+  "packageRules": [
+    {
+      "description": "Security-only baseline: disable everything; vuln alerts override.",
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "Containers: pin digests + digest refresh + patch tags only.",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchUpdateTypes": ["pin", "digest", "patch"],
+      "enabled": true,
+      "pinDigests": true
+    },
+    {
+      "description": "GitHub Actions: pin SHAs + digest/patch refresh.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pin", "digest", "patch"],
+      "enabled": true,
+      "pinDigests": true
+    },
+    {
+      "description": "Skip private Artifact Registry images (need registry auth).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["/^.*-docker\\.pkg\\.dev\\//"],
+      "enabled": false
+    },
+    {
+      "description": "One PR per directory + ecosystem.",
+      "matchManagers": ["dockerfile", "docker-compose", "github-actions"],
+      "additionalBranchPrefix": "{{packageFileDir}}-",
+      "groupName": "{{manager}} {{packageFileDir}}"
+    }
+  ]
+}

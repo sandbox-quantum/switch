@@ -151,6 +151,17 @@ export function sessionErrorMessage(store: SessionStore | undefined): string | u
   return undefined;
 }
 
+/** Returns true if any session under this location has a provision or create error. */
+export function hasSessionError(locationId: string): boolean {
+  const manager = getSessionManagerStore(locationId);
+  if (!manager) return false;
+  for (const session of manager.sessions.values()) {
+    if (isUnregistered(session) && session.phase === 'create-error') return true;
+    if (isUnprovisioned(session) && session.phase === 'provision-error') return true;
+  }
+  return false;
+}
+
 /** Returns the mount error message for the location. */
 export function locationMountErrorMessage(locationId: string): string {
   const store = getLocationManagerStore().locations.get(locationId);

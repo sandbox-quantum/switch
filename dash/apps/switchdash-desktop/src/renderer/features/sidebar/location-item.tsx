@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Loader2,
   Plus,
+  RefreshCw,
   Server,
   Trash2,
   TriangleAlert,
@@ -17,9 +18,11 @@ import {
   type UnregisteredLocation,
 } from '@renderer/features/locations/stores/location';
 import {
+  getLocationManagerStore,
   getLocationStore,
   locationViewKind,
 } from '@renderer/features/locations/stores/location-selectors';
+import { hasSessionError } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { rpc } from '@renderer/lib/ipc';
@@ -222,6 +225,33 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
                       <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
                     </TooltipTrigger>
                     <TooltipContent>Agent not found at path</TooltipContent>
+                  </Tooltip>
+                )}
+                {locationViewKind(location) === 'mount_error' && (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          className="inline-flex cursor-pointer"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void getLocationManagerStore().mountLocation(locationId);
+                          }}
+                        />
+                      }
+                    >
+                      <RefreshCw className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                    </TooltipTrigger>
+                    <TooltipContent>Connection failed — click to retry</TooltipContent>
+                  </Tooltip>
+                )}
+                {locationViewKind(location) === 'ready' && hasSessionError(locationId) && (
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                    </TooltipTrigger>
+                    <TooltipContent>A session failed to connect</TooltipContent>
                   </Tooltip>
                 )}
               </span>

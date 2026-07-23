@@ -1,9 +1,10 @@
-import { Loader2, TriangleAlert } from 'lucide-react';
+import { Loader2, RefreshCw, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { isUnregisteredLocation } from '../../stores/location';
 import {
+  getLocationManagerStore,
   getLocationStore,
   locationDisplayName,
   locationViewKind,
@@ -39,7 +40,12 @@ export const LocationMainPanel = observer(function LocationMainPanel() {
   }
 
   if (kind === 'mount_error') {
-    return <LocationBootstrapErrorPanel message={unmountedMountErrorMessage(store)} />;
+    return (
+      <LocationBootstrapErrorPanel
+        locationId={locationId}
+        message={unmountedMountErrorMessage(store)}
+      />
+    );
   }
 
   if (kind !== 'ready') {
@@ -58,14 +64,31 @@ function LocationBootstrappingPanel() {
   );
 }
 
-function LocationBootstrapErrorPanel({ message }: { message: string }) {
+function LocationBootstrapErrorPanel({
+  locationId,
+  message,
+}: {
+  locationId: string;
+  message: string;
+}) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center p-8">
-      <div className="flex max-w-xs flex-col items-center gap-2 text-center">
+      <div className="flex max-w-xs flex-col items-center gap-3 text-center">
+        <TriangleAlert className="h-6 w-6 text-foreground-destructive" />
         <p className="font-mono text-sm font-medium text-foreground-destructive">
           Failed to set up location
         </p>
         <p className="font-mono text-xs text-foreground-passive">{message}</p>
+        <button
+          type="button"
+          className="mt-1 inline-flex items-center gap-1.5 text-xs text-foreground-muted underline underline-offset-2 transition-colors hover:text-foreground"
+          onClick={() => {
+            void getLocationManagerStore().mountLocation(locationId);
+          }}
+        >
+          <RefreshCw className="h-3 w-3" />
+          Retry connection
+        </button>
       </div>
     </div>
   );

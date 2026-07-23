@@ -8,7 +8,7 @@ authors = [
     { name = "SandboxAQ" },
 ]
 keywords = ["ai", "agents", "orchestration", "governance", "matrix", "mcp"]
-license = "Apache-2.0"
+license = "LicenseRef-Apache-2.0-with-Commons-Clause"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

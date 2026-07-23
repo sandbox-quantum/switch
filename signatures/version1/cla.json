@@ -1,0 +1,20 @@
+{
+  "signedContributors": [
+    {
+      "name": "amaudruz",
+      "id": 32224348,
+      "comment_id": 5056878128,
+      "created_at": "2026-07-23T09:38:14Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 49
+    },
+    {
+      "name": "christian-mcdermott",
+      "id": 265350463,
+      "comment_id": 5061283558,
+      "created_at": "2026-07-23T17:15:12Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 41
+    }
+  ]
+}

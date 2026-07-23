@@ -1,0 +1,153 @@
+name: Container image security (Trivy)
+# Container base images have NO "tag -> CVE" feed — a container's vulnerabilities live
+# in the OS packages/libraries inside it, so the feed is delivered by SCANNING the
+# resolved image (Trivy: NVD + GHSA + distro trackers). Renovate stays the sole updater
+# (it opens the digest/patch bump PRs); this workflow is the detector + gate:
+#   * scheduled/dispatch: scan every Dockerfile's base image -> open/refresh/close a
+#     standing VULNMGMT ticket per project dir (routed to AISIM). No PRs.
+#   * pull_request (renovate/* container PRs): scan the bumped base image(s) and report
+#     remaining fixable CVEs as a non-blocking PR comment + job summary.
+# See .github/renovate-security/README.md. Never gates merge (report-only).
+on:
+  schedule:
+    - cron: "43 6 * * 2" # Tuesdays 06:43 UTC (off the top of the hour on purpose)
+  workflow_dispatch:
+    inputs:
+      min_severity:
+        description: "Lowest severity to report (critical|high|medium|low)"
+        default: "high"
+        required: false
+      dry_run:
+        description: "Scan + summary only; open/refresh no tickets"
+        type: boolean
+        default: false
+        required: false
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "**/Dockerfile"
+      - "**/*.dockerfile"
+      - "**/Dockerfile.*"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  scan-all:
+    # Scheduled / manual full sweep -> standing VULNMGMT tickets.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.72.0 # pinned past the poisoned v0.69.4/.5/.6 supply-chain builds
+
+      - name: Scan base images
+        id: scan
+        shell: bash -eo pipefail {0}
+        env:
+          IN_MIN_SEV: ${{ github.event.inputs.min_severity }}
+        run: |
+          python .github/renovate-security/trivy_scan.py --mode image \
+            --min-severity "${IN_MIN_SEV:-high}" \
+            --report-output /tmp/container-groups.json \
+            --summary-output /tmp/container-summary.md
+          cat /tmp/container-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Open / refresh / close VULNMGMT tickets
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        shell: bash -eo pipefail {0}
+        env:
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SBT_MACHINE_USER_EMAIL: ${{ secrets.SBT_MACHINE_USER_EMAIL }}
+          SBT_MACHINE_USER_JIRA_TOKEN: ${{ secrets.SBT_MACHINE_USER_JIRA_TOKEN }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_VULN_PROJECT: ${{ vars.JIRA_VULN_PROJECT }}
+          JIRA_VULN_EPIC: ${{ vars.JIRA_VULN_EPIC }}
+          JIRA_AISIM_ACCOUNT_ID: ${{ vars.JIRA_AISIM_ACCOUNT_ID }}
+          JIRA_AISIM_USER: ${{ vars.JIRA_AISIM_USER }}
+          JIRA_AISIM_LABEL: "cg-aqtiveguard"
+          JIRA_AISIM_FIELD_ID: ${{ vars.JIRA_AISIM_FIELD_ID }}
+          JIRA_AISIM_FIELD_VALUE: "CG - AqtiveGuard"  # baked BU (org has no repo vars)
+        run: |
+          if [ -z "${SBT_MACHINE_USER_JIRA_TOKEN:-}" ]; then
+            echo "::warning::Jira creds not set; skipping ticketing."
+            exit 0
+          fi
+          python .github/renovate-security/renovate_jira.py --report \
+            --report-groups /tmp/container-groups.json \
+            --repo "${REPO}" --run-url "${RUN_URL}"
+
+  gate:
+    # Non-blocking scan of the base image(s) a renovate/* PR bumps to.
+    if: >-
+      github.event_name == 'pull_request' &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.72.0
+
+      - name: Scan changed images + comment
+        shell: bash -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Directories of the Dockerfiles this PR changed.
+          dirs=""
+          while IFS= read -r f; do
+            b="$(basename "$f")"; lb="${b,,}"
+            case "$lb" in
+              dockerfile|*.dockerfile|dockerfile.*) dirs="${dirs}$(dirname "$f")"$'\n';;
+            esac
+          done < <(gh pr diff "${PR_NUMBER}" --name-only || true)
+          dirs="$(printf '%s' "$dirs" | grep -v '^$' | sort -u | paste -sd, - || true)"
+          if [ -z "$dirs" ]; then
+            echo "No changed Dockerfiles; nothing to scan."
+            exit 0
+          fi
+          echo "Scanning dirs: $dirs"
+          python .github/renovate-security/trivy_scan.py --mode image \
+            --paths "$dirs" --min-severity high \
+            --report-output /tmp/gate-groups.json \
+            --summary-output /tmp/gate-summary.md
+          cat /tmp/gate-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+          n="$(python -c 'import json,sys;print(sum(g["findings_count"] for g in json.load(open("/tmp/gate-groups.json"))["groups"]))' 2>/dev/null || echo 0)"
+          if [ "${n:-0}" != "0" ]; then
+            {
+              echo "🔎 **Trivy container scan** found ${n} fixable HIGH/CRITICAL CVE(s) still present in the bumped base image(s). This is informational and does **not** block merge.";
+              echo;
+              cat /tmp/gate-summary.md;
+            } > /tmp/gate-comment.md
+            gh pr comment "${PR_NUMBER}" --body-file /tmp/gate-comment.md \
+              || echo "::warning::could not post gate comment"
+          else
+            echo "No remaining fixable HIGH/CRITICAL CVEs in the bumped image(s)."
+          fi
