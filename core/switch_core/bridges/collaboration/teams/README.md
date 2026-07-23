@@ -6,6 +6,11 @@ architecture, the ops prerequisites, and the per-bridge configuration. A Teams
 workspace is connected **per bridge through the gateway** — all credentials live
 in the bridge's stored `connection_config`, never in global/env config.
 
+> For the operator-facing **setup walkthrough** (Azure prerequisites, onboarding
+> request, and how Teams fits alongside the other bridges), see
+> [`docs/bridges/TEAMS_SETUP.md`](../../../../../docs/bridges/TEAMS_SETUP.md).
+> This note focuses on the adapter's internal architecture.
+
 ## Architecture
 
 Teams has no persistent bot socket (unlike Slack Socket Mode / Mattermost
