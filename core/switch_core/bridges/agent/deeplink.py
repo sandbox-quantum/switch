@@ -17,7 +17,8 @@ async def redirect_session_deeplink(request: Request) -> RedirectResponse:
     click lands here. The incoming query string is carried across verbatim; the
     scheme and host of the target are fixed constants, so this cannot be coerced
     into an open redirect. Public by design — the link is followed by whoever
-    clicks it in the external channel, and it serves no data beyond the redirect.
+    clicks it in the external channel, and it serves no data beyond the redirect
+    (its `/deeplink` prefix is in the Bearer middleware's public allowlist).
     """
     target = gateway_query_to_switchdash(request.url.query)
     return RedirectResponse(url=target, status_code=302)

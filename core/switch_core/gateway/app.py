@@ -27,7 +27,6 @@ from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connectors import router as connectors_router
-from switch_core.gateway.deeplink import router as deeplink_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
@@ -111,6 +110,5 @@ def create_gateway_app(
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
-    app.include_router(deeplink_router, tags=["deeplink"])
 
     return app
