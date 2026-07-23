@@ -192,6 +192,7 @@ derives substantially from it); all other Apache 2.0 grants are unchanged.
 
 ## Contributing
 
-See [CLAUDE.md](CLAUDE.md) for code style, the error-handling philosophy, and
-the conventions to follow when working in this repository. A dedicated
-`CONTRIBUTING.md` and contributor guides are on the way.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get a change merged, including
+the required [Contributor License Agreement](CLA.md). [CLAUDE.md](CLAUDE.md)
+covers code style, the error-handling philosophy, and the conventions to follow
+when working in this repository.
