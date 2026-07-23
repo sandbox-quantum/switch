@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   Globe,
   HardDrive,
   Pencil,
@@ -168,6 +169,7 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   const { params } = useParams('server');
   const showRenameServerModal = useShowModal('renameServerModal');
   const showDeleteServerModal = useShowModal('deleteServerModal');
+  const showEditServerModal = useShowModal('addServerModal');
 
   const server = store.servers.find((s) => s.id === serverId);
   if (!server) return null;
@@ -243,6 +245,21 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
           <Pencil className="size-4" />
           Rename…
         </ContextMenuItem>
+        {!server.managed && (
+          <ContextMenuItem
+            onClick={() =>
+              showEditServerModal({
+                serverId,
+                initialName: server.name,
+                initialGatewayUrl: server.gatewayUrl,
+                initialApiUrl: server.apiUrl,
+              })
+            }
+          >
+            <ExternalLink className="size-4" />
+            Edit connection…
+          </ContextMenuItem>
+        )}
         <ContextMenuItem
           variant="destructive"
           onClick={() =>
