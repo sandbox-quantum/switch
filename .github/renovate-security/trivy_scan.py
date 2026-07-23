@@ -36,8 +36,8 @@ import json
 import re
 import subprocess  # noqa: S404 - we invoke the trivy CLI with a fixed argv (no shell)
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 # Container image refs we never scan: templated (resolved at build time, not a real
 # image), the empty "scratch" base, and private registries that need auth (mirrors the
@@ -143,7 +143,7 @@ def base_images(text: str, skip_prefixes: tuple[str, ...]) -> list[str]:
 def images_by_dir(
     repo_root: Path,
     skip_prefixes: tuple[str, ...] = _DEFAULT_SKIP_PREFIXES,
-    only_dirs: Optional[set[str]] = None,
+    only_dirs: set[str] | None = None,
 ) -> dict[str, list[str]]:
     """Map ``dir -> [base image refs]`` across every Dockerfile. ``dir`` is the
     Dockerfile's parent (repo-relative), matching Renovate's ``packageFileDir`` grouping
@@ -167,10 +167,10 @@ def images_by_dir(
 # --------------------------------------------------------------------------- #
 # Trivy boundary
 # --------------------------------------------------------------------------- #
-TrivyRunner = Callable[[list[str]], Optional[str]]
+TrivyRunner = Callable[[list[str]], str | None]
 
 
-def _run_trivy(argv: list[str]) -> Optional[str]:
+def _run_trivy(argv: list[str]) -> str | None:
     """Invoke the trivy CLI with a fixed argv (no shell) and return stdout, or None on
     failure. Trivy exits non-zero when it finds vulns with --exit-code set; we never set
     it here (detection is non-blocking), so a non-zero code is a real error."""
@@ -314,7 +314,7 @@ def scan_config(
     min_severity: str = "high",
     trivy_bin: str = "trivy",
     runner: TrivyRunner = _run_trivy,
-    only_dirs: Optional[set[str]] = None,
+    only_dirs: set[str] | None = None,
 ) -> list[Finding]:
     target = repo_root / tf_subdir
     if not target.exists():
@@ -431,7 +431,7 @@ def _render_body(directory: str, findings: list[Finding], engine: str) -> str:
 
 
 def build_report_groups(
-    findings: list[Finding], engine: str, scanned_dirs: Optional[list[str]] = None
+    findings: list[Finding], engine: str, scanned_dirs: list[str] | None = None
 ) -> list[dict]:
     """One report group per directory, for the ticket layer + job summary. When
     ``scanned_dirs`` is given, dirs that were scanned but produced no findings are
@@ -511,7 +511,7 @@ def _load_findings_json(path: str) -> list[Finding]:
     ]
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mode", choices=["image", "config"], required=True)
     ap.add_argument("--repo-root", type=Path, default=None)

@@ -24,7 +24,6 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
 
 DEFAULT_BASE = "https://sandboxquantum.atlassian.net"
 # Vulnerabilities are tracked in the VULNMGMT project. Both search and create
@@ -51,7 +50,7 @@ class JiraClient:
         self._auth = base64.b64encode(f"{email}:{token}".encode()).decode()
 
     @classmethod
-    def from_env(cls) -> Optional["JiraClient"]:
+    def from_env(cls) -> JiraClient | None:
         email = os.environ.get("SBT_MACHINE_USER_EMAIL")
         token = os.environ.get("SBT_MACHINE_USER_JIRA_TOKEN")
         # `or DEFAULT_BASE` (not a get default): the workflow sets
@@ -63,9 +62,7 @@ class JiraClient:
             return None
         return cls(base, email, token)
 
-    def _request(
-        self, method: str, path: str, body: Optional[dict] = None
-    ) -> Optional[dict]:
+    def _request(self, method: str, path: str, body: dict | None = None) -> dict | None:
         url = f"{self.base}{path}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
@@ -114,11 +111,11 @@ class JiraClient:
         self,
         summary: str,
         description: str,
-        labels: Optional[list[str]] = None,
+        labels: list[str] | None = None,
         project: str = CREATE_PROJECT,
         issue_type: str = "Task",
-        epic_key: Optional[str] = None,
-    ) -> Optional[JiraIssue]:
+        epic_key: str | None = None,
+    ) -> JiraIssue | None:
         # REST v3 requires an ADF description.
         fields = {
             "project": {"key": project},
@@ -141,7 +138,7 @@ class JiraClient:
             id=str(data.get("id") or ""),
         )
 
-    def resolve_key(self, id_or_key: str) -> Optional[str]:
+    def resolve_key(self, id_or_key: str) -> str | None:
         """Current key for an issue id/key. After VULNMGMT automation MOVES a created
         issue to its BU project, the numeric id still resolves but returns the NEW key
         (e.g. QNV-7011). Used to stamp the real key into the PR body / close marker."""
@@ -152,13 +149,13 @@ class JiraClient:
             return data.get("key")
         return None
 
-    def myself(self) -> Optional[dict]:
+    def myself(self) -> dict | None:
         """The account this token authenticates as (email, displayName, accountId) —
         so permissions can be granted to the RIGHT account."""
         data = self._request("GET", "/rest/api/3/myself")
         return data if isinstance(data, dict) else None
 
-    def find_account_id(self, query: str) -> Optional[str]:
+    def find_account_id(self, query: str) -> str | None:
         """Best-effort accountId lookup for a user by email or display name, so
         'assign to aisim' works from a human-readable identifier. Returns None if
         the account can't be resolved (user search is permission-gated)."""
@@ -256,8 +253,8 @@ class JiraClient:
     def set_assignee(
         self,
         key: str,
-        account_id: Optional[str] = None,
-        name: Optional[str] = None,
+        account_id: str | None = None,
+        name: str | None = None,
     ) -> bool:
         """Assign an issue (e.g. to the aisim account). Jira Cloud wants an
         accountId; Server/DC wants a name/username. Try accountId first, then name.
@@ -280,7 +277,7 @@ class JiraClient:
         )
         return data.get("transitions", []) if isinstance(data, dict) else []
 
-    def close_issue(self, key: str, comment: Optional[str] = None) -> bool:
+    def close_issue(self, key: str, comment: str | None = None) -> bool:
         """Transition an issue to a Done-category status (optionally commenting
         first). Picks the transition whose target status is in the 'done' category,
         else one named like Done/Closed/Resolved. Best-effort."""
@@ -317,7 +314,7 @@ class JiraClient:
         )
         return data is not None
 
-    def find_field_id(self, name_substr: str) -> Optional[str]:
+    def find_field_id(self, name_substr: str) -> str | None:
         """Best-effort: id of the first field whose name contains `name_substr`
         (case-insensitive), e.g. 'business unit' -> 'customfield_12345'. Lets the
         BU field be auto-discovered without hardcoding its custom-field id."""
@@ -345,7 +342,7 @@ class JiraClient:
                 return True
         return False
 
-    def field_value(self, key: str, field_id: str) -> Optional[str]:
+    def field_value(self, key: str, field_id: str) -> str | None:
         """Read a field's current value as a plain string (for verify-after-set).
         Unwraps the single-select ``{"value"/"name": ...}`` shape. Returns None if the
         field is unset or unreadable. GETs follow the redirect Jira serves when an

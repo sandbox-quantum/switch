@@ -30,7 +30,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import jira_client
 
@@ -106,7 +105,7 @@ def _read_files_arg(files_arg: str) -> list[str]:
 
 
 def _tracking_section(
-    created: Optional[jira_client.JiraIssue],
+    created: jira_client.JiraIssue | None,
     linked: list[jira_client.JiraIssue],
     assigned: bool,
 ) -> str:
@@ -255,7 +254,7 @@ def reconcile(args) -> int:
     )
     linked = client.search(jql) if project_dir else []
 
-    created: Optional[jira_client.JiraIssue] = None
+    created: jira_client.JiraIssue | None = None
     assigned = False
     if not linked and not args.no_create:
         issue_type = os.environ.get("JIRA_ISSUE_TYPE") or ""
@@ -499,7 +498,7 @@ def close_jira(keys_arg: str) -> int:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--reconcile", action="store_true", help="create/link a ticket for a PR"
