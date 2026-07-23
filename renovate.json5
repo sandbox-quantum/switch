@@ -1,0 +1,48 @@
+{
+  // Security-focused, minimally invasive Renovate for switch. COMPLEMENTARY to
+  // Socket (language packages); Renovate owns only the infra ecosystems below.
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "onboarding": false,
+  "enabledManagers": ["dockerfile", "docker-compose", "github-actions"],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "reviewersFromCodeOwners": true,
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": { "enabled": true, "labels": ["security"] },
+  "labels": ["renovate", "dependencies", "security"],
+  "branchPrefix": "renovate/",
+  "packageRules": [
+    {
+      "description": "Security-only baseline: disable everything; vuln alerts override.",
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "Containers: pin digests + digest refresh + patch tags only.",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchUpdateTypes": ["pin", "digest", "patch"],
+      "enabled": true,
+      "pinDigests": true
+    },
+    {
+      "description": "GitHub Actions: pin SHAs + digest/patch refresh.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pin", "digest", "patch"],
+      "enabled": true,
+      "pinDigests": true
+    },
+    {
+      "description": "Skip private Artifact Registry images (need registry auth).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["/^.*-docker\\.pkg\\.dev\\//"],
+      "enabled": false
+    },
+    {
+      "description": "One PR per directory + ecosystem.",
+      "matchManagers": ["dockerfile", "docker-compose", "github-actions"],
+      "additionalBranchPrefix": "{{packageFileDir}}-",
+      "groupName": "{{manager}} {{packageFileDir}}"
+    }
+  ]
+}

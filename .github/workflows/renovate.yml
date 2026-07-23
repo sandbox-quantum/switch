@@ -1,0 +1,75 @@
+name: Renovate
+# Self-hosted Renovate for the ecosystems Socket does NOT cover (containers, GitHub
+# Actions, CircleCI orbs). Policy lives in renovate.json5 at the repo root; see
+# root/scripts/renovate-security/README.md for the rationale (security-focused,
+# minimally invasive, minimumReleaseAge guard, one PR per project+ecosystem).
+#
+# Terraform PROVIDER security is a separate job (tf_provider_security.yml). VULNMGMT
+# ticketing for the PRs this opens is handled by renovate_jira.yml (pull_request).
+#
+# Not a required check; never gates merge.
+on:
+  schedule:
+    - cron: "37 5 * * 1" # Mondays 05:37 UTC (off the top of the hour on purpose)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: compute updates but open no PRs"
+        type: boolean
+        default: false
+        required: false
+      log_level:
+        description: "Renovate log level (info|debug)"
+        default: "info"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Gate the App-token step without referencing a missing secret in an `if:`.
+      BOT_CLIENT_ID: ${{ secrets.AUTOFIX_PR_BOT_CLIENT_ID }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Generate PR-bot App token
+        # Preferred over GITHUB_TOKEN: a PR opened with GITHUB_TOKEN does NOT trigger
+        # CircleCI (we want the project's real build to validate the fix) and would not
+        # trigger renovate_jira.yml either. Falls back to GITHUB_TOKEN if unset.
+        id: apptoken
+        if: ${{ env.BOT_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ secrets.AUTOFIX_PR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOFIX_PR_BOT_APP_PRIVATE_KEY }}
+
+      - name: Resolve dry-run flag
+        id: cfg
+        shell: bash -eo pipefail {0}
+        env:
+          IN_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          dry=""
+          [ "${IN_DRY_RUN:-}" = "true" ] && dry="full"
+          echo "dry=${dry}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@3064367f740a1a91cca218698a63902689cce200 # v46.1.20
+        with:
+          configurationFile: renovate.json5
+          token: ${{ steps.apptoken.outputs.token || github.token }}
+        env:
+          # Only this repo; config is the in-repo renovate.json5.
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_DRY_RUN: ${{ steps.cfg.outputs.dry }}
+          # Actions/OSV vulnerability data (Actions are in the GitHub advisory DB).
+          LOG_LEVEL: ${{ github.event.inputs.log_level || 'info' }}
+          # Let Renovate resolve CODEOWNERS reviewers and read Dependabot alerts.
+          RENOVATE_GITHUB_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}

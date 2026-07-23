@@ -1,0 +1,75 @@
+name: Socket Fix
+# Socket CVE autofix for this repo's LANGUAGE ecosystems (npm, py). Socket-first:
+# Socket owns language packages; Renovate (renovate.json5) covers only infra
+# (Actions/Docker/CircleCI/Terraform) and Trivy covers image/IaC CVEs.
+on:
+  schedule:
+    - cron: '15 2 1 * *' # Runs at 02:15 on day 1 of the month
+    - cron: '15 12 * * 0' # Runs at 12:15 on Sunday
+  workflow_dispatch: #Allow manual run
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  socket-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '20'
+
+      - name: Install npm socket CLI
+        run: npm i -g socket
+
+      - name: Install pnpm
+        run: npm i -g pnpm
+
+      - name: Install Socket CLI
+        run: pip install socketsecurity --upgrade
+
+      - name: Generate github App Token #Generate short-lived Installation Access Token
+        id: generate-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          client-id: ${{ secrets.AUTOFIX_PR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOFIX_PR_BOT_APP_PRIVATE_KEY }}
+
+      - name: Run Socket Fix CLI monthly for major fixes
+        env:
+            SOCKET_CLI_GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+            SOCKET_CLI_GIT_USER_EMAIL: socket-fix[bot]@users.noreply.github.com
+            SOCKET_CLI_GIT_USER_NAME: socket-fix[bot]
+            SOCKET_CLI_API_TOKEN: ${{ secrets.SOCKET_KEY }}
+            SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_KEY }}
+            GH_API_TOKEN: ${{ steps.generate-token.outputs.token }}
+            CI: true
+        if: github.event.schedule == '15 2 1 * *' || github.event_name == 'workflow_dispatch'
+        run: socket fix --minimum-release-age 2w --all
+
+      - name: Run Socket Fix CLI weekly for minor fixes
+        env:
+            SOCKET_CLI_GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+            SOCKET_CLI_GIT_USER_EMAIL: socket-fix[bot]@users.noreply.github.com
+            SOCKET_CLI_GIT_USER_NAME: socket-fix[bot]
+            SOCKET_CLI_API_TOKEN: ${{ secrets.SOCKET_KEY }}
+            SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_KEY }}
+            GH_API_TOKEN: ${{ steps.generate-token.outputs.token }}
+            CI: true
+        if: github.event.schedule == '15 12 * * 0'
+        run: socket fix --minimum-release-age 3d --all --no-major-updates

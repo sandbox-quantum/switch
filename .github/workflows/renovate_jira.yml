@@ -1,0 +1,113 @@
+name: Renovate - VULNMGMT tickets
+# VULNMGMT/Jira ticketing for the security PRs opened by Renovate and by
+# tf_provider_security.yml. On open: search/link or create a ticket, route it to AISIM
+# (Business Unit field), link the PR, and stamp the body with a
+# `<!-- renovate-jira-close: KEY -->` marker. On merge: transition the created
+# ticket(s) to Done. Covers both engines via the shared `renovate/` branch prefix.
+#
+# App-token PRs (from the two workflows above) DO trigger pull_request events, so this
+# runs automatically. Uses only the stdlib Jira client.
+on:
+  pull_request:
+    types: [opened, reopened, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  create-ticket:
+    # Freshly-opened renovate/* PRs (not merges).
+    if: >-
+      github.event.action != 'closed' &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base (for the tool)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Create / link VULNMGMT ticket
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          # Untrusted PR body -> via env, written to a file, never interpolated.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+          SBT_MACHINE_USER_EMAIL: ${{ secrets.SBT_MACHINE_USER_EMAIL }}
+          SBT_MACHINE_USER_JIRA_TOKEN: ${{ secrets.SBT_MACHINE_USER_JIRA_TOKEN }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_VULN_PROJECT: ${{ vars.JIRA_VULN_PROJECT }}
+          JIRA_VULN_EPIC: ${{ vars.JIRA_VULN_EPIC }}
+          JIRA_AISIM_ACCOUNT_ID: ${{ vars.JIRA_AISIM_ACCOUNT_ID }}
+          JIRA_AISIM_USER: ${{ vars.JIRA_AISIM_USER }}
+          JIRA_AISIM_LABEL: "cg-aqtiveguard"
+          JIRA_AISIM_FIELD_ID: ${{ vars.JIRA_AISIM_FIELD_ID }}
+          JIRA_AISIM_FIELD_VALUE: "CG - AqtiveGuard"  # baked BU (org has no repo vars)
+        run: |
+          set -euo pipefail
+          if [ -z "${SBT_MACHINE_USER_JIRA_TOKEN:-}" ]; then
+            echo "::warning::Jira creds not set; skipping ticket creation for PR #${PR_NUMBER}."
+            exit 0
+          fi
+          printf '%s' "${PR_BODY:-}" > /tmp/pr-body.md
+          gh pr diff "${PR_NUMBER}" --name-only > /tmp/pr-files.txt || true
+          python .github/renovate-security/renovate_jira.py --reconcile \
+            --pr-url "${PR_URL}" --pr-title "${PR_TITLE}" --branch "${PR_HEAD_REF}" \
+            --body-file /tmp/pr-body.md --body-out /tmp/pr-body.new \
+            --files /tmp/pr-files.txt --repo "${REPO}"
+          # Only edit the PR if the tool actually rewrote the body (added a marker).
+          if [ -f /tmp/pr-body.new ] && ! cmp -s /tmp/pr-body.md /tmp/pr-body.new; then
+            gh pr edit "${PR_NUMBER}" --body-file /tmp/pr-body.new \
+              || echo "::warning::could not update PR body for #${PR_NUMBER}"
+          fi
+
+  close-ticket:
+    # Merged renovate/* PRs -> close the ticket the automation created.
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base (for the tool)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Close linked VULNMGMT ticket(s)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SBT_MACHINE_USER_EMAIL: ${{ secrets.SBT_MACHINE_USER_EMAIL }}
+          SBT_MACHINE_USER_JIRA_TOKEN: ${{ secrets.SBT_MACHINE_USER_JIRA_TOKEN }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+        run: |
+          set -euo pipefail
+          keys="$(printf '%s' "${PR_BODY:-}" \
+            | grep -oE 'renovate-jira-close: [A-Z0-9,-]+' \
+            | head -1 | sed 's/renovate-jira-close: //' || true)"
+          if [ -z "${keys:-}" ]; then
+            echo "No renovate-jira-close marker in PR #${PR_NUMBER}; nothing to close."
+            exit 0
+          fi
+          if [ -z "${SBT_MACHINE_USER_JIRA_TOKEN:-}" ]; then
+            echo "::warning::Jira creds not set; cannot close ${keys}"
+            exit 0
+          fi
+          echo "Closing Jira ticket(s) for merged PR #${PR_NUMBER}: ${keys}"
+          python .github/renovate-security/renovate_jira.py --close-jira "${keys}"
