@@ -51,6 +51,13 @@ export type UpdateServerParams = {
   apiUrl: string;
 };
 
+/** Rename a server (display name only). Works for managed and external servers;
+ * URLs and managed metadata are untouched. */
+export type RenameServerParams = {
+  id: string;
+  name: string;
+};
+
 /**
  * What happened to one agent when a server's API URL was cascaded to its
  * members. `updated` — the agent's `SWITCH_API_ENDPOINT` was rewritten.

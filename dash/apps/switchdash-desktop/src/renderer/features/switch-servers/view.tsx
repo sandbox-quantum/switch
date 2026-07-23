@@ -1,14 +1,21 @@
-import { ExternalLink, Pencil, RefreshCw } from 'lucide-react';
+import { ExternalLink, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
-import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@renderer/lib/ui/dropdown-menu';
 import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
@@ -60,6 +67,9 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const store = switchServersStore;
   const server = store.servers.find((s) => s.id === serverId);
   const showEditServerModal = useShowModal('addServerModal');
+  const showRenameServerModal = useShowModal('renameServerModal');
+  const showDeleteServerModal = useShowModal('deleteServerModal');
+  const { navigate } = useNavigate();
 
   // A managed server that isn't running has no gateway to reach — its
   // connection status, sign-in, and web-app links are meaningless until it's up,
@@ -100,24 +110,53 @@ const ServerMainPanel = observer(function ServerMainPanel() {
               API: {server.apiUrl}
             </p>
           </div>
-          {!server.managed && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0"
-              onClick={() =>
-                showEditServerModal({
-                  serverId,
-                  initialName: server.name,
-                  initialGatewayUrl: server.gatewayUrl,
-                  initialApiUrl: server.apiUrl,
-                })
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  className="shrink-0"
+                  aria-label="Server actions"
+                >
+                  <MoreVertical className="size-4" />
+                </Button>
               }
-            >
-              <Pencil className="size-3.5" />
-              Edit
-            </Button>
-          )}
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => showRenameServerModal({ serverId, currentName: server.name })}
+              >
+                <Pencil className="size-4" />
+                Rename…
+              </DropdownMenuItem>
+              {!server.managed && (
+                <DropdownMenuItem
+                  onClick={() =>
+                    showEditServerModal({
+                      serverId,
+                      initialName: server.name,
+                      initialGatewayUrl: server.gatewayUrl,
+                      initialApiUrl: server.apiUrl,
+                    })
+                  }
+                >
+                  <ExternalLink className="size-4" />
+                  Edit connection…
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() =>
+                  showDeleteServerModal({ serverId, onSuccess: () => navigate('home') })
+                }
+              >
+                <Trash2 className="size-4" />
+                Delete server…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </header>
 
         {store.error && (

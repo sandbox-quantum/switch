@@ -21,6 +21,7 @@ import type {
   RemoteAgentSummary,
   RemoteRoomRole,
   RemoteRoomSummary,
+  RenameServerParams,
   ServerConnectionStatus,
   SwitchAuthConfig,
   SwitchServer,
@@ -49,6 +50,7 @@ import {
   getServer,
   listServers,
   removeServer,
+  renameServer,
   setActiveServerId,
   updateServer,
 } from './servers-store';
@@ -133,6 +135,8 @@ export const switchServersController = createRPCController({
 
     return { server, propagation: { apiUrlChanged, agents: propagatedAgents } };
   },
+
+  renameServer: (params: RenameServerParams): Promise<SwitchServer> => renameServer(params),
 
   removeServer: (serverId: string): Promise<void> => removeServer(serverId),
 
