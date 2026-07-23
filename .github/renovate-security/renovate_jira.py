@@ -248,7 +248,9 @@ def reconcile(args) -> int:
     # project so we link an existing ticket instead of opening a duplicate.
     terms = [t for t in [eco_label, Path(project_dir).name] if t]
     jql = jira_client.build_search_jql(
-        terms, repo=repo_name, projects=_dedup_projects(client, create_project),
+        terms,
+        repo=repo_name,
+        projects=_dedup_projects(client, create_project),
         path=project_dir,
     )
     linked = client.search(jql) if project_dir else []
