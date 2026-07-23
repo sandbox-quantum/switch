@@ -6,6 +6,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { events } from '@renderer/lib/ipc';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
+import { pickDeeplinkTarget } from './session-deeplink-resolve';
 import { switchRoomsStore as roomConnectionsStore } from './switch-rooms-store';
 
 /**
@@ -58,9 +59,11 @@ export function SessionDeeplinkListener(): null {
     void agentsStore.load();
     return events.on(sessionDeeplinkChannel, ({ agentId, roomId, server, sessionId }) => {
       void (async () => {
-        // Prefer the shared session id (resolves on any client); fall back
-        // to room matching for older links that didn't carry it.
-        const match = (sessionId ? findSessionById(sessionId) : null) ?? findSessionForRoom(roomId);
+        const match = pickDeeplinkTarget(
+          sessionId,
+          () => findSessionById(sessionId),
+          () => findSessionForRoom(roomId)
+        );
         if (!match) {
           console.warn('[deeplink] no local session for deeplink', {
             sessionId,
