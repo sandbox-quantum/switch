@@ -76,6 +76,13 @@ export function SessionDeeplinkListener(): null {
         // Scope the sidebar to the session's server first; otherwise its location
         // is filtered out of the server-scoped tree and the reveal has nothing
         // to expand.
+        console.info('[deeplink] navigating to session', {
+          linkSessionId: sessionId,
+          matchedSessionId: match.sessionId,
+          matchedVia: sessionId ? 'session-id' : 'room',
+          locationId: match.locationId,
+          roomId,
+        });
         if (!agentsStore.loaded) await agentsStore.load();
         const serverId = agentsStore.serverIdForLocation(match.locationId);
         if (serverId) await switchServersStore.setActive(serverId);
