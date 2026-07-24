@@ -1,7 +1,7 @@
-import { Trash2 } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import { useState } from 'react';
+import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { Input } from '@renderer/lib/ui/input';
 import {
   Select,
@@ -218,17 +218,31 @@ function DimensionRow({
     else onChange(ids); // 'specific' — keep any current ids
   };
 
-  const toggleId = (id: string, checked: boolean) => {
-    const next = checked ? [...ids, id] : ids.filter((x) => x !== id);
-    onChange(next);
+  const labelFor = (id: string) => options.find((o) => o.id === id)?.label ?? id;
+  const addId = (id: string) => {
+    if (!ids.includes(id)) onChange([...ids, id]);
+  };
+  const removeId = (id: string) => onChange(ids.filter((x) => x !== id));
+
+  // Manual free-text entry: add the typed value. If it matches a known option's
+  // label (case-insensitive), store that option's id instead of the raw text.
+  const addManual = () => {
+    const raw = search.trim();
+    if (!raw) return;
+    const byLabel = options.find((o) => o.label.toLowerCase() === raw.toLowerCase());
+    addId(byLabel ? byLabel.id : raw);
+    setSearch('');
   };
 
   const needle = search.trim().toLowerCase();
-  // Always keep already-selected options visible so a filter never hides a
-  // current selection the user might want to remove.
-  const filtered = needle
-    ? options.filter((o) => ids.includes(o.id) || o.label.toLowerCase().includes(needle))
-    : options;
+  const matches = needle
+    ? options.filter((o) => !ids.includes(o.id) && o.label.toLowerCase().includes(needle))
+    : [];
+  // Offer "add manual" only when the typed text isn't already an option or selected.
+  const canAddManual =
+    needle.length > 0 &&
+    !ids.includes(search.trim()) &&
+    !options.some((o) => o.label.toLowerCase() === needle || o.id.toLowerCase() === needle);
 
   return (
     <div className="flex flex-col gap-1">
@@ -244,34 +258,80 @@ function DimensionRow({
             {allowNone && <SelectItem value="none">None</SelectItem>}
           </SelectContent>
         </Select>
+        {mode === 'specific' && ids.length > 0 && (
+          <span className="text-xs text-foreground-muted">{ids.length} selected</span>
+        )}
       </div>
       {mode === 'specific' && (
-        <div className="ml-24 flex flex-col gap-1 rounded-md border border-border p-2">
+        <div className="ml-24 flex flex-col gap-2 rounded-md border border-border p-2">
+          {/* Selected entries as chips, so a configured rule is obvious at a glance. */}
+          {ids.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {ids.map((id) => (
+                <Badge key={id} variant="secondary" className="gap-1 pr-1">
+                  <span className="max-w-[180px] truncate">{labelFor(id)}</span>
+                  {!disabled && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${labelFor(id)}`}
+                      className="rounded-sm hover:bg-background-neutral"
+                      onClick={() => removeId(id)}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  )}
+                </Badge>
+              ))}
+            </div>
+          ) : (
+            <span className="text-xs text-foreground-muted">
+              None selected yet — search to pick, or type a value and press Enter.
+            </span>
+          )}
           <Input
-            placeholder={`Search ${label.toLowerCase()}…`}
+            placeholder={`Search or type a ${label.toLowerCase()} value…`}
             value={search}
             disabled={disabled}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && canAddManual) {
+                e.preventDefault();
+                addManual();
+              }
+            }}
             className="h-7"
           />
-          <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-            {options.length === 0 && (
-              <span className="text-xs text-foreground-muted">Nothing to choose from.</span>
-            )}
-            {options.length > 0 && filtered.length === 0 && (
-              <span className="text-xs text-foreground-muted">No matches.</span>
-            )}
-            {filtered.map((opt) => (
-              <label key={opt.id} className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={ids.includes(opt.id)}
+          {needle.length > 0 && (
+            <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
+              {matches.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
                   disabled={disabled}
-                  onCheckedChange={(checked) => toggleId(opt.id, checked === true)}
-                />
-                <span className="truncate">{opt.label}</span>
-              </label>
-            ))}
-          </div>
+                  className="rounded-sm px-1.5 py-1 text-left text-sm hover:bg-background-neutral"
+                  onClick={() => {
+                    addId(opt.id);
+                    setSearch('');
+                  }}
+                >
+                  <span className="truncate">{opt.label}</span>
+                </button>
+              ))}
+              {canAddManual && (
+                <button
+                  type="button"
+                  disabled={disabled}
+                  className="rounded-sm px-1.5 py-1 text-left text-sm text-foreground-muted hover:bg-background-neutral"
+                  onClick={addManual}
+                >
+                  + Add “{search.trim()}”
+                </button>
+              )}
+              {matches.length === 0 && !canAddManual && (
+                <span className="px-1.5 py-1 text-xs text-foreground-muted">No matches.</span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

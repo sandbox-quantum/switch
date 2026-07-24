@@ -152,18 +152,28 @@ function DimensionField({
       {state.mode === "specific" && (
         <Autocomplete
           multiple
+          freeSolo
           size="small"
           disabled={disabled}
           options={options}
-          getOptionLabel={(o) => o.label}
+          getOptionLabel={(o) => (typeof o === "string" ? o : o.label)}
           value={[
             ...selected,
-            ...unknownIds.map((id) => ({ id, label: `${id} (unknown)` })),
+            ...unknownIds.map((id) => ({ id, label: `${id} (manual)` })),
           ]}
           isOptionEqualToValue={(a, b) => a.id === b.id}
-          onChange={(_e, next) => onChange({ ...state, ids: next.map((o) => o.id) })}
+          onChange={(_e, next) =>
+            onChange({
+              ...state,
+              ids: next.map((o) => (typeof o === "string" ? o.trim() : o.id)),
+            })
+          }
           renderInput={(params) => (
-            <TextField {...params} placeholder="search…" helperText={help} />
+            <TextField
+              {...params}
+              placeholder="search or type a value…"
+              helperText={`${help} Type a value and press Enter to add it manually.`}
+            />
           )}
         />
       )}
