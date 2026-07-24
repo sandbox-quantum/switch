@@ -69,9 +69,9 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
   const { params: locationParams } = useParams('location');
   const { params: sessionParams } = useParams('session');
   const showCreateSessionModal = useShowModal('sessionModal');
-  const showConfirmReset = useShowModal('confirmActionModal');
+  const showConfirmReset = useShowModal('resetAgentModal');
   const confirmDeleteAgent = useConfirmDeleteAgent();
-  const { toast } = useToast();
+  const { toastPromise } = useToast();
 
   // Resolve the agent's Switch identity so the "go to" button can open its
   // detail page in the gateway web app (parallel to a room's "go to" button).
@@ -312,26 +312,14 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
           <ContextMenuItem
             onClick={() => {
               showConfirmReset({
-                title: 'Reset agent?',
-                description:
-                  'This kills all of this agent’s remote sessions — its watcher and every running session — then restarts it fresh. Any in-progress work in those sessions is lost.',
-                confirmLabel: 'Reset',
+                agentLabel: locationLabel,
                 onSuccess: () => {
-                  void (async () => {
-                    try {
-                      await rpc.agents.resetRemoteAgent({ agentId: agent.id });
-                      toast({
-                        title: 'Agent reset',
-                        description: `${locationLabel} was reset.`,
-                      });
-                    } catch (error) {
-                      toast({
-                        title: 'Failed to reset agent',
-                        description: error instanceof Error ? error.message : String(error),
-                        variant: 'destructive',
-                      });
-                    }
-                  })();
+                  void toastPromise(rpc.agents.resetRemoteAgent({ agentId: agent.id }), {
+                    loading: `Resetting ${locationLabel}…`,
+                    success: `${locationLabel} was reset`,
+                    error: (error) =>
+                      `Failed to reset agent: ${error instanceof Error ? error.message : String(error)}`,
+                  });
                 },
               });
             }}
