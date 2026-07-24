@@ -58,6 +58,10 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   // Offer to start a local server whenever there isn't one already, even if the
   // user has remote servers registered.
   const hasManagedServer = store.servers.some((s) => s.managed);
+  // The selected server scopes the whole sidebar. When the list is collapsed the
+  // rows are hidden, so surface the active server's name here to keep it clear
+  // which server is selected in any context.
+  const activeServer = store.servers.find((s) => s.id === store.activeServerId);
 
   return (
     <div className="flex flex-col">
@@ -65,15 +69,20 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
         <button
           type="button"
           onClick={() => store.toggleServersExpanded()}
-          className="flex items-center gap-1 rounded-md px-1 py-0.5 text-foreground-tertiary-passive hover:text-foreground-tertiary"
+          className="flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-foreground-tertiary-passive hover:text-foreground-tertiary"
           aria-label={store.serversExpanded ? 'Collapse servers' : 'Expand servers'}
         >
           {store.serversExpanded ? (
-            <ChevronDown className="size-3.5" />
+            <ChevronDown className="size-3.5 shrink-0" />
           ) : (
-            <ChevronRight className="size-3.5" />
+            <ChevronRight className="size-3.5 shrink-0" />
           )}
           <MicroLabel className="text-foreground-tertiary-passive">Servers</MicroLabel>
+          {!store.serversExpanded && activeServer && (
+            <span className="min-w-0 truncate text-xs font-medium text-foreground-muted">
+              · {activeServer.name}
+            </span>
+          )}
         </button>
         <Tooltip>
           <TooltipTrigger
@@ -177,7 +186,9 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   const connected = store.isConnected(serverId);
   const isViewing = isCurrentView(currentView, 'server') && params.serverId === serverId;
   // The active server scopes the whole sidebar (agents/rooms/sessions). Selecting
-  // a server makes it active and opens its page.
+  // a server makes it active and opens its page. The scoped server stays
+  // highlighted regardless of which view is open — navigating to an agent,
+  // session, or room must not clear the "this server is selected" affordance.
   const isScoped = store.activeServerId === serverId;
 
   // A managed server that isn't running has no gateway to reach, so it can't be
@@ -195,13 +206,19 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
       <ContextMenuTrigger
         render={
           <SidebarMenuButton
-            isActive={isViewing}
+            isActive={isScoped}
             onClick={() => {
               void store.setActive(serverId);
               navigate('server', { serverId });
             }}
-            className="justify-between"
+            className="relative justify-between"
           >
+            {isScoped && (
+              <span
+                aria-hidden
+                className="bg-accent absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full"
+              />
+            )}
             <span className="flex min-w-0 items-center gap-2">
               <ServerIcon server={server} isScoped={isScoped} />
               <span className={cn('truncate', isScoped && 'font-medium text-foreground')}>

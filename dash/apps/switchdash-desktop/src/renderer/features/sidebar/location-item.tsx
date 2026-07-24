@@ -219,7 +219,10 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
                     <TooltipTrigger>
                       <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
                     </TooltipTrigger>
-                    <TooltipContent>Runs remotely on {location.data.sshHost}</TooltipContent>
+                    <TooltipContent>
+                      Runs remotely on {location.data.sshHost}
+                      {location.data.dir ? ` · ${location.data.dir}` : ''}
+                    </TooltipContent>
                   </Tooltip>
                 )}
                 {locationViewKind(location) === 'path_not_found' && (

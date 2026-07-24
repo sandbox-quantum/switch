@@ -161,6 +161,17 @@ describe('SidebarStore grouping', () => {
     expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(true);
   });
 
+  it('tracks and clears a pending scroll-to-session request', () => {
+    const store = new SidebarStore(locationManager([]));
+    expect(store.pendingScrollSessionId).toBeNull();
+
+    store.requestScrollToSession('session-1');
+    expect(store.pendingScrollSessionId).toBe('session-1');
+
+    store.clearPendingScroll();
+    expect(store.pendingScrollSessionId).toBeNull();
+  });
+
   it("returns a location's visible sessions for grouped views", () => {
     const store = new SidebarStore(
       locationManagerWithSessions([

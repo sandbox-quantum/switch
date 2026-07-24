@@ -1,5 +1,6 @@
 import { MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useEffect, useRef } from 'react';
 import { SessionContextMenu } from '@renderer/features/sessions/components/session-context-menu';
 import {
   getSessionManagerStore,
@@ -12,6 +13,7 @@ import {
   useWorkspaceSlots,
 } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { cn } from '@renderer/utils/utils';
 import { useAppSettingsKey } from '../settings/use-app-settings-key';
 import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
@@ -42,6 +44,17 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
   const { value: interfaceSettings } = useAppSettingsKey('interface');
   const isActive =
     currentView === 'session' && params.sessionId === sessionId && params.locationId === locationId;
+
+  // A deeplink reveal expands the tree and asks this session's row to center
+  // itself; reading the flag in render (not just the effect) lets the row react
+  // whether it was already mounted or only just appeared after the expand.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const shouldScrollIntoView = sidebarStore.pendingScrollSessionId === sessionId;
+  useEffect(() => {
+    if (!shouldScrollIntoView) return;
+    rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    sidebarStore.clearPendingScroll();
+  }, [shouldScrollIntoView]);
 
   const session = getSessionStore(locationId, sessionId)!;
   const sessionManager = getSessionManagerStore(locationId);
@@ -93,6 +106,7 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
       onDelete={handleDelete}
     >
       <SidebarMenuRow
+        ref={rowRef}
         className={cn(
           'group/row flex items-center justify-between px-1 h-8 gap-1',
           rowVariant === 'pinned' && 'pl-2'

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { toast } from 'sonner';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
@@ -71,6 +72,10 @@ export function SessionDeeplinkListener(): null {
             agentId,
             server,
           });
+          toast.error('No agent session found for this link', {
+            description:
+              'This switchdash has no local session for the linked room. Open it on the client running that agent.',
+          });
           return;
         }
         // Scope the sidebar to the session's server first; otherwise its location
@@ -87,6 +92,7 @@ export function SessionDeeplinkListener(): null {
         const serverId = agentsStore.serverIdForLocation(match.locationId);
         if (serverId) await switchServersStore.setActive(serverId);
         sidebarStore.revealSessionInRoom(match.locationId, roomId);
+        sidebarStore.requestScrollToSession(match.sessionId);
         appState.navigation.navigate('session', match);
       })();
     });

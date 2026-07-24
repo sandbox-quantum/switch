@@ -131,6 +131,12 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   filterConnections = observable.set<AgentConnectionKind>();
   filterProviderIds = observable.set<AgentProviderId>();
   filterHasLiveSession = false;
+  /**
+   * Session whose row should scroll itself into view once it mounts. Set by the
+   * deeplink handler (after revealing/expanding the tree) so the landed session
+   * is centered in the sidebar; the row clears it after scrolling.
+   */
+  pendingScrollSessionId: string | null = null;
 
   constructor(private readonly locationManager: LocationManagerStore) {
     makeAutoObservable(this, {
@@ -515,6 +521,16 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     this.ensureLocationExpanded(locationId);
     this.ensureGroupExpanded(agentRoomGroupKey(locationId, roomId));
     this.ensureGroupExpanded(roomViewGroupKey(roomId));
+  }
+
+  /** Ask the given session's sidebar row to scroll itself into view when it renders. */
+  requestScrollToSession(sessionId: string): void {
+    this.pendingScrollSessionId = sessionId;
+  }
+
+  /** Clear the pending scroll request (called by the row once it has scrolled). */
+  clearPendingScroll(): void {
+    this.pendingScrollSessionId = null;
   }
 
   /** Set the sort key and clear all manual session orders so the list fully re-sorts. */

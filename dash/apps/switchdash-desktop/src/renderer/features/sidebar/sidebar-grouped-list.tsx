@@ -19,7 +19,7 @@ import {
   RoomRow,
   roomLabel,
 } from './sidebar-room-grouping';
-import { agentRoomGroupKey, roomViewGroupKey, UNASSIGNED_ROOM_KEY } from './sidebar-store';
+import { agentRoomGroupKey, roomViewGroupKey } from './sidebar-store';
 import { SidebarSubagentList } from './sidebar-subagent-list';
 
 /** dnd container ids. Each identifies a reorderable sibling set. */
@@ -84,7 +84,7 @@ const AgentFocusedTree = observer(function AgentFocusedTree() {
       true
     );
     containers[container] = ordered.map((session) => session.data.id);
-    const depth = roomKey === UNASSIGNED_ROOM_KEY ? 1 : 2;
+    const depth = 2;
     return (
       <SortableContext
         items={ordered.map((session) => makeDndId(container, session.data.id))}
@@ -121,16 +121,6 @@ const AgentFocusedTree = observer(function AgentFocusedTree() {
               {/* The agent's own rooms/sessions come first, then its subagents. */}
               {expanded &&
                 grouped.map(([roomKey, roomSessions]) => {
-                  // Sessions with no room sit at the same depth as the agent's
-                  // room rows (and subagent rows) — they are direct children of
-                  // the agent, just without a room header above them.
-                  if (roomKey === UNASSIGNED_ROOM_KEY) {
-                    return (
-                      <Fragment key={roomKey}>
-                        {renderSessionGroup(locationId, roomKey, roomSessions)}
-                      </Fragment>
-                    );
-                  }
                   const groupKey = agentRoomGroupKey(locationId, roomKey);
                   const roomExpanded = sidebarStore.isGroupExpanded(groupKey);
                   return (

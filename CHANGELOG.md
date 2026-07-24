@@ -89,6 +89,18 @@ below:
 
 ### [Unreleased]
 
+### [0.11.3] - 2026-07-24
+
+#### Changed
+- Sidebar and session UX polish (CHOO-1644).
+
+### [0.11.2] - 2026-07-24
+
+#### Added
+- Delete and rename connected Switch servers (CHOO-1486).
+- Per-agent bypass-permissions setting — defaults off, on for remote agents
+  (#57).
+
 ### [0.11.1] - 2026-07-24
 
 #### Added
