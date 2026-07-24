@@ -117,6 +117,7 @@ export class LocationManagerStore {
         providerId: data.providerId,
         dir,
         sshHost: data.remote?.sshHost,
+        autoApprove: data.autoApprove,
       });
       if (!onboarded.success) {
         result = err(onboarded.error);

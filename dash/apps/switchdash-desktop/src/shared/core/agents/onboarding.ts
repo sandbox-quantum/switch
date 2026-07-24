@@ -21,6 +21,9 @@ export type OnboardAgentParams = {
    * plus the absolute working directory on that host. */
   sshHost?: string;
   dir: string;
+  /** Seed for the per-agent bypass-permissions flag. Omit to take the
+   * default (false for local, true for remote). */
+  autoApprove?: boolean;
 };
 
 export type OnboardAgentError =

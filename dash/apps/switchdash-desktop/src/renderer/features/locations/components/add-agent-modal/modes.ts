@@ -53,7 +53,7 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  * optional notify handle — seeding name/description from a server-derived
  * default until the user edits them.
  */
-export function useConfigureAgentForm(dir: string) {
+export function useConfigureAgentForm(dir: string, defaultAutoApprove: boolean) {
   const [agentName, setAgentNameRaw] = useState('');
   const [agentNameTouched, setAgentNameTouched] = useState(false);
   const [description, setDescriptionRaw] = useState('');
@@ -61,6 +61,7 @@ export function useConfigureAgentForm(dir: string) {
   const [providerKind, setProviderKind] = useState<AgentProviderKind | null>(null);
   const [notifyUser, setNotifyUser] = useState('');
   const [autoSession, setAutoSession] = useState(true);
+  const [autoApprove, setAutoApprove] = useState(defaultAutoApprove);
 
   const trimmedDir = dir.trim();
   // suggestAgentDefaults derives name/description from the directory basename and
@@ -103,6 +104,8 @@ export function useConfigureAgentForm(dir: string) {
     setNotifyUser,
     autoSession,
     setAutoSession,
+    autoApprove,
+    setAutoApprove,
     isValid,
   };
 }

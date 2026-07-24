@@ -169,6 +169,23 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
           />
         </label>
       </Field>
+
+      <Field>
+        <label className="flex cursor-pointer items-start justify-between gap-3 rounded-md border border-border px-2 py-1.5">
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm">Bypass permissions</span>
+            <span className="text-xs text-foreground-muted">
+              Start this agent&apos;s sessions with permission prompts bypassed (the provider&apos;s
+              auto-approve flag). Turn on only for agents you trust to run unattended.
+            </span>
+          </span>
+          <Switch
+            className="mt-0.5"
+            checked={form.autoApprove}
+            onCheckedChange={(checked) => form.setAutoApprove(checked)}
+          />
+        </label>
+      </Field>
     </FieldGroup>
   );
 });
