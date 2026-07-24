@@ -389,7 +389,7 @@ function DimensionRow({
                     <button
                       type="button"
                       aria-label={`Remove ${labelFor(id)}`}
-                      className="rounded-sm hover:bg-background-neutral"
+                      className="hover:bg-muted rounded-sm"
                       onClick={() => removeId(id)}
                     >
                       <X className="size-3" />
@@ -423,7 +423,7 @@ function DimensionRow({
                   key={opt.id}
                   type="button"
                   disabled={disabled}
-                  className="rounded-sm px-1.5 py-1 text-left text-sm hover:bg-background-neutral"
+                  className="hover:text-accent-foreground rounded-sm px-1.5 py-1 text-left text-sm hover:bg-background-quaternary-1"
                   onClick={() => {
                     addId(opt.id);
                     setSearch('');
@@ -436,7 +436,7 @@ function DimensionRow({
                 <button
                   type="button"
                   disabled={disabled}
-                  className="rounded-sm px-1.5 py-1 text-left text-sm text-foreground-muted hover:bg-background-neutral"
+                  className="hover:text-accent-foreground rounded-sm px-1.5 py-1 text-left text-sm text-foreground-muted hover:bg-background-quaternary-1"
                   onClick={addManual}
                 >
                   + Add “{search.trim()}”
