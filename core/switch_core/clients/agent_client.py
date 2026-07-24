@@ -12,7 +12,9 @@ from nio import (
     RoomMessageMedia,
     RoomMessageText,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.addressing import SenderKind, can_address, parse_policy
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
@@ -56,6 +58,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -120,6 +123,16 @@ _CONNECTED_NOT_LIVE_MESSAGE = (
 )
 
 
+# Posted (once, guarded by AUTO_REPLY_FLAG) when a sender tags this agent but
+# the agent's scoped addressing policy (CHOO-1585) does not permit that sender
+# to address it here. The message is demoted to unaddressed room chatter; this
+# reply is the sender's only feedback that the attempt was rejected.
+_ADDRESSING_DENIED_MESSAGE = (
+    "You're not permitted to direct messages to me in this room — my operator "
+    "has restricted who can address me here."
+)
+
+
 # Shown to an agent addressed here while it holds a role in THIS room but the
 # session that assumed the role has hopped away to other room(s) (the lease
 # still routes here). `room_names` lists where that session is now active.
@@ -150,6 +163,7 @@ class AgentClient(ClientBase[ClientConfig]):
         reference_store: ReferenceStore,
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
+        external_user_store: ExternalUserStore,
         request_tracker: RequestTracker,
         resource_request_tracker: ResourceRequestTracker,
         frontend_base_url: str | None,
@@ -164,6 +178,7 @@ class AgentClient(ClientBase[ClientConfig]):
         self._reference_store = reference_store
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
+        self._external_user_store = external_user_store
         self._request_tracker = request_tracker
         self._resource_request_tracker = resource_request_tracker
         self._frontend_base_url = (
@@ -276,6 +291,10 @@ class AgentClient(ClientBase[ClientConfig]):
 
         reply_thread_root = thread_id if thread_id is not None else event.event_id
 
+        is_addressed = await self._gate_addressed(
+            room, event, meta, reply_thread_root, is_addressed
+        )
+
         if is_addressed:
             triggered_by_auto_reply = bool(
                 event.source.get("content", {}).get(AUTO_REPLY_FLAG)
@@ -361,6 +380,11 @@ class AgentClient(ClientBase[ClientConfig]):
         relates = content.get("m.relates_to") or {}
         if relates.get("rel_type") == "m.thread":
             thread_id = relates.get("event_id")
+
+        reply_thread_root = thread_id if thread_id is not None else event.event_id
+        is_addressed = await self._gate_addressed(
+            room, event, meta, reply_thread_root, is_addressed
+        )
 
         agent_event = AgentEvent(
             type="message",
@@ -797,6 +821,110 @@ class AgentClient(ClientBase[ClientConfig]):
         if await self._is_mentioned_via_alias(event, meta.room_id):
             return True
         return await self._is_mentioned_via_role(event, meta.room_id)
+
+    async def _resolve_sender_principal(
+        self, session: AsyncSession, matrix_user_id: str
+    ) -> tuple[SenderKind, str] | None:
+        """Resolve a Matrix sender to an addressing principal.
+
+        Maps the sender's mxid to its Client, then to either an Agent (an
+        agent-to-agent attempt) or an ExternalUser (a human on a bridge).
+        Returns ``None`` when the sender has no such record — an
+        unresolvable identity that a restricted agent should not trust.
+        """
+        client = await self.client_store.get_by_matrix_user_id(session, matrix_user_id)
+        if client is None:
+            return None
+        agent = await self._agent_store.get_by_client_id(session, client.id)
+        if agent is not None:
+            return ("agent", agent.id)
+        external_user = await self._external_user_store.get_by_client_id(
+            session, client.id
+        )
+        if external_user is not None:
+            return ("user", external_user.id)
+        return None
+
+    async def _addressing_allowed(self, event: RoomMessage, meta: RoomMeta) -> bool:
+        """Whether the message's sender may address this agent, per the agent's
+        scoped addressing policy (CHOO-1585).
+
+        An agent with no policy is open to anyone (today's behaviour), so this
+        returns True without a DB round-trip. With a policy set it is
+        deny-by-default: an unresolvable sender is rejected (fail-closed).
+        """
+        agent = await self._fresh_agent()
+        policy = parse_policy(agent.addressing_policy)
+        if policy.is_open():
+            return True
+        async with self.session_factory() as session:
+            principal = await self._resolve_sender_principal(session, event.sender)
+            room = await self._room_store.get(session, meta.room_id)
+        if principal is None:
+            logger.warning(
+                "Addressing denied for %s: unresolvable sender %s in room %s",
+                self.agent.name,
+                event.sender,
+                meta.room_id,
+            )
+            return False
+        sender_kind, sender_id = principal
+        group_id = room.group_id if room is not None else None
+        allowed = can_address(
+            policy,
+            room_id=meta.room_id,
+            group_id=group_id,
+            sender_kind=sender_kind,
+            sender_id=sender_id,
+        )
+        if not allowed:
+            logger.warning(
+                "Addressing denied for %s: %s %s not permitted in room %s",
+                self.agent.name,
+                sender_kind,
+                sender_id,
+                meta.room_id,
+            )
+        return allowed
+
+    async def _gate_addressed(
+        self,
+        room: MatrixRoom,
+        event: RoomMessage,
+        meta: RoomMeta,
+        reply_thread_root: str,
+        is_addressed: bool,
+    ) -> bool:
+        """Apply the scoped addressing policy to a would-be-addressed message.
+
+        When the message tags this agent but the sender is not permitted by the
+        agent's policy, demote it to unaddressed room chatter and (once, guarded
+        by AUTO_REPLY_FLAG so two agents can't ping-pong) reply to the sender
+        explaining they can't address it here. Returns the effective addressed
+        flag. Zero cost for the common case: only messages that already tag this
+        agent are ever checked, and open policies short-circuit.
+        """
+        if not is_addressed:
+            return False
+        if await self._addressing_allowed(event, meta):
+            return True
+        triggered_by_auto_reply = bool(
+            event.source.get("content", {}).get(AUTO_REPLY_FLAG)
+        )
+        if not triggered_by_auto_reply:
+            handle = self._sender_handle(event)
+            msg = _ADDRESSING_DENIED_MESSAGE
+            already_tagged = _mention_regex(handle).search(msg) is not None
+            body = msg if already_tagged else f"@{handle} {msg}"
+            await self.send_message(
+                room.room_id,
+                body,
+                format="markdown",
+                mentions=[event.sender],
+                thread_root_id=reply_thread_root,
+                extra_content={AUTO_REPLY_FLAG: True},
+            )
+        return False
 
     def _args_tag_my_name(self, text: str) -> bool:
         """True when `text` contains our own `@name` at a full-token boundary

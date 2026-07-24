@@ -2,7 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
+import type {
+  AddressingPolicy,
+  AgentProviderKind,
+} from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 
 /** Switch agent-name charset, enforced server-side too: lowercase letters,
@@ -61,6 +64,9 @@ export function useConfigureAgentForm(dir: string) {
   const [providerKind, setProviderKind] = useState<AgentProviderKind | null>(null);
   const [notifyUser, setNotifyUser] = useState('');
   const [autoSession, setAutoSession] = useState(true);
+  // Scoped addressing policy (CHOO-1585). null = open (default); set to restrict
+  // who can address the new agent. Applied via a follow-up PUT after creation.
+  const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(null);
 
   const trimmedDir = dir.trim();
   // suggestAgentDefaults derives name/description from the directory basename and
@@ -103,6 +109,8 @@ export function useConfigureAgentForm(dir: string) {
     setNotifyUser,
     autoSession,
     setAutoSession,
+    addressingPolicy,
+    setAddressingPolicy,
     isValid,
   };
 }

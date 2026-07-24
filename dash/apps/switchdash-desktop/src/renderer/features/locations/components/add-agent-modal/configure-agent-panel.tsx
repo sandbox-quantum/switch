@@ -1,7 +1,13 @@
+import { useQuery } from '@tanstack/react-query';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useId } from 'react';
+import {
+  AddressingPolicyEditor,
+  type OptionItem,
+} from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
@@ -48,6 +54,44 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
   }, []);
 
   const servers = switchServersStore.servers;
+
+  // Selector data for the addressing-policy editor, scoped to the chosen server.
+  const roomsQuery = useQuery({
+    queryKey: ['remote-rooms', serverId],
+    queryFn: () => rpc.switchServers.listRemoteRooms(serverId as string),
+    enabled: serverId !== null,
+  });
+  const groupsQuery = useQuery({
+    queryKey: ['remote-room-groups', serverId],
+    queryFn: () => rpc.switchServers.listRemoteRoomGroups(serverId as string),
+    enabled: serverId !== null,
+  });
+  const usersQuery = useQuery({
+    queryKey: ['remote-external-users', serverId],
+    queryFn: () => rpc.switchServers.listRemoteExternalUsers(serverId as string),
+    enabled: serverId !== null,
+  });
+  const agentsQuery = useQuery({
+    queryKey: ['remote-agents', serverId],
+    queryFn: () => rpc.switchServers.listRemoteAgents(serverId as string),
+    enabled: serverId !== null,
+  });
+  const roomOptions: OptionItem[] = (roomsQuery.data ?? []).map((r) => ({
+    id: r.id,
+    label: r.name,
+  }));
+  const groupOptions: OptionItem[] = (groupsQuery.data ?? []).map((g) => ({
+    id: g.id,
+    label: g.name,
+  }));
+  const userOptions: OptionItem[] = (usersQuery.data ?? []).map((u) => ({
+    id: u.id,
+    label: u.username,
+  }));
+  const agentOptions: OptionItem[] = (agentsQuery.data ?? []).map((a) => ({
+    id: a.id,
+    label: a.name,
+  }));
 
   if (servers.length === 0) {
     return (
@@ -168,6 +212,22 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
             onCheckedChange={(checked) => form.setAutoSession(checked)}
           />
         </label>
+      </Field>
+
+      <Field>
+        <FieldLabel>Who can address this agent</FieldLabel>
+        <span className="text-xs text-foreground-muted">
+          Restrict who may @mention, target, or delegate tasks to the agent. Defaults to open
+          (anyone in the room). You can change this later from the agent&apos;s settings.
+        </span>
+        <AddressingPolicyEditor
+          value={form.addressingPolicy}
+          onChange={form.setAddressingPolicy}
+          rooms={roomOptions}
+          roomGroups={groupOptions}
+          users={userOptions}
+          agents={agentOptions}
+        />
       </Field>
     </FieldGroup>
   );

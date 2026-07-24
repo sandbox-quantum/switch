@@ -8,6 +8,7 @@ import type {
 } from '@renderer/features/locations/stores/agent-onboarding-types';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
+import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import type { ServerVerifyState } from '@renderer/features/switch-servers/agent-server-picker';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -203,6 +204,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     isMissingSwitchAgent &&
     !isChecking &&
     configureForm.isValid &&
+    !policyHasDeadRule(configureForm.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
     remoteRunValid &&
@@ -216,6 +218,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     isMissingRemoteAgent &&
     !isChecking &&
     remoteConfigureForm.isValid &&
+    !policyHasDeadRule(remoteConfigureForm.addressingPolicy) &&
     !!pickState.serverId &&
     !!pickState.providerId &&
     trimmedRemoteDir.length > 0 &&
@@ -398,6 +401,13 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         setSubmitState('idle');
         return;
       }
+      if (configureForm.addressingPolicy !== null) {
+        await rpc.switchServers.updateAddressingPolicy({
+          serverId: pickState.serverId,
+          agentId: result.agentId,
+          policy: configureForm.addressingPolicy,
+        });
+      }
       // Credentials are now written to .claude/settings.local.json, so the
       // create path re-detects the agent and verifies it on the server, and the
       // selected subagents can be registered under the just-created parent.
@@ -443,6 +453,13 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         setCloseGuard(false);
         setSubmitState('idle');
         return;
+      }
+      if (remoteConfigureForm.addressingPolicy !== null) {
+        await rpc.switchServers.updateAddressingPolicy({
+          serverId: pickState.serverId,
+          agentId: result.agentId,
+          policy: remoteConfigureForm.addressingPolicy,
+        });
       }
       // Credentials are now written to the remote dir's .claude/settings.local.json,
       // so the create path (createRemoteLocation) re-detects the agent over SSH and

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useRemoteAgentName } from '@renderer/features/switch-servers/use-remote-agent-name';
 import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldTitle } from '@renderer/lib/ui/field';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -31,16 +32,33 @@ export function AutoSessionSettingsSection({ locationId }: { locationId: string 
       </FieldDescription>
       <div className="flex flex-col gap-2">
         {switchAgents.map((agent) => (
-          <AutoSessionRow key={agent.id} agentId={agent.id} agentName={agent.name} />
+          <AutoSessionRow
+            key={agent.id}
+            agentId={agent.id}
+            serverId={agent.serverId as string}
+            switchAgentId={agent.switchAgentId as string}
+            agentName={agent.name}
+          />
         ))}
       </div>
     </Field>
   );
 }
 
-function AutoSessionRow({ agentId, agentName }: { agentId: string; agentName: string }) {
+function AutoSessionRow({
+  agentId,
+  serverId,
+  switchAgentId,
+  agentName,
+}: {
+  agentId: string;
+  serverId: string;
+  switchAgentId: string;
+  agentName: string;
+}) {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
+  const displayName = useRemoteAgentName(serverId, switchAgentId, agentName);
 
   const { data: enabled, isLoading } = useQuery({
     queryKey: ['agent-auto-session', agentId],
@@ -66,7 +84,7 @@ function AutoSessionRow({ agentId, agentName }: { agentId: string; agentName: st
 
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5">
-      <span className="truncate text-sm">{agentName}</span>
+      <span className="truncate text-sm">{displayName}</span>
       <Switch
         checked={enabled === true}
         disabled={isLoading || pending}

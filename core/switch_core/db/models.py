@@ -120,6 +120,11 @@ class Agent(Base):
         Text, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
     )
     oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Scoped agent-addressing permissions (CHOO-1585). NULL preserves today's
+    # open behaviour (anyone may address the agent); a stored policy is a
+    # `switch_core.addressing.AddressingPolicy` blob (an allow-list of rules
+    # over room / room-group / user / agent). See that module for the model.
+    addressing_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -12,6 +12,14 @@ class ClientStore:
     async def get(self, session: AsyncSession, client_id: str) -> Client | None:
         return await session.get(Client, client_id)
 
+    async def get_by_matrix_user_id(
+        self, session: AsyncSession, matrix_user_id: str
+    ) -> Client | None:
+        result = await session.execute(
+            select(Client).where(Client.matrix_user_id == matrix_user_id)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_type(
         self, session: AsyncSession, client_type: str
     ) -> list[Client]:

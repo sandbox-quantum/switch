@@ -1,6 +1,9 @@
 import type {
+  AddressingPolicy,
   RemoteAgentRoom,
   RemoteAgentSummary,
+  RemoteExternalUser,
+  RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
   SwitchAuthConfig,
@@ -389,6 +392,69 @@ export async function setAutoSession(
 ): Promise<void> {
   const { options } = await fetchAgentOptions(server, agentId);
   await updateKnownAgentOptions(server, agentId, { ...options, auto_session: enabled });
+}
+
+/**
+ * Fetch an agent's scoped addressing policy (CHOO-1585) from `GET /agents/{id}`.
+ * Returns null when the agent is open (no policy set).
+ */
+export async function fetchAddressingPolicy(
+  server: SwitchServer,
+  agentId: string
+): Promise<AddressingPolicy | null> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as {
+    addressing_policy?: AddressingPolicy | null;
+  };
+  return json.addressing_policy ?? null;
+}
+
+/**
+ * Set (or clear, with `policy = null`) an agent's addressing policy
+ * (`PUT /agents/{id}/addressing-policy`). Only the agent's owner (or an admin)
+ * may change it; a non-owner request surfaces as a `GatewayError`.
+ */
+export async function updateAddressingPolicy(
+  server: SwitchServer,
+  agentId: string,
+  policy: AddressingPolicy | null
+): Promise<void> {
+  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/addressing-policy`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { policy },
+  });
+}
+
+/** List a server's room groups (`GET /room-groups`), for the addressing-rule
+ * room-group selector. */
+export async function fetchRoomGroups(server: SwitchServer): Promise<RemoteRoomGroup[]> {
+  const res = await gatewayFetch(server, '/room-groups', { authenticated: true });
+  const json = (await res.json()) as Array<{ id: string; name: string }>;
+  return json.map((g) => ({ id: g.id, name: g.name }));
+}
+
+/**
+ * Union of external (bridged human) users across every bridge on the server
+ * (`GET /collaborations`, then each bridge's `/users`). The addressing policy's
+ * `users` dimension keys off these ExternalUser ids.
+ */
+export async function fetchAllExternalUsers(server: SwitchServer): Promise<RemoteExternalUser[]> {
+  const bridgesRes = await gatewayFetch(server, '/collaborations', { authenticated: true });
+  const bridges = (await bridgesRes.json()) as Array<{ bridge_id: string }>;
+  const byId = new Map<string, RemoteExternalUser>();
+  for (const bridge of bridges) {
+    const res = await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridge.bridge_id)}/users`,
+      { authenticated: true }
+    );
+    const users = (await res.json()) as Array<{ id: string; external_username: string }>;
+    for (const u of users) byId.set(u.id, { id: u.id, username: u.external_username });
+  }
+  return [...byId.values()];
 }
 
 /** A gateway child agent (e.g. a Claude Code subagent) of some parent agent. */

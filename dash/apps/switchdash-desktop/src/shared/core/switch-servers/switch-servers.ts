@@ -161,6 +161,39 @@ export type RemoteAgentRoom = {
   roomRole: string | null;
 };
 
+/** A room group on a server (mirrors the gateway `RoomGroupDetail`). Used to
+ * scope an addressing rule by room group. */
+export type RemoteRoomGroup = {
+  id: string;
+  name: string;
+};
+
+/** A bridged (external) human identity on a server. The `users` dimension of an
+ * addressing policy keys off these ids. */
+export type RemoteExternalUser = {
+  id: string;
+  username: string;
+};
+
+/**
+ * Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
+ * or an explicit id list ([] = none). A policy with no rules — or a null policy
+ * on the agent — means it is open to anyone. `users` ids are ExternalUser ids;
+ * `agents` ids are agent ids. Mirrors the gateway/core `AddressingPolicy`.
+ */
+export type AddressingDimension = '*' | string[];
+
+export type AddressingRule = {
+  rooms: AddressingDimension;
+  room_groups: AddressingDimension;
+  users: AddressingDimension;
+  agents: AddressingDimension;
+};
+
+export type AddressingPolicy = {
+  rules: AddressingRule[];
+};
+
 /**
  * Result of checking whether an agent exists on a chosen server.
  * `found` — the server owns the agent. `not-found` — it doesn't (wrong server

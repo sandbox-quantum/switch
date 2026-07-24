@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from switch_core.addressing import AddressingPolicy
+
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
 
@@ -281,6 +283,17 @@ class AgentDetail(AgentSummary):
     rooms: list[AgentRoomMembership]
     sessions: list[AgentSessionDetail]
     children: list[AgentSummary]
+    # Scoped agent-addressing permissions (CHOO-1585). null → open (anyone may
+    # address the agent); otherwise the allow-list that governs who can.
+    addressing_policy: AddressingPolicy | None = None
+
+
+class UpdateAddressingPolicyRequest(BaseModel):
+    """Set (or clear) an agent's scoped addressing policy.
+
+    ``policy: null`` clears it — the agent becomes open to anyone again."""
+
+    policy: AddressingPolicy | None = None
 
 
 class KnownAgentType(BaseModel):

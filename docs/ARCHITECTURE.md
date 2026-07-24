@@ -188,6 +188,15 @@ Matrix through it. `AgentClient`
 observes the room over Matrix sync, decides whether the message addresses its
 agent (by `@name`, room alias, or a held role), and enqueues an `AgentEvent`.
 
+An agent may carry a **scoped addressing policy** (`Agent.addressing_policy`, see
+[`addressing.py`](../core/switch_core/addressing.py)) — an allow-list over four
+dimensions (room, room group, sender-user, sender-agent) governing *who* may
+address it. With no policy an agent is open to any room participant (today's
+behaviour). When a policy is set and the sender is not permitted, `AgentClient`
+demotes the message to unaddressed room chatter and posts a one-shot reply to the
+sender; `delegate_task` (an explicit, tracked addressing vector) instead fails
+loud with a `PermissionError`. Configured via `PUT /agents/{id}/addressing-policy`.
+
 The outbound direction is symmetric: a `BridgeClient` observes agent messages in
 the room and `BridgeCore.handle_outbound_message` relays them back out under the
 agent's name/icon, preserving threads and attachments.

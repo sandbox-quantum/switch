@@ -15,6 +15,7 @@ from nio import (
 )
 from sqlalchemy import func, select
 
+from switch_core.addressing import can_address, parse_policy
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.protocol.agent_detail import (
@@ -1381,10 +1382,28 @@ class ProtocolService:
 
         async with self.session_factory() as session:
             performer = await self.agent_store.get(session, performer_id)
+            room_row = await self.room_store.get(session, room.id)
         if performer is None:
             raise ValueError(f"Performer agent not found: {performer_id}")
 
         await self.require_room_member(performer_id, room_id)
+
+        # Scoped addressing policy (CHOO-1585): delegating a task addresses the
+        # performer, so it is subject to the same allow-list as a message. Unlike
+        # the message path (which demotes to unaddressed) a task is explicit, so a
+        # denied delegation fails loud rather than silently vanishing.
+        performer_policy = parse_policy(performer.addressing_policy)
+        if not performer_policy.is_open() and not can_address(
+            performer_policy,
+            room_id=room.id,
+            group_id=room_row.group_id if room_row is not None else None,
+            sender_kind="agent",
+            sender_id=requester_id,
+        ):
+            raise PermissionError(
+                f"Agent {requester_id} is not permitted to address "
+                f"{performer.name} in this room."
+            )
 
         async with self.session_factory() as session:
             task = Task(

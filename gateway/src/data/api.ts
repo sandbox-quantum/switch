@@ -88,6 +88,24 @@ export interface AgentDetail extends AgentSummary {
   rooms: AgentRoomMembership[];
   sessions: AgentSessionDetail[];
   children: AgentSummary[];
+  addressing_policy: AddressingPolicy | null;
+}
+
+// Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
+// or an explicit id list ([] = none). A policy with no rules (or a null
+// addressing_policy) means the agent is open to anyone. `users` ids are
+// ExternalUser ids (bridged human identities); `agents` ids are agent ids.
+export type AddressingDimension = "*" | string[];
+
+export interface AddressingRule {
+  rooms: AddressingDimension;
+  room_groups: AddressingDimension;
+  users: AddressingDimension;
+  agents: AddressingDimension;
+}
+
+export interface AddressingPolicy {
+  rules: AddressingRule[];
 }
 
 export interface BridgeDetail {
@@ -505,6 +523,17 @@ export async function deleteAgent(agentId: string): Promise<boolean> {
   return res?.ok ?? false;
 }
 
+export async function updateAgentAddressingPolicy(
+  agentId: string,
+  policy: AddressingPolicy | null,
+): Promise<AgentDetail> {
+  return jsonRequest<AgentDetail>(
+    `/agents/${agentId}/addressing-policy`,
+    "PUT",
+    { policy },
+  );
+}
+
 export async function fetchKnownAgentTypes(): Promise<KnownAgentType[] | null> {
   return fetchJson<KnownAgentType[]>("/agents/known-types");
 }
@@ -721,6 +750,23 @@ export async function fetchBridgeUsers(
   return fetchJson<ExternalUserSummary[]>(
     `/collaborations/${bridgeId}/users`,
   );
+}
+
+// Union of external (bridged human) users across every bridge. Used by the
+// addressing-policy editor, whose `users` dimension keys off ExternalUser ids.
+export async function fetchAllExternalUsers(): Promise<
+  ExternalUserSummary[] | null
+> {
+  const bridges = await fetchBridges();
+  if (bridges === null) return null;
+  const perBridge = await Promise.all(
+    bridges.map((b) => fetchBridgeUsers(b.bridge_id)),
+  );
+  const byId = new Map<string, ExternalUserSummary>();
+  for (const users of perBridge) {
+    for (const u of users ?? []) byId.set(u.id, u);
+  }
+  return [...byId.values()];
 }
 
 export async function deleteBridge(bridgeId: string): Promise<boolean> {

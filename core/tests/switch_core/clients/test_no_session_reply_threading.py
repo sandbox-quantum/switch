@@ -39,6 +39,16 @@ def _fake_self(
     async def _compute_addressed(_event: object, _meta: object) -> bool:
         return True  # addressed → the offline auto-reply path runs
 
+    async def _gate_addressed(
+        _room: object,
+        _event: object,
+        _meta: object,
+        _reply_thread_root: str,
+        is_addressed: bool,
+    ) -> bool:
+        # No addressing policy in these tests — pass the addressed flag through.
+        return is_addressed
+
     async def _is_available(_room_id: str) -> bool:
         return False  # no live session → triggers the auto-reply
 
@@ -49,6 +59,7 @@ def _fake_self(
         agent=SimpleNamespace(id="agent-1", name="cc-bug-fixing"),
         _resolve_room_meta=_resolve_room_meta,
         _compute_addressed=_compute_addressed,
+        _gate_addressed=_gate_addressed,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
         send_message=send_message,

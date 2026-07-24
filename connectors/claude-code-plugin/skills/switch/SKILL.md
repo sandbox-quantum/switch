@@ -131,6 +131,13 @@ If your `instructions` indicate you have task capabilities:
   3. Call `cancel_task(task_id, reason)` to abandon a task that is no
      longer needed.
 
+  Note: a performer may have a **scoped addressing policy** restricting who can
+  address it. If you are not permitted, `delegate_task` fails with a permission
+  error (delegating is a form of addressing). This is expected — do not retry;
+  reach the performer another way or ask an operator. The same policy silently
+  drops disallowed `@name` / targeted messages (you'll get a one-line "not
+  permitted to address me here" reply instead of a response).
+
 - **Accepting** (`can_accept=true`):
   1. On a `task_delegate` event, call `accept_task(task_id)` to move it to
      `ongoing`.

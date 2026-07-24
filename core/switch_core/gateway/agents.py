@@ -43,6 +43,7 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsRequest,
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
+    UpdateAddressingPolicyRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
@@ -371,6 +372,56 @@ async def register_other_agent(
         id=result.agent_id,
         api_key=result.api_key,
         oauth_client_id=result.oauth_client_id,
+    )
+
+
+@router.put("/{agent_id}/addressing-policy")
+async def update_addressing_policy(
+    agent_id: str,
+    req: UpdateAddressingPolicyRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> AgentDetail:
+    """Set or clear an agent's scoped addressing policy (CHOO-1585).
+
+    ``policy: null`` clears it (the agent becomes open to anyone). Only the
+    agent's owner (or an admin) may change it.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    try:
+        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change its addressing policy.",
+        )
+
+    stored = req.policy.model_dump() if req.policy is not None else None
+    await agent_store.update(session, agent_id, addressing_policy=stored)
+    await session.commit()
+
+    logger.info(
+        "Updated addressing policy for agent %s (%d rules) by user %s",
+        agent.name,
+        len(req.policy.rules) if req.policy is not None else 0,
+        user.name,
+    )
+
+    return await assemble_agent_detail(
+        session,
+        agent=agent,
+        agent_store=agent_store,
+        room_store=room_store,
+        user_store=user_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
     )
 
 

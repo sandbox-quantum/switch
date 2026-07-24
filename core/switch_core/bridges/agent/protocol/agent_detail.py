@@ -15,6 +15,7 @@ from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.addressing import AddressingPolicy
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.db.models import Agent, AgentSession
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -212,6 +213,12 @@ async def assemble_agent_detail(
         for child in child_agents
     ]
 
+    addressing_policy = (
+        AddressingPolicy.model_validate(agent.addressing_policy)
+        if isinstance(agent.addressing_policy, dict)
+        else None
+    )
+
     return AgentDetail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
@@ -225,6 +232,7 @@ async def assemble_agent_detail(
         rooms=memberships,
         sessions=sessions,
         children=children,
+        addressing_policy=addressing_policy,
     )
 
 

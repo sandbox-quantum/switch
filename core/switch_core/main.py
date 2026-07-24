@@ -197,6 +197,7 @@ async def run() -> None:
         reference_store=reference_store,
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
+        external_user_store=external_user_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
         frontend_base_url=config.frontend_base_url,

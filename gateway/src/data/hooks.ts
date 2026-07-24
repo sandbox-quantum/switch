@@ -25,6 +25,7 @@ import {
   fetchAgent,
   fetchAgents,
   fetchApiKeys,
+  fetchAllExternalUsers,
   fetchBridges,
   fetchBridgeTypes,
   fetchBridgeUsers,
@@ -144,6 +145,10 @@ export function useBridgeUsers(
     [bridgeId],
   );
   return useQuery(fetcher);
+}
+
+export function useAllExternalUsers(): UseQueryResult<ExternalUserSummary[]> {
+  return useQuery(fetchAllExternalUsers);
 }
 
 export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {

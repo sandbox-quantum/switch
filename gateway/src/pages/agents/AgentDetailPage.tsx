@@ -22,6 +22,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useAgent, useKnownAgentTypes } from "../../data/hooks";
+import AddressingPolicySection from "./AddressingPolicySection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 
 // Presence of an agent within a room — mirrors the room detail page so the two
@@ -123,6 +124,12 @@ export default function AgentDetailPage() {
               />
             </>
           )}
+          <Divider />
+          <AddressingPolicySection
+            agent={agent}
+            canEdit={isOwner}
+            onUpdated={refetch}
+          />
           <Divider />
           <SessionsSection sessions={agent.sessions} />
           <Divider />

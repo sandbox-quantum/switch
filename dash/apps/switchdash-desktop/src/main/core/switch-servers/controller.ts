@@ -10,6 +10,7 @@ import { sshConnectionIdForHost } from '@main/core/locations/location-transport'
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
 import type {
+  AddressingPolicy,
   AddServerParams,
   AgentDefaults,
   AgentVerifyResult,
@@ -19,6 +20,8 @@ import type {
   ProvisionRemoteAgentParams,
   RemoteAgentRoom,
   RemoteAgentSummary,
+  RemoteExternalUser,
+  RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
   ServerConnectionStatus,
@@ -31,15 +34,19 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
 import {
   agentExistsOnServer,
+  fetchAddressingPolicy,
   fetchAgentDetail,
   fetchAgentRooms,
   fetchAgents,
+  fetchAllExternalUsers,
   fetchAuthConfig,
   fetchMe,
+  fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
   GatewayError,
   registerKnownAgent,
+  updateAddressingPolicy,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
@@ -204,6 +211,25 @@ export const switchServersController = createRPCController({
 
   listRoomRoles: async (params: { serverId: string; roomId: string }): Promise<RemoteRoomRole[]> =>
     fetchRoomRoles(await requireServer(params.serverId), params.roomId),
+
+  listRemoteRoomGroups: async (serverId: string): Promise<RemoteRoomGroup[]> =>
+    fetchRoomGroups(await requireServer(serverId)),
+
+  listRemoteExternalUsers: async (serverId: string): Promise<RemoteExternalUser[]> =>
+    fetchAllExternalUsers(await requireServer(serverId)),
+
+  getAddressingPolicy: async (params: {
+    serverId: string;
+    agentId: string;
+  }): Promise<AddressingPolicy | null> =>
+    fetchAddressingPolicy(await requireServer(params.serverId), params.agentId),
+
+  updateAddressingPolicy: async (params: {
+    serverId: string;
+    agentId: string;
+    policy: AddressingPolicy | null;
+  }): Promise<void> =>
+    updateAddressingPolicy(await requireServer(params.serverId), params.agentId, params.policy),
 
   verifyAgent: async (params: {
     serverId: string;
