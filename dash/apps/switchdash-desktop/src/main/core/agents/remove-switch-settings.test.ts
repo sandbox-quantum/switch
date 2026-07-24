@@ -1,7 +1,7 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
-import { mergeSwitchSettings } from './write-switch-settings';
 import { removeSwitchCredentials } from './remove-switch-settings';
+import { mergeSwitchSettings } from './write-switch-settings';
 
 const SETTINGS_PATH = '.claude/settings.local.json';
 
@@ -45,7 +45,12 @@ describe('removeSwitchCredentials (default .claude teardown)', () => {
     const fs = fakeFs({
       [SETTINGS_PATH]: JSON.stringify({
         permissions: { allow: ['Bash', 'mcp__plugin_switch-connector_switch'] },
-        env: { EDITOR: 'vim', SWITCH_API_ENDPOINT: 'e', SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'a' },
+        env: {
+          EDITOR: 'vim',
+          SWITCH_API_ENDPOINT: 'e',
+          SWITCH_API_TOKEN: 't',
+          SWITCH_AGENT_ID: 'a',
+        },
       }),
     });
 
