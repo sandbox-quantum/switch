@@ -10,6 +10,7 @@ import {
 } from '@renderer/app/modal-registry';
 import { Dialog, DialogOverlay, DialogPortal } from '@renderer/lib/ui/dialog';
 import { cn } from '@renderer/utils/utils';
+import { shouldCloseModalOnDismiss } from './dismissal';
 import { modalStore } from './modal-store';
 
 const SIZE_CLASSES: Record<ModalSize, string> = {
@@ -55,10 +56,12 @@ export const ModalRenderer = observer(function ModalRenderer() {
     eventDetails: DialogPrimitive.Root.ChangeEventDetails
   ) => {
     if (!open && modalStore.isOpen) {
-      const isPassiveDismiss =
-        eventDetails.reason === 'outside-press' || eventDetails.reason === 'escape-key';
-      if (modalStore.closeGuardActive && isPassiveDismiss) return;
-      modalStore.closeModal();
+      const shouldClose = shouldCloseModalOnDismiss({
+        reason: eventDetails.reason,
+        closeGuardActive: modalStore.closeGuardActive,
+        dismissOnOutsideClick: entry?.dismissOnOutsideClick !== false,
+      });
+      if (shouldClose) modalStore.closeModal();
     }
   };
 

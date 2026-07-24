@@ -22,6 +22,13 @@ export type ModalRegistryEntry<TProps = unknown, TResult = unknown> = {
   component: ModalComponent<TProps, TResult>;
   size?: ModalSize;
   position?: ModalPosition;
+  /**
+   * Whether a click on the backdrop dismisses the modal. Defaults to `true`.
+   * Set `false` for data-entry modals so a stray outside click does not
+   * discard in-progress input; the Escape key and close/Cancel buttons still
+   * dismiss.
+   */
+  dismissOnOutsideClick?: boolean;
 };
 
 export function createModal<TProps, TResult>(
@@ -33,19 +40,25 @@ export function createModal<TProps, TResult>(
 
 export const modalRegistry = {
   commandPaletteModal: createModal(CommandPaletteModal, { size: 'md' }),
-  sessionModal: createModal(CreateSessionModal),
-  addAgentModal: createModal(AddAgentModal),
+  sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
+  addAgentModal: createModal(AddAgentModal, { dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
   resetAgentModal: createModal(ResetAgentModal, { size: 'sm' }),
   confirmExternalLinkModal: createModal(ExternalLinkChoiceDialog, { size: 'sm' }),
   unsavedChangesModal: createModal(UnsavedChangesDialog, { size: 'xs' }),
-  feedbackModal: createModal(FeedbackModal),
-  renameSessionModal: createModal(RenameSessionModal, { size: 'xs' }),
+  feedbackModal: createModal(FeedbackModal, { dismissOnOutsideClick: false }),
+  renameSessionModal: createModal(RenameSessionModal, {
+    size: 'xs',
+    dismissOnOutsideClick: false,
+  }),
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
-  addServerModal: createModal(AddServerModal, { size: 'md' }),
-  assignServerModal: createModal(AssignServerModal, { size: 'sm' }),
-  renameServerModal: createModal(RenameServerModal, { size: 'xs' }),
+  addServerModal: createModal(AddServerModal, { size: 'md', dismissOnOutsideClick: false }),
+  assignServerModal: createModal(AssignServerModal, { size: 'sm', dismissOnOutsideClick: false }),
+  renameServerModal: createModal(RenameServerModal, {
+    size: 'xs',
+    dismissOnOutsideClick: false,
+  }),
   deleteServerModal: createModal(DeleteServerModal, { size: 'sm' }),
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ModalRegistryEntry<any, any>>;
