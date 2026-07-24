@@ -1,0 +1,1 @@
+ALTER TABLE `agents` ADD `auto_approve` integer DEFAULT false NOT NULL;

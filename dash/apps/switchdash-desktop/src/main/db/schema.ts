@@ -151,6 +151,11 @@ export const agents = sqliteTable(
     apiEndpoint: text('api_endpoint'),
     serverId: text('server_id').references(() => switchServers.id, { onDelete: 'set null' }),
     status: text('status'),
+    // When set, switchdash launches this agent's CLI with its auto-approve /
+    // "bypass permissions" flag (e.g. `--dangerously-skip-permissions`).
+    // Defaults false for local agents; onboarding seeds it true for remote
+    // agents (see onboard-agent). Editable per agent in location settings.
+    autoApprove: integer('auto_approve', { mode: 'boolean' }).notNull().default(false),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

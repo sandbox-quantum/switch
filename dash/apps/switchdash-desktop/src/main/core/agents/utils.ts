@@ -11,6 +11,7 @@ export function mapAgentRowToAgent(row: AgentRow): Agent {
     apiEndpoint: row.apiEndpoint ?? null,
     serverId: row.serverId ?? null,
     status: row.status ?? null,
+    autoApprove: row.autoApprove,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

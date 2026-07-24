@@ -413,7 +413,7 @@ class RemoteSessionReconciler {
       id: sessionId,
       agentId: agent.id,
       title: roomId ? `Switch room ${roomId}` : 'Remote session',
-      autoApprove: true,
+      autoApprove: agent.autoApprove,
     });
     if (!result.success) {
       if (result.error.type === 'already-exists') {

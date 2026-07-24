@@ -132,6 +132,9 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     switchAgentId: switchAgent.agentId,
     apiEndpoint: switchAgent.apiEndpoint,
     serverId: params.serverId,
+    // Remote agents run unattended on their VM with no operator to answer
+    // permission prompts, so default them to bypass; local agents default off.
+    autoApprove: sshHost !== null,
   });
 
   // Seed the local auto_session mirror + start the watcher from the gateway

@@ -18,6 +18,10 @@ export type Agent = {
   apiEndpoint: string | null;
   serverId: string | null;
   status: string | null;
+  /** When true, switchdash launches this agent's CLI with its auto-approve /
+   * "bypass permissions" flag. Defaults false for local agents and true for
+   * remote agents (seeded at onboarding); editable per agent. */
+  autoApprove: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -33,6 +37,9 @@ export type CreateAgentParams = {
    * chosen and verified at onboarding (legacy rows may still be null until the
    * user assigns one). */
   serverId: string;
+  /** Seed for the per-agent bypass-permissions flag: false for local agents,
+   * true for remote agents. */
+  autoApprove: boolean;
 };
 
 export type RenameAgentParams = {

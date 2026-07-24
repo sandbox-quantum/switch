@@ -10,6 +10,7 @@ export type UpdateAgentParams = {
   switchAgentId?: string | null;
   apiEndpoint?: string | null;
   serverId?: string;
+  autoApprove?: boolean;
 };
 
 type AgentUpdateSet = Parameters<ReturnType<typeof db.update<typeof agents>>['set']>[0];
@@ -20,6 +21,7 @@ export async function updateAgent(params: UpdateAgentParams): Promise<Agent | un
   if (params.switchAgentId !== undefined) set.switchAgentId = params.switchAgentId;
   if (params.apiEndpoint !== undefined) set.apiEndpoint = params.apiEndpoint;
   if (params.serverId !== undefined) set.serverId = params.serverId;
+  if (params.autoApprove !== undefined) set.autoApprove = params.autoApprove;
 
   const [row] = await db.update(agents).set(set).where(eq(agents.id, params.agentId)).returning();
   if (!row) return undefined;

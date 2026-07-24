@@ -28,7 +28,6 @@ export const SETTINGS_DEFAULTS = {
     preserveNameCapitalization: false,
     includeIssueContextByDefault: true,
   },
-  agentAutoApproveDefaults: {},
   notifications: {
     enabled: true,
     sound: true,

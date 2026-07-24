@@ -15,6 +15,7 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
       switchAgentId: params.switchAgentId,
       apiEndpoint: params.apiEndpoint,
       serverId: params.serverId,
+      autoApprove: params.autoApprove,
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
