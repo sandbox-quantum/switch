@@ -84,7 +84,7 @@ export type {
   SubagentFieldType,
   SubagentsDescriptor,
 } from './capabilities/subagents';
-export type { SwitchSetupDescriptor } from './capabilities/switch-setup';
+export type { ISwitchSetupBehavior, SwitchSetupDescriptor } from './capabilities/switch-setup';
 
 // Typed registry factory
 export { createPluginRegistry } from '../../lib/plugins/registry';

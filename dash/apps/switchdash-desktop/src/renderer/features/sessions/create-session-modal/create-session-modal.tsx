@@ -3,7 +3,6 @@ import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
-import { useAgentAutoApproveDefaults } from '@renderer/features/sessions/hooks/useAgentAutoApproveDefaults';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { rpc } from '@renderer/lib/ipc';
@@ -46,7 +45,6 @@ import { buildConnectPrompt } from './build-connect-prompt';
 // and there is no git worktree — sessions run in the agent's location root. So the
 // spawn dialog only asks for an optional name, an optional initial prompt, and an
 // optional Switch room (and role in it) to connect to on start.
-const SESSION_PROVIDER = 'claude' as const;
 
 const NO_ROLE = '__none__';
 
@@ -83,7 +81,6 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   initialPR?: unknown;
 }) {
   const selectedLocationId = useDefaultLocationId(locationId);
-  const autoApproveDefaults = useAgentAutoApproveDefaults();
   const { navigate } = useNavigate();
 
   const [name, setName] = useState('');
@@ -169,7 +166,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         id,
         agentId: resolvedAgent.id,
         title: trimmedName || 'Session',
-        autoApprove: autoApproveDefaults.getDefault(SESSION_PROVIDER),
+        autoApprove: resolvedAgent.autoApprove,
         initialPrompt,
         subagentName: subagentName || undefined,
       });

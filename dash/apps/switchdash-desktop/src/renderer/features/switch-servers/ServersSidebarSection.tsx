@@ -1,4 +1,14 @@
-import { ChevronDown, ChevronRight, Globe, HardDrive, Plus, Server } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Globe,
+  HardDrive,
+  Pencil,
+  Plus,
+  Server,
+  Trash2,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import {
@@ -9,6 +19,12 @@ import {
 } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { buttonVariants } from '@renderer/lib/ui/button';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@renderer/lib/ui/context-menu';
 import { MicroLabel } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
@@ -42,6 +58,10 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
   // Offer to start a local server whenever there isn't one already, even if the
   // user has remote servers registered.
   const hasManagedServer = store.servers.some((s) => s.managed);
+  // The selected server scopes the whole sidebar. When the list is collapsed the
+  // rows are hidden, so surface the active server's name here to keep it clear
+  // which server is selected in any context.
+  const activeServer = store.servers.find((s) => s.id === store.activeServerId);
 
   return (
     <div className="flex flex-col">
@@ -49,15 +69,20 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
         <button
           type="button"
           onClick={() => store.toggleServersExpanded()}
-          className="flex items-center gap-1 rounded-md px-1 py-0.5 text-foreground-tertiary-passive hover:text-foreground-tertiary"
+          className="flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-foreground-tertiary-passive hover:text-foreground-tertiary"
           aria-label={store.serversExpanded ? 'Collapse servers' : 'Expand servers'}
         >
           {store.serversExpanded ? (
-            <ChevronDown className="size-3.5" />
+            <ChevronDown className="size-3.5 shrink-0" />
           ) : (
-            <ChevronRight className="size-3.5" />
+            <ChevronRight className="size-3.5 shrink-0" />
           )}
           <MicroLabel className="text-foreground-tertiary-passive">Servers</MicroLabel>
+          {!store.serversExpanded && activeServer && (
+            <span className="min-w-0 truncate text-xs font-medium text-foreground-muted">
+              · {activeServer.name}
+            </span>
+          )}
         </button>
         <Tooltip>
           <TooltipTrigger
@@ -151,6 +176,9 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
   const { params } = useParams('server');
+  const showRenameServerModal = useShowModal('renameServerModal');
+  const showDeleteServerModal = useShowModal('deleteServerModal');
+  const showEditServerModal = useShowModal('addServerModal');
 
   const server = store.servers.find((s) => s.id === serverId);
   if (!server) return null;
@@ -158,7 +186,9 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   const connected = store.isConnected(serverId);
   const isViewing = isCurrentView(currentView, 'server') && params.serverId === serverId;
   // The active server scopes the whole sidebar (agents/rooms/sessions). Selecting
-  // a server makes it active and opens its page.
+  // a server makes it active and opens its page. The scoped server stays
+  // highlighted regardless of which view is open — navigating to an agent,
+  // session, or room must not clear the "this server is selected" affordance.
   const isScoped = store.activeServerId === serverId;
 
   // A managed server that isn't running has no gateway to reach, so it can't be
@@ -172,45 +202,96 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   const needsSignIn = !dormant && !connected;
 
   return (
-    <SidebarMenuButton
-      isActive={isViewing}
-      onClick={() => {
-        void store.setActive(serverId);
-        navigate('server', { serverId });
-      }}
-      className="justify-between"
-    >
-      <span className="flex min-w-0 items-center gap-2">
-        <ServerIcon server={server} isScoped={isScoped} />
-        <span className={cn('truncate', isScoped && 'font-medium text-foreground')}>
-          {server.name}
-        </span>
-        {server.managed && (
-          <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
-            {server.managementKind === 'remote' ? (server.sshHost ?? 'Remote') : 'This computer'}
-          </span>
-        )}
-        <span
-          aria-hidden
-          className={cn(
-            'size-1.5 shrink-0 rounded-full',
-            dormant ? 'bg-foreground-muted' : connected ? 'bg-green-500' : 'bg-amber-500'
-          )}
-        />
-      </span>
-      {needsSignIn && (
-        <span
-          role="button"
-          tabIndex={0}
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate('server', { serverId });
-          }}
-          className="shrink-0 rounded border border-red-500/40 px-1.5 py-0.5 text-xs font-medium text-red-500 hover:bg-red-500/10"
+    <ContextMenu>
+      <ContextMenuTrigger
+        render={
+          <SidebarMenuButton
+            isActive={isScoped}
+            onClick={() => {
+              void store.setActive(serverId);
+              navigate('server', { serverId });
+            }}
+            className="relative justify-between"
+          >
+            {isScoped && (
+              <span
+                aria-hidden
+                className="bg-accent absolute top-1/2 left-0 h-4 w-0.5 -translate-y-1/2 rounded-full"
+              />
+            )}
+            <span className="flex min-w-0 items-center gap-2">
+              <ServerIcon server={server} isScoped={isScoped} />
+              <span className={cn('truncate', isScoped && 'font-medium text-foreground')}>
+                {server.name}
+              </span>
+              {server.managed && (
+                <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">
+                  {server.managementKind === 'remote'
+                    ? (server.sshHost ?? 'Remote')
+                    : 'This computer'}
+                </span>
+              )}
+              <span
+                aria-hidden
+                className={cn(
+                  'size-1.5 shrink-0 rounded-full',
+                  dormant ? 'bg-foreground-muted' : connected ? 'bg-green-500' : 'bg-amber-500'
+                )}
+              />
+            </span>
+            {needsSignIn && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate('server', { serverId });
+                }}
+                className="shrink-0 rounded border border-red-500/40 px-1.5 py-0.5 text-xs font-medium text-red-500 hover:bg-red-500/10"
+              >
+                Sign in
+              </span>
+            )}
+          </SidebarMenuButton>
+        }
+      />
+      <ContextMenuContent>
+        <ContextMenuItem
+          onClick={() => showRenameServerModal({ serverId, currentName: server.name })}
         >
-          Sign in
-        </span>
-      )}
-    </SidebarMenuButton>
+          <Pencil className="size-4" />
+          Rename…
+        </ContextMenuItem>
+        {!server.managed && (
+          <ContextMenuItem
+            onClick={() =>
+              showEditServerModal({
+                serverId,
+                initialName: server.name,
+                initialGatewayUrl: server.gatewayUrl,
+                initialApiUrl: server.apiUrl,
+              })
+            }
+          >
+            <ExternalLink className="size-4" />
+            Edit connection…
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem
+          variant="destructive"
+          onClick={() =>
+            showDeleteServerModal({
+              serverId,
+              onSuccess: () => {
+                if (isViewing) navigate('home');
+              },
+            })
+          }
+        >
+          <Trash2 className="size-4" />
+          Delete server…
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 });

@@ -88,6 +88,11 @@ switchCore:
   logLevel: INFO
   # Public base URL the gateway is served on (used for links / OIDC redirects).
   frontendBaseUrl: ""
+  # Public origin (scheme + host, no path) of the gateway HTTP API itself, used
+  # to build the switchdash:// deeplink HTTP redirect so the "Open in SwitchDash"
+  # link is clickable on Discord and other http-only platforms. Leave empty to
+  # post the raw switchdash:// deeplink.
+  gatewayPublicUrl: ""
   # Set the Secure flag on the switch_auth session cookie. True here because the
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP
   # local dev.

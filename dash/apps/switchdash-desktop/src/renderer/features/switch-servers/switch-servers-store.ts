@@ -166,6 +166,48 @@ export class SwitchServersStore {
     }
   }
 
+  async renameServer(id: string, name: string): Promise<boolean> {
+    this.clearError();
+    try {
+      await rpc.switchServers.renameServer({ id, name });
+      const servers = await rpc.switchServers.listServers();
+      runInAction(() => {
+        this.servers = servers;
+      });
+      return true;
+    } catch (cause) {
+      this.setError(cause);
+      return false;
+    }
+  }
+
+  /**
+   * Delete a server. For a managed server this first tears down its stack (the
+   * Docker/SSH reset — stops containers and destroys the stack's data), since
+   * removing the record while the stack keeps running would strand it. External
+   * servers have no stack, so this is a plain de-register. In both cases the
+   * server's agents are unlinked but kept (see {@link removeServer}), never
+   * deleted. Returns false if the teardown or de-register failed.
+   */
+  async deleteServer(serverId: string): Promise<boolean> {
+    this.clearError();
+    const server = this.servers.find((s) => s.id === serverId);
+    try {
+      if (server?.managed) {
+        if (server.managementKind === 'remote' && server.sshHost) {
+          await rpc.remoteSwitchServer.reset(server.sshHost);
+        } else {
+          await rpc.localSwitchServer.reset();
+        }
+      }
+    } catch (cause) {
+      this.setError(cause);
+      return false;
+    }
+    await this.removeServer(serverId);
+    return this.error === null;
+  }
+
   async removeServer(serverId: string): Promise<void> {
     this.clearError();
     try {

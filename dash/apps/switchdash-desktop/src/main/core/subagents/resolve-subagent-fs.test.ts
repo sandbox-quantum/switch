@@ -36,6 +36,7 @@ function agent(overrides: Partial<Agent>): Agent {
     apiEndpoint: 'https://switch.example.com',
     serverId: 'srv-1',
     status: null,
+    autoApprove: false,
     createdAt: '',
     updatedAt: '',
     ...overrides,

@@ -525,6 +525,128 @@ def test_send_message_to_dm_falls_back_to_bot_post() -> None:
     assert ref == f"{dm.id}:501"
 
 
+# ── Outbound attachments ─────────────────────────────────────────────────────
+
+
+def test_send_attachment_posts_via_webhook_with_agent_identity() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+
+    ref = _run(
+        adapter.send_attachment(
+            str(CHANNEL_ID),
+            "my-agent",
+            "shot.png",
+            "image/png",
+            b"PNGDATA",
+            caption="look **here**",
+        )
+    )
+
+    assert len(webhook.sent) == 1
+    call = webhook.sent[0]
+    assert call["content"] == "look **here**"
+    assert call["username"] == "my-agent"
+    assert "my-agent" in call["avatar_url"]
+    assert isinstance(call["file"], discord.File)
+    assert call["file"].filename == "shot.png"
+    # Image previews must render, so embeds are NOT suppressed for attachments.
+    assert "suppress_embeds" not in call
+    assert "thread" not in call
+    assert ref == f"{CHANNEL_ID}:901"
+
+
+def test_send_attachment_without_caption_sends_empty_content() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+
+    _run(
+        adapter.send_attachment(
+            str(CHANNEL_ID), "my-agent", "shot.png", "image/png", b"PNGDATA"
+        )
+    )
+
+    assert webhook.sent[0]["content"] == ""
+    assert webhook.sent[0]["file"].filename == "shot.png"
+
+
+def test_send_attachment_into_thread() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    thread = _FakeThread(parent=channel, thread_id=4000)
+    adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+
+    ref = _run(
+        adapter.send_attachment(
+            str(CHANNEL_ID),
+            "my-agent",
+            "shot.png",
+            "image/png",
+            b"PNGDATA",
+            thread_root_id=f"{CHANNEL_ID}:4000",
+        )
+    )
+
+    assert webhook.sent[0]["thread"] is thread
+    assert ref == "4000:901"
+
+
+def test_send_attachment_to_dm_posts_file_as_bot() -> None:
+    adapter = _adapter()
+    dm = _FakeDMChannel()
+    adapter._client = _FakeClient({dm.id: dm})
+
+    ref = _run(
+        adapter.send_attachment(
+            str(dm.id), "my-agent", "shot.png", "image/png", b"PNGDATA", caption="hi"
+        )
+    )
+
+    assert dm.sent[0]["content"] == "**my-agent**: hi"
+    assert dm.sent[0]["file"].filename == "shot.png"
+    assert ref == f"{dm.id}:501"
+
+
+def test_send_attachment_falls_back_to_text_note_on_http_error() -> None:
+    class _FileRejectingWebhook(_FakeWebhook):
+        async def send(self, **kwargs: Any) -> Any:
+            if "file" in kwargs:
+                raise discord.HTTPException(_FakeResponse(), "upload failed")
+            return await super().send(**kwargs)
+
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FileRejectingWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+
+    ref = _run(
+        adapter.send_attachment(
+            str(CHANNEL_ID),
+            "my-agent",
+            "shot.png",
+            "image/png",
+            b"PNGDATA",
+            caption="a picture",
+        )
+    )
+
+    # Base fallback posts a disclosed text note (no file) via send_message.
+    text_posts = [c for c in webhook.sent if "file" not in c]
+    assert len(text_posts) == 1
+    assert "shot.png" in text_posts[0]["content"]
+    assert "a picture" in text_posts[0]["content"]
+    assert ref == f"{CHANNEL_ID}:901"
+
+
 def test_admin_message_posts_as_bot_not_webhook() -> None:
     adapter = _adapter()
     channel = _FakeChannel()

@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
+import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { AutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-session-settings-section';
 import { SubagentAutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/subagent-auto-session-settings-section';
 import {
@@ -30,6 +31,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
       ) : (
         <>
           <AutoSessionSettingsSection locationId={locationId} />
+          <AutoApproveSettingsSection locationId={locationId} />
           <AddressingPolicySettingsSection locationId={locationId} />
         </>
       )}

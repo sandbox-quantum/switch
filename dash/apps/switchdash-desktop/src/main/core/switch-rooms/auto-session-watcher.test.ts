@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const createSession = vi.fn();
 const getConnections = vi.fn();
+const getAgentById = vi.fn();
 
 vi.mock('@main/lib/logger', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -15,9 +16,12 @@ vi.mock('./switch-room-service', () => ({
   switchRoomService: { getConnections: () => getConnections() },
 }));
 
-// These are only touched by startForAgent / the loops, not by the decision
-// logic under test — stub them so the module imports cleanly.
-vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: vi.fn() }));
+// spawnForRoom reads the agent to decide autoApprove; startForAgent / the loops
+// also touch this. Route it through a controllable mock so tests can set the
+// per-agent flag.
+vi.mock('@main/core/agents/getAgentById', () => ({
+  getAgentById: (...args: unknown[]) => getAgentById(...args),
+}));
 vi.mock('@main/db/client', () => ({ db: {} }));
 vi.mock('./auto-session-store', () => ({
   listAutoSessionAgentIds: vi.fn(async () => []),
@@ -50,6 +54,8 @@ describe('AutoSessionWatcher.handleNotification', () => {
   beforeEach(() => {
     createSession.mockReset();
     getConnections.mockReset();
+    getAgentById.mockReset();
+    getAgentById.mockResolvedValue({ id: 'local-1', autoApprove: false });
     createSession.mockResolvedValue({ success: true, data: { session: { id: 'new' } } });
   });
 
@@ -63,6 +69,30 @@ describe('AutoSessionWatcher.handleNotification', () => {
     const params = createSession.mock.calls[0][0] as { agentId: string; initialPrompt: string };
     expect(params.agentId).toBe('local-1');
     expect(params.initialPrompt).toContain('room-x');
+  });
+
+  it('spawns with permissions enforced when the agent has autoApprove off', async () => {
+    getConnections.mockReturnValue([]);
+    getAgentById.mockResolvedValue({ id: 'local-1', autoApprove: false });
+    const watcher = fakeWatcher();
+
+    handle(watcher, 'room-x');
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+
+    const params = createSession.mock.calls[0][0] as { autoApprove: boolean };
+    expect(params.autoApprove).toBe(false);
+  });
+
+  it('spawns with permissions bypassed when the agent has autoApprove on', async () => {
+    getConnections.mockReturnValue([]);
+    getAgentById.mockResolvedValue({ id: 'local-1', autoApprove: true });
+    const watcher = fakeWatcher();
+
+    handle(watcher, 'room-x');
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+
+    const params = createSession.mock.calls[0][0] as { autoApprove: boolean };
+    expect(params.autoApprove).toBe(true);
   });
 
   it('does not spawn when a live session already attends the room', async () => {

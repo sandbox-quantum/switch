@@ -89,6 +89,36 @@ below:
 
 ### [Unreleased]
 
+### [0.11.4] - 2026-07-24
+
+#### Added
+- Reset a remote agent — kill and reset all of its tmux sessions (CHOO-1656).
+
+### [0.11.3] - 2026-07-24
+
+#### Changed
+- Sidebar and session UX polish (CHOO-1644).
+
+### [0.11.2] - 2026-07-24
+
+#### Added
+- Delete and rename connected Switch servers (CHOO-1486).
+- Per-agent bypass-permissions setting — defaults off, on for remote agents
+  (#57).
+
+### [0.11.1] - 2026-07-24
+
+#### Added
+- Agent delete now tears down its credentials and optionally deletes the agent
+  from Switch (CHOO-1364).
+- Agent error indicator with a retry button (CHOO-1639).
+
+#### Changed
+- Discord bridge polish: deeplink redirect, room icon, and outbound image relay
+  (CHOO-1588).
+- Relicensed to Apache-2.0 + Commons Clause, with a CLA gate for contributions
+  (CHOO-1251).
+
 ### [0.11.0] - 2026-07-20
 
 #### Added

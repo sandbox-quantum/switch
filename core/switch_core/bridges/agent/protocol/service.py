@@ -67,6 +67,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.deeplinks import switchdash_to_gateway
 from switch_core.events import (
     LlmCallReport as MatrixLlmCallReport,
 )
@@ -980,7 +981,20 @@ class ProtocolService:
         `detail` is a short activity line for the running turn (e.g. "Editing
         foo.py"); like `thread_id` it is transient and rides the event only —
         the bridge surfaces it in place on the live working message.
+
+        The `switchdash://` deeplink is rewritten to a gateway HTTP redirect when
+        `GATEWAY_PUBLIC_URL` is configured, so the "Open in SwitchDash" link is
+        clickable on platforms that only linkify http(s) (Discord). The rewritten
+        link is what gets persisted and emitted, so both the bridged status
+        message and the `!status` command surface a clickable link. When unset,
+        the raw `switchdash://` deeplink is left untouched (today's behavior).
         """
+        if deeplink_url is not None and self.config.gateway_public_url:
+            deeplink_url = (
+                switchdash_to_gateway(deeplink_url, self.config.gateway_public_url)
+                or deeplink_url
+            )
+
         room = await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             agent = await self.agent_store.get(session, agent_id)

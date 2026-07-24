@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { toast } from 'sonner';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
@@ -6,6 +7,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { events } from '@renderer/lib/ipc';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
+import { pickDeeplinkTarget } from './session-deeplink-resolve';
 import { switchRoomsStore as roomConnectionsStore } from './switch-rooms-store';
 
 /**
@@ -58,9 +60,11 @@ export function SessionDeeplinkListener(): null {
     void agentsStore.load();
     return events.on(sessionDeeplinkChannel, ({ agentId, roomId, server, sessionId }) => {
       void (async () => {
-        // Prefer the shared session id (resolves on any client); fall back
-        // to room matching for older links that didn't carry it.
-        const match = (sessionId ? findSessionById(sessionId) : null) ?? findSessionForRoom(roomId);
+        const match = pickDeeplinkTarget(
+          sessionId,
+          () => findSessionById(sessionId),
+          () => findSessionForRoom(roomId)
+        );
         if (!match) {
           console.warn('[deeplink] no local session for deeplink', {
             sessionId,
@@ -68,15 +72,27 @@ export function SessionDeeplinkListener(): null {
             agentId,
             server,
           });
+          toast.error('No agent session found for this link', {
+            description:
+              'This switchdash has no local session for the linked room. Open it on the client running that agent.',
+          });
           return;
         }
         // Scope the sidebar to the session's server first; otherwise its location
         // is filtered out of the server-scoped tree and the reveal has nothing
         // to expand.
+        console.info('[deeplink] navigating to session', {
+          linkSessionId: sessionId,
+          matchedSessionId: match.sessionId,
+          matchedVia: sessionId ? 'session-id' : 'room',
+          locationId: match.locationId,
+          roomId,
+        });
         if (!agentsStore.loaded) await agentsStore.load();
         const serverId = agentsStore.serverIdForLocation(match.locationId);
         if (serverId) await switchServersStore.setActive(serverId);
         sidebarStore.revealSessionInRoom(match.locationId, roomId);
+        sidebarStore.requestScrollToSession(match.sessionId);
         appState.navigation.navigate('session', match);
       })();
     });

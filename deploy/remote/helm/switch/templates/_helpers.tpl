@@ -240,6 +240,10 @@ Include with `nindent 12`.
 - name: FRONTEND_BASE_URL
   value: {{ .Values.switchCore.frontendBaseUrl | quote }}
 {{- end }}
+{{- if .Values.switchCore.gatewayPublicUrl }}
+- name: GATEWAY_PUBLIC_URL
+  value: {{ .Values.switchCore.gatewayPublicUrl | quote }}
+{{- end }}
 {{- end }}
 
 {{/*

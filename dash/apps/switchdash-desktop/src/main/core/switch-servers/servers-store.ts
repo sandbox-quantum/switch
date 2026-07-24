@@ -6,6 +6,7 @@ import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema
 import type {
   AddServerParams,
   ManagedServerRef,
+  RenameServerParams,
   SwitchServer,
   UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
@@ -136,10 +137,13 @@ export async function ensureManagedServer(
     ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
   const existing = existingForTarget ?? (await getServerByGatewayUrl(gatewayUrl));
   if (existing) {
+    // Preserve the stored name on restart: the name is set once at creation and
+    // then owned by the user (rename). Only the URLs/kind refresh when a managed
+    // stack restarts (ports can change), so overwriting name here would clobber a
+    // rename — the local stack always restarts with a hardcoded default name.
     const [row] = await db
       .update(switchServers)
       .set({
-        name: params.name.trim(),
         gatewayUrl,
         apiUrl,
         managed: true,
@@ -199,6 +203,18 @@ export async function updateServer(params: UpdateServerParams): Promise<SwitchSe
       apiUrl: normaliseUrl(params.apiUrl),
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
+    .where(eq(switchServers.id, params.id))
+    .returning();
+  if (!row) {
+    throw new Error(`No Switch server with id ${params.id}`);
+  }
+  return mapRow(row);
+}
+
+export async function renameServer(params: RenameServerParams): Promise<SwitchServer> {
+  const [row] = await db
+    .update(switchServers)
+    .set({ name: params.name.trim(), updatedAt: sql`CURRENT_TIMESTAMP` })
     .where(eq(switchServers.id, params.id))
     .returning();
   if (!row) {

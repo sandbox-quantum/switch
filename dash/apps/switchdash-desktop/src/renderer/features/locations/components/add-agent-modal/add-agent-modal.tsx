@@ -63,7 +63,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const showAddServerModal = useShowModal('addServerModal');
 
   const pickState = usePickMode();
-  const configureForm = useConfigureAgentForm(pickState.path);
+  const configureForm = useConfigureAgentForm(pickState.path, false);
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
@@ -71,7 +71,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
   // Configure form for onboarding a brand-new agent in the remote dir. Defaults
   // (name/description) are derived from the remote dir just like a local agent.
-  const remoteConfigureForm = useConfigureAgentForm(remoteRepoDir.trim());
+  const remoteConfigureForm = useConfigureAgentForm(remoteRepoDir.trim(), true);
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
@@ -265,6 +265,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           serverId: pickState.serverId,
           providerId: pickState.providerId,
           remote: { sshHost: runHost, dir: trimmedRemoteDir },
+          autoApprove: remoteConfigureForm.autoApprove,
         }
       : {
           mode: 'pick',
@@ -273,6 +274,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           serverId: pickState.serverId,
           providerId: pickState.providerId,
           remote: undefined,
+          autoApprove: configureForm.autoApprove,
         };
     // The new location mounts (leaving the always-shown "unregistered" state)
     // before agentsStore re-fetches its agent, which would drop it out of the

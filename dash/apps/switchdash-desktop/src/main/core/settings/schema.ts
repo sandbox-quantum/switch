@@ -36,10 +36,6 @@ export const sessionSettingsSchema = z.object({
   includeIssueContextByDefault: z.boolean(),
 });
 
-export const agentAutoApproveDefaultsSchema = z
-  .partialRecord(z.enum(AGENT_PROVIDER_IDS), z.boolean())
-  .default({});
-
 export const terminalSettingsSchema = z.object({
   fontFamily: z.string().optional(),
   fontSize: z.number().min(TERMINAL_FONT_SIZE_MIN).max(TERMINAL_FONT_SIZE_MAX).optional(),
@@ -136,7 +132,6 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   localLocation: localLocationSettingsSchema,
   location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
-  agentAutoApproveDefaults: agentAutoApproveDefaultsSchema,
   defaultAgent: defaultAgentSchema,
   keyboard: keyboardSettingsSchema,
   notifications: notificationSettingsSchema,
@@ -154,7 +149,6 @@ export const appSettingsSchema = z.object({
   localLocation: localLocationSettingsSchema,
   location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
-  agentAutoApproveDefaults: agentAutoApproveDefaultsSchema,
   defaultAgent: defaultAgentSchema,
   keyboard: keyboardSettingsSchema,
   notifications: notificationSettingsSchema,

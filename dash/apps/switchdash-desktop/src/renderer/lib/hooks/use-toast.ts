@@ -27,8 +27,25 @@ function toast({ title, description, variant, action, icon }: Toast) {
   return sonnerToast(title ?? '', options);
 }
 
-function useToast() {
-  return { toast };
+/**
+ * Show a single toast that tracks a promise: a loading state while it runs, then
+ * a success or error state when it settles. Use for actions with a noticeable
+ * delay (e.g. a remote reset) so the user gets "working…" then "done" feedback
+ * from one toast rather than a click with no acknowledgement.
+ */
+function toastPromise<T>(
+  promise: Promise<T>,
+  messages: { loading: string; success: string; error: (error: unknown) => string }
+) {
+  return sonnerToast.promise(promise, {
+    loading: messages.loading,
+    success: messages.success,
+    error: (error: unknown) => messages.error(error),
+  });
 }
 
-export { toast, useToast };
+function useToast() {
+  return { toast, toastPromise };
+}
+
+export { toast, toastPromise, useToast };

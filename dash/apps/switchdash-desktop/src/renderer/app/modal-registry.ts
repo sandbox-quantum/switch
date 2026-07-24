@@ -1,10 +1,14 @@
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
+import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
+import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
 import { AddServerModal } from '@renderer/features/switch-servers/AddServerModal';
 import { AssignServerModal } from '@renderer/features/switch-servers/assign-server-modal';
+import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
+import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
 import { ConfirmActionDialog } from '@renderer/lib/components/confirm-action-dialog';
 import { ExternalLinkChoiceDialog } from '@renderer/lib/components/external-link-choice-dialog';
 import { FeedbackModal } from '@renderer/lib/components/feedback-modal/feedback-modal';
@@ -32,6 +36,8 @@ export const modalRegistry = {
   sessionModal: createModal(CreateSessionModal),
   addAgentModal: createModal(AddAgentModal),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
+  deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
+  resetAgentModal: createModal(ResetAgentModal, { size: 'sm' }),
   confirmExternalLinkModal: createModal(ExternalLinkChoiceDialog, { size: 'sm' }),
   unsavedChangesModal: createModal(UnsavedChangesDialog, { size: 'xs' }),
   feedbackModal: createModal(FeedbackModal),
@@ -39,5 +45,7 @@ export const modalRegistry = {
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
   addServerModal: createModal(AddServerModal, { size: 'md' }),
   assignServerModal: createModal(AssignServerModal, { size: 'sm' }),
+  renameServerModal: createModal(RenameServerModal, { size: 'xs' }),
+  deleteServerModal: createModal(DeleteServerModal, { size: 'sm' }),
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ModalRegistryEntry<any, any>>;

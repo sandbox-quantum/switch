@@ -7,6 +7,7 @@ const REMOTE_AGENT = {
   providerId: 'claude',
   locationId: 'proj-1',
   switchAgentId: 'switch-1',
+  autoApprove: true,
 };
 
 const getAgentById = vi.fn(async () => REMOTE_AGENT as unknown);

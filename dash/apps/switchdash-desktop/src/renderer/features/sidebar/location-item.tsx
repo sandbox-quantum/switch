@@ -6,6 +6,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Server,
   Trash2,
   TriangleAlert,
@@ -25,6 +26,7 @@ import {
 import { hasSessionError } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import {
   useNavigate,
@@ -67,8 +69,9 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
   const { params: locationParams } = useParams('location');
   const { params: sessionParams } = useParams('session');
   const showCreateSessionModal = useShowModal('sessionModal');
-  const showAssignServerModal = useShowModal('assignServerModal');
+  const showConfirmReset = useShowModal('resetAgentModal');
   const confirmDeleteAgent = useConfirmDeleteAgent();
+  const { toastPromise } = useToast();
 
   // Resolve the agent's Switch identity so the "go to" button can open its
   // detail page in the gateway web app (parallel to a room's "go to" button).
@@ -216,7 +219,10 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
                     <TooltipTrigger>
                       <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
                     </TooltipTrigger>
-                    <TooltipContent>Runs remotely on {location.data.sshHost}</TooltipContent>
+                    <TooltipContent>
+                      Runs remotely on {location.data.sshHost}
+                      {location.data.dir ? ` · ${location.data.dir}` : ''}
+                    </TooltipContent>
                   </Tooltip>
                 )}
                 {locationViewKind(location) === 'path_not_found' && (
@@ -305,10 +311,26 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
         </SidebarMenuRow>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={() => showAssignServerModal({ locationId })}>
-          <Server className="size-4" />
-          Assign server
-        </ContextMenuItem>
+        {location.data?.sshHost != null && agent && (
+          <ContextMenuItem
+            onClick={() => {
+              showConfirmReset({
+                agentLabel: locationLabel,
+                onSuccess: () => {
+                  void toastPromise(rpc.agents.resetRemoteAgent({ agentId: agent.id }), {
+                    loading: `Resetting ${locationLabel}…`,
+                    success: `${locationLabel} was reset`,
+                    error: (error) =>
+                      `Failed to reset agent: ${error instanceof Error ? error.message : String(error)}`,
+                  });
+                },
+              });
+            }}
+          >
+            <RotateCcw className="size-4" />
+            Reset agent
+          </ContextMenuItem>
+        )}
         <ContextMenuItem
           variant="destructive"
           onClick={() => {

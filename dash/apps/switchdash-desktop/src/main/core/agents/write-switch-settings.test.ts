@@ -4,7 +4,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { detectSwitchAgent } from './detect';
 import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
-import { mergeSwitchApiEndpoint, writeSwitchSettings } from './write-switch-settings';
+import {
+  mergeSwitchApiEndpoint,
+  mergeSwitchSettings,
+  removeSwitchSettings,
+  writeSwitchSettings,
+} from './write-switch-settings';
 
 let dir: string;
 
@@ -129,5 +134,100 @@ describe('mergeSwitchApiEndpoint', () => {
         'https://new.example.com'
       )
     ).toBeNull();
+  });
+});
+
+describe('removeSwitchSettings', () => {
+  it('round-trips a freshly provisioned file to deletion', () => {
+    // A file written by mergeSwitchSettings with no pre-existing content is ours
+    // alone, so tearing it down should leave nothing behind.
+    const provisioned = mergeSwitchSettings(null, {
+      apiEndpoint: 'https://switch.example.com',
+      apiToken: 'secret-token',
+      agentId: 'agent-123',
+    });
+
+    expect(removeSwitchSettings(provisioned)).toEqual({ kind: 'delete' });
+  });
+
+  it('strips only the SWITCH_* keys and connector rules, preserving everything else', () => {
+    const existing = JSON.stringify({
+      permissions: { allow: ['Bash', 'mcp__plugin_switch-connector_switch'], deny: ['Read'] },
+      hooks: { PostToolUse: [{ command: 'x' }] },
+      env: {
+        EXISTING_KEY: 'keep-me',
+        SWITCH_API_ENDPOINT: 'https://switch.example.com',
+        SWITCH_API_TOKEN: 'secret-token',
+        SWITCH_AGENT_ID: 'agent-123',
+      },
+    });
+
+    const result = removeSwitchSettings(existing);
+    expect(result.kind).toBe('write');
+    const parsed = JSON.parse((result as { content: string }).content) as Record<string, unknown>;
+
+    // Our env keys are gone; the user's stays.
+    expect(parsed.env).toEqual({ EXISTING_KEY: 'keep-me' });
+    // The connector allow rule is removed; the user's allow/deny rules stay.
+    expect(parsed.permissions).toEqual({ allow: ['Bash'], deny: ['Read'] });
+    // Unrelated keys are untouched.
+    expect(parsed.hooks).toEqual({ PostToolUse: [{ command: 'x' }] });
+  });
+
+  it('drops now-empty env and permissions blocks but keeps other keys', () => {
+    const existing = JSON.stringify({
+      hooks: { PostToolUse: [{ command: 'x' }] },
+      permissions: {
+        allow: [
+          'mcp__plugin_switch-connector_switch',
+          'mcp__plugin_switch-connector_switch-channel',
+        ],
+      },
+      env: { SWITCH_API_ENDPOINT: 'e', SWITCH_API_TOKEN: 't', SWITCH_AGENT_ID: 'a' },
+    });
+
+    const result = removeSwitchSettings(existing);
+    expect(result.kind).toBe('write');
+    const parsed = JSON.parse((result as { content: string }).content) as Record<string, unknown>;
+
+    // Both blocks held only our contributions, so both are dropped entirely.
+    expect(parsed).toEqual({ hooks: { PostToolUse: [{ command: 'x' }] } });
+    expect('env' in parsed).toBe(false);
+    expect('permissions' in parsed).toBe(false);
+  });
+
+  it('skips files that are not a provisioned Switch agent', () => {
+    // Absent file.
+    expect(removeSwitchSettings(null)).toEqual({ kind: 'skip' });
+    // Unparseable.
+    expect(removeSwitchSettings('{not json')).toEqual({ kind: 'skip' });
+    // Empty object.
+    expect(removeSwitchSettings('{}')).toEqual({ kind: 'skip' });
+    // A real config with no Switch creds -> leave it untouched.
+    expect(removeSwitchSettings(JSON.stringify({ env: { OTHER: 'x' } }))).toEqual({ kind: 'skip' });
+  });
+
+  it('tears down even a partially-provisioned file (only some SWITCH_* keys)', () => {
+    // Defensive: if a write was interrupted and only the token survived, teardown
+    // must still remove it rather than leaving a dangling secret.
+    const existing = JSON.stringify({ env: { SWITCH_API_TOKEN: 'secret-token' } });
+    expect(removeSwitchSettings(existing)).toEqual({ kind: 'delete' });
+  });
+
+  it('leaves the directory undetectable as a Switch agent after teardown', async () => {
+    await writeSwitchSettings({
+      dir,
+      apiEndpoint: 'https://switch.example.com',
+      apiToken: 'secret-token',
+      agentId: 'agent-123',
+    });
+    const raw = await fs.readFile(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), 'utf8');
+
+    const result = removeSwitchSettings(raw);
+    // The file was ours alone -> delete it, which makes the dir undetectable.
+    expect(result).toEqual({ kind: 'delete' });
+    await fs.rm(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), { force: true });
+
+    expect(await detectSwitchAgent(dir)).toBeNull();
   });
 });

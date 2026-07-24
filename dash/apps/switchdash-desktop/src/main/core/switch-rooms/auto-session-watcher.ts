@@ -384,6 +384,11 @@ class AutoSessionWatcher {
   }
 
   private async spawnForRoom(watcher: AgentWatcher, roomId: string): Promise<void> {
+    // Bypass permissions only if this agent is configured to. Auto-started
+    // local sessions run with no operator watching, but the default is off —
+    // the per-agent setting (location settings) is the source of truth.
+    const agent = await getAgentById(watcher.localAgentId);
+    const autoApprove = agent?.autoApprove ?? false;
     let lastError: string | null = null;
     for (let attempt = 1; attempt <= SPAWN_MAX_ATTEMPTS; attempt += 1) {
       if (watcher.abort.signal.aborted) return;
@@ -397,7 +402,7 @@ class AutoSessionWatcher {
           // connect_to_room, the connect hook starts the per-room poller, which
           // injects the message waiting in the room's event queue.
           initialPrompt: `connect to switch room ${roomId}`,
-          autoApprove: true,
+          autoApprove,
         });
         if (result.success) {
           log.info('AutoSessionWatcher: spawned session for room', {

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
+from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.event_queue import EventQueue
@@ -120,6 +121,7 @@ def create_agent_bridge_app(
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     app.include_router(api_router, prefix="/agents", tags=["api"])
+    app.include_router(deeplink_router, tags=["deeplink"])
 
     app.state.config = config
 
