@@ -9,6 +9,7 @@ import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
 import { onboardAgent } from './onboard-agent';
 import { renameAgent } from './renameAgent';
+import { resetRemoteAgent } from './reset-remote-agent';
 import {
   getAgentAutoSession,
   setAgentAutoSession,
@@ -24,6 +25,7 @@ export const agentsController = createRPCController({
   renameAgent: (params: RenameAgentParams) => renameAgent(params),
   deleteAgent: (params: { agentId: string } & DeleteAgentOptions) =>
     deleteAgent(params.agentId, { deleteInSwitch: params.deleteInSwitch }),
+  resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
   updateAgent: (params: UpdateAgentParams) => updateAgent(params),
   assignServer: (params: { agentId: string; serverId: string }): Promise<AgentVerifyResult> =>
     assignAgentServer(params),

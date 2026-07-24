@@ -6,6 +6,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Server,
   Trash2,
   TriangleAlert,
@@ -25,6 +26,7 @@ import {
 import { hasSessionError } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import {
   useNavigate,
@@ -67,8 +69,9 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
   const { params: locationParams } = useParams('location');
   const { params: sessionParams } = useParams('session');
   const showCreateSessionModal = useShowModal('sessionModal');
-  const showAssignServerModal = useShowModal('assignServerModal');
+  const showConfirmReset = useShowModal('confirmActionModal');
   const confirmDeleteAgent = useConfirmDeleteAgent();
+  const { toast } = useToast();
 
   // Resolve the agent's Switch identity so the "go to" button can open its
   // detail page in the gateway web app (parallel to a room's "go to" button).
@@ -305,10 +308,38 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
         </SidebarMenuRow>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={() => showAssignServerModal({ locationId })}>
-          <Server className="size-4" />
-          Assign server
-        </ContextMenuItem>
+        {location.data?.sshHost != null && agent && (
+          <ContextMenuItem
+            onClick={() => {
+              showConfirmReset({
+                title: 'Reset agent?',
+                description:
+                  'This kills all of this agent’s remote sessions — its watcher and every running session — then restarts it fresh. Any in-progress work in those sessions is lost.',
+                confirmLabel: 'Reset',
+                onSuccess: () => {
+                  void (async () => {
+                    try {
+                      await rpc.agents.resetRemoteAgent({ agentId: agent.id });
+                      toast({
+                        title: 'Agent reset',
+                        description: `${locationLabel} was reset.`,
+                      });
+                    } catch (error) {
+                      toast({
+                        title: 'Failed to reset agent',
+                        description: error instanceof Error ? error.message : String(error),
+                        variant: 'destructive',
+                      });
+                    }
+                  })();
+                },
+              });
+            }}
+          >
+            <RotateCcw className="size-4" />
+            Reset agent
+          </ContextMenuItem>
+        )}
         <ContextMenuItem
           variant="destructive"
           onClick={() => {
