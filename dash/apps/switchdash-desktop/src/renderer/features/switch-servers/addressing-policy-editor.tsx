@@ -76,6 +76,10 @@ export function AddressingPolicyEditor({
 }) {
   const restricted = value !== null;
   const rules = value?.rules ?? [];
+  // Which rule (by index) is currently open for editing. Loaded rules start
+  // collapsed (shown as a read-only summary); a freshly added rule opens for
+  // editing. Only one rule is edited at a time.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   const optionsFor = (key: DimKey): OptionItem[] => {
     if (key === 'rooms') return rooms;
@@ -87,6 +91,17 @@ export function AddressingPolicyEditor({
   const setRules = (next: AddressingRule[]) => onChange({ rules: next });
   const updateRule = (index: number, next: AddressingRule) =>
     setRules(rules.map((r, i) => (i === index ? next : r)));
+
+  const addRule = () => {
+    setRules([...rules, EMPTY_RULE]);
+    setEditingIndex(rules.length);
+  };
+  const removeRule = (index: number) => {
+    setRules(rules.filter((_r, i) => i !== index));
+    setEditingIndex((prev) =>
+      prev === null || prev === index ? null : prev > index ? prev - 1 : prev
+    );
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -112,65 +127,165 @@ export function AddressingPolicyEditor({
               a rule or switch back to Open.
             </p>
           )}
-          {rules.map((rule, index) => (
-            <div key={index} className="flex flex-col gap-2 rounded-md border border-border p-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Rule {index + 1}</span>
+          {rules.map((rule, index) =>
+            index === editingIndex ? (
+              <div
+                key={index}
+                className="border-primary/50 flex flex-col gap-2 rounded-md border bg-background-2/40 p-2"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Editing rule {index + 1}</span>
+                  {!disabled && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => removeRule(index)}
+                      aria-label="Remove rule"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  )}
+                </div>
+                <DimensionRow
+                  label="Rooms"
+                  value={rule.rooms}
+                  options={optionsFor('rooms')}
+                  allowNone={false}
+                  disabled={disabled}
+                  onChange={(rooms) => updateRule(index, { ...rule, rooms })}
+                />
+                <DimensionRow
+                  label="Room groups"
+                  value={rule.room_groups}
+                  options={optionsFor('room_groups')}
+                  allowNone={false}
+                  disabled={disabled}
+                  onChange={(room_groups) => updateRule(index, { ...rule, room_groups })}
+                />
+                <DimensionRow
+                  label="Users"
+                  value={rule.users}
+                  options={optionsFor('users')}
+                  allowNone
+                  disabled={disabled}
+                  onChange={(users) => updateRule(index, { ...rule, users })}
+                />
+                <DimensionRow
+                  label="Agents"
+                  value={rule.agents}
+                  options={optionsFor('agents')}
+                  allowNone
+                  disabled={disabled}
+                  onChange={(agents) => updateRule(index, { ...rule, agents })}
+                />
+                {deadRuleReason(rule) !== null && (
+                  <p className="text-destructive text-xs">{deadRuleReason(rule)}</p>
+                )}
                 {!disabled && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => setRules(rules.filter((_r, i) => i !== index))}
-                    aria-label="Remove rule"
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      disabled={deadRuleReason(rule) !== null}
+                      onClick={() => setEditingIndex(null)}
+                    >
+                      Apply rule
+                    </Button>
+                  </div>
                 )}
               </div>
-              <DimensionRow
-                label="Rooms"
-                value={rule.rooms}
-                options={optionsFor('rooms')}
-                allowNone={false}
+            ) : (
+              <RuleSummary
+                key={index}
+                index={index}
+                rule={rule}
+                rooms={rooms}
+                roomGroups={roomGroups}
+                users={users}
+                agents={agents}
                 disabled={disabled}
-                onChange={(rooms) => updateRule(index, { ...rule, rooms })}
+                onEdit={() => setEditingIndex(index)}
+                onRemove={() => removeRule(index)}
               />
-              <DimensionRow
-                label="Room groups"
-                value={rule.room_groups}
-                options={optionsFor('room_groups')}
-                allowNone={false}
-                disabled={disabled}
-                onChange={(room_groups) => updateRule(index, { ...rule, room_groups })}
-              />
-              <DimensionRow
-                label="Users"
-                value={rule.users}
-                options={optionsFor('users')}
-                allowNone
-                disabled={disabled}
-                onChange={(users) => updateRule(index, { ...rule, users })}
-              />
-              <DimensionRow
-                label="Agents"
-                value={rule.agents}
-                options={optionsFor('agents')}
-                allowNone
-                disabled={disabled}
-                onChange={(agents) => updateRule(index, { ...rule, agents })}
-              />
-              {deadRuleReason(rule) !== null && (
-                <p className="text-destructive text-xs">{deadRuleReason(rule)}</p>
-              )}
-            </div>
-          ))}
+            )
+          )}
           {!disabled && (
             <div>
-              <Button variant="outline" size="sm" onClick={() => setRules([...rules, EMPTY_RULE])}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={editingIndex !== null}
+                onClick={addRule}
+              >
                 Add rule
               </Button>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Human-readable summary of one dimension for the collapsed rule view. */
+function dimLabel(dim: AddressingDimension, options: OptionItem[]): string {
+  if (dim === '*') return 'any';
+  if (dim.length === 0) return 'none';
+  return dim.map((id) => options.find((o) => o.id === id)?.label ?? id).join(', ');
+}
+
+/** Collapsed, read-only view of an applied rule — makes it obvious the rule is
+ * set up (vs the bordered/highlighted editing view). */
+function RuleSummary({
+  index,
+  rule,
+  rooms,
+  roomGroups,
+  users,
+  agents,
+  disabled,
+  onEdit,
+  onRemove,
+}: {
+  index: number;
+  rule: AddressingRule;
+  rooms: OptionItem[];
+  roomGroups: OptionItem[];
+  users: OptionItem[];
+  agents: OptionItem[];
+  disabled: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const dead = deadRuleReason(rule);
+  return (
+    <div className="flex items-start justify-between gap-2 rounded-md border border-border p-2">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-sm font-medium">Rule {index + 1}</span>
+        <div className="flex flex-col gap-0.5 text-xs text-foreground-muted">
+          <span>
+            <span className="font-medium">Rooms:</span> {dimLabel(rule.rooms, rooms)}
+          </span>
+          <span>
+            <span className="font-medium">Room groups:</span>{' '}
+            {dimLabel(rule.room_groups, roomGroups)}
+          </span>
+          <span>
+            <span className="font-medium">Users:</span> {dimLabel(rule.users, users)}
+          </span>
+          <span>
+            <span className="font-medium">Agents:</span> {dimLabel(rule.agents, agents)}
+          </span>
+        </div>
+        {dead !== null && <span className="text-destructive text-xs">{dead}</span>}
+      </div>
+      {!disabled && (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="outline" size="sm" onClick={onEdit}>
+            Edit
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={onRemove} aria-label="Remove rule">
+            <Trash2 className="size-4" />
+          </Button>
         </div>
       )}
     </div>

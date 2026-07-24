@@ -39,6 +39,7 @@ export function AddressingPolicySettingsSection({ locationId }: { locationId: st
             serverId={agent.serverId as string}
             agentId={agent.switchAgentId as string}
             agentName={agent.name}
+            showName={switchAgents.length > 1}
           />
         ))}
       </div>
@@ -50,10 +51,12 @@ function AddressingPolicyRow({
   serverId,
   agentId,
   agentName,
+  showName,
 }: {
   serverId: string;
   agentId: string;
   agentName: string;
+  showName: boolean;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<AddressingPolicy | null>(null);
@@ -114,7 +117,7 @@ function AddressingPolicyRow({
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border p-3">
-      <span className="text-sm font-medium">{displayName}</span>
+      {showName && <span className="text-sm font-medium">{displayName}</span>}
       <AddressingPolicyEditor
         value={value}
         onChange={(next) => {

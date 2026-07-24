@@ -18,39 +18,56 @@ export function AutoApproveSettingsSection({ locationId }: { locationId: string 
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 
-  if ((agents ?? []).length === 0) return null;
+  const list = agents ?? [];
+  if (list.length === 0) return null;
+  // Single-agent locations don't need the (directory-derived) agent name label —
+  // the section title identifies the setting, so the toggle sits inline with it.
+  const single = list.length === 1 ? list[0] : null;
 
   return (
     <Field>
-      <FieldTitle>Bypass permissions</FieldTitle>
+      <div className="flex items-center justify-between gap-3">
+        <FieldTitle>Bypass permissions</FieldTitle>
+        {single && (
+          <AutoApproveSwitch
+            agentId={single.id}
+            enabled={single.autoApprove}
+            locationId={locationId}
+          />
+        )}
+      </div>
       <FieldDescription className="text-foreground-muted">
         When on, switchdash starts this agent&apos;s sessions with permission prompts bypassed (the
         provider&apos;s auto-approve flag). Off by default; turn it on only for agents you trust to
         run unattended.
       </FieldDescription>
-      <div className="flex flex-col gap-2">
-        {(agents ?? []).map((agent) => (
-          <AutoApproveRow
-            key={agent.id}
-            agentId={agent.id}
-            agentName={agent.name}
-            enabled={agent.autoApprove}
-            locationId={locationId}
-          />
-        ))}
-      </div>
+      {!single && (
+        <div className="flex flex-col gap-2">
+          {list.map((agent) => (
+            <div
+              key={agent.id}
+              className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5"
+            >
+              <span className="truncate text-sm">{agent.name}</span>
+              <AutoApproveSwitch
+                agentId={agent.id}
+                enabled={agent.autoApprove}
+                locationId={locationId}
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </Field>
   );
 }
 
-function AutoApproveRow({
+function AutoApproveSwitch({
   agentId,
-  agentName,
   enabled,
   locationId,
 }: {
   agentId: string;
-  agentName: string;
   enabled: boolean;
   locationId: string;
 }) {
@@ -69,13 +86,10 @@ function AutoApproveRow({
   });
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5">
-      <span className="truncate text-sm">{agentName}</span>
-      <Switch
-        checked={enabled}
-        disabled={mutation.isPending}
-        onCheckedChange={(checked) => mutation.mutate(checked)}
-      />
-    </div>
+    <Switch
+      checked={enabled}
+      disabled={mutation.isPending}
+      onCheckedChange={(checked) => mutation.mutate(checked)}
+    />
   );
 }
