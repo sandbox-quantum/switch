@@ -97,15 +97,18 @@ class SwitchNotificationPoller {
     // not the parent's `.claude/settings.local.json` — otherwise it receives the
     // events addressed to the parent rather than to the subagent.
     const [sessionRow] = await db
-      .select({ config: sessions.config })
+      .select({ config: sessions.config, agentId: sessions.agentId })
       .from(sessions)
       .where(eq(sessions.id, ctx.sessionId))
       .limit(1);
     const subagentName = sessionRow?.config?.subagentName;
+    const agentId = sessionRow?.agentId;
 
-    // A subagent's credentials now live in the provider-neutral
-    // `.switch/agents/<name>.json`; fall back to the legacy
-    // `.claude/switch-subagents/<name>.settings.json` for un-migrated installs
+    // Credentials come from the agent's provider-neutral per-agent file — a
+    // subagent's `.switch/agents/<name>.json` or a plain agent's
+    // `.switch/agents/<agentId>.json` — so a session polls as its own identity
+    // even when agents share a location. Fall back to the legacy subagent path,
+    // then the location's `.claude/settings.local.json`, for un-migrated installs
     // (CHOO-1440).
     const creds = subagentName
       ? ((await readSwitchAgentCredentialsFromSettings(
@@ -116,7 +119,9 @@ class SwitchNotificationPoller {
           subagentSettingsPath(rootPath, subagentName),
           log
         )))
-      : await readSwitchAgentCredentials(rootPath, log);
+      : ((agentId
+          ? await readSwitchAgentCredentialsFromSettings(agentSettingsPath(rootPath, agentId), log)
+          : null) ?? (await readSwitchAgentCredentials(rootPath, log)));
     if (!creds) {
       log.warn(
         'SwitchNotificationPoller: missing Switch credentials (SWITCH_API_TOKEN/ENDPOINT/AGENT_ID) — cannot poll room',

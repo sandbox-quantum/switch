@@ -8,9 +8,11 @@ import {
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
   SWITCH_SUBAGENTS_DIR_RELATIVE,
 } from '@main/core/agents/switch-settings-paths';
+import { writeAgentNeutralSettings } from '@main/core/agents/write-switch-settings';
 import { getLocationById, getLocations } from '@main/core/locations/store';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { log } from '@main/lib/logger';
 
 /**
@@ -74,6 +76,31 @@ export async function reconcileAgentRowsForLocation(
   });
 
   const agentsInLocation = await getAgents(locationId);
+
+  // Backfill the primary main agent's provider-neutral per-agent creds file from
+  // `.claude/settings.local.json` (the agent that currently owns that identity),
+  // so launch/poller can inject it. Best-effort (CHOO-1440).
+  const settingsCreds = await readSwitchAgentCredentials(location.dir, log);
+  if (settingsCreds) {
+    const owner = agentsInLocation.find(
+      (a) => a.definitionName === null && a.switchAgentId === settingsCreds.agentId
+    );
+    if (owner) {
+      await writeAgentNeutralSettings({
+        dir: location.dir,
+        slug: owner.id,
+        apiEndpoint: settingsCreds.apiEndpoint,
+        apiToken: settingsCreds.token,
+        agentId: settingsCreds.agentId,
+      }).catch((error) => {
+        log.warn('reconcileAgentRows: failed to sync neutral creds for main agent', {
+          agentId: owner.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  }
+
   const seenDefinitionNames = new Set(
     agentsInLocation.map((a) => a.definitionName).filter((name): name is string => name !== null)
   );

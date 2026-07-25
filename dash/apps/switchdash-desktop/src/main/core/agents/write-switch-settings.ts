@@ -1,7 +1,11 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SWITCH_CONNECTOR_TOOL_RULES } from '@switchdash/core/agents/plugins';
-import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
+import {
+  agentSettingsRelativePath,
+  SWITCH_AGENTS_GITIGNORE_RELATIVE,
+  SWITCH_SETTINGS_RELATIVE_PATH,
+} from './switch-settings-paths';
 
 export interface SwitchSettingsCredentials {
   apiEndpoint: string;
@@ -240,4 +244,43 @@ export async function writeSwitchSettings(params: {
   const merged = mergeSwitchSettings(existingRaw, params);
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, merged, 'utf8');
+}
+
+/**
+ * Write an agent's Switch credentials to its provider-neutral per-agent file
+ * `.switch/agents/<slug>.json` (CHOO-1440), alongside the connector-owned
+ * `.claude/settings.local.json`. switchdash injects this file's env at launch, so
+ * it is the authoritative per-agent identity — letting multiple agents share a
+ * location without colliding on the single `settings.local.json` identity.
+ *
+ * `apiToken` is the agent's secret API key — written here and never returned to
+ * the renderer or logged. A `.gitignore` keeps the directory out of version
+ * control.
+ */
+export async function writeAgentNeutralSettings(params: {
+  dir: string;
+  slug: string;
+  apiEndpoint: string;
+  apiToken: string;
+  agentId: string;
+}): Promise<void> {
+  const settingsPath = path.join(params.dir, agentSettingsRelativePath(params.slug));
+  const gitignorePath = path.join(params.dir, SWITCH_AGENTS_GITIGNORE_RELATIVE);
+
+  let existingRaw: string | null = null;
+  try {
+    existingRaw = await fs.readFile(settingsPath, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+  }
+
+  const merged = mergeSwitchSettings(existingRaw, params);
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+  await fs.writeFile(settingsPath, merged, 'utf8');
+  try {
+    await fs.access(gitignorePath);
+  } catch {
+    await fs.writeFile(gitignorePath, '*\n', 'utf8');
+  }
 }

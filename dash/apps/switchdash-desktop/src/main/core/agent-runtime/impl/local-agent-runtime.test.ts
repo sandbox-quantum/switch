@@ -55,6 +55,10 @@ vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
   },
 }));
 
+vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
+  readAgentSwitchEnv: vi.fn(async () => ({})),
+}));
+
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: vi.fn((id: string) => ({
     metadata: { id },

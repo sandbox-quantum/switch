@@ -376,10 +376,23 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
   async discoverLocal(workspaceFs, homeFs): Promise<LocalSubagent[]> {
     // Names come from either credentials location — the neutral `.switch/agents`
     // dir and the legacy `.claude/switch-subagents` dir — so both migrated and
-    // un-migrated installs are discovered (CHOO-1440).
-    const neutralNames = (await workspaceFs.list(SWITCH_AGENT_SETTINGS_DIR))
+    // un-migrated installs are discovered (CHOO-1440). Plain agents' creds files
+    // live in the neutral dir too (keyed by agent id, no `.claude/agents/<name>.md`
+    // definition); a neutral file counts as a subagent only when it has a
+    // definition, so those are filtered out here.
+    const neutralCandidates = (await workspaceFs.list(SWITCH_AGENT_SETTINGS_DIR))
       .filter((entry) => entry.endsWith('.json'))
-      .map((entry) => entry.slice(0, -'.json'.length));
+      .map((entry) => entry.slice(0, -'.json'.length))
+      .filter((name) => name.length > 0);
+    const neutralNames: string[] = [];
+    for (const name of neutralCandidates) {
+      if (
+        (await workspaceFs.exists(definitionRelPath(name))) ||
+        (await homeFs.exists(definitionRelPath(name)))
+      ) {
+        neutralNames.push(name);
+      }
+    }
     const legacyNames = (await workspaceFs.list(CLAUDE_SUBAGENTS.dirRelative))
       .filter((entry) => entry.endsWith(CLAUDE_SUBAGENTS.settingsSuffix))
       .map((entry) => entry.slice(0, -CLAUDE_SUBAGENTS.settingsSuffix.length));

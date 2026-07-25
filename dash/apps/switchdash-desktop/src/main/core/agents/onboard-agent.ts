@@ -3,6 +3,7 @@ import { err, ok } from '@switchdash/shared';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
+import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -18,6 +19,7 @@ import { createAgent } from './createAgent';
 import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
+import { writeAgentNeutralSettings } from './write-switch-settings';
 
 /**
  * Gate agent creation on the chosen server actually owning the detected agent
@@ -137,6 +139,30 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     // to answer permission prompts, so default them to bypass, local off.
     autoApprove: params.autoApprove ?? sshHost !== null,
   });
+
+  // Mirror the agent's credentials into its provider-neutral per-agent file
+  // (`.switch/agents/<agentId>.json`), the authoritative identity switchdash
+  // injects at launch so agents sharing a location don't collide on the single
+  // `.claude/settings.local.json` identity (CHOO-1440). Local agents only — a
+  // remote agent's dir lives on its VM. Best-effort: the launch/poller fall back
+  // to `settings.local.json`, so a failure here does not break onboarding.
+  if (sshHost === null) {
+    const creds = await readSwitchAgentCredentials(params.dir, log);
+    if (creds) {
+      await writeAgentNeutralSettings({
+        dir: params.dir,
+        slug: agent.id,
+        apiEndpoint: creds.apiEndpoint,
+        apiToken: creds.token,
+        agentId: creds.agentId,
+      }).catch((error) => {
+        log.warn('onboardAgent: failed to write neutral agent settings', {
+          agentId: agent.id,
+          error: String(error),
+        });
+      });
+    }
+  }
 
   // Seed the local auto_session mirror + start the watcher from the gateway
   // profile so an agent registered with auto_session on starts watching now,

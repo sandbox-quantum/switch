@@ -65,6 +65,25 @@ export async function readSwitchAgentCredentialsFromSettings(
 }
 
 /**
+ * Read an agent's Switch credentials from a settings file and return them as the
+ * `SWITCH_*` env vars a launched session needs, or `{}` when the file is
+ * missing/incomplete. Used to inject an agent's identity at launch from its
+ * provider-neutral `.switch/agents/<id>.json` (CHOO-1440).
+ */
+export async function readAgentSwitchEnv(
+  settingsPath: string,
+  log: CredentialsLogger
+): Promise<Record<string, string>> {
+  const creds = await readSwitchAgentCredentialsFromSettings(settingsPath, log);
+  if (!creds) return {};
+  return {
+    SWITCH_API_ENDPOINT: creds.apiEndpoint,
+    SWITCH_API_TOKEN: creds.token,
+    SWITCH_AGENT_ID: creds.agentId,
+  };
+}
+
+/**
  * Parse Switch agent credentials from the raw text of a `.claude/settings.local.json`.
  * Transport-agnostic (no filesystem): used by both the local readers above and
  * the remote preflight, which fetches the file over SFTP. Returns null when the
