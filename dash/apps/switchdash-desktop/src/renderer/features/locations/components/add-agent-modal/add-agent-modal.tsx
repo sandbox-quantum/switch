@@ -168,6 +168,22 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     enabled: shouldDetectRemote,
   });
 
+  // Switch agents already defined in the picked local dir (.claude/agents/*.md +
+  // credentials). When present, the modal offers onboarding them instead of the
+  // create/configure flow — a directory is a flat container of agents (CHOO-1440).
+  const discoverQuery = useQuery({
+    queryKey: ['discoverLocationAgents', 'local', pickState.path, pickState.providerId],
+    queryFn: () =>
+      rpc.agents.discoverLocationAgents({
+        sshHost: null,
+        dir: pickState.path,
+        providerId: pickState.providerId!,
+      }),
+    enabled: !isRemoteRun && !!pickState.providerId && pickState.path.trim().length > 0,
+  });
+  const existingAgents = (discoverQuery.data ?? []).filter((a) => a.registered);
+  const hasExistingAgents = !isRemoteRun && existingAgents.length > 0;
+
   const inspection = pathStatusQuery.data;
   const isChecking = isRemoteRun
     ? shouldDetectRemote && remoteAgentQuery.isPending
@@ -175,8 +191,10 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const switchAgent = isRemoteRun
     ? (remoteAgentQuery.data ?? null)
     : (inspection?.switchAgent ?? null);
-  // A local directory with no Switch agent config offers the configure flow.
-  const isMissingSwitchAgent = !isRemoteRun && !isChecking && shouldCheckPathStatus && !switchAgent;
+  // A local directory with no Switch agent config (and no onboardable definitions)
+  // offers the configure/create flow.
+  const isMissingSwitchAgent =
+    !isRemoteRun && !isChecking && shouldCheckPathStatus && !switchAgent && !hasExistingAgents;
   // A remote dir with no Switch agent offers the remote configure flow: register
   // the agent on the server and write its creds into the remote dir over SSH.
   const isMissingRemoteAgent = isRemoteRun && !isChecking && shouldDetectRemote && !switchAgent;
@@ -415,6 +433,40 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const handleConfigure = () => createNewAgent(configureForm);
   const handleConfigureRemote = () => createNewAgent(remoteConfigureForm);
 
+  /** Onboard the agents already defined in the picked local directory. */
+  const handleOnboard = async () => {
+    if (!pickState.serverId || !pickState.providerId || !hasExistingAgents) return;
+    setSubmitState('creating');
+    setCloseGuard(true);
+    try {
+      const result = await rpc.agents.onboardLocationAgents({
+        sshHost: null,
+        dir: pickState.path,
+        providerId: pickState.providerId,
+        serverId: pickState.serverId,
+      });
+      if (!result.success) {
+        reportCreationError(result.error);
+        setCloseGuard(false);
+        setSubmitState('idle');
+        return;
+      }
+      await getLocationManagerStore().load();
+      void agentsStore.load();
+      finishWith(result.data[0].locationId);
+    } catch (error) {
+      log.error(error);
+      setCloseGuard(false);
+      setSubmitState('idle');
+      toast({
+        title: 'Failed to onboard agents',
+        description: String(error),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const canOnboard = hasExistingAgents && !!pickState.serverId && submitState === 'idle';
   const submitLabel = submitState === 'creating' ? 'Adding...' : 'Add Agent';
 
   return (
@@ -426,7 +478,17 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       }
       footer={
         <DialogFooter>
-          {isMissingRemoteAgent ? (
+          {hasExistingAgents ? (
+            <ConfirmButton
+              type="button"
+              onClick={() => void handleOnboard()}
+              disabled={!canOnboard}
+            >
+              {submitState === 'creating'
+                ? 'Onboarding...'
+                : `Onboard ${existingAgents.length} agent${existingAgents.length === 1 ? '' : 's'}`}
+            </ConfirmButton>
+          ) : isMissingRemoteAgent ? (
             <ConfirmButton
               type="button"
               onClick={() => void handleConfigureRemote()}
@@ -506,7 +568,30 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             </div>
           )}
         </Field>
-        {!isRemoteRun && <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />}
+        {!isRemoteRun && (
+          <PickExistingPanel
+            state={pickState}
+            showName={!isMissingSwitchAgent && !hasExistingAgents}
+          />
+        )}
+        {hasExistingAgents && (
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-background-1 px-3 py-2.5 text-sm">
+            <span className="text-foreground-muted">
+              This directory already has {existingAgents.length} Switch agent
+              {existingAgents.length === 1 ? '' : 's'}:
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {existingAgents.map((a) => (
+                <span
+                  key={a.name}
+                  className="rounded bg-background-2 px-1.5 py-0.5 font-mono text-xs text-foreground"
+                >
+                  {a.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         {isMissingRemoteAgent && (
           <>
             <ConfigureAgentPanel

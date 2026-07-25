@@ -8,6 +8,7 @@ import { assignAgentServer } from './assignAgentServer';
 import { createAgent } from './createAgent';
 import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
+import { discoverLocationAgents } from './discover-location-agents';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
 import { onboardAgent } from './onboard-agent';
@@ -28,6 +29,11 @@ export const agentsController = createRPCController({
     Promise.resolve(getAgentDefinitionFields(params.providerId)),
   onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   onboardLocationAgents: (params: OnboardLocationParams) => onboardLocationAgents(params),
+  discoverLocationAgents: (params: {
+    sshHost: string | null;
+    dir: string;
+    providerId: AgentProviderId;
+  }) => discoverLocationAgents(params),
   getAgents: (locationId?: string) => getAgents(locationId),
   getAgentById: (agentId: string) => getAgentById(agentId),
   renameAgent: (params: RenameAgentParams) => renameAgent(params),
