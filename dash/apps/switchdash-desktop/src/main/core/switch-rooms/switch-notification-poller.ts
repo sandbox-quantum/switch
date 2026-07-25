@@ -2,7 +2,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
-import { subagentSettingsPath } from '@main/core/agents/switch-settings-paths';
+import { agentSettingsPath, subagentSettingsPath } from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
 import { isHumanInputRecent } from '@main/core/pty/human-activity';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
@@ -103,11 +103,19 @@ class SwitchNotificationPoller {
       .limit(1);
     const subagentName = sessionRow?.config?.subagentName;
 
+    // A subagent's credentials now live in the provider-neutral
+    // `.switch/agents/<name>.json`; fall back to the legacy
+    // `.claude/switch-subagents/<name>.settings.json` for un-migrated installs
+    // (CHOO-1440).
     const creds = subagentName
-      ? await readSwitchAgentCredentialsFromSettings(
+      ? ((await readSwitchAgentCredentialsFromSettings(
+          agentSettingsPath(rootPath, subagentName),
+          log
+        )) ??
+        (await readSwitchAgentCredentialsFromSettings(
           subagentSettingsPath(rootPath, subagentName),
           log
-        )
+        )))
       : await readSwitchAgentCredentials(rootPath, log);
     if (!creds) {
       log.warn(

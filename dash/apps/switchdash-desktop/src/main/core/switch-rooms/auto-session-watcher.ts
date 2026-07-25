@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
-import { SWITCH_SUBAGENTS_DIR_RELATIVE } from '@main/core/agents/switch-settings-paths';
+import {
+  agentSettingsPath,
+  SWITCH_SUBAGENTS_DIR_RELATIVE,
+} from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
 import { sessionService } from '@main/core/sessions/session-service';
 import { events } from '@main/lib/events';
@@ -225,17 +228,18 @@ class AutoSessionWatcher {
       });
       return;
     }
-    const settingsPath = path.join(
-      rootPath,
-      SWITCH_SUBAGENTS_DIR_RELATIVE,
-      `${name}.settings.json`
-    );
-    const creds = await readSwitchAgentCredentialsFromSettings(settingsPath, log);
+    // A subagent's credentials now live in the provider-neutral
+    // `.switch/agents/<name>.json`; fall back to the legacy
+    // `.claude/switch-subagents/<name>.settings.json` for un-migrated installs
+    // (CHOO-1440).
+    const legacyPath = path.join(rootPath, SWITCH_SUBAGENTS_DIR_RELATIVE, `${name}.settings.json`);
+    const creds =
+      (await readSwitchAgentCredentialsFromSettings(agentSettingsPath(rootPath, name), log)) ??
+      (await readSwitchAgentCredentialsFromSettings(legacyPath, log));
     if (!creds) {
       log.warn('AutoSessionWatcher: missing subagent credentials; cannot watch', {
         parentAgentId,
         name,
-        settingsPath,
       });
       return;
     }
