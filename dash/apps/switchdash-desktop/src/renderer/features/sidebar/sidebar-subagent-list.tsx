@@ -1,10 +1,9 @@
-import { useQuery } from '@tanstack/react-query';
 import { Bot, ChevronRight, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { rpc } from '@renderer/lib/ipc';
 import {
   useNavigate,
   useParams,
@@ -82,23 +81,19 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
       ? locationParams.subagentName
       : undefined;
 
-  const agentQuery = useQuery({
-    queryKey: ['locationAgent', locationId],
-    queryFn: async () => representativeAgent(await rpc.agents.getAgents(locationId)) ?? null,
-    enabled: !!locationId,
-  });
-  const agent = agentQuery.data ?? null;
+  const locationAgents = agentsStore.byLocation.get(locationId) ?? [];
+  const agent = representativeAgent(locationAgents) ?? null;
 
   // Only agent types with a subagents capability discover/launch subagents.
   const { data: providerMeta } = useAgent(agent?.providerId ?? '');
   const supportsSubagents = !!agent && providerMeta?.capabilities.subagents.kind !== 'none';
 
-  const subagentsQuery = useQuery({
-    queryKey: ['subagents', agent?.id],
-    queryFn: () => rpc.subagents.list(agent!.id),
-    enabled: !!agent && supportsSubagents,
-  });
-  const discovered = subagentsQuery.data?.subagents ?? [];
+  // Subagents are ordinary agent rows that carry a definitionName and share this
+  // location with the parent (CHOO-1440) — sourced from the agent table, not a
+  // separate discovery/reconcile call.
+  const discovered = locationAgents
+    .filter((a) => a.definitionName != null)
+    .map((a) => ({ name: a.definitionName as string, description: null, registered: true }));
 
   // Group the location's subagent sessions by the subagent they ran as.
   const sessionsByName = new Map<string, SessionStore[]>();

@@ -28,15 +28,17 @@ type Props = BaseModalProps<DeleteAgentModalResult> & DeleteAgentModalArgs;
 export function DeleteAgentModal({ agentId, agentLabel, onSuccess, onClose }: Props) {
   const [deleteInSwitch, setDeleteInSwitch] = useState(false);
 
-  // The subagents that a Switch delete would cascade to. Best-effort: if the
-  // listing can't load (offline, no server) we simply show no subagent warning.
-  const { data } = useQuery({
-    queryKey: ['subagents', agentId],
-    queryFn: () => rpc.subagents.list(agentId),
+  // The subagents that a Switch delete would cascade to — the definition agents
+  // sharing this agent's location (CHOO-1440). Best-effort: if the agent list
+  // can't load we simply show no subagent warning.
+  const { data: allAgents } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => rpc.agents.getAgents(),
   });
-  const subagentNames = data
-    ? [...data.subagents.map((s) => s.name), ...data.remoteOnly.map((r) => r.name)]
-    : [];
+  const locationId = allAgents?.find((a) => a.id === agentId)?.locationId;
+  const subagentNames = (allAgents ?? [])
+    .filter((a) => a.locationId === locationId && a.definitionName != null)
+    .map((a) => a.definitionName as string);
   const subagentCount = subagentNames.length;
 
   return (
