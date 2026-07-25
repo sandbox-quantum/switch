@@ -13,13 +13,22 @@ import { log } from '@renderer/utils/logger';
  * no local config to stage. Renders one row per Switch-linked agent in the
  * location; hidden entirely when the location has none.
  */
-export function AutoSessionSettingsSection({ locationId }: { locationId: string }) {
+export function AutoSessionSettingsSection({
+  locationId,
+  agentId,
+}: {
+  locationId: string;
+  /** Scope to a single agent (e.g. a subagent's own row); omit for every agent. */
+  agentId?: string;
+}) {
   const { data: agents } = useQuery({
     queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 
-  const switchAgents = (agents ?? []).filter((a) => a.serverId && a.switchAgentId);
+  const switchAgents = (agents ?? [])
+    .filter((a) => a.serverId && a.switchAgentId)
+    .filter((a) => !agentId || a.id === agentId);
   if (switchAgents.length === 0) return null;
   // The agent name only disambiguates when a location has more than one agent;
   // for the common single-agent case the section title already identifies it, so

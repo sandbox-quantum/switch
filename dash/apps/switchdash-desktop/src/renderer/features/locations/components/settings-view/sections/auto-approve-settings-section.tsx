@@ -12,13 +12,20 @@ import { log } from '@renderer/utils/logger';
  * (seeded at onboarding); this row is the source of truth thereafter. The
  * value lives on the agent row, so the toggle writes through `updateAgent`.
  */
-export function AutoApproveSettingsSection({ locationId }: { locationId: string }) {
+export function AutoApproveSettingsSection({
+  locationId,
+  agentId,
+}: {
+  locationId: string;
+  /** Scope to a single agent (e.g. a subagent's own row); omit for every agent. */
+  agentId?: string;
+}) {
   const { data: agents } = useQuery({
     queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 
-  const list = agents ?? [];
+  const list = (agents ?? []).filter((a) => !agentId || a.id === agentId);
   if (list.length === 0) return null;
   // Single-agent locations don't need the (directory-derived) agent name label —
   // the section title identifies the setting, so the toggle sits inline with it.
