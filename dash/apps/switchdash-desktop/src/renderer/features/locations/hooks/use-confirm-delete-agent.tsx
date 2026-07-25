@@ -10,29 +10,39 @@ export function useConfirmDeleteAgent() {
 
   return async ({
     locationId,
+    agentId,
     locationLabel,
     onDeleted,
   }: {
     locationId: string;
+    /** The specific agent to delete. Omit to fall back to the location's first
+     * agent (legacy single-agent callers). */
+    agentId?: string;
     locationLabel: string;
     onDeleted?: () => void;
   }) => {
-    // Resolve the specific agent at this location so the delete is per-agent
-    // (creds teardown + optional Switch delete), not a blanket location removal.
-    const agents = await rpc.agents.getAgents(locationId);
-    const agent = agents[0];
-    if (!agent) return;
+    // Resolve the specific agent so the delete is per-agent (creds teardown +
+    // optional Switch delete), not a blanket location removal.
+    let targetAgentId = agentId;
+    if (!targetAgentId) {
+      const agents = await rpc.agents.getAgents(locationId);
+      targetAgentId = agents[0]?.id;
+    }
+    if (!targetAgentId) return;
+    const resolvedAgentId = targetAgentId;
 
     showDeleteAgent({
-      agentId: agent.id,
+      agentId: resolvedAgentId,
       agentLabel: locationLabel,
       onSuccess: ({ deleteInSwitch }) => {
         void (async () => {
           try {
-            await getLocationManagerStore().removeAgent(locationId, agent.id, { deleteInSwitch });
+            await getLocationManagerStore().removeAgent(locationId, resolvedAgentId, {
+              deleteInSwitch,
+            });
             onDeleted?.();
           } catch (error) {
-            log.error('Failed to remove agent', { agentId: agent.id, error });
+            log.error('Failed to remove agent', { agentId: resolvedAgentId, error });
             toast({
               title: 'Failed to remove agent',
               description: error instanceof Error ? error.message : String(error),

@@ -14,11 +14,6 @@ export function sessionRoomId(session: SessionStore): string | null {
   return roomConnectionsStore.roomForSession(session.data.id);
 }
 
-/** Whether a session was launched as a subagent (it nests under the subagent row). */
-export function isSubagentSession(session: SessionStore): boolean {
-  return 'subagentName' in session.data && !!session.data.subagentName;
-}
-
 export function roomLabel(roomKey: string): string {
   if (roomKey === UNASSIGNED_ROOM_KEY) return 'Unassigned';
   return switchRoomsStore.roomNameById(roomKey) ?? `Room ${roomKey.slice(0, 8)}`;
