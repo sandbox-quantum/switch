@@ -3,6 +3,7 @@ import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
+import { reconcileAgentRowsForLocation } from './reconcile-agent-rows';
 import { registerSubagentsCore } from './register-subagents';
 import { resolveSubagentFs } from './resolve-subagent-fs';
 import { applyLocalSubagentAutoSessionState } from './setSubagentAutoSession';
@@ -86,6 +87,14 @@ export async function createSubagent(params: CreateSubagentParams): Promise<{ na
         });
       });
     }
+
+    // Materialise the new subagent as a first-class agent row (CHOO-1440).
+    await reconcileAgentRowsForLocation(agent.locationId).catch((error) => {
+      log.warn('createSubagent: failed to reconcile agent rows after creation', {
+        parentAgentId: params.parentAgentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     return { name };
   } finally {

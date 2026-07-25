@@ -106,7 +106,8 @@ export const SubagentsPanel = observer(function SubagentsPanel() {
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 
-  const parent = (agents ?? []).find((a) => a.serverId && a.switchAgentId) ?? null;
+  const parent =
+    (agents ?? []).find((a) => a.definitionName == null && a.serverId && a.switchAgentId) ?? null;
 
   const subagentsQuery = useQuery({
     queryKey: ['subagents', parent?.id],

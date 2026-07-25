@@ -25,7 +25,9 @@ export function SubagentAutoSessionSettingsSection({
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 
-  const parent = (agents ?? []).find((a) => a.serverId && a.switchAgentId);
+  const parent = (agents ?? []).find(
+    (a) => a.definitionName == null && a.serverId && a.switchAgentId
+  );
 
   if (agentsLoading) {
     return (

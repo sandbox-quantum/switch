@@ -98,16 +98,12 @@
       "indexes": {
         "idx_agents_location_id": {
           "name": "idx_agents_location_id",
-          "columns": [
-            "location_id"
-          ],
+          "columns": ["location_id"],
           "isUnique": false
         },
         "idx_agents_server_id": {
           "name": "idx_agents_server_id",
-          "columns": [
-            "server_id"
-          ],
+          "columns": ["server_id"],
           "isUnique": false
         }
       },
@@ -116,12 +112,8 @@
           "name": "agents_location_id_locations_id_fk",
           "tableFrom": "agents",
           "tableTo": "locations",
-          "columnsFrom": [
-            "location_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["location_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -129,12 +121,8 @@
           "name": "agents_server_id_switch_servers_id_fk",
           "tableFrom": "agents",
           "tableTo": "switch_servers",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["server_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -164,9 +152,7 @@
       "indexes": {
         "idx_app_secrets_key": {
           "name": "idx_app_secrets_key",
-          "columns": [
-            "key"
-          ],
+          "columns": ["key"],
           "isUnique": true
         }
       },
@@ -204,9 +190,7 @@
       "indexes": {
         "idx_app_settings_key": {
           "name": "idx_app_settings_key",
-          "columns": [
-            "key"
-          ],
+          "columns": ["key"],
           "isUnique": true
         }
       },
@@ -244,9 +228,7 @@
       "indexes": {
         "idx_kv_key": {
           "name": "idx_kv_key",
-          "columns": [
-            "key"
-          ],
+          "columns": ["key"],
           "isUnique": true
         }
       },
@@ -311,12 +293,8 @@
           "name": "location_settings_location_id_locations_id_fk",
           "tableFrom": "location_settings",
           "tableTo": "locations",
-          "columnsFrom": [
-            "location_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["location_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -377,10 +355,7 @@
       "indexes": {
         "idx_locations_host_dir": {
           "name": "idx_locations_host_dir",
-          "columns": [
-            "ssh_host",
-            "dir"
-          ],
+          "columns": ["ssh_host", "dir"],
           "isUnique": true
         }
       },
@@ -439,16 +414,12 @@
       "indexes": {
         "idx_messages_session_id": {
           "name": "idx_messages_session_id",
-          "columns": [
-            "session_id"
-          ],
+          "columns": ["session_id"],
           "isUnique": false
         },
         "idx_messages_timestamp": {
           "name": "idx_messages_timestamp",
-          "columns": [
-            "timestamp"
-          ],
+          "columns": ["timestamp"],
           "isUnique": false
         }
       },
@@ -457,12 +428,8 @@
           "name": "messages_session_id_sessions_id_fk",
           "tableFrom": "messages",
           "tableTo": "sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -636,9 +603,7 @@
       "indexes": {
         "idx_sessions_agent_id": {
           "name": "idx_sessions_agent_id",
-          "columns": [
-            "agent_id"
-          ],
+          "columns": ["agent_id"],
           "isUnique": false
         }
       },
@@ -647,12 +612,8 @@
           "name": "sessions_agent_id_agents_id_fk",
           "tableFrom": "sessions",
           "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["agent_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -734,9 +695,7 @@
       "indexes": {
         "idx_switch_servers_gateway_url": {
           "name": "idx_switch_servers_gateway_url",
-          "columns": [
-            "gateway_url"
-          ],
+          "columns": ["gateway_url"],
           "isUnique": true
         }
       },

@@ -44,6 +44,7 @@ import {
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
+import { representativeAgent } from '@shared/core/agents/agents';
 import {
   SidebarItemMiniButton,
   SidebarMenuAction,
@@ -77,7 +78,7 @@ export const SidebarLocationItem = observer(function SidebarLocationItem({
   // detail page in the gateway web app (parallel to a room's "go to" button).
   const agentQuery = useQuery({
     queryKey: ['locationAgent', locationId],
-    queryFn: async () => (await rpc.agents.getAgents(locationId))[0] ?? null,
+    queryFn: async () => representativeAgent(await rpc.agents.getAgents(locationId)) ?? null,
     enabled: !!locationId,
   });
 

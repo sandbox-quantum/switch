@@ -27,6 +27,7 @@ import { locationFileIndexService } from './core/search/location-file-index-serv
 import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
+import { reconcileAllAgentRows } from './core/subagents/reconcile-agent-rows';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
 import { updateService } from './core/updates/update-service';
@@ -118,6 +119,15 @@ void app.whenReady().then(async () => {
     await resolveAgentServers();
   } catch (e) {
     log.warn('switch-agents: failed to reconcile agent → server links at boot', { error: e });
+  }
+
+  // Materialise each local location's on-disk subagent definitions as
+  // first-class agent rows (the subagent collapse — CHOO-1440). Best-effort:
+  // discovery failures must not block boot.
+  try {
+    await reconcileAllAgentRows();
+  } catch (e) {
+    log.warn('subagents: failed to reconcile subagent agent rows at boot', { error: e });
   }
 
   const agentHookReady = agentHookService.initialize().catch((e) => {

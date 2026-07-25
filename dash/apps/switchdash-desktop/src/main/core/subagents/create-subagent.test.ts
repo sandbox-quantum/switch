@@ -6,12 +6,14 @@ const registerSubagentsCore = vi.hoisted(() => vi.fn());
 const resolveSubagentFs = vi.hoisted(() => vi.fn());
 const applyLocalSubagentAutoSessionState = vi.hoisted(() => vi.fn(async () => {}));
 const getRemoteAgentLocation = vi.hoisted(() => vi.fn(async () => null));
+const reconcileAgentRowsForLocation = vi.hoisted(() => vi.fn(async () => ({ created: 0 })));
 const logWarn = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer }));
 vi.mock('@main/core/agents/agent-location', () => ({ getRemoteAgentLocation }));
 vi.mock('./register-subagents', () => ({ registerSubagentsCore }));
+vi.mock('./reconcile-agent-rows', () => ({ reconcileAgentRowsForLocation }));
 vi.mock('./resolve-subagent-fs', () => ({ resolveSubagentFs }));
 vi.mock('./setSubagentAutoSession', () => ({ applyLocalSubagentAutoSessionState }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn() } }));

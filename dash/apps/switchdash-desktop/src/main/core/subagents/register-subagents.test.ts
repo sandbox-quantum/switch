@@ -11,6 +11,7 @@ const remoteClose = vi.hoisted(() => vi.fn());
 const remoteRead = vi.hoisted(() => vi.fn());
 const getAgents = vi.hoisted(() => vi.fn());
 const getLocationByHostDir = vi.hoisted(() => vi.fn());
+const reconcileAgentRowsForLocation = vi.hoisted(() => vi.fn(async () => ({ created: 0 })));
 const applyLocalSubagentAutoSessionState = vi.hoisted(() => vi.fn(async () => {}));
 const logWarn = vi.hoisted(() => vi.fn());
 
@@ -23,6 +24,7 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
   readSwitchAgentCredentials,
 }));
 vi.mock('./resolve-subagent-fs', () => ({ openRemoteSubagentFs }));
+vi.mock('./reconcile-agent-rows', () => ({ reconcileAgentRowsForLocation }));
 vi.mock('@main/core/agents/getAgents', () => ({ getAgents }));
 vi.mock('@main/core/locations/store', () => ({ getLocationByHostDir }));
 vi.mock('./setSubagentAutoSession', () => ({ applyLocalSubagentAutoSessionState }));

@@ -12,6 +12,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useAgent } from '@renderer/lib/stores/use-agents';
 import { cn } from '@renderer/utils/utils';
+import { representativeAgent } from '@shared/core/agents/agents';
 
 function LocationViewNav({
   items,
@@ -59,7 +60,7 @@ export const ActiveLocation = observer(function ActiveLocation() {
     queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
-  const agent = agents?.[0] ?? null;
+  const agent = representativeAgent(agents ?? []) ?? null;
   const { data: providerMeta } = useAgent(agent?.providerId ?? '');
   // Only a parent agent can have subagents — a subagent can't have its own, so
   // hide the tab when the view is scoped to a subagent.

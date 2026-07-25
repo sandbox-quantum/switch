@@ -11,6 +11,7 @@ import {
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import type { Snapshottable } from '@renderer/lib/stores/snapshottable';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
+import { representativeAgent } from '@shared/core/agents/agents';
 import {
   AGENT_PROVIDER_IDS,
   isValidProviderId,
@@ -206,9 +207,10 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     });
   }
 
-  /** The parent agent of a location (the agent shown on its sidebar row). */
+  /** The representative agent of a location (the agent shown on its sidebar row):
+   * the first real (non-definition) agent, not a former subagent's row. */
   private parentAgent(locationId: string) {
-    return agentsStore.byLocation.get(locationId)?.[0];
+    return representativeAgent(agentsStore.byLocation.get(locationId) ?? []);
   }
 
   /** Where a location runs — `remote` when it has an SSH host, else `local`. */

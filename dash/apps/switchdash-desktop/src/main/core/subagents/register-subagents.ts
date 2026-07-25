@@ -11,6 +11,7 @@ import { registerSubagentsBulk } from '@main/core/switch-servers/gateway-client'
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { reconcileAgentRowsForLocation } from './reconcile-agent-rows';
 import { openRemoteSubagentFs } from './resolve-subagent-fs';
 import { applyLocalSubagentAutoSessionState } from './setSubagentAutoSession';
 
@@ -149,6 +150,18 @@ export async function registerSubagents(
     autoSession: true,
   });
   await startAutoSessionWatchers(params.dir, parent.agentId, result.registered);
+
+  // Materialise the just-registered subagents as first-class agent rows so they
+  // flow through the normal agent operations (CHOO-1440).
+  const location = await getLocationByHostDir(null, params.dir);
+  if (location) {
+    await reconcileAgentRowsForLocation(location.id).catch((error) => {
+      log.warn('registerSubagents: failed to reconcile agent rows after registration', {
+        dir: params.dir,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
   return result;
 }
 

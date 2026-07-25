@@ -15,6 +15,7 @@ import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { useAgent } from '@renderer/lib/stores/use-agents';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
+import { representativeAgent } from '@shared/core/agents/agents';
 import { SidebarSessionItem } from './session-item';
 import { SidebarItemMiniButton, SidebarMenuRow } from './sidebar-primitives';
 import {
@@ -83,7 +84,7 @@ export const SidebarSubagentList = observer(function SidebarSubagentList({
 
   const agentQuery = useQuery({
     queryKey: ['locationAgent', locationId],
-    queryFn: async () => (await rpc.agents.getAgents(locationId))[0] ?? null,
+    queryFn: async () => representativeAgent(await rpc.agents.getAgents(locationId)) ?? null,
     enabled: !!locationId,
   });
   const agent = agentQuery.data ?? null;

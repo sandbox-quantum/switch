@@ -71,10 +71,20 @@ describe('reconcileAgentRowsForLocation', () => {
   it('is idempotent: skips subagents already represented by definitionName', async () => {
     getAgents.mockResolvedValue([
       parent(),
-      { ...parent({ id: 'sub-1', name: 'code-reviewer' }), definitionName: 'code-reviewer', switchAgentId: 'sw-child' },
+      {
+        ...parent({ id: 'sub-1', name: 'code-reviewer' }),
+        definitionName: 'code-reviewer',
+        switchAgentId: 'sw-child',
+      },
     ]);
     discoverLocal.mockResolvedValue([
-      { name: 'code-reviewer', description: null, model: null, switchAgentId: 'sw-child', apiEndpoint: null },
+      {
+        name: 'code-reviewer',
+        description: null,
+        model: null,
+        switchAgentId: 'sw-child',
+        apiEndpoint: null,
+      },
     ]);
 
     const result = await reconcileAgentRowsForLocation('loc-1');
@@ -95,7 +105,13 @@ describe('reconcileAgentRowsForLocation', () => {
   it('does not seed from an unlinked parent (no server)', async () => {
     getAgents.mockResolvedValue([parent({ serverId: null })]);
     discoverLocal.mockResolvedValue([
-      { name: 'code-reviewer', description: null, model: null, switchAgentId: 'sw-child', apiEndpoint: null },
+      {
+        name: 'code-reviewer',
+        description: null,
+        model: null,
+        switchAgentId: 'sw-child',
+        apiEndpoint: null,
+      },
     ]);
 
     const result = await reconcileAgentRowsForLocation('loc-1');

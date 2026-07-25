@@ -37,6 +37,7 @@ import {
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
+import { representativeAgent } from '@shared/core/agents/agents';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 import { buildConnectPrompt } from './build-connect-prompt';
 
@@ -154,7 +155,8 @@ export const CreateSessionModal = observer(function CreateSessionModal({
     const initialPrompt = buildConnectPrompt(room?.roomName ?? null, chosenRole, prompt);
 
     void (async () => {
-      const resolvedAgent = agent ?? (await rpc.agents.getAgents(selectedLocationId))[0];
+      const resolvedAgent =
+        agent ?? representativeAgent(await rpc.agents.getAgents(selectedLocationId));
       if (!resolvedAgent) {
         log.error('spawn session failed: location has no agents', selectedLocationId);
         return;

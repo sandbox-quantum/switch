@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { createAgent } from '@main/core/agents/createAgent';
 import { getAgents } from '@main/core/agents/getAgents';
-import { getLocationById } from '@main/core/locations/store';
+import { getLocationById, getLocations } from '@main/core/locations/store';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { log } from '@main/lib/logger';
@@ -35,16 +35,17 @@ export async function reconcileAgentRowsForLocation(
 
   const agentsInLocation = await getAgents(locationId);
   const seenDefinitionNames = new Set(
-    agentsInLocation
-      .map((a) => a.definitionName)
-      .filter((name): name is string => name !== null)
+    agentsInLocation.map((a) => a.definitionName).filter((name): name is string => name !== null)
   );
   const seenSwitchIds = new Set(
     agentsInLocation.map((a) => a.switchAgentId).filter((id): id is string => id !== null)
   );
 
   const parents = agentsInLocation.filter(
-    (a) => a.definitionName === null && a.serverId !== null && !!getPlugin(a.providerId).behavior.subagents
+    (a) =>
+      a.definitionName === null &&
+      a.serverId !== null &&
+      !!getPlugin(a.providerId).behavior.subagents
   );
 
   const fs = createPluginFs(location.dir);
@@ -88,4 +89,24 @@ export async function reconcileAgentRowsForLocation(
   }
 
   return { created };
+}
+
+/**
+ * Reconcile every local location's subagent definitions into agent rows. Run at
+ * boot so existing installs' on-disk subagents become first-class agents (the
+ * backfill for the subagent collapse). Best-effort per location.
+ */
+export async function reconcileAllAgentRows(): Promise<void> {
+  const locations = await getLocations();
+  for (const location of locations) {
+    if (location.sshHost) continue;
+    try {
+      await reconcileAgentRowsForLocation(location.id);
+    } catch (error) {
+      log.warn('reconcileAgentRows: failed for location', {
+        locationId: location.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }

@@ -30,6 +30,23 @@ export type Agent = {
   updatedAt: string;
 };
 
+/** True for an agent that launches as a provider definition (a former subagent). */
+export function isDefinitionAgent(agent: Pick<Agent, 'definitionName'>): boolean {
+  return agent.definitionName != null;
+}
+
+/**
+ * The agent that represents a location in single-agent UI surfaces (the sidebar
+ * location row, a location's settings target): the first non-definition ("real")
+ * agent, falling back to the first agent. Keeps a former subagent's agent row
+ * from being mistaken for the location's primary agent (CHOO-1440).
+ */
+export function representativeAgent<T extends Pick<Agent, 'definitionName'>>(
+  agents: readonly T[]
+): T | undefined {
+  return agents.find((a) => a.definitionName == null) ?? agents[0];
+}
+
 export type CreateAgentParams = {
   id: string;
   locationId: string;
