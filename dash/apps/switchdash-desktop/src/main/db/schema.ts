@@ -147,6 +147,13 @@ export const agents = sqliteTable(
       .references(() => locations.id),
     name: text('name').notNull(),
     providerId: text('provider_id').$type<AgentProviderId>().notNull(),
+    // The provider-level agent definition this row launches as, when it is one
+    // (e.g. a Claude Code subagent: the `.claude/agents/<name>.md` stem, passed
+    // to the CLI as `--agent <name>`). Null for a plain agent that launches the
+    // provider CLI with no definition. This single field replaces the former
+    // separate "subagent" concept — a subagent is just an agent with a
+    // definitionName sharing its location with other agents (CHOO-1440).
+    definitionName: text('definition_name'),
     switchAgentId: text('switch_agent_id'),
     apiEndpoint: text('api_endpoint'),
     serverId: text('server_id').references(() => switchServers.id, { onDelete: 'set null' }),

@@ -14,6 +14,10 @@ export type Agent = {
   locationId: string;
   name: string;
   providerId: AgentProviderId;
+  /** The provider-level definition this agent launches as (e.g. a Claude Code
+   * subagent — the `.claude/agents/<name>.md` stem, passed as `--agent <name>`),
+   * or null for a plain agent with no definition. */
+  definitionName: string | null;
   switchAgentId: string | null;
   apiEndpoint: string | null;
   serverId: string | null;
@@ -31,6 +35,9 @@ export type CreateAgentParams = {
   locationId: string;
   name: string;
   providerId: AgentProviderId;
+  /** The provider-level definition to launch as (`--agent <name>`), or null for
+   * a plain agent. */
+  definitionName?: string | null;
   switchAgentId: string | null;
   apiEndpoint: string | null;
   /** The Switch server this agent belongs to. Every agent must have one — it is

@@ -281,6 +281,13 @@
       "when": 1784829154686,
       "tag": "0039_new_ben_parker",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1784989270502,
+      "tag": "0040_massive_dreadnoughts",
+      "breakpoints": true
     }
   ]
 }

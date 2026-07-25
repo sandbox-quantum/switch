@@ -63,6 +63,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     locationId: 'location-id',
     name: 'Agent',
     providerId: 'claude',
+    definitionName: null,
     switchAgentId: 'sw-1',
     apiEndpoint: 'https://switch.example.com',
     serverId: 'server-1',

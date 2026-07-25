@@ -12,6 +12,7 @@ export async function createAgent(params: CreateAgentParams): Promise<Agent> {
       locationId: params.locationId,
       name: params.name,
       providerId: params.providerId,
+      definitionName: params.definitionName ?? null,
       switchAgentId: params.switchAgentId,
       apiEndpoint: params.apiEndpoint,
       serverId: params.serverId,

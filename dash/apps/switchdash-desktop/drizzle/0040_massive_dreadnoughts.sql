@@ -1,0 +1,1 @@
+ALTER TABLE `agents` ADD `definition_name` text;

@@ -7,6 +7,7 @@ export function mapAgentRowToAgent(row: AgentRow): Agent {
     locationId: row.locationId,
     name: row.name,
     providerId: row.providerId,
+    definitionName: row.definitionName ?? null,
     switchAgentId: row.switchAgentId ?? null,
     apiEndpoint: row.apiEndpoint ?? null,
     serverId: row.serverId ?? null,
