@@ -31,7 +31,13 @@ export async function createSession(
   const configObj: SessionConfig = {};
   if (params.autoApprove !== undefined) configObj.autoApprove = params.autoApprove;
   if (params.initialPrompt?.trim()) configObj.initialPrompt = params.initialPrompt.trim();
-  if (params.subagentName?.trim()) configObj.subagentName = params.subagentName.trim();
+  // A subagent is just an agent that launches as a provider definition. When the
+  // owning agent carries a definitionName, its sessions launch with
+  // `--agent <definitionName>` — derive it here so the runtime needs no DB
+  // lookup. An explicit param still wins (legacy "run this session as subagent
+  // X of parent" callers) (CHOO-1440).
+  const launchDefinition = params.subagentName?.trim() || agent.definitionName?.trim();
+  if (launchDefinition) configObj.subagentName = launchDefinition;
   const config = Object.keys(configObj).length > 0 ? configObj : undefined;
 
   const [row] = await db
