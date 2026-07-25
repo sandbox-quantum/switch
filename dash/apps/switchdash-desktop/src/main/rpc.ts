@@ -15,7 +15,6 @@ import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
 import { appSettingsController } from './core/settings/controller';
 import { providerSettingsController } from './core/settings/provider-settings-controller';
-import { subagentsController } from './core/subagents/controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
 import { switchSetupController } from './core/switch-setup/controller';
@@ -37,7 +36,6 @@ export const rpcRouter = createRPCRouter({
   viewState: viewStateController,
   search: searchController,
   switchRooms: switchRoomsController,
-  subagents: subagentsController,
   locationRuntimeSettings: locationRuntimeSettingsController,
   switchServers: switchServersController,
   switchSetup: switchSetupController,

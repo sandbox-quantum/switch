@@ -16,13 +16,22 @@ import type { AddressingPolicy } from '@shared/core/switch-servers/switch-server
  * agent (@mention, targeted message, task delegation). One editor per
  * Switch-linked agent in the location; hidden when the location has none.
  */
-export function AddressingPolicySettingsSection({ locationId }: { locationId: string }) {
+export function AddressingPolicySettingsSection({
+  locationId,
+  agentId,
+}: {
+  locationId: string;
+  /** Scope to a single agent; omit to show every Switch-linked agent. */
+  agentId?: string;
+}) {
   const { data: agents } = useQuery({
     queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
   });
 
-  const switchAgents = (agents ?? []).filter((a) => a.serverId && a.switchAgentId);
+  const switchAgents = (agents ?? []).filter(
+    (a) => a.serverId && a.switchAgentId && (!agentId || a.id === agentId)
+  );
   if (switchAgents.length === 0) return null;
 
   return (

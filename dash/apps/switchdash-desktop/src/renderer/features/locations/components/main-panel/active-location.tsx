@@ -1,18 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { SessionList } from '@renderer/features/locations/components/session-view/session-list';
 import { SettingsPanel } from '@renderer/features/locations/components/settings-view/settings-panel';
-import { SubagentsPanel } from '@renderer/features/locations/components/subagents-view/subagents-panel';
 import {
   asMounted,
   getLocationStore,
 } from '@renderer/features/locations/stores/location-selectors';
 import type { LocationView } from '@renderer/features/locations/stores/location-view';
-import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { useAgent } from '@renderer/lib/stores/use-agents';
 import { cn } from '@renderer/utils/utils';
-import { representativeAgent } from '@shared/core/agents/agents';
 
 function LocationViewNav({
   items,
@@ -52,34 +47,19 @@ function LocationViewNav({
 
 export const ActiveLocation = observer(function ActiveLocation() {
   const {
-    params: { locationId, subagentName },
+    params: { locationId },
   } = useParams('location');
   const store = asMounted(getLocationStore(locationId));
-
-  const { data: agents } = useQuery({
-    queryKey: ['location-agents', locationId],
-    queryFn: () => rpc.agents.getAgents(locationId),
-  });
-  const agent = representativeAgent(agents ?? []) ?? null;
-  const { data: providerMeta } = useAgent(agent?.providerId ?? '');
-  // Only a parent agent can have subagents — a subagent can't have its own, so
-  // hide the tab when the view is scoped to a subagent.
-  const supportsSubagents =
-    !subagentName && !!agent && providerMeta?.capabilities.subagents.kind !== 'none';
 
   if (!store) return null;
 
   const items: Array<{ id: LocationView; label: string }> = [
     { id: 'sessions', label: 'Sessions' },
-    ...(supportsSubagents ? ([{ id: 'subagents', label: 'Subagents' }] as const) : []),
     { id: 'settings', label: 'Settings' },
   ];
 
-  // Don't strand the user on a tab the current agent doesn't offer.
-  const activeView =
-    store.view.activeView === 'subagents' && !supportsSubagents
-      ? 'sessions'
-      : store.view.activeView;
+  // 'subagents' is a retired view; fall back to Sessions if a stale view sticks.
+  const activeView = store.view.activeView === 'settings' ? 'settings' : 'sessions';
 
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
@@ -93,7 +73,6 @@ export const ActiveLocation = observer(function ActiveLocation() {
           <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
             <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-1 py-10">
               {activeView === 'sessions' && <SessionList />}
-              {activeView === 'subagents' && <SubagentsPanel />}
               {activeView === 'settings' && <SettingsPanel />}
             </div>
           </div>

@@ -3,7 +3,6 @@ import { observer } from 'mobx-react-lite';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { AutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-session-settings-section';
-import { SubagentAutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/subagent-auto-session-settings-section';
 import {
   asMounted,
   getLocationStore,
@@ -18,13 +17,12 @@ export const SettingsPanel = observer(function SettingsPanel() {
   } = useParams('location');
   const mounted = asMounted(getLocationStore(locationId));
 
-  // When scoped to a subagent, resolve its own agent row so its settings render
-  // through the normal per-agent sections — a subagent is just an agent now
-  // (CHOO-1440).
+  // Resolve the specific agent the page is scoped to (by its definition name),
+  // so its settings render through the normal per-agent sections. switchdash has
+  // no main/subagent split — every agent gets the same settings (CHOO-1440).
   const { data: agents } = useQuery({
     queryKey: ['location-agents', locationId],
     queryFn: () => rpc.agents.getAgents(locationId),
-    enabled: !!subagentName,
   });
 
   if (!mounted) {
@@ -35,24 +33,16 @@ export const SettingsPanel = observer(function SettingsPanel() {
     );
   }
 
-  if (subagentName) {
-    // A subagent is an agent row now, so it gets the same per-agent settings.
-    // Auto-session stays on the subagent watcher path (keyed by parent+name);
-    // auto-approve is a plain per-agent DB flag on the subagent's own row.
-    const subagent = (agents ?? []).find((a) => a.definitionName === subagentName);
-    return (
-      <div className="flex flex-col gap-6">
-        <SubagentAutoSessionSettingsSection locationId={locationId} subagentName={subagentName} />
-        {subagent && <AutoApproveSettingsSection locationId={locationId} agentId={subagent.id} />}
-      </div>
-    );
-  }
+  const agent = subagentName
+    ? (agents ?? []).find((a) => a.definitionName === subagentName)
+    : (agents ?? [])[0];
+  const agentId = agent?.id;
 
   return (
     <div className="flex flex-col gap-6">
-      <AutoSessionSettingsSection locationId={locationId} />
-      <AutoApproveSettingsSection locationId={locationId} />
-      <AddressingPolicySettingsSection locationId={locationId} />
+      <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />
+      <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
+      <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );
 });
