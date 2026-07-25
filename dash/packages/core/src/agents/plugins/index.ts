@@ -71,7 +71,7 @@ export type { IHooksBehavior } from './capabilities/hooks';
 export type { IMcpBehavior, McpServerRegistration } from './capabilities/mcp';
 export type { IPlugins } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
-export { SWITCH_CONNECTOR_TOOL_RULES } from './capabilities/subagents';
+export { SWITCH_AGENT_SETTINGS_DIR, SWITCH_CONNECTOR_TOOL_RULES } from './capabilities/subagents';
 export type {
   ISubagentsBehavior,
   LocalSubagent,

@@ -11,7 +11,15 @@ vi.mock('@main/core/locations/store', () => ({ getLocationById }));
 vi.mock('@main/core/agents/getAgents', () => ({ getAgents }));
 vi.mock('@main/core/agents/createAgent', () => ({ createAgent }));
 vi.mock('@main/core/providers/plugin-registry', () => ({ getPlugin }));
-vi.mock('@main/core/providers/plugin-fs', () => ({ createPluginFs: () => ({}) }));
+vi.mock('@main/core/providers/plugin-fs', () => ({
+  createPluginFs: () => ({
+    list: async () => [],
+    exists: async () => false,
+    read: async () => null,
+    write: async () => {},
+    delete: async () => {},
+  }),
+}));
 vi.mock('@main/lib/logger', () => ({ log: { warn: logWarn, error: vi.fn() } }));
 
 const { reconcileAgentRowsForLocation } = await import('./reconcile-agent-rows');

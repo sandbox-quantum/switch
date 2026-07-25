@@ -49,6 +49,15 @@ export const SWITCH_CONNECTOR_TOOL_RULES = [
   'mcp__plugin_switch-connector_switch-channel',
 ] as const;
 
+/**
+ * Provider-neutral directory (relative to a location's working directory) for
+ * per-agent Switch credentials, replacing provider-specific layouts such as
+ * Claude's `.claude/switch-subagents/`. One `<name>.json` per agent, keeping the
+ * store out of any single provider's config tree (CHOO-1440). POSIX separator so
+ * it is stable across local and SFTP filesystems.
+ */
+export const SWITCH_AGENT_SETTINGS_DIR = '.switch/agents';
+
 /** A renderable input type for a subagent attribute field. */
 export type SubagentFieldType = 'text' | 'textarea' | 'select' | 'list' | 'number' | 'boolean';
 

@@ -7,6 +7,7 @@ import {
   type SubagentCredentials,
   type SubagentDefinition,
   type SubagentField,
+  SWITCH_AGENT_SETTINGS_DIR,
   SWITCH_CONNECTOR_TOOL_RULES,
 } from '@switchdash/core/agents/plugins';
 
@@ -324,8 +325,28 @@ function parseSettingsObject(raw: string | null): Record<string, unknown> {
   }
 }
 
+/** Legacy per-subagent credentials file under `.claude/switch-subagents/`. */
 function settingsRelPath(name: string): string {
   return path.join(CLAUDE_SUBAGENTS.dirRelative, `${name}${CLAUDE_SUBAGENTS.settingsSuffix}`);
+}
+
+/** Provider-neutral per-agent credentials file (the current location). */
+function neutralSettingsRelPath(name: string): string {
+  return path.join(SWITCH_AGENT_SETTINGS_DIR, `${name}.json`);
+}
+
+/**
+ * Read an agent's credentials JSON, preferring the provider-neutral location and
+ * falling back to the legacy `.claude/switch-subagents/` file for installs not
+ * yet migrated (CHOO-1440).
+ */
+async function readCredsObject(
+  workspaceFs: PluginFs,
+  name: string
+): Promise<Record<string, unknown>> {
+  const neutral = await workspaceFs.read(neutralSettingsRelPath(name));
+  if (neutral !== null) return parseSettingsObject(neutral);
+  return parseSettingsObject(await workspaceFs.read(settingsRelPath(name)));
 }
 
 function definitionRelPath(name: string): string {
@@ -353,16 +374,22 @@ async function readDefinitionMeta(
 
 export const claudeSubagentsBehavior: ISubagentsBehavior = {
   async discoverLocal(workspaceFs, homeFs): Promise<LocalSubagent[]> {
-    const entries = await workspaceFs.list(CLAUDE_SUBAGENTS.dirRelative);
-    const names = entries
+    // Names come from either credentials location — the neutral `.switch/agents`
+    // dir and the legacy `.claude/switch-subagents` dir — so both migrated and
+    // un-migrated installs are discovered (CHOO-1440).
+    const neutralNames = (await workspaceFs.list(SWITCH_AGENT_SETTINGS_DIR))
+      .filter((entry) => entry.endsWith('.json'))
+      .map((entry) => entry.slice(0, -'.json'.length));
+    const legacyNames = (await workspaceFs.list(CLAUDE_SUBAGENTS.dirRelative))
       .filter((entry) => entry.endsWith(CLAUDE_SUBAGENTS.settingsSuffix))
-      .map((entry) => entry.slice(0, -CLAUDE_SUBAGENTS.settingsSuffix.length))
+      .map((entry) => entry.slice(0, -CLAUDE_SUBAGENTS.settingsSuffix.length));
+    const names = [...new Set([...neutralNames, ...legacyNames])]
       .filter((name) => name.length > 0)
       .sort((a, b) => a.localeCompare(b));
 
     return Promise.all(
       names.map(async (name) => {
-        const settings = parseSettingsObject(await workspaceFs.read(settingsRelPath(name)));
+        const settings = await readCredsObject(workspaceFs, name);
         const env = (settings.env ?? {}) as Record<string, unknown>;
         const { description, model } = await readDefinitionMeta(workspaceFs, homeFs, name);
         return {
@@ -405,12 +432,12 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
       '--agent',
       subagentName,
       '--settings',
-      path.join(sessionPath, settingsRelPath(subagentName)),
+      path.join(sessionPath, neutralSettingsRelPath(subagentName)),
     ];
   },
 
   async readLaunchEnv(workspaceFs, subagentName): Promise<Record<string, string>> {
-    const settings = parseSettingsObject(await workspaceFs.read(settingsRelPath(subagentName)));
+    const settings = await readCredsObject(workspaceFs, subagentName);
     const env = (settings.env ?? {}) as Record<string, unknown>;
     const result: Record<string, string> = {};
     for (const key of SWITCH_ENV_KEYS) {
@@ -422,12 +449,12 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
 
   async writeSettings(workspaceFs, credentials: SubagentCredentials): Promise<void> {
     // Keep the tokens out of git — `*` ignores everything in the directory.
-    const gitignoreRel = path.join(CLAUDE_SUBAGENTS.dirRelative, '.gitignore');
+    const gitignoreRel = path.join(SWITCH_AGENT_SETTINGS_DIR, '.gitignore');
     if (!(await workspaceFs.exists(gitignoreRel))) {
       await workspaceFs.write(gitignoreRel, '*\n');
     }
 
-    const relPath = settingsRelPath(credentials.subagentName);
+    const relPath = neutralSettingsRelPath(credentials.subagentName);
     const existing = parseSettingsObject(await workspaceFs.read(relPath));
     const currentEnv = (existing.env ?? {}) as Record<string, unknown>;
     const currentPerms =
@@ -494,6 +521,7 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
 
   async removeLocal(workspaceFs, name): Promise<void> {
     await workspaceFs.delete(definitionRelPath(name));
+    await workspaceFs.delete(neutralSettingsRelPath(name));
     await workspaceFs.delete(settingsRelPath(name));
   },
 };

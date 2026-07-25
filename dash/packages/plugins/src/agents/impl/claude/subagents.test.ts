@@ -30,6 +30,8 @@ function fakeFs(files: Record<string, string>): PluginFs {
 
 const settingsRel = (name: string) =>
   path.join(CLAUDE_SUBAGENTS.dirRelative, `${name}${CLAUDE_SUBAGENTS.settingsSuffix}`);
+/** Provider-neutral per-agent credentials file (the current write location). */
+const neutralRel = (name: string) => path.join('.switch', 'agents', `${name}.json`);
 const defRel = (name: string) => path.join(CLAUDE_SUBAGENTS.definitionsDirRelative, `${name}.md`);
 
 describe('claudeSubagentsBehavior.launchArgs', () => {
@@ -38,7 +40,7 @@ describe('claudeSubagentsBehavior.launchArgs', () => {
       '--agent',
       'reviewer',
       '--settings',
-      path.join('/repo/agent', '.claude', 'switch-subagents', 'reviewer.settings.json'),
+      path.join('/repo/agent', '.switch', 'agents', 'reviewer.json'),
     ]);
   });
 });
@@ -229,7 +231,7 @@ describe('claudeSubagentsBehavior.writeSettings', () => {
       agentId: 'a1',
     });
 
-    const written = await workspaceFs.read(settingsRel('reviewer'));
+    const written = await workspaceFs.read(neutralRel('reviewer'));
     expect(JSON.parse(written!)).toEqual({
       permissions: {
         allow: [
@@ -239,14 +241,12 @@ describe('claudeSubagentsBehavior.writeSettings', () => {
       },
       env: { SWITCH_API_ENDPOINT: 'https://s', SWITCH_API_TOKEN: 'secret', SWITCH_AGENT_ID: 'a1' },
     });
-    expect(await workspaceFs.read(path.join(CLAUDE_SUBAGENTS.dirRelative, '.gitignore'))).toBe(
-      '*\n'
-    );
+    expect(await workspaceFs.read(path.join('.switch', 'agents', '.gitignore'))).toBe('*\n');
   });
 
   it('preserves existing permissions and env, unioning the Switch rules', async () => {
     const workspaceFs = fakeFs({
-      [settingsRel('reviewer')]: JSON.stringify({
+      [neutralRel('reviewer')]: JSON.stringify({
         permissions: { allow: ['Bash'] },
         env: { KEEP: 'me' },
       }),
@@ -258,7 +258,7 @@ describe('claudeSubagentsBehavior.writeSettings', () => {
       agentId: 'a1',
     });
 
-    const settings = JSON.parse((await workspaceFs.read(settingsRel('reviewer')))!);
+    const settings = JSON.parse((await workspaceFs.read(neutralRel('reviewer')))!);
     expect(settings.permissions.allow).toEqual([
       'Bash',
       'mcp__plugin_switch-connector_switch',

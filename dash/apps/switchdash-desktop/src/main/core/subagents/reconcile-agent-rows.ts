@@ -1,11 +1,44 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import path from 'node:path';
 import { createAgent } from '@main/core/agents/createAgent';
 import { getAgents } from '@main/core/agents/getAgents';
+import {
+  agentSettingsRelativePath,
+  SWITCH_AGENTS_GITIGNORE_RELATIVE,
+  SWITCH_SUBAGENTS_DIR_RELATIVE,
+} from '@main/core/agents/switch-settings-paths';
 import { getLocationById, getLocations } from '@main/core/locations/store';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { log } from '@main/lib/logger';
+
+/**
+ * Move a location's legacy per-subagent credentials from the Claude-specific
+ * `.claude/switch-subagents/<name>.settings.json` layout to the provider-neutral
+ * `.switch/agents/<name>.json` layout (CHOO-1440). Idempotent: files already at
+ * the neutral location are left untouched. Best-effort; the credential readers
+ * fall back to the legacy location, so a partial move never breaks launch.
+ */
+async function migrateLegacyCredsToNeutral(dir: string): Promise<void> {
+  const fs = createPluginFs(dir);
+  const legacy = (await fs.list(SWITCH_SUBAGENTS_DIR_RELATIVE)).filter((e) =>
+    e.endsWith('.settings.json')
+  );
+  if (legacy.length === 0) return;
+  if (!(await fs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
+    await fs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
+  }
+  for (const entry of legacy) {
+    const name = entry.slice(0, -'.settings.json'.length);
+    const neutralRel = agentSettingsRelativePath(name);
+    if (await fs.exists(neutralRel)) continue;
+    const content = await fs.read(path.join(SWITCH_SUBAGENTS_DIR_RELATIVE, entry));
+    if (content === null) continue;
+    await fs.write(neutralRel, content);
+    await fs.delete(path.join(SWITCH_SUBAGENTS_DIR_RELATIVE, entry));
+  }
+}
 
 /**
  * Sync a location's on-disk subagent definitions into first-class agent rows.
@@ -32,6 +65,13 @@ export async function reconcileAgentRowsForLocation(
 ): Promise<{ created: number }> {
   const location = await getLocationById(locationId);
   if (!location || location.sshHost) return { created: 0 };
+
+  await migrateLegacyCredsToNeutral(location.dir).catch((error) => {
+    log.warn('reconcileAgentRows: legacy creds migration failed', {
+      locationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   const agentsInLocation = await getAgents(locationId);
   const seenDefinitionNames = new Set(
