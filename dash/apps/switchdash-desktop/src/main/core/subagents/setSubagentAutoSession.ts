@@ -1,4 +1,5 @@
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { getAgents } from '@main/core/agents/getAgents';
 import {
   listAutoSessionSubagents,
   setAutoSessionSubagent,
@@ -11,7 +12,6 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
-import { listSubagents } from './list-subagents';
 
 export type SubagentAutoSessionParams = {
   parentAgentId: string;
@@ -33,13 +33,16 @@ export async function applyLocalSubagentAutoSessionState(
   await autoSessionWatcher.reconcileSubagent(parentAgentId, name, enabled);
 }
 
-/** Resolve a subagent's own Switch agent id (needed to flip its gateway profile). */
+/** Resolve a subagent's own Switch agent id (needed to flip its gateway profile).
+ * A subagent is an agent row carrying `definitionName` in the parent's location. */
 async function resolveSubagentSwitchId(
   parentAgentId: string,
   name: string
 ): Promise<string | null> {
-  const { subagents } = await listSubagents(parentAgentId);
-  return subagents.find((s) => s.name === name)?.switchAgentId ?? null;
+  const parent = await getAgentById(parentAgentId);
+  if (!parent) return null;
+  const row = (await getAgents(parent.locationId)).find((a) => a.definitionName === name);
+  return row?.switchAgentId ?? null;
 }
 
 /**

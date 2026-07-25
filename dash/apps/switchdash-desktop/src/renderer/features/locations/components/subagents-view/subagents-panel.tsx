@@ -109,12 +109,6 @@ export const SubagentsPanel = observer(function SubagentsPanel() {
   const parent =
     (agents ?? []).find((a) => a.definitionName == null && a.serverId && a.switchAgentId) ?? null;
 
-  const subagentsQuery = useQuery({
-    queryKey: ['subagents', parent?.id],
-    queryFn: () => rpc.subagents.list(parent!.id),
-    enabled: !!parent,
-  });
-
   if (!mounted || agentsLoading) {
     return (
       <div className="flex items-center justify-center py-10">
@@ -135,14 +129,28 @@ export const SubagentsPanel = observer(function SubagentsPanel() {
     );
   }
 
-  const subagents = subagentsQuery.data?.subagents ?? [];
+  // Subagents are ordinary agent rows carrying a definitionName, sharing the
+  // parent's location (CHOO-1440). Description/model live in the on-disk
+  // definition and are loaded on demand by the edit form, not listed here.
+  const subagents: Subagent[] = (agents ?? [])
+    .filter((a) => a.definitionName !== null)
+    .map((a) => ({
+      parentAgentId: parent.id,
+      name: a.definitionName as string,
+      description: null,
+      model: null,
+      switchAgentId: a.switchAgentId,
+      apiEndpoint: a.apiEndpoint,
+      serverId: a.serverId,
+      registered: true,
+    }));
 
   return (
     <SubagentsList
       providerId={parent.providerId}
       parentAgentId={parent.id}
       subagents={subagents}
-      loading={subagentsQuery.isLoading}
+      loading={false}
     />
   );
 });

@@ -9,7 +9,6 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import { createSubagent, type CreateSubagentParams } from './create-subagent';
 import { deleteSubagent, type DeleteSubagentParams } from './delete-subagent';
 import { editSubagent, type EditSubagentParams } from './edit-subagent';
-import { listSubagents } from './list-subagents';
 import {
   registerSubagents,
   registerSubagentsRemote,
@@ -76,7 +75,6 @@ async function readDefinition(params: {
 }
 
 export const subagentsController = createRPCController({
-  list: (parentAgentId: string) => listSubagents(parentAgentId),
   listDefinitions,
   listRemoteDefinitions,
   attributeFields: (providerId: string) => attributeFields(providerId),

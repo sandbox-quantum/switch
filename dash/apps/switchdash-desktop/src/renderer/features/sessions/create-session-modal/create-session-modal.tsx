@@ -91,28 +91,20 @@ export const CreateSessionModal = observer(function CreateSessionModal({
 
   // A session belongs to an agent; resolve the location's agent up front so we
   // can offer the rooms it belongs to.
-  const agentQuery = useQuery({
-    queryKey: ['locationAgent', selectedLocationId],
-    queryFn: async () => {
-      const agents = await rpc.agents.getAgents(selectedLocationId);
-      return agents[0] ?? null;
-    },
+  const agentsQuery = useQuery({
+    queryKey: ['location-agents', selectedLocationId],
+    queryFn: () => rpc.agents.getAgents(selectedLocationId),
     enabled: !!selectedLocationId,
   });
-  const agent = agentQuery.data ?? null;
+  const locationAgents = agentsQuery.data ?? [];
+  const agent = representativeAgent(locationAgents) ?? null;
 
   // When launching as a subagent, the session joins rooms under the subagent's
-  // own Switch identity, so the room picker must use the subagent's id/server —
-  // not the parent agent's.
-  const subagentsQuery = useQuery({
-    queryKey: ['subagents', agent?.id],
-    queryFn: () => rpc.subagents.list(agent!.id),
-    enabled: !!agent && !!subagentName,
-  });
-  const subagent =
-    subagentName && subagentsQuery.data
-      ? (subagentsQuery.data.subagents.find((s) => s.name === subagentName) ?? null)
-      : null;
+  // own Switch identity — its own agent row (a definitionName agent) — so the
+  // room picker uses the subagent's id/server, not the parent agent's (CHOO-1440).
+  const subagent = subagentName
+    ? (locationAgents.find((a) => a.definitionName === subagentName) ?? null)
+    : null;
 
   const serverId = subagentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
   const switchAgentId = subagentName
