@@ -68,7 +68,13 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
   const [runHost, setRunHost] = useState<string>(LOCAL_RUN_LOCATION);
+  // `remoteRepoDir` is the *committed* remote working dir that drives discovery
+  // (SSH agent-detect, agent defaults, subagent scan). `remoteRepoDirDraft` is
+  // the raw text field. They are split so typing does not refire those queries
+  // on every keystroke — discovery runs only when the user commits the dir
+  // (the "Set location" button or Enter). See CHOO-1440.
   const [remoteRepoDir, setRemoteRepoDir] = useState('');
+  const [remoteRepoDirDraft, setRemoteRepoDirDraft] = useState('');
   // Configure form for onboarding a brand-new agent in the remote dir. Defaults
   // (name/description) are derived from the remote dir just like a local agent.
   const remoteConfigureForm = useConfigureAgentForm(remoteRepoDir.trim(), true);
@@ -127,6 +133,13 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       setRunHost(LOCAL_RUN_LOCATION);
     }
   }, [allowedHosts, runHost]);
+
+  // Reset the remote working dir when the run host changes so a committed dir
+  // from a previous host does not leak into discovery for the new one.
+  useEffect(() => {
+    setRemoteRepoDir('');
+    setRemoteRepoDirDraft('');
+  }, [runHost]);
 
   // The subagents the user chose to onboard alongside the parent. Held in a ref
   // (not state) so the section can report changes without re-rendering the modal.
@@ -555,11 +568,27 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             </p>
           )}
           {isRemoteRun && (
-            <Input
-              value={remoteRepoDir}
-              placeholder="Remote working directory, e.g. /home/agent/repo"
-              onChange={(e) => setRemoteRepoDir(e.target.value)}
-            />
+            <div className="flex items-center gap-2">
+              <Input
+                value={remoteRepoDirDraft}
+                placeholder="Remote working directory, e.g. /home/agent/repo"
+                onChange={(e) => setRemoteRepoDirDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    setRemoteRepoDir(remoteRepoDirDraft.trim());
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setRemoteRepoDir(remoteRepoDirDraft.trim())}
+                disabled={remoteRepoDirDraft.trim() === remoteRepoDir}
+              >
+                Set location
+              </Button>
+            </div>
           )}
         </Field>
         {!isRemoteRun && <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />}
