@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { err, ok } from '@switchdash/shared';
+import type { Result } from '@switchdash/shared';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
@@ -11,7 +12,6 @@ import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { basenameFromAnyPath } from '@shared/path-name';
-import type { Result } from '@switchdash/shared';
 import { agentEvents } from './agent-events';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
@@ -81,7 +81,9 @@ export async function onboardLocationAgents(
   });
 
   const existing = new Set(
-    (await getAgents(location.id)).map((a) => a.definitionName).filter((n): n is string => n != null)
+    (await getAgents(location.id))
+      .map((a) => a.definitionName)
+      .filter((n): n is string => n != null)
   );
 
   const created: Agent[] = [];

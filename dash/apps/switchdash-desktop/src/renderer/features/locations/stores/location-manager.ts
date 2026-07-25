@@ -65,6 +65,29 @@ export class LocationManagerStore {
     return completion.success ? result.locationId : undefined;
   }
 
+  /**
+   * Add a brand-new agent to a location (local or remote): mint its identity,
+   * write its definition + credentials, and create the row — all server-side via
+   * `addAgent` — then mount the resulting location so it shows immediately. The
+   * flat-agent create path (CHOO-1440); returns the typed `addAgent` result so
+   * the caller can surface recoverable gateway failures.
+   */
+  async addAgentAndOpen(
+    params: Parameters<typeof rpc.agents.addAgent>[0]
+  ): Promise<Awaited<ReturnType<typeof rpc.agents.addAgent>>> {
+    const result = await rpc.agents.addAgent(params);
+    if (result.kind === 'created') {
+      const location = (await rpc.locations.getLocations()).find(
+        (l) => l.id === result.agent.locationId
+      );
+      if (!location) {
+        throw new Error(`Added agent's location ${result.agent.locationId} not found`);
+      }
+      this._setAndOpenLocation(location.id, location);
+    }
+    return result;
+  }
+
   async startAgentOnboarding(
     data: ModeData,
     options: StartAgentOnboardingOptions = {}

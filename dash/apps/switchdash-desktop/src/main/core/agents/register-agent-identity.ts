@@ -1,6 +1,9 @@
-import type { AgentProviderKind, ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { GatewayError, registerKnownAgent } from '@main/core/switch-servers/gateway-client';
+import type {
+  AgentProviderKind,
+  ProvisionAgentResult,
+} from '@shared/core/switch-servers/switch-servers';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 export type RegisterAgentInput = {
   name: string;
@@ -24,7 +27,8 @@ export async function registerAgentIdentity(
   server: SwitchServer,
   input: RegisterAgentInput
 ): Promise<
-  { kind: 'created'; id: string; apiKey: string } | Exclude<ProvisionAgentResult, { kind: 'created' }>
+  | { kind: 'created'; id: string; apiKey: string }
+  | Exclude<ProvisionAgentResult, { kind: 'created' }>
 > {
   try {
     const registered = await registerKnownAgent(server, {

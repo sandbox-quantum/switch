@@ -1,3 +1,4 @@
+import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -40,11 +41,11 @@ import {
 import { log } from '@renderer/utils/logger';
 import type { ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
+import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
 import { ConfigureAgentPanel } from './configure-agent-panel';
 import { PickExistingPanel } from './content';
 import { useConfigureAgentForm, usePickMode } from './modes';
-import { SubagentOnboardingSection, type SubagentSelection } from './subagent-onboarding-section';
 
 // switchdash adds a Switch *agent* by pointing at a local directory that the
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
@@ -141,11 +142,12 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     setRemoteRepoDirDraft('');
   }, [runHost]);
 
-  // The subagents the user chose to onboard alongside the parent. Held in a ref
-  // (not state) so the section can report changes without re-rendering the modal.
-  const subagentSelectionRef = useRef<SubagentSelection>([]);
-  const onSubagentSelectionChange = useCallback((selection: SubagentSelection) => {
-    subagentSelectionRef.current = selection;
+  // Advanced definition attributes (model, effort, tools, system prompt, …) the
+  // user set in the collapsed Advanced section. Held in a ref (not state) so the
+  // section can report changes without re-rendering the modal.
+  const advancedAttributesRef = useRef<SubagentAttributes>({});
+  const onAdvancedChange = useCallback((attributes: SubagentAttributes) => {
+    advancedAttributesRef.current = attributes;
   }, []);
 
   const shouldCheckPathStatus = !isRemoteRun && pickState.path.trim().length > 0;
@@ -307,39 +309,6 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     return result.locationId;
   };
 
-  /** Onboard the subagents the user selected, after the parent is added. A
-   * failure here is surfaced but does not block adding the parent (which already
-   * succeeded). */
-  const registerSelectedSubagents = async () => {
-    const selection = subagentSelectionRef.current;
-    if (selection.length === 0 || !pickState.serverId || !pickState.providerId) return;
-    try {
-      const { registered } = isRemoteRun
-        ? await rpc.subagents.registerRemote({
-            providerId: pickState.providerId,
-            serverId: pickState.serverId,
-            sshHost: runHost,
-            remoteRepoDir: trimmedRemoteDir,
-            subagents: selection,
-          })
-        : await rpc.subagents.register({
-            providerId: pickState.providerId,
-            serverId: pickState.serverId,
-            dir: pickState.path,
-            subagents: selection,
-          });
-      if (registered.length > 0) {
-        toast({ title: `Onboarded ${registered.length} subagent(s)` });
-      }
-    } catch (error) {
-      toast({
-        title: 'Failed to onboard subagents',
-        description: error instanceof Error ? error.message : String(error),
-        variant: 'destructive',
-      });
-    }
-  };
-
   const handleSubmit = async () => {
     if (!canSubmitDetected) return;
     setSubmitState('creating');
@@ -347,7 +316,6 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     try {
       const locationId = await startCreate();
       if (locationId) {
-        await registerSelectedSubagents();
         finishWith(locationId);
       } else {
         setCloseGuard(false);
@@ -396,19 +364,26 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     }
   };
 
-  const handleConfigure = async () => {
-    if (!canSubmitConfigure || !pickState.serverId || !configureForm.providerKind) return;
+  /** Create a brand-new flat agent in the chosen directory (local or remote):
+   * mint its identity, write its `.claude/agents/<name>.md` definition + its
+   * per-agent credentials, and create the row — all via `addAgent`. */
+  const createNewAgent = async (form: ReturnType<typeof useConfigureAgentForm>) => {
+    if (!pickState.serverId || !pickState.providerId || !form.providerKind) return;
     setSubmitState('creating');
     setCloseGuard(true);
     try {
-      const result = await rpc.switchServers.provisionAgent({
+      const result = await getLocationManagerStore().addAgentAndOpen({
+        sshHost: isRemoteRun ? runHost : null,
+        dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
+        name: form.agentName,
+        providerId: pickState.providerId,
         serverId: pickState.serverId,
-        dir: pickState.path,
-        name: configureForm.agentName,
-        description: configureForm.description.trim(),
-        providerKind: configureForm.providerKind,
-        notifyUser: configureForm.notifyUser.trim() || undefined,
-        autoSession: configureForm.autoSession,
+        description: form.description.trim(),
+        providerKind: form.providerKind,
+        notifyUser: form.notifyUser.trim() || null,
+        autoSession: form.autoSession,
+        autoApprove: form.autoApprove,
+        definitionAttributes: advancedAttributesRef.current,
       });
       if (result.kind !== 'created') {
         reportProvisionError(result);
@@ -416,89 +391,29 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         setSubmitState('idle');
         return;
       }
-      if (configureForm.addressingPolicy !== null) {
+      if (form.addressingPolicy !== null && result.agent.switchAgentId) {
         await rpc.switchServers.updateAddressingPolicy({
           serverId: pickState.serverId,
-          agentId: result.agentId,
-          policy: configureForm.addressingPolicy,
+          agentId: result.agent.switchAgentId,
+          policy: form.addressingPolicy,
         });
       }
-      // Credentials are now written to .claude/settings.local.json, so the
-      // create path re-detects the agent and verifies it on the server, and the
-      // selected subagents can be registered under the just-created parent.
-      const locationId = await startCreate();
-      if (locationId) {
-        await registerSelectedSubagents();
-        finishWith(locationId);
-      } else {
-        setCloseGuard(false);
-        setSubmitState('idle');
-      }
+      void agentsStore.load();
+      finishWith(result.agent.locationId);
     } catch (error) {
       log.error(error);
       setCloseGuard(false);
       setSubmitState('idle');
       toast({
-        title: 'Failed to register agent',
+        title: 'Failed to add agent',
         description: String(error),
         variant: 'destructive',
       });
     }
   };
 
-  const handleConfigureRemote = async () => {
-    if (!canSubmitConfigureRemote || !pickState.serverId || !remoteConfigureForm.providerKind) {
-      return;
-    }
-    setSubmitState('creating');
-    setCloseGuard(true);
-    try {
-      const result = await rpc.switchServers.provisionRemoteAgent({
-        serverId: pickState.serverId,
-        sshHost: runHost,
-        remoteRepoDir: trimmedRemoteDir,
-        name: remoteConfigureForm.agentName,
-        description: remoteConfigureForm.description.trim(),
-        providerKind: remoteConfigureForm.providerKind,
-        notifyUser: remoteConfigureForm.notifyUser.trim() || undefined,
-        autoSession: remoteConfigureForm.autoSession,
-      });
-      if (result.kind !== 'created') {
-        reportProvisionError(result);
-        setCloseGuard(false);
-        setSubmitState('idle');
-        return;
-      }
-      if (remoteConfigureForm.addressingPolicy !== null) {
-        await rpc.switchServers.updateAddressingPolicy({
-          serverId: pickState.serverId,
-          agentId: result.agentId,
-          policy: remoteConfigureForm.addressingPolicy,
-        });
-      }
-      // Credentials are now written to the remote dir's .claude/settings.local.json,
-      // so the create path (createRemoteLocation) re-detects the agent over SSH and
-      // verifies it on the server, and the selected subagents can be registered
-      // under the just-created remote parent.
-      const locationId = await startCreate();
-      if (locationId) {
-        await registerSelectedSubagents();
-        finishWith(locationId);
-      } else {
-        setCloseGuard(false);
-        setSubmitState('idle');
-      }
-    } catch (error) {
-      log.error(error);
-      setCloseGuard(false);
-      setSubmitState('idle');
-      toast({
-        title: 'Failed to register agent',
-        description: String(error),
-        variant: 'destructive',
-      });
-    }
-  };
+  const handleConfigure = () => createNewAgent(configureForm);
+  const handleConfigureRemote = () => createNewAgent(remoteConfigureForm);
 
   const submitLabel = submitState === 'creating' ? 'Adding...' : 'Add Agent';
 
@@ -599,11 +514,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
               serverId={pickState.serverId}
               onAddServer={() => showAddServerModal({})}
             />
-            <SubagentOnboardingSection
-              source={{ kind: 'remote', sshHost: runHost, remoteRepoDir: trimmedRemoteDir }}
-              providerId={pickState.providerId}
-              onSelectionChange={onSubagentSelectionChange}
-            />
+            <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
           </>
         )}
         {switchAgent && (
@@ -635,15 +546,6 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
                 </div>
               </div>
             )}
-            <SubagentOnboardingSection
-              source={
-                isRemoteRun
-                  ? { kind: 'remote', sshHost: runHost, remoteRepoDir: trimmedRemoteDir }
-                  : { kind: 'local', dir: pickState.path }
-              }
-              providerId={pickState.providerId}
-              onSelectionChange={onSubagentSelectionChange}
-            />
           </>
         )}
         {isMissingSwitchAgent && (
@@ -653,11 +555,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
               serverId={pickState.serverId}
               onAddServer={() => showAddServerModal({})}
             />
-            <SubagentOnboardingSection
-              source={{ kind: 'local', dir: pickState.path }}
-              providerId={pickState.providerId}
-              onSelectionChange={onSubagentSelectionChange}
-            />
+            <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
           </>
         )}
       </DialogContentArea>

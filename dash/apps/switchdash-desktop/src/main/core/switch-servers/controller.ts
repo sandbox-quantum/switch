@@ -1,7 +1,7 @@
 import type { Result } from '@switchdash/shared';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
-import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
+import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch-settings';
 import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
@@ -10,7 +10,6 @@ import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
 import type {
   AddressingPolicy,
   AddServerParams,
