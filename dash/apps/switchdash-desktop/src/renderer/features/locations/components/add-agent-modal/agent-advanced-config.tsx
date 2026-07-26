@@ -1,113 +1,19 @@
-import type { SubagentAttributes, SubagentField } from '@switchdash/core/agents/plugins';
+import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
-import { Switch } from '@renderer/lib/ui/switch';
-import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-
-/** Sentinel for a select's "unset" choice (an empty string is not a valid item). */
-const UNSET = '__unset__';
-
-/** A field's value as held in the form: strings for everything except booleans. */
-type FormValue = string | boolean;
-type FormState = Record<string, FormValue>;
-
-/** name/description are collected as top-level modal fields, not advanced ones. */
-const TOP_LEVEL_KEYS = new Set(['name', 'description']);
-
-function emptyForm(fields: SubagentField[]): FormState {
-  const state: FormState = {};
-  for (const field of fields) state[field.key] = field.type === 'boolean' ? false : '';
-  return state;
-}
-
-function attributesFromForm(fields: SubagentField[], state: FormState): SubagentAttributes {
-  const attributes: SubagentAttributes = {};
-  for (const field of fields) {
-    const value = state[field.key];
-    if (field.type === 'boolean') {
-      attributes[field.key] = value === true;
-    } else if (field.type === 'list') {
-      attributes[field.key] = String(value)
-        .split(',')
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
-    } else if (field.type === 'number') {
-      const trimmed = String(value).trim();
-      attributes[field.key] = trimmed.length > 0 ? Number(trimmed) : null;
-    } else {
-      attributes[field.key] = String(value).trim();
-    }
-  }
-  return attributes;
-}
-
-function DefinitionFieldInput({
-  field,
-  value,
-  onChange,
-}: {
-  field: SubagentField;
-  value: FormValue;
-  onChange: (value: FormValue) => void;
-}) {
-  const id = `agent-advanced-${field.key}`;
-  if (field.type === 'boolean') {
-    return <Switch id={id} checked={value === true} onCheckedChange={onChange} />;
-  }
-  if (field.type === 'textarea') {
-    return (
-      <Textarea
-        id={id}
-        value={String(value)}
-        rows={5}
-        placeholder={field.placeholder}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    );
-  }
-  if (field.type === 'select') {
-    const current = String(value);
-    return (
-      <Select
-        value={current.length > 0 ? current : UNSET}
-        onValueChange={(next) => onChange(next === UNSET ? '' : (next ?? ''))}
-      >
-        <SelectTrigger id={id}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {(field.options ?? []).map((option) => (
-            <SelectItem key={option.value} value={option.value.length > 0 ? option.value : UNSET}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    );
-  }
-  return (
-    <Input
-      id={id}
-      type={field.type === 'number' ? 'number' : 'text'}
-      value={String(value)}
-      placeholder={field.placeholder}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  );
-}
+import {
+  advancedFields,
+  attributesFromForm,
+  DefinitionFieldInput,
+  emptyForm,
+  type FormState,
+  type FormValue,
+} from '../agent-definition-fields';
 
 /**
  * Collapsed "Advanced configuration" section for the add-agent modal. Renders the
@@ -130,10 +36,7 @@ export function AgentAdvancedConfig({
     enabled: !!providerId,
   });
 
-  const fields = useMemo(
-    () => (allFields ?? []).filter((f) => !TOP_LEVEL_KEYS.has(f.key)),
-    [allFields]
-  );
+  const fields = useMemo(() => advancedFields(allFields ?? []), [allFields]);
 
   const [state, setState] = useState<FormState>({});
   // Reset the form (and reported attributes) whenever the provider's field set
