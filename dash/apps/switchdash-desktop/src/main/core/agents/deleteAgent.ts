@@ -2,10 +2,7 @@ import { eq } from 'drizzle-orm';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { setAutoSessionAgent } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
-import {
-  deleteAgent as gatewayDeleteAgent,
-  fetchAgentChildren,
-} from '@main/core/switch-servers/gateway-client';
+import { deleteAgent as gatewayDeleteAgent } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
@@ -23,23 +20,24 @@ import { removeSwitchCredentials } from './remove-switch-settings';
 
 export type DeleteAgentOptions = {
   /**
-   * Also delete the agent's identity on the Switch server (via the gateway),
-   * cascading to delete every subagent registered under it. When false, the
-   * agent is removed from switchdash only; its Switch identity (and its
-   * subagents') is left registered on the server.
+   * Also delete the agent's identity on the Switch server (via the gateway).
+   * When false, the agent is removed from switchdash only; its Switch identity is
+   * left registered on the server.
    */
   deleteInSwitch: boolean;
 };
 
 /**
- * Delete the agent's identity on the Switch server, cascading to its subagents.
+ * Delete this agent's own identity on the Switch server — and ONLY this one.
  *
- * The gateway does NOT cascade child deletes on its own (a parent delete only
- * orphans its children), so switchdash drives the cascade: enumerate the
- * registered children and delete each one first, then delete the parent. Runs
- * before any local teardown so a gateway failure surfaces loudly and aborts the
- * delete with local state intact, rather than leaving the row gone but the Switch
- * identity orphaned.
+ * switchdash agents are flat: a directory is a container of independent agents
+ * with no parent/child hierarchy (CHOO-1440), so deleting one never affects any
+ * other agent, even a sibling in the same directory. (Legacy agents may still
+ * carry a gateway parent/child link from the old subagent model; we deliberately
+ * do not follow it — deleting a former "parent" simply orphans those links, it
+ * must not cascade-delete the other agents.) Runs before any local teardown so a
+ * gateway failure surfaces loudly and aborts the delete with local state intact,
+ * rather than leaving the row gone but the Switch identity orphaned.
  */
 async function deleteAgentInSwitch(agent: Agent): Promise<void> {
   if (!agent.serverId || !agent.switchAgentId) {
@@ -50,10 +48,6 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
   const server = await getServer(agent.serverId);
   if (!server) throw new Error(`No Switch server with id ${agent.serverId}`);
 
-  const { children } = await fetchAgentChildren(server, agent.switchAgentId);
-  for (const child of children) {
-    await gatewayDeleteAgent(server, child.id);
-  }
   await gatewayDeleteAgent(server, agent.switchAgentId);
 }
 
@@ -91,7 +85,7 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  * Delete an agent — the one real delete entry point (the sidebar's Remove
  * Agent routes here). Tears down everything a bare row delete would leak:
  *
- * 1. The agent's identity on the Switch server, cascading to its subagents —
+ * 1. The agent's own identity on the Switch server (never any other agent) —
  *    only when `deleteInSwitch` is set (the opt-in "also delete in Switch").
  * 2. The agent's running sessions (runtime + view-state), which previously
  *    only the location-delete path handled.
@@ -100,8 +94,9 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    caches the agent's Switch credentials in memory, so without an explicit
  *    stop it keeps heartbeating and polling notifications for an agent that
  *    no longer exists.
- * 4. The Switch credentials + subagent files switchdash provisioned on disk
- *    (local or remote), which a bare row delete would leave orphaned.
+ * 4. The Switch credentials + definition file switchdash provisioned on disk for
+ *    THIS agent (local or remote), which a bare row delete would leave orphaned.
+ *    Sibling agents' files in the same directory are untouched.
  *
  * The agent's location row is intentionally kept — locations are reusable
  * and other agents may still live there.

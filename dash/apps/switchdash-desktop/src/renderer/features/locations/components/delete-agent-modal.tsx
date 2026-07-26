@@ -1,7 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
-import { TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { Checkbox } from '@renderer/lib/ui/checkbox';
@@ -25,21 +22,8 @@ export type DeleteAgentModalResult = { deleteInSwitch: boolean };
 
 type Props = BaseModalProps<DeleteAgentModalResult> & DeleteAgentModalArgs;
 
-export function DeleteAgentModal({ agentId, agentLabel, onSuccess, onClose }: Props) {
+export function DeleteAgentModal({ agentLabel, onSuccess, onClose }: Props) {
   const [deleteInSwitch, setDeleteInSwitch] = useState(false);
-
-  // The subagents that a Switch delete would cascade to — the definition agents
-  // sharing this agent's location (CHOO-1440). Best-effort: if the agent list
-  // can't load we simply show no subagent warning.
-  const { data: allAgents } = useQuery({
-    queryKey: ['agents'],
-    queryFn: () => rpc.agents.getAgents(),
-  });
-  const locationId = allAgents?.find((a) => a.id === agentId)?.locationId;
-  const agentNames = (allAgents ?? [])
-    .filter((a) => a.locationId === locationId && a.definitionName != null)
-    .map((a) => a.definitionName as string);
-  const subagentCount = agentNames.length;
 
   return (
     <>
@@ -62,23 +46,11 @@ export function DeleteAgentModal({ agentId, agentLabel, onSuccess, onClose }: Pr
           <span className="flex flex-col gap-0.5">
             <span className="text-sm font-medium">Also delete this agent in Switch</span>
             <span className="text-xs text-foreground-muted">
-              Permanently deletes its identity on the Switch server. This can’t be undone.
+              Permanently deletes its identity on the Switch server. This can’t be undone. Only this
+              agent is affected — others in the same directory are left alone.
             </span>
           </span>
         </label>
-
-        {deleteInSwitch && subagentCount > 0 && (
-          <div className="border-destructive/30 bg-destructive/10 flex items-start gap-2.5 rounded-md border p-3 text-sm">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-foreground-destructive" />
-            <div className="flex flex-col gap-1">
-              <span className="font-medium text-foreground">
-                {subagentCount} subagent{subagentCount === 1 ? '' : 's'} will also be deleted in
-                Switch
-              </span>
-              <span className="text-foreground-muted">{agentNames.join(', ')}</span>
-            </div>
-          </div>
-        )}
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

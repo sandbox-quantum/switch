@@ -457,35 +457,6 @@ export async function fetchAllExternalUsers(server: SwitchServer): Promise<Remot
   return [...byId.values()];
 }
 
-/** A gateway child agent (e.g. a Claude Code subagent) of some parent agent. */
-export type RemoteChildAgent = {
-  id: string;
-  /** Server-side name, e.g. `<parent-name>.<subagent-name>`. */
-  name: string;
-};
-
-/**
- * The parent agent's child agents, from its `AgentDetail.children`
- * (`GET /agents/{id}`). Used to reconcile locally-discovered subagents against
- * what the gateway actually has registered. `parentName` is returned alongside
- * so callers can strip the `<parent>.<subagent>` prefix from child names.
- */
-export async function fetchAgentChildren(
-  server: SwitchServer,
-  parentAgentId: string
-): Promise<{ parentName: string; children: RemoteChildAgent[] }> {
-  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(parentAgentId)}`, {
-    authenticated: true,
-  });
-  const json = (await res.json()) as {
-    name: string;
-    children?: Array<{ id: string; name: string }>;
-  };
-  return {
-    parentName: json.name,
-    children: (json.children ?? []).map((c) => ({ id: c.id, name: c.name })),
-  };
-}
 
 /** A subagent registered via the bulk endpoint. `apiKey` is a secret — keep it
  * in the main process (write it to the subagent's settings file); never pass it
