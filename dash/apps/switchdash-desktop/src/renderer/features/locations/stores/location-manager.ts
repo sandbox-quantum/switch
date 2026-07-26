@@ -12,6 +12,7 @@ import type {
   StartAgentOnboardingOptions,
   StartAgentOnboardingResult,
 } from './agent-onboarding-types';
+import { agentsStore } from './agents-store';
 import {
   createUnmountedLocation,
   createUnregisteredLocation,
@@ -281,17 +282,33 @@ export class LocationManagerStore {
     agentId: string,
     options: { deleteInSwitch: boolean }
   ): Promise<void> {
-    const snapshot = this.locations.get(locationId);
+    // A directory is a flat container of independent agents (CHOO-1440), so
+    // deleting one must remove only that agent — its siblings, and the location
+    // itself, stay put. Optimistically drop the agent from the cache; remove the
+    // location row only when it was this agent's last one.
+    const prevAgents = agentsStore.byLocation.get(locationId);
+    const remaining = (prevAgents ?? []).filter((a) => a.id !== agentId);
+    const locationSnapshot = remaining.length === 0 ? this.locations.get(locationId) : undefined;
+
     runInAction(() => {
-      this.locations.delete(locationId);
+      if (prevAgents) {
+        if (remaining.length > 0) agentsStore.byLocation.set(locationId, remaining);
+        else agentsStore.byLocation.delete(locationId);
+      }
+      if (remaining.length === 0) this.locations.delete(locationId);
     });
-    appState.navigation.revalidate();
+    if (remaining.length === 0) appState.navigation.revalidate();
+
     try {
       await rpc.agents.deleteAgent({ agentId, deleteInSwitch: options.deleteInSwitch });
+      // Reconcile against the source of truth (also corrects the optimistic guess).
+      await agentsStore.load();
     } catch (error) {
       runInAction(() => {
-        if (snapshot) this.locations.set(locationId, snapshot);
+        if (prevAgents) agentsStore.byLocation.set(locationId, prevAgents);
+        if (locationSnapshot) this.locations.set(locationId, locationSnapshot);
       });
+      if (locationSnapshot) appState.navigation.revalidate();
       throw error;
     }
   }

@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@shared/core/agents/agents';
 import type { Location } from '@shared/core/locations/locations';
-import { isUnregisteredLocation } from './location';
+import { agentsStore } from './agents-store';
+import { isUnregisteredLocation, type LocationStore } from './location';
 import { LocationManagerStore } from './location-manager';
 
 const mocks = vi.hoisted(() => ({
   onboardAgent: vi.fn(),
+  getAgents: vi.fn(async () => [] as Agent[]),
+  deleteAgent: vi.fn(async () => {}),
   getLocations: vi.fn(async () => [] as Location[]),
   inspectLocationPath: vi.fn(),
   openLocation: vi.fn(),
@@ -19,7 +22,8 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
     agents: {
       onboardAgent: mocks.onboardAgent,
-      getAgents: vi.fn(async () => [] as Agent[]),
+      getAgents: mocks.getAgents,
+      deleteAgent: mocks.deleteAgent,
     },
     locations: {
       getLocations: mocks.getLocations,
@@ -175,5 +179,63 @@ describe('LocationManagerStore agent onboarding', () => {
       expect(loc.phase).toBe('error');
       expect(loc.error).toBe('Sign in to Pilot before adding this agent.');
     }
+  });
+});
+
+describe('LocationManagerStore removeAgent', () => {
+  // removeAgent only gets/deletes the location by key, so a placeholder stands in
+  // for the (heavy) real LocationStore.
+  const stubLocation = {} as LocationStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    agentsStore.byLocation.clear();
+    mocks.deleteAgent.mockResolvedValue(undefined);
+  });
+
+  it('removes only the target agent and keeps the location when siblings remain', async () => {
+    const a = agent({ id: 'a', locationId: 'loc' });
+    const b = agent({ id: 'b', locationId: 'loc' });
+    agentsStore.byLocation.set('loc', [a, b]);
+    mocks.getAgents.mockResolvedValue([b]); // source of truth after the delete
+
+    const store = new LocationManagerStore();
+    store.locations.set('loc', stubLocation);
+
+    await store.removeAgent('loc', 'a', { deleteInSwitch: false });
+
+    expect(mocks.deleteAgent).toHaveBeenCalledWith({ agentId: 'a', deleteInSwitch: false });
+    expect(store.locations.has('loc')).toBe(true);
+    expect(agentsStore.byLocation.get('loc')?.map((x) => x.id)).toEqual(['b']);
+  });
+
+  it('removes the location when the last agent is deleted', async () => {
+    const a = agent({ id: 'a', locationId: 'loc' });
+    agentsStore.byLocation.set('loc', [a]);
+    mocks.getAgents.mockResolvedValue([]);
+
+    const store = new LocationManagerStore();
+    store.locations.set('loc', stubLocation);
+
+    await store.removeAgent('loc', 'a', { deleteInSwitch: true });
+
+    expect(mocks.deleteAgent).toHaveBeenCalledWith({ agentId: 'a', deleteInSwitch: true });
+    expect(store.locations.has('loc')).toBe(false);
+    expect(agentsStore.byLocation.has('loc')).toBe(false);
+  });
+
+  it('restores the agent and location when the delete fails', async () => {
+    const a = agent({ id: 'a', locationId: 'loc' });
+    agentsStore.byLocation.set('loc', [a]);
+    mocks.deleteAgent.mockRejectedValueOnce(new Error('gateway down'));
+
+    const store = new LocationManagerStore();
+    store.locations.set('loc', stubLocation);
+
+    await expect(store.removeAgent('loc', 'a', { deleteInSwitch: true })).rejects.toThrow(
+      'gateway down'
+    );
+    expect(store.locations.has('loc')).toBe(true);
+    expect(agentsStore.byLocation.get('loc')?.map((x) => x.id)).toEqual(['a']);
   });
 });

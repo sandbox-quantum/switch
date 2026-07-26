@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -7,6 +8,7 @@ import { log } from '@renderer/utils/logger';
 export function useConfirmDeleteAgent() {
   const showDeleteAgent = useShowModal('deleteAgentModal');
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   return async ({
     locationId,
@@ -40,6 +42,11 @@ export function useConfirmDeleteAgent() {
             await getLocationManagerStore().removeAgent(locationId, resolvedAgentId, {
               deleteInSwitch,
             });
+            // Refresh the detail views that list a location's agents (settings
+            // sections, delete modal) so the removed agent drops and its siblings
+            // stay (CHOO-1440).
+            void queryClient.invalidateQueries({ queryKey: ['location-agents', locationId] });
+            void queryClient.invalidateQueries({ queryKey: ['agents'] });
             onDeleted?.();
           } catch (error) {
             log.error('Failed to remove agent', { agentId: resolvedAgentId, error });

@@ -457,7 +457,6 @@ export async function fetchAllExternalUsers(server: SwitchServer): Promise<Remot
   return [...byId.values()];
 }
 
-
 /** A subagent registered via the bulk endpoint. `apiKey` is a secret — keep it
  * in the main process (write it to the subagent's settings file); never pass it
  * to the renderer. */
