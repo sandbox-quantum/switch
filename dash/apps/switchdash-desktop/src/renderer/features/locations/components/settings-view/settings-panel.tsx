@@ -43,8 +43,8 @@ export const SettingsPanel = observer(function SettingsPanel() {
     <div className="flex flex-col gap-6">
       <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />
       <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
-      <AgentDefinitionSettingsSection locationId={locationId} agentId={agentId} />
       <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
+      <AgentDefinitionSettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );
 });

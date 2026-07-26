@@ -104,16 +104,17 @@ export function DefinitionFieldInput({
   }
   if (field.type === 'select') {
     const current = String(value);
+    const selected = current.length > 0 ? current : UNSET;
+    const options = field.options ?? [];
+    const selectedLabel =
+      options.find((o) => (o.value.length > 0 ? o.value : UNSET) === selected)?.label ?? '';
     return (
-      <Select
-        value={current.length > 0 ? current : UNSET}
-        onValueChange={(next) => onChange(next === UNSET ? '' : (next ?? ''))}
-      >
+      <Select value={selected} onValueChange={(next) => onChange(next === UNSET ? '' : (next ?? ''))}>
         <SelectTrigger id={id}>
-          <SelectValue />
+          <SelectValue>{selectedLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {(field.options ?? []).map((option) => (
+          {options.map((option) => (
             <SelectItem key={option.value} value={option.value.length > 0 ? option.value : UNSET}>
               {option.label}
             </SelectItem>

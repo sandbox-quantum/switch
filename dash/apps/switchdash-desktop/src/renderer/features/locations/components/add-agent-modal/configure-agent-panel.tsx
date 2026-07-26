@@ -96,16 +96,6 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
 
   return (
     <FieldGroup>
-      <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
-        <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-        <span>
-          Create a new agent below — its definition and per-agent credentials are written into this
-          directory&apos;s
-          <span className="mx-1 font-mono">.claude/agents</span> and
-          <span className="mx-1 font-mono">.switch/agents</span>.
-        </span>
-      </div>
-
       <Field>
         <FieldLabel>Switch server</FieldLabel>
         <div className="rounded-md border border-border bg-background-1 px-3 py-1.5 text-sm">
