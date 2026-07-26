@@ -386,7 +386,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
    * mint its identity, write its `.claude/agents/<name>.md` definition + its
    * per-agent credentials, and create the row — all via `addAgent`. */
   const createNewAgent = async (form: ReturnType<typeof useConfigureAgentForm>) => {
-    if (!pickState.serverId || !pickState.providerId || !form.providerKind) return;
+    if (!pickState.serverId || !pickState.providerId) return;
     setSubmitState('creating');
     setCloseGuard(true);
     try {
@@ -397,8 +397,6 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         providerId: pickState.providerId,
         serverId: pickState.serverId,
         description: form.description.trim(),
-        providerKind: form.providerKind,
-        notifyUser: form.notifyUser.trim() || null,
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,

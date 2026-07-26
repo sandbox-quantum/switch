@@ -1,16 +1,11 @@
 import { GatewayError, registerKnownAgent } from '@main/core/switch-servers/gateway-client';
-import type {
-  AgentProviderKind,
-  ProvisionAgentResult,
-} from '@shared/core/switch-servers/switch-servers';
+import type { ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 export type RegisterAgentInput = {
   name: string;
   description: string;
-  providerKind: AgentProviderKind;
   repoDir: string;
-  notifyUser?: string;
   autoSession?: boolean;
 };
 
@@ -22,6 +17,11 @@ export type RegisterAgentInput = {
  * there is no parent/child linkage on the gateway; a switchdash agent is a flat
  * repository-defined agent (CHOO-1440). Shared by the local and remote create
  * flows so the option mapping stays identical.
+ *
+ * Channels are always enabled: switchdash keeps the agent's session live (and
+ * auto-spawns one on notify), so it is session-addressable regardless of the
+ * underlying model provider — there is no user-facing "how do you run Claude"
+ * choice.
  */
 export async function registerAgentIdentity(
   server: SwitchServer,
@@ -35,10 +35,9 @@ export async function registerAgentIdentity(
       name: input.name,
       description: input.description,
       options: {
-        channels_enabled: input.providerKind === 'anthropic',
+        channels_enabled: true,
         repo_dir: input.repoDir,
         ...(input.autoSession ? { auto_session: true } : {}),
-        ...(input.notifyUser ? { notify_user: input.notifyUser } : {}),
       },
     });
     return { kind: 'created', id: registered.id, apiKey: registered.apiKey };

@@ -8,7 +8,6 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -31,8 +30,6 @@ export type AddAgentParams = {
   /** The registered Switch server to mint the identity on. */
   serverId: string;
   description: string;
-  providerKind: AgentProviderKind;
-  notifyUser: string | null;
   autoSession: boolean;
   autoApprove: boolean;
   /** Provider-specific definition attributes (model, effort, tools, prompt, …),
@@ -72,9 +69,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   const registered = await registerAgentIdentity(server, {
     name: params.name,
     description: params.description,
-    providerKind: params.providerKind,
     repoDir: params.dir,
-    notifyUser: params.notifyUser ?? undefined,
     autoSession: params.autoSession,
   });
   if (registered.kind !== 'created') return registered;

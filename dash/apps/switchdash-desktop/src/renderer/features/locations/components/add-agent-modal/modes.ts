@@ -2,10 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type {
-  AddressingPolicy,
-  AgentProviderKind,
-} from '@shared/core/switch-servers/switch-servers';
+import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 
 /** Switch agent-name charset, enforced server-side too: lowercase letters,
@@ -50,19 +47,18 @@ export function usePickMode() {
 export type PickModeState = ReturnType<typeof usePickMode>;
 
 /**
- * Form state for onboarding a brand-new Switch agent (a directory with no
- * `.claude/settings.local.json` yet). Collects the fields the `configure` skill
- * asks for — Switch agent name, description, provider kind (channels), and an
- * optional notify handle — seeding name/description from a server-derived
- * default until the user edits them.
+ * Form state for creating a brand-new Switch agent in a directory. Collects the
+ * Switch agent name and description (advanced definition attributes are gathered
+ * separately in the Advanced section), seeding name/description from a
+ * server-derived default until the user edits them. switchdash always registers
+ * the agent as a managed, session-addressable identity — there is no run-mode or
+ * notify-handle choice (CHOO-1440).
  */
 export function useConfigureAgentForm(dir: string, defaultAutoApprove: boolean) {
   const [agentName, setAgentNameRaw] = useState('');
   const [agentNameTouched, setAgentNameTouched] = useState(false);
   const [description, setDescriptionRaw] = useState('');
   const [descriptionTouched, setDescriptionTouched] = useState(false);
-  const [providerKind, setProviderKind] = useState<AgentProviderKind | null>(null);
-  const [notifyUser, setNotifyUser] = useState('');
   const [autoSession, setAutoSession] = useState(true);
   const [autoApprove, setAutoApprove] = useState(defaultAutoApprove);
   // Scoped addressing policy (CHOO-1585). null = open (default); set to restrict
@@ -96,7 +92,7 @@ export function useConfigureAgentForm(dir: string, defaultAutoApprove: boolean) 
   };
 
   const nameIsValid = AGENT_NAME_PATTERN.test(agentName);
-  const isValid = nameIsValid && description.trim().length > 0 && providerKind !== null;
+  const isValid = nameIsValid && description.trim().length > 0;
 
   return {
     agentName,
@@ -104,10 +100,6 @@ export function useConfigureAgentForm(dir: string, defaultAutoApprove: boolean) 
     nameIsValid,
     description,
     setDescription,
-    providerKind,
-    setProviderKind,
-    notifyUser,
-    setNotifyUser,
     autoSession,
     setAutoSession,
     autoApprove,

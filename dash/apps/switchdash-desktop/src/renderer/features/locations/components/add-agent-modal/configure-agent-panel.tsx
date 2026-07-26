@@ -11,30 +11,16 @@ import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
-import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
 import { Switch } from '@renderer/lib/ui/switch';
-import type { AgentProviderKind } from '@shared/core/switch-servers/switch-servers';
 import type { ConfigureAgentFormState } from './modes';
 
-const PROVIDER_OPTIONS: { value: AgentProviderKind; label: string; hint: string }[] = [
-  {
-    value: 'anthropic',
-    label: 'Anthropic (claude.ai / Console / API key)',
-    hint: 'Channels work — the agent is session-addressable and replies in real time.',
-  },
-  {
-    value: 'third-party',
-    label: 'Third-party provider (Vertex AI / Bedrock / other)',
-    hint: 'Channels are ignored — the agent is session-passive (no synchronous replies).',
-  },
-];
-
 /**
- * Onboarding form for a directory with no Switch agent yet. Collects everything
- * the switch-connector `configure` skill asks for — target server, Switch agent
- * name, description, provider kind (drives channels / addressability), and an
- * optional notify handle — so the agent can be registered and its credentials
- * written without leaving the app.
+ * Create form for a new Switch agent in a directory. Collects the target server,
+ * Switch agent name, and description, then the managed-session options
+ * (auto-session, bypass permissions, addressing policy). switchdash always
+ * registers the agent as a managed, session-addressable identity — there is no
+ * run-mode or notify-handle choice (CHOO-1440); advanced definition attributes
+ * live in the collapsed Advanced section.
  */
 export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
   form,
@@ -47,7 +33,6 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
 }) {
   const nameId = useId();
   const descriptionId = useId();
-  const notifyId = useId();
 
   useEffect(() => {
     if (switchServersStore.servers.length === 0) void switchServersStore.init();
@@ -114,9 +99,10 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
       <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
         <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
         <span>
-          No Switch agent here yet. Register one below — its credentials are written to this
+          Create a new agent below — its definition and per-agent credentials are written into this
           directory&apos;s
-          <span className="mx-1 font-mono">.claude/settings.local.json</span>.
+          <span className="mx-1 font-mono">.claude/agents</span> and
+          <span className="mx-1 font-mono">.switch/agents</span>.
         </span>
       </div>
 
@@ -159,42 +145,6 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
           value={form.description}
           onChange={(e) => form.setDescription(e.target.value)}
         />
-      </Field>
-
-      <Field>
-        <FieldLabel>How do you run Claude Code?</FieldLabel>
-        <RadioGroup
-          value={form.providerKind ?? ''}
-          onValueChange={(value) => form.setProviderKind(value as AgentProviderKind)}
-          className="gap-2"
-        >
-          {PROVIDER_OPTIONS.map((option) => (
-            <label
-              key={option.value}
-              className="flex cursor-pointer items-start gap-2 rounded-md border border-border px-2 py-1.5"
-            >
-              <RadioGroupItem value={option.value} className="mt-0.5" />
-              <span className="flex flex-col gap-0.5">
-                <span className="text-sm">{option.label}</span>
-                <span className="text-xs text-foreground-muted">{option.hint}</span>
-              </span>
-            </label>
-          ))}
-        </RadioGroup>
-      </Field>
-
-      <Field>
-        <FieldLabel htmlFor={notifyId}>Notify handle (optional)</FieldLabel>
-        <Input
-          id={notifyId}
-          placeholder="your Slack / Mattermost handle"
-          value={form.notifyUser}
-          onChange={(e) => form.setNotifyUser(e.target.value)}
-        />
-        <span className="text-xs text-foreground-muted">
-          When someone addresses this agent while it&apos;s offline, Switch @-mentions this handle
-          so you get pinged. Leave blank to skip.
-        </span>
       </Field>
 
       <Field>

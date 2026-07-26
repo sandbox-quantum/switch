@@ -227,9 +227,7 @@ export const switchServersController = createRPCController({
     const registered = await registerAgentIdentity(server, {
       name: params.name,
       description: params.description,
-      providerKind: params.providerKind,
       repoDir: params.dir,
-      notifyUser: params.notifyUser,
       autoSession: params.autoSession,
     });
     if (registered.kind !== 'created') return registered;
@@ -260,9 +258,7 @@ export const switchServersController = createRPCController({
     const registered = await registerAgentIdentity(server, {
       name: params.name,
       description: params.description,
-      providerKind: params.providerKind,
       repoDir: params.remoteRepoDir,
-      notifyUser: params.notifyUser,
       autoSession: params.autoSession,
     });
     if (registered.kind !== 'created') return registered;
