@@ -109,7 +109,10 @@ export function DefinitionFieldInput({
     const selectedLabel =
       options.find((o) => (o.value.length > 0 ? o.value : UNSET) === selected)?.label ?? '';
     return (
-      <Select value={selected} onValueChange={(next) => onChange(next === UNSET ? '' : (next ?? ''))}>
+      <Select
+        value={selected}
+        onValueChange={(next) => onChange(next === UNSET ? '' : (next ?? ''))}
+      >
         <SelectTrigger id={id}>
           <SelectValue>{selectedLabel}</SelectValue>
         </SelectTrigger>

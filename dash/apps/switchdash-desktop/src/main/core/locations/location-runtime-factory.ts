@@ -218,6 +218,10 @@ type AgentRuntimeOpts = {
   tmuxEnabled: boolean;
   shellSetup?: string;
   sessionEnvVars: Record<string, string>;
+  /** Candidate creds files (relative to the working dir) the remote preflight
+   * checks, in priority order — the agent's neutral `.switch/agents/<name>.json`
+   * first, then the legacy `.claude/settings.local.json` (CHOO-1440). */
+  credsRelPaths: string[];
 };
 
 async function resolveLocalAgentShellProfile(sessionId: string): Promise<ResolvedShellProfile> {
@@ -247,7 +251,14 @@ export async function buildAgentRuntime(
     const fs = new SshFileSystem(proxy, transport.dir);
     // Gate remote session start: fail loud now (missing tools / absent creds /
     // no egress to Switch) rather than spawning an agent that never connects.
-    await preflightRemoteSession({ ctx, fs, log, host: transport.host, workDir: transport.dir });
+    await preflightRemoteSession({
+      ctx,
+      fs,
+      log,
+      host: transport.host,
+      workDir: transport.dir,
+      credsRelPaths: opts.credsRelPaths,
+    });
     // Remote sessions always run under tmux — it persists the agent's PTY and
     // is the pane the sidecar injects into and reattaches to.
     return new SshAgentRuntime({

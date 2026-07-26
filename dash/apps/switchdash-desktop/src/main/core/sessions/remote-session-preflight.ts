@@ -18,8 +18,10 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
  *     opaque "sidecar exited during startup" — the sidecar bundle (and this
  *     module's own reachability probe) rely on `fetch`/optional chaining, which
  *     only stabilised in Node 18;
- *  2. the agent's Switch creds exist in the remote `.claude/settings.local.json`
- *     (the sidecar reads them from there) — read in parallel with (1);
+ *  2. the agent's Switch creds exist on the remote host — checked at the agent's
+ *     provider-neutral per-agent path (`.switch/agents/<name>.json`) first, then
+ *     the legacy `.claude/settings.local.json` for un-migrated installs
+ *     (CHOO-1440) — read in parallel with (1);
  *  3. the host can actually reach the Switch API endpoint — the sidecar polls
  *     from the VM, so no egress means a dead agent.
  *
@@ -29,7 +31,6 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
  */
 
 const REQUIRED_BINARIES = ['tmux', 'node', 'git'] as const;
-const REMOTE_SETTINGS_PATH = '.claude/settings.local.json';
 const REACHABILITY_TIMEOUT_MS = 5000;
 // Global `fetch` and `AbortSignal.timeout` (used by the reachability probe below
 // and throughout the sidecar bundle) are only stable from Node 18.
@@ -63,6 +64,10 @@ export interface RemotePreflightDeps {
   log: CredentialsLogger;
   host: string;
   workDir: string;
+  /** Candidate creds files (relative to the working dir) to check, in priority
+   * order — the agent's neutral `.switch/agents/<name>.json` first, then the
+   * legacy `.claude/settings.local.json`. The first that parses is used. */
+  credsRelPaths: string[];
 }
 
 export async function preflightRemoteSession(deps: RemotePreflightDeps): Promise<void> {
@@ -145,21 +150,27 @@ async function assertHostReady(
 }
 
 async function readRemoteEndpoint(deps: RemotePreflightDeps): Promise<string> {
-  let content: string;
-  try {
-    ({ content } = await deps.fs.read(REMOTE_SETTINGS_PATH));
-  } catch {
+  const primary = deps.credsRelPaths[0] ?? '.switch/agents';
+  let foundButIncomplete = false;
+  for (const relPath of deps.credsRelPaths) {
+    let content: string;
+    try {
+      ({ content } = await deps.fs.read(relPath));
+    } catch {
+      continue;
+    }
+    const creds = parseSwitchAgentCredentials(content, deps.log);
+    if (creds) return creds.apiEndpoint;
+    foundButIncomplete = true;
+  }
+  if (foundButIncomplete) {
     throw new Error(
-      `no Switch credentials at ${REMOTE_SETTINGS_PATH} on remote host '${deps.host}' — run remote setup for this agent first.`
+      `Switch credentials at ${primary} on remote host '${deps.host}' are incomplete — re-run remote setup for this agent.`
     );
   }
-  const creds = parseSwitchAgentCredentials(content, deps.log);
-  if (!creds) {
-    throw new Error(
-      `Switch credentials at ${REMOTE_SETTINGS_PATH} on remote host '${deps.host}' are incomplete — re-run remote setup for this agent.`
-    );
-  }
-  return creds.apiEndpoint;
+  throw new Error(
+    `no Switch credentials at ${primary} on remote host '${deps.host}' — run remote setup for this agent first.`
+  );
 }
 
 async function assertEndpointReachable(

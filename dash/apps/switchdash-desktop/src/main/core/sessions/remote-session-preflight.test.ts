@@ -43,12 +43,20 @@ function makeDeps(opts: {
     return { stdout: '', stderr: '' };
   });
   const fs = {
-    read: vi.fn(async () => {
+    read: vi.fn(async (_path: string) => {
       if (opts.credsFile == null) throw new Error('no such file');
       return { content: opts.credsFile };
     }),
   };
-  return { ctx: { exec }, fs, log, host: 'box', workDir: '/home/agent/repo', exec };
+  return {
+    ctx: { exec },
+    fs,
+    log,
+    host: 'box',
+    workDir: '/home/agent/repo',
+    credsRelPaths: ['.switch/agents/agent-1.json', '.claude/settings.local.json'],
+    exec,
+  };
 }
 
 describe('preflightRemoteSession', () => {
@@ -97,6 +105,27 @@ describe('preflightRemoteSession', () => {
   it('fails loud when the remote creds file is absent', async () => {
     const deps = makeDeps({ credsFile: null });
     await expect(preflightRemoteSession(deps)).rejects.toThrow(/no Switch credentials/);
+  });
+
+  it('reads the neutral per-agent creds path in preference to the legacy one', async () => {
+    const deps = makeDeps({ endpointReachable: true });
+    // Neutral path has creds; the legacy path is absent — the preflight should
+    // still pass by reading the neutral file first (CHOO-1440).
+    deps.fs.read = vi.fn(async (path: string) => {
+      if (path === '.switch/agents/agent-1.json') return { content: CREDS_FILE };
+      throw new Error('no such file');
+    });
+    await expect(preflightRemoteSession(deps)).resolves.toBeUndefined();
+    expect(deps.fs.read).toHaveBeenCalledWith('.switch/agents/agent-1.json');
+  });
+
+  it('falls back to the legacy settings.local.json when the neutral file is absent', async () => {
+    const deps = makeDeps({ endpointReachable: true });
+    deps.fs.read = vi.fn(async (path: string) => {
+      if (path === '.claude/settings.local.json') return { content: CREDS_FILE };
+      throw new Error('no such file');
+    });
+    await expect(preflightRemoteSession(deps)).resolves.toBeUndefined();
   });
 
   it('fails loud when the creds file is incomplete', async () => {
