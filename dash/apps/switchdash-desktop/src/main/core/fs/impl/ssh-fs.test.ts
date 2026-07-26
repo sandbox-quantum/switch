@@ -162,3 +162,41 @@ describe('SshFileSystem.watch', () => {
     watcher.close();
   });
 });
+
+function makeReaddirFs(base: string, filenames: string[]) {
+  const readdirPaths: string[] = [];
+  const sftp = {
+    on: vi.fn(),
+    readdir: vi.fn(
+      (dirPath: string, callback: (error: Error | undefined, list?: unknown[]) => void) => {
+        readdirPaths.push(dirPath);
+        callback(
+          undefined,
+          filenames.map((filename) => ({
+            filename,
+            attrs: { isDirectory: () => false, size: 1, mtime: 0, atime: 0, mode: 0o100644 },
+          }))
+        );
+      }
+    ),
+  };
+  const proxy = {
+    sftp: vi.fn((callback: (error: Error | undefined, sftp: unknown) => void) => {
+      callback(undefined, sftp);
+    }),
+  };
+  return { fs: new SshFileSystem(proxy as never, base), readdirPaths };
+}
+
+describe('SshFileSystem trailing-slash tolerance', () => {
+  it('resolves + relativizes identically whether the base has a trailing slash or not', async () => {
+    for (const base of ['/repo', '/repo/']) {
+      const { fs, readdirPaths } = makeReaddirFs(base, ['code-reviewer.md']);
+      const result = await fs.list('.claude/agents', { includeHidden: true });
+      // No double slash from the base, and entries come back relative (a
+      // trailing-slash base previously leaked absolute paths).
+      expect(readdirPaths[0]).toBe('/repo/.claude/agents');
+      expect(result.entries.map((e) => e.path)).toEqual(['.claude/agents/code-reviewer.md']);
+    }
+  });
+});

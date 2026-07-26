@@ -73,8 +73,11 @@ export class SshFileSystem implements FileSystemProvider {
     if (!remotePath) {
       throw new FileSystemError('Remote path is required', FileSystemErrorCodes.INVALID_PATH);
     }
-    // Normalize remote path to use forward slashes
-    this.remotePath = remotePath.replace(/\\/g, '/');
+    // Normalize the base: forward slashes, and strip any trailing slash (except a
+    // bare root) so `/repo` and `/repo/` resolve identically — relativePath and
+    // isWithinBase compare against this base, so a trailing slash would otherwise
+    // make them return absolute paths / mis-scope (CHOO-1440).
+    this.remotePath = remotePath.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────

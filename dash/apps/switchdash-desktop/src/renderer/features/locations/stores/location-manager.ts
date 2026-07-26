@@ -38,6 +38,17 @@ export class LocationManagerStore {
     return this._loadPromise;
   }
 
+  /**
+   * Force a fresh reconcile, bypassing the memoized initial {@link load}. Mounts
+   * any location that gained agents since the last load (and drops nothing that is
+   * already mounted). Called after onboarding agents into a directory so the new
+   * location appears immediately instead of only after a restart (CHOO-1440).
+   */
+  reload(): Promise<void> {
+    this._loadPromise = this._doLoad();
+    return this._loadPromise;
+  }
+
   private async _doLoad(): Promise<void> {
     // Only surface locations that still have at least one agent — a location
     // with no agents lingers in the DB (kept for reuse) but has no sidebar row.

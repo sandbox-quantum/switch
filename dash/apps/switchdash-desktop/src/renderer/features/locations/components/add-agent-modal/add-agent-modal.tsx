@@ -57,6 +57,15 @@ export type AddLocationModalProps = BaseModalProps<void>;
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
 
+/** Canonical working-directory path: trimmed, with trailing slashes removed
+ * (except a bare root), so `/repo` and `/repo/` behave identically through
+ * detection, discovery, and location keying — the flow must not care (CHOO-1440). */
+function canonicalDir(dir: string): string {
+  const trimmed = dir.trim();
+  const stripped = trimmed.replace(/\/+$/, '');
+  return stripped || (trimmed.startsWith('/') ? '/' : '');
+}
+
 export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLocationModalProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const [verifyState, setVerifyState] = useState<ServerVerifyState>('idle');
@@ -219,9 +228,17 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   }, []);
 
   const inspection = pathStatusQuery.data;
-  const isChecking = isRemoteRun
-    ? shouldDetectRemote && remoteAgentQuery.isPending
-    : shouldCheckPathStatus && pathStatusQuery.isPending;
+  // Discovery (`.claude/agents` scan) is a separate query from agent-detection;
+  // fold its pending state into `isChecking` so the modal decides "onboard
+  // existing vs create new" only once BOTH have settled — otherwise the create
+  // form flashes up first and then flips to the onboard list when discovery lands
+  // (CHOO-1440).
+  const isDiscovering =
+    !!pickState.providerId && discoverDir.trim().length > 0 && discoverQuery.isPending;
+  const isChecking =
+    (isRemoteRun
+      ? shouldDetectRemote && remoteAgentQuery.isPending
+      : shouldCheckPathStatus && pathStatusQuery.isPending) || isDiscovering;
   const switchAgent = isRemoteRun
     ? (remoteAgentQuery.data ?? null)
     : (inspection?.switchAgent ?? null);
@@ -487,8 +504,10 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         setSubmitState('idle');
         return;
       }
-      await getLocationManagerStore().load();
-      void agentsStore.load();
+      // reload (not load) — the initial load is memoized, so a plain load() would
+      // no-op and the onboarded location wouldn't mount until a restart (CHOO-1440).
+      await agentsStore.load();
+      await getLocationManagerStore().reload();
       finishWith(result.data[0].locationId);
     } catch (error) {
       log.error(error);
@@ -598,15 +617,15 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    setRemoteRepoDir(remoteRepoDirDraft.trim());
+                    setRemoteRepoDir(canonicalDir(remoteRepoDirDraft));
                   }
                 }}
               />
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setRemoteRepoDir(remoteRepoDirDraft.trim())}
-                disabled={remoteRepoDirDraft.trim() === remoteRepoDir}
+                onClick={() => setRemoteRepoDir(canonicalDir(remoteRepoDirDraft))}
+                disabled={canonicalDir(remoteRepoDirDraft) === remoteRepoDir}
               >
                 Set location
               </Button>
@@ -614,6 +633,9 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           )}
         </Field>
         {!isRemoteRun && <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />}
+        {isChecking && (
+          <p className="text-sm text-foreground-muted">Scanning directory for agents…</p>
+        )}
         {hasOnboardable && !createMode && (
           <>
             <OnboardExistingPanel
