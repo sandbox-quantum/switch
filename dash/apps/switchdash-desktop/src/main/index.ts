@@ -10,6 +10,7 @@ import { setupApplicationMenu } from './app/menu';
 import { registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
 import { agentHookService } from './core/agent-hooks/agent-hook-service';
+import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
@@ -118,6 +119,12 @@ void app.whenReady().then(async () => {
     await resolveAgentServers();
   } catch (e) {
     log.warn('switch-agents: failed to reconcile agent → server links at boot', { error: e });
+  }
+
+  try {
+    await migrateAgentStorage();
+  } catch (e) {
+    log.warn('switch-agents: failed to migrate agent storage layout at boot', { error: e });
   }
 
   const agentHookReady = agentHookService.initialize().catch((e) => {
