@@ -23,6 +23,7 @@ const CONFIG: SidecarLaunchConfig = {
   repoDir: '/home/dev/repo',
   deeplinkScheme: 'switchdash',
   launchSpec: SPEC,
+  credsSlug: 'claude-code.repo.me',
 };
 
 const readyLine = (hash: string | undefined = 'hash-v1'): string =>
@@ -154,6 +155,7 @@ describe('RemoteSidecarLauncher', () => {
     ]);
     const inner = launch!.args[6];
     expect(inner).toContain("SWITCHDASH_SIDECAR_REPO_DIR='/home/dev/repo'");
+    expect(inner).toContain("SWITCHDASH_SIDECAR_AGENT_SLUG='claude-code.repo.me'");
     expect(inner).not.toContain('SWITCHDASH_SIDECAR_LOCATION_ID');
     expect(inner).not.toContain('SWITCHDASH_SIDECAR_TMUX_TARGET');
     expect(inner).toContain('.switchdash/sidecar.mjs');

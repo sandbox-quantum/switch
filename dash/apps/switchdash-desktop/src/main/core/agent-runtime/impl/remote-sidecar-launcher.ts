@@ -35,6 +35,10 @@ export interface SidecarLaunchConfig {
   deeplinkScheme: string;
   /** Provider-specific launch recipe the sidecar's watcher materialises per auto-start. */
   launchSpec: AgentLaunchSpec;
+  /** The agent's per-agent credentials slug — its definition name, else its agent
+   * id — so the sidecar reads `.switch/agents/<slug>.json` for this agent's Switch
+   * identity rather than the legacy shared settings file (CHOO-1440). */
+  credsSlug: string;
 }
 
 export interface SidecarEndpoint {
@@ -63,6 +67,7 @@ function sidecarEnv(config: SidecarLaunchConfig): Record<string, string> {
   return {
     SWITCHDASH_SIDECAR_REPO_DIR: config.repoDir,
     SWITCHDASH_SIDECAR_DEEPLINK_SCHEME: config.deeplinkScheme,
+    SWITCHDASH_SIDECAR_AGENT_SLUG: config.credsSlug,
   };
 }
 

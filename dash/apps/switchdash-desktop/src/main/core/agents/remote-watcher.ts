@@ -114,6 +114,7 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
     repoDir: remoteRepoDir,
     deeplinkScheme: DEEPLINK_SCHEME,
     autoApprove: agent.autoApprove,
+    credsSlug: agent.definitionName ?? agent.id,
     ctx,
     connectionId,
     host,

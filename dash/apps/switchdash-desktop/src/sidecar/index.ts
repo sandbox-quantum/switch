@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { HookEventLog, HookServer } from '@main/core/agent-hooks/hook-server';
-import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
+import { agentSettingsPath } from '@main/core/agents/switch-settings-paths';
+import {
+  readSwitchAgentCredentials,
+  readSwitchAgentCredentialsFromSettings,
+} from '@main/core/switch-rooms/switch-credentials';
 import { createTmuxRun } from '@main/core/switch-rooms/tmux-injection-sink';
 import { type AgentLaunchSpec } from './agent-launch-spec';
 import { NotificationWatcher } from './notification-watcher';
@@ -28,8 +32,11 @@ import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
  *    with no live session.
  *
  * Pure Node (no Electron, no database). The agent's Switch credentials come from
- * its `.claude/settings.local.json`; the provider-specific launch recipe for
- * auto-started sessions comes from the launch spec switchdash writes to the VM.
+ * its provider-neutral per-agent file `.switch/agents/<slug>.json` (the slug is
+ * passed in `SWITCHDASH_SIDECAR_AGENT_SLUG`), falling back to the legacy shared
+ * `.claude/settings.local.json` for un-migrated installs (CHOO-1440); the
+ * provider-specific launch recipe for auto-started sessions comes from the launch
+ * spec switchdash writes to the VM.
  * On startup it prints one JSON line to stdout — `{event:"ready",port,token}` —
  * so the launcher can point switchdash's remote sessions at this hook server.
  */
@@ -61,11 +68,18 @@ async function main(): Promise<void> {
   const repoDir = requireEnv('SWITCHDASH_SIDECAR_REPO_DIR');
   const deeplinkScheme = process.env.SWITCHDASH_SIDECAR_DEEPLINK_SCHEME?.trim() || 'switchdash';
 
-  const creds = await readSwitchAgentCredentials(repoDir, log);
+  // Prefer the agent's provider-neutral per-agent creds file; fall back to the
+  // legacy shared settings.local.json for un-migrated installs (CHOO-1440).
+  const credsSlug = process.env.SWITCHDASH_SIDECAR_AGENT_SLUG?.trim();
+  const creds =
+    (credsSlug
+      ? await readSwitchAgentCredentialsFromSettings(agentSettingsPath(repoDir, credsSlug), log)
+      : null) ?? (await readSwitchAgentCredentials(repoDir, log));
   if (!creds) {
-    throw new Error(
-      `sidecar: no Switch credentials in ${repoDir}/.claude/settings.local.json — run remote setup first`
-    );
+    const where = credsSlug
+      ? agentSettingsPath(repoDir, credsSlug)
+      : `${repoDir}/.claude/settings.local.json`;
+    throw new Error(`sidecar: no Switch credentials at ${where} — run remote setup first`);
   }
   const launchSpec = await readLaunchSpec(repoDir);
 

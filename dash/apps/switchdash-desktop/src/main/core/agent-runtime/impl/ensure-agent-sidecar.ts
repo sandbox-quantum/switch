@@ -23,11 +23,15 @@ export async function ensureAgentSidecar(params: {
   deeplinkScheme: string;
   /** The agent's bypass-permissions setting, baked into the auto-start launch spec. */
   autoApprove: boolean;
+  /** Per-agent creds slug (definition name, else agent id) — selects the sidecar's
+   * `.switch/agents/<slug>.json` identity file (CHOO-1440). */
+  credsSlug: string;
   ctx: IExecutionContext;
   connectionId: string;
   host: SidecarHost;
 }): Promise<SidecarEndpoint> {
-  const { providerId, repoDir, deeplinkScheme, autoApprove, ctx, connectionId, host } = params;
+  const { providerId, repoDir, deeplinkScheme, autoApprove, credsSlug, ctx, connectionId, host } =
+    params;
   const launchSpec = await generateAgentLaunchSpec({
     providerId,
     remoteRepoDir: repoDir,
@@ -40,7 +44,7 @@ export async function ensureAgentSidecar(params: {
     host,
     bundlePath: resolveSidecarBundlePath(),
     sidecarTmuxName: agentSidecarTmuxName(repoDir),
-    config: { repoDir, deeplinkScheme, launchSpec },
+    config: { repoDir, deeplinkScheme, launchSpec, credsSlug },
     log,
   });
   return launcher.deployAndLaunch();
@@ -60,11 +64,15 @@ export async function probeAgentSidecar(params: {
   /** The agent's bypass-permissions setting. Probe never writes the spec, so this
    * only shapes the (unused) config; pass the real value for consistency. */
   autoApprove: boolean;
+  /** Per-agent creds slug (definition name, else agent id). Probe never launches,
+   * so this only shapes the (unused) config; pass the real value for consistency. */
+  credsSlug: string;
   ctx: IExecutionContext;
   connectionId: string;
   host: SidecarHost;
 }): Promise<SidecarEndpoint | null> {
-  const { providerId, repoDir, deeplinkScheme, autoApprove, ctx, connectionId, host } = params;
+  const { providerId, repoDir, deeplinkScheme, autoApprove, credsSlug, ctx, connectionId, host } =
+    params;
   const launchSpec = await generateAgentLaunchSpec({
     providerId,
     remoteRepoDir: repoDir,
@@ -77,7 +85,7 @@ export async function probeAgentSidecar(params: {
     host,
     bundlePath: resolveSidecarBundlePath(),
     sidecarTmuxName: agentSidecarTmuxName(repoDir),
-    config: { repoDir, deeplinkScheme, launchSpec },
+    config: { repoDir, deeplinkScheme, launchSpec, credsSlug },
     log,
   });
   return launcher.probeExisting();
