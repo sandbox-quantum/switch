@@ -58,7 +58,7 @@ export const plugin = definePlugin(
     sessions: {
       kind: 'stateless',
     },
-    subagents: { kind: 'none' },
+    repoAgents: { kind: 'none' },
     switchSetup: { kind: 'none' },
   },
   { icon }

@@ -1,4 +1,4 @@
-import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
+import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -27,7 +27,7 @@ export function AgentAdvancedConfig({
   onChange,
 }: {
   providerId: AgentProviderId | null;
-  onChange: (attributes: SubagentAttributes) => void;
+  onChange: (attributes: RepoAgentAttributes) => void;
 }) {
   const [open, setOpen] = useState(false);
   const { data: allFields } = useQuery({

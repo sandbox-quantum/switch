@@ -36,10 +36,10 @@ export function DeleteAgentModal({ agentId, agentLabel, onSuccess, onClose }: Pr
     queryFn: () => rpc.agents.getAgents(),
   });
   const locationId = allAgents?.find((a) => a.id === agentId)?.locationId;
-  const subagentNames = (allAgents ?? [])
+  const agentNames = (allAgents ?? [])
     .filter((a) => a.locationId === locationId && a.definitionName != null)
     .map((a) => a.definitionName as string);
-  const subagentCount = subagentNames.length;
+  const subagentCount = agentNames.length;
 
   return (
     <>
@@ -75,7 +75,7 @@ export function DeleteAgentModal({ agentId, agentLabel, onSuccess, onClose }: Pr
                 {subagentCount} subagent{subagentCount === 1 ? '' : 's'} will also be deleted in
                 Switch
               </span>
-              <span className="text-foreground-muted">{subagentNames.join(', ')}</span>
+              <span className="text-foreground-muted">{agentNames.join(', ')}</span>
             </div>
           </div>
         )}

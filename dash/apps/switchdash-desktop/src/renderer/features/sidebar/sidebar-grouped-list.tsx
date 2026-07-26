@@ -21,7 +21,7 @@ import { agentRoomGroupKey, roomViewGroupKey, UNASSIGNED_ROOM_KEY } from './side
 
 /** The provider definition a session was launched as, if any. */
 function sessionDefinitionName(session: SessionStore): string | undefined {
-  return 'subagentName' in session.data ? session.data.subagentName : undefined;
+  return 'agentName' in session.data ? session.data.agentName : undefined;
 }
 
 /** An agent paired with its (mounted) location, for the flat sidebar list. */

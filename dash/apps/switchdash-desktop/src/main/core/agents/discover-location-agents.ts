@@ -32,7 +32,7 @@ export async function discoverLocationAgents(params: {
   dir: string;
   providerId: AgentProviderId;
 }): Promise<DiscoveredLocationAgent[]> {
-  const behavior = getPlugin(params.providerId).behavior.subagents;
+  const behavior = getPlugin(params.providerId).behavior.repoAgents;
   if (!behavior) return [];
 
   const location = await getLocationByHostDir(params.sshHost, params.dir);

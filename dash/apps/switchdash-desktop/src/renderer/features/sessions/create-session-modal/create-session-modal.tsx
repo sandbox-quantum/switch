@@ -71,12 +71,12 @@ function useDefaultLocationId(propLocationId?: string): string | undefined {
 
 export const CreateSessionModal = observer(function CreateSessionModal({
   locationId,
-  subagentName,
+  agentName,
   onClose,
 }: BaseModalProps & {
   locationId?: string;
   /** When set, start the session as this Claude Code subagent of the agent. */
-  subagentName?: string;
+  agentName?: string;
   // Accepted for source compatibility with switchdash callers; ignored in switchdash v0.
   strategy?: string;
   initialPR?: unknown;
@@ -102,12 +102,12 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   // When launching as a subagent, the session joins rooms under the subagent's
   // own Switch identity — its own agent row (a definitionName agent) — so the
   // room picker uses the subagent's id/server, not the parent agent's (CHOO-1440).
-  const subagent = subagentName
-    ? (locationAgents.find((a) => a.definitionName === subagentName) ?? null)
+  const subagent = agentName
+    ? (locationAgents.find((a) => a.definitionName === agentName) ?? null)
     : null;
 
-  const serverId = subagentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
-  const switchAgentId = subagentName
+  const serverId = agentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
+  const switchAgentId = agentName
     ? (subagent?.switchAgentId ?? null)
     : (agent?.switchAgentId ?? null);
 
@@ -162,7 +162,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         title: trimmedName || 'Session',
         autoApprove: resolvedAgent.autoApprove,
         initialPrompt,
-        subagentName: subagentName || undefined,
+        agentName: agentName || undefined,
       });
       navigate('session', { locationId: selectedLocationId, sessionId: id });
       onClose();
@@ -173,7 +173,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   return (
     <>
       <DialogHeader className="flex items-center gap-2">
-        <DialogTitle>{subagentName ? `New Session · @${subagentName}` : 'New Session'}</DialogTitle>
+        <DialogTitle>{agentName ? `New Session · @${agentName}` : 'New Session'}</DialogTitle>
       </DialogHeader>
       <DialogContentArea>
         <div className="flex w-full flex-col gap-5">

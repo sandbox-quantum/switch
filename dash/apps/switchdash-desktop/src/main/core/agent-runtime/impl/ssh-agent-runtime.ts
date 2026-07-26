@@ -206,8 +206,8 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       repoDir: this.sessionPath,
       deeplinkScheme: DEEPLINK_SCHEME,
       autoApprove: agent?.autoApprove ?? false,
-      credsSlug: agent?.definitionName ?? session.subagentName ?? session.agentId,
-      definitionName: agent?.definitionName ?? session.subagentName ?? null,
+      credsSlug: agent?.definitionName ?? session.agentName ?? session.agentId,
+      definitionName: agent?.definitionName ?? session.agentName ?? null,
       ctx: this.ctx,
       connectionId: this.connectionId,
       host: this.createSidecarHost(),
@@ -346,7 +346,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       const providerConfig = await providerOverrideSettings.getItem(session.providerId);
       const agentSession = resolveAgentSessionCommandArgs(session, isResuming);
       const plugin = getPlugin(session.providerId);
-      const subagentsBehavior = plugin.behavior.subagents;
+      const repoAgents = plugin.behavior.repoAgents;
 
       const binaryName = plugin.capabilities.hostDependency.binaryNames[0] ?? session.providerId;
       const executableCli = await resolveAgentExecutable({
@@ -357,19 +357,17 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         connectionId: this.connectionId,
       });
 
-      // A remote flat agent runs as its own definition: launch with
-      // `--agent <name> --settings <neutral creds>` so it uses the definition's
-      // model/prompt/tools and its own Switch identity (CHOO-1440) — mirroring the
-      // local runtime. The creds paths resolve on the VM (sessionPath is remote).
-      const extraArgs = [
-        ...parseExtraArgs(providerConfig?.extraArgs),
-        ...(session.subagentName && subagentsBehavior
-          ? subagentsBehavior.launchArgs(this.sessionPath, session.subagentName)
-          : []),
-      ];
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
-        extraArgs,
+        extraArgs: parseExtraArgs(providerConfig?.extraArgs),
+        // A remote agent runs as its own definition: the provider produces the
+        // run-as-name args (Claude → `--agent <name> --settings <neutral creds>`),
+        // resolved on the VM (sessionPath is remote). Distinct from user extra
+        // args (CHOO-1440).
+        agentArgs:
+          session.agentName && repoAgents
+            ? repoAgents.launchArgs(this.sessionPath, session.agentName)
+            : [],
         autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
@@ -385,12 +383,9 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       // from its neutral `.switch/agents/<name>.json` on the VM. A `--settings`
       // file's env block is not reliably propagated to the spawned MCP server, so
       // inject it directly, matching the local runtime.
-      const subagentVars =
-        session.subagentName && subagentsBehavior
-          ? await subagentsBehavior.readLaunchEnv(
-              createRemotePluginFs(this.fs),
-              session.subagentName
-            )
+      const identityVars =
+        session.agentName && repoAgents
+          ? await repoAgents.readLaunchEnv(createRemotePluginFs(this.fs), session.agentName)
           : {};
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
@@ -444,7 +439,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       const sshCommand = resolveSshCommand(
         'agent',
         cfg,
-        { ...providerEnv, ...colorEnv, ...this.sessionEnvVars, ...hookEnv, ...subagentVars },
+        { ...providerEnv, ...colorEnv, ...this.sessionEnvVars, ...hookEnv, ...identityVars },
         profile
       );
 

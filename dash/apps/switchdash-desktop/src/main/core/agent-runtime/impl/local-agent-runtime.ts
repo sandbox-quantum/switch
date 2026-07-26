@@ -132,7 +132,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       const providerConfig = await providerOverrideSettings.getItem(session.providerId);
       const agentSession = resolveAgentSessionCommandArgs(session, isResuming);
       const plugin = getPlugin(session.providerId);
-      const subagentsBehavior = plugin.behavior.subagents;
+      const repoAgents = plugin.behavior.repoAgents;
 
       const binaryName = plugin.capabilities.hostDependency.binaryNames[0] ?? session.providerId;
       const cachedStatePath = localDependencyManager.get(session.providerId as never)?.path;
@@ -144,15 +144,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         cachedStatePath,
       });
 
-      const extraArgs = [
-        ...parseExtraArgs(providerConfig?.extraArgs),
-        ...(session.subagentName && subagentsBehavior
-          ? subagentsBehavior.launchArgs(this.sessionPath, session.subagentName)
-          : []),
-      ];
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
-        extraArgs,
+        extraArgs: parseExtraArgs(providerConfig?.extraArgs),
+        // The provider owns how to run as the named agent (CHOO-1440).
+        agentArgs:
+          session.agentName && repoAgents
+            ? repoAgents.launchArgs(this.sessionPath, session.agentName)
+            : [],
         autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
@@ -196,11 +195,8 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // which Claude reads natively). Lets agents sharing a location keep distinct
       // identities (CHOO-1440).
       const subagentVars =
-        session.subagentName && subagentsBehavior
-          ? await subagentsBehavior.readLaunchEnv(
-              createPluginFs(this.sessionPath),
-              session.subagentName
-            )
+        session.agentName && repoAgents
+          ? await repoAgents.readLaunchEnv(createPluginFs(this.sessionPath), session.agentName)
           : await readAgentSwitchEnv(agentSettingsPath(this.sessionPath, session.agentId), log);
       const pty = spawnLocalPty({
         id: ptySessionId,

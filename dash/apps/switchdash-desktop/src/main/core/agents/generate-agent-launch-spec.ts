@@ -36,19 +36,12 @@ export async function generateAgentLaunchSpec(params: {
    * definition (`--agent <name> --settings <neutral creds>`) with its own model,
    * prompt, tools, and Switch identity. Null for a provider/agent with no
    * on-disk definition (CHOO-1440). */
-  subagentName: string | null;
+  agentName: string | null;
   ctx: IExecutionContext;
   connectionId: string;
 }): Promise<AgentLaunchSpec> {
-  const {
-    providerId,
-    remoteRepoDir,
-    deeplinkScheme,
-    autoApprove,
-    subagentName,
-    ctx,
-    connectionId,
-  } = params;
+  const { providerId, remoteRepoDir, deeplinkScheme, autoApprove, agentName, ctx, connectionId } =
+    params;
   const plugin = getPlugin(providerId);
   if (!plugin.behavior.prompt) {
     throw new Error(
@@ -66,16 +59,13 @@ export async function generateAgentLaunchSpec(params: {
     connectionId,
   });
 
-  const subagentsBehavior = plugin.behavior.subagents;
-  const extraArgs = [
-    ...parseExtraArgs(providerConfig?.extraArgs),
-    ...(subagentName && subagentsBehavior
-      ? subagentsBehavior.launchArgs(remoteRepoDir, subagentName)
-      : []),
-  ];
+  const repoAgents = plugin.behavior.repoAgents;
   const agentCommand = plugin.behavior.prompt.buildCommand({
     cli,
-    extraArgs,
+    extraArgs: parseExtraArgs(providerConfig?.extraArgs),
+    // The provider owns how to run as the named agent (CHOO-1440); kept distinct
+    // from user extra args.
+    agentArgs: agentName && repoAgents ? repoAgents.launchArgs(remoteRepoDir, agentName) : [],
     autoApprove,
     initialPrompt: INITIAL_PROMPT_PLACEHOLDER,
     sessionId: SESSION_ID_PLACEHOLDER,

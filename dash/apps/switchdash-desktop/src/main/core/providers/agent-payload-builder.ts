@@ -52,7 +52,7 @@ function buildMetadata(provider: CLIAgentPluginProvider): AgentMetadata {
       hooks: capabilities.hooks,
       mcp: capabilities.mcp,
       plugins: capabilities.plugins,
-      subagents: capabilities.subagents,
+      repoAgents: capabilities.repoAgents,
       switchSetup: capabilities.switchSetup,
     },
     installDocs: capabilities.hostDependency.installDocs ?? null,

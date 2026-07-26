@@ -7,7 +7,7 @@ import {
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
 import { buildClaudeHookConfig } from './hooks';
 import { icon } from './icon';
-import { CLAUDE_SUBAGENTS, claudeSubagentsBehavior } from './subagents';
+import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
 export const plugin = definePlugin(
   {
@@ -100,8 +100,8 @@ export const plugin = definePlugin(
     sessions: {
       kind: 'resumable',
     },
-    subagents: {
-      kind: 'claude-agents',
+    repoAgents: {
+      kind: 'definitions',
       dirRelative: CLAUDE_SUBAGENTS.dirRelative,
       settingsSuffix: CLAUDE_SUBAGENTS.settingsSuffix,
       definitionsDirRelative: CLAUDE_SUBAGENTS.definitionsDirRelative,
@@ -129,5 +129,5 @@ export const provider = registerPluginBehavior(plugin, {
   },
   hooks: buildClaudeHookConfig(),
   mcp: passthroughMcpAdapter('.claude.json'),
-  subagents: claudeSubagentsBehavior,
+  repoAgents: claudeRepoAgentsBehavior,
 });

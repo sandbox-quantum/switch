@@ -35,7 +35,7 @@ export type OnboardLocationResult = Result<Agent[], OnboardAgentError>;
 /** The Switch identity an onboarded definition should run under. */
 type ResolvedIdentity = { switchAgentId: string; apiEndpoint: string };
 
-type SubagentsBehavior = NonNullable<ReturnType<typeof getPlugin>['behavior']['subagents']>;
+type RepoAgentsBehavior = NonNullable<ReturnType<typeof getPlugin>['behavior']['repoAgents']>;
 
 /** Map a recoverable registration failure to an onboard error. */
 function registrationError(
@@ -72,7 +72,7 @@ async function resolveIdentity(
   description: string | null,
   ctx: {
     server: SwitchServer;
-    behavior: SubagentsBehavior;
+    behavior: RepoAgentsBehavior;
     workspace: WorkspaceFs;
     credsByName: Map<string, { switchAgentId: string | null; apiEndpoint: string | null }>;
     dir: string;
@@ -119,8 +119,8 @@ async function resolveIdentity(
     };
   }
 
-  await ctx.behavior.writeSettings(ctx.workspace.fs, {
-    subagentName: name,
+  await ctx.behavior.writeCredentials(ctx.workspace.fs, {
+    agentName: name,
     apiEndpoint: ctx.server.apiUrl,
     apiToken: registered.apiKey,
     agentId: registered.id,
@@ -154,7 +154,7 @@ export async function onboardLocationAgents(
   const server = await getServer(params.serverId);
   if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
 
-  const behavior = getPlugin(params.providerId).behavior.subagents;
+  const behavior = getPlugin(params.providerId).behavior.repoAgents;
   if (!behavior) {
     return err({
       type: 'invalid-directory',

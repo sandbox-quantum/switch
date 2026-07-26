@@ -168,7 +168,7 @@ export type AgentCapabilities = {
   hooks: { kind: string; scope?: string };
   mcp: { kind: string };
   plugins: { kind: string };
-  subagents: { kind: string };
+  repoAgents: { kind: string };
   switchSetup: { kind: string };
 };
 

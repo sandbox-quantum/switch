@@ -126,6 +126,13 @@ export function buildStandardCommand(ctx: CommandContext, spec: StandardCommandS
     args.push(...ctx.extraArgs);
   }
 
+  // Provider-produced args to run as a specific named agent (repo-agents
+  // capability). Distinct from user extra args; placed before the positional
+  // prompt like them so flags are not mistaken for the prompt (CHOO-1440).
+  if (ctx.agentArgs?.length) {
+    args.push(...ctx.agentArgs);
+  }
+
   // Initial prompt — only on fresh sessions
   if (!ctx.isResuming && ctx.initialPrompt) {
     if (spec.initialPromptViaStdinPipe) {

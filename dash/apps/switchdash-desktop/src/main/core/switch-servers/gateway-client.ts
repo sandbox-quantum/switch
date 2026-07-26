@@ -491,7 +491,7 @@ export async function fetchAgentChildren(
  * in the main process (write it to the subagent's settings file); never pass it
  * to the renderer. */
 export type BulkRegisteredSubagent = {
-  subagentName: string;
+  agentName: string;
   name: string;
   id: string;
   apiKey: string;
@@ -507,7 +507,7 @@ export async function registerSubagentsBulk(
   server: SwitchServer,
   params: {
     parentAgentId: string;
-    subagents: { subagentName: string; description: string }[];
+    subagents: { agentName: string; description: string }[];
     /** Register every subagent with the `auto_session` connection model, so a
      * watcher auto-spawns a session when the subagent is addressed. */
     autoSession: boolean;
@@ -522,7 +522,7 @@ export async function registerSubagentsBulk(
       parent_agent_id: params.parentAgentId,
       options: params.autoSession ? { auto_session: true } : {},
       subagents: params.subagents.map((s) => ({
-        subagent_name: s.subagentName,
+        subagent_name: s.agentName,
         description: s.description,
       })),
       overwrite: params.overwrite ?? false,
@@ -532,7 +532,7 @@ export async function registerSubagentsBulk(
     results: Array<{ subagent_name: string; name: string; id: string; api_key: string }>;
   };
   return json.results.map((r) => ({
-    subagentName: r.subagent_name,
+    agentName: r.subagent_name,
     name: r.name,
     id: r.id,
     apiKey: r.api_key,

@@ -23,8 +23,8 @@ export const SWITCH_SETTINGS_RELATIVE_PATH = path.join('.claude', 'settings.loca
 export const SWITCH_SUBAGENTS_DIR_RELATIVE = path.join('.claude', 'switch-subagents');
 
 /** Absolute path to a subagent's Switch credentials file under `dir`. */
-export function subagentSettingsPath(dir: string, subagentName: string): string {
-  return path.join(dir, SWITCH_SUBAGENTS_DIR_RELATIVE, `${subagentName}.settings.json`);
+export function subagentSettingsPath(dir: string, agentName: string): string {
+  return path.join(dir, SWITCH_SUBAGENTS_DIR_RELATIVE, `${agentName}.settings.json`);
 }
 
 /**

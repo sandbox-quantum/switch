@@ -1,4 +1,4 @@
-import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
+import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -145,8 +145,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // Advanced definition attributes (model, effort, tools, system prompt, …) the
   // user set in the collapsed Advanced section. Held in a ref (not state) so the
   // section can report changes without re-rendering the modal.
-  const advancedAttributesRef = useRef<SubagentAttributes>({});
-  const onAdvancedChange = useCallback((attributes: SubagentAttributes) => {
+  const advancedAttributesRef = useRef<RepoAgentAttributes>({});
+  const onAdvancedChange = useCallback((attributes: RepoAgentAttributes) => {
     advancedAttributesRef.current = attributes;
   }, []);
 

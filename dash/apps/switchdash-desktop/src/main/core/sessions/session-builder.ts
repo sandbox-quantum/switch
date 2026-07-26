@@ -113,7 +113,7 @@ export async function buildSessionFromRuntime(
   // `.switch/agents/<name>.json`; otherwise a plain agent's at
   // `.switch/agents/<agentId>.json`. Fall back to the legacy shared
   // `.claude/settings.local.json` for un-migrated installs (CHOO-1440).
-  const slug = session.subagentName;
+  const slug = session.agentName;
   const credsRelPaths = [
     ...(slug ? [agentSettingsRelativePath(slug)] : []),
     agentSettingsRelativePath(session.agentId),

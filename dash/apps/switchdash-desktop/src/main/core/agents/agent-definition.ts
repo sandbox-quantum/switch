@@ -1,4 +1,4 @@
-import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
+import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getAgentLocation } from './agent-location';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -11,11 +11,11 @@ import { getAgentById } from './getAgentById';
  * definition name, or the definition file is absent — the caller renders an
  * empty form in that case (CHOO-1440).
  */
-export async function readAgentDefinition(agentId: string): Promise<SubagentAttributes | null> {
+export async function readAgentDefinition(agentId: string): Promise<RepoAgentAttributes | null> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error(`No agent with id ${agentId}`);
 
-  const behavior = getPlugin(agent.providerId).behavior.subagents;
+  const behavior = getPlugin(agent.providerId).behavior.repoAgents;
   if (!behavior || !agent.definitionName) return null;
 
   const location = await getAgentLocation(agent);
@@ -36,12 +36,12 @@ export async function readAgentDefinition(agentId: string): Promise<SubagentAttr
  */
 export async function updateAgentDefinition(params: {
   agentId: string;
-  attributes: SubagentAttributes;
+  attributes: RepoAgentAttributes;
 }): Promise<void> {
   const agent = await getAgentById(params.agentId);
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
 
-  const behavior = getPlugin(agent.providerId).behavior.subagents;
+  const behavior = getPlugin(agent.providerId).behavior.repoAgents;
   if (!behavior || !agent.definitionName) {
     throw new Error(`Agent ${params.agentId} has no editable on-disk definition.`);
   }

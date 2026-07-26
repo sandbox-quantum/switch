@@ -4,6 +4,13 @@ import { definePluginCapability } from '../../../lib/plugins/capability';
 export type CommandContext = {
   cli: string; // absolute path to the cli binary
   extraArgs?: string[]; // user-configured in settings
+  /**
+   * Provider-produced args that run the CLI as a specific named agent (from the
+   * repo-agents capability's `launchArgs`), e.g. Claude's `--agent <name>
+   * --settings <creds>`. Kept distinct from user `extraArgs`: switchdash asks the
+   * provider how to run agent <name>, and the provider owns the answer (CHOO-1440).
+   */
+  agentArgs?: string[];
   autoApprove: boolean;
   initialPrompt?: string;
   /** Switchdash session UUID — used as the session token for providers that track their

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
-import { CLAUDE_SUBAGENTS, claudeSubagentsBehavior } from './subagents';
+import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
 /** Minimal in-memory PluginFs over a flat path→content map. */
 function fakeFs(files: Record<string, string>): PluginFs {
@@ -34,9 +34,9 @@ const settingsRel = (name: string) =>
 const neutralRel = (name: string) => path.join('.switch', 'agents', `${name}.json`);
 const defRel = (name: string) => path.join(CLAUDE_SUBAGENTS.definitionsDirRelative, `${name}.md`);
 
-describe('claudeSubagentsBehavior.launchArgs', () => {
+describe('claudeRepoAgentsBehavior.launchArgs', () => {
   it('builds --agent and --settings for a subagent', () => {
-    expect(claudeSubagentsBehavior.launchArgs('/repo/agent', 'reviewer')).toEqual([
+    expect(claudeRepoAgentsBehavior.launchArgs('/repo/agent', 'reviewer')).toEqual([
       '--agent',
       'reviewer',
       '--settings',
@@ -45,7 +45,7 @@ describe('claudeSubagentsBehavior.launchArgs', () => {
   });
 });
 
-describe('claudeSubagentsBehavior.discoverDefinitions', () => {
+describe('claudeRepoAgentsBehavior.discoverDefinitions', () => {
   it('parses definitions, eligibility, and registered state', async () => {
     const workspaceFs = fakeFs({
       [defRel('reviewer')]:
@@ -56,7 +56,7 @@ describe('claudeSubagentsBehavior.discoverDefinitions', () => {
       [defRel('linter')]: '---\ndescription: Lints\ntools: Read, Edit\n---\n',
     });
 
-    const defs = await claudeSubagentsBehavior.discoverDefinitions(workspaceFs);
+    const defs = await claudeRepoAgentsBehavior.discoverDefinitions(workspaceFs);
 
     expect(defs).toEqual([
       { name: 'linter', description: 'Lints', model: null, eligible: false, registered: false },
@@ -71,7 +71,7 @@ describe('claudeSubagentsBehavior.discoverDefinitions', () => {
   });
 });
 
-describe('claudeSubagentsBehavior.discoverLocal', () => {
+describe('claudeRepoAgentsBehavior.discoverLocal', () => {
   it('reads creds env and definition meta, project scope then home', async () => {
     const workspaceFs = fakeFs({
       [settingsRel('reviewer')]:
@@ -83,7 +83,7 @@ describe('claudeSubagentsBehavior.discoverLocal', () => {
       [defRel('helper')]: '---\ndescription: From home\n---\n',
     });
 
-    const local = await claudeSubagentsBehavior.discoverLocal(workspaceFs, homeFs);
+    const local = await claudeRepoAgentsBehavior.discoverLocal(workspaceFs, homeFs);
 
     expect(local).toEqual([
       {
@@ -104,28 +104,28 @@ describe('claudeSubagentsBehavior.discoverLocal', () => {
   });
 });
 
-describe('claudeSubagentsBehavior.readLaunchEnv', () => {
+describe('claudeRepoAgentsBehavior.readLaunchEnv', () => {
   it('returns only non-empty SWITCH_* keys', async () => {
     const workspaceFs = fakeFs({
       [settingsRel('reviewer')]:
         '{"env":{"SWITCH_AGENT_ID":"a1","SWITCH_API_TOKEN":"t","SWITCH_API_ENDPOINT":"  ","OTHER":"x"}}',
     });
 
-    expect(await claudeSubagentsBehavior.readLaunchEnv(workspaceFs, 'reviewer')).toEqual({
+    expect(await claudeRepoAgentsBehavior.readLaunchEnv(workspaceFs, 'reviewer')).toEqual({
       SWITCH_AGENT_ID: 'a1',
       SWITCH_API_TOKEN: 't',
     });
   });
 
   it('returns {} when the credentials file is missing', async () => {
-    expect(await claudeSubagentsBehavior.readLaunchEnv(fakeFs({}), 'reviewer')).toEqual({});
+    expect(await claudeRepoAgentsBehavior.readLaunchEnv(fakeFs({}), 'reviewer')).toEqual({});
   });
 });
 
-describe('claudeSubagentsBehavior.writeDefinition / readDefinition', () => {
+describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
   it('writes frontmatter + body without a tools line, and round-trips attributes', async () => {
     const workspaceFs = fakeFs({});
-    await claudeSubagentsBehavior.writeDefinition(workspaceFs, {
+    await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
       name: 'reviewer',
       description: 'Reviews diffs',
       model: 'opus',
@@ -139,7 +139,7 @@ describe('claudeSubagentsBehavior.writeDefinition / readDefinition', () => {
     // No `tools:` line → the subagent inherits all tools and is Switch-eligible.
     expect(raw).not.toContain('tools:');
 
-    const attrs = await claudeSubagentsBehavior.readDefinition(workspaceFs, 'reviewer');
+    const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
     expect(attrs).toMatchObject({
       name: 'reviewer',
       description: 'Reviews diffs',
@@ -151,7 +151,7 @@ describe('claudeSubagentsBehavior.writeDefinition / readDefinition', () => {
 
   it('always merges the Switch connector tools into a non-empty tools list', async () => {
     const workspaceFs = fakeFs({});
-    await claudeSubagentsBehavior.writeDefinition(workspaceFs, {
+    await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
       name: 'reviewer',
       description: 'Reviews diffs',
       tools: ['Read', 'Grep'],
@@ -164,13 +164,13 @@ describe('claudeSubagentsBehavior.writeDefinition / readDefinition', () => {
     );
 
     // Read-back strips the Switch rules so the form shows only the user's tools.
-    const attrs = await claudeSubagentsBehavior.readDefinition(workspaceFs, 'reviewer');
+    const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
     expect(attrs?.tools).toEqual(['Read', 'Grep']);
   });
 
   it('serialises optional scalar, number, and boolean fields and omits empty ones', async () => {
     const workspaceFs = fakeFs({});
-    await claudeSubagentsBehavior.writeDefinition(workspaceFs, {
+    await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
       name: 'worker',
       description: 'line one\nline two',
       model: '',
@@ -189,43 +189,43 @@ describe('claudeSubagentsBehavior.writeDefinition / readDefinition', () => {
     expect(raw).not.toContain('model:');
     expect(raw).not.toContain('permissionMode:');
 
-    const attrs = await claudeSubagentsBehavior.readDefinition(workspaceFs, 'worker');
+    const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'worker');
     expect(attrs).toMatchObject({ color: 'blue', maxTurns: 5, background: true, model: '' });
   });
 
   it('returns null when no definition exists', async () => {
-    expect(await claudeSubagentsBehavior.readDefinition(fakeFs({}), 'ghost')).toBeNull();
+    expect(await claudeRepoAgentsBehavior.readDefinition(fakeFs({}), 'ghost')).toBeNull();
   });
 });
 
-describe('claudeSubagentsBehavior.attributeFields', () => {
+describe('claudeRepoAgentsBehavior.attributeFields', () => {
   it('declares name and description first, both required', () => {
-    const fields = claudeSubagentsBehavior.attributeFields();
+    const fields = claudeRepoAgentsBehavior.attributeFields();
     expect(fields[0]).toMatchObject({ key: 'name', required: true, immutableOnEdit: true });
     expect(fields[1]).toMatchObject({ key: 'description', required: true });
     expect(fields.map((f) => f.key)).toContain('tools');
   });
 });
 
-describe('claudeSubagentsBehavior.removeLocal', () => {
+describe('claudeRepoAgentsBehavior.removeLocal', () => {
   it('deletes both the definition and credentials files', async () => {
     const workspaceFs = fakeFs({
       [defRel('reviewer')]: '---\nname: reviewer\ndescription: x\n---\n',
       [settingsRel('reviewer')]: '{"env":{}}',
     });
 
-    await claudeSubagentsBehavior.removeLocal(workspaceFs, 'reviewer');
+    await claudeRepoAgentsBehavior.removeLocal(workspaceFs, 'reviewer');
 
     expect(await workspaceFs.exists(defRel('reviewer'))).toBe(false);
     expect(await workspaceFs.exists(settingsRel('reviewer'))).toBe(false);
   });
 });
 
-describe('claudeSubagentsBehavior.writeSettings', () => {
+describe('claudeRepoAgentsBehavior.writeSettings', () => {
   it('writes the credentials JSON, permissions.allow, and a gitignore', async () => {
     const workspaceFs = fakeFs({});
-    await claudeSubagentsBehavior.writeSettings(workspaceFs, {
-      subagentName: 'reviewer',
+    await claudeRepoAgentsBehavior.writeCredentials(workspaceFs, {
+      agentName: 'reviewer',
       apiEndpoint: 'https://s',
       apiToken: 'secret',
       agentId: 'a1',
@@ -251,8 +251,8 @@ describe('claudeSubagentsBehavior.writeSettings', () => {
         env: { KEEP: 'me' },
       }),
     });
-    await claudeSubagentsBehavior.writeSettings(workspaceFs, {
-      subagentName: 'reviewer',
+    await claudeRepoAgentsBehavior.writeCredentials(workspaceFs, {
+      agentName: 'reviewer',
       apiEndpoint: 'https://s',
       apiToken: 'secret',
       agentId: 'a1',

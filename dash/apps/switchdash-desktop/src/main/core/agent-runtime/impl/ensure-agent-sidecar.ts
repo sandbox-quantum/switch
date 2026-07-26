@@ -49,7 +49,7 @@ export async function ensureAgentSidecar(params: {
     remoteRepoDir: repoDir,
     deeplinkScheme,
     autoApprove,
-    subagentName: definitionName,
+    agentName: definitionName,
     ctx,
     connectionId,
   });
@@ -103,7 +103,7 @@ export async function probeAgentSidecar(params: {
     remoteRepoDir: repoDir,
     deeplinkScheme,
     autoApprove,
-    subagentName: definitionName,
+    agentName: definitionName,
     ctx,
     connectionId,
   });

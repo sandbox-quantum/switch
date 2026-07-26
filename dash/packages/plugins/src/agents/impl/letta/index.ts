@@ -40,7 +40,7 @@ export const plugin = definePlugin(
     sessions: {
       kind: 'resumable',
     },
-    subagents: { kind: 'none' },
+    repoAgents: { kind: 'none' },
     switchSetup: { kind: 'none' },
   },
   { icon }

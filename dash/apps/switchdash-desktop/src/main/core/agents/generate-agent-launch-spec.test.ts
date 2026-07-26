@@ -10,7 +10,7 @@ const launchArgs = vi.fn((dir: string, name: string) => [
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({
-    behavior: { prompt: { buildCommand }, subagents: { launchArgs } },
+    behavior: { prompt: { buildCommand }, repoAgents: { launchArgs } },
     capabilities: { hostDependency: { binaryNames: ['claude'] } },
   }),
 }));
@@ -28,7 +28,7 @@ const baseParams = {
   providerId: 'claude',
   remoteRepoDir: '/home/agent/repo',
   deeplinkScheme: 'switchdash',
-  subagentName: null,
+  agentName: null,
   ctx: {} as never,
   connectionId: 'conn-1',
 };
@@ -52,11 +52,11 @@ describe('generateAgentLaunchSpec', () => {
   });
 
   it('appends the definition launch args so auto-started sessions run as the definition', async () => {
-    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false, subagentName: 'reviewer' });
+    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false, agentName: 'reviewer' });
     expect(launchArgs).toHaveBeenCalledWith('/home/agent/repo', 'reviewer');
     expect(buildCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        extraArgs: [
+        agentArgs: [
           '--agent',
           'reviewer',
           '--settings',
@@ -67,8 +67,8 @@ describe('generateAgentLaunchSpec', () => {
   });
 
   it('adds no definition launch args when the agent has no definition', async () => {
-    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false, subagentName: null });
+    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false, agentName: null });
     expect(launchArgs).not.toHaveBeenCalled();
-    expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ extraArgs: [] }));
+    expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
   });
 });

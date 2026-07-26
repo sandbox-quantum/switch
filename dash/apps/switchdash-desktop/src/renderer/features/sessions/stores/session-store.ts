@@ -29,7 +29,7 @@ export type UnregisteredSessionData = {
   statusChangedAt: string;
   isPinned: boolean;
   /** Set when this session runs as a Claude Code subagent of its agent. */
-  subagentName?: string;
+  agentName?: string;
 };
 
 export class SessionStore {

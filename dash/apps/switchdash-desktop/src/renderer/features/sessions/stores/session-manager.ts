@@ -188,7 +188,7 @@ export class SessionManagerStore {
           status: 'in_progress',
           statusChangedAt: new Date().toISOString(),
           isPinned: false,
-          subagentName: params.subagentName,
+          agentName: params.agentName,
         })
       );
     });
@@ -220,7 +220,7 @@ export class SessionManagerStore {
         isInitialSession: true,
         isPinned: false,
         autoApprove: params.autoApprove ?? false,
-        subagentName: params.subagentName,
+        agentName: params.agentName,
         createdAt: now,
         updatedAt: now,
       };

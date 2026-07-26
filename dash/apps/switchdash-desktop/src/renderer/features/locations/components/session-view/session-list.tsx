@@ -134,7 +134,7 @@ function SelectionBar({
 
 export const SessionList = observer(function SessionList() {
   const {
-    params: { locationId, subagentName },
+    params: { locationId, agentName },
   } = useParams('location');
   const store = asMounted(getLocationStore(locationId));
   const sessionManager = getSessionManagerStore(locationId);
@@ -149,7 +149,7 @@ export const SessionList = observer(function SessionList() {
         .filter((t): t is ReadySession => t.state !== 'unregistered')
         // Scope to the active subagent: its own page lists only sessions
         // launched as it; the parent agent's page excludes subagent sessions.
-        .filter((t) => (subagentName ? t.data.subagentName === subagentName : !t.data.subagentName))
+        .filter((t) => (agentName ? t.data.agentName === agentName : !t.data.agentName))
     : [];
   const activeSessions = allSessions.filter((t) => !t.data.archivedAt);
   const archivedSessions = allSessions.filter((t) => Boolean(t.data.archivedAt));
@@ -237,7 +237,7 @@ export const SessionList = observer(function SessionList() {
               onChange={(e) => sessionView.setSearchQuery(e.target.value)}
               className="flex-1"
             />
-            <Button onClick={() => showCreateSessionModal({ locationId, subagentName })}>
+            <Button onClick={() => showCreateSessionModal({ locationId, agentName })}>
               Create Session <BoundShortcut settingsKey="newSession" />
             </Button>
           </div>
@@ -245,7 +245,7 @@ export const SessionList = observer(function SessionList() {
       </div>
 
       {filteredSessions.length === 0 && sessionView.tab === 'active' ? (
-        <SessionListEmptyState locationId={locationId} subagentName={subagentName} />
+        <SessionListEmptyState locationId={locationId} agentName={agentName} />
       ) : (
         <SessionVirtualList
           sessions={filteredSessions}

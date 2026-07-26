@@ -67,7 +67,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   const confirmDeleteAgent = useConfirmDeleteAgent();
   const { toastPromise } = useToast();
 
-  const subagentName = agent.definitionName ?? undefined;
+  const agentName = agent.definitionName ?? undefined;
   const location = getLocationStore(agent.locationId);
 
   // The row is labelled by the agent's registered Switch name; fall back to the
@@ -81,8 +81,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
       }),
     enabled: !!agent.serverId && !!agent.switchAgentId,
   });
-  const label =
-    remoteAgentQuery.data?.name?.trim() || agent.name || subagentName || 'Unnamed agent';
+  const label = remoteAgentQuery.data?.name?.trim() || agent.name || agentName || 'Unnamed agent';
 
   const expanded = sidebarStore.isGroupExpanded(agentExpandKey(agent.id));
   const toggle = () => sidebarStore.toggleGroupExpanded(agentExpandKey(agent.id));
@@ -93,11 +92,11 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
       : currentView === 'location'
         ? locationParams.locationId
         : null;
-  const currentSubagentName = currentView === 'location' ? locationParams.subagentName : undefined;
+  const currentSubagentName = currentView === 'location' ? locationParams.agentName : undefined;
   const isActive =
     currentView === 'location' &&
     currentLocationId === agent.locationId &&
-    currentSubagentName === subagentName;
+    currentSubagentName === agentName;
 
   if (!location) return null;
 
@@ -110,7 +109,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
 
   const open = () => {
     sidebarStore.ensureGroupExpanded(agentExpandKey(agent.id));
-    navigate('location', { locationId: agent.locationId, subagentName });
+    navigate('location', { locationId: agent.locationId, agentName });
   };
 
   return (
@@ -204,7 +203,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                   className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100"
                   onClick={(e) => {
                     e.stopPropagation();
-                    showCreateSessionModal({ locationId: agent.locationId, subagentName });
+                    showCreateSessionModal({ locationId: agent.locationId, agentName });
                   }}
                 >
                   <Plus className="h-4 w-4" />

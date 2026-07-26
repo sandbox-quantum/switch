@@ -1,4 +1,4 @@
-import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
+import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import type { CreateAgentParams, RenameAgentParams } from '@shared/core/agents/agents';
 import type { OnboardAgentParams } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -31,7 +31,7 @@ export const agentsController = createRPCController({
   definitionFields: (params: { providerId: AgentProviderId }) =>
     Promise.resolve(getAgentDefinitionFields(params.providerId)),
   readAgentDefinition: (params: { agentId: string }) => readAgentDefinition(params.agentId),
-  updateAgentDefinition: (params: { agentId: string; attributes: SubagentAttributes }) =>
+  updateAgentDefinition: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentDefinition(params),
   onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   onboardLocationAgents: (params: OnboardLocationParams) => onboardLocationAgents(params),

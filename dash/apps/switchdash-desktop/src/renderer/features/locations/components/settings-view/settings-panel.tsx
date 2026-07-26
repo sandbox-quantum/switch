@@ -14,7 +14,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 
 export const SettingsPanel = observer(function SettingsPanel() {
   const {
-    params: { locationId, subagentName },
+    params: { locationId, agentName },
   } = useParams('location');
   const mounted = asMounted(getLocationStore(locationId));
 
@@ -34,8 +34,8 @@ export const SettingsPanel = observer(function SettingsPanel() {
     );
   }
 
-  const agent = subagentName
-    ? (agents ?? []).find((a) => a.definitionName === subagentName)
+  const agent = agentName
+    ? (agents ?? []).find((a) => a.definitionName === agentName)
     : (agents ?? [])[0];
   const agentId = agent?.id;
 

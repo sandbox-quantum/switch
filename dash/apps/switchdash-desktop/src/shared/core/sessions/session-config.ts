@@ -14,12 +14,17 @@ const sessionConfigV0Schema = z.object({
   /** Initial prompt to deliver on the first spawn; cleared from config after the session starts. */
   initialPrompt: z.string().optional(),
   /**
-   * When set, this session runs as a Claude Code subagent of its (parent) agent:
-   * the CLI is launched with `--agent <subagentName>` and the subagent's own
-   * Switch credentials file, so it participates in rooms under the subagent's
-   * identity. The value is the bare subagent name (the `.claude/agents/<name>.md`
-   * file stem), which also names its `.claude/switch-subagents/<name>.settings.json`.
+   * When set, this session runs as the repository-defined agent of this name: the
+   * provider launches its CLI to run as that agent (Claude Code → `--agent <name>`)
+   * with the agent's own Switch credentials, so it joins rooms under that identity.
+   * The value is the agent's definition name (its `.switch/agents/<name>.json`
+   * credentials key). switchdash has no "subagent" concept — how the provider runs
+   * a named agent is the provider's business (CHOO-1440).
    */
+  agentName: z.string().optional(),
+  /** Legacy key for {@link agentName}, kept so sessions persisted before the
+   * rename still resolve their identity after an upgrade; coalesced into
+   * `agentName` when read (CHOO-1440). */
   subagentName: z.string().optional(),
 });
 

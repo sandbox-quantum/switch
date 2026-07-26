@@ -9,8 +9,8 @@ import { mcpCapability } from './capabilities/mcp';
 import { modelsCapability } from './capabilities/models';
 import { pluginsCapability } from './capabilities/plugins';
 import { promptCapability } from './capabilities/prompt';
+import { repoAgentsCapability } from './capabilities/repo-agents';
 import { sessionsCapability } from './capabilities/sessions';
-import { subagentsCapability } from './capabilities/subagents';
 import { switchSetupCapability } from './capabilities/switch-setup';
 
 export const PLUGIN_CAPABILITIES = {
@@ -23,7 +23,7 @@ export const PLUGIN_CAPABILITIES = {
   plugins: pluginsCapability,
   prompt: promptCapability,
   sessions: sessionsCapability,
-  subagents: subagentsCapability,
+  repoAgents: repoAgentsCapability,
   switchSetup: switchSetupCapability,
 } as const;
 
@@ -71,19 +71,19 @@ export type { IHooksBehavior } from './capabilities/hooks';
 export type { IMcpBehavior, McpServerRegistration } from './capabilities/mcp';
 export type { IPlugins } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
-export { SWITCH_AGENT_SETTINGS_DIR, SWITCH_CONNECTOR_TOOL_RULES } from './capabilities/subagents';
+export { SWITCH_AGENT_SETTINGS_DIR, SWITCH_CONNECTOR_TOOL_RULES } from './capabilities/repo-agents';
 export type {
-  ISubagentsBehavior,
-  LocalSubagent,
-  SubagentAttributes,
-  SubagentAttributeValue,
-  SubagentCredentials,
-  SubagentDefinition,
-  SubagentField,
-  SubagentFieldOption,
-  SubagentFieldType,
-  SubagentsDescriptor,
-} from './capabilities/subagents';
+  IRepoAgentsBehavior,
+  LocalRepoAgent,
+  RepoAgentAttributes,
+  RepoAgentAttributeValue,
+  RepoAgentCredentials,
+  RepoAgentDefinition,
+  RepoAgentField,
+  RepoAgentFieldOption,
+  RepoAgentFieldType,
+  RepoAgentsDescriptor,
+} from './capabilities/repo-agents';
 export type { ISwitchSetupBehavior, SwitchSetupDescriptor } from './capabilities/switch-setup';
 
 // Typed registry factory

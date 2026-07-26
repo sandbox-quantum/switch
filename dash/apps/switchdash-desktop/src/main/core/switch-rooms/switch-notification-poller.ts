@@ -101,7 +101,7 @@ class SwitchNotificationPoller {
       .from(sessions)
       .where(eq(sessions.id, ctx.sessionId))
       .limit(1);
-    const subagentName = sessionRow?.config?.subagentName;
+    const agentName = sessionRow?.config?.agentName;
     const agentId = sessionRow?.agentId;
 
     // Credentials come from the agent's provider-neutral per-agent file — a
@@ -110,13 +110,13 @@ class SwitchNotificationPoller {
     // even when agents share a location. Fall back to the legacy subagent path,
     // then the location's `.claude/settings.local.json`, for un-migrated installs
     // (CHOO-1440).
-    const creds = subagentName
+    const creds = agentName
       ? ((await readSwitchAgentCredentialsFromSettings(
-          agentSettingsPath(rootPath, subagentName),
+          agentSettingsPath(rootPath, agentName),
           log
         )) ??
         (await readSwitchAgentCredentialsFromSettings(
-          subagentSettingsPath(rootPath, subagentName),
+          subagentSettingsPath(rootPath, agentName),
           log
         )))
       : ((agentId
@@ -125,7 +125,7 @@ class SwitchNotificationPoller {
     if (!creds) {
       log.warn(
         'SwitchNotificationPoller: missing Switch credentials (SWITCH_API_TOKEN/ENDPOINT/AGENT_ID) — cannot poll room',
-        { sessionId: ctx.sessionId, dir: rootPath, roomId, subagentName }
+        { sessionId: ctx.sessionId, dir: rootPath, roomId, agentName }
       );
       return;
     }

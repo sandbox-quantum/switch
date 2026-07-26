@@ -19,4 +19,4 @@ export const locationView = {
       ? { ok: true }
       : { ok: false, redirect: 'home' };
   },
-} satisfies ViewDefinition<{ locationId: string; subagentName?: string }>;
+} satisfies ViewDefinition<{ locationId: string; agentName?: string }>;

@@ -1,7 +1,7 @@
 import type {
-  SubagentAttributes,
-  SubagentAttributeValue,
-  SubagentField,
+  RepoAgentAttributes,
+  RepoAgentAttributeValue,
+  RepoAgentField,
 } from '@switchdash/core/agents/plugins';
 import { Input } from '@renderer/lib/ui/input';
 import {
@@ -25,11 +25,11 @@ export type FormState = Record<string, FormValue>;
 export const TOP_LEVEL_KEYS = new Set(['name', 'description']);
 
 /** The advanced (non top-level) attribute fields, in provider display order. */
-export function advancedFields(allFields: SubagentField[]): SubagentField[] {
+export function advancedFields(allFields: RepoAgentField[]): RepoAgentField[] {
   return allFields.filter((f) => !TOP_LEVEL_KEYS.has(f.key));
 }
 
-export function emptyForm(fields: SubagentField[]): FormState {
+export function emptyForm(fields: RepoAgentField[]): FormState {
   const state: FormState = {};
   for (const field of fields) state[field.key] = field.type === 'boolean' ? false : '';
   return state;
@@ -37,12 +37,12 @@ export function emptyForm(fields: SubagentField[]): FormState {
 
 /** Seed a form from existing attribute values (for editing an existing agent). */
 export function formFromAttributes(
-  fields: SubagentField[],
-  attributes: SubagentAttributes
+  fields: RepoAgentField[],
+  attributes: RepoAgentAttributes
 ): FormState {
   const state: FormState = {};
   for (const field of fields) {
-    const value: SubagentAttributeValue | undefined = attributes[field.key];
+    const value: RepoAgentAttributeValue | undefined = attributes[field.key];
     if (field.type === 'boolean') {
       state[field.key] = value === true;
     } else if (field.type === 'list') {
@@ -56,8 +56,11 @@ export function formFromAttributes(
   return state;
 }
 
-export function attributesFromForm(fields: SubagentField[], state: FormState): SubagentAttributes {
-  const attributes: SubagentAttributes = {};
+export function attributesFromForm(
+  fields: RepoAgentField[],
+  state: FormState
+): RepoAgentAttributes {
+  const attributes: RepoAgentAttributes = {};
   for (const field of fields) {
     const value = state[field.key];
     if (field.type === 'boolean') {
@@ -83,7 +86,7 @@ export function DefinitionFieldInput({
   value,
   onChange,
 }: {
-  field: SubagentField;
+  field: RepoAgentField;
   value: FormValue;
   onChange: (value: FormValue) => void;
 }) {

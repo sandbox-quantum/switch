@@ -1,12 +1,12 @@
 import path from 'node:path';
 import {
-  type ISubagentsBehavior,
-  type LocalSubagent,
+  type IRepoAgentsBehavior,
+  type LocalRepoAgent,
   type PluginFs,
-  type SubagentAttributes,
-  type SubagentCredentials,
-  type SubagentDefinition,
-  type SubagentField,
+  type RepoAgentAttributes,
+  type RepoAgentCredentials,
+  type RepoAgentDefinition,
+  type RepoAgentField,
   SWITCH_AGENT_SETTINGS_DIR,
   SWITCH_CONNECTOR_TOOL_RULES,
 } from '@switchdash/core/agents/plugins';
@@ -47,7 +47,7 @@ const BOOLEAN_KEYS = new Set(['background']);
  * field keys match the `.claude/agents/<name>.md` frontmatter keys verbatim
  * (`prompt` being the body). hooks / mcpServers / skills are intentionally
  * omitted — they are nested/block-list YAML, edit the `.md` directly for those. */
-const CLAUDE_SUBAGENT_FIELDS: SubagentField[] = [
+const CLAUDE_SUBAGENT_FIELDS: RepoAgentField[] = [
   {
     key: 'name',
     label: 'Name',
@@ -244,13 +244,13 @@ function extractBody(content: string): string {
   return (match ? normalised.slice(match[0].length) : normalised).trim();
 }
 
-function toScalar(value: SubagentAttributes[string] | undefined): string {
+function toScalar(value: RepoAgentAttributes[string] | undefined): string {
   if (value === null || value === undefined) return '';
   if (Array.isArray(value)) return value.join(', ');
   return String(value).trim();
 }
 
-function toList(value: SubagentAttributes[string] | undefined): string[] {
+function toList(value: RepoAgentAttributes[string] | undefined): string[] {
   if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter((v) => v.length > 0);
   if (typeof value === 'string') return splitList(value);
   return [];
@@ -263,7 +263,7 @@ function toList(value: SubagentAttributes[string] | undefined): string[] {
  * `tools` is omitted entirely, which inherits all tools. The body defaults to
  * the description when no system prompt is given.
  */
-function serializeDefinition(attributes: SubagentAttributes): string {
+function serializeDefinition(attributes: RepoAgentAttributes): string {
   const name = toScalar(attributes.name);
   const description = toScalar(attributes.description).replace(/\s*\r?\n\s*/g, ' ');
   const lines = ['---', `name: ${name}`, `description: ${description}`];
@@ -372,8 +372,8 @@ async function readDefinitionMeta(
   return { description: null, model: null };
 }
 
-export const claudeSubagentsBehavior: ISubagentsBehavior = {
-  async discoverLocal(workspaceFs, homeFs): Promise<LocalSubagent[]> {
+export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
+  async discoverLocal(workspaceFs, homeFs): Promise<LocalRepoAgent[]> {
     // Names come from either credentials location — the neutral `.switch/agents`
     // dir and the legacy `.claude/switch-subagents` dir — so both migrated and
     // un-migrated installs are discovered (CHOO-1440). Plain agents' creds files
@@ -416,7 +416,7 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
     );
   },
 
-  async discoverDefinitions(workspaceFs): Promise<SubagentDefinition[]> {
+  async discoverDefinitions(workspaceFs): Promise<RepoAgentDefinition[]> {
     const entries = await workspaceFs.list(CLAUDE_SUBAGENTS.definitionsDirRelative);
     const files = entries
       .filter((entry) => entry.endsWith(MD_SUFFIX))
@@ -440,17 +440,17 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
     );
   },
 
-  launchArgs(sessionPath, subagentName): string[] {
+  launchArgs(workingDir, agentName): string[] {
     return [
       '--agent',
-      subagentName,
+      agentName,
       '--settings',
-      path.join(sessionPath, neutralSettingsRelPath(subagentName)),
+      path.join(workingDir, neutralSettingsRelPath(agentName)),
     ];
   },
 
-  async readLaunchEnv(workspaceFs, subagentName): Promise<Record<string, string>> {
-    const settings = await readCredsObject(workspaceFs, subagentName);
+  async readLaunchEnv(workspaceFs, agentName): Promise<Record<string, string>> {
+    const settings = await readCredsObject(workspaceFs, agentName);
     const env = (settings.env ?? {}) as Record<string, unknown>;
     const result: Record<string, string> = {};
     for (const key of SWITCH_ENV_KEYS) {
@@ -460,14 +460,14 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
     return result;
   },
 
-  async writeSettings(workspaceFs, credentials: SubagentCredentials): Promise<void> {
+  async writeCredentials(workspaceFs, credentials: RepoAgentCredentials): Promise<void> {
     // Keep the tokens out of git — `*` ignores everything in the directory.
     const gitignoreRel = path.join(SWITCH_AGENT_SETTINGS_DIR, '.gitignore');
     if (!(await workspaceFs.exists(gitignoreRel))) {
       await workspaceFs.write(gitignoreRel, '*\n');
     }
 
-    const relPath = neutralSettingsRelPath(credentials.subagentName);
+    const relPath = neutralSettingsRelPath(credentials.agentName);
     const existing = parseSettingsObject(await workspaceFs.read(relPath));
     const currentEnv = (existing.env ?? {}) as Record<string, unknown>;
     const currentPerms =
@@ -496,21 +496,21 @@ export const claudeSubagentsBehavior: ISubagentsBehavior = {
     await workspaceFs.write(relPath, `${JSON.stringify(settings, null, 2)}\n`);
   },
 
-  attributeFields(): SubagentField[] {
+  attributeFields(): RepoAgentField[] {
     return CLAUDE_SUBAGENT_FIELDS;
   },
 
-  async writeDefinition(workspaceFs, attributes: SubagentAttributes): Promise<void> {
+  async writeDefinition(workspaceFs, attributes: RepoAgentAttributes): Promise<void> {
     const name = toScalar(attributes.name);
     await workspaceFs.write(definitionRelPath(name), serializeDefinition(attributes));
   },
 
-  async readDefinition(workspaceFs, name): Promise<SubagentAttributes | null> {
+  async readDefinition(workspaceFs, name): Promise<RepoAgentAttributes | null> {
     const content = await workspaceFs.read(definitionRelPath(name));
     if (content === null) return null;
     const fields = parseFrontmatterFields(content);
 
-    const attributes: SubagentAttributes = {
+    const attributes: RepoAgentAttributes = {
       name: fields.name ?? name,
       description: fields.description ?? '',
       [BODY_KEY]: extractBody(content),

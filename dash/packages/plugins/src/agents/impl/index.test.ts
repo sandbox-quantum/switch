@@ -120,29 +120,29 @@ describe('pluginRegistry', () => {
     }
   });
 
-  it('each entry declares a subagents descriptor; only supporting types carry a behavior', () => {
+  it('each entry declares a repo-agents descriptor; only supporting types carry a behavior', () => {
     for (const d of pluginRegistry.getAll()) {
-      const descriptor = d.capabilities.subagents;
-      expect(['claude-agents', 'none'], `${d.metadata.id}.subagents.kind`).toContain(
+      const descriptor = d.capabilities.repoAgents;
+      expect(['definitions', 'none'], `${d.metadata.id}.repoAgents.kind`).toContain(
         descriptor.kind
       );
-      // A 'none' provider must not ship a subagents behavior; a supporting one must.
+      // A 'none' provider must not ship a repo-agents behavior; a supporting one must.
       if (descriptor.kind === 'none') {
-        expect(d.behavior.subagents, `${d.metadata.id} should have no subagents behavior`).toBe(
+        expect(d.behavior.repoAgents, `${d.metadata.id} should have no repo-agents behavior`).toBe(
           undefined
         );
       } else {
         expect(
-          typeof d.behavior.subagents?.launchArgs,
-          `${d.metadata.id} should ship a subagents behavior`
+          typeof d.behavior.repoAgents?.launchArgs,
+          `${d.metadata.id} should ship a repo-agents behavior`
         ).toBe('function');
       }
     }
   });
 
-  it('claude is the subagents-supporting provider', () => {
-    expect(pluginRegistry.get('claude')!.capabilities.subagents.kind).toBe('claude-agents');
-    expect(pluginRegistry.get('codex')!.capabilities.subagents.kind).toBe('none');
+  it('claude is the repo-agents-supporting provider', () => {
+    expect(pluginRegistry.get('claude')!.capabilities.repoAgents.kind).toBe('definitions');
+    expect(pluginRegistry.get('codex')!.capabilities.repoAgents.kind).toBe('none');
   });
 
   it('each entry has a behavior.prompt.buildCommand function', () => {

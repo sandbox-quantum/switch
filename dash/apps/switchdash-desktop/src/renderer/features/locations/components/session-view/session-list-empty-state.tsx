@@ -6,21 +6,21 @@ import { ActionListItem } from '@renderer/lib/ui/action-list-item';
 
 export const SessionListEmptyState = observer(function SessionListEmptyState({
   locationId,
-  subagentName,
+  agentName,
 }: {
   locationId: string;
-  subagentName?: string;
+  agentName?: string;
 }) {
   const showSessionModal = useShowModal('sessionModal');
 
   const actions = [
     {
       label: 'New Session',
-      description: subagentName
-        ? `Spawn a claude session as ${subagentName}`
+      description: agentName
+        ? `Spawn a claude session as ${agentName}`
         : 'Spawn a claude session for this agent',
       icon: Plus,
-      onActivate: () => showSessionModal({ locationId, subagentName }),
+      onActivate: () => showSessionModal({ locationId, agentName }),
     },
   ];
 

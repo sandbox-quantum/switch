@@ -49,7 +49,7 @@ export type Session = {
   lastInteractedAt?: string;
   autoApprove?: boolean;
   /** Set when this session runs as a Claude Code subagent of its agent. */
-  subagentName?: string;
+  agentName?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -70,11 +70,11 @@ export type CreateSessionParams = {
   initialSize?: { cols: number; rows: number };
   /**
    * Run this session as a Claude Code subagent of `agentId`: launches the CLI
-   * with `--agent <subagentName>` and the subagent's own Switch credentials, so
+   * with `--agent <agentName>` and the subagent's own Switch credentials, so
    * it joins rooms under the subagent's identity. The session is still owned by
    * the parent `agentId` (it runs in the parent's working directory).
    */
-  subagentName?: string;
+  agentName?: string;
 };
 
 export type CreateSessionError =

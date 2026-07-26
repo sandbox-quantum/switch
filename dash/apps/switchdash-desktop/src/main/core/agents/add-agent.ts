@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
+import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
@@ -35,7 +35,7 @@ export type AddAgentParams = {
   /** Provider-specific definition attributes (model, effort, tools, prompt, …),
    * keyed by the provider's attribute fields. `name`/`description` are set from
    * the params above. */
-  definitionAttributes: SubagentAttributes;
+  definitionAttributes: RepoAgentAttributes;
 };
 
 export type AddAgentResult =
@@ -74,7 +74,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
   if (registered.kind !== 'created') return registered;
 
-  const behavior = getPlugin(params.providerId).behavior.subagents;
+  const behavior = getPlugin(params.providerId).behavior.repoAgents;
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
     if (behavior) {
@@ -83,8 +83,8 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
         name: params.name,
         description: params.description,
       });
-      await behavior.writeSettings(workspace.fs, {
-        subagentName: params.name,
+      await behavior.writeCredentials(workspace.fs, {
+        agentName: params.name,
         apiEndpoint: server.apiUrl,
         apiToken: registered.apiKey,
         agentId: registered.id,

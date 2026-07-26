@@ -36,8 +36,8 @@ export async function createSession(
   // `--agent <definitionName>` — derive it here so the runtime needs no DB
   // lookup. An explicit param still wins (legacy "run this session as subagent
   // X of parent" callers) (CHOO-1440).
-  const launchDefinition = params.subagentName?.trim() || agent.definitionName?.trim();
-  if (launchDefinition) configObj.subagentName = launchDefinition;
+  const launchDefinition = params.agentName?.trim() || agent.definitionName?.trim();
+  if (launchDefinition) configObj.agentName = launchDefinition;
   const config = Object.keys(configObj).length > 0 ? configObj : undefined;
 
   const [row] = await db
