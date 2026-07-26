@@ -1,10 +1,13 @@
 import { getLocationById } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
+import { fetchAgentDetail } from '@main/core/switch-servers/gateway-client';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgents } from './getAgents';
-import { agentSettingsRelativePath } from './switch-settings-paths';
+import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 import { updateAgent } from './updateAgent';
 
 /**
@@ -49,47 +52,54 @@ async function migrateOne(agent: Agent): Promise<boolean> {
 
   const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
   try {
-    // Resolve the agent's REAL name — its provider definition/credentials stem,
-    // NOT `agent.name` (the directory-derived display name). Prefer the row's
-    // definitionName; otherwise match the on-disk agent to this row by
-    // switchAgentId. If neither resolves (e.g. a legacy "main" agent whose creds
-    // live only in the shared settings.local.json, with no named definition), skip
-    // it — it keeps working via the legacy-path fallbacks — rather than guess a
-    // wrong name (CHOO-1440).
+    // Resolve the agent's REAL name — the credentials/definition stem, NOT
+    // `agent.name` (the directory-derived display name). Prefer the row's
+    // definitionName; else the on-disk agent matched to this row by switchAgentId;
+    // else the registered Switch name from the gateway (authoritative — the same
+    // name new agents are created under). Never the directory name (CHOO-1440).
     let name = agent.definitionName;
     let description = agent.name;
     if (!name) {
       if (!agent.switchAgentId) return false;
       const discovered = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
       const match = discovered.find((d) => d.switchAgentId === agent.switchAgentId);
-      if (!match) {
-        log.info('migrateAgentStorage: no on-disk agent matches this row; skipping', {
-          agentId: agent.id,
-          switchAgentId: agent.switchAgentId,
-        });
-        return false;
+      if (match) {
+        name = match.name;
+        description = match.description ?? match.name;
+      } else {
+        const registered = await fetchRegisteredName(agent);
+        if (!registered) {
+          log.info('migrateAgentStorage: could not resolve a real name for agent; skipping', {
+            agentId: agent.id,
+            switchAgentId: agent.switchAgentId,
+          });
+          return false;
+        }
+        name = registered.name;
+        description = registered.description;
       }
-      name = match.name;
-      description = match.description ?? match.name;
     }
 
     let changed = false;
 
     // 1. Credentials: if the neutral per-agent file is absent, adopt the legacy
-    //    layout's credentials for this name (readLaunchEnv reads the neutral file
-    //    first, then the legacy per-agent file).
+    //    layout's credentials — the per-agent file (via readLaunchEnv, which reads
+    //    the neutral then legacy per-agent locations), else the shared
+    //    `.claude/settings.local.json` (legacy "main" agent).
     const neutral = await workspace.fs.read(agentSettingsRelativePath(name));
     if (neutral === null) {
-      const env = await behavior.readLaunchEnv(workspace.fs, name);
-      const apiEndpoint = env.SWITCH_API_ENDPOINT;
-      const apiToken = env.SWITCH_API_TOKEN;
-      const agentId = env.SWITCH_AGENT_ID;
-      if (apiEndpoint && apiToken && agentId) {
+      const creds =
+        toCreds(await behavior.readLaunchEnv(workspace.fs, name)) ??
+        parseSwitchAgentCredentials(
+          (await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH)) ?? '',
+          log
+        );
+      if (creds) {
         await behavior.writeCredentials(workspace.fs, {
           agentName: name,
-          apiEndpoint,
-          apiToken,
-          agentId,
+          apiEndpoint: creds.apiEndpoint,
+          apiToken: creds.token,
+          agentId: creds.agentId,
         });
         changed = true;
       }
@@ -112,4 +122,34 @@ async function migrateOne(agent: Agent): Promise<boolean> {
   } finally {
     workspace.close();
   }
+}
+
+/** The agent's registered name + description on its Switch server, or null. */
+async function fetchRegisteredName(
+  agent: Agent
+): Promise<{ name: string; description: string } | null> {
+  if (!agent.serverId || !agent.switchAgentId) return null;
+  const server = await getServer(agent.serverId);
+  if (!server) return null;
+  try {
+    const detail = await fetchAgentDetail(server, agent.switchAgentId);
+    return { name: detail.name, description: detail.description || detail.name };
+  } catch (error) {
+    log.warn('migrateAgentStorage: failed to fetch registered agent name', {
+      agentId: agent.id,
+      error: String(error),
+    });
+    return null;
+  }
+}
+
+/** Build credentials from a launch-env map, or null when any value is missing. */
+function toCreds(
+  env: Record<string, string>
+): { apiEndpoint: string; token: string; agentId: string } | null {
+  const apiEndpoint = env.SWITCH_API_ENDPOINT;
+  const token = env.SWITCH_API_TOKEN;
+  const agentId = env.SWITCH_AGENT_ID;
+  if (apiEndpoint && token && agentId) return { apiEndpoint, token, agentId };
+  return null;
 }
