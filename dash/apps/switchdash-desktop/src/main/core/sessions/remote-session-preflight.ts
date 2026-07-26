@@ -151,7 +151,11 @@ async function assertHostReady(
 
 async function readRemoteEndpoint(deps: RemotePreflightDeps): Promise<string> {
   const primary = deps.credsRelPaths[0] ?? '.switch/agents';
-  let foundButIncomplete = false;
+  // Track the FIRST file that was present but unparseable/incomplete, so the
+  // error names the actual offending file rather than always the primary path —
+  // a stale fallback (an old id-keyed `.switch/agents/<id>.json` or the legacy
+  // `.claude/settings.local.json`) is a common cause and must be pinpointed.
+  let incompletePath: string | null = null;
   for (const relPath of deps.credsRelPaths) {
     let content: string;
     try {
@@ -161,11 +165,11 @@ async function readRemoteEndpoint(deps: RemotePreflightDeps): Promise<string> {
     }
     const creds = parseSwitchAgentCredentials(content, deps.log);
     if (creds) return creds.apiEndpoint;
-    foundButIncomplete = true;
+    if (incompletePath === null) incompletePath = relPath;
   }
-  if (foundButIncomplete) {
+  if (incompletePath !== null) {
     throw new Error(
-      `Switch credentials at ${primary} on remote host '${deps.host}' are incomplete — re-run remote setup for this agent.`
+      `Switch credentials at ${incompletePath} on remote host '${deps.host}' are incomplete — re-run remote setup for this agent.`
     );
   }
   throw new Error(

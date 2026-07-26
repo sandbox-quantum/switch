@@ -82,13 +82,21 @@ async function migrateOne(agent: Agent): Promise<boolean> {
 
     let changed = false;
 
-    // 1. Credentials: if the neutral per-agent file is absent, adopt the legacy
-    //    layout's credentials — the per-agent file (via readLaunchEnv, which reads
-    //    the neutral then legacy per-agent locations), else the shared
-    //    `.claude/settings.local.json` (legacy "main" agent).
-    const neutral = await workspace.fs.read(agentSettingsRelativePath(name));
+    // 1. Credentials: if the name-keyed neutral file is absent, adopt whatever
+    //    complete credentials already exist on disk, in priority order:
+    //      a. a stale ID-keyed neutral file `.switch/agents/<agentId>.json` — an
+    //         earlier layout keyed the neutral file by agent id, not name;
+    //      b. the legacy per-agent file (via readLaunchEnv: name-keyed neutral
+    //         then `.claude/switch-subagents/<name>.settings.json`);
+    //      c. the shared `.claude/settings.local.json` (legacy "main" agent).
+    //    The token is minted once and lives only on disk, so this is the only way
+    //    to recover it — nothing can reconstruct it from the gateway.
+    const idKeyedRelPath = agentSettingsRelativePath(agent.id);
+    const namedRelPath = agentSettingsRelativePath(name);
+    const neutral = name === agent.id ? null : await workspace.fs.read(namedRelPath);
     if (neutral === null) {
       const creds =
+        parseSwitchAgentCredentials((await workspace.fs.read(idKeyedRelPath)) ?? '', log) ??
         toCreds(await behavior.readLaunchEnv(workspace.fs, name)) ??
         parseSwitchAgentCredentials(
           (await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH)) ?? '',
@@ -101,6 +109,16 @@ async function migrateOne(agent: Agent): Promise<boolean> {
           apiToken: creds.token,
           agentId: creds.agentId,
         });
+        changed = true;
+      }
+    }
+
+    // Remove the stale ID-keyed neutral file once the name-keyed one is in place:
+    // an incomplete leftover there otherwise shadows the real creds in the
+    // session preflight (which scans both), and a complete one is now redundant.
+    if (name !== agent.id && (await workspace.fs.read(namedRelPath)) !== null) {
+      if ((await workspace.fs.read(idKeyedRelPath)) !== null) {
+        await workspace.fs.delete(idKeyedRelPath);
         changed = true;
       }
     }
