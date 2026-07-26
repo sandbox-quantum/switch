@@ -100,6 +100,34 @@ describe('InProcessSessionSpawner.spawnedSessions', () => {
   });
 });
 
+describe('InProcessSessionSpawner.setSpec', () => {
+  it('applies a swapped launch spec to the next launch (live toggle, no restart)', async () => {
+    const { spawner, calls } = makeSpawner();
+    spawner.setSpec({
+      ...SPEC,
+      command: '/usr/bin/other-cli',
+      args: ['--session-id', SESSION_ID_PLACEHOLDER, '--no-skip', INITIAL_PROMPT_PLACEHOLDER],
+    });
+    await spawner.launch('room-x');
+
+    const inner = calls.find((c) => c.args[0] === 'new-session')!.args.at(-1)!;
+    expect(inner).toContain('/usr/bin/other-cli');
+    expect(inner).toContain('--no-skip');
+    expect(inner).not.toContain('--dangerously-skip-permissions');
+  });
+});
+
+describe('InProcessSessionSpawner.roomIdForSession', () => {
+  it('returns the room a launched session was started for, or null', async () => {
+    const { spawner } = makeSpawner({ isPaneLive: () => true });
+    await spawner.launch('room-x');
+    const sessionId = spawner.spawnedSessions()[0]!.sessionId;
+
+    expect(spawner.roomIdForSession(sessionId)).toBe('room-x');
+    expect(spawner.roomIdForSession('unknown-session')).toBeNull();
+  });
+});
+
 describe('InProcessSessionSpawner.drop', () => {
   it('forgets a launched session by its session id', async () => {
     const { spawner } = makeSpawner({ isPaneLive: () => true });

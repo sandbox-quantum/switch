@@ -41,9 +41,22 @@ export class InProcessSessionSpawner implements SessionSpawner {
   ) => Promise<{ stdout: string; stderr: string }>;
   /** Room id → the session we launched for it (its minted id + tmux target). */
   private readonly launched = new Map<string, { sessionId: string; tmuxTarget: string }>();
+  /** The live launch recipe. Seeded from deps, replaceable via `setSpec` so a
+   * bypass-permissions toggle takes effect without restarting the sidecar. */
+  private spec: AgentLaunchSpec;
 
   constructor(private readonly deps: InProcessSessionSpawnerDeps) {
     this.exec = deps.exec ?? ((command, args) => execFileAsync(command, args));
+    this.spec = deps.spec;
+  }
+
+  /**
+   * Swap the launch recipe (the entrypoint re-reads the spec file each poll and
+   * pushes it here), so a toggled setting — e.g. bypass-permissions — applies to
+   * the next auto-started session without restarting the sidecar.
+   */
+  setSpec(spec: AgentLaunchSpec): void {
+    this.spec = spec;
   }
 
   /**
@@ -62,6 +75,14 @@ export class InProcessSessionSpawner implements SessionSpawner {
         return;
       }
     }
+  }
+
+  /** The room a launched (not-yet-connected) session was started for, or null. */
+  roomIdForSession(sessionId: string): string | null {
+    for (const [roomId, session] of this.launched) {
+      if (session.sessionId === sessionId) return roomId;
+    }
+    return null;
   }
 
   /** tmux targets of launched sessions, for the entrypoint's pane-liveness poll. */
@@ -98,7 +119,8 @@ export class InProcessSessionSpawner implements SessionSpawner {
   }
 
   async launch(roomId: string): Promise<void> {
-    const { spec, hookPort, hookToken, log } = this.deps;
+    const { hookPort, hookToken, log } = this.deps;
+    const spec = this.spec;
     const sessionId = randomUUID();
     const tmuxTarget = makeAgentTmuxSessionName(sessionId);
 

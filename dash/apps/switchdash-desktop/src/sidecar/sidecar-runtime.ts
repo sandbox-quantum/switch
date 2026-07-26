@@ -66,6 +66,10 @@ export class SidecarRuntime {
    * sessions it owns, used to scope the VM-wide tmux enumeration in `/sessions`. */
   private readonly seen = new Set<string>();
   private readonly resolveContext: ContextResolver;
+  /** Notified when a session connects to a room, so the notification watcher can
+   * hand its per-room in-flight guard off to the live-room check (mirrors the
+   * local AutoSessionWatcher's room-connection subscription). */
+  private roomConnectedListener: ((roomId: string) => void) | null = null;
 
   constructor(private readonly deps: SidecarRuntimeDeps) {
     this.resolveContext = async (ptyId) => {
@@ -77,6 +81,11 @@ export class SidecarRuntime {
         ptyId,
       };
     };
+  }
+
+  /** Register the room-connected listener (the notification watcher's guard hand-off). */
+  onRoomConnected(listener: (roomId: string) => void): void {
+    this.roomConnectedListener = listener;
   }
 
   /** Handle one raw hook callback from an agent CLI. Never throws. */
@@ -133,8 +142,12 @@ export class SidecarRuntime {
   ): void {
     const existing = this.sessions.get(sessionId);
     // A repeat connect to the same room by the same session is a no-op so the
-    // in-flight queue and renew loop are preserved.
-    if (existing && existing.roomId === roomId) return;
+    // in-flight queue and renew loop are preserved — but still hand off the
+    // watcher's spawn guard (idempotent), since a session is attending the room.
+    if (existing && existing.roomId === roomId) {
+      this.roomConnectedListener?.(roomId);
+      return;
+    }
     // A session re-targeting to a new room supersedes ITS OWN prior room only —
     // other sessions' connections are untouched (mirrors each session's
     // connect_to_room re-targeting independently).
@@ -162,6 +175,12 @@ export class SidecarRuntime {
     this.sessions.set(sessionId, { connection, roomId, tmuxTarget });
     this.deps.log.debug('SidecarRuntime: room connected', { sessionId, roomId, roomName });
     connection.start();
+    this.roomConnectedListener?.(roomId);
+  }
+
+  /** The room a session is currently attending, or null if it has none. */
+  roomIdForSession(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.roomId ?? null;
   }
 
   /**

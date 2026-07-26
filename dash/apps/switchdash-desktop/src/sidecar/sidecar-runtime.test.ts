@@ -160,6 +160,35 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(runtime.connectedSessions()).toEqual([]);
   });
 
+  it('notifies the room-connected listener when a session connects to a room', async () => {
+    const { runtime } = makeRuntime();
+    const connected: string[] = [];
+    runtime.onRoomConnected((roomId) => connected.push(roomId));
+
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+
+    expect(connected).toEqual(['room-1']);
+  });
+
+  it('notifies the listener again on a repeat connect (idempotent guard hand-off)', async () => {
+    const { runtime } = makeRuntime();
+    const connected: string[] = [];
+    runtime.onRoomConnected((roomId) => connected.push(roomId));
+
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+
+    expect(connected).toEqual(['room-1', 'room-1']);
+  });
+
+  it('roomIdForSession returns the attended room, or null when unknown', async () => {
+    const { runtime } = makeRuntime();
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+
+    expect(runtime.roomIdForSession('session-a')).toBe('room-1');
+    expect(runtime.roomIdForSession('session-unknown')).toBeNull();
+  });
+
   it('stops all connections on stop()', async () => {
     const { runtime, created } = makeRuntime();
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));

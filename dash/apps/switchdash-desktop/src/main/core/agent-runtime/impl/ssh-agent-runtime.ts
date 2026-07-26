@@ -3,6 +3,7 @@ import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
+import { getAgentById } from '@main/core/agents/getAgentById';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { FileSystemProvider } from '@main/core/fs/types';
@@ -197,10 +198,14 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     // One agent-scoped sidecar serves every session on the VM (this one and any
     // the sidecar's own watcher auto-starts) — ensure it is running and point
     // this session's hooks at its shared hook server. Reattaches if already up.
+    // The launch spec governs the watcher's auto-started sessions, so it carries
+    // the agent's bypass-permissions setting (not this UI session's).
+    const agent = await getAgentById(session.agentId);
     const endpoint = await ensureAgentSidecar({
       providerId: session.providerId,
       repoDir: this.sessionPath,
       deeplinkScheme: DEEPLINK_SCHEME,
+      autoApprove: agent?.autoApprove ?? false,
       ctx: this.ctx,
       connectionId: this.connectionId,
       host: this.createSidecarHost(),

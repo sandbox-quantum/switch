@@ -110,9 +110,11 @@ async function main(): Promise<void> {
   // Every raw hook the agents post is buffered so switchdash can replay it
   // through its own hook path (room/status/session) while the UI is attached;
   // the sidecar still handles it VM-locally for injection regardless.
-  // Declared before the server so the /sessions provider can close over it; the
-  // spawner is constructed once the server's port/token are known below.
+  // Declared before the server so the /sessions provider and disconnect handler
+  // can close over them; both are constructed once the server's port/token are
+  // known below.
   let spawner: InProcessSessionSpawner | null = null;
+  let watcher: NotificationWatcher | null = null;
 
   const eventLog = new HookEventLog();
   const server = new HookServer(log);
@@ -153,8 +155,15 @@ async function main(): Promise<void> {
       // the session everywhere instead of leaving a ghost row that re-attaches
       // into a blank tmux session.
       disconnectHandler: (sessionId, terminated) => {
+        // Resolve the session's room before teardown, then clear the watcher's
+        // in-flight guard for it — otherwise a delete during the boot window
+        // (before the session connects, so the connect hand-off never fired)
+        // leaves the room gated for up to INFLIGHT_TTL_MS and a near-immediate
+        // re-address is silently dropped (CHOO-1664).
+        const roomId = runtime.roomIdForSession(sessionId) ?? spawner?.roomIdForSession(sessionId);
         runtime.stopSession(sessionId);
         spawner?.drop(sessionId);
+        if (roomId) watcher?.clearRoom(roomId);
         if (terminated) {
           eventLog.append({
             ptyId: '',
@@ -189,12 +198,38 @@ async function main(): Promise<void> {
       watchEnabled = false;
     }
   };
-  const watcher = new NotificationWatcher({
+
+  // Re-read the launch spec each poll and push it to the spawner, so a toggled
+  // setting (e.g. bypass-permissions, CHOO-1664) applies to the next auto-started
+  // session without restarting the sidecar — mirroring `watch-enabled`. A read or
+  // parse failure keeps the last good spec rather than crashing the poll.
+  let lastSpecJson = JSON.stringify(launchSpec);
+  const refreshLaunchSpec = async (): Promise<void> => {
+    let spec: AgentLaunchSpec;
+    try {
+      spec = await readLaunchSpec(repoDir);
+    } catch (error) {
+      log.warn('sidecar: failed to re-read launch spec; keeping current', {
+        error: String(error),
+      });
+      return;
+    }
+    const json = JSON.stringify(spec);
+    if (json === lastSpecJson) return;
+    lastSpecJson = json;
+    spawner?.setSpec(spec);
+    log.info('sidecar: launch spec changed — applied to spawner');
+  };
+  watcher = new NotificationWatcher({
     creds,
     spawner,
     watchEnabled: () => watchEnabled,
     log,
   });
+  // Hand the per-room spawn guard off to the live-room check the moment a session
+  // connects — so a session torn down shortly after connecting does not leave the
+  // room gated until INFLIGHT_TTL_MS (mirrors the local AutoSessionWatcher).
+  runtime.onRoomConnected((roomId) => watcher?.clearRoom(roomId));
   watcher.start();
 
   const refreshLiveness = async (): Promise<void> => {
@@ -211,7 +246,7 @@ async function main(): Promise<void> {
     for (const t of [...liveTargets]) if (!targets.has(t)) liveTargets.delete(t);
   };
   const refresh = async (): Promise<void> => {
-    await Promise.all([refreshLiveness(), refreshWatchEnabled()]);
+    await Promise.all([refreshLiveness(), refreshWatchEnabled(), refreshLaunchSpec()]);
   };
   void refresh();
   const paneTimer = setInterval(() => void refresh(), PANE_POLL_INTERVAL_MS);
@@ -230,7 +265,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     clearInterval(paneTimer);
-    watcher.stop();
+    watcher?.stop();
     runtime.stop();
     server.stop();
     process.exit(0);

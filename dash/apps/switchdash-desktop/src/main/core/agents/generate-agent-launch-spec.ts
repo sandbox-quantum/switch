@@ -21,19 +21,21 @@ function parseExtraArgs(value: string | undefined): string[] {
  * prompt). The VM watcher — which has no plugin registry — substitutes those
  * tokens per spawn, so all provider knowledge stays here in switchdash.
  *
- * Auto-started sessions always run with autoApprove: a headless VM session has
- * no operator to answer permission prompts, matching the local auto-session
- * watcher's `autoApprove: true`.
+ * `autoApprove` is the agent's per-agent bypass-permissions setting, baked into
+ * the spec's argv so the VM watcher's auto-started sessions honor it (CHOO-1664)
+ * — mirroring the local auto-session watcher, which reads the same setting.
  */
 export async function generateAgentLaunchSpec(params: {
   providerId: string;
   /** Absolute remote working dir the agent runs in. */
   remoteRepoDir: string;
   deeplinkScheme: string;
+  /** The agent's bypass-permissions setting, applied to auto-started sessions. */
+  autoApprove: boolean;
   ctx: IExecutionContext;
   connectionId: string;
 }): Promise<AgentLaunchSpec> {
-  const { providerId, remoteRepoDir, deeplinkScheme, ctx, connectionId } = params;
+  const { providerId, remoteRepoDir, deeplinkScheme, autoApprove, ctx, connectionId } = params;
   const plugin = getPlugin(providerId);
   if (!plugin.behavior.prompt) {
     throw new Error(
@@ -54,7 +56,7 @@ export async function generateAgentLaunchSpec(params: {
   const agentCommand = plugin.behavior.prompt.buildCommand({
     cli,
     extraArgs: parseExtraArgs(providerConfig?.extraArgs),
-    autoApprove: true,
+    autoApprove,
     initialPrompt: INITIAL_PROMPT_PLACEHOLDER,
     sessionId: SESSION_ID_PLACEHOLDER,
     providerSessionId: undefined,

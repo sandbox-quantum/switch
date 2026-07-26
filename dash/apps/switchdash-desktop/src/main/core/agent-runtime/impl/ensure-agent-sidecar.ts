@@ -21,15 +21,18 @@ export async function ensureAgentSidecar(params: {
   /** Absolute remote repo dir; the agent's Switch creds + bundle live under it. */
   repoDir: string;
   deeplinkScheme: string;
+  /** The agent's bypass-permissions setting, baked into the auto-start launch spec. */
+  autoApprove: boolean;
   ctx: IExecutionContext;
   connectionId: string;
   host: SidecarHost;
 }): Promise<SidecarEndpoint> {
-  const { providerId, repoDir, deeplinkScheme, ctx, connectionId, host } = params;
+  const { providerId, repoDir, deeplinkScheme, autoApprove, ctx, connectionId, host } = params;
   const launchSpec = await generateAgentLaunchSpec({
     providerId,
     remoteRepoDir: repoDir,
     deeplinkScheme,
+    autoApprove,
     ctx,
     connectionId,
   });
@@ -54,15 +57,19 @@ export async function probeAgentSidecar(params: {
   providerId: string;
   repoDir: string;
   deeplinkScheme: string;
+  /** The agent's bypass-permissions setting. Probe never writes the spec, so this
+   * only shapes the (unused) config; pass the real value for consistency. */
+  autoApprove: boolean;
   ctx: IExecutionContext;
   connectionId: string;
   host: SidecarHost;
 }): Promise<SidecarEndpoint | null> {
-  const { providerId, repoDir, deeplinkScheme, ctx, connectionId, host } = params;
+  const { providerId, repoDir, deeplinkScheme, autoApprove, ctx, connectionId, host } = params;
   const launchSpec = await generateAgentLaunchSpec({
     providerId,
     remoteRepoDir: repoDir,
     deeplinkScheme,
+    autoApprove,
     ctx,
     connectionId,
   });

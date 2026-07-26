@@ -379,7 +379,13 @@ class AutoSessionWatcher {
       .getConnections()
       .some((c) => c.roomId === roomId && c.agentId === watcher.creds.agentId);
     if (hasLiveSession) return;
-    if (watcher.inFlight.has(roomId)) return;
+    if (watcher.inFlight.has(roomId)) {
+      log.info(
+        'AutoSessionWatcher: notification for room with a spawn already in flight — skipping duplicate spawn',
+        { localAgentId: watcher.localAgentId, roomId }
+      );
+      return;
+    }
 
     const timer = setTimeout(() => watcher.inFlight.delete(roomId), INFLIGHT_TTL_MS);
     watcher.inFlight.set(roomId, timer);

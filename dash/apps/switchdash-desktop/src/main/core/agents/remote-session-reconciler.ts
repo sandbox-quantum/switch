@@ -355,6 +355,7 @@ class RemoteSessionReconciler {
       providerId: agent.providerId,
       repoDir: conn.remoteRepoDir,
       deeplinkScheme: DEEPLINK_SCHEME,
+      autoApprove: agent.autoApprove,
       ctx: conn.ctx,
       connectionId: conn.connectionId,
       host: conn.host,

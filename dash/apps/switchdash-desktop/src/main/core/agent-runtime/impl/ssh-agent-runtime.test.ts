@@ -55,6 +55,12 @@ vi.mock('@main/core/dependencies/host-dependency-store', () => ({
   },
 }));
 
+// Stubbed so importing the runtime doesn't pull in the DB client (no Electron
+// `app` in tests). launchSidecar reads the agent's autoApprove for the spec.
+vi.mock('@main/core/agents/getAgentById', () => ({
+  getAgentById: vi.fn(async () => ({ autoApprove: false })),
+}));
+
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: vi.fn((id: string) => ({
     metadata: { id },

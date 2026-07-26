@@ -9,8 +9,10 @@ import { log } from '@renderer/utils/logger';
  * agent's CLI with its auto-approve flag (e.g. `--dangerously-skip-permissions`)
  * — for every session, including automation-started ones (auto-session,
  * remote reconcile). Defaults off for local agents and on for remote agents
- * (seeded at onboarding); this row is the source of truth thereafter. The
- * value lives on the agent row, so the toggle writes through `updateAgent`.
+ * (seeded at onboarding); this row is the source of truth thereafter. The value
+ * lives on the agent row; the toggle writes through `setAgentAutoApprove`, which
+ * also pushes the change to a remote agent's on-VM watcher so it takes effect
+ * live (CHOO-1664).
  */
 export function AutoApproveSettingsSection({
   locationId,
@@ -82,7 +84,7 @@ function AutoApproveSwitch({
   const queryKey = ['location-agents', locationId];
 
   const mutation = useMutation({
-    mutationFn: (next: boolean) => rpc.agents.updateAgent({ agentId, autoApprove: next }),
+    mutationFn: (next: boolean) => rpc.agents.setAgentAutoApprove({ agentId, enabled: next }),
     onError: (error) => {
       log.error('Failed to update autoApprove for agent', { agentId, error });
       void queryClient.invalidateQueries({ queryKey });

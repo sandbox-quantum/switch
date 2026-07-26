@@ -45,6 +45,7 @@ async function fetchSidecarSessionIds(agent: Agent, conn: RemoteConn): Promise<s
       providerId: agent.providerId,
       repoDir: conn.remoteRepoDir,
       deeplinkScheme: DEEPLINK_SCHEME,
+      autoApprove: agent.autoApprove,
       ctx: conn.ctx,
       connectionId: conn.connectionId,
       host: conn.host,

@@ -21,6 +21,12 @@ below:
 
 ### [Unreleased]
 
+### [0.8.1] - 2026-07-24
+
+#### Fixed
+- Prevent a duplicate Switch room from being created when provisioning a Slack
+  channel (race on bridge channel provisioning) (CHOO-1660).
+
 ### [0.8.0] - 2026-07-24
 
 #### Added

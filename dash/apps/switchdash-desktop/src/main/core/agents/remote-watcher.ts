@@ -113,6 +113,7 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
     providerId: agent.providerId,
     repoDir: remoteRepoDir,
     deeplinkScheme: DEEPLINK_SCHEME,
+    autoApprove: agent.autoApprove,
     ctx,
     connectionId,
     host,

@@ -66,6 +66,35 @@ describe('NotificationWatcher spawn decision', () => {
     expect(spawner.launch).toHaveBeenCalledTimes(1);
   });
 
+  it('logs at info when a notification is dropped because a spawn is in flight', async () => {
+    const spawner = makeSpawner();
+    const watcher = makeWatcher(spawner);
+    handle(watcher, 'room-x');
+    await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
+    handle(watcher, 'room-x'); // suppressed by the in-flight guard
+    expect(spawner.launch).toHaveBeenCalledTimes(1);
+    expect(silentLog.info).toHaveBeenCalledWith(
+      expect.stringContaining('skipping duplicate spawn'),
+      { roomId: 'room-x' }
+    );
+  });
+
+  it('clearRoom releases the in-flight guard so the next notification spawns again', async () => {
+    const spawner = makeSpawner();
+    const watcher = makeWatcher(spawner);
+    handle(watcher, 'room-x');
+    await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
+
+    // Without a clear, a re-notification is suppressed by the in-flight guard.
+    handle(watcher, 'room-x');
+    expect(spawner.launch).toHaveBeenCalledTimes(1);
+
+    // Handing the guard off (session connected, or deleted) lets the next one spawn.
+    watcher.clearRoom('room-x');
+    handle(watcher, 'room-x');
+    await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(2));
+  });
+
   it('retries on launch failure then posts a spawn-failure notice', async () => {
     const launch = vi.fn(async () => {
       throw new Error('boom');

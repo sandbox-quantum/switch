@@ -191,7 +191,13 @@ export class NotificationWatcher {
 
   /** Decide whether to spawn for a notified room, with a per-room in-flight guard. */
   private handleNotification(roomId: string): void {
-    if (this.inFlight.has(roomId)) return;
+    if (this.inFlight.has(roomId)) {
+      this.deps.log.info(
+        'NotificationWatcher: notification for room with a spawn already in flight — skipping duplicate spawn',
+        { roomId }
+      );
+      return;
+    }
 
     const timer = setTimeout(() => this.inFlight.delete(roomId), INFLIGHT_TTL_MS);
     this.inFlight.set(roomId, timer);
@@ -199,6 +205,16 @@ export class NotificationWatcher {
     void this.spawnForRoom(roomId).catch((error) => {
       this.deps.log.warn('NotificationWatcher: spawn failed', { roomId, error: String(error) });
     });
+  }
+
+  /**
+   * Clear the in-flight guard for a room, so the next notification spawns a fresh
+   * session immediately. Called when a session actually connects to the room (the
+   * live-room check takes over the guard from here — mirrors the local
+   * AutoSessionWatcher) and when a session is deleted before it ever connected.
+   */
+  clearRoom(roomId: string): void {
+    this.clearInFlight(roomId);
   }
 
   private async spawnForRoom(roomId: string): Promise<void> {

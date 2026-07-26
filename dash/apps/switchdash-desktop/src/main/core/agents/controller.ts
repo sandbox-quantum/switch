@@ -17,6 +17,7 @@ import { onboardAgent } from './onboard-agent';
 import { onboardLocationAgents, type OnboardLocationParams } from './onboard-location-agents';
 import { renameAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
+import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';
 import {
   getAgentAutoSession,
   setAgentAutoSession,
@@ -50,6 +51,8 @@ export const agentsController = createRPCController({
     assignAgentServer(params),
   setAgentAutoSession: (params: AgentAutoSessionParams): Promise<void> =>
     setAgentAutoSession(params),
+  setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
+    setAgentAutoApprove(params),
   getAgentAutoSession: (params: { agentId: string }): Promise<boolean> =>
     getAgentAutoSession(params),
 });
