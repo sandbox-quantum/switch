@@ -35,6 +35,11 @@ function makeSpawner(over: Partial<InProcessSessionSpawnerDeps> = {}) {
     hookPort: 4321,
     hookToken: 'hooktok',
     runtime,
+    switchEnv: {
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_API_TOKEN: 'tok',
+      SWITCH_AGENT_ID: 'agent-1',
+    },
     isPaneLive: () => true,
     log: silentLog,
     exec,
@@ -54,6 +59,10 @@ describe('InProcessSessionSpawner.launch', () => {
     expect(inner).toContain("SWITCHDASH_HOOK_PORT='4321'");
     expect(inner).toContain("SWITCHDASH_HOOK_TOKEN='hooktok'");
     expect(inner).toContain("SWITCH_CHANNEL_DISABLE_POLL='1'");
+    // The agent's identity is injected so the auto-started session authenticates
+    // as this agent (CHOO-1440).
+    expect(inner).toContain("SWITCH_API_ENDPOINT='https://switch.example.com'");
+    expect(inner).toContain("SWITCH_AGENT_ID='agent-1'");
     expect(inner).toContain('connect to switch room room-x');
     expect(inner).not.toContain(SESSION_ID_PLACEHOLDER);
     expect(inner).not.toContain(INITIAL_PROMPT_PLACEHOLDER);

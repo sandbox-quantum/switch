@@ -21,6 +21,10 @@ export interface InProcessSessionSpawnerDeps {
   hookToken: string;
   /** The multi-session runtime — a room it already serves needs no new session. */
   runtime: RoomLivenessSource;
+  /** The agent's Switch identity as `SWITCH_*` env, injected into every
+   * auto-started session so it authenticates as this agent — a `--settings` env
+   * block is not reliably propagated to the spawned MCP server (CHOO-1440). */
+  switchEnv: Record<string, string>;
   /** Whether a given tmux target is currently live (poller-backed cache). */
   isPaneLive: (tmuxTarget: string) => boolean;
   log: WatcherLogger;
@@ -125,6 +129,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
     const tmuxTarget = makeAgentTmuxSessionName(sessionId);
 
     const hookEnv = {
+      ...this.deps.switchEnv,
       SWITCHDASH_HOOK_PORT: String(hookPort),
       SWITCHDASH_PTY_ID: makePtyId(spec.providerId, sessionId),
       SWITCHDASH_HOOK_TOKEN: hookToken,

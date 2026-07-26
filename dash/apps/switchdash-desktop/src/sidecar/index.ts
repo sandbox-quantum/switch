@@ -194,6 +194,11 @@ async function main(): Promise<void> {
     hookPort: server.getPort(),
     hookToken: server.getToken(),
     runtime,
+    switchEnv: {
+      SWITCH_API_ENDPOINT: creds.apiEndpoint,
+      SWITCH_API_TOKEN: creds.token,
+      SWITCH_AGENT_ID: creds.agentId,
+    },
     isPaneLive,
     log,
   });

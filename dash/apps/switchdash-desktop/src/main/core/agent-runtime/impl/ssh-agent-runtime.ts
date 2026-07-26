@@ -207,6 +207,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       deeplinkScheme: DEEPLINK_SCHEME,
       autoApprove: agent?.autoApprove ?? false,
       credsSlug: agent?.definitionName ?? session.subagentName ?? session.agentId,
+      definitionName: agent?.definitionName ?? session.subagentName ?? null,
       ctx: this.ctx,
       connectionId: this.connectionId,
       host: this.createSidecarHost(),
