@@ -1,8 +1,8 @@
+import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
 import type { CreateAgentParams, RenameAgentParams } from '@shared/core/agents/agents';
 import type { OnboardAgentParams } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
-import type { SubagentAttributes } from '@switchdash/core/agents/plugins';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';

@@ -168,26 +168,32 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     enabled: shouldDetectRemote,
   });
 
-  // Switch agents already defined in the picked local dir (.claude/agents/*.md +
-  // credentials). When present, the modal offers onboarding them instead of the
-  // create/configure flow — a directory is a flat container of agents (CHOO-1440).
+  // Provider agents defined in the picked dir (`.claude/agents/*.md`) — both those
+  // already set up for Switch and plain provider subagents a user created directly.
+  // The modal suggests onboarding them alongside the create flow; a directory is a
+  // flat container of agents (CHOO-1440). Works for local and remote dirs.
+  const discoverDir = isRemoteRun ? trimmedRemoteDir : pickState.path;
+  const discoverSshHost = isRemoteRun ? runHost : null;
   const discoverQuery = useQuery({
-    queryKey: ['discoverLocationAgents', 'local', pickState.path, pickState.providerId],
+    queryKey: [
+      'discoverLocationAgents',
+      discoverSshHost ?? 'local',
+      discoverDir,
+      pickState.providerId,
+    ],
     queryFn: () =>
       rpc.agents.discoverLocationAgents({
-        sshHost: null,
-        dir: pickState.path,
+        sshHost: discoverSshHost,
+        dir: discoverDir,
         providerId: pickState.providerId!,
       }),
-    enabled: !isRemoteRun && !!pickState.providerId && pickState.path.trim().length > 0,
+    enabled: !!pickState.providerId && discoverDir.trim().length > 0,
   });
-  // Definitions on disk with Switch creds that switchdash has NOT yet onboarded.
-  // Already-onboarded ones are excluded so the modal never offers to re-add an
-  // agent that already exists here (CHOO-1440).
-  const onboardableAgents = (discoverQuery.data ?? []).filter(
-    (a) => a.registered && !a.alreadyAgent
-  );
-  const hasOnboardable = !isRemoteRun && onboardableAgents.length > 0;
+  // Definitions that can join Switch and switchdash hasn't already onboarded — the
+  // ones worth offering. Already-onboarded ones are excluded so the modal never
+  // offers to re-add an agent that already exists here (CHOO-1440).
+  const onboardableAgents = (discoverQuery.data ?? []).filter((a) => a.eligible && !a.alreadyAgent);
+  const hasOnboardable = onboardableAgents.length > 0;
 
   const inspection = pathStatusQuery.data;
   const isChecking = isRemoteRun
@@ -200,8 +206,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // This is available even when the directory already contains other agents — a
   // directory is a flat container, so you can always add another (CHOO-1440);
   // onboarding pre-existing definitions is offered alongside it (see below).
-  const isMissingSwitchAgent =
-    !isRemoteRun && !isChecking && shouldCheckPathStatus && !switchAgent;
+  const isMissingSwitchAgent = !isRemoteRun && !isChecking && shouldCheckPathStatus && !switchAgent;
   // A remote dir with no Switch agent offers the remote configure flow: register
   // the agent on the server and write its creds into the remote dir over SSH.
   const isMissingRemoteAgent = isRemoteRun && !isChecking && shouldDetectRemote && !switchAgent;
@@ -438,15 +443,15 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const handleConfigure = () => createNewAgent(configureForm);
   const handleConfigureRemote = () => createNewAgent(remoteConfigureForm);
 
-  /** Onboard the agents already defined in the picked local directory. */
+  /** Onboard (or adopt) the agents already defined in the picked directory. */
   const handleOnboard = async () => {
     if (!pickState.serverId || !pickState.providerId || !hasOnboardable) return;
     setSubmitState('creating');
     setCloseGuard(true);
     try {
       const result = await rpc.agents.onboardLocationAgents({
-        sshHost: null,
-        dir: pickState.path,
+        sshHost: discoverSshHost,
+        dir: discoverDir,
         providerId: pickState.providerId,
         serverId: pickState.serverId,
       });
@@ -491,14 +496,6 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             >
               {submitLabel}
             </ConfirmButton>
-          ) : isMissingRemoteAgent ? (
-            <ConfirmButton
-              type="button"
-              onClick={() => void handleConfigureRemote()}
-              disabled={!canSubmitConfigureRemote}
-            >
-              {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
-            </ConfirmButton>
           ) : (
             <>
               {hasOnboardable && (
@@ -513,7 +510,15 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
                     : `Onboard ${onboardableAgents.length} existing`}
                 </Button>
               )}
-              {isMissingSwitchAgent ? (
+              {isMissingRemoteAgent ? (
+                <ConfirmButton
+                  type="button"
+                  onClick={() => void handleConfigureRemote()}
+                  disabled={!canSubmitConfigureRemote}
+                >
+                  {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
+                </ConfirmButton>
+              ) : isMissingSwitchAgent ? (
                 <ConfirmButton
                   type="button"
                   onClick={() => void handleConfigure()}
@@ -521,7 +526,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
                 >
                   {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
                 </ConfirmButton>
-              ) : (
+              ) : hasOnboardable ? null : (
                 <ConfirmButton
                   type="button"
                   onClick={() => void handleSubmit()}
@@ -587,15 +592,13 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             </div>
           )}
         </Field>
-        {!isRemoteRun && (
-          <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />
-        )}
+        {!isRemoteRun && <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />}
         {hasOnboardable && (
           <div className="flex flex-col gap-2 rounded-md border border-border bg-background-1 px-3 py-2.5 text-sm">
             <span className="text-foreground-muted">
               {onboardableAgents.length} agent{onboardableAgents.length === 1 ? '' : 's'} defined in
-              this directory {onboardableAgents.length === 1 ? "isn't" : "aren't"} in switchdash yet —
-              onboard {onboardableAgents.length === 1 ? 'it' : 'them'}, or add a new one below:
+              this directory {onboardableAgents.length === 1 ? "isn't" : "aren't"} in switchdash yet
+              — onboard {onboardableAgents.length === 1 ? 'it' : 'them'}, or add a new one below:
             </span>
             <div className="flex flex-wrap gap-1.5">
               {onboardableAgents.map((a) => (

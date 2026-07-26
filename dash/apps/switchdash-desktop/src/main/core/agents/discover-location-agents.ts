@@ -7,20 +7,25 @@ import { getAgents } from './getAgents';
 export type DiscoveredLocationAgent = {
   /** The definition/launch name (`.claude/agents/<name>.md` stem, `--agent <name>`). */
   name: string;
-  switchAgentId: string | null;
-  /** Whether the definition carries Switch credentials (registered on a server). */
+  description: string | null;
+  /** Whether the definition already carries Switch credentials on disk. */
   registered: boolean;
+  /** Whether the definition can join Switch (its tools allowlist keeps the
+   * connector's MCP tools, or it inherits all tools). */
+  eligible: boolean;
   /** Whether switchdash already has an agent row for this definition in this dir. */
   alreadyAgent: boolean;
 };
 
 /**
  * Read-only scan of a working directory for the provider's on-disk agent
- * definitions and their Switch credentials — used by the Add Agent modal to
- * offer onboarding a directory that already contains agents (CHOO-1440). Each
- * result carries `alreadyAgent` so the modal can hide definitions switchdash has
- * already onboarded (they must not be offered again). Returns an empty list for a
- * provider with no definition concept or a directory with none.
+ * definitions (`.claude/agents/*.md`) — used by the Add Agent modal to suggest
+ * onboarding a directory's existing agents (CHOO-1440). It surfaces BOTH agents
+ * already set up for Switch (carrying credentials) and plain provider subagents a
+ * user created directly (no Switch setup yet), so either can be adopted as a
+ * Switch agent. `alreadyAgent` marks definitions switchdash already has a row for,
+ * so the modal never offers to re-add them. Works for local and remote (SSH)
+ * directories. Returns an empty list for a provider with no definition concept.
  */
 export async function discoverLocationAgents(params: {
   sshHost: string | null;
@@ -41,12 +46,15 @@ export async function discoverLocationAgents(params: {
 
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
-    const found = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
-    return found.map((agent) => ({
-      name: agent.name,
-      switchAgentId: agent.switchAgentId,
-      registered: agent.switchAgentId != null,
-      alreadyAgent: existing.has(agent.name),
+    const definitions = await behavior.discoverDefinitions(workspace.fs);
+    const local = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
+    const credentialled = new Set(local.filter((l) => l.switchAgentId !== null).map((l) => l.name));
+    return definitions.map((def) => ({
+      name: def.name,
+      description: def.description,
+      registered: def.registered || credentialled.has(def.name),
+      eligible: def.eligible,
+      alreadyAgent: existing.has(def.name),
     }));
   } finally {
     workspace.close();

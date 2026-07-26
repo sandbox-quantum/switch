@@ -11,11 +11,13 @@ import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
-import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { resolveWorkspaceFsFor, type WorkspaceFs } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { getAgents } from './getAgents';
+import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 
 export type OnboardLocationParams = {
@@ -23,19 +25,124 @@ export type OnboardLocationParams = {
   dir: string;
   locationName?: string;
   providerId: AgentProviderId;
-  /** The registered Switch server the discovered agents must belong to. */
+  /** The registered Switch server the discovered agents belong to (or are
+   * adopted onto, for plain provider subagents with no Switch setup yet). */
   serverId: string;
 };
 
 export type OnboardLocationResult = Result<Agent[], OnboardAgentError>;
 
+/** The Switch identity an onboarded definition should run under. */
+type ResolvedIdentity = { switchAgentId: string; apiEndpoint: string };
+
+type SubagentsBehavior = NonNullable<ReturnType<typeof getPlugin>['behavior']['subagents']>;
+
+/** Map a recoverable registration failure to an onboard error. */
+function registrationError(
+  kind: 'unauthenticated' | 'name-conflict' | 'invalid-name' | 'error',
+  message: string,
+  name: string,
+  server: SwitchServer,
+  dir: string
+): OnboardAgentError {
+  if (kind === 'unauthenticated') {
+    return {
+      type: 'switch-server-unauthenticated',
+      dir,
+      serverId: server.id,
+      serverName: server.name,
+    };
+  }
+  if (kind === 'name-conflict') {
+    return {
+      type: 'error',
+      message: `An agent named "${name}" already exists on ${server.name}. Rename the definition or delete the conflicting agent.`,
+    };
+  }
+  return { type: 'error', message };
+}
+
 /**
- * Onboard every agent already defined in a working directory: scan the
- * provider's on-disk definitions (`.claude/agents/*.md`) plus their Switch
- * credentials, verify each identity on the chosen server, and create one flat
- * agent row per definition. There is no "main" agent — switchdash treats the
- * directory as a flat container of repository-defined agents (CHOO-1440).
- * Local and remote (SSH) directories are both supported.
+ * Resolve the Switch identity to onboard a definition under: reuse existing
+ * credentials when their identity still exists on the server, otherwise register
+ * a fresh identity and write the credentials (adopting a plain subagent).
+ */
+async function resolveIdentity(
+  name: string,
+  description: string | null,
+  ctx: {
+    server: SwitchServer;
+    behavior: SubagentsBehavior;
+    workspace: WorkspaceFs;
+    credsByName: Map<string, { switchAgentId: string | null; apiEndpoint: string | null }>;
+    dir: string;
+  }
+): Promise<{ ok: true; identity: ResolvedIdentity } | { ok: false; error: OnboardAgentError }> {
+  const creds = ctx.credsByName.get(name);
+  if (creds?.switchAgentId && creds.apiEndpoint) {
+    try {
+      if (await agentExistsOnServer(ctx.server, creds.switchAgentId)) {
+        return {
+          ok: true,
+          identity: { switchAgentId: creds.switchAgentId, apiEndpoint: creds.apiEndpoint },
+        };
+      }
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+        return {
+          ok: false,
+          error: {
+            type: 'switch-server-unauthenticated',
+            dir: ctx.dir,
+            serverId: ctx.server.id,
+            serverName: ctx.server.name,
+          },
+        };
+      }
+      throw cause;
+    }
+  }
+
+  // No usable credentials — adopt: mint a fresh identity and write its creds,
+  // keeping the existing definition file untouched.
+  const registered = await registerAgentIdentity(ctx.server, {
+    name,
+    description: description ?? `Claude Code agent ${name}`,
+    repoDir: ctx.dir,
+    autoSession: true,
+  });
+  if (registered.kind !== 'created') {
+    const message = 'message' in registered ? registered.message : '';
+    return {
+      ok: false,
+      error: registrationError(registered.kind, message, name, ctx.server, ctx.dir),
+    };
+  }
+
+  await ctx.behavior.writeSettings(ctx.workspace.fs, {
+    subagentName: name,
+    apiEndpoint: ctx.server.apiUrl,
+    apiToken: registered.apiKey,
+    agentId: registered.id,
+  });
+  return { ok: true, identity: { switchAgentId: registered.id, apiEndpoint: ctx.server.apiUrl } };
+}
+
+/**
+ * Onboard the provider agents defined in a working directory. Every
+ * `.claude/agents/<name>.md` definition that can join Switch and isn't already a
+ * switchdash agent is brought in as a flat agent row (CHOO-1440):
+ *
+ * - A definition that already carries valid Switch credentials (registered, and
+ *   its identity still exists on the server) is imported under that identity.
+ * - A plain provider subagent (a definition with no Switch setup — e.g. one a
+ *   user created directly in Claude Code) is *adopted*: switchdash mints a Switch
+ *   identity for it and writes its per-agent credentials, leaving the existing
+ *   definition file untouched.
+ *
+ * There is no "main" agent — the directory is a flat container of
+ * repository-defined agents. Local and remote (SSH) directories are both
+ * supported.
  */
 export async function onboardLocationAgents(
   params: OnboardLocationParams
@@ -56,24 +163,6 @@ export async function onboardLocationAgents(
     });
   }
 
-  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
-  let discovered;
-  try {
-    discovered = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
-  } finally {
-    workspace.close();
-  }
-
-  const registered = discovered.filter((d) => d.switchAgentId !== null);
-  if (registered.length === 0) {
-    return err({
-      type: 'invalid-directory',
-      dir: params.dir,
-      message:
-        'No Switch agents found in this directory. Add an agent here first, then onboard it.',
-    });
-  }
-
   const location = await ensureLocation({
     sshHost: params.sshHost,
     dir: params.dir,
@@ -86,43 +175,56 @@ export async function onboardLocationAgents(
       .filter((n): n is string => n != null)
   );
 
+  const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   const created: Agent[] = [];
-  for (const sub of registered) {
-    if (existing.has(sub.name) || sub.switchAgentId === null) continue;
-    try {
-      if (!(await agentExistsOnServer(server, sub.switchAgentId))) continue;
-    } catch (cause) {
-      if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
-        return err({
-          type: 'switch-server-unauthenticated',
-          dir: params.dir,
-          serverId: server.id,
-          serverName: server.name,
-        });
-      }
-      throw cause;
+  try {
+    const definitions = await behavior.discoverDefinitions(workspace.fs);
+    const local = await behavior.discoverLocal(workspace.fs, workspace.homeFs);
+    const credsByName = new Map(local.map((l) => [l.name, l]));
+
+    // Onboardable = a definition that can join Switch and isn't already a row.
+    const onboardable = definitions.filter((d) => d.eligible && !existing.has(d.name));
+    if (onboardable.length === 0) {
+      return err({
+        type: 'invalid-directory',
+        dir: params.dir,
+        message: 'No Claude agents available to onboard in this directory.',
+      });
     }
 
-    const agent = await createAgent({
-      id: randomUUID(),
-      locationId: location.id,
-      name: sub.name,
-      providerId: params.providerId,
-      definitionName: sub.name,
-      switchAgentId: sub.switchAgentId,
-      apiEndpoint: sub.apiEndpoint,
-      serverId: params.serverId,
-      autoApprove: params.sshHost !== null,
-    });
-    existing.add(sub.name);
-    created.push(agent);
-
-    await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
-      log.warn('onboardLocationAgents: failed to reconcile auto_session', {
-        agentId: agent.id,
-        error: String(error),
+    for (const def of onboardable) {
+      const resolved = await resolveIdentity(def.name, def.description, {
+        server,
+        behavior,
+        workspace,
+        credsByName,
+        dir: params.dir,
       });
-    });
+      if (!resolved.ok) return err(resolved.error);
+
+      const agent = await createAgent({
+        id: randomUUID(),
+        locationId: location.id,
+        name: def.name,
+        providerId: params.providerId,
+        definitionName: def.name,
+        switchAgentId: resolved.identity.switchAgentId,
+        apiEndpoint: resolved.identity.apiEndpoint,
+        serverId: params.serverId,
+        autoApprove: params.sshHost !== null,
+      });
+      existing.add(def.name);
+      created.push(agent);
+
+      await reconcileAgentAutoSessionFromGateway(agent.id).catch((error) => {
+        log.warn('onboardLocationAgents: failed to reconcile auto_session', {
+          agentId: agent.id,
+          error: String(error),
+        });
+      });
+    }
+  } finally {
+    workspace.close();
   }
 
   if (created.length === 0) {
