@@ -1,3 +1,4 @@
+import { getAgentById } from '@main/core/agents/getAgentById';
 import {
   agentSettingsRelativePath,
   SWITCH_SETTINGS_RELATIVE_PATH,
@@ -108,12 +109,15 @@ export async function buildSessionFromRuntime(
     settings
   );
 
-  // The remote preflight verifies the session's own creds file. A session that
-  // runs as a specific definition (subagent) has its creds at the neutral
-  // `.switch/agents/<name>.json`; otherwise a plain agent's at
-  // `.switch/agents/<agentId>.json`. Fall back to the legacy shared
-  // `.claude/settings.local.json` for un-migrated installs (CHOO-1440).
-  const slug = session.agentName;
+  // The remote preflight verifies the session's own creds file, keyed by the
+  // agent's NAME (`.switch/agents/<name>.json`). Resolve the name from the agent
+  // row's definitionName — the source of truth, so a session picks up the right
+  // name even if it was created (or restored) before the agent was migrated — and
+  // fall back to the session's own agentName. The agent-id path and the legacy
+  // shared `.claude/settings.local.json` are last-resort fallbacks for agents not
+  // yet migrated (CHOO-1440).
+  const agent = await getAgentById(session.agentId);
+  const slug = agent?.definitionName ?? session.agentName;
   const credsRelPaths = [
     ...(slug ? [agentSettingsRelativePath(slug)] : []),
     agentSettingsRelativePath(session.agentId),
