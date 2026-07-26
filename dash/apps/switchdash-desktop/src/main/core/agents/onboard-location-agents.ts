@@ -28,6 +28,10 @@ export type OnboardLocationParams = {
   /** The registered Switch server the discovered agents belong to (or are
    * adopted onto, for plain provider subagents with no Switch setup yet). */
   serverId: string;
+  /** Definition names to onboard. When omitted, every onboardable definition in
+   * the directory is onboarded; when given, only these are (the modal's
+   * multi-select). Names not currently onboardable are ignored. */
+  names?: string[];
 };
 
 export type OnboardLocationResult = Result<Agent[], OnboardAgentError>;
@@ -192,7 +196,21 @@ export async function onboardLocationAgents(
       });
     }
 
-    for (const def of onboardable) {
+    // Restrict to the caller's selection (the modal's multi-select) when given;
+    // otherwise onboard every onboardable definition.
+    const requested = params.names;
+    const selected = requested
+      ? onboardable.filter((d) => requested.includes(d.name))
+      : onboardable;
+    if (selected.length === 0) {
+      return err({
+        type: 'invalid-directory',
+        dir: params.dir,
+        message: 'None of the selected agents are available to onboard in this directory.',
+      });
+    }
+
+    for (const def of selected) {
       const resolved = await resolveIdentity(def.name, def.description, {
         server,
         behavior,

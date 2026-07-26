@@ -46,6 +46,7 @@ import { AgentTypePicker } from './agent-type-picker';
 import { ConfigureAgentPanel } from './configure-agent-panel';
 import { PickExistingPanel } from './content';
 import { useConfigureAgentForm, usePickMode } from './modes';
+import { OnboardExistingPanel } from './onboard-existing-panel';
 
 // switchdash adds a Switch *agent* by pointing at a local directory that the
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
@@ -190,10 +191,32 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     enabled: !!pickState.providerId && discoverDir.trim().length > 0,
   });
   // Definitions that can join Switch and switchdash hasn't already onboarded — the
-  // ones worth offering. Already-onboarded ones are excluded so the modal never
-  // offers to re-add an agent that already exists here (CHOO-1440).
+  // ones worth offering. Already-onboarded ones (on THIS client) are excluded so
+  // the modal never offers to re-add a row it already has; ones registered on the
+  // gateway by another client are still offered (imported, not re-minted). CHOO-1440.
   const onboardableAgents = (discoverQuery.data ?? []).filter((a) => a.eligible && !a.alreadyAgent);
   const hasOnboardable = onboardableAgents.length > 0;
+
+  // Branch the flow when a directory has onboardable definitions: `createMode`
+  // false shows the multi-select adopt list; true reveals the create form. When
+  // there is nothing to onboard, the create form always shows. `selectedNames`
+  // are the checked definitions to onboard (default: all).
+  const [createMode, setCreateMode] = useState(false);
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  const onboardableKey = onboardableAgents.map((a) => a.name).join('|');
+  useEffect(() => {
+    setSelectedNames(new Set(onboardableKey ? onboardableKey.split('|') : []));
+    setCreateMode(false);
+  }, [onboardableKey]);
+  const showCreate = !hasOnboardable || createMode;
+  const toggleSelected = useCallback((name: string, checked: boolean) => {
+    setSelectedNames((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  }, []);
 
   const inspection = pathStatusQuery.data;
   const isChecking = isRemoteRun
@@ -443,9 +466,11 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const handleConfigure = () => createNewAgent(configureForm);
   const handleConfigureRemote = () => createNewAgent(remoteConfigureForm);
 
-  /** Onboard (or adopt) the agents already defined in the picked directory. */
+  /** Onboard (or adopt) the selected agents already defined in the picked
+   * directory — importing those already registered on the gateway and minting a
+   * fresh identity for plain provider definitions. */
   const handleOnboard = async () => {
-    if (!pickState.serverId || !pickState.providerId || !hasOnboardable) return;
+    if (!pickState.serverId || !pickState.providerId || selectedNames.size === 0) return;
     setSubmitState('creating');
     setCloseGuard(true);
     try {
@@ -454,6 +479,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         dir: discoverDir,
         providerId: pickState.providerId,
         serverId: pickState.serverId,
+        names: [...selectedNames],
       });
       if (!result.success) {
         reportCreationError(result.error);
@@ -476,7 +502,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     }
   };
 
-  const canOnboard = hasOnboardable && !!pickState.serverId && submitState === 'idle';
+  const canOnboard =
+    hasOnboardable && selectedNames.size > 0 && !!pickState.serverId && submitState === 'idle';
   const submitLabel = submitState === 'creating' ? 'Adding...' : 'Add Agent';
 
   return (
@@ -496,46 +523,40 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             >
               {submitLabel}
             </ConfirmButton>
+          ) : hasOnboardable && !createMode ? (
+            <ConfirmButton
+              type="button"
+              onClick={() => void handleOnboard()}
+              disabled={!canOnboard}
+            >
+              {submitState === 'creating'
+                ? 'Onboarding...'
+                : `Onboard ${selectedNames.size} selected`}
+            </ConfirmButton>
+          ) : isMissingRemoteAgent ? (
+            <ConfirmButton
+              type="button"
+              onClick={() => void handleConfigureRemote()}
+              disabled={!canSubmitConfigureRemote}
+            >
+              {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
+            </ConfirmButton>
+          ) : isMissingSwitchAgent ? (
+            <ConfirmButton
+              type="button"
+              onClick={() => void handleConfigure()}
+              disabled={!canSubmitConfigure}
+            >
+              {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
+            </ConfirmButton>
           ) : (
-            <>
-              {hasOnboardable && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void handleOnboard()}
-                  disabled={!canOnboard}
-                >
-                  {submitState === 'creating'
-                    ? 'Onboarding...'
-                    : `Onboard ${onboardableAgents.length} existing`}
-                </Button>
-              )}
-              {isMissingRemoteAgent ? (
-                <ConfirmButton
-                  type="button"
-                  onClick={() => void handleConfigureRemote()}
-                  disabled={!canSubmitConfigureRemote}
-                >
-                  {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
-                </ConfirmButton>
-              ) : isMissingSwitchAgent ? (
-                <ConfirmButton
-                  type="button"
-                  onClick={() => void handleConfigure()}
-                  disabled={!canSubmitConfigure}
-                >
-                  {submitState === 'creating' ? 'Registering...' : 'Configure & Add Agent'}
-                </ConfirmButton>
-              ) : hasOnboardable ? null : (
-                <ConfirmButton
-                  type="button"
-                  onClick={() => void handleSubmit()}
-                  disabled={!canSubmitDetected}
-                >
-                  {submitLabel}
-                </ConfirmButton>
-              )}
-            </>
+            <ConfirmButton
+              type="button"
+              onClick={() => void handleSubmit()}
+              disabled={!canSubmitDetected}
+            >
+              {submitLabel}
+            </ConfirmButton>
           )}
         </DialogFooter>
       }
@@ -593,26 +614,35 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           )}
         </Field>
         {!isRemoteRun && <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />}
-        {hasOnboardable && (
-          <div className="flex flex-col gap-2 rounded-md border border-border bg-background-1 px-3 py-2.5 text-sm">
-            <span className="text-foreground-muted">
-              {onboardableAgents.length} agent{onboardableAgents.length === 1 ? '' : 's'} defined in
-              this directory {onboardableAgents.length === 1 ? "isn't" : "aren't"} in switchdash yet
-              — onboard {onboardableAgents.length === 1 ? 'it' : 'them'}, or add a new one below:
-            </span>
-            <div className="flex flex-wrap gap-1.5">
-              {onboardableAgents.map((a) => (
-                <span
-                  key={a.name}
-                  className="rounded bg-background-2 px-1.5 py-0.5 font-mono text-xs text-foreground"
-                >
-                  {a.name}
-                </span>
-              ))}
-            </div>
-          </div>
+        {hasOnboardable && !createMode && (
+          <>
+            <OnboardExistingPanel
+              agents={onboardableAgents}
+              selected={selectedNames}
+              onToggle={toggleSelected}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="self-start"
+              onClick={() => setCreateMode(true)}
+            >
+              Create a new agent instead
+            </Button>
+          </>
         )}
-        {isMissingRemoteAgent && (
+        {hasOnboardable && createMode && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="self-start"
+            onClick={() => setCreateMode(false)}
+          >
+            ← Back to existing agents
+          </Button>
+        )}
+        {isMissingRemoteAgent && showCreate && (
           <>
             <ConfigureAgentPanel
               form={remoteConfigureForm}
@@ -653,7 +683,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             )}
           </>
         )}
-        {isMissingSwitchAgent && (
+        {isMissingSwitchAgent && showCreate && (
           <>
             <ConfigureAgentPanel
               form={configureForm}

@@ -51,7 +51,9 @@ const h = vi.hoisted(() => {
     writeCredentials: vi.fn((fs: PluginFs, creds: { agentName: string }) =>
       fs.write(
         `.switch/agents/${creds.agentName}.json`,
-        JSON.stringify({ env: { SWITCH_API_ENDPOINT: 'x', SWITCH_API_TOKEN: 'x', SWITCH_AGENT_ID: 'x' } })
+        JSON.stringify({
+          env: { SWITCH_API_ENDPOINT: 'x', SWITCH_API_TOKEN: 'x', SWITCH_AGENT_ID: 'x' },
+        })
       )
     ),
     readLaunchEnv: vi.fn(async (fs: PluginFs, name: string) => {
