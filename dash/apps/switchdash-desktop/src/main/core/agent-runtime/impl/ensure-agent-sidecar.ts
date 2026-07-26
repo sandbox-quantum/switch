@@ -56,7 +56,7 @@ export async function ensureAgentSidecar(params: {
   const launcher = new RemoteSidecarLauncher({
     host,
     bundlePath: resolveSidecarBundlePath(),
-    sidecarTmuxName: agentSidecarTmuxName(repoDir),
+    sidecarTmuxName: agentSidecarTmuxName(repoDir, credsSlug),
     config: { repoDir, deeplinkScheme, launchSpec, credsSlug },
     log,
   });
@@ -110,7 +110,7 @@ export async function probeAgentSidecar(params: {
   const launcher = new RemoteSidecarLauncher({
     host,
     bundlePath: resolveSidecarBundlePath(),
-    sidecarTmuxName: agentSidecarTmuxName(repoDir),
+    sidecarTmuxName: agentSidecarTmuxName(repoDir, credsSlug),
     config: { repoDir, deeplinkScheme, launchSpec, credsSlug },
     log,
   });

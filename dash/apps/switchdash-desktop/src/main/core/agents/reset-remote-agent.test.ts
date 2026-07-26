@@ -4,23 +4,28 @@ import { exactTmuxTarget, makeAgentTmuxSessionName } from '@main/core/pty/tmux-s
 import { buildKillTmuxScript, resetTmuxTargets } from './reset-remote-agent-tmux';
 
 const REPO = '/home/dev/repo';
+const SLUG = 'agent-a';
 
 describe('resetTmuxTargets', () => {
-  it('kills every agent session plus the sidecar', () => {
-    const targets = resetTmuxTargets(['s1', 's2'], REPO);
+  it('kills every agent session plus this agent’s sidecar', () => {
+    const targets = resetTmuxTargets(['s1', 's2'], REPO, SLUG);
     expect(targets).toContain(makeAgentTmuxSessionName('s1'));
     expect(targets).toContain(makeAgentTmuxSessionName('s2'));
-    expect(targets).toContain(agentSidecarTmuxName(REPO));
+    expect(targets).toContain(agentSidecarTmuxName(REPO, SLUG));
     expect(targets).toHaveLength(3);
   });
 
   it('kills the sidecar even when the agent has no sessions', () => {
-    expect(resetTmuxTargets([], REPO)).toEqual([agentSidecarTmuxName(REPO)]);
+    expect(resetTmuxTargets([], REPO, SLUG)).toEqual([agentSidecarTmuxName(REPO, SLUG)]);
+  });
+
+  it('targets only this agent’s sidecar, not a co-located agent’s', () => {
+    expect(resetTmuxTargets([], REPO, SLUG)).not.toContain(agentSidecarTmuxName(REPO, 'agent-b'));
   });
 
   it('deduplicates repeated session ids', () => {
-    const targets = resetTmuxTargets(['s1', 's1'], REPO);
-    expect(targets).toEqual([makeAgentTmuxSessionName('s1'), agentSidecarTmuxName(REPO)]);
+    const targets = resetTmuxTargets(['s1', 's1'], REPO, SLUG);
+    expect(targets).toEqual([makeAgentTmuxSessionName('s1'), agentSidecarTmuxName(REPO, SLUG)]);
   });
 });
 

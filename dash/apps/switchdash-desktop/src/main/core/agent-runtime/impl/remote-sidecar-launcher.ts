@@ -3,6 +3,15 @@ import { readFile } from 'node:fs/promises';
 import { exactTmuxTarget } from '@main/core/pty/tmux-session-name';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import type { AgentLaunchSpec } from '../../../../sidecar/agent-launch-spec';
+import {
+  SIDECAR_BUNDLE_HASH_REL_PATH,
+  SIDECAR_BUNDLE_REL_PATH,
+  sidecarAgentDir,
+  sidecarLaunchSpecRelPath,
+  sidecarLogRelPath,
+  sidecarReadyRelPath,
+  sidecarWatchEnabledRelPath,
+} from '../../../../sidecar/sidecar-paths';
 
 /**
  * Deploys and launches the switchdash remote runtime sidecar on the agent's VM
@@ -19,13 +28,6 @@ import type { AgentLaunchSpec } from '../../../../sidecar/agent-launch-spec';
  */
 
 const SIDECAR_TMUX_SUFFIX = '-sidecar';
-const SIDECAR_DIR = '.switchdash';
-const BUNDLE_REL_PATH = `${SIDECAR_DIR}/sidecar.mjs`;
-const BUNDLE_HASH_FILE = `${SIDECAR_DIR}/sidecar.mjs.sha256`;
-const LAUNCH_SPEC_REL_PATH = `${SIDECAR_DIR}/agent-launch-spec.json`;
-const WATCH_ENABLED_FILE = `${SIDECAR_DIR}/watch-enabled`;
-const READY_FILE = `${SIDECAR_DIR}/sidecar.ready`;
-const LOG_FILE = `${SIDECAR_DIR}/sidecar.log`;
 const READY_POLL_INTERVAL_MS = 250;
 const READY_MAX_ATTEMPTS = 80; // ~20s
 
@@ -105,13 +107,14 @@ const defaultSleep = (ms: number): Promise<void> =>
 
 /**
  * Deterministic, agent-scoped tmux session name for the sidecar, derived from
- * the remote repo dir so every caller (the SSH agent runtime and the
- * auto-session setup path) computes the same name and reattaches to the one
- * shared sidecar. Deliberately does NOT end in `-sidecar` so the legacy
- * per-session `reapOrphanedSidecars` never mistakes it for an orphan.
+ * the remote repo dir AND the agent's creds slug — so every caller (the SSH
+ * agent runtime and the auto-session setup path) computes the same name and
+ * reattaches to that agent's sidecar, while two agents sharing a directory get
+ * distinct sidecars (CHOO-1440). Deliberately does NOT end in `-sidecar` so the
+ * legacy per-session `reapOrphanedSidecars` never mistakes it for an orphan.
  */
-export function agentSidecarTmuxName(repoDir: string): string {
-  const hash = createHash('sha256').update(repoDir).digest('hex').slice(0, 16);
+export function agentSidecarTmuxName(repoDir: string, slug: string): string {
+  const hash = createHash('sha256').update(`${repoDir}\0${slug}`).digest('hex').slice(0, 16);
   return `switchdash-sidecar-${hash}`;
 }
 
@@ -152,6 +155,20 @@ export class RemoteSidecarLauncher {
     this.hashBundle = opts.hashBundle ?? (() => sha256File(this.bundlePath));
   }
 
+  /** Per-agent state paths, keyed by this agent's creds slug (CHOO-1440). */
+  private get agentDir(): string {
+    return sidecarAgentDir(this.config.credsSlug);
+  }
+  private get launchSpecPath(): string {
+    return sidecarLaunchSpecRelPath(this.config.credsSlug);
+  }
+  private get readyPath(): string {
+    return sidecarReadyRelPath(this.config.credsSlug);
+  }
+  private get logPath(): string {
+    return sidecarLogRelPath(this.config.credsSlug);
+  }
+
   /**
    * Reconcile-or-launch. The sidecar is designed to outlive the switchdash UI,
    * so on relaunch a still-running sidecar (its tmux session alive and its ready
@@ -180,7 +197,7 @@ export class RemoteSidecarLauncher {
         sidecarTmuxName: this.sidecarTmuxName,
       });
     } else {
-      await this.host.putFile(this.bundlePath, BUNDLE_REL_PATH);
+      await this.host.putFile(this.bundlePath, SIDECAR_BUNDLE_REL_PATH);
       await this.writeBundleHash(localHash);
     }
     await this.killSidecar();
@@ -196,9 +213,9 @@ export class RemoteSidecarLauncher {
    */
   private async prepareDir(): Promise<string> {
     const script = [
-      `mkdir -p ${quoteShellArg(SIDECAR_DIR)}`,
-      `rm -f ${quoteShellArg(READY_FILE)}`,
-      `[ -f ${quoteShellArg(BUNDLE_REL_PATH)} ] && cat ${quoteShellArg(BUNDLE_HASH_FILE)} 2>/dev/null || true`,
+      `mkdir -p ${quoteShellArg(this.agentDir)}`,
+      `rm -f ${quoteShellArg(this.readyPath)}`,
+      `[ -f ${quoteShellArg(SIDECAR_BUNDLE_REL_PATH)} ] && cat ${quoteShellArg(SIDECAR_BUNDLE_HASH_REL_PATH)} 2>/dev/null || true`,
     ].join('; ');
     const { stdout } = await this.host.exec('sh', ['-c', script]);
     return stdout.trim();
@@ -207,21 +224,21 @@ export class RemoteSidecarLauncher {
   private async writeLaunchSpec(): Promise<void> {
     const json = JSON.stringify(this.config.launchSpec);
     const b64 = Buffer.from(json, 'utf8').toString('base64');
-    const spec = quoteShellArg(LAUNCH_SPEC_REL_PATH);
+    const spec = quoteShellArg(this.launchSpecPath);
     // base64 round-trip avoids fighting shell quoting on the JSON payload. Write
-    // to a per-process temp (`$$`) then atomically `mv` into place, so two agents
-    // that share a repo dir (hence this spec file) can't interleave writes and
-    // leave a torn, unparseable file that crashes the sidecar on startup.
+    // to a per-process temp (`$$`) then atomically `mv` into place, so nothing
+    // can observe a torn, half-written spec that would crash the sidecar on
+    // startup.
     await this.host.exec('sh', [
       '-c',
-      `mkdir -p ${quoteShellArg(SIDECAR_DIR)} && tmp=${spec}.$$.tmp && printf %s ${quoteShellArg(b64)} | base64 -d > "$tmp" && mv "$tmp" ${spec}`,
+      `mkdir -p ${quoteShellArg(this.agentDir)} && tmp=${spec}.$$.tmp && printf %s ${quoteShellArg(b64)} | base64 -d > "$tmp" && mv "$tmp" ${spec}`,
     ]);
   }
 
   private async writeBundleHash(hash: string): Promise<void> {
     await this.host.exec('sh', [
       '-c',
-      `printf %s ${quoteShellArg(hash)} > ${quoteShellArg(BUNDLE_HASH_FILE)}`,
+      `printf %s ${quoteShellArg(hash)} > ${quoteShellArg(SIDECAR_BUNDLE_HASH_REL_PATH)}`,
     ]);
   }
 
@@ -285,8 +302,8 @@ export class RemoteSidecarLauncher {
       .map(([key, value]) => `${key}=${quoteShellArg(value)}`)
       .join(' ');
     const inner =
-      `${envPrefix} exec node ${quoteShellArg(BUNDLE_REL_PATH)} ` +
-      `> ${quoteShellArg(READY_FILE)} 2>> ${quoteShellArg(LOG_FILE)}`;
+      `${envPrefix} exec node ${quoteShellArg(SIDECAR_BUNDLE_REL_PATH)} ` +
+      `> ${quoteShellArg(this.readyPath)} 2>> ${quoteShellArg(this.logPath)}`;
     await this.host.exec('tmux', [
       'new-session',
       '-d',
@@ -309,7 +326,7 @@ export class RemoteSidecarLauncher {
     throw new Error(
       `sidecar did not report ready within ${
         (READY_MAX_ATTEMPTS * READY_POLL_INTERVAL_MS) / 1000
-      }s — see ${this.config.repoDir}/${LOG_FILE}`
+      }s — see ${this.config.repoDir}/${this.logPath}`
     );
   }
 
@@ -318,7 +335,7 @@ export class RemoteSidecarLauncher {
       await this.host.exec('tmux', ['has-session', '-t', exactTmuxTarget(this.sidecarTmuxName)]);
     } catch {
       const tail = await this.readLogTail();
-      const logRef = `${this.config.repoDir}/${LOG_FILE}`;
+      const logRef = `${this.config.repoDir}/${this.logPath}`;
       this.log.warn('RemoteSidecarLauncher: sidecar exited during startup', {
         sidecarTmuxName: this.sidecarTmuxName,
         logRef,
@@ -336,7 +353,7 @@ export class RemoteSidecarLauncher {
    * error (e.g. a SyntaxError from too-old node) instead of an opaque message. */
   private async readLogTail(): Promise<string> {
     try {
-      const { stdout } = await this.host.exec('tail', ['-n', '20', LOG_FILE]);
+      const { stdout } = await this.host.exec('tail', ['-n', '20', this.logPath]);
       return stdout.trim();
     } catch {
       return '';
@@ -345,7 +362,7 @@ export class RemoteSidecarLauncher {
 
   private async readReadyFile(): Promise<string | null> {
     try {
-      const { stdout } = await this.host.exec('cat', [READY_FILE]);
+      const { stdout } = await this.host.exec('cat', [this.readyPath]);
       return stdout;
     } catch {
       return null; // not created yet
@@ -354,14 +371,20 @@ export class RemoteSidecarLauncher {
 }
 
 /**
- * Set the sidecar's live `watch-enabled` flag (1/0). The running sidecar reads
+ * Set the agent's sidecar `watch-enabled` flag (1/0). The running sidecar reads
  * this file each poll, so toggling auto_session enables/disables auto-start
  * without restarting the sidecar — leaving its session injection undisturbed.
+ * Keyed by the agent's creds `slug` so it targets that agent's sidecar and not a
+ * co-located one (CHOO-1440).
  */
-export async function writeWatchEnabled(host: SidecarHost, enabled: boolean): Promise<void> {
+export async function writeWatchEnabled(
+  host: SidecarHost,
+  slug: string,
+  enabled: boolean
+): Promise<void> {
   await host.exec('sh', [
     '-c',
-    `mkdir -p ${quoteShellArg(SIDECAR_DIR)} && printf %s ${enabled ? '1' : '0'} > ${quoteShellArg(WATCH_ENABLED_FILE)}`,
+    `mkdir -p ${quoteShellArg(sidecarAgentDir(slug))} && printf %s ${enabled ? '1' : '0'} > ${quoteShellArg(sidecarWatchEnabledRelPath(slug))}`,
   ]);
 }
 

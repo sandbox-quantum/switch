@@ -141,10 +141,11 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
   remoteSessionReconciler.stop(agentId);
 
   const conn = await connectRemoteAgent(agent);
+  const credsSlug = agent.definitionName ?? agent.id;
 
   // Silence the VM watcher first so it cannot auto-start a fresh session between
   // the /sessions snapshot and the kill (whose pane we would then miss).
-  await writeWatchEnabled(conn.host, false);
+  await writeWatchEnabled(conn.host, credsSlug, false);
 
   const dbSessionIds = (
     await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.agentId, agentId))
@@ -152,7 +153,7 @@ export async function resetRemoteAgent(agentId: string): Promise<void> {
   const sidecarSessionIds = await fetchSidecarSessionIds(agent, conn);
   const sessionIds = [...new Set([...dbSessionIds, ...sidecarSessionIds])];
 
-  await killTmuxSessions(conn.host, resetTmuxTargets(sessionIds, conn.remoteRepoDir));
+  await killTmuxSessions(conn.host, resetTmuxTargets(sessionIds, conn.remoteRepoDir, credsSlug));
   log.info('resetRemoteAgent: killed remote tmux sessions', {
     agentId,
     sessions: sessionIds.length,

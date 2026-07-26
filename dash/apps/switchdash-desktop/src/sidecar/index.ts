@@ -13,6 +13,12 @@ import { type AgentLaunchSpec } from './agent-launch-spec';
 import { NotificationWatcher } from './notification-watcher';
 import { InProcessSessionSpawner } from './session-spawner';
 import { createSidecarLogger, requireEnv } from './sidecar-logger';
+import {
+  LEGACY_LAUNCH_SPEC_REL_PATH,
+  LEGACY_WATCH_ENABLED_REL_PATH,
+  sidecarLaunchSpecRelPath,
+  sidecarWatchEnabledRelPath,
+} from './sidecar-paths';
 import { defaultRoomConnectionFactory, SidecarRuntime } from './sidecar-runtime';
 import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
 
@@ -42,13 +48,11 @@ import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
  */
 
 const PANE_POLL_INTERVAL_MS = 2000;
-const LAUNCH_SPEC_REL_PATH = '.switchdash/agent-launch-spec.json';
-const WATCH_ENABLED_REL_PATH = '.switchdash/watch-enabled';
 
 const execFileAsync = promisify(execFile);
 
-async function readLaunchSpec(repoDir: string): Promise<AgentLaunchSpec> {
-  const specPath = path.join(repoDir, LAUNCH_SPEC_REL_PATH);
+async function readLaunchSpec(repoDir: string, specRelPath: string): Promise<AgentLaunchSpec> {
+  const specPath = path.join(repoDir, specRelPath);
   let raw: string;
   try {
     raw = await readFile(specPath, 'utf8');
@@ -81,7 +85,17 @@ async function main(): Promise<void> {
       : `${repoDir}/.claude/settings.local.json`;
     throw new Error(`sidecar: no Switch credentials at ${where} — run remote setup first`);
   }
-  const launchSpec = await readLaunchSpec(repoDir);
+
+  // Per-agent state paths, so multiple agents in one repo dir each drive their
+  // own sidecar without clobbering each other's spec/watch flag (CHOO-1440).
+  // Fall back to the legacy shared paths when launched without a slug.
+  const launchSpecRel = credsSlug
+    ? sidecarLaunchSpecRelPath(credsSlug)
+    : LEGACY_LAUNCH_SPEC_REL_PATH;
+  const watchEnabledRel = credsSlug
+    ? sidecarWatchEnabledRelPath(credsSlug)
+    : LEGACY_WATCH_ENABLED_REL_PATH;
+  const launchSpec = await readLaunchSpec(repoDir, launchSpecRel);
 
   // Pane-liveness cache: a background poll marks each active/pending tmux target
   // live or dead so injection defers (rather than fails) when a pane is briefly
@@ -211,7 +225,7 @@ async function main(): Promise<void> {
   let watchEnabled = false;
   const refreshWatchEnabled = async (): Promise<void> => {
     try {
-      const raw = await readFile(path.join(repoDir, WATCH_ENABLED_REL_PATH), 'utf8');
+      const raw = await readFile(path.join(repoDir, watchEnabledRel), 'utf8');
       watchEnabled = raw.trim() === '1';
     } catch {
       watchEnabled = false;
@@ -226,7 +240,7 @@ async function main(): Promise<void> {
   const refreshLaunchSpec = async (): Promise<void> => {
     let spec: AgentLaunchSpec;
     try {
-      spec = await readLaunchSpec(repoDir);
+      spec = await readLaunchSpec(repoDir, launchSpecRel);
     } catch (error) {
       log.warn('sidecar: failed to re-read launch spec; keeping current', {
         error: String(error),

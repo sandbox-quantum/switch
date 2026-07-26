@@ -4,11 +4,19 @@ import { quoteShellArg } from '@main/utils/shellEscape';
 
 /**
  * The tmux session names to kill when resetting an agent: one per agent session
- * id plus the agent's sidecar session. Deduplicated by name.
+ * id plus the agent's own sidecar session (keyed by repo dir + creds slug, so a
+ * co-located agent's sidecar is left running). Deduplicated by name.
  */
-export function resetTmuxTargets(sessionIds: string[], remoteRepoDir: string): string[] {
+export function resetTmuxTargets(
+  sessionIds: string[],
+  remoteRepoDir: string,
+  slug: string
+): string[] {
   return [
-    ...new Set([...sessionIds.map(makeAgentTmuxSessionName), agentSidecarTmuxName(remoteRepoDir)]),
+    ...new Set([
+      ...sessionIds.map(makeAgentTmuxSessionName),
+      agentSidecarTmuxName(remoteRepoDir, slug),
+    ]),
   ];
 }
 
