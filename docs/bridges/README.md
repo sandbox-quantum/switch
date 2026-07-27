@@ -25,37 +25,20 @@ credentials live per-bridge in the bridge's stored `connection_config` (a JSONB
 column) — **never** in global environment/config. Onboarding one platform never
 touches another.
 
-There are two equivalent surfaces, both of which call the same registration
-logic:
+Onboard a bridge from the **operator dashboard**: **Messaging Apps → Add
+bridge**, pick the platform, and fill in the form. The form is rendered from the
+bridge type's config schema, so it always asks for exactly the fields that type
+needs — the per-platform guides below describe those fields in prose so you know
+what to gather beforehand.
 
-1. **Operator dashboard (recommended).** The gateway management API, admin
-   authenticated, backing the dashboard UI (the gateway app is mounted under
-   `/gateway`):
-   - `GET /gateway/collaborations/types` — lists the registered bridge types and
-     the JSON schema for each type's `connection_config` (this is what the "add
-     bridge" form renders from).
-   - `POST /gateway/collaborations` — create a bridge:
-     `{ "bridge_type": "...", "display_name": "...", "connection_config": { ... } }`
-   - `GET /gateway/collaborations`, `GET /gateway/collaborations/{id}`,
-     `PATCH /gateway/collaborations/{id}`, `DELETE /gateway/collaborations/{id}`,
-     `GET /gateway/collaborations/{id}/users` — manage existing bridges.
-
-2. **Internal collaboration API.** The bridge service also exposes
-   `POST /collab/bridges` (+ `GET`, `GET /{id}`, `DELETE /{id}`) with the same
-   `{ bridge_type, display_name, connection_config }` body. This is what the
-   local-dev seeder (`deploy/shared_resources/setup.py`) uses to auto-register
-   the local Mattermost bridge.
-
-On success the bridge is created, its platform client starts, and identities are
-provisioned lazily as channels are used. The `connection_config` you send must
-match the type's schema exactly (extra/missing required fields are rejected with
-a `422`/`400`).
+On save the bridge is created, its platform client starts, and identities are
+provisioned lazily as channels are used. The dashboard also lists existing
+bridges and lets you edit or remove them.
 
 ### Registered bridge types
 
-`slack`, `mattermost`, `teams`, `discord`. Query
-`GET /gateway/collaborations/types` for the live list and each type's config
-schema — the per-platform guides below describe the same fields in prose.
+`slack`, `mattermost`, `teams`, `discord`. The dashboard's Add-bridge form lists
+the live set and the fields each one requires.
 
 ## Once a bridge is live
 

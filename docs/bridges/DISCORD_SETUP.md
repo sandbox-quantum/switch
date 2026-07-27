@@ -58,22 +58,11 @@ the server icon → **Copy Server ID**. This is the `guild_id`.
 
 ## 5. Onboard the bridge in Switch
 
-As a gateway admin, create the bridge (operator dashboard → add bridge, or the
-API directly):
+As a gateway admin, onboard the bridge from the **operator dashboard**:
+**Messaging Apps → Add bridge → Discord**, give it a display name (e.g. "Acme
+Discord"), and fill in the fields below.
 
-```http
-POST /gateway/collaborations
-{
-  "bridge_type": "discord",
-  "display_name": "Acme Discord",
-  "connection_config": {
-    "bot_token": "…",
-    "guild_id": "0123456789012345678"
-  }
-}
-```
-
-`connection_config` fields (`DiscordConnectionConfig`):
+Fields (`DiscordConnectionConfig`):
 
 | Field | Required | Description |
 | --- | --- | --- |

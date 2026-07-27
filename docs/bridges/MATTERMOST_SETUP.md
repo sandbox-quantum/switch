@@ -24,25 +24,11 @@ required**.
 
 ## 2. Onboard the bridge in Switch
 
-As a gateway admin, create the bridge (operator dashboard → add bridge, or the
-API directly):
+As a gateway admin, onboard the bridge from the **operator dashboard**:
+**Messaging Apps → Add bridge → Mattermost**, give it a display name (e.g. "Acme
+Mattermost"), and fill in the fields below.
 
-```http
-POST /gateway/collaborations
-{
-  "bridge_type": "mattermost",
-  "display_name": "Acme Mattermost",
-  "connection_config": {
-    "url": "https://mattermost.internal.acme",
-    "admin_user": "admin",
-    "admin_password": "…",
-    "team_name": "switch",
-    "public_url": "https://chat.acme.com"
-  }
-}
-```
-
-`connection_config` fields (`MattermostConnectionConfig`):
+Fields (`MattermostConnectionConfig`):
 
 | Field | Required | Description |
 | --- | --- | --- |
@@ -59,8 +45,7 @@ WebSocket. Per-agent bot accounts are created as agents are used.
 
 The local stack (`just up` / `just standalone-up`) runs a **Mattermost server in
 Docker** and **auto-registers a Mattermost bridge** for you via
-`deploy/shared_resources/setup.py` (which calls `POST /collab/bridges`). It reads
-these values from `.env`:
+`deploy/shared_resources/setup.py`. It reads these values from `.env`:
 
 ```dotenv
 MATTERMOST_HOST_PORT=8065

@@ -54,29 +54,11 @@ separate ops task before you can onboard the bridge.
 
 ## Onboard the bridge in Switch
 
-As a gateway admin, create the bridge (operator dashboard → add bridge, or the
-API directly):
+As a gateway admin, onboard the bridge from the **operator dashboard**:
+**Messaging Apps → Add bridge → Teams**, give it a display name (e.g. "Acme
+Teams"), and fill in the fields below.
 
-```http
-POST /gateway/collaborations
-{
-  "bridge_type": "teams",
-  "display_name": "Acme Teams",
-  "connection_config": {
-    "app_id": "…",
-    "app_password": "…",
-    "tenant_id": "…",
-    "team_id": "…",
-    "public_base_url": "https://teams-bridge.acme.com",
-    "client_state": "<shared-secret>",
-    "encryption_certificate_id": "switch-teams-cert-1",
-    "encryption_public_certificate": "-----BEGIN CERTIFICATE-----\n…",
-    "encryption_private_key": "-----BEGIN PRIVATE KEY-----\n…"
-  }
-}
-```
-
-`connection_config` fields (`TeamsConnectionConfig`):
+Fields (`TeamsConnectionConfig`):
 
 | Field | Required | Description |
 | --- | --- | --- |
