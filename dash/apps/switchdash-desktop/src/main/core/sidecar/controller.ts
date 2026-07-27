@@ -10,6 +10,7 @@ import {
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { reapStaleSidecarsForAgent } from '@main/core/agents/reap-stale-sidecars';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
@@ -89,7 +90,9 @@ export const sidecarController = createRPCController({
    */
   upgrade: async (agentId: string): Promise<AgentSidecarStatus> => {
     const { agent } = await requireRemoteAgent(agentId);
-    await ensureAgentSidecar(await paramsForAgent(agent));
+    const params = await paramsForAgent(agent);
+    await ensureAgentSidecar(params);
+    await reapStaleSidecarsForAgent(agent, params.host, params.repoDir);
     return readAndBroadcast(agentId);
   },
 
@@ -100,7 +103,9 @@ export const sidecarController = createRPCController({
    */
   restart: async (agentId: string): Promise<AgentSidecarStatus> => {
     const { agent } = await requireRemoteAgent(agentId);
-    await restartAgentSidecar(await paramsForAgent(agent));
+    const params = await paramsForAgent(agent);
+    await restartAgentSidecar(params);
+    await reapStaleSidecarsForAgent(agent, params.host, params.repoDir);
     return readAndBroadcast(agentId);
   },
 

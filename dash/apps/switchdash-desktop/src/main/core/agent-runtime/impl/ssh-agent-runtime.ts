@@ -4,6 +4,7 @@ import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-s
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { reapStaleSidecarsForAgent } from '@main/core/agents/reap-stale-sidecars';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { FileSystemProvider } from '@main/core/fs/types';
@@ -201,6 +202,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     // The launch spec governs the watcher's auto-started sessions, so it carries
     // the agent's bypass-permissions setting (not this UI session's).
     const agent = await getAgentById(session.agentId);
+    const host = this.createSidecarHost();
     const endpoint = await ensureAgentSidecar({
       providerId: session.providerId,
       repoDir: this.sessionPath,
@@ -210,8 +212,11 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       agentName: agent?.name ?? session.agentName ?? null,
       ctx: this.ctx,
       connectionId: this.connectionId,
-      host: this.createSidecarHost(),
+      host,
     });
+    // Drop any sidecar left in this directory by an earlier generation of the
+    // agent's name — it is still polling Switch and no other path can see it.
+    if (agent) await reapStaleSidecarsForAgent(agent, host, this.sessionPath);
     this.sidecarEndpoint = endpoint;
     this.startRelay(endpoint);
     return endpoint;

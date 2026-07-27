@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentLaunchSpec } from '../../../../sidecar/agent-launch-spec';
 import { SIDECAR_BUNDLE_REL_PATH } from '../../../../sidecar/sidecar-paths';
@@ -6,6 +7,7 @@ import {
   agentSidecarTmuxName,
   killSidecarSession,
   reapOrphanedSidecars,
+  reapStaleAgentSidecars,
   RemoteSidecarLauncher,
   type SidecarHost,
   type SidecarLaunchConfig,
@@ -451,6 +453,95 @@ describe('killSidecarSession', () => {
       command: 'tmux',
       args: ['kill-session', '-t', '=switchdash-sidecar-abc'],
     });
+  });
+});
+
+describe('reapStaleAgentSidecars', () => {
+  const REPO = '/home/dev/repo';
+  /** What a pre-CHOO-1440 client named this agent's sidecar: hash(repoDir) alone. */
+  const legacyName = `switchdash-sidecar-${createHash('sha256').update(REPO).digest('hex').slice(0, 16)}`;
+  const current = agentSidecarTmuxName(REPO, 'agent-a');
+  const sibling = agentSidecarTmuxName(REPO, 'agent-b');
+  const renamedFrom = agentSidecarTmuxName(REPO, 'agent-a-old');
+  const otherDir = agentSidecarTmuxName('/home/dev/other', 'agent-z');
+
+  function reaperHost(sessions: Array<[name: string, path: string]>) {
+    const calls: ExecCall[] = [];
+    const host: SidecarHost = {
+      async exec(command, args) {
+        calls.push({ command, args });
+        if (command === 'tmux' && args[0] === 'list-sessions') {
+          return { stdout: sessions.map(([n, p]) => `${n}\t${p}`).join('\n'), stderr: '' };
+        }
+        return { stdout: '', stderr: '' };
+      },
+      async putFile() {},
+    };
+    const kills = (): string[] =>
+      calls
+        .filter((c) => c.command === 'tmux' && c.args[0] === 'kill-session')
+        .map((c) => c.args[2]!);
+    return { host, kills };
+  }
+
+  it('kills leftover generations in the dir, sparing siblings and other dirs', async () => {
+    const { host, kills } = reaperHost([
+      [current, REPO],
+      [legacyName, REPO], // pre-CHOO-1440 naming — same agent, unreachable name
+      [renamedFrom, REPO], // the name this agent ran under before it was renamed
+      [sibling, REPO], // a co-located agent's own sidecar
+      [otherDir, '/home/dev/other'], // an agent this client knows nothing about
+      ['switchdash-abc123', REPO], // an agent pane, not a sidecar
+    ]);
+
+    await reapStaleAgentSidecars(host, REPO, [current, sibling], noopLog);
+
+    expect(kills()).toEqual([`=${legacyName}`, `=${renamedFrom}`]);
+  });
+
+  it('kills nothing when every sidecar in the dir is claimed', async () => {
+    const { host, kills } = reaperHost([
+      [current, REPO],
+      [sibling, REPO],
+    ]);
+    await reapStaleAgentSidecars(host, REPO, [current, sibling], noopLog);
+    expect(kills()).toEqual([]);
+  });
+
+  it('refuses to reap when no expected name is supplied', async () => {
+    const { host, kills } = reaperHost([[current, REPO]]);
+    await reapStaleAgentSidecars(host, REPO, [], noopLog);
+    expect(kills()).toEqual([]);
+  });
+
+  it('is a no-op when the host has no tmux server', async () => {
+    const host: SidecarHost = {
+      async exec() {
+        throw new Error('no server running');
+      },
+      async putFile() {},
+    };
+    await expect(reapStaleAgentSidecars(host, REPO, [current], noopLog)).resolves.toBeUndefined();
+  });
+
+  it('keeps reaping after one kill fails', async () => {
+    const calls: ExecCall[] = [];
+    const host: SidecarHost = {
+      async exec(command, args) {
+        calls.push({ command, args });
+        if (command === 'tmux' && args[0] === 'list-sessions') {
+          return { stdout: `${legacyName}\t${REPO}\n${renamedFrom}\t${REPO}`, stderr: '' };
+        }
+        if (args[2] === `=${legacyName}`) throw new Error('kill failed');
+        return { stdout: '', stderr: '' };
+      },
+      async putFile() {},
+    };
+    await reapStaleAgentSidecars(host, REPO, [current], noopLog);
+    expect(calls.filter((c) => c.args[0] === 'kill-session').map((c) => c.args[2])).toEqual([
+      `=${legacyName}`,
+      `=${renamedFrom}`,
+    ]);
   });
 });
 

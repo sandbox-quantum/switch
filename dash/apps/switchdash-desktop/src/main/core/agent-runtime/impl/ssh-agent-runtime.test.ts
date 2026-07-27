@@ -23,6 +23,10 @@ vi.mock('./resolve-sidecar-bundle', () => ({
   resolveSidecarBundlePath: vi.fn(() => '/local/dist-sidecar/sidecar.mjs'),
 }));
 
+vi.mock('@main/core/agents/reap-stale-sidecars', () => ({
+  reapStaleSidecarsForAgent: vi.fn(async () => {}),
+}));
+
 vi.mock('./remote-sidecar-launcher', () => ({
   RemoteSidecarLauncher: vi.fn(function () {
     return { deployAndLaunch, stop: sidecarStop };

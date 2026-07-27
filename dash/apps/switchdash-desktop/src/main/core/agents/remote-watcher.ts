@@ -7,6 +7,7 @@ import { getRemoteAgentLocation } from './agent-location';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
+import { reapStaleSidecarsForAgent } from './reap-stale-sidecars';
 import { remoteSessionReconciler } from './remote-session-reconciler';
 
 /**
@@ -121,6 +122,7 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
     host,
   });
   await writeWatchEnabled(host, agent.name ?? agent.id, true);
+  await reapStaleSidecarsForAgent(agent, host, remoteRepoDir);
   log.info('ensureRemoteWatcher: sidecar deployed + watching', {
     agentId,
     switchAgentId: agent.switchAgentId,

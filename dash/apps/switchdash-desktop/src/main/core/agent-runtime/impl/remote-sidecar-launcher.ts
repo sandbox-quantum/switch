@@ -41,6 +41,7 @@ import {
  */
 
 const SIDECAR_TMUX_SUFFIX = '-sidecar';
+const AGENT_SIDECAR_TMUX_PREFIX = 'switchdash-sidecar-';
 const READY_POLL_INTERVAL_MS = 250;
 const READY_MAX_ATTEMPTS = 80; // ~20s
 const DEPLOY_LOCK_POLL_MS = 500;
@@ -172,7 +173,7 @@ const defaultSleep = (ms: number): Promise<void> =>
  */
 export function agentSidecarTmuxName(repoDir: string, slug: string): string {
   const hash = createHash('sha256').update(`${repoDir}\0${slug}`).digest('hex').slice(0, 16);
-  return `switchdash-sidecar-${hash}`;
+  return `${AGENT_SIDECAR_TMUX_PREFIX}${hash}`;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -716,6 +717,108 @@ export async function killSidecarSession(
   }
 }
 
+/** One entry of `tmux list-sessions`: the session's name and its working dir. */
+export interface HostTmuxSession {
+  name: string;
+  /** `#{session_path}` — for an agent-scoped sidecar, the repo dir it was
+   * launched with (`new-session -c`). */
+  path: string;
+}
+
+function parseTmuxSessions(stdout: string): HostTmuxSession[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const tab = line.indexOf('\t');
+      return tab === -1
+        ? { name: line, path: '' }
+        : { name: line.slice(0, tab), path: line.slice(tab + 1) };
+    });
+}
+
+/**
+ * Agent-scoped sidecars running in `repoDir` that no live agent claims — the
+ * stale generations to reap. See {@link reapStaleAgentSidecars}.
+ *
+ * Scoped to `repoDir` on purpose: a sidecar for some other directory belongs to
+ * an agent this caller knows nothing about (another client's, another user's),
+ * and killing it would be strictly destructive.
+ */
+export function staleAgentSidecarNames(
+  sessions: readonly HostTmuxSession[],
+  repoDir: string,
+  expectedNames: readonly string[]
+): string[] {
+  const expected = new Set(expectedNames);
+  return sessions
+    .filter((s) => s.name.startsWith(AGENT_SIDECAR_TMUX_PREFIX))
+    .filter((s) => s.path === repoDir)
+    .filter((s) => !expected.has(s.name))
+    .map((s) => s.name);
+}
+
+/**
+ * Kill agent-scoped sidecars in `repoDir` whose name no agent at that directory
+ * currently maps to.
+ *
+ * A sidecar's identity is a hash of `(repoDir, creds slug)` and every other code
+ * path asks tmux exactly one question — does a session with *this* name exist —
+ * so the moment either input changes, the running sidecar becomes unreachable
+ * rather than replaced: the next launch starts a second one beside it and
+ * nothing ever looks at the first again. Both inputs have changed in shipped
+ * releases (the slug joined the hash in CHOO-1440; the storage migration
+ * rewrote agent names), and a plain rename does it too. The orphans are not
+ * merely untidy — each keeps polling its Switch rooms and renewing, so the agent
+ * appears live from a process no client can see, stop, or upgrade.
+ *
+ * `expectedNames` must cover every agent at `repoDir` — siblings sharing a
+ * directory each run their own sidecar by design (CHOO-1440).
+ *
+ * Best-effort by design: this is opportunistic cleanup alongside a launch, and
+ * a host that cannot be enumerated is not a reason to fail the launch. Anything
+ * actually reaped is logged as a warning rather than passing silently.
+ */
+export async function reapStaleAgentSidecars(
+  host: SidecarHost,
+  repoDir: string,
+  expectedNames: readonly string[],
+  log: SidecarLauncherLogger
+): Promise<void> {
+  if (expectedNames.length === 0) {
+    // Reaping against an empty expected-set would kill the directory's live
+    // sidecar. A caller with no agents to name has nothing to reconcile.
+    log.warn('reapStaleAgentSidecars: refusing to reap with no expected sidecars', { repoDir });
+    return;
+  }
+
+  let sessions: HostTmuxSession[];
+  try {
+    const { stdout } = await host.exec('tmux', [
+      'list-sessions',
+      '-F',
+      '#{session_name}\t#{session_path}',
+    ]);
+    sessions = parseTmuxSessions(stdout);
+  } catch {
+    return; // no tmux server / no sessions
+  }
+
+  for (const name of staleAgentSidecarNames(sessions, repoDir, expectedNames)) {
+    try {
+      await host.exec('tmux', ['kill-session', '-t', exactTmuxTarget(name)]);
+      log.warn('reapStaleAgentSidecars: killed a sidecar no agent claims', { name, repoDir });
+    } catch (error) {
+      log.warn('reapStaleAgentSidecars: failed to kill stale sidecar', {
+        name,
+        repoDir,
+        error: String(error),
+      });
+    }
+  }
+}
+
 /**
  * Reap LEGACY per-session sidecars — those named `<agentTmux>-sidecar`, one per
  * session — whose agent pane is gone: they are still polling Switch with nowhere
@@ -726,8 +829,9 @@ export async function killSidecarSession(
  * to outlive every pane: with no live session the notification watcher is the
  * thing that starts one when the agent is next addressed, so reaping them for
  * having no panes would quietly disable auto-start. An agent-scoped sidecar is
- * torn down explicitly instead, via `killSidecarSession`, when the agent or host
- * goes away.
+ * torn down explicitly instead — via `killSidecarSession` when its agent is
+ * renamed or deleted, and via `reapStaleAgentSidecars` when it is a leftover
+ * generation of an agent that is still around.
  *
  * Best-effort: a missing tmux server (no sessions at all) is a no-op, not an error.
  */
