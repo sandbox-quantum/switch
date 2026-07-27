@@ -91,10 +91,13 @@ class RemoteSessionReconciler {
   private readonly adopted = new Map<string, Set<string>>();
   /** sessionId → consecutive reconcile passes it has been absent from `/sessions`. */
   private readonly missingStreak = new Map<string, number>();
-  /** sidecar key (host::repoDir) → agentId currently reconciling that sidecar.
-   * The sidecar — and its /sessions snapshot — is scoped to host+dir, so two
-   * agents sharing a dir would double-poll it and race to adopt the same
-   * session ids. One reconciler per sidecar; duplicates stop themselves. */
+  /** sidecar key (host::repoDir::credsSlug) → agentId currently reconciling that
+   * sidecar. A sidecar — and its /sessions snapshot — is scoped to host+dir+agent
+   * name (ensureAgentSidecar keys it by credsSlug = agent.name), so two agents in
+   * the SAME dir but with different names each own a distinct sidecar and must both
+   * reconcile. Only two agent rows resolving to the same host+dir+name share one
+   * sidecar; those double-poll and race to adopt the same ids, so one reconciler
+   * per sidecar — those duplicates stop themselves. */
   private readonly sidecarKeys = new Map<string, string>();
 
   constructor() {
@@ -240,7 +243,12 @@ class RemoteSessionReconciler {
       return;
     }
 
-    if (!this.claimSidecar(agentId, location)) return;
+    // The sidecar is scoped to host+dir+agent name, so the claim key must carry
+    // the same credsSlug (agent.name ?? id) the probe uses — else co-located
+    // agents with different names collapse onto one claim and all but one are
+    // starved of session discovery.
+    const sidecarKey = `${location.id}::${agent.name ?? agent.id}`;
+    if (!this.claimSidecar(agentId, sidecarKey)) return;
 
     // The manager is mid-backoff rebuilding the transport: let it finish
     // rather than racing it with connect attempts every tick. Disconnected and
@@ -299,24 +307,25 @@ class RemoteSessionReconciler {
   }
 
   /**
-   * Claim the agent's sidecar (host+repoDir) for reconciliation. Returns false
-   * — and stops this agent's loop — when another live agent already reconciles
-   * the same sidecar, so shared-dir agents cannot double-poll one snapshot and
-   * race each other's adoptions.
+   * Claim the agent's sidecar (host+repoDir+agent name) for reconciliation.
+   * Returns false — and stops this agent's loop — when another live agent already
+   * reconciles the SAME sidecar (two rows resolving to one host+dir+name), so
+   * genuine duplicates cannot double-poll one snapshot and race each other's
+   * adoptions. Co-located agents with different names own distinct sidecars, get
+   * distinct keys, and both proceed.
    */
-  private claimSidecar(agentId: string, location: { id: string }): boolean {
-    const key = location.id;
-    const holder = this.sidecarKeys.get(key);
+  private claimSidecar(agentId: string, sidecarKey: string): boolean {
+    const holder = this.sidecarKeys.get(sidecarKey);
     if (holder !== undefined && holder !== agentId && this.timers.has(holder)) {
       log.info('RemoteSessionReconciler: sidecar already reconciled by another agent — stopping', {
         agentId,
-        key,
+        key: sidecarKey,
         holder,
       });
       this.stop(agentId);
       return false;
     }
-    this.sidecarKeys.set(key, agentId);
+    this.sidecarKeys.set(sidecarKey, agentId);
     return true;
   }
 

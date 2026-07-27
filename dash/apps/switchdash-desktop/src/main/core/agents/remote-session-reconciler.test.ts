@@ -372,18 +372,50 @@ describe('RemoteSessionReconciler', () => {
     expect(provisionSession).not.toHaveBeenCalled();
   });
 
-  it('stops a duplicate reconciler whose agent shares an already-claimed sidecar', async () => {
-    // agent-1 and agent-2 share host+repoDir → one sidecar, one snapshot.
-    // Whoever reconciles it first holds the claim; the other stops itself.
+  it('stops a duplicate reconciler that targets the same sidecar (same host+dir+name)', async () => {
+    // Two agent rows resolving to the same host+repoDir AND the same name share
+    // ONE sidecar and one snapshot. Whoever reconciles it first holds the claim;
+    // the other stops itself. The name is what makes the sidecar identical.
     httpGetJsonOverChannel.mockResolvedValue({ sessions: [] });
+    getAgentById.mockResolvedValueOnce({ ...REMOTE_AGENT, name: 'shared' } as unknown as never);
     remoteSessionReconciler.start('agent-1');
     await vi.waitFor(() => expect(httpGetJsonOverChannel).toHaveBeenCalled());
 
-    getAgentById.mockResolvedValueOnce({ ...REMOTE_AGENT, id: 'agent-2' } as unknown as never);
+    getAgentById.mockResolvedValueOnce({
+      ...REMOTE_AGENT,
+      id: 'agent-2',
+      name: 'shared',
+    } as unknown as never);
     const callsBefore = httpGetJsonOverChannel.mock.calls.length;
     await reconcile('agent-2');
 
     // agent-2's pass bailed before polling the sidecar.
     expect(httpGetJsonOverChannel.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('lets co-located agents with different names each reconcile their own sidecar', async () => {
+    // Regression: two agents in the SAME dir but with different names each own a
+    // distinct per-name sidecar. Keying the claim on host+dir alone collapsed
+    // them onto one claim and starved the loser of session discovery, so its
+    // VM-spawned sessions never surfaced in the sidebar. Different name → different
+    // sidecar key → both reconcile.
+    httpGetJsonOverChannel.mockResolvedValue({ sessions: [] });
+    getAgentById.mockResolvedValueOnce({
+      ...REMOTE_AGENT,
+      name: 'onboarder',
+    } as unknown as never);
+    remoteSessionReconciler.start('agent-1');
+    await vi.waitFor(() => expect(httpGetJsonOverChannel).toHaveBeenCalled());
+
+    getAgentById.mockResolvedValueOnce({
+      ...REMOTE_AGENT,
+      id: 'agent-2',
+      name: 'manager',
+    } as unknown as never);
+    const callsBefore = httpGetJsonOverChannel.mock.calls.length;
+    await reconcile('agent-2');
+
+    // agent-2 polled its own sidecar rather than bailing on the shared location.
+    expect(httpGetJsonOverChannel.mock.calls.length).toBe(callsBefore + 1);
   });
 });
