@@ -5,6 +5,7 @@ import {
   homebrewOption,
   npmDependency,
 } from '@switchdash/core/agents/plugins/helpers';
+import { buildCodexAutoApproveFlag } from './auto-approve';
 import { buildCodexHookConfig } from './hooks';
 import { icon } from './icon';
 
@@ -73,8 +74,7 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
-        autoApproveFlag:
-          '-c approval_policy="never" -c sandbox_mode="danger-full-access" --dangerously-bypass-hook-trust',
+        autoApproveFlag: buildCodexAutoApproveFlag(process.env),
         initialPromptFlag: '',
         resumeFlag: 'resume',
         sessionIdFlag: ' ',

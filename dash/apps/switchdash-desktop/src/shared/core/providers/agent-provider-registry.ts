@@ -99,7 +99,7 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     id: 'codex',
     name: 'Codex',
     description:
-      'CLI that connects to OpenAI models for location-aware code assistance and terminal workflows.',
+      'CLI that connects to OpenAI models for project-aware code assistance and terminal workflows.',
     docUrl: 'https://github.com/openai/codex',
     installCommand: 'npm install -g @openai/codex',
     commands: ['codex'],
