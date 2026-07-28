@@ -79,6 +79,9 @@ services:
     # and depends on its DOM structure, so an unattended upgrade could break
     # the embedded room view on a `docker compose pull` no one initiated.
     image: mattermost/mattermost-team-edition:11.9.0
+    # Mattermost publishes team-edition for amd64 only, so an Apple Silicon or
+    # other arm64 host fails the pull outright without this. Runs emulated.
+    platform: linux/amd64
     profiles: ["collab"]
     ports:
       - "${SWITCH_BIND_ADDR:-0.0.0.0}:${MATTERMOST_HOST_PORT:-8065}:8065"

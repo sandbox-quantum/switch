@@ -1,13 +1,32 @@
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { RoomMainPanel } from './room-main-panel';
 
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
   const name = switchRoomsStore.roomNameById(params.roomId);
-  return <span className="truncate text-sm font-medium">{name ?? 'Room'}</span>;
+  const serverName = switchRoomsStore.roomServerName(params.roomId);
+
+  return (
+    <Titlebar
+      leftSlot={
+        <div className="flex items-center gap-1 px-2 text-sm text-foreground-muted">
+          {serverName && (
+            <>
+              <span className="max-w-40 truncate text-sm text-foreground-passive">
+                {serverName}
+              </span>
+              <span className="text-sm text-foreground-passive">/</span>
+            </>
+          )}
+          <span className="max-w-56 truncate">{name ?? 'Room'}</span>
+        </div>
+      }
+    />
+  );
 });
 
 export const roomView = {

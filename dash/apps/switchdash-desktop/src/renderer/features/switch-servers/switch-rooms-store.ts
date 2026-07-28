@@ -61,6 +61,14 @@ export class SwitchRoomsStore {
     return this.roomServerById.get(roomId) ?? null;
   }
 
+  /** Display name of the server a room belongs to, for the room titlebar's
+   * breadcrumb. Null while rooms are still loading. */
+  roomServerName(roomId: string): string | null {
+    const serverId = this.roomServerById.get(roomId);
+    if (!serverId) return null;
+    return switchServersStore.servers.find((s) => s.id === serverId)?.name ?? null;
+  }
+
   /**
    * URL of a room's detail page in the gateway web app, or null if the room's
    * owning server isn't known yet (names/servers are loaded by loadRoomNames).
