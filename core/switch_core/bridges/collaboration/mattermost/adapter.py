@@ -42,6 +42,12 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
     # address). Used for the channel deeplink so the link works in the user's
     # desktop client. Falls back to `url` when unset.
     public_url: str | None = None
+    # Human account to add to every channel this bridge creates. A bundled
+    # Mattermost has exactly one human, and a room created by an agent names no
+    # users — without this they would never be a member of a private channel and
+    # could not read the room at all. Unset for bridges where membership is
+    # managed on the platform.
+    default_member: str | None = None
 
 
 class MattermostAdapter(CollaborationAdapter):
@@ -523,7 +529,30 @@ class MattermostAdapter(CollaborationAdapter):
             )
             channel_id = channel["id"]
 
+        await self._add_default_member(channel_id)
         return channel_id
+
+    async def _add_default_member(self, channel_id: str) -> None:
+        """Add the deployment's human account to a channel we just created.
+
+        Public channels would let them join by navigating, but private ones
+        would not — and a room created by an agent names no users, so nothing
+        else would ever add them. Best-effort and loudly logged: the channel and
+        room already exist by this point, so failing here should not undo them,
+        but it does mean a human cannot see the room.
+        """
+        member = self._config.default_member
+        if not member:
+            return
+        try:
+            await self.add_users_to_channel(channel_id, [member], [])
+        except Exception:
+            logger.exception(
+                "Failed to add default member '%s' to Mattermost channel %s — "
+                "the room exists but no human is in its channel",
+                member,
+                channel_id,
+            )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._admin_driver or not self._main_loop:

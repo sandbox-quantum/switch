@@ -190,6 +190,11 @@ def register_bridge() -> None:
         "admin_user": MATTERMOST_ADMIN_USER,
         "admin_password": MATTERMOST_ADMIN_PASSWORD,
         "team_name": MATTERMOST_TEAM_NAME,
+        # The bundled deployment's single human. Added to every channel this
+        # bridge creates so they can read rooms that agents created without
+        # naming any users — including private ones, which they could not
+        # otherwise join.
+        "default_member": MATTERMOST_USER,
     }
     if MATTERMOST_PUBLIC_URL:
         connection_config["public_url"] = MATTERMOST_PUBLIC_URL
