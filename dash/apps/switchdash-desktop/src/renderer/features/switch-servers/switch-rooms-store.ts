@@ -55,6 +55,12 @@ export class SwitchRoomsStore {
     return this.channelUrlByRoom.get(roomId) ?? null;
   }
 
+  /** Id of the server a room belongs to, or null if not yet loaded. The room
+   * view needs it to resolve that server's Mattermost session. */
+  roomServerId(roomId: string): string | null {
+    return this.roomServerById.get(roomId) ?? null;
+  }
+
   /**
    * URL of a room's detail page in the gateway web app, or null if the room's
    * owning server isn't known yet (names/servers are loaded by loadRoomNames).

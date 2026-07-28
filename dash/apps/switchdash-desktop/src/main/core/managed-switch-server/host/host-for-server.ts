@@ -1,5 +1,6 @@
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { remoteSecretsKey } from './remote-identity';
+import { localServerDir, remoteServerStateDir } from '../paths';
+import { hostSlug, remoteSecretsKey } from './remote-identity';
 
 /** Local host's fixed secrets-store key. */
 const LOCAL_SECRETS_KEY = 'local-switch-server:secrets';
@@ -17,4 +18,17 @@ export function managedServerSecretsKey(server: SwitchServer): string {
     return remoteSecretsKey(server.sshHost);
   }
   return LOCAL_SECRETS_KEY;
+}
+
+/**
+ * The on-disk state directory holding a managed server's persisted port
+ * choice. Like {@link managedServerSecretsKey}, this exists so a caller that
+ * only needs to read state does not have to construct a {@link ServerHost} —
+ * which for a remote server would open an SSH connection.
+ */
+export function managedServerStateDir(server: SwitchServer): string {
+  if (server.managementKind === 'remote' && server.sshHost) {
+    return remoteServerStateDir(hostSlug(server.sshHost));
+  }
+  return localServerDir();
 }

@@ -14,6 +14,7 @@ import { SidebarSessionItem } from './session-item';
 import {
   groupByRoom,
   openRoomInGateway,
+  openRoomView,
   openRoomInMessagingApp,
   RoomRow,
   roomLabel,
@@ -123,6 +124,7 @@ const AgentSessions = observer(function AgentSessions({
               depth={depth}
               bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
               onToggle={() => sidebarStore.toggleGroupExpanded(groupKey)}
+              onSelect={roomKey === UNASSIGNED_ROOM_KEY ? null : () => openRoomView(roomKey)}
               onOpenGateway={() => openRoomInGateway(roomKey)}
               onOpenChannel={
                 switchRoomsStore.roomChannelUrl(roomKey)
@@ -205,6 +207,7 @@ const RoomFocusedTree = observer(function RoomFocusedTree() {
               depth={0}
               bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
               onToggle={() => sidebarStore.toggleGroupExpanded(roomViewKey)}
+              onSelect={roomKey === UNASSIGNED_ROOM_KEY ? null : () => openRoomView(roomKey)}
               onOpenGateway={() => openRoomInGateway(roomKey)}
               onOpenChannel={
                 switchRoomsStore.roomChannelUrl(roomKey)

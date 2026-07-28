@@ -29,6 +29,18 @@ export default defineConfig({
         '@root': resolve('.'),
       },
     },
+    build: {
+      rollupOptions: {
+        input: {
+          // The app's own preload, attached to the main window.
+          index: resolve('src/preload/index.ts'),
+          // Guest preload for the embedded Mattermost webview. Built as a
+          // separate entry so it can be attached per-webview rather than to
+          // the app window.
+          'mattermost-guest': resolve('src/preload/mattermost-guest.ts'),
+        },
+      },
+    },
   },
   renderer: {
     root: 'src/renderer',

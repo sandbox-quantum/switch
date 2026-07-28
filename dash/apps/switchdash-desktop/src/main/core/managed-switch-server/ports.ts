@@ -3,11 +3,15 @@ import { dirname, join } from 'node:path';
 import { isPorts, type LocalServerPorts } from './free-port';
 import type { ServerHost } from './host/types';
 
-function portsFilePath(host: ServerHost): string {
+/** Reading the persisted choice only needs the state directory — not a live
+ * host — so these take the narrowest shape that works. */
+type HostStateDir = Pick<ServerHost, 'stateDir'>;
+
+function portsFilePath(host: HostStateDir): string {
   return join(host.stateDir, 'ports.json');
 }
 
-async function loadPersisted(host: ServerHost): Promise<LocalServerPorts | null> {
+async function loadPersisted(host: HostStateDir): Promise<LocalServerPorts | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(portsFilePath(host), 'utf8'));
     return isPorts(parsed) ? parsed : null;
@@ -41,7 +45,7 @@ export async function resolvePorts(host: ServerHost): Promise<LocalServerPorts> 
  * Used at boot to re-establish a remote forward only when we know the ports the
  * running containers are actually bound to (picking fresh here would forward to
  * the wrong ports). */
-export function readPersistedPorts(host: ServerHost): Promise<LocalServerPorts | null> {
+export function readPersistedPorts(host: HostStateDir): Promise<LocalServerPorts | null> {
   return loadPersisted(host);
 }
 
