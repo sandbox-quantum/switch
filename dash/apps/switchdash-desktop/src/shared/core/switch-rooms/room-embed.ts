@@ -54,6 +54,41 @@ export function channelUrlFromDeeplink(deeplink: string, mattermostOrigin: strin
   }
 }
 
+/** The fields of a `Set-Cookie` header that decide whether the Mattermost web
+ * app can see the cookie once it is replayed into a webview partition. */
+export type ParsedSetCookie = {
+  name: string;
+  value: string;
+  path: string;
+  httpOnly: boolean;
+};
+
+/**
+ * Parse a `Set-Cookie` header well enough to replay it into a partition.
+ *
+ * `HttpOnly` is the attribute that matters: Mattermost marks MMAUTHTOKEN
+ * HttpOnly but leaves MMUSERID and MMCSRF readable, because its web app reads
+ * them from `document.cookie` to decide it is signed in. Flattening that flag
+ * across all three leaves the app looking logged out despite a valid session.
+ *
+ * Returns null for a header with no `name=value` pair rather than throwing.
+ */
+export function parseSetCookie(setCookie: string): ParsedSetCookie | null {
+  const [pair, ...attrs] = setCookie.split(';');
+  const eq = pair.indexOf('=');
+  if (eq < 1) return null;
+
+  const flags = attrs.map((a) => a.trim().toLowerCase());
+  const pathAttr = flags.find((a) => a.startsWith('path='))?.slice('path='.length);
+
+  return {
+    name: pair.slice(0, eq).trim(),
+    value: pair.slice(eq + 1).trim(),
+    path: pathAttr || '/',
+    httpOnly: flags.includes('httponly'),
+  };
+}
+
 /** Per-server partition, so each server's Mattermost session stays isolated. */
 export function mattermostPartition(serverId: string): string {
   return `persist:switch-mattermost:${serverId}`;

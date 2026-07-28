@@ -10,11 +10,40 @@ import { log } from '@main/lib/logger';
 import {
   channelUrlFromDeeplink,
   mattermostPartition,
+  parseSetCookie,
   type RoomEmbed,
 } from '@shared/core/switch-rooms/room-embed';
 
 const MATTERMOST_AUTH_COOKIE = 'MMAUTHTOKEN';
 const MATTERMOST_USER = 'user';
+
+/**
+ * Replay one `Set-Cookie` header into a partition, preserving the attributes
+ * that decide whether the web app can see it.
+ *
+ * `HttpOnly` in particular is per-cookie and load-bearing here: MMAUTHTOKEN is
+ * HttpOnly, while MMCSRF and MMUSERID are deliberately readable because the
+ * Mattermost web app reads them from `document.cookie`. Forcing one flag across
+ * all three would hide the two the client needs.
+ */
+async function replaySetCookie(
+  partition: string,
+  origin: string,
+  setCookie: string
+): Promise<void> {
+  const parsed = parseSetCookie(setCookie);
+  if (!parsed) return;
+
+  await electronSession.fromPartition(partition).cookies.set({
+    url: origin,
+    name: parsed.name,
+    value: parsed.value,
+    path: parsed.path,
+    httpOnly: parsed.httpOnly,
+    secure: origin.startsWith('https'),
+    sameSite: 'lax',
+  });
+}
 
 /**
  * Where this server's Mattermost is reachable from the desktop, or null when we
@@ -65,18 +94,19 @@ async function installMattermostSession(origin: string, serverId: string): Promi
     );
   }
 
-  const token = response.headers.get('token');
-  if (!token) throw new Error('Mattermost login returned no session token');
-
   const partition = mattermostPartition(serverId);
-  await electronSession.fromPartition(partition).cookies.set({
-    url: origin,
-    name: MATTERMOST_AUTH_COOKIE,
-    value: token,
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: origin.startsWith('https'),
-  });
+
+  // Mattermost issues MMAUTHTOKEN, MMUSERID and MMCSRF together. The web app
+  // treats itself as signed out unless the readable two are present, so replay
+  // whatever the server actually sent rather than reconstructing one cookie.
+  const setCookies = response.headers.getSetCookie();
+  for (const cookie of setCookies) {
+    await replaySetCookie(partition, origin, cookie);
+  }
+
+  if (!setCookies.some((c) => c.startsWith(`${MATTERMOST_AUTH_COOKIE}=`))) {
+    throw new Error('Mattermost login returned no session cookie');
+  }
 
   return partition;
 }
