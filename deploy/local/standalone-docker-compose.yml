@@ -68,7 +68,10 @@ services:
       TUWUNEL_MAX_REQUEST_SIZE: "20000000"
 
   mattermost:
-    image: mattermost/mattermost-team-edition:latest
+    # Pinned rather than `latest`: switchdash embeds this Mattermost's web UI
+    # and depends on its DOM structure, so an unattended upgrade could break
+    # the embedded room view on a `docker compose pull` no one initiated.
+    image: mattermost/mattermost-team-edition:11.9.0
     profiles: ["collab"]
     ports:
       - "${SWITCH_BIND_ADDR:-0.0.0.0}:${MATTERMOST_HOST_PORT:-8065}:8065"
@@ -86,6 +89,11 @@ services:
       # leave a "(message deleted)" tombstone. Requires Mattermost >= v10.2.
       MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
+      # Neither plugin is usable in a bundled Switch deployment: Copilot has no
+      # configured provider and throws a 404 looking up its bot on every page
+      # load, and Calls ships a WebRTC service nothing here can reach.
+      MM_PLUGINSETTINGS_PLUGINSTATES: |
+        {"mattermost-ai":{"Enable":false},"com.mattermost.calls":{"Enable":false}}
     depends_on:
       init-db:
         condition: service_completed_successfully
