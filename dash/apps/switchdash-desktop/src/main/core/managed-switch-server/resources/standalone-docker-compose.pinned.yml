@@ -52,9 +52,21 @@ services:
       PGPASSWORD: ${DB_PASSWORD}
     entrypoint: >
       sh -c "
-        until pg_isready -h postgres -U ${DB_USER}; do sleep 1; done
-        psql -h postgres -U ${DB_USER} -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
-          psql -h postgres -U ${DB_USER} -c 'CREATE DATABASE mattermost;'
+        i=0
+        until psql -h postgres -U ${DB_USER} -d postgres -c 'SELECT 1' >/dev/null 2>&1; do
+          i=$$((i+1))
+          if [ $$i -ge 30 ]; then
+            echo 'init-db: could not connect to postgres as ${DB_USER} after 30 tries.' >&2
+            echo 'Last attempt:' >&2
+            psql -h postgres -U ${DB_USER} -d postgres -c 'SELECT 1' >&2
+            echo 'A stale pgdata volume keeps the password it was first created with,' >&2
+            echo 'so a regenerated DB_PASSWORD will fail here. Recreate the stack to reset it.' >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        psql -h postgres -U ${DB_USER} -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
+          psql -h postgres -U ${DB_USER} -d postgres -c 'CREATE DATABASE mattermost;'
       "
     depends_on:
       postgres:
