@@ -837,6 +837,7 @@ async def create_room(
     user_names: list[str] | None = None,
     channel_type: str | None = None,
     bridge_id: str | None = None,
+    internal_only: bool = False,
     admin_mode: bool = False,
     security_config: dict[str, Any] | None = None,
     instructions: str | None = None,
@@ -853,10 +854,15 @@ async def create_room(
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
-    Prefer bridged rooms (pass `bridge_id`) for collaboration with humans on
-    Slack/Mattermost. Omit `bridge_id` only when you explicitly want an
-    internal-only room with no external channel. Call `list_bridges` to
-    discover bridge ids and present the choice to the user.
+    Rooms are bridged by default: omitting `bridge_id` uses the instance's
+    default bridge (on a standalone deployment, the bundled Mattermost), so the
+    room is readable by humans without the caller knowing the deployment's
+    topology. Pass `bridge_id` to choose a specific bridge — call
+    `list_bridges` to discover ids and present the choice to the user. Pass
+    `internal_only=True` for an agent-only room with no external channel.
+
+    If the instance has no default bridge configured and you omit `bridge_id`,
+    the room is created internal-only.
 
     Args:
         name: Display name for the room.
@@ -873,7 +879,9 @@ async def create_room(
             as a private channel with that user invited; the user must already
             be known to Switch on the bridge (creation fails otherwise).
         bridge_id: Optional id of the collaboration bridge backing this room.
-            Omit for an internal-only room (no external channel).
+            Omit to use the instance's default bridge.
+        internal_only: Create a room with no external channel, opting out of
+            the default bridge. Ignored when `bridge_id` is set.
         admin_mode: When true, the room is created in administrative mode.
         security_config: Optional dict overriding default protection checks.
         instructions: Room-specific system prompt / guidance shown to agents
@@ -931,6 +939,7 @@ async def create_room(
         user_names=user_names,
         channel_type=channel_type,
         bridge_id=bridge_id,
+        internal_only=internal_only,
         admin_mode=admin_mode,
         security_config=security_config,
         instructions=instructions,
@@ -1239,9 +1248,10 @@ async def list_bridges() -> list[dict[str, Any]]:
     the list to the user and let them choose, rather than guessing.
 
     Returns:
-        List of `{id, type, display_name, status}` dicts. Only `status`
-        == "active" bridges are usable for new rooms; others are shown for
-        context.
+        List of `{id, type, display_name, status, is_default}` dicts. Only
+        `status` == "active" bridges are usable for new rooms; others are
+        shown for context. `is_default` marks the bridge that `create_room`
+        uses when no `bridge_id` is given (at most one).
     """
     protocol = _get_protocol()
     return await protocol.list_bridges()

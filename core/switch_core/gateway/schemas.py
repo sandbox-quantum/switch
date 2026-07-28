@@ -96,6 +96,9 @@ class RoomCreateRequest(BaseModel):
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
     bridge_id: str | None = None
+    # Opt out of the instance default bridge: create a room with no external
+    # channel. Ignored when bridge_id is set.
+    internal_only: bool = False
     external_channel_id: str | None = None
     group_id: str | None = None
     read_visibility: str = "public"
@@ -410,6 +413,7 @@ class BridgeDetail(BaseModel):
     display_name: str
     status: str
     agent_greetings_enabled: bool
+    is_default: bool
     room_count: int
     created_at: str
 

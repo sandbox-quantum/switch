@@ -13,6 +13,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Room, RoomGroup, RoomRole
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.matrix_admin import MatrixAdmin
 
@@ -53,6 +54,11 @@ class RoomCreateConfig(BaseModel):
     user_names: list[str] | None = None
     channel_type: ChannelType | None = None
     bridge_id: str | None = None
+    # Opt out of the instance default bridge and create a room with no external
+    # channel. Only meaningful when ``bridge_id`` is unset: omitting the bridge
+    # now means "use the default", so making a room agent-only has to be said
+    # rather than implied.
+    internal_only: bool = False
     external_channel_id: str | None = None
     instructions: str | None = None
     protection_config: dict[str, object] | None = None
@@ -107,6 +113,7 @@ class RoomService:
         agent_store: AgentStore,
         client_lifecycle: ClientLifecycleService,
         collab_lifecycle: CollaborationBridgeLifecycleService,
+        collab_bridge_store: CollaborationBridgeStore,
         resource_service: ResourceService,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
@@ -115,6 +122,7 @@ class RoomService:
         self._agent_store = agent_store
         self._client_lifecycle = client_lifecycle
         self._collab_lifecycle = collab_lifecycle
+        self._collab_bridge_store = collab_bridge_store
         self._resource_service = resource_service
         self._session_factory = session_factory
 
@@ -280,6 +288,39 @@ class RoomService:
             await session.commit()
         return failures
 
+    async def _resolve_bridge_id(self, config: RoomCreateConfig) -> str | None:
+        """Pick the bridge for a new room: the one named, else the instance
+        default, else none.
+
+        A standalone Switch always ships a bridge (the bundled Mattermost), so
+        defaulting to it means every room has somewhere humans can read it
+        without the caller having to know the deployment's topology. Callers
+        that genuinely want an agent-only room pass ``internal_only``.
+
+        A default that is configured but not currently running is reported
+        rather than skipped — silently creating an unbridged room would look
+        identical to success and only surface much later as a room nobody can
+        see.
+        """
+        if config.bridge_id:
+            return config.bridge_id
+        if config.internal_only:
+            return None
+
+        async with self._session_factory() as session:
+            default = await self._collab_bridge_store.get_default(session)
+        if default is None:
+            return None
+
+        if self._collab_lifecycle.get(default.id) is None:
+            raise ValueError(
+                f"Default bridge '{default.display_name}' ({default.id}) is not "
+                "running, so the room cannot be bridged. Start the bridge, name "
+                "a different bridge_id, or pass internal_only to create an "
+                "agent-only room."
+            )
+        return default.id
+
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
@@ -292,11 +333,12 @@ class RoomService:
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
+        bridge_id = await self._resolve_bridge_id(config)
         bridge_core = None
-        if config.bridge_id:
-            bridge_core = self._collab_lifecycle.get(config.bridge_id)
+        if bridge_id:
+            bridge_core = self._collab_lifecycle.get(bridge_id)
             if bridge_core is None:
-                raise ValueError(f"Bridge not running: {config.bridge_id}")
+                raise ValueError(f"Bridge not running: {bridge_id}")
 
         if bridge_core and external_channel_id is not None and channel_type is None:
             channel_type = await bridge_core.adapter.get_channel_type(
@@ -355,7 +397,7 @@ class RoomService:
                 name=config.name,
                 description=config.description,
                 channel_type=channel_type,
-                bridge_id=config.bridge_id,
+                bridge_id=bridge_id,
                 external_channel_id=external_channel_id,
                 admin_mode=config.admin_mode,
                 instructions=config.instructions,

@@ -498,8 +498,23 @@ class CollaborationBridge(Base):
     agent_greetings_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default="true", nullable=False
     )
+    # The bridge new rooms land on when no bridge is named. At most one row may
+    # be true; the partial unique index below is what actually enforces that,
+    # so concurrent writers cannot produce two defaults.
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_collaboration_bridges_single_default",
+            "is_default",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
     )
 
 

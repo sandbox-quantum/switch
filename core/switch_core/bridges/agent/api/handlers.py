@@ -1050,6 +1050,7 @@ async def create_room(
             user_names=req.user_names,
             channel_type=req.channel_type,
             bridge_id=req.bridge_id,
+            internal_only=req.internal_only,
             admin_mode=req.admin_mode,
             security_config=req.security_config,
             instructions=req.instructions,

@@ -244,6 +244,7 @@ async def run() -> None:
         agent_store=agent_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
+        collab_bridge_store=bridge_store,
         resource_service=resource_service,
         session_factory=session_factory,
     )

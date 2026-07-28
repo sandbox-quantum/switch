@@ -81,6 +81,7 @@ async def create_bridge(
         display_name=bridge.display_name,
         status=bridge.status,
         agent_greetings_enabled=bridge.agent_greetings_enabled,
+        is_default=bridge.is_default,
         room_count=0,
         created_at=str(bridge.created_at),
     )
@@ -105,6 +106,7 @@ async def list_bridges(
                 display_name=bridge.display_name,
                 status=bridge.status,
                 agent_greetings_enabled=bridge.agent_greetings_enabled,
+                is_default=bridge.is_default,
                 room_count=len(rooms),
                 created_at=str(bridge.created_at),
             )
@@ -137,6 +139,7 @@ async def update_bridge(
         display_name=bridge.display_name,
         status=bridge.status,
         agent_greetings_enabled=bridge.agent_greetings_enabled,
+        is_default=bridge.is_default,
         room_count=len(rooms),
         created_at=str(bridge.created_at),
     )

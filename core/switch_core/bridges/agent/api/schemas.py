@@ -342,9 +342,11 @@ class CreateModerationRoomRequest(BaseModel):
     include_subagents_for: list[str] | None = None
     user_names: list[str] | None = None
     channel_type: Literal["channel_public", "channel_private"] | None = None
-    # Bridge is optional — omit to create an internal-only room (no
-    # external collaboration channel).
+    # Bridge is optional — omit to use the instance's default bridge.
     bridge_id: str | None = None
+    # Opt out of the instance default bridge: create a room with no external
+    # channel. Ignored when bridge_id is set.
+    internal_only: bool = False
     admin_mode: bool = False
     security_config: dict[str, Any] | None = None
     instructions: str | None = None

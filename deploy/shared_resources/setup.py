@@ -171,7 +171,16 @@ def register_bridge() -> None:
         bridges = resp.json()
         for bridge in bridges:
             if bridge.get("bridge_type") == "mattermost":
-                print(f"Mattermost bridge already registered: {bridge['bridge_id']}")
+                bridge_id = bridge["bridge_id"]
+                print(f"Mattermost bridge already registered: {bridge_id}")
+                # Adopt the default on an instance that predates it, so an
+                # existing deployment gains the invariant on its next setup run
+                # rather than only new ones.
+                if not any(b.get("is_default") for b in bridges):
+                    client.post(
+                        f"/collab/bridges/{bridge_id}/default"
+                    ).raise_for_status()
+                    print(f"Set Mattermost bridge as default: {bridge_id}")
                 client.close()
                 return
 
@@ -190,11 +199,14 @@ def register_bridge() -> None:
             "bridge_type": "mattermost",
             "display_name": "Mattermost",
             "connection_config": connection_config,
+            # The bundled Mattermost is the deployment's own chat, so it is
+            # what rooms should bridge to when the caller names nothing.
+            "set_as_default": True,
         },
     )
     resp.raise_for_status()
     data = resp.json()
-    print(f"Registered Mattermost bridge: {data['bridge_id']}")
+    print(f"Registered Mattermost bridge: {data['bridge_id']} (default)")
 
     client.close()
 

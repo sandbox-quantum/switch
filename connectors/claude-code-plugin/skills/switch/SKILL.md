@@ -231,12 +231,16 @@ available to any agent — the responsibility for using them well still
 applies.
 
 - **`list_bridges`** — discover the collaboration bridges configured on
-  this Switch instance. Returns `{id, type, display_name, status}` per
-  bridge. Only `status == "active"` bridges are usable for new rooms.
+  this Switch instance. Returns `{id, type, display_name, status,
+  is_default}` per bridge. Only `status == "active"` bridges are usable
+  for new rooms. `is_default` marks the bridge `create_room` uses when no
+  `bridge_id` is given (at most one per instance).
 - **`create_room`** — provision a new room. Required: `name`,
   `description`, `agent_names`. Optional but commonly used: `bridge_id`,
-  `channel_type` (`"channel_public"`, `"channel_private"`, or `"direct"`
-  for a 1:1 DM — see "DM rooms" below), `user_names`, `instructions`,
+  `internal_only` (opt out of the default bridge — see "Prefer bridged
+  rooms" below), `channel_type` (`"channel_public"`, `"channel_private"`,
+  or `"direct"` for a 1:1 DM — see "DM rooms" below), `user_names`,
+  `instructions`,
   `reference_ids`, `package_ids`, `linked_rooms`, `join_event_listeners`
   (subset of `agent_names` that should receive `room_join` events in the
   room — off by default). Returns
@@ -307,26 +311,33 @@ applies.
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
-The point of Switch is collaboration between agents and humans. **Default
-to creating bridged rooms** (rooms attached to a Slack / Mattermost
-channel via a `bridge_id`) so humans on those platforms can participate.
-Only create an internal-only room (omitting `bridge_id`) when the user
-has explicitly said the room should not bridge anywhere — e.g. "just a
-scratch room for agents to coordinate."
+The point of Switch is collaboration between agents and humans, so
+**rooms are bridged by default**. Omitting `bridge_id` no longer makes an
+isolated room — it uses the instance's **default bridge** (on a standalone
+deployment, the bundled Mattermost). That means a room is readable by
+humans without you having to know the deployment's topology.
+
+To create a room with **no** external channel, pass `internal_only=True`.
+Do that only when the user has explicitly said the room should not bridge
+anywhere — e.g. "just a scratch room for agents to coordinate."
 
 **Do not guess a `bridge_id`.** Workflow when the user asks you to
 create a room:
 
 1. Call `list_bridges`.
-2. Show the user the active bridges (display name + type) and ask which
-   one to use (or whether to skip bridging entirely).
+2. Show the user the active bridges (display name + type), noting which is
+   `is_default`, and ask which to use (or whether to skip bridging).
 3. Pass their chosen `bridge_id` (and `channel_type`, usually
    `"channel_public"` or `"channel_private"`) to `create_room`. Omit
-   both if they chose internal-only.
+   `bridge_id` to accept the default; pass `internal_only=True` if they
+   want no channel at all.
 
-If exactly one active bridge exists and the room is clearly for
-collaboration, it is reasonable to propose using it without enumerating
-— but still confirm before creating.
+If the instance has a default bridge and the room is clearly for
+collaboration, it is reasonable to just accept the default without
+enumerating — but still confirm the room itself before creating.
+
+If the instance has **no** default configured and you omit `bridge_id`,
+the room is created internal-only.
 
 ### DM rooms (1:1 with a user)
 
@@ -552,7 +563,8 @@ tell whether a holder is reachable in this room right now.
 - `list_bridges` — before creating a room, to discover the available
   collaboration bridges and ask the user which one to use.
 - `create_room` — provision a new room. Confirm name, members, and
-  bridge choice with the user before calling. Prefer bridged rooms.
+  bridge choice with the user before calling. Rooms use the default
+  bridge unless you pass `bridge_id` or `internal_only`.
 - `invite_agent_to_room` — add another agent to an existing room by
   name.
 - `list_all_rooms` / `get_room_detail` — enumerate every room on the

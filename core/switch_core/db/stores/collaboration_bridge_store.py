@@ -27,6 +27,36 @@ class CollaborationBridgeStore:
         )
         return list(result.scalars().all())
 
+    async def get_default(self, session: AsyncSession) -> CollaborationBridge | None:
+        """The bridge new rooms land on when none is named, or None when the
+        instance has not nominated one."""
+        result = await session.execute(
+            select(CollaborationBridge).where(CollaborationBridge.is_default.is_(True))
+        )
+        return result.scalars().one_or_none()
+
+    async def set_default(
+        self, session: AsyncSession, bridge_id: str
+    ) -> CollaborationBridge:
+        """Nominate ``bridge_id`` as the instance default, demoting whichever
+        bridge held it before. The demotion is flushed first because a partial
+        unique index enforces a single default — writing the new one while the
+        old is still set would collide."""
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+
+        current = await self.get_default(session)
+        if current is not None and current.id == bridge_id:
+            return bridge
+        if current is not None:
+            current.is_default = False
+            await session.flush()
+
+        bridge.is_default = True
+        await session.flush()
+        return bridge
+
     async def update_status(
         self, session: AsyncSession, bridge_id: str, status: str
     ) -> None:

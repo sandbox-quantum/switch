@@ -1663,6 +1663,7 @@ class ProtocolService:
                 "type": b.type,
                 "display_name": b.display_name,
                 "status": b.status,
+                "is_default": b.is_default,
             }
             for b in bridges
         ]
@@ -1676,6 +1677,7 @@ class ProtocolService:
         user_names: list[str] | None,
         channel_type: str | None,
         bridge_id: str | None,
+        internal_only: bool = False,
         admin_mode: bool = False,
         security_config: dict[str, Any] | None = None,
         instructions: str | None = None,
@@ -1725,6 +1727,7 @@ class ProtocolService:
             user_names=user_names,
             channel_type=channel_type,  # type: ignore[arg-type]
             bridge_id=bridge_id,
+            internal_only=internal_only,
             admin_mode=admin_mode,
             protection_config=security_config,
             instructions=instructions,
