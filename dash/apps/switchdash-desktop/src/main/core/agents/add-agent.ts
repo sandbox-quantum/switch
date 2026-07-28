@@ -12,6 +12,7 @@ import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
+import { knownAgentTypeForProvider } from './known-agent-type';
 import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
@@ -72,6 +73,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
     description: params.description,
     repoDir: params.dir,
     autoSession: params.autoSession,
+    agentType: knownAgentTypeForProvider(params.providerId),
   });
   if (registered.kind !== 'created') return registered;
 

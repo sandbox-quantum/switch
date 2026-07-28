@@ -297,8 +297,122 @@ class ClaudeCodeKnownAgent(KnownAgent):
         )
 
 
+class CodexOptions(KnownAgentOptions):
+    auto_session: bool = False
+    """When True, the operator's connector (switchdash) watches every room this
+    agent belongs to and auto-spawns a Codex session — connected to the room and
+    wired to the agent's identity — the moment the agent is addressed in a room
+    where it has no live session. The registered profile becomes `auto_session`.
+    Codex has no plugin-channel of its own; switchdash delivers inbound room
+    messages by injecting them into the session's terminal (CHOO-1436)."""
+
+    repo_dir: str | None = None
+    """Absolute path to the directory the operator runs Codex from. Used to
+    generate a ready-to-paste `cd <repo_dir> && codex "connect to switch room …"`
+    command shown when the agent is addressed with no live session. None → a
+    `<codex-dir>` placeholder is shown instead."""
+
+    notify_user: str | None = None
+    """Username (on the room's bridged platform) to `@`-mention in the
+    unavailable-session message so the operator gets a notification. Bare name,
+    no leading `@`. None → post without a mention."""
+
+    # switchdash sends `channels_enabled` for every provider; Codex has no
+    # connector channel, so it does not affect the profile. Accepted (and
+    # ignored) for request-shape compatibility with the claude-code options.
+    channels_enabled: bool = True
+
+    @field_validator("repo_dir", "notify_user", mode="before")
+    @classmethod
+    def _blank_string_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+
+class CodexKnownAgent(KnownAgent):
+    connector_type = "Codex"
+    options_schema = CodexOptions
+    tools = [
+        ToolSpec(name="Shell", description="Executes shell commands"),
+        ToolSpec(name="ApplyPatch", description="Applies patches to files"),
+        ToolSpec(name="Read", description="Reads file contents"),
+    ]
+    models: ClassVar[list[ModelSpec]] = []
+
+    @classmethod
+    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
+        assert isinstance(options, CodexOptions)
+        # switchdash watches + auto-spawns when auto_session; otherwise it keeps a
+        # session live and delivers messages by terminal injection, which is the
+        # session_addressable model. Codex does not report per-tool events or
+        # mediate tool calls (it runs auto-approved), so those lists stay empty —
+        # unlike Claude Code, whose PostToolUse hooks report tool activity.
+        connection_model = (
+            "auto_session" if options.auto_session else "session_addressable"
+        )
+        return IntegrationProfile(
+            connection_model=connection_model,
+            message_exchange=True,
+            pre_invocation_mediation=[],
+            post_invocation_mediation=[],
+            event_reporting=[],
+            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
+        )
+
+    @classmethod
+    def start_session_instructions(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        """Build the room-facing onboarding message for a Codex agent.
+
+        Mirrors the Claude Code shape but emits a `codex "…"` command (never a
+        `claude` one) and omits Claude-specific flags. Codex sessions are normally
+        auto-managed by switchdash, so this fallback is shown mainly when no
+        connector is watching.
+        """
+        assert isinstance(options, CodexOptions)
+        dir_token = options.repo_dir if options.repo_dir else "<codex-dir>"
+        prompt = f"connect to switch room {room_name}"
+        if assume_role:
+            prompt += f" and assume the role {assume_role}"
+        cmd = f'cd {dir_token} && codex "{prompt}"'
+
+        prefix = f"@{options.notify_user}\n\n" if options.notify_user else ""
+        if connected_not_live:
+            opening = (
+                "I have a session connected to this room, but it isn't reporting "
+                "as live, so I'm not receiving messages. Relaunch it, or start a "
+                "fresh session, with:"
+            )
+        elif other_room_names:
+            where = ", ".join(f"**{name}**" for name in other_room_names)
+            opening = (
+                f"I don't have a session connected to this room right now, but I "
+                f"do have other session(s) connected to {where}. Either ask me in "
+                "one of those rooms to come here, or start a new session connected "
+                "to this room — my operator should run:"
+            )
+        else:
+            opening = (
+                "I don't have a session connected to this room. To set up a new "
+                "session connected to this room, my operator should run:"
+            )
+        return (
+            f"{prefix}{opening}\n\n```\n{cmd}\n```\n\n(Codex sessions are normally "
+            "managed by switchdash — it auto-starts one when I'm addressed.)"
+        )
+
+
 KNOWN_AGENTS: dict[str, type[KnownAgent]] = {
     "claude-code": ClaudeCodeKnownAgent,
+    "codex": CodexKnownAgent,
 }
 
 

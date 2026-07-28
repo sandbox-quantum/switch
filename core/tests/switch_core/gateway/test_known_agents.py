@@ -3,8 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from switch_core.gateway.known_agents import (
+    KNOWN_AGENTS,
     ClaudeCodeKnownAgent,
     ClaudeCodeOptions,
+    CodexKnownAgent,
+    CodexOptions,
     known_agent_for,
 )
 
@@ -230,6 +233,78 @@ class TestStartSessionInstructions:
         # room ...` command — that's where the operator actually needs it.
         assert msg.count("Some Long Room Name") == 1
         assert "I don't have a session connected to this room." in msg
+
+
+class TestCodexKnownAgent:
+    def test_registered_under_codex_key(self) -> None:
+        assert KNOWN_AGENTS.get("codex") is CodexKnownAgent
+        assert CodexKnownAgent.connector_type == "Codex"
+
+    def test_default_profile_is_session_addressable(self) -> None:
+        profile = CodexKnownAgent.build_profile(CodexOptions())
+        assert profile.connection_model == "session_addressable"
+
+    def test_auto_session_sets_auto_session_model(self) -> None:
+        profile = CodexKnownAgent.build_profile(CodexOptions(auto_session=True))
+        assert profile.connection_model == "auto_session"
+
+    def test_no_tool_call_mediation_or_reporting(self) -> None:
+        # Codex runs auto-approved and reports lifecycle hooks only (not per-tool
+        # events), unlike Claude Code.
+        profile = CodexKnownAgent.build_profile(CodexOptions())
+        assert profile.pre_invocation_mediation == []
+        assert profile.event_reporting == []
+
+    def test_can_delegate_and_accept_tasks(self) -> None:
+        profile = CodexKnownAgent.build_profile(CodexOptions())
+        assert profile.task_protocol.can_delegate is True
+        assert profile.task_protocol.can_accept is True
+
+    def test_start_session_instructions_emit_codex_not_claude(self) -> None:
+        opts = CodexOptions(repo_dir="/Users/x/repo")
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert 'cd /Users/x/repo && codex "connect to switch room hub"' in msg
+        # It must NOT suggest a claude command or Claude-specific flags.
+        assert "claude" not in msg
+        assert "--dangerously-load-development-channels" not in msg
+
+    def test_no_repo_dir_uses_codex_placeholder(self) -> None:
+        msg = CodexKnownAgent.start_session_instructions(
+            CodexOptions(repo_dir=None), _agent({}), "triage"
+        )
+        assert msg is not None
+        assert "cd <codex-dir>" in msg
+
+    def test_notify_user_prepended_as_at_mention(self) -> None:
+        opts = CodexOptions(repo_dir="/x", notify_user="cmcd")
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert msg.startswith("@cmcd\n\n")
+
+    def test_channels_enabled_is_accepted_but_ignored(self) -> None:
+        # switchdash sends channels_enabled for every provider; Codex accepts it
+        # without it affecting the profile.
+        opts = CodexOptions.model_validate({"channels_enabled": False})
+        assert (
+            CodexKnownAgent.build_profile(opts).connection_model
+            == "session_addressable"
+        )
+
+    def test_known_agent_for_round_trips_codex(self) -> None:
+        agent = _agent(
+            {
+                "known_agent_type": "codex",
+                "known_agent_options": {"auto_session": True, "repo_dir": "/tmp/r"},
+            }
+        )
+        result = known_agent_for(agent)
+        assert result is not None
+        spec, options = result
+        assert spec is CodexKnownAgent
+        assert isinstance(options, CodexOptions)
+        assert options.auto_session is True
+        assert options.repo_dir == "/tmp/r"
 
 
 class TestKnownAgentFor:

@@ -7,6 +7,9 @@ export type RegisterAgentInput = {
   description: string;
   repoDir: string;
   autoSession?: boolean;
+  /** Gateway known-agent type; derive from the provider via
+   * {@link knownAgentTypeForProvider}. Defaults to 'claude-code'. */
+  agentType?: string;
 };
 
 /**
@@ -34,6 +37,7 @@ export async function registerAgentIdentity(
     const registered = await registerKnownAgent(server, {
       name: input.name,
       description: input.description,
+      agentType: input.agentType,
       options: {
         channels_enabled: true,
         repo_dir: input.repoDir,

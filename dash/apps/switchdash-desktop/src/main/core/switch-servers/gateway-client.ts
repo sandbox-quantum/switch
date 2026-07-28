@@ -218,13 +218,22 @@ export type RegisteredAgent = {
  */
 export async function registerKnownAgent(
   server: SwitchServer,
-  params: { name: string; description: string; options: RegisterKnownAgentOptions }
+  params: {
+    name: string;
+    description: string;
+    options: RegisterKnownAgentOptions;
+    /** Gateway known-agent type. Defaults to 'claude-code' for back-compat;
+     * pass 'codex' for a Codex agent so it registers as a Codex known-agent
+     * (correct connector type + `codex …` onboarding command) rather than
+     * inheriting Claude Code's (CHOO-1436). */
+    agentType?: string;
+  }
 ): Promise<RegisteredAgent> {
   const res = await gatewayFetch(server, '/agents/register', {
     authenticated: true,
     method: 'POST',
     body: {
-      agent_type: 'claude-code',
+      agent_type: params.agentType ?? 'claude-code',
       name: params.name,
       description: params.description,
       options: params.options,
