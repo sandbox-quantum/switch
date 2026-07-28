@@ -54,7 +54,11 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  * the agent as a managed, session-addressable identity — there is no run-mode or
  * notify-handle choice (CHOO-1440).
  */
-export function useConfigureAgentForm(dir: string, defaultAutoApprove: boolean) {
+export function useConfigureAgentForm(
+  dir: string,
+  defaultAutoApprove: boolean,
+  providerId: AgentProviderId | null
+) {
   const [agentName, setAgentNameRaw] = useState('');
   const [agentNameTouched, setAgentNameTouched] = useState(false);
   const [description, setDescriptionRaw] = useState('');
@@ -70,9 +74,12 @@ export function useConfigureAgentForm(dir: string, defaultAutoApprove: boolean) 
   // the local user — pure, no filesystem read — so it works identically for a
   // local path or a remote working dir, giving remote agents the same defaults.
   const defaultsQuery = useQuery({
-    queryKey: ['agentDefaults', trimmedDir],
-    queryFn: () => rpc.switchServers.suggestAgentDefaults({ dir: trimmedDir }),
-    enabled: trimmedDir.length > 0,
+    queryKey: ['agentDefaults', trimmedDir, providerId],
+    queryFn: () => {
+      if (providerId === null) throw new Error('providerId is required for agent defaults');
+      return rpc.switchServers.suggestAgentDefaults({ dir: trimmedDir, providerId });
+    },
+    enabled: trimmedDir.length > 0 && providerId !== null,
   });
 
   const defaults = defaultsQuery.data;

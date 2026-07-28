@@ -21,9 +21,17 @@ describe('slugifyAgentNamePart', () => {
 
 describe('suggestAgentDefaults', () => {
   it('builds a claude-code.<repo>.<user> name and matches the agent-name pattern', () => {
-    const { name, description } = suggestAgentDefaults('/Users/someone/My Repo');
+    const { name, description } = suggestAgentDefaults('/Users/someone/My Repo', 'claude');
     expect(name.startsWith('claude-code.my-repo')).toBe(true);
     expect(name).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
     expect(description).toBe('Claude Code running in My Repo');
+  });
+
+  it('prefixes the name and description with the chosen provider (Codex)', () => {
+    const { name, description } = suggestAgentDefaults('/Users/someone/My Repo', 'codex');
+    expect(name.startsWith('codex.my-repo')).toBe(true);
+    expect(name).not.toContain('claude-code');
+    expect(name).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
+    expect(description).toBe('Codex running in My Repo');
   });
 });

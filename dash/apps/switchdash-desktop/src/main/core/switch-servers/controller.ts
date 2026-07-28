@@ -14,6 +14,7 @@ import {
 } from '@main/core/managed-switch-server/managed-server-status';
 import { HostUnreachableError } from '@main/core/remote-hosts/host-reachability-service';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddressingPolicy,
   AddServerParams,
@@ -228,8 +229,10 @@ export const switchServersController = createRPCController({
     }
   },
 
-  suggestAgentDefaults: async (params: { dir: string }): Promise<AgentDefaults> =>
-    suggestAgentDefaults(params.dir),
+  suggestAgentDefaults: async (params: {
+    dir: string;
+    providerId: AgentProviderId;
+  }): Promise<AgentDefaults> => suggestAgentDefaults(params.dir, params.providerId),
 
   /**
    * Register a new Claude Code agent on the chosen server (owned by the

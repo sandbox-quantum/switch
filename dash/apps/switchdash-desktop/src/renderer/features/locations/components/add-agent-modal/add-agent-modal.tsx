@@ -76,7 +76,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const showAddServerModal = useShowModal('addServerModal');
 
   const pickState = usePickMode();
-  const configureForm = useConfigureAgentForm(pickState.path, false);
+  const configureForm = useConfigureAgentForm(pickState.path, false, pickState.providerId);
 
   // Run location: 'local' (default) or an onboarded remote host's SSH alias. A
   // remote agent runs its sessions on the host and needs a remote working dir.
@@ -90,7 +90,11 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const [remoteRepoDirDraft, setRemoteRepoDirDraft] = useState('');
   // Configure form for onboarding a brand-new agent in the remote dir. Defaults
   // (name/description) are derived from the remote dir just like a local agent.
-  const remoteConfigureForm = useConfigureAgentForm(remoteRepoDir.trim(), true);
+  const remoteConfigureForm = useConfigureAgentForm(
+    remoteRepoDir.trim(),
+    true,
+    pickState.providerId
+  );
   const { data: remoteHosts } = useQuery({
     queryKey: ['remote-hosts'],
     queryFn: () => rpc.remoteHosts.listHosts(),
