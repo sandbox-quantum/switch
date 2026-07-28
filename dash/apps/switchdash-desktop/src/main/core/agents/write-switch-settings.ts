@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SWITCH_CONNECTOR_TOOL_RULES } from '@switchdash/core/agents/plugins';
+import type { PluginFs } from '@switchdash/core/agents/plugins';
 import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -282,5 +283,26 @@ export async function writeAgentNeutralSettings(params: {
     await fs.access(gitignorePath);
   } catch {
     await fs.writeFile(gitignorePath, '*\n', 'utf8');
+  }
+}
+
+/**
+ * Write an agent's provider-neutral per-agent Switch credentials over a
+ * {@link PluginFs} (local disk or a remote repo dir via SFTP), keyed by `slug`
+ * (the agent id) — the authoritative identity switchdash injects at launch
+ * (`agentSettingsPath`). Mirrors {@link writeAgentNeutralSettings} but through the
+ * transport-agnostic fs so it works at create time for both local and remote
+ * agents, and for providers with no repo-agent `writeCredentials` hook (e.g.
+ * Codex), which would otherwise get no credentials on disk at all (CHOO-1436).
+ */
+export async function writeNeutralAgentSettingsFs(
+  workspaceFs: PluginFs,
+  params: { slug: string } & SwitchSettingsCredentials
+): Promise<void> {
+  const relPath = agentSettingsRelativePath(params.slug);
+  const merged = mergeSwitchSettings(await workspaceFs.read(relPath), params);
+  await workspaceFs.write(relPath, merged);
+  if (!(await workspaceFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
+    await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
 }

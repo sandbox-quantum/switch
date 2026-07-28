@@ -14,6 +14,7 @@ import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
+import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
 export type AddAgentParams = {
   id?: string;
@@ -74,6 +75,10 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
   if (registered.kind !== 'created') return registered;
 
+  // Generated up front so the per-agent credentials file can be keyed by it
+  // below — the launch path reads `agentSettingsPath(sessionPath, session.agentId)`.
+  const localAgentId = params.id ?? randomUUID();
+
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
@@ -85,6 +90,19 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
       });
       await behavior.writeCredentials(workspace.fs, {
         agentName: params.name,
+        apiEndpoint: server.apiUrl,
+        apiToken: registered.apiKey,
+        agentId: registered.id,
+      });
+    } else {
+      // Providers without repo-agent definitions (e.g. Codex) have no
+      // `writeCredentials` hook, so their Switch credentials would never land on
+      // disk — leaving the session with no `SWITCH_*` to inject and the
+      // MCP-based Switch setup a no-op. Write the provider-neutral per-agent
+      // file directly from the freshly-minted token, keyed by the agent id the
+      // launch path reads (CHOO-1436).
+      await writeNeutralAgentSettingsFs(workspace.fs, {
+        slug: localAgentId,
         apiEndpoint: server.apiUrl,
         apiToken: registered.apiKey,
         agentId: registered.id,
@@ -101,7 +119,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
 
   const agent = await createAgent({
-    id: params.id ?? randomUUID(),
+    id: localAgentId,
     locationId: location.id,
     name: params.name,
     providerId: params.providerId,
