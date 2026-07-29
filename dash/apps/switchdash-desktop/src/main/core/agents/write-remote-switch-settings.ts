@@ -3,13 +3,10 @@ import {
   FileSystemErrorCodes,
   type FileSystemProvider,
 } from '@main/core/fs/types';
+import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 import { mergeSwitchSettings, type SwitchSettingsCredentials } from './write-switch-settings';
 
-// Remote hosts are POSIX; use forward-slash literals rather than the
-// platform-dependent path.join constant (which would emit backslashes when
-// switchdash runs on Windows).
 const REMOTE_SETTINGS_DIR = '.claude';
-const REMOTE_SETTINGS_PATH = '.claude/settings.local.json';
 
 /**
  * Write the agent's `SWITCH_*` credentials into the remote working directory's
@@ -29,7 +26,7 @@ export async function writeRemoteSwitchSettings(
 ): Promise<void> {
   let existingRaw: string | null = null;
   try {
-    const result = await fs.read(REMOTE_SETTINGS_PATH);
+    const result = await fs.read(SWITCH_SETTINGS_RELATIVE_PATH);
     existingRaw = result.content;
   } catch (error) {
     // Start fresh only when the file is genuinely absent. A transport failure
@@ -42,7 +39,7 @@ export async function writeRemoteSwitchSettings(
 
   const merged = mergeSwitchSettings(existingRaw, creds);
   await fs.mkdir(REMOTE_SETTINGS_DIR, { recursive: true });
-  const result = await fs.write(REMOTE_SETTINGS_PATH, merged);
+  const result = await fs.write(SWITCH_SETTINGS_RELATIVE_PATH, merged);
   if (!result.success) {
     throw new Error(`failed to write remote Switch settings: ${result.error ?? 'unknown error'}`);
   }

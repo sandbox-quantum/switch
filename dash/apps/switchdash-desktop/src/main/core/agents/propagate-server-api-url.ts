@@ -16,11 +16,6 @@ import { updateAgent } from './updateAgent';
 import { mapAgentRowToAgent } from './utils';
 import { mergeSwitchApiEndpoint } from './write-switch-settings';
 
-// Remote hosts are POSIX; use a forward-slash literal rather than the
-// platform-dependent SWITCH_SETTINGS_RELATIVE_PATH (which emits backslashes when
-// switchdash runs on Windows). Matches write-remote-switch-settings.ts.
-const REMOTE_SETTINGS_PATH = '.claude/settings.local.json';
-
 /**
  * Rewrite one local agent's `SWITCH_API_ENDPOINT`, preserving its token and
  * every other key. Returns whether the file was updated (false = not a
@@ -59,7 +54,7 @@ async function propagateRemote(
   try {
     let existingRaw: string | null = null;
     try {
-      ({ content: existingRaw } = await fs.read(REMOTE_SETTINGS_PATH));
+      ({ content: existingRaw } = await fs.read(SWITCH_SETTINGS_RELATIVE_PATH));
     } catch (error) {
       // Absent file -> unprovisioned agent. A transport failure (dead SSH
       // connection) must propagate rather than look like "no config".
@@ -70,7 +65,7 @@ async function propagateRemote(
 
     const merged = mergeSwitchApiEndpoint(existingRaw, apiEndpoint);
     if (merged === null) return false;
-    const result = await fs.write(REMOTE_SETTINGS_PATH, merged);
+    const result = await fs.write(SWITCH_SETTINGS_RELATIVE_PATH, merged);
     if (!result.success) {
       throw new Error(`failed to write remote Switch settings: ${result.error ?? 'unknown error'}`);
     }

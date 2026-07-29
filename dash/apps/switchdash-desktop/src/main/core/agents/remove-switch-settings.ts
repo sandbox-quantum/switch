@@ -1,12 +1,7 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 import { removeSwitchSettings } from './write-switch-settings';
-
-// Rooted at the agent's working dir and used against both local and remote
-// (SFTP) PluginFs, so use a forward-slash literal rather than the
-// platform-dependent SWITCH_SETTINGS_RELATIVE_PATH (which emits backslashes on
-// Windows and would not resolve on a POSIX host).
-const SWITCH_SETTINGS_POSIX_PATH = '.claude/settings.local.json';
 
 /**
  * Reverse the default `.claude/settings.local.json` provisioning: strip the
@@ -16,14 +11,14 @@ const SWITCH_SETTINGS_POSIX_PATH = '.claude/settings.local.json';
  * directory and a remote SSH host.
  */
 async function removeDefaultSwitchCredentials(fs: PluginFs): Promise<void> {
-  const existing = await fs.read(SWITCH_SETTINGS_POSIX_PATH);
+  const existing = await fs.read(SWITCH_SETTINGS_RELATIVE_PATH);
   const result = removeSwitchSettings(existing);
   if (result.kind === 'skip') return;
   if (result.kind === 'delete') {
-    await fs.delete(SWITCH_SETTINGS_POSIX_PATH);
+    await fs.delete(SWITCH_SETTINGS_RELATIVE_PATH);
     return;
   }
-  await fs.write(SWITCH_SETTINGS_POSIX_PATH, result.content);
+  await fs.write(SWITCH_SETTINGS_RELATIVE_PATH, result.content);
 }
 
 /**

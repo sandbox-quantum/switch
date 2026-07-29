@@ -5,6 +5,12 @@ import path from 'node:path';
  * leaf module (only `node:path`) so the credentials reader — and through it the
  * remote sidecar bundle — can use them without pulling in the Electron-bound
  * agent-detection module.
+ *
+ * Every *relative* path here is a forward-slash literal, never `path.join`: these
+ * are handed to a `PluginFs`, which is either the local disk or a remote POSIX
+ * host over SFTP, and `path.join` emits backslashes when switchdash runs on
+ * Windows. The *absolute* helpers below still use `path.join`, which normalises a
+ * forward-slash tail correctly on every platform.
  */
 
 /**
@@ -12,7 +18,7 @@ import path from 'node:path';
  * file that the switch-connector `configure` skill writes the `SWITCH_*` env
  * block into for a per-location agent.
  */
-export const SWITCH_SETTINGS_RELATIVE_PATH = path.join('.claude', 'settings.local.json');
+export const SWITCH_SETTINGS_RELATIVE_PATH = '.claude/settings.local.json';
 
 /**
  * Directory, relative to an agent's working directory, where the switch-connector
@@ -20,7 +26,7 @@ export const SWITCH_SETTINGS_RELATIVE_PATH = path.join('.claude', 'settings.loca
  * (`<subagent_name>.settings.json`). switchdash discovers a parent agent's
  * launchable Claude Code subagents by scanning this directory.
  */
-export const SWITCH_SUBAGENTS_DIR_RELATIVE = path.join('.claude', 'switch-subagents');
+export const SWITCH_SUBAGENTS_DIR_RELATIVE = '.claude/switch-subagents';
 
 /** Absolute path to a subagent's Switch credentials file under `dir`. */
 export function subagentSettingsPath(dir: string, agentName: string): string {
@@ -36,14 +42,14 @@ export function subagentSettingsPath(dir: string, agentName: string): string {
  * (CHOO-1440). The `.claude/agents/<name>.md` *definition* stays under `.claude`
  * because it is Claude-specific; only the Switch credentials move here.
  */
-export const SWITCH_AGENTS_DIR_RELATIVE = path.join('.switch', 'agents');
+export const SWITCH_AGENTS_DIR_RELATIVE = '.switch/agents';
 
 /**
  * Relative path to the `.gitignore` that keeps the per-agent credentials files
  * (which contain `SWITCH_API_TOKEN`) out of version control. Its content is `*`
  * so the whole directory is ignored.
  */
-export const SWITCH_AGENTS_GITIGNORE_RELATIVE = path.join(SWITCH_AGENTS_DIR_RELATIVE, '.gitignore');
+export const SWITCH_AGENTS_GITIGNORE_RELATIVE = `${SWITCH_AGENTS_DIR_RELATIVE}/.gitignore`;
 
 /**
  * Relative path (from a location dir) to an agent's provider-neutral Switch
@@ -51,7 +57,7 @@ export const SWITCH_AGENTS_GITIGNORE_RELATIVE = path.join(SWITCH_AGENTS_DIR_RELA
  * definition name for a subagent-derived agent, or its stable name otherwise.
  */
 export function agentSettingsRelativePath(slug: string): string {
-  return path.join(SWITCH_AGENTS_DIR_RELATIVE, `${slug}.json`);
+  return `${SWITCH_AGENTS_DIR_RELATIVE}/${slug}.json`;
 }
 
 /** Absolute path to an agent's provider-neutral Switch credentials file under `dir`. */
