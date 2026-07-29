@@ -5,7 +5,7 @@ import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
-import { agentSettingsPath } from '@main/core/agents/switch-settings-paths';
+import { resolveAgentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -20,7 +20,7 @@ import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
-import { readAgentSwitchEnv } from '@main/core/switch-rooms/switch-credentials';
+import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
@@ -201,17 +201,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // to sit in `.claude/settings.local.json`. Real env vars outrank every
       // settings file and reach the spawned MCP server, so inject the agent's
       // identity last (highest precedence): a subagent from its definition creds,
-      // and a plain agent from its provider-neutral `.switch/agents/<name>.json`
+      // and a plain agent from its provider-neutral `.switch/agents/<slug>.json`
       // (empty when absent — the session then falls back to settings.local.json,
-      // which Claude reads natively). Keyed by `name` — the one key-space every
-      // writer uses (CHOO-1440); id is only a fallback for a nameless legacy row.
+      // which Claude reads natively).
+      const workspaceFs = createPluginFs(this.sessionPath);
       const subagentVars =
         session.agentName && repoAgents
-          ? await repoAgents.readLaunchEnv(createPluginFs(this.sessionPath), session.agentName)
-          : await readAgentSwitchEnv(
-              agentSettingsPath(this.sessionPath, session.agentName ?? session.agentId),
-              log
-            );
+          ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
+          : await readAgentSwitchEnvFromFs(workspaceFs, await resolveAgentCredsSlug(session), log);
 
       const pty = spawnLocalPty({
         id: ptySessionId,

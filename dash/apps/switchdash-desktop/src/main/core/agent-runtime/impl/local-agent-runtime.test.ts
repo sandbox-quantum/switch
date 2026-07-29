@@ -55,8 +55,14 @@ vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
   },
 }));
 
+// Stubbed so importing the runtime doesn't pull in the DB client (no Electron
+// `app` in tests). The agent row is what resolves the credentials-file slug.
+vi.mock('@main/core/agents/getAgentById', () => ({
+  getAgentById: vi.fn(async () => ({ name: 'codex-hoot' })),
+}));
+
 vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
-  readAgentSwitchEnv: vi.fn(async () => ({})),
+  readAgentSwitchEnvFromFs: vi.fn(async () => ({})),
 }));
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
@@ -154,6 +160,7 @@ vi.mock('@main/core/settings/settings-service', () => ({
 }));
 
 const { events } = await import('@main/lib/events');
+const { readAgentSwitchEnvFromFs } = await import('@main/core/switch-rooms/switch-credentials');
 const { agentHookService } = await import('@main/core/agent-hooks/agent-hook-service');
 const { appSettingsService } = await import('@main/core/settings/settings-service');
 
@@ -247,6 +254,30 @@ describe('local agent runtime respawn state', () => {
     vi.mocked(agentHookService.getPort).mockReturnValue(0);
     vi.mocked(agentHookService.getToken).mockReturnValue('token');
     ptySessionRegistry.unregister('location-1:session-1');
+  });
+
+  it('reads the identity file keyed by the agent row name, not the session id', async () => {
+    // Every writer keys `.switch/agents/<slug>.json` by the agent's name; a
+    // reader that keyed by id would silently fall back to the shared
+    // settings.local.json identity (CHOO-1440).
+    const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
+    spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
+    vi.mocked(readAgentSwitchEnvFromFs).mockResolvedValueOnce({
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_API_TOKEN: 'tok-123',
+      SWITCH_AGENT_ID: 'sw-1',
+    });
+
+    await localProvider().start(session());
+
+    expect(readAgentSwitchEnvFromFs).toHaveBeenCalledWith(
+      expect.anything(),
+      'codex-hoot',
+      expect.anything()
+    );
+    const request = spawnLocalPty.mock.calls[0][0] as { env: Record<string, string> };
+    expect(request.env.SWITCH_API_TOKEN).toBe('tok-123');
+    expect(request.env.SWITCH_AGENT_ID).toBe('sw-1');
   });
 
   it('passes global editor variables to local agent sessions', async () => {

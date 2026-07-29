@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
@@ -117,6 +118,7 @@ function emitReconnected(connectionId: string): void {
 }
 
 const { events } = await import('@main/lib/events');
+const { getAgentById } = await import('@main/core/agents/getAgentById');
 
 type ProviderState = {
   known: boolean;
@@ -139,14 +141,31 @@ function makeCtx(): ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'] {
   return { exec: vi.fn(async () => ({ stdout: '', stderr: '' })) } as never;
 }
 
+/** A remote filesystem holding `files` (keyed by repo-relative path); anything
+ *  else reads as NOT_FOUND, matching SshFileSystem. */
+function makeRemoteFs(files: Record<string, string> = {}) {
+  return {
+    copyLocalFile: vi.fn(async () => {}),
+    read: vi.fn(async (relPath: string) => {
+      const content = files[relPath];
+      if (content === undefined) {
+        throw new FileSystemError(`no such file: ${relPath}`, FileSystemErrorCodes.NOT_FOUND);
+      }
+      return { content };
+    }),
+  } as never;
+}
+
 function sshProvider({
   proxy = makeProxy(),
   tmux = false,
   ctx = makeCtx(),
+  fs = makeRemoteFs(),
 }: {
   proxy?: SshClientProxy;
   tmux?: boolean;
   ctx?: ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'];
+  fs?: ConstructorParameters<typeof SshAgentRuntime>[0]['fs'];
 } = {}) {
   return new SshAgentRuntime({
     locationId: 'location-1',
@@ -154,7 +173,7 @@ function sshProvider({
     sessionPath: '/repo',
     tmux,
     ctx,
-    fs: { copyLocalFile: vi.fn(async () => {}) } as never,
+    fs,
     proxy,
     connectionId: 'ssh-1',
   });
@@ -228,6 +247,41 @@ describe('SshAgentRuntime', () => {
       expect.anything()
     );
     expect(ptySessionRegistry.get(sessionId)).toBeDefined();
+  });
+
+  it('injects the agent identity from its neutral creds file for a provider without repo-agents', async () => {
+    // Codex has no `repoAgents` behavior, so there is no `readLaunchEnv` hook to
+    // go through — the runtime must still read `.switch/agents/<name>.json` from
+    // the VM, or the remote session authenticates to Switch as nobody.
+    vi.mocked(getAgentById).mockResolvedValueOnce({
+      autoApprove: false,
+      name: 'codex-hoot',
+    } as never);
+    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
+    mockSpawn(exitHandlers);
+
+    await sshProvider({
+      fs: makeRemoteFs({
+        '.switch/agents/codex-hoot.json': JSON.stringify({
+          env: {
+            SWITCH_API_ENDPOINT: 'https://switch.example.com',
+            SWITCH_API_TOKEN: 'tok-123',
+            SWITCH_AGENT_ID: 'sw-1',
+          },
+        }),
+      }),
+    }).start(session());
+
+    expect(resolveSshCommand).toHaveBeenCalledWith(
+      'agent',
+      expect.anything(),
+      expect.objectContaining({
+        SWITCH_API_ENDPOINT: 'https://switch.example.com',
+        SWITCH_API_TOKEN: 'tok-123',
+        SWITCH_AGENT_ID: 'sw-1',
+      }),
+      expect.anything()
+    );
   });
 
   it('propagates a failed SSH channel open as an error', async () => {

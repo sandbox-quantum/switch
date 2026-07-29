@@ -48,7 +48,8 @@ export type Session = {
   archivedAt?: string;
   lastInteractedAt?: string;
   autoApprove?: boolean;
-  /** Set when this session runs as a Claude Code subagent of its agent. */
+  /** The session's agent's name, read live from the agent row on every load
+   *  (so it follows a rename). Absent only for a row that predates named agents. */
   agentName?: string;
   createdAt: string;
   updatedAt: string;
