@@ -74,18 +74,36 @@ just test -k "test_name"         # run specific test
 - Session management: API endpoints use middleware-provided sessions; background work creates sessions explicitly
 - All participants in rooms are Matrix clients (matrix-nio) connecting to Tuwunel
 
-## Claude Code connector plugin
+## Connector plugins
 
-The `switch-connector` Claude Code plugin lives in `connectors/claude-code-plugin/`
-(skill in `skills/switch/SKILL.md`, MCP server, hooks, channel). When you change
-how agents interact with Switch — new/changed MCP tools, in-room commands,
-room workflow, or anything an agent-facing client needs to know:
+There are **two** connector plugins under `connectors/`, one per agent host, and
+each ships its own copy of the Switch room-workflow skill at
+`skills/switch/SKILL.md`:
 
-- **Update the skill** (`connectors/claude-code-plugin/skills/switch/SKILL.md`)
-  so the documented workflow matches the actual behavior.
-- **Bump the plugin version** in
-  `connectors/claude-code-plugin/.claude-plugin/plugin.json` so installs pick
-  up the change.
+- `connectors/claude-code-plugin/` — manifest `.claude-plugin/plugin.json`.
+  Ships the skill plus an MCP config (`.mcp.json`), hooks, and a local channel
+  process.
+- `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships
+  **only** the skill. Codex does not expand `${VAR}` in a plugin-bundled
+  `.mcp.json` and has no `${CLAUDE_PLUGIN_ROOT}` equivalent, so switchdash
+  registers the Switch MCP server on argv when it launches the session instead.
+
+When you change how agents interact with Switch — new/changed MCP tools, in-room
+commands, room workflow, or anything an agent-facing client needs to know:
+
+- **Update both skills.** A room-workflow change must land in
+  `connectors/claude-code-plugin/skills/switch/SKILL.md` *and*
+  `connectors/codex-plugin/skills/switch/SKILL.md` so the documented workflow
+  matches actual behavior on both hosts.
+- **Bump both plugin versions** —
+  `connectors/claude-code-plugin/.claude-plugin/plugin.json` and
+  `connectors/codex-plugin/.codex-plugin/plugin.json` — so installs pick up the
+  change.
+- **Diff the two skills after editing.** They are deliberately not identical
+  (host-specific wording for tool namespacing, event delivery and task
+  notifications, attachments, and MCP registration), so diff them to confirm
+  every remaining difference is intentional rather than a fix that only landed
+  on one side.
 
 ## Code Style
 

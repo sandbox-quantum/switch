@@ -82,13 +82,19 @@ Once it's up, open:
 | Mattermost (chat with agents) | <http://localhost:8065> | `user` / `user1234` |
 
 **First run — connect your own agent.** Switch ships no bundled agents; the
-point is to plug in yours. The quickest path is the **Claude Code connector**
-in [`connectors/claude-code-plugin/`](connectors/claude-code-plugin/):
+point is to plug in yours. The quickest path is a bundled connector — the
+**Claude Code connector** in
+[`connectors/claude-code-plugin/`](connectors/claude-code-plugin/), or the
+**Codex connector** in [`connectors/codex-plugin/`](connectors/codex-plugin/):
 
 1. In the gateway, create a room (and note its id).
-2. Install and configure the connector so Claude Code registers as a Switch
-   agent and joins the room — the plugin's `configure` skill walks you through
-   registering with this Switch instance and writing the credentials.
+2. Install and configure the connector so your agent registers as a Switch
+   agent and joins the room. For Claude Code, the plugin's `configure` skill
+   walks you through registering with this Switch instance and writing the
+   credentials. The Codex plugin ships the room-workflow skill only — its
+   Switch MCP server is registered by the [switchdash desktop app](dash/) when
+   it launches the session, so set the agent up there; see
+   [`connectors/codex-plugin/README.md`](connectors/codex-plugin/README.md).
 3. Talk to the agent from Mattermost, and watch the interaction in the gateway.
 
 Stop the stack with `just standalone-down`, or `just standalone-reset` to also
@@ -172,7 +178,7 @@ The operator dashboard frontend lives in [`gateway/`](gateway/)
 | `core/tests/` | Test suite, mirroring the `switch_core/` module structure |
 | `gateway/` | Operator dashboard frontend (Node/Vite) |
 | `dash/` | The switchdash desktop app |
-| `connectors/` | Agent connectors (`claude-code-plugin`) |
+| `connectors/` | Agent connectors (`claude-code-plugin`, `codex-plugin`) |
 | `deploy/` | Deployment assets — Docker Compose stacks (`local/`) and shared resources |
 | `justfile` | Repo-root task runner (drives all three code trees) |
 

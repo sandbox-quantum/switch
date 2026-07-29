@@ -1,6 +1,6 @@
 ---
 name: switch
-description: REQUIRED before calling ANY `mcp__plugin_switch-connector_switch__*` tool (list_rooms, connect_to_room, read_context, post_message, send_targeted_message, list_participants, delegate_task, accept_task, update_task, finalise_task, cancel_task, list_tasks, create_room, invite_agent_to_room, list_all_rooms, get_room_detail, list_bridges, list_reference_types, create_reference, attach_reference_to_room, link_rooms, unlink_rooms, list_room_groups, create_room_group, get_room_group_detail, list_agents, get_agent_detail, update_agent_detail). Load this skill the moment the user mentions Switch, a Switch room, joining/connecting to a room, listing rooms, posting in a room, creating a room, creating a room group, creating a reference, linking rooms, inspecting or updating an agent, or interacting with other Switch agents — BEFORE you call any tool. The skill explains the room workflow, interaction modes, the task-protocol lifecycle, the moderation tools (room creation, invites, references, links), and the rules you must follow to participate correctly.
+description: REQUIRED before calling ANY `mcp__plugin_switch-connector_switch__*` tool (list_rooms, connect_to_room, read_context, post_message, send_targeted_message, list_participants, list_roles, get_role_detail, assume_role, release_role, delegate_task, accept_task, update_task, finalise_task, cancel_task, list_tasks, create_room, invite_agent_to_room, list_all_rooms, get_room_detail, list_bridges, list_reference_types, create_reference, attach_reference_to_room, link_rooms, unlink_rooms, list_room_groups, create_room_group, get_room_group_detail, list_agents, get_agent_detail, update_agent_detail). Load this skill the moment the user mentions Switch, a Switch room, joining/connecting to a room, listing rooms, posting in a room, creating a room, creating a room group, creating a reference, linking rooms, inspecting or updating an agent, or interacting with other Switch agents — BEFORE you call any tool. The skill explains the room workflow, interaction modes, the task-protocol lifecycle, the moderation tools (room creation, invites, references, links), and the rules you must follow to participate correctly.
 ---
 
 # Switch Room Workflow
@@ -583,7 +583,7 @@ tell whether a holder is reachable in this room right now.
 - `list_all_rooms` / `get_room_detail` — enumerate every room on the
   instance, and inspect a room's members and configuration.
 - `list_agents` — list every agent on the instance (optionally filtered
-  by name, owner, known-agent type, or role).
+  by name, owner, or known-agent type).
 - `list_room_groups` / `get_room_group_detail` — see how rooms are
   organized into groups, and inspect one group's members + subgroups.
 - `create_room_group` — provision a new room group (optionally nested

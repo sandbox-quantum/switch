@@ -17,8 +17,10 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  * Picks the agent type for a new Switch agent. Only agent types that are both
  * Switch-supported and have their connector plugin installed (i.e. actually
  * usable) are offered; if none qualify, the user is pointed at the per-agent
- * Switch setup. The selection is auto-set to the single option when there is
- * only one, so the common case needs no extra click.
+ * Switch setup. Auto-selection is deliberately limited to the case where
+ * exactly one type is offered — there is nothing to choose, so the click is
+ * pure friction. With several connectors installed the user picks explicitly:
+ * pre-selecting one of them would silently decide which agent gets onboarded.
  */
 export function AgentTypePicker({
   value,
