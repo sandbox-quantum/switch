@@ -1,4 +1,5 @@
 import { shell, type BrowserWindow, type WebContents } from 'electron';
+import { DEEPLINK_SCHEME, handleDeeplinkUrl } from '@main/app/deeplinks';
 import { getMainWindow } from '@main/app/window';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -30,8 +31,14 @@ function requestExternalLinkOpen(url: string) {
  * message silently did nothing when clicked. Mattermost renders those as
  * `target="_blank"`, which is `window.open`.
  *
- * "Internal" here means the guest's own origin, not the app's: a link back into
- * Mattermost should move the pane, and anything else belongs in the browser.
+ * Three destinations, in order of specificity:
+ *
+ *  - our own `switchdash://` deeplinks, which agents post into rooms so a human
+ *    can jump to the session behind a message. Handled in-process rather than
+ *    handed to the OS: the app is already running and is the registered
+ *    handler, so a round trip through the shell would at best come back to us.
+ *  - the guest's own origin, which moves the pane rather than opening a window.
+ *  - anything else http(s), which belongs in the user's browser.
  */
 export function registerGuestLinkHandlers(guest: WebContents) {
   const guestOrigin = (): string | null => {
@@ -47,26 +54,34 @@ export function registerGuestLinkHandlers(guest: WebContents) {
     return origin !== null && (url === origin || url.startsWith(`${origin}/`));
   };
 
-  guest.setWindowOpenHandler(({ url }) => {
-    if (!/^https?:\/\//i.test(url)) {
-      log.warn('Blocked non-http window.open from embedded room view', { url });
-      return { action: 'deny' };
+  // Never let the guest spawn a window: it would be chrome-less, unmanaged and
+  // outside the room pane. Every case below therefore denies, having routed the
+  // URL somewhere useful first.
+  const route = (url: string): void => {
+    if (url.startsWith(`${DEEPLINK_SCHEME}://`)) {
+      handleDeeplinkUrl(url);
+      return;
     }
-    // Never let the guest spawn a window: it would be chrome-less, unmanaged
-    // and outside the room pane. Same-origin goes to the pane itself instead.
     if (isSameOrigin(url)) {
       void guest.loadURL(url);
-    } else {
-      requestExternalLinkOpen(url);
+      return;
     }
+    if (/^https?:\/\//i.test(url)) {
+      requestExternalLinkOpen(url);
+      return;
+    }
+    log.warn('Blocked link with an unsupported scheme from the embedded room view', { url });
+  };
+
+  guest.setWindowOpenHandler(({ url }) => {
+    route(url);
     return { action: 'deny' };
   });
 
   guest.on('will-navigate', (event, url) => {
     if (isSameOrigin(url)) return;
     event.preventDefault();
-    if (/^https?:\/\//i.test(url)) requestExternalLinkOpen(url);
-    else log.warn('Blocked non-http navigation from embedded room view', { url });
+    route(url);
   });
 }
 

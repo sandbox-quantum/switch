@@ -108,6 +108,10 @@ services:
       # which in the embedded room view is chrome the user cannot meaningfully
       # act on and has to dismiss per account.
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
+      # Agents post `switchdash://session?…` deeplinks so a human can jump from
+      # a message to the session behind it. Mattermost only turns known schemes
+      # into links, so without this they render as unclickable plain text.
+      MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: switchdash
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       # Lets the bridge hard-delete (permanent=true) an agent's transient
