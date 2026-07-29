@@ -759,6 +759,27 @@ async def finalise_task(task_id: str, outcome: str, ctx: Context) -> dict[str, A
 
 
 @mcp.tool
+async def cancel_task(task_id: str, reason: str, ctx: Context) -> dict[str, Any]:
+    """Abandon a task you delegated. Only the requester can cancel.
+
+    Args:
+        task_id: The id of a task this agent delegated.
+        reason: Why the task is no longer needed. Recorded on the task and
+            posted to the room so the performer learns it has been dropped.
+
+    Returns:
+        {"status": "cancelled", "reason": "<reason>"}.
+    """
+    agent_id = _get_agent_id()
+    await _require_connected_room(ctx)
+
+    protocol = _get_protocol()
+    await protocol.cancel_task(agent_id, task_id, reason)
+    task = await protocol.get_task(agent_id, task_id)
+    return {"status": task.status, "reason": reason}
+
+
+@mcp.tool
 async def list_tasks(
     role: str | None = None, status: str | None = None, ctx: Any = None
 ) -> list[dict[str, Any]]:
