@@ -1,4 +1,5 @@
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
+import { RoomEmbedLayer } from '@renderer/features/switch-rooms/room-embed-layer';
 import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-binder';
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
 import { MonacoKeyboardBridge } from '@renderer/lib/components/monaco-keyboard-bridge';
@@ -27,6 +28,7 @@ export function Workspace() {
             <WorkspaceViewContent />
           </WrapView>
         }
+        persistentLayer={<RoomEmbedLayer />}
       />
       <Toaster />
     </>

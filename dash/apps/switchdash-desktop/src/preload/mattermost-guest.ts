@@ -47,6 +47,16 @@ const CHROMELESS_CSS = `
   #channel_view {
     min-width: 0 !important;
   }
+
+  /* Workspace-administration affordances that do not belong in an embedded
+     room: the reader is a switchdash user looking at one conversation, and
+     acting on any of these would take them somewhere the pane cannot show.
+     Add to this list as more surface: each entry is one Mattermost control. */
+
+  /* "Invite others to the workspace", in the channel intro. */
+  #introTextInvite {
+    display: none !important;
+  }
 `;
 
 function suppressLandingInterstitial(): void {

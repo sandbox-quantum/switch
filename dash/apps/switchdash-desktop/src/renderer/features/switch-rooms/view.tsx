@@ -3,7 +3,6 @@ import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { RoomMainPanel } from './room-main-panel';
 
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
@@ -32,7 +31,9 @@ const RoomTitlebar = observer(function RoomTitlebar() {
 export const roomView = {
   WrapView: ({ children }: { children: React.ReactNode; roomId: string }) => <>{children}</>,
   TitlebarSlot: RoomTitlebar,
-  MainPanel: RoomMainPanel,
+  // The conversation itself is drawn by RoomEmbedLayer, which is mounted above
+  // the view switch so its <webview> survives navigating away and back.
+  MainPanel: () => null,
   canActivate: (params: unknown): GuardResult => {
     const roomId =
       typeof params === 'object' && params !== null

@@ -12,9 +12,21 @@ const MAIN_PANEL_MIN_SIZE = '30%';
 interface WorkspaceLayoutProps {
   leftSidebar: ReactNode;
   mainContent: ReactNode;
+  /**
+   * Content overlaid on the main panel that must survive view changes.
+   *
+   * Rendered here rather than inside a view because the per-view subtree is
+   * remounted on navigation, and the embedded room `<webview>` reloads its
+   * whole client whenever it is unmounted or re-parented.
+   */
+  persistentLayer?: ReactNode;
 }
 
-export function WorkspaceLayout({ leftSidebar, mainContent }: WorkspaceLayoutProps) {
+export function WorkspaceLayout({
+  leftSidebar,
+  mainContent,
+  persistentLayer = null,
+}: WorkspaceLayoutProps) {
   const { leftPanelRef, handleDragging, syncLeftOpenFromPanel, isLeftOpen } =
     useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -55,7 +67,10 @@ export function WorkspaceLayout({ leftSidebar, mainContent }: WorkspaceLayoutPro
         )}
       />
       <ResizablePanel id="workspace-main" minSize={MAIN_PANEL_MIN_SIZE}>
-        {mainContent}
+        <div className="relative h-full w-full">
+          {mainContent}
+          {persistentLayer}
+        </div>
       </ResizablePanel>
     </ResizablePanelGroup>
   );
