@@ -20,6 +20,7 @@ import { createAgent } from './createAgent';
 import { getAgents } from './getAgents';
 import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
+import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
 export type OnboardLocationParams = {
   sshHost: string | null;
@@ -127,8 +128,8 @@ async function resolveIdentity(
     };
   }
 
-  await ctx.behavior.writeCredentials(ctx.workspace.fs, {
-    agentName: name,
+  await writeNeutralAgentSettingsFs(ctx.workspace.fs, {
+    slug: name,
     apiEndpoint: ctx.server.apiUrl,
     apiToken: registered.apiKey,
     agentId: registered.id,

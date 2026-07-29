@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SWITCH_CONNECTOR_TOOL_RULES } from '@switchdash/core/agents/plugins';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
+import { createPluginFs } from '@main/core/providers/plugin-fs';
 import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -258,51 +259,31 @@ export async function writeSwitchSettings(params: {
  * the renderer or logged. A `.gitignore` keeps the directory out of version
  * control.
  */
-export async function writeAgentNeutralSettings(params: {
-  dir: string;
-  slug: string;
-  apiEndpoint: string;
-  apiToken: string;
-  agentId: string;
-}): Promise<void> {
-  const settingsPath = path.join(params.dir, agentSettingsRelativePath(params.slug));
-  const gitignorePath = path.join(params.dir, SWITCH_AGENTS_GITIGNORE_RELATIVE);
-
-  let existingRaw: string | null = null;
-  try {
-    existingRaw = await fs.readFile(settingsPath, 'utf8');
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-  }
-
-  const merged = mergeSwitchSettings(existingRaw, params);
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, merged, 'utf8');
-  try {
-    await fs.access(gitignorePath);
-  } catch {
-    await fs.writeFile(gitignorePath, '*\n', 'utf8');
-  }
+export async function writeAgentNeutralSettings(
+  params: { dir: string; slug: string } & SwitchSettingsCredentials
+): Promise<void> {
+  await writeNeutralAgentSettingsFs(createPluginFs(params.dir), params);
 }
 
 /**
  * Write an agent's provider-neutral per-agent Switch credentials over a
  * {@link PluginFs} (local disk or a remote repo dir via SFTP), keyed by `slug`
  * (the agent name) — the authoritative identity switchdash injects at launch
- * (`agentSettingsPath`). Mirrors {@link writeAgentNeutralSettings} but through the
- * transport-agnostic fs so it works at create time for both local and remote
- * agents. This is the unconditional per-agent credential write for every provider;
- * providers with repo-agent definitions (Claude) layer their definition on top.
+ * (`agentSettingsPath`). This is the single per-agent credential writer for every
+ * provider and every transport; providers with repo-agent definitions (Claude)
+ * layer their definition on top.
+ *
+ * The `.gitignore` is written first: it is what keeps `SWITCH_API_TOKEN` out of
+ * version control, so it must already be in place before the token reaches disk.
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
   params: { slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
-  const relPath = agentSettingsRelativePath(params.slug);
-  const merged = mergeSwitchSettings(await workspaceFs.read(relPath), params);
-  await workspaceFs.write(relPath, merged);
   if (!(await workspaceFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
     await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
+  const relPath = agentSettingsRelativePath(params.slug);
+  const merged = mergeSwitchSettings(await workspaceFs.read(relPath), params);
+  await workspaceFs.write(relPath, merged);
 }

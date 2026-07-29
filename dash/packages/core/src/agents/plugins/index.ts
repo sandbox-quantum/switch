@@ -77,7 +77,6 @@ export type {
   LocalRepoAgent,
   RepoAgentAttributes,
   RepoAgentAttributeValue,
-  RepoAgentCredentials,
   RepoAgentDefinition,
   RepoAgentField,
   RepoAgentFieldOption,

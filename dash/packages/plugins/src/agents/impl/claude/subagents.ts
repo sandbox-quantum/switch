@@ -4,7 +4,6 @@ import {
   type LocalRepoAgent,
   type PluginFs,
   type RepoAgentAttributes,
-  type RepoAgentCredentials,
   type RepoAgentDefinition,
   type RepoAgentField,
   SWITCH_AGENT_SETTINGS_DIR,
@@ -458,42 +457,6 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
       if (value) result[key] = value;
     }
     return result;
-  },
-
-  async writeCredentials(workspaceFs, credentials: RepoAgentCredentials): Promise<void> {
-    // Keep the tokens out of git — `*` ignores everything in the directory.
-    const gitignoreRel = path.join(SWITCH_AGENT_SETTINGS_DIR, '.gitignore');
-    if (!(await workspaceFs.exists(gitignoreRel))) {
-      await workspaceFs.write(gitignoreRel, '*\n');
-    }
-
-    const relPath = neutralSettingsRelPath(credentials.agentName);
-    const existing = parseSettingsObject(await workspaceFs.read(relPath));
-    const currentEnv = (existing.env ?? {}) as Record<string, unknown>;
-    const currentPerms =
-      existing.permissions && typeof existing.permissions === 'object'
-        ? (existing.permissions as Record<string, unknown>)
-        : {};
-    const currentAllow = Array.isArray(currentPerms.allow)
-      ? (currentPerms.allow as unknown[]).map(String)
-      : [];
-
-    const settings = {
-      ...existing,
-      // Auto-approve the Switch connector tools so the subagent never has to ask
-      // ("don't ask"), on top of whatever the file already allowed.
-      permissions: {
-        ...currentPerms,
-        allow: dedupe([...currentAllow, ...SWITCH_CONNECTOR_TOOL_RULES]),
-      },
-      env: {
-        ...currentEnv,
-        SWITCH_API_ENDPOINT: credentials.apiEndpoint,
-        SWITCH_API_TOKEN: credentials.apiToken,
-        SWITCH_AGENT_ID: credentials.agentId,
-      },
-    };
-    await workspaceFs.write(relPath, `${JSON.stringify(settings, null, 2)}\n`);
   },
 
   attributeFields(): RepoAgentField[] {

@@ -28,14 +28,6 @@ export type RepoAgentDefinition = {
   registered: boolean;
 };
 
-/** Credentials written for an agent so its sessions act under its own identity. */
-export type RepoAgentCredentials = {
-  agentName: string;
-  apiEndpoint: string;
-  apiToken: string;
-  agentId: string;
-};
-
 /**
  * The MCP permission rules that keep a Switch agent connected to the platform:
  * the connector's two MCP servers. Used both as `tools` allowlist entries (so an
@@ -109,8 +101,6 @@ export type IRepoAgentsBehavior = {
   launchArgs(workingDir: string, agentName: string): string[];
   /** The named agent's Switch credentials as env vars, for the launched session. */
   readLaunchEnv(workspaceFs: PluginFs, agentName: string): Promise<Record<string, string>>;
-  /** Write a named agent's credentials so it is immediately runnable. */
-  writeCredentials(workspaceFs: PluginFs, credentials: RepoAgentCredentials): Promise<void>;
   /** The attribute fields this provider supports, in display order. Drives the
    * create/edit form; the first two are always `name` and `description`. */
   attributeFields(): RepoAgentField[];

@@ -31,7 +31,6 @@ function fakeFs(files: Record<string, string>): PluginFs {
 const settingsRel = (name: string) =>
   path.join(CLAUDE_SUBAGENTS.dirRelative, `${name}${CLAUDE_SUBAGENTS.settingsSuffix}`);
 /** Provider-neutral per-agent credentials file (the current write location). */
-const neutralRel = (name: string) => path.join('.switch', 'agents', `${name}.json`);
 const defRel = (name: string) => path.join(CLAUDE_SUBAGENTS.definitionsDirRelative, `${name}.md`);
 
 describe('claudeRepoAgentsBehavior.launchArgs', () => {
@@ -218,53 +217,5 @@ describe('claudeRepoAgentsBehavior.removeLocal', () => {
 
     expect(await workspaceFs.exists(defRel('reviewer'))).toBe(false);
     expect(await workspaceFs.exists(settingsRel('reviewer'))).toBe(false);
-  });
-});
-
-describe('claudeRepoAgentsBehavior.writeSettings', () => {
-  it('writes the credentials JSON, permissions.allow, and a gitignore', async () => {
-    const workspaceFs = fakeFs({});
-    await claudeRepoAgentsBehavior.writeCredentials(workspaceFs, {
-      agentName: 'reviewer',
-      apiEndpoint: 'https://s',
-      apiToken: 'secret',
-      agentId: 'a1',
-    });
-
-    const written = await workspaceFs.read(neutralRel('reviewer'));
-    expect(JSON.parse(written!)).toEqual({
-      permissions: {
-        allow: [
-          'mcp__plugin_switch-connector_switch',
-          'mcp__plugin_switch-connector_switch-channel',
-        ],
-      },
-      env: { SWITCH_API_ENDPOINT: 'https://s', SWITCH_API_TOKEN: 'secret', SWITCH_AGENT_ID: 'a1' },
-    });
-    expect(await workspaceFs.read(path.join('.switch', 'agents', '.gitignore'))).toBe('*\n');
-  });
-
-  it('preserves existing permissions and env, unioning the Switch rules', async () => {
-    const workspaceFs = fakeFs({
-      [neutralRel('reviewer')]: JSON.stringify({
-        permissions: { allow: ['Bash'] },
-        env: { KEEP: 'me' },
-      }),
-    });
-    await claudeRepoAgentsBehavior.writeCredentials(workspaceFs, {
-      agentName: 'reviewer',
-      apiEndpoint: 'https://s',
-      apiToken: 'secret',
-      agentId: 'a1',
-    });
-
-    const settings = JSON.parse((await workspaceFs.read(neutralRel('reviewer')))!);
-    expect(settings.permissions.allow).toEqual([
-      'Bash',
-      'mcp__plugin_switch-connector_switch',
-      'mcp__plugin_switch-connector_switch-channel',
-    ]);
-    expect(settings.env.KEEP).toBe('me');
-    expect(settings.env.SWITCH_AGENT_ID).toBe('a1');
   });
 });

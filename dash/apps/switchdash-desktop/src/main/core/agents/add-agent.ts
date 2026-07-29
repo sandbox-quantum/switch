@@ -77,8 +77,6 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
   if (registered.kind !== 'created') return registered;
 
-  const localAgentId = params.id ?? randomUUID();
-
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
@@ -111,7 +109,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
 
   const agent = await createAgent({
-    id: localAgentId,
+    id: params.id ?? randomUUID(),
     locationId: location.id,
     name: params.name,
     providerId: params.providerId,

@@ -13,6 +13,7 @@ import {
   mergeSwitchApiEndpoint,
   mergeSwitchSettings,
   removeSwitchSettings,
+  writeAgentNeutralSettings,
   writeNeutralAgentSettingsFs,
   writeSwitchSettings,
 } from './write-switch-settings';
@@ -120,12 +121,15 @@ describe('writeNeutralAgentSettingsFs', () => {
     expect(ignore).toBe('*\n');
   });
 
-  it('merges into an existing per-agent file, preserving unrelated env keys', async () => {
+  it('merges into an existing per-agent file, preserving unrelated env keys and allow rules', async () => {
     const relPath = agentSettingsRelativePath('agent-abc');
     await fs.mkdir(path.dirname(path.join(dir, relPath)), { recursive: true });
     await fs.writeFile(
       path.join(dir, relPath),
-      JSON.stringify({ env: { EXISTING: 'keep', SWITCH_API_TOKEN: 'old' } }),
+      JSON.stringify({
+        permissions: { allow: ['Bash'] },
+        env: { EXISTING: 'keep', SWITCH_API_TOKEN: 'old' },
+      }),
       'utf8'
     );
 
@@ -146,6 +150,57 @@ describe('writeNeutralAgentSettingsFs', () => {
       SWITCH_API_TOKEN: 'new-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
+    // The connector's MCP tools are auto-approved on top of whatever the agent
+    // already allowed, so a Switch agent never has to ask to reach its room.
+    expect(settings.permissions).toEqual({
+      allow: [
+        'Bash',
+        'mcp__plugin_switch-connector_switch',
+        'mcp__plugin_switch-connector_switch-channel',
+      ],
+    });
+  });
+
+  it('writes the gitignore before the token file, so a crash never leaves a tracked token', async () => {
+    const writes: string[] = [];
+    const recordingFs = createPluginFs(dir);
+    const write = recordingFs.write.bind(recordingFs);
+    recordingFs.write = async (p, c) => {
+      writes.push(p);
+      return write(p, c);
+    };
+
+    await writeNeutralAgentSettingsFs(recordingFs, {
+      slug: 'agent-abc',
+      apiEndpoint: 'https://switch.example.com',
+      apiToken: 'secret-token',
+      agentId: 'switch-agent-1',
+    });
+
+    expect(writes).toEqual([
+      SWITCH_AGENTS_GITIGNORE_RELATIVE,
+      agentSettingsRelativePath('agent-abc'),
+    ]);
+  });
+});
+
+describe('writeAgentNeutralSettings', () => {
+  it('produces the same file as the PluginFs writer, for a plain directory path', async () => {
+    await writeAgentNeutralSettings({
+      dir,
+      slug: 'agent-abc',
+      apiEndpoint: 'https://switch.example.com',
+      apiToken: 'secret-token',
+      agentId: 'switch-agent-1',
+    });
+
+    const raw = await fs.readFile(path.join(dir, agentSettingsRelativePath('agent-abc')), 'utf8');
+    expect((JSON.parse(raw) as { env: Record<string, string> }).env).toEqual({
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_API_TOKEN: 'secret-token',
+      SWITCH_AGENT_ID: 'switch-agent-1',
+    });
+    expect(await fs.readFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), 'utf8')).toBe('*\n');
   });
 });
 
