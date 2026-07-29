@@ -146,6 +146,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
       sessionId,
       initialPrompt: `connect to switch room ${roomId}`,
       extraEnv: hookEnv,
+      switchApiEndpoint: this.deps.switchEnv.SWITCH_API_ENDPOINT,
     });
 
     await this.startDetachedTmux(tmuxTarget, spec.cwd, command.env, command.command, command.args);

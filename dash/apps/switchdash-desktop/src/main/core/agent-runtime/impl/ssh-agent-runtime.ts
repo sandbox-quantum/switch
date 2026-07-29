@@ -2,6 +2,7 @@ import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
+import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -430,17 +431,32 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         connectionId: this.connectionId,
       });
 
+      // The agent's Switch identity as real env vars (highest precedence): read
+      // from its neutral `.switch/agents/<slug>.json` on the VM. A `--settings`
+      // file's env block is not reliably propagated to the spawned MCP server, so
+      // inject it directly, matching the local runtime.
+      // Resolved before the command is built because an agent that cannot expand
+      // variables in its MCP config needs the endpoint on argv (see below).
+      const remoteFs = createRemotePluginFs(this.fs);
+      const identityVars =
+        session.agentName && repoAgents
+          ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
+          : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
+
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
         extraArgs: parseExtraArgs(providerConfig?.extraArgs),
         // A remote agent runs as its own definition: the provider produces the
         // run-as-name args (Claude → `--agent <name> --settings <neutral creds>`),
         // resolved on the VM (sessionPath is remote). Distinct from user extra
-        // args (CHOO-1440).
-        agentArgs:
-          session.agentName && repoAgents
+        // args (CHOO-1440). The provider also owns how it receives a per-session
+        // Switch MCP server when it cannot read one from a config file.
+        agentArgs: [
+          ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
-            : [],
+            : []),
+          ...switchMcpLaunchArgs(plugin, identityVars.SWITCH_API_ENDPOINT),
+        ],
         autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
@@ -451,16 +467,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
 
       const customEnv = providerConfig?.env ?? {};
       const providerEnv: Record<string, string> = { ...agentCommand.env, ...customEnv };
-
-      // The agent's Switch identity as real env vars (highest precedence): read
-      // from its neutral `.switch/agents/<slug>.json` on the VM. A `--settings`
-      // file's env block is not reliably propagated to the spawned MCP server, so
-      // inject it directly, matching the local runtime.
-      const remoteFs = createRemotePluginFs(this.fs);
-      const identityVars =
-        session.agentName && repoAgents
-          ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
-          : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 

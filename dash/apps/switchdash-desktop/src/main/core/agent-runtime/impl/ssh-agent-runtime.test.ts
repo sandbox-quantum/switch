@@ -16,6 +16,12 @@ const buildCommandMock = vi.hoisted(() =>
     env: {} as Record<string, string>,
   }))
 );
+/** A provider with no `mcp` behavior — it resolves MCP servers from config. */
+const defaultGetPlugin = vi.hoisted(() => (id: string) => ({
+  metadata: { id },
+  capabilities: { hostDependency: { binaryNames: [id] }, hooks: { kind: 'none' } },
+  behavior: { prompt: { buildCommand: buildCommandMock } },
+}));
 const resolveSshCommand = vi.hoisted(() => vi.fn(() => 'remote-cmd'));
 const deployAndLaunch = vi.hoisted(() => vi.fn(async () => ({ port: 9999, token: 'sidecar-tok' })));
 const sidecarStop = vi.hoisted(() => vi.fn(async () => {}));
@@ -67,11 +73,7 @@ vi.mock('@main/core/agents/getAgentById', () => ({
 }));
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
-  getPlugin: vi.fn((id: string) => ({
-    metadata: { id },
-    capabilities: { hostDependency: { binaryNames: [id] }, hooks: { kind: 'none' } },
-    behavior: { prompt: { buildCommand: buildCommandMock } },
-  })),
+  getPlugin: vi.fn(defaultGetPlugin),
 }));
 
 vi.mock('./keystroke-injection', () => ({
@@ -118,6 +120,8 @@ function emitReconnected(connectionId: string): void {
 }
 
 const { events } = await import('@main/lib/events');
+const { getAgentById } = await import('@main/core/agents/getAgentById');
+const { getPlugin } = await import('@main/core/providers/plugin-registry');
 
 type ProviderState = {
   known: boolean;
@@ -222,6 +226,7 @@ describe('SshAgentRuntime', () => {
     openSsh2Pty.mockReset();
     buildCommandMock.mockReset();
     buildCommandMock.mockReturnValue({ command: 'agent', args: [], env: {} });
+    vi.mocked(getPlugin).mockImplementation(defaultGetPlugin as never);
     resolveSshCommand.mockClear();
     deployAndLaunch.mockClear();
     sidecarStop.mockClear();
@@ -277,6 +282,51 @@ describe('SshAgentRuntime', () => {
         SWITCH_AGENT_ID: 'sw-1',
       }),
       expect.anything()
+    );
+  });
+
+  it('registers the Switch MCP server on argv for a provider that needs it there', async () => {
+    // The token reaches the session as an env var, but Codex only learns the
+    // server exists from argv. Without this a remote Codex session comes up
+    // authenticated and with no `switch` tools — configured-looking and inert.
+    vi.mocked(getPlugin).mockImplementation(
+      (id: string) =>
+        ({
+          metadata: { id },
+          capabilities: { hostDependency: { binaryNames: [id] }, hooks: { kind: 'none' } },
+          behavior: {
+            prompt: { buildCommand: buildCommandMock },
+            mcp: {
+              launchArgsForServer: (server: { name: string; url?: string }) => [
+                '-c',
+                `mcp_servers.${server.name}.url=${JSON.stringify(server.url)}`,
+              ],
+            },
+          },
+        }) as never
+    );
+    vi.mocked(getAgentById).mockResolvedValueOnce({
+      autoApprove: false,
+      name: 'codex-hoot',
+    } as never);
+    mockSpawn([]);
+
+    await sshProvider({
+      fs: makeRemoteFs({
+        '.switch/agents/codex-hoot.json': JSON.stringify({
+          env: {
+            SWITCH_API_ENDPOINT: 'https://switch.example.com/',
+            SWITCH_API_TOKEN: 'tok-123',
+            SWITCH_AGENT_ID: 'sw-1',
+          },
+        }),
+      }),
+    }).start(session());
+
+    expect(buildCommandMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentArgs: ['-c', 'mcp_servers.switch.url="https://switch.example.com/mcp/"'],
+      })
     );
   });
 

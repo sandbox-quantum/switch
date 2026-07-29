@@ -8,9 +8,16 @@ const launchArgs = vi.fn((dir: string, name: string) => [
   `${dir}/.switch/agents/${name}.json`,
 ]);
 
+const launchArgsForServer = vi.fn((server: { name: string; url?: string }) => [
+  '-c',
+  `mcp_servers.${server.name}.url=${JSON.stringify(server.url)}`,
+]);
+/** Set per test: whether the mocked provider receives MCP servers on argv. */
+let mcpBehavior: { launchArgsForServer?: typeof launchArgsForServer } | undefined;
+
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({
-    behavior: { prompt: { buildCommand }, repoAgents: { launchArgs } },
+    behavior: { prompt: { buildCommand }, repoAgents: { launchArgs }, mcp: mcpBehavior },
     capabilities: { hostDependency: { binaryNames: ['claude'] } },
   }),
 }));
@@ -22,6 +29,7 @@ vi.mock('@main/core/settings/provider-settings-service', () => ({
 }));
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({ hostDependencyStore: {} }));
 
+import { SWITCH_API_ENDPOINT_PLACEHOLDER } from '@shared/core/switch-rooms/switch-mcp-endpoint';
 import { generateAgentLaunchSpec } from './generate-agent-launch-spec';
 
 const baseParams = {
@@ -37,6 +45,8 @@ describe('generateAgentLaunchSpec', () => {
   beforeEach(() => {
     buildCommand.mockClear();
     launchArgs.mockClear();
+    launchArgsForServer.mockClear();
+    mcpBehavior = undefined;
   });
 
   // The bug (CHOO-1664): autoApprove was hardcoded true, so the remote watcher's
@@ -69,6 +79,28 @@ describe('generateAgentLaunchSpec', () => {
   it('adds no definition launch args when the agent has no definition', async () => {
     await generateAgentLaunchSpec({ ...baseParams, autoApprove: false, agentName: null });
     expect(launchArgs).not.toHaveBeenCalled();
+    expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
+  });
+
+  it('bakes an endpoint placeholder for a provider that takes MCP servers on argv', async () => {
+    // The endpoint is only known on the VM, so the spec carries a token the
+    // watcher substitutes per spawn. Without it a remote auto-started Codex
+    // session gets its token from the sidecar but no `switch` tools at all.
+    mcpBehavior = { launchArgsForServer };
+
+    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+
+    expect(buildCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentArgs: ['-c', `mcp_servers.switch.url="${SWITCH_API_ENDPOINT_PLACEHOLDER}/mcp/"`],
+      })
+    );
+  });
+
+  it('adds no MCP args for a provider that resolves servers from config', async () => {
+    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+
+    expect(launchArgsForServer).not.toHaveBeenCalled();
     expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
   });
 });

@@ -1,8 +1,10 @@
 import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
+import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
+import { SWITCH_API_ENDPOINT_PLACEHOLDER } from '@shared/core/switch-rooms/switch-mcp-endpoint';
 import {
   type AgentLaunchSpec,
   INITIAL_PROMPT_PLACEHOLDER,
@@ -64,8 +66,13 @@ export async function generateAgentLaunchSpec(params: {
     cli,
     extraArgs: parseExtraArgs(providerConfig?.extraArgs),
     // The provider owns how to run as the named agent (CHOO-1440); kept distinct
-    // from user extra args.
-    agentArgs: agentName && repoAgents ? repoAgents.launchArgs(remoteRepoDir, agentName) : [],
+    // from user extra args. A provider that receives its Switch MCP server on
+    // argv gets the endpoint as a placeholder the watcher resolves per spawn,
+    // since the endpoint is only known on the VM.
+    agentArgs: [
+      ...(agentName && repoAgents ? repoAgents.launchArgs(remoteRepoDir, agentName) : []),
+      ...switchMcpLaunchArgs(plugin, SWITCH_API_ENDPOINT_PLACEHOLDER),
+    ],
     autoApprove,
     initialPrompt: INITIAL_PROMPT_PLACEHOLDER,
     sessionId: SESSION_ID_PLACEHOLDER,

@@ -1,13 +1,11 @@
 import type { getPlugin } from '@main/core/providers/plugin-registry';
+import { switchMcpUrl } from '@shared/core/switch-rooms/switch-mcp-endpoint';
 
 /** MCP server name the Switch tools are registered under. */
 export const SWITCH_MCP_SERVER_NAME = 'switch';
 
 /** Env var the agent reads the Switch bearer token from at request time. */
 export const SWITCH_MCP_TOKEN_ENV_VAR = 'SWITCH_API_TOKEN';
-
-/** Path appended to the agent-bridge endpoint to reach its MCP surface. */
-const SWITCH_MCP_PATH_SUFFIX = '/mcp/';
 
 /**
  * Launch arguments registering the Switch MCP server for this session, for
@@ -20,6 +18,10 @@ const SWITCH_MCP_PATH_SUFFIX = '/mcp/';
  * Returns nothing when the provider resolves MCP servers some other way (its
  * connector plugin expands env vars) or when the session has no Switch identity
  * — an agent with no credentials has no endpoint to point at.
+ *
+ * `apiEndpoint` may be `SWITCH_API_ENDPOINT_PLACEHOLDER` when precomputing a
+ * launch spec for the on-VM watcher, which substitutes the real endpoint per
+ * spawn.
  */
 export function switchMcpLaunchArgs(
   plugin: ReturnType<typeof getPlugin>,
@@ -28,13 +30,13 @@ export function switchMcpLaunchArgs(
   const buildArgs = plugin.behavior.mcp?.launchArgsForServer;
   if (!buildArgs) return [];
 
-  const endpoint = apiEndpoint?.trim().replace(/\/+$/, '');
-  if (!endpoint) return [];
+  const url = switchMcpUrl(apiEndpoint);
+  if (url === null) return [];
 
   return buildArgs({
     name: SWITCH_MCP_SERVER_NAME,
     transport: 'http',
-    url: `${endpoint}${SWITCH_MCP_PATH_SUFFIX}`,
+    url,
     bearer_token_env_var: SWITCH_MCP_TOKEN_ENV_VAR,
   });
 }
