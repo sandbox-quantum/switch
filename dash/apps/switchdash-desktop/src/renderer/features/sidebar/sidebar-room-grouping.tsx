@@ -35,6 +35,21 @@ export function openRoomView(roomKey: string): void {
 }
 
 /**
+ * Whether a room row is the one currently open in the main panel, so it can
+ * carry the same selected styling as an agent or session row.
+ *
+ * Read from the navigation store rather than the `useParams` hook because the
+ * room rows are produced inside `.map()` callbacks, where a hook cannot be
+ * called. Observers re-render on navigation either way.
+ */
+export function isRoomViewActive(roomKey: string): boolean {
+  if (roomKey === UNASSIGNED_ROOM_KEY) return false;
+  if (appState.navigation.currentViewId !== 'room') return false;
+  const params = appState.navigation.viewParamsStore.room;
+  return (params as { roomId?: string } | undefined)?.roomId === roomKey;
+}
+
+/**
  * Open a room's bridged channel in the messaging app's desktop client (Slack,
  * Mattermost) via the native deeplink the gateway built. No-op when the room
  * isn't bridged or the link is unknown.
@@ -76,6 +91,7 @@ export function RoomRow({
   onOpenGateway,
   onOpenChannel = null,
   onSelect = null,
+  isActive = false,
   depth = 0,
   bridgeType = null,
 }: {
@@ -87,6 +103,8 @@ export function RoomRow({
   /** Open the room's conversation in the main panel. Null for rows that have
    * no room behind them (Unassigned), which stay expand-only. */
   onSelect?: (() => void) | null;
+  /** True when this room's conversation is the view currently open. */
+  isActive?: boolean;
   /** Open the room's channel in the messaging app, or null when there is no
    * native deeplink (room not bridged / link unknown). */
   onOpenChannel?: (() => void) | null;
@@ -99,6 +117,7 @@ export function RoomRow({
   return (
     <SidebarMenuRow
       className="group/room flex h-8 items-center gap-1 px-1"
+      isActive={isActive}
       style={depthIndent(depth)}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onSelect ?? onToggle}

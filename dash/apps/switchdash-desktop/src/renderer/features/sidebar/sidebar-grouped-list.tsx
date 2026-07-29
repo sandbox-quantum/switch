@@ -16,6 +16,7 @@ import {
   openRoomInGateway,
   openRoomView,
   openRoomInMessagingApp,
+  isRoomViewActive,
   RoomRow,
   roomLabel,
 } from './sidebar-room-grouping';
@@ -125,6 +126,7 @@ const AgentSessions = observer(function AgentSessions({
               bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
               onToggle={() => sidebarStore.toggleGroupExpanded(groupKey)}
               onSelect={roomKey === UNASSIGNED_ROOM_KEY ? null : () => openRoomView(roomKey)}
+              isActive={isRoomViewActive(roomKey)}
               onOpenGateway={() => openRoomInGateway(roomKey)}
               onOpenChannel={
                 switchRoomsStore.roomChannelUrl(roomKey)
@@ -208,6 +210,7 @@ const RoomFocusedTree = observer(function RoomFocusedTree() {
               bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
               onToggle={() => sidebarStore.toggleGroupExpanded(roomViewKey)}
               onSelect={roomKey === UNASSIGNED_ROOM_KEY ? null : () => openRoomView(roomKey)}
+              isActive={isRoomViewActive(roomKey)}
               onOpenGateway={() => openRoomInGateway(roomKey)}
               onOpenChannel={
                 switchRoomsStore.roomChannelUrl(roomKey)
