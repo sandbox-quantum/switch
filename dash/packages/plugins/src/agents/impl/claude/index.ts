@@ -112,6 +112,7 @@ export const plugin = definePlugin(
       marketplaceName: 'switch-plugins',
       marketplaceSource: SWITCH_MARKETPLACE_SOURCE,
       scope: 'user',
+      dialect: 'claude-code',
     },
   },
   { icon }

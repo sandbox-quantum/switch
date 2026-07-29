@@ -54,6 +54,9 @@ type McpConfigShape = {
   serversKey: string;
   toNative(server: McpServerRegistration): Record<string, unknown>;
   fromNative(name: string, raw: Record<string, unknown>): McpServerRegistration;
+  /** See {@link IMcpBehavior.launchArgsForServer}. Omit when the agent has no
+   * need to receive a server on argv. */
+  launchArgsForServer?(server: McpServerRegistration): string[];
 };
 
 function parseMcpFile(content: string, format: 'json' | 'toml'): Record<string, unknown> {
@@ -135,6 +138,9 @@ export function createMcpAdapter(shape: McpConfigShape) {
         await removeFromPath(fs, legacyPath, name);
       }
     },
+    ...(shape.launchArgsForServer
+      ? { launchArgsForServer: shape.launchArgsForServer.bind(shape) }
+      : {}),
   };
 }
 
@@ -189,6 +195,25 @@ export function codexMcpAdapter(configPath = '.codex/config.toml') {
     configPath,
     format: 'toml',
     serversKey: 'mcp_servers',
+    /**
+     * Codex takes config overrides as `-c <dotted.key>=<TOML value>`, at higher
+     * precedence than any config file. Every key is emitted on every call: an
+     * override of `mcp_servers.<name>.url` replaces that server's whole table
+     * rather than merging into it, so a partial set would silently drop the
+     * fields left out.
+     */
+    launchArgsForServer(server: McpServerRegistration): string[] {
+      const entries: Array<[string, string]> = [];
+      if (typeof server.url === 'string') entries.push(['url', server.url]);
+      if (typeof server.bearer_token_env_var === 'string') {
+        entries.push(['bearer_token_env_var', server.bearer_token_env_var]);
+      }
+      if (typeof server.command === 'string') entries.push(['command', server.command]);
+      return entries.flatMap(([key, value]) => [
+        '-c',
+        `mcp_servers.${server.name}.${key}=${JSON.stringify(value)}`,
+      ]);
+    },
     toNative(s) {
       const entry = deepClone(s) as Record<string, unknown>;
       const isHttp =

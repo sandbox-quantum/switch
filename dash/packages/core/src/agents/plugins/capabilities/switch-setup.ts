@@ -19,16 +19,34 @@ export type ISwitchSetupBehavior = {
 };
 
 /**
+ * Which plugin-marketplace CLI dialect an agent speaks.
+ *
+ * Both dialects share the marketplace model — register a marketplace source,
+ * install a named plugin from it — but they disagree on verbs, flags and the
+ * JSON shapes they emit, so the driver cannot assume one from the other:
+ *
+ * - `claude-code`: `plugin install|update|uninstall <ref> -s <scope>`,
+ *   `plugin marketplace update`; `plugin list --json` entries carry `id` and
+ *   `installPath`; manifests live under `.claude-plugin/`.
+ * - `codex`: `plugin add|remove <ref>` (no scope flag, and **no per-plugin
+ *   update verb** — updating is remove-then-add), `plugin marketplace upgrade`;
+ *   `plugin list --json` returns `{ installed, available }` whose entries carry
+ *   `pluginId` and `source.path`; manifests live under `.codex-plugin/`.
+ */
+export const SWITCH_SETUP_CLI_DIALECTS = ['claude-code', 'codex'] as const;
+export type SwitchSetupCliDialect = (typeof SWITCH_SETUP_CLI_DIALECTS)[number];
+
+/**
  * Describes how an agent type installs and manages its Switch connector plugin.
  *
- * kind: 'cli'  — the agent exposes a Claude-Code-style plugin marketplace CLI
- *                (`<agent> plugin install/update/uninstall`, `<agent> plugin
- *                marketplace add/update/list`). The main-process switch-setup
- *                service drives that CLI from these descriptor fields.
+ * kind: 'cli'  — the agent exposes a plugin marketplace CLI. The main-process
+ *                switch-setup service drives that CLI from these descriptor
+ *                fields, using the verb/parse rules for the declared `dialect`.
  * kind: 'none' — the agent has no Switch connector setup; the UI surfaces nothing.
  *
- * The descriptor is purely declarative — the generic CLI driver handles plugin
- * install/update for every agent that shares the marketplace model. The optional
+ * The descriptor is purely declarative — one generic driver serves every agent
+ * that shares the marketplace model, with `dialect` naming the surface
+ * differences rather than forking the code path. The optional
  * {@link ISwitchSetupBehavior} is only for the one thing that can be genuinely
  * provider-specific: where credentials live on disk, so they can be torn down on
  * delete. Providers using the default `.claude` layout omit it.
@@ -44,8 +62,10 @@ export const switchSetupCapability = definePluginCapability<ISwitchSetupBehavior
       marketplaceName: z.string(),
       /** Source passed to `marketplace add`: a GitHub `owner/repo` or a path. */
       marketplaceSource: z.string(),
-      /** Install scope flag for `-s`. */
+      /** Install scope flag for `-s`. Ignored by dialects that have no scope. */
       scope: z.enum(['user', 'project', 'local']).default('user'),
+      /** Which CLI dialect this agent's `plugin` subcommand speaks. */
+      dialect: z.enum(SWITCH_SETUP_CLI_DIALECTS).default('claude-code'),
     }),
     z.object({ kind: z.literal('none') }),
   ])

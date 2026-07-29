@@ -11,6 +11,12 @@
       "description": "Connect Claude Code to a Switch platform instance as a participating agent",
       "category": "integrations",
       "source": "./connectors/claude-code-plugin"
+    },
+    {
+      "name": "switch-connector-codex",
+      "description": "Connect Codex to a Switch platform instance as a participating agent",
+      "category": "integrations",
+      "source": "./connectors/codex-plugin"
     }
   ]
 }

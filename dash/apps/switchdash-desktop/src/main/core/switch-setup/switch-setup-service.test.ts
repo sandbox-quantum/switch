@@ -42,6 +42,7 @@ const CLI_AGENT = {
       marketplaceName: 'switch-plugins',
       marketplaceSource: 'sandbox-quantum/switch',
       scope: 'user',
+      dialect: 'claude-code',
     },
     hostDependency: { binaryNames: ['claude'] },
   },

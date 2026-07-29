@@ -8,6 +8,20 @@ export type IMcpBehavior = {
   readServers(fs: PluginFs): Promise<McpServerRegistration[]>;
   writeServers(fs: PluginFs, servers: McpServerRegistration[]): Promise<void>;
   removeServer(fs: PluginFs, name: string): Promise<void>;
+  /**
+   * Render a server as launch arguments, for agents that must receive a
+   * per-session MCP server on the command line rather than from a config file.
+   *
+   * Implement this only when the agent cannot resolve a server whose address
+   * varies per session any other way. An agent whose connector plugin expands
+   * environment variables in its bundled MCP config (Claude Code) leaves this
+   * undefined: the config file is already per-session because the values are.
+   * Codex performs no such expansion — a plugin-bundled `.mcp.json` reaches the
+   * server with `${VAR}` intact — and writing the resolved address into its
+   * single global config would make two agents in one location overwrite each
+   * other, so its address must ride on argv.
+   */
+  launchArgsForServer?(server: McpServerRegistration): string[];
 };
 
 export type McpServerRegistration = {

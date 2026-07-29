@@ -5,11 +5,8 @@ import { sshConnectionIdForHost } from '@main/core/locations/location-transport'
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
-import type {
-  MarketplaceListEntry,
-  SwitchSetupResult,
-  SwitchSetupStatus,
-} from './switch-setup-service';
+import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
+import type { SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
 import { marketplaceMatchesSource } from './switch-setup-service';
 
 const EXEC_TIMEOUT_MS = 120_000;
@@ -83,7 +80,7 @@ export class RemoteSwitchSetupService {
     if (!binaryName) return null;
     const bin = (await resolveCommandPath(binaryName, this.ctx)) ?? binaryName;
     const ref = `${descriptor.pluginName}@${descriptor.marketplaceName}`;
-    return { descriptor, bin, ref };
+    return { descriptor, bin, ref, rules: cliRulesFor(descriptor.dialect) };
   }
 
   private async run(bin: string, args: string[]): Promise<RunResult> {
@@ -106,30 +103,33 @@ export class RemoteSwitchSetupService {
     }
   }
 
-  private async findInstalled(bin: string, ref: string) {
+  private async findInstalled(bin: string, ref: string, rules: SwitchSetupCliRules) {
     const { stdout } = await this.run(bin, ['plugin', 'list', '--json']);
-    const parsed = parseJsonLoose(stdout);
-    if (parsed === null) return null;
-    const list: Array<{ id?: string; version?: string }> = Array.isArray(parsed)
-      ? parsed
-      : (((parsed as { installed?: unknown[] })?.installed ?? []) as never[]);
-    return list.find((p) => p.id === ref) ?? null;
+    return rules.parsePluginList(parseJsonLoose(stdout)).find((p) => p.ref === ref) ?? null;
   }
 
+  /**
+   * Advertised version from CLI output alone — no SFTP round-trip to read
+   * manifests. Null means "unknown", which callers must not read as up to date;
+   * a dialect that does not report versions for uninstalled plugins always
+   * returns null here.
+   */
   private async advertisedVersion(
     bin: string,
     marketplaceName: string,
-    pluginName: string
+    pluginName: string,
+    rules: SwitchSetupCliRules
   ): Promise<string | null> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    const parsed = parseJsonLoose(stdout);
-    if (!Array.isArray(parsed)) return null;
-    const markets = parsed as Array<{
-      name?: string;
-      plugins?: Array<{ name?: string; version?: string }>;
-    }>;
-    const market = markets.find((m) => m.name === marketplaceName);
-    return market?.plugins?.find((p) => p.name === pluginName)?.version ?? null;
+    const fromMarketplace = rules
+      .parseAdvertisedVersions(parseJsonLoose(stdout), marketplaceName)
+      .get(pluginName);
+    if (fromMarketplace) return fromMarketplace;
+    const { stdout: pluginStdout } = await this.run(bin, ['plugin', 'list', '--json']);
+    return (
+      rules.parseAdvertisedVersions(parseJsonLoose(pluginStdout), marketplaceName).get(pluginName) ??
+      null
+    );
   }
 
   /**
@@ -141,18 +141,18 @@ export class RemoteSwitchSetupService {
   private async ensureMarketplace(
     bin: string,
     marketplaceName: string,
-    marketplaceSource: string
+    marketplaceSource: string,
+    rules: SwitchSetupCliRules
   ): Promise<void> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    const parsed = parseJsonLoose(stdout);
-    const existing = Array.isArray(parsed)
-      ? (parsed as MarketplaceListEntry[]).find((m) => m.name === marketplaceName)
-      : undefined;
+    const existing = rules
+      .parseMarketplaceList(parseJsonLoose(stdout))
+      .find((m) => m.name === marketplaceName);
     if (existing) {
       if (marketplaceMatchesSource(existing, marketplaceSource)) return;
       log.warn('remote-switch-setup: re-pointing marketplace to current source', {
         marketplaceName,
-        from: existing.repo ?? existing.path ?? null,
+        from: existing.source,
         to: marketplaceSource,
       });
       const removed = await this.run(bin, ['plugin', 'marketplace', 'remove', marketplaceName]);
@@ -171,14 +171,15 @@ export class RemoteSwitchSetupService {
   async getStatus(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
-    const { descriptor, bin, ref } = resolved;
+    const { descriptor, bin, ref, rules } = resolved;
 
-    const entry = await this.findInstalled(bin, ref);
+    const entry = await this.findInstalled(bin, ref, rules);
     const installedVersion = entry?.version ?? null;
     const latestVersion = await this.advertisedVersion(
       bin,
       descriptor.marketplaceName,
-      descriptor.pluginName
+      descriptor.pluginName,
+      rules
     );
     const installed = entry !== null;
     const updateAvailable =
@@ -205,16 +206,16 @@ export class RemoteSwitchSetupService {
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
-    const { descriptor, bin } = resolved;
+    const { descriptor, bin, rules } = resolved;
     let refreshError: string | null = null;
     try {
-      await this.ensureMarketplace(bin, descriptor.marketplaceName, descriptor.marketplaceSource);
-      const res = await this.run(bin, [
-        'plugin',
-        'marketplace',
-        'update',
+      await this.ensureMarketplace(
+        bin,
         descriptor.marketplaceName,
-      ]);
+        descriptor.marketplaceSource,
+        rules
+      );
+      const res = await this.run(bin, rules.marketplaceRefreshArgs(descriptor.marketplaceName));
       if (res.code !== 0) {
         throw new Error(
           res.stderr.trim() || `Failed to update marketplace ${descriptor.marketplaceName}`
@@ -231,13 +232,18 @@ export class RemoteSwitchSetupService {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref } = resolved;
+    const { descriptor, bin, ref, rules } = resolved;
     try {
-      await this.ensureMarketplace(bin, descriptor.marketplaceName, descriptor.marketplaceSource);
+      await this.ensureMarketplace(
+        bin,
+        descriptor.marketplaceName,
+        descriptor.marketplaceSource,
+        rules
+      );
     } catch (err) {
       return { success: false, message: `Could not add marketplace: ${String(err)}` };
     }
-    const res = await this.run(bin, ['plugin', 'install', ref, '-s', descriptor.scope]);
+    const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
     return res.code === 0
       ? { success: true }
       : { success: false, message: res.stderr.trim() || 'Install failed.' };
@@ -247,11 +253,33 @@ export class RemoteSwitchSetupService {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref } = resolved;
-    const res = await this.run(bin, ['plugin', 'update', ref, '-s', descriptor.scope]);
-    return res.code === 0
+    const { descriptor, bin, ref, rules } = resolved;
+    const updateArgs = rules.updateArgs(ref, descriptor.scope);
+    if (updateArgs) {
+      const res = await this.run(bin, updateArgs);
+      return res.code === 0
+        ? { success: true }
+        : { success: false, message: res.stderr.trim() || 'Update failed.' };
+    }
+
+    // No per-plugin update verb (Codex): remove then re-add. A failed re-add
+    // leaves the host with no connector, so say that rather than 'Update failed'.
+    const removed = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
+    if (removed.code !== 0) {
+      return {
+        success: false,
+        message: removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
+      };
+    }
+    const added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
+    return added.code === 0
       ? { success: true }
-      : { success: false, message: res.stderr.trim() || 'Update failed.' };
+      : {
+          success: false,
+          message:
+            added.stderr.trim() ||
+            'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
+        };
   }
 
   /** Status of every Switch-supported agent type's connector plugin on this host. */

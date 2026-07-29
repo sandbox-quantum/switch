@@ -83,7 +83,12 @@ export type {
   RepoAgentFieldType,
   RepoAgentsDescriptor,
 } from './capabilities/repo-agents';
-export type { ISwitchSetupBehavior, SwitchSetupDescriptor } from './capabilities/switch-setup';
+export type {
+  ISwitchSetupBehavior,
+  SwitchSetupCliDialect,
+  SwitchSetupDescriptor,
+} from './capabilities/switch-setup';
+export { SWITCH_SETUP_CLI_DIALECTS } from './capabilities/switch-setup';
 
 // Typed registry factory
 export { createPluginRegistry } from '../../lib/plugins/registry';

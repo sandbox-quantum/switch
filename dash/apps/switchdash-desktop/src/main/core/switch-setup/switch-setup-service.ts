@@ -5,6 +5,12 @@ import semver from 'semver';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { log } from '@main/lib/logger';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
+import {
+  cliRulesFor,
+  type InstalledPlugin,
+  type RegisteredMarketplace,
+  type SwitchSetupCliRules,
+} from './switch-setup-cli-dialect';
 
 /** Status of an agent type's Switch connector plugin. */
 export type SwitchSetupStatus = {
@@ -23,18 +29,9 @@ export type SwitchSetupStatus = {
   refreshError: string | null;
 };
 
-/** Marketplace entry shape from `plugin marketplace list --json`. */
-export type MarketplaceListEntry = {
-  name?: string;
-  source?: string;
-  repo?: string;
-  path?: string;
-  installLocation?: string;
-};
-
-/** Whether a registered marketplace entry points at the expected source (repo or path). */
-export function marketplaceMatchesSource(entry: MarketplaceListEntry, source: string): boolean {
-  return entry.repo === source || entry.path === source;
+/** Whether a registered marketplace entry points at the expected source. */
+export function marketplaceMatchesSource(entry: RegisteredMarketplace, source: string): boolean {
+  return entry.source === source;
 }
 
 /** Outcome of a mutating operation, mirroring the providers controller shape. */
@@ -43,6 +40,15 @@ export type SwitchSetupResult = { success: boolean; message?: string };
 const EXEC_TIMEOUT_MS = 120_000;
 
 type RunResult = { code: number; stdout: string; stderr: string };
+
+/** Parse CLI JSON, yielding null rather than throwing on unparseable output. */
+function parseJsonOrNull(stdout: string): unknown {
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+}
 
 function unsupported(agentId: string): SwitchSetupStatus {
   return {
@@ -81,7 +87,7 @@ class SwitchSetupService {
     if (!binaryName) return null;
     const bin = (await resolveCommandPath(binaryName, this.ctx)) ?? binaryName;
     const ref = `${descriptor.pluginName}@${descriptor.marketplaceName}`;
-    return { descriptor, bin, ref };
+    return { descriptor, bin, ref, rules: cliRulesFor(descriptor.dialect) };
   }
 
   /** Run a CLI command, capturing output and exit code without throwing. */
@@ -103,31 +109,25 @@ class SwitchSetupService {
     }
   }
 
-  /** Find the installed plugin entry from `plugin list --json` (array or {installed}). */
-  private async findInstalled(bin: string, ref: string) {
+  /** Find the installed plugin entry from `plugin list --json`. */
+  private async findInstalled(
+    bin: string,
+    ref: string,
+    rules: SwitchSetupCliRules
+  ): Promise<InstalledPlugin | null> {
     const { stdout } = await this.run(bin, ['plugin', 'list', '--json']);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch {
-      return null;
-    }
-    const list: Array<{ id?: string; version?: string; installPath?: string }> = Array.isArray(
-      parsed
-    )
-      ? parsed
-      : (((parsed as { installed?: unknown[] })?.installed ?? []) as never[]);
-    return list.find((p) => p.id === ref) ?? null;
+    return rules.parsePluginList(parseJsonOrNull(stdout)).find((p) => p.ref === ref) ?? null;
   }
 
-  /** Read the true installed version from the install dir's plugin.json (robust). */
+  /** Read the true installed version from the plugin manifest, falling back to the CLI's. */
   private async installedVersion(
-    entry: { version?: string; installPath?: string } | null
+    entry: InstalledPlugin | null,
+    rules: SwitchSetupCliRules
   ): Promise<string | null> {
     if (!entry) return null;
-    if (entry.installPath) {
+    if (entry.manifestPath) {
       const manifest = await this.readJson<{ version?: string }>(
-        join(entry.installPath, '.claude-plugin', 'plugin.json')
+        join(entry.manifestPath, rules.pluginManifestDir, 'plugin.json')
       );
       if (manifest?.version) return manifest.version;
     }
@@ -138,24 +138,21 @@ class SwitchSetupService {
   private async advertisedVersion(
     bin: string,
     marketplaceName: string,
-    pluginName: string
+    pluginName: string,
+    rules: SwitchSetupCliRules
   ): Promise<string | null> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    let markets: Array<{ name?: string; installLocation?: string }>;
-    try {
-      markets = JSON.parse(stdout);
-    } catch {
-      return null;
-    }
-    const market = markets.find((m) => m.name === marketplaceName);
-    if (!market?.installLocation) return null;
+    const market = rules
+      .parseMarketplaceList(parseJsonOrNull(stdout))
+      .find((m) => m.name === marketplaceName && m.root !== null);
+    if (!market?.root) return null;
     const manifest = await this.readJson<{ plugins?: Array<{ name?: string; source?: string }> }>(
-      join(market.installLocation, '.claude-plugin', 'marketplace.json')
+      join(market.root, rules.marketplaceManifestDir, 'marketplace.json')
     );
     const entry = manifest?.plugins?.find((p) => p.name === pluginName);
     if (!entry?.source) return null;
     const pluginManifest = await this.readJson<{ version?: string }>(
-      join(market.installLocation, entry.source, '.claude-plugin', 'plugin.json')
+      join(market.root, entry.source, rules.pluginManifestDir, 'plugin.json')
     );
     return pluginManifest?.version ?? null;
   }
@@ -169,31 +166,27 @@ class SwitchSetupService {
   private async ensureMarketplace(
     bin: string,
     marketplaceName: string,
-    marketplaceSource: string
+    marketplaceSource: string,
+    rules: SwitchSetupCliRules
   ): Promise<void> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    try {
-      const markets: MarketplaceListEntry[] = JSON.parse(stdout);
-      const existing = markets.find((m) => m.name === marketplaceName);
-      if (existing) {
-        if (marketplaceMatchesSource(existing, marketplaceSource)) return;
-        log.warn('switch-setup: re-pointing marketplace to current source', {
-          marketplaceName,
-          from: existing.repo ?? existing.path ?? null,
-          to: marketplaceSource,
-        });
-        const removed = await this.run(bin, ['plugin', 'marketplace', 'remove', marketplaceName]);
-        if (removed.code !== 0) {
-          throw new Error(
-            removed.stderr.trim() || `Failed to remove stale marketplace ${marketplaceName}`
-          );
-        }
-      }
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        // Unparseable list output — fall through and attempt to add.
-      } else {
-        throw err;
+    // An unreadable listing yields no entries, so we fall through and attempt the
+    // add — which is idempotent — rather than treating it as fatal.
+    const existing = rules
+      .parseMarketplaceList(parseJsonOrNull(stdout))
+      .find((m) => m.name === marketplaceName);
+    if (existing) {
+      if (marketplaceMatchesSource(existing, marketplaceSource)) return;
+      log.warn('switch-setup: re-pointing marketplace to current source', {
+        marketplaceName,
+        from: existing.source,
+        to: marketplaceSource,
+      });
+      const removed = await this.run(bin, ['plugin', 'marketplace', 'remove', marketplaceName]);
+      if (removed.code !== 0) {
+        throw new Error(
+          removed.stderr.trim() || `Failed to remove stale marketplace ${marketplaceName}`
+        );
       }
     }
     const res = await this.run(bin, ['plugin', 'marketplace', 'add', marketplaceSource]);
@@ -206,14 +199,15 @@ class SwitchSetupService {
   async getStatus(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
-    const { descriptor, bin } = resolved;
+    const { descriptor, bin, rules } = resolved;
 
-    const entry = await this.findInstalled(bin, resolved.ref);
-    const installedVersion = await this.installedVersion(entry);
+    const entry = await this.findInstalled(bin, resolved.ref, rules);
+    const installedVersion = await this.installedVersion(entry, rules);
     const latestVersion = await this.advertisedVersion(
       bin,
       descriptor.marketplaceName,
-      descriptor.pluginName
+      descriptor.pluginName,
+      rules
     );
     const installed = entry !== null;
     const updateAvailable =
@@ -255,16 +249,16 @@ class SwitchSetupService {
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
-    const { descriptor, bin } = resolved;
+    const { descriptor, bin, rules } = resolved;
     let refreshError: string | null = null;
     try {
-      await this.ensureMarketplace(bin, descriptor.marketplaceName, descriptor.marketplaceSource);
-      const res = await this.run(bin, [
-        'plugin',
-        'marketplace',
-        'update',
+      await this.ensureMarketplace(
+        bin,
         descriptor.marketplaceName,
-      ]);
+        descriptor.marketplaceSource,
+        rules
+      );
+      const res = await this.run(bin, rules.marketplaceRefreshArgs(descriptor.marketplaceName));
       if (res.code !== 0) {
         throw new Error(
           res.stderr.trim() || `Failed to update marketplace ${descriptor.marketplaceName}`
@@ -281,35 +275,67 @@ class SwitchSetupService {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref } = resolved;
+    const { descriptor, bin, ref, rules } = resolved;
     try {
-      await this.ensureMarketplace(bin, descriptor.marketplaceName, descriptor.marketplaceSource);
+      await this.ensureMarketplace(
+        bin,
+        descriptor.marketplaceName,
+        descriptor.marketplaceSource,
+        rules
+      );
     } catch (err) {
       return { success: false, message: `Could not add marketplace: ${String(err)}` };
     }
-    const res = await this.run(bin, ['plugin', 'install', ref, '-s', descriptor.scope]);
+    const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
     return res.code === 0
       ? { success: true }
       : { success: false, message: res.stderr.trim() || 'Install failed.' };
   }
 
+  /**
+   * Update the installed plugin. Dialects without a per-plugin update verb
+   * (Codex) are updated by uninstalling and reinstalling; a failed reinstall is
+   * reported as such rather than as a plain update failure, because it leaves
+   * the agent with no connector rather than with the previous version.
+   */
   async update(agentId: string): Promise<SwitchSetupResult> {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref } = resolved;
-    const res = await this.run(bin, ['plugin', 'update', ref, '-s', descriptor.scope]);
-    return res.code === 0
+    const { descriptor, bin, ref, rules } = resolved;
+
+    const updateArgs = rules.updateArgs(ref, descriptor.scope);
+    if (updateArgs) {
+      const res = await this.run(bin, updateArgs);
+      return res.code === 0
+        ? { success: true }
+        : { success: false, message: res.stderr.trim() || 'Update failed.' };
+    }
+
+    const removed = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
+    if (removed.code !== 0) {
+      return {
+        success: false,
+        message: removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
+      };
+    }
+    const added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
+    return added.code === 0
       ? { success: true }
-      : { success: false, message: res.stderr.trim() || 'Update failed.' };
+      : {
+          success: false,
+          message:
+            added.stderr.trim() ||
+            'Update failed: the plugin was removed but could not be reinstalled. Install it again from Settings → Agents.',
+        };
   }
 
   async uninstall(agentId: string): Promise<SwitchSetupResult> {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref } = resolved;
-    const res = await this.run(bin, ['plugin', 'uninstall', ref, '-s', descriptor.scope]);
+    const { descriptor, bin, ref, rules } = resolved;
+    const res = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
     return res.code === 0
       ? { success: true }
       : { success: false, message: res.stderr.trim() || 'Uninstall failed.' };

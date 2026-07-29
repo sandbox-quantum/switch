@@ -5,6 +5,7 @@ import {
   homebrewOption,
   npmDependency,
 } from '@switchdash/core/agents/plugins/helpers';
+import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
 import { buildCodexAutoApproveFlag } from './auto-approve';
 import { buildCodexHookConfig } from './hooks';
 import { icon } from './icon';
@@ -65,7 +66,15 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    switchSetup: { kind: 'none' },
+    switchSetup: {
+      kind: 'cli',
+      pluginName: 'switch-connector-codex',
+      marketplaceName: 'switch-plugins',
+      marketplaceSource: SWITCH_MARKETPLACE_SOURCE,
+      // Codex has no install-scope flag; the value is unused for this dialect.
+      scope: 'user',
+      dialect: 'codex',
+    },
   },
   { icon }
 );
