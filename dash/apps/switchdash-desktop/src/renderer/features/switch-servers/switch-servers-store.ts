@@ -1,4 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx';
+import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { rpc } from '@renderer/lib/ipc';
 import type {
   ServerConnectionStatus,
@@ -34,6 +35,14 @@ export class SwitchServersStore {
 
   constructor() {
     makeAutoObservable(this);
+  }
+
+  /** Whether this server is managed on a host the reachability manager has
+   * marked unreachable — nothing it serves can be fetched until that clears. */
+  isHostBlocked(serverId: string): boolean {
+    const server = this.servers.find((s) => s.id === serverId);
+    if (!server?.managed || server.managementKind !== 'remote' || !server.sshHost) return false;
+    return hostReachabilityStore.isBlocked(server.sshHost);
   }
 
   get activeServer(): SwitchServer | null {
@@ -116,6 +125,10 @@ export class SwitchServersStore {
 
   async ensureAuthConfig(serverId: string): Promise<void> {
     if (this.authConfigs.has(serverId)) return;
+    // The gateway of a server on an unreachable host cannot answer, and the
+    // host-unreachable surface already states why — don't paint the global
+    // error banner with a doomed fetch (CHOO-1780).
+    if (this.isHostBlocked(serverId)) return;
     try {
       const config = await rpc.switchServers.getAuthConfig(serverId);
       runInAction(() => {

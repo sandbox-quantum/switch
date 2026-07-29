@@ -1,3 +1,5 @@
+import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
+import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
 import { listManagedServers } from '@main/core/switch-servers/servers-store';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -58,6 +60,7 @@ class RemoteServerService {
   }
 
   async detectDocker(sshHost: string): Promise<DockerAvailability> {
+    hostReachabilityService.requireReachable(sshHost);
     const host = await createRemoteServerHost(sshHost);
     try {
       return await host.detectDocker();
@@ -70,33 +73,56 @@ class RemoteServerService {
    * quit, so their desktop reachability is restored on launch. Best-effort per
    * host: an unreachable host is left `stopped` rather than failing boot. */
   async initialize(): Promise<void> {
+    hostReachabilityService.on('change', ({ current }: HostReachabilityChange) => {
+      if (current.status === 'reachable') void this.onHostReachable(current.sshHost);
+    });
+    for (const [sshHost, serverId] of await this.remoteHosts()) {
+      this.statuses.set(sshHost, initialStatus(sshHost));
+      await this.reconcileHost(sshHost, serverId);
+    }
+  }
+
+  private async remoteHosts(): Promise<Map<string, string>> {
     const remotes = (await listManagedServers()).filter(
       (s) => s.managementKind === 'remote' && s.sshHost
     );
-    for (const server of remotes) {
-      const sshHost = server.sshHost!;
-      this.statuses.set(sshHost, initialStatus(sshHost));
-      let host: RemoteServerHost | null = null;
-      try {
-        host = await createRemoteServerHost(sshHost);
-        if (!(await isStackRunning(host))) {
-          host.dispose();
-          continue;
-        }
-        const ports = await readPersistedPorts(host);
-        if (!ports) {
-          // Running but we don't know its ports — leave it stopped; the user can
-          // restart to re-derive them rather than forward to the wrong ports.
-          host.dispose();
-          continue;
-        }
-        await host.establishNetworking(ports);
-        this.hosts.set(sshHost, host);
-        this.setStatus(sshHost, { phase: 'running', serverId: server.id });
-      } catch (error) {
-        host?.dispose();
-        log.warn(`remote-switch-server: boot reconcile failed for ${sshHost}`, { error });
+    return new Map(remotes.map((s) => [s.sshHost!, s.id]));
+  }
+
+  /** Pick a host's stack back up once its host is reachable again, so a
+   * recovered host resumes without the user restarting anything. */
+  private async onHostReachable(sshHost: string): Promise<void> {
+    if (this.busy.has(sshHost) || this.hosts.has(sshHost)) return;
+    const serverId = (await this.remoteHosts()).get(sshHost);
+    if (!serverId) return;
+    await this.reconcileHost(sshHost, serverId);
+  }
+
+  /** Adopt an already-running remote stack: re-open its forward and mark it
+   * running. Skipped while the host is blocked — the reachability manager will
+   * call back through {@link onHostReachable} when it recovers. */
+  private async reconcileHost(sshHost: string, serverId: string): Promise<void> {
+    if (hostReachabilityService.isBlocked(sshHost)) return;
+    let host: RemoteServerHost | null = null;
+    try {
+      host = await createRemoteServerHost(sshHost);
+      if (!(await isStackRunning(host))) {
+        host.dispose();
+        return;
       }
+      const ports = await readPersistedPorts(host);
+      if (!ports) {
+        // Running but we don't know its ports — leave it stopped; the user can
+        // restart to re-derive them rather than forward to the wrong ports.
+        host.dispose();
+        return;
+      }
+      await host.establishNetworking(ports);
+      this.hosts.set(sshHost, host);
+      this.setStatus(sshHost, { phase: 'running', serverId });
+    } catch (error) {
+      host?.dispose();
+      log.warn(`remote-switch-server: boot reconcile failed for ${sshHost}`, { error });
     }
   }
 
@@ -104,6 +130,7 @@ class RemoteServerService {
     if (this.busy.has(sshHost)) {
       return { kind: 'error', message: `An operation is already in progress for ${sshHost}.` };
     }
+    hostReachabilityService.requireReachable(sshHost);
     this.busy.add(sshHost);
     const abort = new AbortController();
     this.startAborts.set(sshHost, abort);
@@ -159,6 +186,7 @@ class RemoteServerService {
   async stop(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
       throw new Error(`An operation is already in progress for ${sshHost}.`);
+    hostReachabilityService.requireReachable(sshHost);
     this.busy.add(sshHost);
     const host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
     try {
@@ -183,6 +211,7 @@ class RemoteServerService {
   async reset(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
       throw new Error(`An operation is already in progress for ${sshHost}.`);
+    hostReachabilityService.requireReachable(sshHost);
     this.busy.add(sshHost);
     const host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
     try {

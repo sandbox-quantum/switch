@@ -43,7 +43,10 @@ export const RemoteServerControls = observer(function RemoteServerControls({
   }, [store, sshHost]);
 
   const status = store.statusFor(sshHost);
-  const transitioning = store.isTransitioning(sshHost);
+  const hostBlocked = store.isHostBlocked(sshHost);
+  // Every lifecycle action rides the host's SSH connection, so none of them can
+  // succeed while it is down — disable rather than let them fail (CHOO-1780).
+  const transitioning = store.isTransitioning(sshHost) || hostBlocked;
   const running = store.isRunning(sshHost);
   const docker = store.dockerFor(sshHost);
   const dockerUnavailable = docker && !docker.available ? docker : null;
@@ -186,6 +189,16 @@ const ResetDialog = observer(function ResetDialog({
 });
 
 const PhaseBadge = observer(function PhaseBadge({ sshHost }: { sshHost: string }) {
+  // Never report a stack state we cannot currently observe: with the host down,
+  // `running` is a memory of the last time we could see it (CHOO-1780).
+  if (remoteServerStore.isHostBlocked(sshHost)) {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
+        <span aria-hidden className="inline-block size-2 rounded-full bg-amber-500" />
+        Host unreachable
+      </span>
+    );
+  }
   const phase = remoteServerStore.phaseFor(sshHost);
   const label: Record<typeof phase, string> = {
     stopped: 'Stopped',

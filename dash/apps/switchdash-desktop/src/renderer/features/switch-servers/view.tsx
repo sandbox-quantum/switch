@@ -2,6 +2,8 @@ import { ExternalLink, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-re
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
+import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -77,6 +79,10 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   const detailsVisible = !server?.managed || isManagedRunning(server);
 
   useEffect(() => {
+    void hostReachabilityStore.hydrate();
+  }, []);
+
+  useEffect(() => {
     if (!detailsVisible) return;
     void store.refreshStatus(serverId);
     void store.ensureAuthConfig(serverId);
@@ -86,6 +92,22 @@ const ServerMainPanel = observer(function ServerMainPanel() {
     return (
       <div className="relative z-10 flex min-h-0 flex-1 overflow-auto bg-background p-6">
         <p className="text-sm text-foreground-muted">This server is no longer available.</p>
+      </div>
+    );
+  }
+
+  // A remote-managed server is only as reachable as its host. While the host is
+  // blocked, everything on this page (stack status, Docker, sign-in, web app)
+  // would be a stale or doomed read, so the modeled host state replaces it
+  // outright rather than sitting under a green badge (CHOO-1780).
+  const blockedHost =
+    server.managed && server.managementKind === 'remote' && server.sshHost
+      ? hostReachabilityStore.get(server.sshHost)
+      : null;
+  if (blockedHost && hostReachabilityStore.isBlocked(blockedHost.sshHost)) {
+    return (
+      <div className="relative z-10 flex min-h-0 flex-1 overflow-auto bg-background">
+        <HostUnreachablePanel reachability={blockedHost} />
       </div>
     );
   }

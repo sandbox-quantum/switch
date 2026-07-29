@@ -8,7 +8,11 @@ import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
 import { appService } from '@main/core/app/service';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
+import {
+  isManagedServerRunning,
+  managedServerHostBlocked,
+} from '@main/core/managed-switch-server/managed-server-status';
+import { HostUnreachableError } from '@main/core/remote-hosts/host-reachability-service';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type {
   AddressingPolicy,
@@ -70,6 +74,20 @@ async function requireServer(serverId: string): Promise<SwitchServer> {
   return server;
 }
 
+/**
+ * Resolve a server and refuse to touch its gateway while the host it is managed
+ * on is unreachable. Everything the gateway serves — auth config, sign-in,
+ * dashboard pages — rides the SSH forward, so a fetch here can only produce a
+ * misleading `Could not reach http://localhost:<port>` (CHOO-1780). Fail with
+ * the modeled host state instead, which the UI already knows how to render.
+ */
+async function requireReachableServer(serverId: string): Promise<SwitchServer> {
+  const server = await requireServer(serverId);
+  const blocked = managedServerHostBlocked(server);
+  if (blocked) throw new HostUnreachableError(blocked);
+  return server;
+}
+
 export const switchServersController = createRPCController({
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
@@ -105,15 +123,15 @@ export const switchServersController = createRPCController({
   setActiveServer: (serverId: string): Promise<void> => setActiveServerId(serverId),
 
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>
-    fetchAuthConfig(await requireServer(serverId)),
+    fetchAuthConfig(await requireReachableServer(serverId)),
 
   passwordLogin: async (params: PasswordLoginParams) => {
-    const server = await requireServer(params.serverId);
+    const server = await requireReachableServer(params.serverId);
     return passwordLogin(server, params.email, params.password);
   },
 
   oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> =>
-    oidcLogin(await requireServer(serverId)),
+    oidcLogin(await requireReachableServer(serverId)),
 
   logout: (serverId: string): Promise<void> => deleteSessionCookie(serverId),
 
@@ -127,7 +145,7 @@ export const switchServersController = createRPCController({
    * origin.
    */
   openGatewayPage: async (params: { serverId: string; url: string }): Promise<void> => {
-    const server = await requireServer(params.serverId);
+    const server = await requireReachableServer(params.serverId);
     if (server.managed) {
       await openAuthenticatedGatewayPage(server, params.url);
     } else {

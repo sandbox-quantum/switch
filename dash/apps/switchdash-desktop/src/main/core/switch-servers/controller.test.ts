@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchMe = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const isManagedServerRunning = vi.hoisted(() => vi.fn());
+const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
+const fetchAuthConfig = vi.hoisted(() => vi.fn());
 
 // Stub the modules the controller imports that would otherwise pull electron /
 // ssh / agent side effects at load. We only exercise getConnectionStatus.
@@ -19,6 +21,10 @@ vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHo
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
+  managedServerHostBlocked,
+}));
+vi.mock('@main/core/remote-hosts/host-reachability-service', () => ({
+  HostUnreachableError: class HostUnreachableError extends Error {},
 }));
 vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin: vi.fn() }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
@@ -28,7 +34,7 @@ vi.mock('./gateway-client', () => ({
   fetchAgentDetail: vi.fn(),
   fetchAgentRooms: vi.fn(),
   fetchAgents: vi.fn(),
-  fetchAuthConfig: vi.fn(),
+  fetchAuthConfig,
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
   registerKnownAgent: vi.fn(),
@@ -100,5 +106,28 @@ describe('getConnectionStatus', () => {
     expect(status).toEqual({ serverId: 'srv', connected: true, user: USER });
     expect(isManagedServerRunning).not.toHaveBeenCalled();
     expect(fetchMe).toHaveBeenCalledOnce();
+  });
+});
+
+describe('gateway calls on an unreachable host', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+  });
+
+  it('refuses getAuthConfig instead of fetching a gateway that cannot answer', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({ sshHost: 'h', status: 'unreachable' });
+
+    await expect(switchServersController.getAuthConfig('srv')).rejects.toThrow();
+    expect(fetchAuthConfig).not.toHaveBeenCalled();
+  });
+
+  it('fetches the auth config normally while the host is reachable', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    fetchAuthConfig.mockResolvedValue({ password: true });
+
+    await expect(switchServersController.getAuthConfig('srv')).resolves.toEqual({ password: true });
+    expect(fetchAuthConfig).toHaveBeenCalledOnce();
   });
 });

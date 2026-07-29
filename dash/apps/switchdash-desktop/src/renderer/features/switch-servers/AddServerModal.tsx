@@ -1,6 +1,7 @@
 import { CircleCheck, Globe, HardDrive, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
@@ -416,7 +417,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   const status = sshHost ? store.statusFor(sshHost) : null;
   const logs = sshHost ? store.logsFor(sshHost) : [];
 
-  const canStart = !!sshHost && name.trim().length > 0 && dockerReady && !starting;
+  const hostBlocked = sshHost ? store.isHostBlocked(sshHost) : false;
+  const canStart = !!sshHost && name.trim().length > 0 && dockerReady && !starting && !hostBlocked;
   const primaryLabel = running ? 'Done' : status?.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
     if (running) onSuccess();
@@ -474,6 +476,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
                 ))}
               </div>
             </Field>
+
+            {sshHost && <HostReachabilityNotice sshHost={sshHost} />}
 
             {sshHost && (
               <Field>

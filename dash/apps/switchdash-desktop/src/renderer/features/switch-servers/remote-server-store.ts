@@ -1,6 +1,7 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
+import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
@@ -44,7 +45,17 @@ export class RemoteServerStore {
     return this.statusFor(sshHost).phase;
   }
 
+  /**
+   * Whether the host this stack lives on is known-unreachable. Mirrors the
+   * main-process gate in `isManagedServerRunning` so the UI and the backend
+   * agree on one host-level state (CHOO-1780).
+   */
+  isHostBlocked(sshHost: string): boolean {
+    return hostReachabilityStore.isBlocked(sshHost);
+  }
+
   isRunning(sshHost: string): boolean {
+    if (this.isHostBlocked(sshHost)) return false;
     return this.phaseFor(sshHost) === 'running';
   }
 
@@ -62,6 +73,7 @@ export class RemoteServerStore {
   }
 
   async init(): Promise<void> {
+    void hostReachabilityStore.hydrate();
     if (!this.off) {
       this.off = events.on(remoteServerStatusChannel, (status) => {
         runInAction(() => this.statuses.set(status.sshHost, status));
@@ -95,6 +107,9 @@ export class RemoteServerStore {
   }
 
   async checkDocker(sshHost: string): Promise<void> {
+    // Probing Docker over a dead SSH forward can only yield a HostUnreachableError
+    // in the page banner; the host-unreachable surface already says it better.
+    if (this.isHostBlocked(sshHost)) return;
     try {
       const docker = await rpc.remoteSwitchServer.detectDocker(sshHost);
       runInAction(() => this.dockerByHost.set(sshHost, docker));
