@@ -77,41 +77,27 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
   if (registered.kind !== 'created') return registered;
 
-  // Generated up front so the per-agent credentials file can be keyed by it
-  // below — the launch path reads `agentSettingsPath(sessionPath, session.agentId)`.
   const localAgentId = params.id ?? randomUUID();
 
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   try {
+    // Writing the per-agent Switch credentials is unconditional core behavior for
+    // every provider, keyed by the agent's `name` — the single key-space every
+    // reader (launch path, auto-session watcher, notification poller) uses
+    // (CHOO-1440). Providers with repo-agent definitions (Claude) layer their
+    // on-disk definition on top; that's the only provider-specific extra.
+    await writeNeutralAgentSettingsFs(workspace.fs, {
+      slug: params.name,
+      apiEndpoint: server.apiUrl,
+      apiToken: registered.apiKey,
+      agentId: registered.id,
+    });
     if (behavior) {
       await behavior.writeDefinition(workspace.fs, {
         ...params.definitionAttributes,
         name: params.name,
         description: params.description,
-      });
-      await behavior.writeCredentials(workspace.fs, {
-        agentName: params.name,
-        apiEndpoint: server.apiUrl,
-        apiToken: registered.apiKey,
-        agentId: registered.id,
-      });
-    } else {
-      // Two credential-keying conventions exist and the readers (auto-session
-      // watcher + notification poller) try both via a fallback chain:
-      //   - behavior providers (Claude) key by agent NAME (writeCredentials above)
-      //   - non-behavior providers (Codex) key by agent ID (this branch)
-      // Providers without repo-agent definitions (e.g. Codex) have no
-      // `writeCredentials` hook, so their Switch credentials would never land on
-      // disk — leaving the session with no `SWITCH_*` to inject and the
-      // MCP-based Switch setup a no-op. Write the provider-neutral per-agent
-      // file directly from the freshly-minted token, keyed by the agent id the
-      // launch path reads (CHOO-1436).
-      await writeNeutralAgentSettingsFs(workspace.fs, {
-        slug: localAgentId,
-        apiEndpoint: server.apiUrl,
-        apiToken: registered.apiKey,
-        agentId: registered.id,
       });
     }
   } finally {

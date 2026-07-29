@@ -141,17 +141,18 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   });
 
   // Mirror the agent's credentials into its provider-neutral per-agent file
-  // (`.switch/agents/<agentId>.json`), the authoritative identity switchdash
-  // injects at launch so agents sharing a location don't collide on the single
-  // `.claude/settings.local.json` identity (CHOO-1440). Local agents only — a
-  // remote agent's dir lives on its VM. Best-effort: the launch/poller fall back
-  // to `settings.local.json`, so a failure here does not break onboarding.
+  // (`.switch/agents/<name>.json`), the authoritative identity switchdash injects
+  // at launch so agents sharing a location don't collide on the single
+  // `.claude/settings.local.json` identity (CHOO-1440). Keyed by `name` — the one
+  // key-space every reader uses. Local agents only — a remote agent's dir lives on
+  // its VM. Best-effort: the launch/poller fall back to `settings.local.json`, so
+  // a failure here does not break onboarding.
   if (sshHost === null) {
     const creds = await readSwitchAgentCredentials(params.dir, log);
     if (creds) {
       await writeAgentNeutralSettings({
         dir: params.dir,
-        slug: agent.id,
+        slug: agent.name,
         apiEndpoint: creds.apiEndpoint,
         apiToken: creds.token,
         agentId: creds.agentId,

@@ -201,14 +201,18 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // to sit in `.claude/settings.local.json`. Real env vars outrank every
       // settings file and reach the spawned MCP server, so inject the agent's
       // identity last (highest precedence): a subagent from its definition creds,
-      // and a plain agent from its provider-neutral `.switch/agents/<id>.json`
+      // and a plain agent from its provider-neutral `.switch/agents/<name>.json`
       // (empty when absent — the session then falls back to settings.local.json,
-      // which Claude reads natively). Lets agents sharing a location keep distinct
-      // identities (CHOO-1440).
+      // which Claude reads natively). Keyed by `name` — the one key-space every
+      // writer uses (CHOO-1440); id is only a fallback for a nameless legacy row.
       const subagentVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(createPluginFs(this.sessionPath), session.agentName)
-          : await readAgentSwitchEnv(agentSettingsPath(this.sessionPath, session.agentId), log);
+          : await readAgentSwitchEnv(
+              agentSettingsPath(this.sessionPath, session.agentName ?? session.agentId),
+              log
+            );
+
       const pty = spawnLocalPty({
         id: ptySessionId,
         command: resolved.command,

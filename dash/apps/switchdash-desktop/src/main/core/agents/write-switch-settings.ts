@@ -289,11 +289,11 @@ export async function writeAgentNeutralSettings(params: {
 /**
  * Write an agent's provider-neutral per-agent Switch credentials over a
  * {@link PluginFs} (local disk or a remote repo dir via SFTP), keyed by `slug`
- * (the agent id) — the authoritative identity switchdash injects at launch
+ * (the agent name) — the authoritative identity switchdash injects at launch
  * (`agentSettingsPath`). Mirrors {@link writeAgentNeutralSettings} but through the
  * transport-agnostic fs so it works at create time for both local and remote
- * agents, and for providers with no repo-agent `writeCredentials` hook (e.g.
- * Codex), which would otherwise get no credentials on disk at all (CHOO-1436).
+ * agents. This is the unconditional per-agent credential write for every provider;
+ * providers with repo-agent definitions (Claude) layer their definition on top.
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,

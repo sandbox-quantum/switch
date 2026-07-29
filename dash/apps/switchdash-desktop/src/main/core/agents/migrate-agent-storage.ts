@@ -10,6 +10,7 @@ import {
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgents } from './getAgents';
 import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
+import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
 /**
  * Migrate existing switchdash-managed agents to the current storage/definition
@@ -65,8 +66,12 @@ interface MigrateResult {
 
 /** Migrate one agent (local or remote). */
 async function migrateOne(agent: Agent): Promise<MigrateResult> {
+  // A provider may have no repo-agent behavior (e.g. Codex): it has no on-disk
+  // definition and no `writeCredentials`/`readLaunchEnv` hooks, but its
+  // provider-neutral credentials still need collapsing onto the one name-keyed
+  // key-space. So the credential migration runs for every provider; only the
+  // definition step (2) is behavior-gated.
   const behavior = getPlugin(agent.providerId).behavior.repoAgents;
-  if (!behavior) return { changed: false, complete: true };
 
   const location = await getLocationById(agent.locationId);
   if (!location) return { changed: false, complete: true };
@@ -84,9 +89,11 @@ async function migrateOne(agent: Agent): Promise<MigrateResult> {
     // 1. Credentials: if the name-keyed neutral file is absent, adopt whatever
     //    complete credentials already exist on disk, in priority order:
     //      a. a stale ID-keyed neutral file `.switch/agents/<agentId>.json` — an
-    //         earlier layout keyed the neutral file by agent id, not name;
+    //         earlier layout keyed the neutral file by agent id, not name (this
+    //         includes Codex agents added on the pre-rework id-keyed scheme);
     //      b. the legacy per-agent file (via readLaunchEnv: name-keyed neutral
-    //         then `.claude/switch-subagents/<name>.settings.json`);
+    //         then `.claude/switch-subagents/<name>.settings.json`) — behavior
+    //         providers only;
     //      c. the shared `.claude/settings.local.json` (legacy "main" agent).
     //    The token is minted once and lives only on disk, so this is the only way
     //    to recover it — nothing can reconstruct it from the gateway.
@@ -96,14 +103,14 @@ async function migrateOne(agent: Agent): Promise<MigrateResult> {
     if (neutral === null) {
       const creds =
         parseSwitchAgentCredentials((await workspace.fs.read(idKeyedRelPath)) ?? '', log) ??
-        toCreds(await behavior.readLaunchEnv(workspace.fs, name)) ??
+        (behavior ? toCreds(await behavior.readLaunchEnv(workspace.fs, name)) : null) ??
         parseSwitchAgentCredentials(
           (await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH)) ?? '',
           log
         );
       if (creds) {
-        await behavior.writeCredentials(workspace.fs, {
-          agentName: name,
+        await writeNeutralAgentSettingsFs(workspace.fs, {
+          slug: name,
           apiEndpoint: creds.apiEndpoint,
           apiToken: creds.token,
           agentId: creds.agentId,
@@ -123,8 +130,9 @@ async function migrateOne(agent: Agent): Promise<MigrateResult> {
     }
 
     // 2. Definition: ensure the provider has an on-disk definition for this agent
-    //    so it runs as a named repository-defined agent.
-    if ((await behavior.readDefinition(workspace.fs, name)) === null) {
+    //    so it runs as a named repository-defined agent. Behavior providers only —
+    //    a provider without definitions (Codex) has nothing to write here.
+    if (behavior && (await behavior.readDefinition(workspace.fs, name)) === null) {
       await behavior.writeDefinition(workspace.fs, { name, description });
       changed = true;
     }

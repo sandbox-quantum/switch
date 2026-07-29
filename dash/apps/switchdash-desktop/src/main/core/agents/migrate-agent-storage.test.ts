@@ -41,34 +41,54 @@ function credsJson(agentId: string): string {
 
 // Shared mock state + spies. Hoisted so the vi.mock factories (which are lifted
 // above imports) can reference them. `agents`/`workspace` are set per test.
+// `repoAgents` is the behavior `getPlugin` returns — set it to null in a test to
+// simulate a provider without repo-agent definitions (e.g. Codex).
 const h = vi.hoisted(() => {
-  const state: { agents: Array<Record<string, unknown>>; workspace: PluginFs | null } = {
+  const writeCredentials = vi.fn((fs: PluginFs, creds: { agentName: string }) =>
+    fs.write(
+      `.switch/agents/${creds.agentName}.json`,
+      JSON.stringify({
+        env: { SWITCH_API_ENDPOINT: 'x', SWITCH_API_TOKEN: 'x', SWITCH_AGENT_ID: 'x' },
+      })
+    )
+  );
+  const readLaunchEnv = vi.fn(async (fs: PluginFs, name: string) => {
+    const raw =
+      (await fs.read(`.switch/agents/${name}.json`)) ??
+      (await fs.read(`.claude/switch-subagents/${name}.settings.json`));
+    return raw ? ((JSON.parse(raw).env ?? {}) as Record<string, string>) : {};
+  });
+  const readDefinition = vi.fn((fs: PluginFs, name: string) =>
+    fs.read(`.claude/agents/${name}.md`).then((c) => (c === null ? null : { name }))
+  );
+  const writeDefinition = vi.fn((fs: PluginFs, attrs: { name: string }) =>
+    fs.write(`.claude/agents/${attrs.name}.md`, `# ${attrs.name}`)
+  );
+  const discoverLocal = vi.fn(async () => []);
+  const defaultRepoAgents = {
+    writeCredentials,
+    readLaunchEnv,
+    readDefinition,
+    writeDefinition,
+    discoverLocal,
+  };
+  const state: {
+    agents: Array<Record<string, unknown>>;
+    workspace: PluginFs | null;
+    repoAgents: object | null;
+  } = {
     agents: [],
     workspace: null,
+    repoAgents: defaultRepoAgents,
   };
   return {
     state,
-    writeCredentials: vi.fn((fs: PluginFs, creds: { agentName: string }) =>
-      fs.write(
-        `.switch/agents/${creds.agentName}.json`,
-        JSON.stringify({
-          env: { SWITCH_API_ENDPOINT: 'x', SWITCH_API_TOKEN: 'x', SWITCH_AGENT_ID: 'x' },
-        })
-      )
-    ),
-    readLaunchEnv: vi.fn(async (fs: PluginFs, name: string) => {
-      const raw =
-        (await fs.read(`.switch/agents/${name}.json`)) ??
-        (await fs.read(`.claude/switch-subagents/${name}.settings.json`));
-      return raw ? ((JSON.parse(raw).env ?? {}) as Record<string, string>) : {};
-    }),
-    readDefinition: vi.fn((fs: PluginFs, name: string) =>
-      fs.read(`.claude/agents/${name}.md`).then((c) => (c === null ? null : { name }))
-    ),
-    writeDefinition: vi.fn((fs: PluginFs, attrs: { name: string }) =>
-      fs.write(`.claude/agents/${attrs.name}.md`, `# ${attrs.name}`)
-    ),
-    discoverLocal: vi.fn(async () => []),
+    defaultRepoAgents,
+    writeCredentials,
+    readLaunchEnv,
+    readDefinition,
+    writeDefinition,
+    discoverLocal,
     updateAgent: vi.fn(async () => undefined),
     isComplete: vi.fn(async () => false),
     markComplete: vi.fn(async () => undefined),
@@ -76,17 +96,7 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
-  getPlugin: () => ({
-    behavior: {
-      repoAgents: {
-        writeCredentials: h.writeCredentials,
-        readLaunchEnv: h.readLaunchEnv,
-        readDefinition: h.readDefinition,
-        writeDefinition: h.writeDefinition,
-        discoverLocal: h.discoverLocal,
-      },
-    },
-  }),
+  getPlugin: () => ({ behavior: { repoAgents: h.state.repoAgents } }),
 }));
 vi.mock('@main/core/locations/store', () => ({
   getLocationById: vi.fn(async () => ({ id: 'loc', sshHost: null, dir: '/repo' })),
@@ -124,6 +134,7 @@ describe('migrateAgentStorage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.state.agents = [{ ...baseAgent }];
+    h.state.repoAgents = h.defaultRepoAgents;
   });
 
   it('recovers creds from a stale id-keyed neutral file, writes the name-keyed file, and removes the stale one', async () => {
@@ -135,12 +146,34 @@ describe('migrateAgentStorage', () => {
 
     await migrateAgentStorage();
 
-    expect(h.writeCredentials).toHaveBeenCalledWith(
-      ws,
-      expect.objectContaining({ agentName: 'cc-hoot-main', apiToken: 'tok-123', agentId: 'sw-1' })
-    );
     expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(true);
+    const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
+    expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
+    expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
     expect(await ws.exists('.switch/agents/agent-id-1.json')).toBe(false);
+  });
+
+  it('migrates a provider without repo-agents (Codex): id-keyed creds → name-keyed, id file removed, no definition written', async () => {
+    // Codex has no repoAgents behavior; the pre-rework scheme keyed its neutral
+    // creds file by agent id. The migration must still collapse it onto the
+    // name-keyed key-space, or the agent silently loses its (unrecoverable) token.
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
+    h.state.repoAgents = null;
+    const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-1') });
+    h.state.workspace = ws;
+
+    await migrateAgentStorage();
+
+    // Name-keyed file written via the unconditional neutral writer (not the
+    // behavior hook, which does not exist for Codex), token preserved.
+    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
+    const written = JSON.parse((await ws.read('.switch/agents/codex-hoot.json')) as string);
+    expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
+    expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
+    // Stale id-keyed file removed; no definition written (no behavior).
+    expect(await ws.exists('.switch/agents/agent-id-1.json')).toBe(false);
+    expect(h.writeCredentials).not.toHaveBeenCalled();
+    expect(h.writeDefinition).not.toHaveBeenCalled();
   });
 
   it('falls back to .claude/settings.local.json when no neutral file exists', async () => {
@@ -152,10 +185,8 @@ describe('migrateAgentStorage', () => {
 
     await migrateAgentStorage();
 
-    expect(h.writeCredentials).toHaveBeenCalledWith(
-      ws,
-      expect.objectContaining({ agentName: 'cc-hoot-main', agentId: 'sw-1' })
-    );
+    const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
+    expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
   });
 
   it('does nothing when the name-keyed file already exists and the definition is present', async () => {
