@@ -1,4 +1,4 @@
-import { net, session as electronSession } from 'electron';
+import { session as electronSession } from 'electron';
 import {
   managedServerSecretsKey,
   managedServerStateDir,
@@ -10,40 +10,11 @@ import { log } from '@main/lib/logger';
 import {
   channelUrlFromDeeplink,
   mattermostPartition,
-  parseSetCookie,
   type RoomEmbed,
 } from '@shared/core/switch-rooms/room-embed';
 
 const MATTERMOST_AUTH_COOKIE = 'MMAUTHTOKEN';
 const MATTERMOST_USER = 'user';
-
-/**
- * Replay one `Set-Cookie` header into a partition, preserving the attributes
- * that decide whether the web app can see it.
- *
- * `HttpOnly` in particular is per-cookie and load-bearing here: MMAUTHTOKEN is
- * HttpOnly, while MMCSRF and MMUSERID are deliberately readable because the
- * Mattermost web app reads them from `document.cookie`. Forcing one flag across
- * all three would hide the two the client needs.
- */
-async function replaySetCookie(
-  partition: string,
-  origin: string,
-  setCookie: string
-): Promise<void> {
-  const parsed = parseSetCookie(setCookie);
-  if (!parsed) return;
-
-  await electronSession.fromPartition(partition).cookies.set({
-    url: origin,
-    name: parsed.name,
-    value: parsed.value,
-    path: parsed.path,
-    httpOnly: parsed.httpOnly,
-    secure: origin.startsWith('https'),
-    sameSite: 'lax',
-  });
-}
 
 /**
  * Where this server's Mattermost is reachable from the desktop, or null when we
@@ -66,12 +37,18 @@ async function mattermostOriginFor(serverId: string): Promise<string | null> {
 }
 
 /**
- * Log the shared `user` account into Mattermost and install the resulting
- * session cookie in the webview's partition.
+ * Log the shared `user` account into Mattermost so the webview's partition
+ * holds a live session.
  *
- * Mattermost returns its session token in a `Token` response header rather than
- * a readable cookie, so we set the cookie ourselves. Throws on failure — an
- * embed that silently renders a login page is worse than a stated error.
+ * The login runs through the partition's own session with `credentials:
+ * 'include'`, so Chromium writes the response's cookies straight into the jar
+ * the webview will read. Doing it that way is not a stylistic choice: the Fetch
+ * spec makes `Set-Cookie` a forbidden response header, so a plain `net.fetch`
+ * cannot see the cookies at all and can only reconstruct them — which loses
+ * MMUSERID and MMCSRF, the two the web app reads to decide it is signed in.
+ *
+ * Throws on failure; an embed that silently renders a login page is worse than
+ * a stated error.
  */
 async function installMattermostSession(origin: string, serverId: string): Promise<string> {
   const server = await getServer(serverId);
@@ -79,9 +56,13 @@ async function installMattermostSession(origin: string, serverId: string): Promi
 
   const secrets = await loadOrCreateSecrets({ secretsKey: managedServerSecretsKey(server) });
 
-  const response = await net.fetch(`${origin}/api/v4/users/login`, {
+  const partition = mattermostPartition(serverId);
+  const partitionSession = electronSession.fromPartition(partition);
+
+  const response = await partitionSession.fetch(`${origin}/api/v4/users/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({
       login_id: MATTERMOST_USER,
       password: secrets.mattermostUserPassword,
@@ -94,18 +75,16 @@ async function installMattermostSession(origin: string, serverId: string): Promi
     );
   }
 
-  const partition = mattermostPartition(serverId);
-
-  // Mattermost issues MMAUTHTOKEN, MMUSERID and MMCSRF together. The web app
-  // treats itself as signed out unless the readable two are present, so replay
-  // whatever the server actually sent rather than reconstructing one cookie.
-  const setCookies = response.headers.getSetCookie();
-  for (const cookie of setCookies) {
-    await replaySetCookie(partition, origin, cookie);
-  }
-
-  if (!setCookies.some((c) => c.startsWith(`${MATTERMOST_AUTH_COOKIE}=`))) {
-    throw new Error('Mattermost login returned no session cookie');
+  // Read the jar rather than the response: this asserts the thing the webview
+  // actually depends on, instead of a proxy for it.
+  const stored = await partitionSession.cookies.get({ url: origin });
+  const names = new Set(stored.map((c) => c.name));
+  if (!names.has(MATTERMOST_AUTH_COOKIE)) {
+    throw new Error(
+      `Mattermost login succeeded but stored no ${MATTERMOST_AUTH_COOKIE} cookie (got: ${
+        [...names].join(', ') || 'none'
+      })`
+    );
   }
 
   return partition;

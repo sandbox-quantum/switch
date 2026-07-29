@@ -100,15 +100,18 @@ export const RoomMainPanel = observer(function RoomMainPanel() {
   }
 
   if (embed.kind === 'external') {
+    // `platform` is the raw bridge type ("mattermost", "slack"), which reads as
+    // a typo in prose.
+    const platform = embed.platform.charAt(0).toUpperCase() + embed.platform.slice(1);
     return (
       <RoomNotice
         icon={<MessagesSquare className="size-6" />}
-        title={`This room lives in ${embed.platform}`}
+        title={`This room lives in ${platform}`}
         detail="Conversations on external platforms open in their own app."
         action={
           <Button variant="outline" size="sm" onClick={() => void rpc.app.openExternal(embed.url)}>
             <ExternalLink className="size-3" />
-            Open in {embed.platform}
+            Open in {platform}
           </Button>
         }
       />

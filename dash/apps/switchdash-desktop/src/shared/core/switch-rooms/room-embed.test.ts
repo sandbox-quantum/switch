@@ -1,55 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { channelUrlFromDeeplink, mattermostPartition, parseSetCookie } from './room-embed';
-
-describe('parseSetCookie', () => {
-  // The three cookies a real Mattermost login issues. Replaying only the first
-  // left the web app rendering its login page despite a valid session.
-  it('keeps MMAUTHTOKEN HttpOnly', () => {
-    expect(parseSetCookie('MMAUTHTOKEN=abc123; Path=/; HttpOnly; SameSite=Lax')).toEqual({
-      name: 'MMAUTHTOKEN',
-      value: 'abc123',
-      path: '/',
-      httpOnly: true,
-    });
-  });
-
-  it('leaves MMUSERID readable, since the web app reads it from document.cookie', () => {
-    expect(parseSetCookie('MMUSERID=u1; Path=/; SameSite=Lax')).toEqual({
-      name: 'MMUSERID',
-      value: 'u1',
-      path: '/',
-      httpOnly: false,
-    });
-  });
-
-  it('leaves MMCSRF readable', () => {
-    expect(parseSetCookie('MMCSRF=tok; Path=/; SameSite=Lax')?.httpOnly).toBe(false);
-  });
-
-  it('honours an explicit Path', () => {
-    expect(parseSetCookie('A=b; Path=/sub')?.path).toBe('/sub');
-  });
-
-  it('defaults Path to / when absent', () => {
-    expect(parseSetCookie('A=b; HttpOnly')?.path).toBe('/');
-  });
-
-  it('matches attributes case-insensitively', () => {
-    expect(parseSetCookie('A=b; path=/x; httponly')).toMatchObject({
-      path: '/x',
-      httpOnly: true,
-    });
-  });
-
-  it('preserves a value containing =', () => {
-    expect(parseSetCookie('A=b=c=; Path=/')?.value).toBe('b=c=');
-  });
-
-  it('returns null for a header with no name=value pair', () => {
-    expect(parseSetCookie('nonsense')).toBeNull();
-    expect(parseSetCookie('=novalue')).toBeNull();
-  });
-});
+import { channelUrlFromDeeplink, mattermostPartition } from './room-embed';
 
 describe('channelUrlFromDeeplink', () => {
   it('rewrites a Mattermost deeplink onto the origin we serve it from', () => {
