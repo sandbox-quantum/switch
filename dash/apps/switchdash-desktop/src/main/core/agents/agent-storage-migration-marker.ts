@@ -10,14 +10,29 @@ import { kv } from '@main/db/schema';
  */
 const MARKER_KEY = 'agentStorageMigrationComplete';
 
+/**
+ * The migration generation this build knows how to satisfy. Bump it whenever
+ * {@link migrateAgentStorage} learns to fix something it previously skipped, so
+ * installs that latched an earlier generation run the new pass exactly once
+ * instead of short-circuiting on a marker that no longer means what it says.
+ *
+ * - `1` — the original pass: Claude agents only (providers without a
+ *   `repoAgents` behavior returned "complete" without being looked at).
+ * - `2` — every provider's credentials collapsed onto the name-keyed key-space.
+ */
+const MARKER_VALUE = '2';
+
 export async function isAgentStorageMigrationComplete(): Promise<boolean> {
   const [row] = await db.select().from(kv).where(eq(kv.key, MARKER_KEY)).limit(1);
-  return row?.value === '1';
+  return row?.value === MARKER_VALUE;
 }
 
 export async function markAgentStorageMigrationComplete(): Promise<void> {
   await db
     .insert(kv)
-    .values({ key: MARKER_KEY, value: '1', updatedAt: sql`CURRENT_TIMESTAMP` })
-    .onConflictDoUpdate({ target: kv.key, set: { value: '1', updatedAt: sql`CURRENT_TIMESTAMP` } });
+    .values({ key: MARKER_KEY, value: MARKER_VALUE, updatedAt: sql`CURRENT_TIMESTAMP` })
+    .onConflictDoUpdate({
+      target: kv.key,
+      set: { value: MARKER_VALUE, updatedAt: sql`CURRENT_TIMESTAMP` },
+    });
 }
