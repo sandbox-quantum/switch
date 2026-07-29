@@ -14,7 +14,7 @@ Existing instances are left without a default on purpose — adopting one is
 promoting an arbitrary existing bridge here could start routing rooms to a
 Slack workspace the operator never nominated.
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: b3f36489c258
 Revises: d5e6f7a8b9c0
 Create Date: 2026-07-28 00:00:00.000000
 
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"
+revision: str = "b3f36489c258"
 down_revision: str | None = "d5e6f7a8b9c0"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
