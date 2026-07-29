@@ -3,8 +3,8 @@ import type { CanonicalHookEvent, HookRegistration } from '@switchdash/core/agen
 import {
   buildNestedJsonHookConfig,
   defaultHookEventParser,
-  makeHookPostCommand,
   makeNotificationHookCommand,
+  makeStdinHookCommand,
 } from '@switchdash/core/agents/plugins/helpers';
 import * as toml from 'smol-toml';
 
@@ -55,19 +55,6 @@ async function removeLegacyCodexNotify(fs: PluginFs): Promise<void> {
 }
 
 /**
- * A hook command that forwards Codex's event payload to switchdash.
- *
- * Codex documents stdin delivery, but its notify-style hooks have historically
- * passed the payload as `$1`, so accept either rather than depending on which
- * one a given event uses.
- */
-function makeCodexStdinCommand(eventType: string): string {
-  const post = makeHookPostCommand(eventType, 'stdin', {});
-  if (process.platform === 'win32') return post;
-  return `INPUT="\${1:-$(cat)}"; printf '%s' "$INPUT" | ${post}`;
-}
-
-/**
  * Tool-name pattern for the Switch `connect_to_room` MCP tool. The server name
  * is part of the tool name, and switchdash registers the server as `switch`,
  * but a session may reach Switch through a differently-named server — so match
@@ -78,8 +65,8 @@ export const CODEX_ROOM_CONNECT_MATCHER = 'mcp__.*__connect_to_room';
 /**
  * Event type the room-tracking hook reports. Consumed by the hook service's
  * event enricher, which reads `room_id`/`agent_id` out of the tool response and
- * repoints the session's room. Shared with Claude's connector, which emits the
- * same event from the equivalent PostToolUse hook.
+ * repoints the session's room. Claude's hook config emits the same event from
+ * its equivalent PostToolUse hook, so both providers share one enricher path.
  */
 const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
 
@@ -116,12 +103,12 @@ export function buildCodexHookConfig() {
   const base = buildNestedJsonHookConfig(CODEX_HOOKS_PATH, [
     { hookKey: 'Stop', command: makeNotificationHookCommand('idle_prompt') },
     { hookKey: 'PermissionRequest', command: makeNotificationHookCommand('permission_prompt') },
-    { hookKey: 'SessionStart', command: makeCodexStdinCommand('session-start') },
+    { hookKey: 'SessionStart', command: makeStdinHookCommand('session-start') },
     // Matcher-scoped to the Switch connect tool; the rest are lifecycle events
     // that carry no matcher.
     {
       hookKey: 'PostToolUse',
-      command: makeCodexStdinCommand(SWITCH_ROOM_CONNECT_EVENT),
+      command: makeStdinHookCommand(SWITCH_ROOM_CONNECT_EVENT),
       matcher: CODEX_ROOM_CONNECT_MATCHER,
     },
   ]);
