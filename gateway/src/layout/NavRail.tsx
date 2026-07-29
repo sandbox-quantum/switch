@@ -31,6 +31,7 @@ const NAV_ITEMS: NavItem[] = [
 const ADMIN_ITEMS: NavItem[] = [{ label: "Users", path: "/users", icon: PeopleOutlined }];
 
 const TARGET = 44;
+const LOGO = 38;
 
 function RailItem({ item, active }: { item: NavItem; active: boolean }) {
   return (
@@ -100,6 +101,10 @@ export default memo(function NavRail() {
       }}
     >
       <Tooltip title="Switch Gateway" placement="right">
+        {/* Two assets rather than one recoloured mark: the swap is done in CSS
+            off the colour-scheme attribute so there is no flash on first paint,
+            and a future coloured logo drops in without rework. The file names
+            describe the ink — `dark` is the black mark, for the light theme. */}
         <Box
           sx={{
             width: TARGET,
@@ -107,12 +112,30 @@ export default memo(function NavRail() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontWeight: 700,
-            fontSize: "1.0625rem",
-            letterSpacing: "-0.03em",
           }}
         >
-          Sw
+          <Box
+            component="img"
+            src="/switch_logo_dark.svg"
+            alt="Switch"
+            sx={{
+              width: LOGO,
+              height: LOGO,
+              '[data-mui-color-scheme="dark"] &': { display: "none" },
+            }}
+          />
+          <Box
+            component="img"
+            src="/switch_logo_light.svg"
+            alt=""
+            aria-hidden
+            sx={{
+              width: LOGO,
+              height: LOGO,
+              display: "none",
+              '[data-mui-color-scheme="dark"] &': { display: "block" },
+            }}
+          />
         </Box>
       </Tooltip>
 
