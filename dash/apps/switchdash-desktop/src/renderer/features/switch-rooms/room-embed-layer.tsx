@@ -135,26 +135,39 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     if (activeRoomId) void resolve(activeRoomId);
   }, [effectiveTheme, activeRoomId, resolve]);
 
-  if (!isRoomView || !activeRoomId) return null;
-
-  const active = states.get(activeRoomId);
+  // Never unmount, even off a room view: returning null here would destroy
+  // every live <webview> and reload Mattermost on the way back, which is the
+  // exact cost this layer exists to avoid. Hide the whole layer instead —
+  // display:none keeps the guests running and takes the layer out of both
+  // layout and hit-testing, so the view underneath behaves normally.
+  const visible = isRoomView && activeRoomId !== null;
+  const active = activeRoomId ? states.get(activeRoomId) : undefined;
 
   return (
-    <div className="absolute inset-x-0 top-10 bottom-0 overflow-hidden rounded-b-[10px] bg-background">
-      {active?.phase === 'resolving' || active === undefined ? (
+    <div
+      className={cn(
+        'absolute inset-x-0 top-10 bottom-0 overflow-hidden rounded-b-[10px] bg-background',
+        visible ? 'block' : 'hidden'
+      )}
+    >
+      {visible && (active?.phase === 'resolving' || active === undefined) ? (
         <RoomNotice
           icon={<Loader2 className="size-5 animate-spin" />}
           title="Opening conversation…"
         />
       ) : null}
 
-      {active?.phase === 'error' ? (
+      {visible && active?.phase === 'error' ? (
         <RoomNotice
           icon={<MessagesSquare className="size-6" />}
           title="Couldn’t open this conversation"
           detail={active.message}
           action={
-            <Button variant="outline" size="sm" onClick={() => void resolve(activeRoomId)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => activeRoomId && void resolve(activeRoomId)}
+            >
               <RefreshCw className="size-3" />
               Retry
             </Button>
@@ -162,11 +175,11 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         />
       ) : null}
 
-      {active?.phase === 'ready' && active.embed.kind === 'unavailable' ? (
+      {visible && active?.phase === 'ready' && active.embed.kind === 'unavailable' ? (
         <RoomNotice icon={<MessagesSquare className="size-6" />} title={active.embed.reason} />
       ) : null}
 
-      {active?.phase === 'ready' && active.embed.kind === 'external' ? (
+      {visible && active?.phase === 'ready' && active.embed.kind === 'external' ? (
         <RoomNotice
           icon={<MessagesSquare className="size-6" />}
           title={`This room lives in ${capitalise(active.embed.platform)}`}
