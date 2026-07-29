@@ -21,6 +21,7 @@ import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type ApiKeyDetail, deleteApiKey, revealApiKey } from "../../data/api";
 import { useApiKeys } from "../../data/hooks";
+import { MONO_SX, formatDate } from "../../theme/hootFormat";
 import CreateKeyDialog from "./CreateKeyDialog";
 
 export default function RegistrationKeysPage() {
@@ -78,9 +79,19 @@ export default function RegistrationKeysPage() {
         field: "key_prefix",
         headerName: "Key Prefix",
         width: 180,
-        renderCell: ({ value }) => <code>{value}...</code>,
+        renderCell: ({ value }) => (
+          <Typography component="span" sx={MONO_SX}>
+            {value}...
+          </Typography>
+        ),
       },
-      { field: "created_at", headerName: "Created", flex: 1, minWidth: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        flex: 1,
+        minWidth: 140,
+        valueFormatter: (value) => formatDate(value as string),
+      },
       {
         field: "actions",
         headerName: "",
@@ -115,9 +126,19 @@ export default function RegistrationKeysPage() {
         field: "key_prefix",
         headerName: "Key Prefix",
         width: 180,
-        renderCell: ({ value }) => <code>{value}...</code>,
+        renderCell: ({ value }) => (
+          <Typography component="span" sx={MONO_SX}>
+            {value}...
+          </Typography>
+        ),
       },
-      { field: "created_at", headerName: "Created", flex: 1, minWidth: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        flex: 1,
+        minWidth: 140,
+        valueFormatter: (value) => formatDate(value as string),
+      },
       {
         field: "actions",
         headerName: "",

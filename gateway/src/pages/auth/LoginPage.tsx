@@ -2,6 +2,7 @@ import {
   Alert,
   Box,
   Button,
+  Card,
   CircularProgress,
   Divider,
   Stack,
@@ -57,14 +58,19 @@ export default function LoginPage() {
         height: "100vh",
         alignItems: "center",
         justifyContent: "center",
+        backgroundColor: "var(--hoot-canvas)",
       }}
     >
-      <Box component="form" onSubmit={handleSubmit} sx={{ width: 360 }}>
-        <Typography
-          variant="h5"
-          sx={{ fontWeight: 700, mb: 3, color: "primary.main" }}
-        >
+      <Card
+        component="form"
+        onSubmit={handleSubmit}
+        sx={{ width: 380, p: 4, boxShadow: "var(--hoot-shadow-surface)" }}
+      >
+        <Typography variant="h6" sx={{ mb: 0.5 }}>
           Switch Gateway
+        </Typography>
+        <Typography variant="body2" sx={{ mb: 3, color: "text.secondary" }}>
+          Sign in to manage your agents, rooms and resources.
         </Typography>
         <Stack spacing={2}>
           {error && <Alert severity="error">{error}</Alert>}
@@ -110,7 +116,7 @@ export default function LoginPage() {
             </Button>
           )}
         </Stack>
-      </Box>
+      </Card>
     </Box>
   );
 }

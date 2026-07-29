@@ -89,8 +89,11 @@ export const APP_THEME = () =>
       h2: { fontSize: "1.4375rem", lineHeight: "2rem", fontWeight: 700, letterSpacing: "-0.02em" },
       h3: { fontSize: "1.1875rem", lineHeight: "1.75rem", fontWeight: 600, letterSpacing: "-0.02em" },
       h4: { fontSize: "1.0625rem", lineHeight: "1.625rem", fontWeight: 600, letterSpacing: "-0.02em" },
-      h5: { fontSize: "0.9375rem", lineHeight: "1.5rem", fontWeight: 600, letterSpacing: "-0.01em" },
-      h6: { fontSize: "0.9375rem", lineHeight: "1.5rem", fontWeight: 600, letterSpacing: "-0.01em" },
+      // Gateway's existing convention is h5 for a page title and h6 for a
+      // section title, so those two variants carry Hoot's page and section
+      // rungs rather than continuing the ramp downwards.
+      h5: { fontSize: "1.8125rem", lineHeight: "2.25rem", fontWeight: 700, letterSpacing: "-0.02em" },
+      h6: { fontSize: "1.1875rem", lineHeight: "1.75rem", fontWeight: 600, letterSpacing: "-0.02em" },
       subtitle1: { fontSize: "0.9375rem", lineHeight: "1.5rem", fontWeight: 500 },
       subtitle2: { fontSize: "0.875rem", lineHeight: "1.25rem", fontWeight: 500 },
       body1: { fontSize: "0.9375rem", lineHeight: "1.5rem" },

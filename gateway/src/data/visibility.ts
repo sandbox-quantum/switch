@@ -33,7 +33,9 @@ export interface AccessLevelMeta {
   label: string; // compact chip label
   optionLabel: string; // dropdown option label
   helper: string; // form helper text
-  color: "default" | "info" | "success";
+  /** Access level is a setting, not a status — nothing here succeeded or
+   * failed, so the chips stay neutral and the label carries the meaning. */
+  color: "default";
 }
 
 export const ACCESS_LEVELS: AccessLevel[] = ["private", "read_only", "public"];
@@ -49,12 +51,12 @@ export const ACCESS_META: Record<AccessLevel, AccessLevelMeta> = {
     label: "Read-only",
     optionLabel: "Public — read only",
     helper: "Anyone can see and attach it; only you and admins can change it.",
-    color: "info",
+    color: "default",
   },
   public: {
     label: "Public",
     optionLabel: "Public — read & write",
     helper: "Anyone can see, attach, and change it.",
-    color: "success",
+    color: "default",
   },
 };

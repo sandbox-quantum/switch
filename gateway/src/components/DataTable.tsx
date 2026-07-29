@@ -38,7 +38,7 @@ const HOOT_GRID_SX: SxProps<Theme> = {
   },
   "& .MuiDataGrid-columnHeaderTitle": { fontWeight: 500, opacity: 0.7 },
   "& .MuiDataGrid-row": { minHeight: "52px !important" },
-  "& .MuiDataGrid-row:hover": { backgroundColor: "rgb(0 0 0 / 0.03)" },
+  "& .MuiDataGrid-row:hover": { backgroundColor: "var(--hoot-accent)" },
   "& .MuiDataGrid-row.Mui-selected": {
     backgroundColor: "var(--hoot-muted)",
     "&:hover": { backgroundColor: "var(--hoot-muted)" },

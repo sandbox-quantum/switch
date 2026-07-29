@@ -26,39 +26,12 @@ import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useAgents } from "../../data/hooks";
+import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
-type ChipColor =
-  | "primary"
-  | "secondary"
-  | "success"
-  | "warning"
-  | "info"
-  | "error"
-  | "default";
-
-// Known connector types get a stable, on-brand colour; everything else falls
-// back to a deterministic hash so new connector types still render distinctly
-// without a code change.
-const TYPE_COLORS: Record<string, ChipColor> = {
-  "Claude Code": "warning",
-  "Google ADK": "info",
-};
-
-const FALLBACK_COLORS: ChipColor[] = [
-  "primary",
-  "secondary",
-  "success",
-  "error",
-];
-
-function typeColor(type: string): ChipColor {
-  if (TYPE_COLORS[type]) return TYPE_COLORS[type];
-  if (type.startsWith("server-side")) return "secondary";
-  let hash = 0;
-  for (let i = 0; i < type.length; i++) hash = (hash * 31 + type.charCodeAt(i)) | 0;
-  return FALLBACK_COLORS[Math.abs(hash) % FALLBACK_COLORS.length];
-}
+// Connector type is a category, not a status. Colour here would compete with
+// the status hues for the reader's attention and mean nothing, so the tag is
+// neutral and the label carries the distinction.
 
 export default function AgentsPage() {
   const navigate = useNavigate();
@@ -170,22 +143,18 @@ export default function AgentsPage() {
         width: 150,
         renderCell: ({ value }) =>
           value ? (
-            <Chip
-              label={value}
-              size="small"
-              color={typeColor(value as string)}
-              variant="outlined"
-            />
+            <Chip label={value} size="small" />
           ) : (
-            "—"
+            <Box component="span" sx={{ color: "text.secondary" }}>
+              {EM_DASH}
+            </Box>
           ),
       },
       {
         field: "connection_model",
         headerName: "Connection Type",
         width: 170,
-        valueFormatter: (value) =>
-          value ? (value as string).replace(/_/g, " ") : "—",
+        valueFormatter: (value) => (value ? titleCase(value as string) : EM_DASH),
       },
       {
         field: "parent_agent_id",
@@ -193,7 +162,7 @@ export default function AgentsPage() {
         width: 200,
         valueGetter: (value) =>
           value ? (parentNameById.get(value as string) ?? value) : "",
-        renderCell: ({ value }) => value || "—",
+        renderCell: ({ value }) => value || EM_DASH,
       },
       { field: "description", headerName: "Description", flex: 2, minWidth: 200 },
       { field: "tool_count", headerName: "Tools", width: 80, type: "number" },
@@ -202,9 +171,14 @@ export default function AgentsPage() {
         field: "owner_name",
         headerName: "Owner",
         width: 130,
-        renderCell: ({ value }) => value ?? "—",
+        renderCell: ({ value }) => value ?? EM_DASH,
       },
-      { field: "created_at", headerName: "Created", width: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        width: 130,
+        valueFormatter: (value) => formatDate(value as string),
+      },
       {
         field: "actions",
         headerName: "",

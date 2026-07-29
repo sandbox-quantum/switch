@@ -8,7 +8,6 @@ import {
   CircularProgress,
   Divider,
   IconButton,
-  Paper,
   Stack,
   TextField,
   Typography,
@@ -28,6 +27,7 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { usePackages } from "../../data/hooks";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 
@@ -94,27 +94,25 @@ export default function DocumentDetailPage() {
         <AccessChip pair={doc} />
       </Stack>
 
-      <Paper variant="outlined" sx={{ borderRadius: 2, p: 3 }}>
-        <Stack spacing={4}>
-          <DocInfoSection doc={doc} />
-          <Divider />
-          <EditFieldsSection
-            doc={doc}
-            canMutate={canMutate}
-            onSaved={(updated) => setDoc(updated)}
-          />
-          <Divider />
-          <InPackagesSection packageIds={doc.packages ?? []} />
-          <Divider />
-          <ResourceAttachmentsSection kind="document" resourceId={id} />
-          {canMutate && (
-            <>
-              <Divider />
-              <DangerSection onDelete={() => setDeleteOpen(true)} />
-            </>
-          )}
-        </Stack>
-      </Paper>
+      <Stack spacing={4}>
+        <DocInfoSection doc={doc} />
+        <Divider />
+        <EditFieldsSection
+          doc={doc}
+          canMutate={canMutate}
+          onSaved={(updated) => setDoc(updated)}
+        />
+        <Divider />
+        <InPackagesSection packageIds={doc.packages ?? []} />
+        <Divider />
+        <ResourceAttachmentsSection kind="document" resourceId={id} />
+        {canMutate && (
+          <>
+            <Divider />
+            <DangerSection onDelete={() => setDeleteOpen(true)} />
+          </>
+        )}
+      </Stack>
 
       <DeleteResourceDialog
         open={deleteOpen}
@@ -131,22 +129,40 @@ export default function DocumentDetailPage() {
 function DocInfoSection({ doc }: { doc: DocumentDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
-      <InfoLine label="Owner" value={doc.owner_name ?? doc.owner_id ?? "—"} />
-      <InfoLine
-        label="Created"
-        value={new Date(doc.created_at).toLocaleString()}
-      />
+      {doc.owner_name ? (
+        <InfoLine label="Owner" value={doc.owner_name} />
+      ) : (
+        <InfoLine label="Owner" value={doc.owner_id} mono />
+      )}
+      <InfoLine label="Created" value={formatDateTime(doc.created_at)} />
     </Stack>
   );
 }
 
-function InfoLine({ label, value }: { label: string; value: string }) {
+function InfoLine({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
   return (
     <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong> {value}
+      <strong>{label}:</strong>{" "}
+      {value ? (
+        <Box component="span" sx={mono ? MONO_SX : undefined}>
+          {value}
+        </Box>
+      ) : (
+        <Box component="span" sx={{ color: "text.secondary" }}>
+          {EM_DASH}
+        </Box>
+      )}
     </Typography>
   );
 }
@@ -199,7 +215,7 @@ function EditFieldsSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Details
       </Typography>
       <TextField
@@ -266,7 +282,7 @@ function InPackagesSection({ packageIds }: { packageIds: string[] }) {
   }, [allPackages]);
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         In packages
       </Typography>
       {packageIds.length === 0 ? (
@@ -294,7 +310,7 @@ function InPackagesSection({ packageIds }: { packageIds: string[] }) {
 function DangerSection({ onDelete }: { onDelete: () => void }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="error">
+      <Typography variant="overline" sx={{ color: "error.main", display: "block" }}>
         Danger zone
       </Typography>
       <Button

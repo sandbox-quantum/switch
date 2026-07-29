@@ -7,7 +7,6 @@ import {
   CircularProgress,
   Divider,
   IconButton,
-  Paper,
   Stack,
   Typography,
 } from "@mui/material";
@@ -22,28 +21,32 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useAgent, useKnownAgentTypes } from "../../data/hooks";
+import {
+  EM_DASH,
+  MONO_SX,
+  formatDateTime,
+  titleCase,
+} from "../../theme/hootFormat";
 import AddressingPolicySection from "./AddressingPolicySection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 
 // Presence of an agent within a room — mirrors the room detail page so the two
 // views report status identically.
 const ROOM_STATUS_META: Record<string, { label: string; color: string }> = {
-  live: { label: "Live", color: "#4caf50" },
-  awaiting_manual_poll: { label: "Idle", color: "#ff9800" },
-  no_session: { label: "No session", color: "#9e9e9e" },
-  disconnected: { label: "Disconnected", color: "#f44336" },
+  live: { label: "Live", color: "var(--hoot-success)" },
+  awaiting_manual_poll: { label: "Idle", color: "var(--hoot-warning)" },
+  no_session: { label: "No session", color: "var(--hoot-muted-foreground)" },
+  disconnected: { label: "Disconnected", color: "var(--hoot-destructive)" },
 };
 
 // State of a single session row.
 const SESSION_STATE_META: Record<string, { label: string; color: string }> = {
-  live: { label: "Live", color: "#4caf50" },
-  open: { label: "Open", color: "#ff9800" },
-  stale: { label: "Stale", color: "#9e9e9e" },
+  live: { label: "Live", color: "var(--hoot-success)" },
+  open: { label: "Open", color: "var(--hoot-warning)" },
+  stale: { label: "Stale", color: "var(--hoot-muted-foreground)" },
 };
 
-function humanize(value: string): string {
-  return value.replace(/_/g, " ");
-}
+const NEUTRAL_STATUS_COLOR = "var(--hoot-muted-foreground)";
 
 function StatusDot({ color, title }: { color: string; title?: string }) {
   return (
@@ -101,7 +104,7 @@ export default function AgentDetailPage() {
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
-            label={humanize(agent.connection_model)}
+            label={titleCase(agent.connection_model)}
             size="small"
             color="info"
             variant="outlined"
@@ -109,59 +112,74 @@ export default function AgentDetailPage() {
         )}
       </Stack>
 
-      <Paper variant="outlined" sx={{ borderRadius: 2, p: 3 }}>
-        <Stack spacing={4}>
-          <InfoSection agent={agent} />
-          <Divider />
-          <CapabilitiesSection agent={agent} />
-          {agent.known_agent_type && (
-            <>
-              <Divider />
-              <OptionsSection
-                agent={agent}
-                canEdit={isOwner}
-                onUpdated={refetch}
-              />
-            </>
-          )}
-          <Divider />
-          <AddressingPolicySection
-            agent={agent}
-            canEdit={isOwner}
-            onUpdated={refetch}
-          />
-          <Divider />
-          <SessionsSection sessions={agent.sessions} />
-          <Divider />
-          <RoomsSection rooms={agent.rooms} />
-          <Divider />
-          <ListSection
-            title={`Tools (${agent.tools.length})`}
-            empty="No tools."
-            items={agent.tools}
-          />
-          <Divider />
-          <ListSection
-            title={`Models (${agent.models.length})`}
-            empty="No models."
-            items={agent.models}
-          />
-          {agent.children.length > 0 && (
-            <>
-              <Divider />
-              <SubagentsSection children={agent.children} />
-            </>
-          )}
-        </Stack>
-      </Paper>
+      <Stack spacing={4}>
+        <InfoSection agent={agent} />
+        <Divider />
+        <CapabilitiesSection agent={agent} />
+        {agent.known_agent_type && (
+          <>
+            <Divider />
+            <OptionsSection
+              agent={agent}
+              canEdit={isOwner}
+              onUpdated={refetch}
+            />
+          </>
+        )}
+        <Divider />
+        <AddressingPolicySection
+          agent={agent}
+          canEdit={isOwner}
+          onUpdated={refetch}
+        />
+        <Divider />
+        <SessionsSection sessions={agent.sessions} />
+        <Divider />
+        <RoomsSection rooms={agent.rooms} />
+        <Divider />
+        <ListSection
+          title={`Tools (${agent.tools.length})`}
+          empty="No tools."
+          items={agent.tools}
+        />
+        <Divider />
+        <ListSection
+          title={`Models (${agent.models.length})`}
+          empty="No models."
+          items={agent.models}
+        />
+        {agent.children.length > 0 && (
+          <>
+            <Divider />
+            <SubagentsSection children={agent.children} />
+          </>
+        )}
+      </Stack>
     </Box>
   );
 }
 
-function InfoLine({ label, value }: { label: string; value: string }) {
+function InfoLine({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
   return (
     <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong> {value}
+      <strong>{label}:</strong>{" "}
+      {value ? (
+        <Box component="span" sx={mono ? MONO_SX : undefined}>
+          {value}
+        </Box>
+      ) : (
+        <Box component="span" sx={{ color: "text.secondary" }}>
+          {EM_DASH}
+        </Box>
+      )}
     </Typography>
   );
 }
@@ -169,25 +187,24 @@ function InfoLine({ label, value }: { label: string; value: string }) {
 function InfoSection({ agent }: { agent: AgentDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
       {agent.description && (
         <Typography variant="body2">{agent.description}</Typography>
       )}
-      <InfoLine label="Owner" value={agent.owner_name ?? agent.owner_id ?? "—"} />
-      <InfoLine label="Agent type" value={agent.connector_type || "—"} />
+      {agent.owner_name ? (
+        <InfoLine label="Owner" value={agent.owner_name} />
+      ) : (
+        <InfoLine label="Owner" value={agent.owner_id} mono />
+      )}
+      <InfoLine label="Agent type" value={agent.connector_type} />
       <InfoLine
         label="Connection type"
-        value={
-          agent.connection_model ? humanize(agent.connection_model) : "—"
-        }
+        value={agent.connection_model ? titleCase(agent.connection_model) : null}
       />
-      <InfoLine label="OAuth client" value={agent.oauth_client_id ?? "—"} />
-      <InfoLine
-        label="Created"
-        value={new Date(agent.created_at).toLocaleString()}
-      />
+      <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
+      <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
     </Stack>
   );
 }
@@ -201,7 +218,7 @@ function CapabilitiesSection({ agent }: { agent: AgentDetail }) {
   const task = (profile.task_protocol ?? {}) as Record<string, unknown>;
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Capabilities
       </Typography>
       <InfoLine
@@ -265,7 +282,7 @@ function OptionsSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Options
       </Typography>
       {!spec ? (
@@ -314,7 +331,7 @@ function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }) {
   const liveCount = sessions.filter((s) => s.state === "live").length;
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Sessions ({liveCount} live / {sessions.length})
       </Typography>
       {sessions.length === 0 ? (
@@ -335,8 +352,8 @@ function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }) {
 function SessionRow({ session }: { session: AgentSessionDetail }) {
   const navigate = useNavigate();
   const meta = SESSION_STATE_META[session.state] ?? {
-    label: session.state,
-    color: "#9e9e9e",
+    label: titleCase(session.state),
+    color: NEUTRAL_STATUS_COLOR,
   };
   const isLive = session.state === "live";
   const clickable = session.room_id !== null;
@@ -366,7 +383,11 @@ function SessionRow({ session }: { session: AgentSessionDetail }) {
       <StatusDot color={meta.color} title={meta.label} />
       <Typography
         variant="body2"
-        sx={{ flexGrow: 1, fontWeight: isLive ? 600 : 400 }}
+        sx={{
+          flexGrow: 1,
+          fontWeight: isLive ? 600 : 400,
+          ...(!session.room_name && session.room_id ? MONO_SX : {}),
+        }}
       >
         {session.room_name ?? (session.room_id ? session.room_id : "Room-agnostic")}
       </Typography>
@@ -387,7 +408,7 @@ function SessionRow({ session }: { session: AgentSessionDetail }) {
         </Typography>
       )}
       <Typography variant="caption" color="text.secondary">
-        last seen {new Date(session.last_seen_at).toLocaleString()}
+        last seen {formatDateTime(session.last_seen_at)}
       </Typography>
     </Stack>
   );
@@ -396,7 +417,7 @@ function SessionRow({ session }: { session: AgentSessionDetail }) {
 function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Rooms ({rooms.length})
       </Typography>
       {rooms.length === 0 ? (
@@ -417,8 +438,8 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
 function RoomRow({ room }: { room: AgentRoomMembership }) {
   const navigate = useNavigate();
   const meta = ROOM_STATUS_META[room.status] ?? {
-    label: room.status,
-    color: "#9e9e9e",
+    label: titleCase(room.status),
+    color: NEUTRAL_STATUS_COLOR,
   };
   return (
     <Stack
@@ -469,7 +490,7 @@ function ListSection({
 }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         {title}
       </Typography>
       {items.length === 0 ? (
@@ -497,7 +518,7 @@ function SubagentsSection({ children }: { children: AgentSummary[] }) {
   const navigate = useNavigate();
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Subagents ({children.length})
       </Typography>
       <Stack direction="row" flexWrap="wrap" gap={0.5}>

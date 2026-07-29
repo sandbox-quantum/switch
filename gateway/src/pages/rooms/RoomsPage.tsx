@@ -16,8 +16,17 @@ import {
   unarchiveRoom,
 } from "../../data/api";
 import { useRoomGroups, useRooms } from "../../data/hooks";
+import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/hootFormat";
 import { buildGroupIndex, effectiveColor, groupPathName } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
+
+function Missing() {
+  return (
+    <Typography component="span" variant="body2" sx={{ color: "text.secondary" }}>
+      {EM_DASH}
+    </Typography>
+  );
+}
 
 function ColorDot({ color }: { color: string }) {
   return (
@@ -102,7 +111,7 @@ export default function RoomsPage() {
               <span>{groupPathName(row.group_id, byId) || row.group_name}</span>
             </Stack>
           ) : (
-            "—"
+            <Missing />
           ),
       },
       {
@@ -110,7 +119,15 @@ export default function RoomsPage() {
         headerName: "Owner",
         flex: 1,
         minWidth: 150,
-        renderCell: ({ value, row }) => value ?? (row.owner_id ? row.owner_id : "—"),
+        renderCell: ({ value, row }) =>
+          value ??
+          (row.owner_id ? (
+            <Typography component="span" sx={MONO_SX}>
+              {row.owner_id}
+            </Typography>
+          ) : (
+            <Missing />
+          )),
       },
       {
         field: "read_visibility",
@@ -123,7 +140,11 @@ export default function RoomsPage() {
         headerName: "Type",
         width: 120,
         renderCell: ({ value }) =>
-          value ? <Chip label={value} size="small" /> : "—",
+          value ? (
+            <Chip label={channelTypeLabel(value as string)} size="small" />
+          ) : (
+            <Missing />
+          ),
       },
       { field: "agent_count", headerName: "Agents", width: 90, type: "number" },
       {
@@ -137,9 +158,18 @@ export default function RoomsPage() {
         headerName: "Bridge",
         width: 160,
         renderCell: ({ value }) =>
-          value ? <Chip label={value} size="small" color="info" /> : "—",
+          value ? (
+            <Chip label={value} size="small" color="info" />
+          ) : (
+            <Missing />
+          ),
       },
-      { field: "created_at", headerName: "Created", width: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        width: 140,
+        valueFormatter: (value) => formatDate(value as string),
+      },
       {
         field: "actions",
         headerName: "",

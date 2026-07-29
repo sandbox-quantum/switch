@@ -8,7 +8,6 @@ import {
   CircularProgress,
   Divider,
   IconButton,
-  Paper,
   Stack,
   TextField,
   Typography,
@@ -28,6 +27,7 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { usePackages, useReferenceTypes } from "../../data/hooks";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 import JsonValueForm from "./value_forms/JsonValueForm";
@@ -99,27 +99,25 @@ export default function ReferenceDetailPage() {
         <AccessChip pair={ref} />
       </Stack>
 
-      <Paper variant="outlined" sx={{ borderRadius: 2, p: 3 }}>
-        <Stack spacing={4}>
-          <RefInfoSection ref_={ref} typeLabel={typeSpec?.display_name} />
-          <Divider />
-          <EditFieldsSection
-            ref_={ref}
-            canMutate={canMutate}
-            onSaved={(updated) => setRef(updated)}
-          />
-          <Divider />
-          <InPackagesSection packageIds={ref.packages ?? []} />
-          <Divider />
-          <ResourceAttachmentsSection kind="reference" resourceId={id} />
-          {canMutate && (
-            <>
-              <Divider />
-              <DangerSection onDelete={() => setDeleteOpen(true)} />
-            </>
-          )}
-        </Stack>
-      </Paper>
+      <Stack spacing={4}>
+        <RefInfoSection ref_={ref} typeLabel={typeSpec?.display_name} />
+        <Divider />
+        <EditFieldsSection
+          ref_={ref}
+          canMutate={canMutate}
+          onSaved={(updated) => setRef(updated)}
+        />
+        <Divider />
+        <InPackagesSection packageIds={ref.packages ?? []} />
+        <Divider />
+        <ResourceAttachmentsSection kind="reference" resourceId={id} />
+        {canMutate && (
+          <>
+            <Divider />
+            <DangerSection onDelete={() => setDeleteOpen(true)} />
+          </>
+        )}
+      </Stack>
 
       <DeleteResourceDialog
         open={deleteOpen}
@@ -142,23 +140,41 @@ function RefInfoSection({
 }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
       <InfoLine label="Type" value={typeLabel ?? ref_.type} />
-      <InfoLine label="Owner" value={ref_.owner_name ?? ref_.owner_id} />
-      <InfoLine
-        label="Created"
-        value={new Date(ref_.created_at).toLocaleString()}
-      />
+      {ref_.owner_name ? (
+        <InfoLine label="Owner" value={ref_.owner_name} />
+      ) : (
+        <InfoLine label="Owner" value={ref_.owner_id} mono />
+      )}
+      <InfoLine label="Created" value={formatDateTime(ref_.created_at)} />
     </Stack>
   );
 }
 
-function InfoLine({ label, value }: { label: string; value: string }) {
+function InfoLine({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
   return (
     <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong> {value}
+      <strong>{label}:</strong>{" "}
+      {value ? (
+        <Box component="span" sx={mono ? MONO_SX : undefined}>
+          {value}
+        </Box>
+      ) : (
+        <Box component="span" sx={{ color: "text.secondary" }}>
+          {EM_DASH}
+        </Box>
+      )}
     </Typography>
   );
 }
@@ -213,7 +229,7 @@ function EditFieldsSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Details
       </Typography>
       <TextField
@@ -276,7 +292,7 @@ function InPackagesSection({ packageIds }: { packageIds: string[] }) {
   }, [allPackages]);
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         In packages
       </Typography>
       {packageIds.length === 0 ? (
@@ -304,7 +320,7 @@ function InPackagesSection({ packageIds }: { packageIds: string[] }) {
 function DangerSection({ onDelete }: { onDelete: () => void }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="error">
+      <Typography variant="overline" sx={{ color: "error.main", display: "block" }}>
         Danger zone
       </Typography>
       <Button

@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import type { UserInfo } from "../../data/api";
 import { useUsers } from "../../data/hooks";
+import { formatDate, titleCase } from "../../theme/hootFormat";
 import CreateUserDialog from "./CreateUserDialog";
 
 export default function UsersPage() {
@@ -21,13 +22,18 @@ export default function UsersPage() {
         width: 120,
         renderCell: ({ value }) => (
           <Chip
-            label={value}
+            label={titleCase(String(value))}
             size="small"
             color={value === "admin" ? "primary" : "default"}
           />
         ),
       },
-      { field: "created_at", headerName: "Created", width: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        width: 140,
+        valueFormatter: (value) => formatDate(value as string),
+      },
     ],
     [],
   );

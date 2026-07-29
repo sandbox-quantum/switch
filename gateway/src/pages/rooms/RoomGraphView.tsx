@@ -8,6 +8,7 @@ import {
   type LinkedRoomDetail,
 } from "../../data/api";
 import { useRoom } from "../../data/hooks";
+import { useGraphCanvasTheme } from "../graphCanvasTheme";
 
 interface GraphNode {
   id: string;
@@ -181,6 +182,8 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
     return () => clearTimeout(t);
   }, [nodes.length, links.length]);
 
+  const canvas = useGraphCanvasTheme();
+
   const paintNode = useCallback(
     (node: GraphNode, ctx: CanvasRenderingContext2D) => {
       const { x = 0, y = 0, kind, label } = node;
@@ -210,7 +213,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
       // Plus/minus glyph for non-center nodes to hint at expand/collapse.
       if (kind !== "center") {
         const armLen = radius * 0.45;
-        ctx.strokeStyle = "#0A0C0D";
+        ctx.strokeStyle = canvas.nodeStroke;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(x - armLen, y);
@@ -224,14 +227,14 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
 
       // Font in graph coordinates so it scales with the node when zooming.
       const fontGraphUnits = radius * 0.55;
-      ctx.font = `${kind === "center" ? "600 " : ""}${fontGraphUnits}px DM Sans, sans-serif`;
+      ctx.font = `${kind === "center" ? "600 " : ""}${fontGraphUnits}px ${canvas.fontFamily}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillStyle = "#F2F2F2";
+      ctx.fillStyle = canvas.label;
       const truncated = label.length > 32 ? label.slice(0, 31) + "…" : label;
       ctx.fillText(truncated, x, y + radius + fontGraphUnits * 0.4);
     },
-    [],
+    [canvas],
   );
 
   const handleNodeClick = useCallback((node: GraphNode) => {
@@ -274,7 +277,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
           overflow: "hidden",
           border: "1px solid",
           borderColor: "divider",
-          backgroundColor: "#0A0C0D",
+          backgroundColor: canvas.background,
           position: "relative",
         }}
       >
@@ -311,7 +314,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
           graphData={{ nodes, links }}
           width={dimensions.width}
           height={dimensions.height}
-          backgroundColor="#0A0C0D"
+          backgroundColor={canvas.background}
           nodeRelSize={1}
           nodeCanvasObject={paintNode}
           nodePointerAreaPaint={(node, color, ctx) => {
@@ -322,7 +325,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
             ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI);
             ctx.fill();
           }}
-          linkColor={() => "#ffffff40"}
+          linkColor={() => canvas.link}
           linkWidth={1}
           linkDirectionalArrowLength={5}
           linkDirectionalArrowRelPos={1}

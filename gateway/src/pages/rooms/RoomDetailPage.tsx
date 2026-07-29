@@ -20,7 +20,6 @@ import {
   FormControlLabel,
   IconButton,
   MenuItem,
-  Paper,
   Stack,
   Switch,
   TextField,
@@ -52,6 +51,13 @@ import { useAgents, useBridgeUsers, useRoom, useRoomGroups } from "../../data/ho
 import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
+import {
+  EM_DASH,
+  MONO_SX,
+  channelTypeLabel,
+  formatDateTime,
+  titleCase,
+} from "../../theme/hootFormat";
 import { effectiveColor, buildGroupIndex, flattenTree } from "./groupTree";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
@@ -108,7 +114,9 @@ export default function RoomDetailPage() {
         {room.archived && (
           <Chip label="Archived" size="small" color="warning" />
         )}
-        {room.channel_type && <Chip label={room.channel_type} size="small" />}
+        {room.channel_type && (
+          <Chip label={channelTypeLabel(room.channel_type)} size="small" />
+        )}
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" color="info" />
         )}
@@ -117,47 +125,45 @@ export default function RoomDetailPage() {
         </Button>
       </Stack>
 
-      <Paper variant="outlined" sx={{ borderRadius: 2, p: 3 }}>
-        <Stack spacing={4}>
-          <RoomInfoSection room={room} />
-          <Divider />
-          <GroupSection room={room} canWrite={canWrite} onChanged={refetch} />
-          <Divider />
-          <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
-          <Divider />
-          <EditableFieldsSection
-            room={room}
-            canWrite={canWrite}
-            onSaved={refetch}
-          />
-          <Divider />
-          <ParticipantsSection room={room} onChanged={refetch} />
-          <Divider />
-          <RoomResourcesSection roomId={room.id} />
-          <Divider />
-          <RoomLinkedRoomsSection roomId={room.id} />
-          <Divider />
-          <RoomGraphView roomId={room.id} />
-          {room.bridge_id && (
-            <>
-              <Divider />
-              <BridgeSection room={room} />
-            </>
-          )}
-          {canWrite && (
-            <>
-              <Divider />
-              <ArchiveSection room={room} onChanged={refetch} />
-            </>
-          )}
-          {canDelete && (
-            <>
-              <Divider />
-              <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
-            </>
-          )}
-        </Stack>
-      </Paper>
+      <Stack spacing={4}>
+        <RoomInfoSection room={room} />
+        <Divider />
+        <GroupSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <Divider />
+        <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <Divider />
+        <EditableFieldsSection
+          room={room}
+          canWrite={canWrite}
+          onSaved={refetch}
+        />
+        <Divider />
+        <ParticipantsSection room={room} onChanged={refetch} />
+        <Divider />
+        <RoomResourcesSection roomId={room.id} />
+        <Divider />
+        <RoomLinkedRoomsSection roomId={room.id} />
+        <Divider />
+        <RoomGraphView roomId={room.id} />
+        {room.bridge_id && (
+          <>
+            <Divider />
+            <BridgeSection room={room} />
+          </>
+        )}
+        {canWrite && (
+          <>
+            <Divider />
+            <ArchiveSection room={room} onChanged={refetch} />
+          </>
+        )}
+        {canDelete && (
+          <>
+            <Divider />
+            <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
+          </>
+        )}
+      </Stack>
 
       <ExportRoomYamlDialog
         open={exportOpen}
@@ -174,28 +180,52 @@ export default function RoomDetailPage() {
 function RoomInfoSection({ room }: { room: RoomDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Room info
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
         <AccessChip pair={room} />
         {room.channel_type && (
-          <InfoChip label="Channel type" value={room.channel_type} />
+          <InfoChip
+            label="Channel type"
+            value={channelTypeLabel(room.channel_type)}
+          />
         )}
-        <InfoChip label="Created" value={new Date(room.created_at).toLocaleString()} />
-        <InfoChip label="Matrix room" value={room.matrix_room_id} />
+        <InfoChip label="Created" value={formatDateTime(room.created_at)} />
+        <InfoChip label="Matrix room" value={room.matrix_room_id} mono />
         {room.external_channel_id && (
-          <InfoChip label="External channel" value={room.external_channel_id} />
+          <InfoChip
+            label="External channel"
+            value={room.external_channel_id}
+            mono
+          />
         )}
       </Stack>
     </Stack>
   );
 }
 
-function InfoChip({ label, value }: { label: string; value: string }) {
+function InfoChip({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
   return (
     <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong> {value}
+      <strong>{label}:</strong>{" "}
+      {value ? (
+        <Box component="span" sx={mono ? MONO_SX : undefined}>
+          {value}
+        </Box>
+      ) : (
+        <Box component="span" sx={{ color: "text.secondary" }}>
+          {EM_DASH}
+        </Box>
+      )}
     </Typography>
   );
 }
@@ -237,7 +267,7 @@ function GroupSection({
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Group
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
@@ -311,7 +341,7 @@ function RolesSection({
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Roles
       </Typography>
       <Typography variant="caption" color="text.secondary">
@@ -619,7 +649,7 @@ function EditableFieldsSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Settings
       </Typography>
       {!canWrite && (
@@ -811,7 +841,7 @@ function ParticipantsSection({
 
   return (
     <Stack spacing={3}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Participants
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
@@ -871,7 +901,7 @@ function ParticipantsSection({
         )}
         {isFixedMembership && (
           <Typography variant="caption" color="text.secondary">
-            Membership for {room.channel_type} rooms is managed from the messaging platform.
+            Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
           </Typography>
         )}
       </Box>
@@ -924,22 +954,22 @@ const STATUS_META: Record<
 > = {
   live: {
     label: "Live",
-    color: "#4caf50",
+    color: "var(--hoot-success)",
     description: "Connected and receiving events",
   },
   awaiting_manual_poll: {
     label: "Idle",
-    color: "#ff9800",
+    color: "var(--hoot-warning)",
     description: "Session open — awaiting manual poll",
   },
   no_session: {
     label: "No session",
-    color: "#9e9e9e",
+    color: "var(--hoot-muted-foreground)",
     description: "Not currently connected to this room",
   },
   disconnected: {
     label: "Disconnected",
-    color: "#f44336",
+    color: "var(--hoot-destructive)",
     description: "Always-on agent is not connected",
   },
 };
@@ -961,8 +991,8 @@ function AgentRow({
 }) {
   const navigate = useNavigate();
   const meta = (status && STATUS_META[status]) || {
-    label: status ?? "unknown",
-    color: "#9e9e9e",
+    label: status ? titleCase(status) : "Unknown",
+    color: "var(--hoot-muted-foreground)",
     description: "",
   };
   return (
@@ -1045,16 +1075,21 @@ function AgentRow({
 function BridgeSection({ room }: { room: RoomDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Bridge
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap">
-        <InfoChip
-          label="Bridge"
-          value={room.bridge_display_name ?? room.bridge_id ?? "—"}
-        />
+        {room.bridge_display_name ? (
+          <InfoChip label="Bridge" value={room.bridge_display_name} />
+        ) : (
+          <InfoChip label="Bridge" value={room.bridge_id} mono />
+        )}
         {room.external_channel_id && (
-          <InfoChip label="External channel" value={room.external_channel_id} />
+          <InfoChip
+            label="External channel"
+            value={room.external_channel_id}
+            mono
+          />
         )}
       </Stack>
       <Typography variant="caption" color="text.secondary">
@@ -1096,7 +1131,7 @@ function ArchiveSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Archive
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
@@ -1147,7 +1182,7 @@ function DangerSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Danger zone
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}

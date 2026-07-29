@@ -7,7 +7,6 @@ import {
   CircularProgress,
   Divider,
   IconButton,
-  Paper,
   Stack,
   TextField,
   Typography,
@@ -26,6 +25,7 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import PackageMembersSection from "./PackageMembersSection";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
@@ -93,27 +93,25 @@ export default function PackageDetailPage() {
         <AccessChip pair={pkg} />
       </Stack>
 
-      <Paper variant="outlined" sx={{ borderRadius: 2, p: 3 }}>
-        <Stack spacing={4}>
-          <InfoSection pkg={pkg} />
-          <Divider />
-          <EditFieldsSection
-            pkg={pkg}
-            canMutate={canMutate}
-            onSaved={(updated) => setPkg(updated)}
-          />
-          <Divider />
-          <PackageMembersSection packageId={id} canMutate={canMutate} />
-          <Divider />
-          <ResourceAttachmentsSection kind="package" resourceId={id} />
-          {canMutate && (
-            <>
-              <Divider />
-              <DangerSection onDelete={() => setDeleteOpen(true)} />
-            </>
-          )}
-        </Stack>
-      </Paper>
+      <Stack spacing={4}>
+        <InfoSection pkg={pkg} />
+        <Divider />
+        <EditFieldsSection
+          pkg={pkg}
+          canMutate={canMutate}
+          onSaved={(updated) => setPkg(updated)}
+        />
+        <Divider />
+        <PackageMembersSection packageId={id} canMutate={canMutate} />
+        <Divider />
+        <ResourceAttachmentsSection kind="package" resourceId={id} />
+        {canMutate && (
+          <>
+            <Divider />
+            <DangerSection onDelete={() => setDeleteOpen(true)} />
+          </>
+        )}
+      </Stack>
 
       <DeleteResourceDialog
         open={deleteOpen}
@@ -130,14 +128,25 @@ export default function PackageDetailPage() {
 function InfoSection({ pkg }: { pkg: PackageDetail }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
       <Typography variant="body2" color="text.secondary">
-        <strong>Owner:</strong> {pkg.owner_name ?? pkg.owner_id}
+        <strong>Owner:</strong>{" "}
+        {pkg.owner_name ? (
+          pkg.owner_name
+        ) : pkg.owner_id ? (
+          <Box component="span" sx={MONO_SX}>
+            {pkg.owner_id}
+          </Box>
+        ) : (
+          <Box component="span" sx={{ color: "text.secondary" }}>
+            {EM_DASH}
+          </Box>
+        )}
       </Typography>
       <Typography variant="body2" color="text.secondary">
-        <strong>Created:</strong> {new Date(pkg.created_at).toLocaleString()}
+        <strong>Created:</strong> {formatDateTime(pkg.created_at)}
       </Typography>
     </Stack>
   );
@@ -188,7 +197,7 @@ function EditFieldsSection({
 
   return (
     <Stack spacing={2}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Details
       </Typography>
       <TextField
@@ -239,7 +248,7 @@ function EditFieldsSection({
 function DangerSection({ onDelete }: { onDelete: () => void }) {
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="error">
+      <Typography variant="overline" sx={{ color: "error.main", display: "block" }}>
         Danger zone
       </Typography>
       <Button

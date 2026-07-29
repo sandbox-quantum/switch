@@ -13,6 +13,7 @@ import { useNavigate } from "react-router";
 import { useRoomGraph, useRoomGroups, useRooms } from "../../data/hooks";
 import { branchColor, buildGroupIndex, topAncestor } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
+import { useGraphCanvasTheme } from "../graphCanvasTheme";
 
 interface GraphNode {
   id: string;
@@ -147,6 +148,8 @@ export default function RoomsGraphPage() {
     return () => clearTimeout(t);
   }, [nodes.length, links.length]);
 
+  const canvas = useGraphCanvasTheme();
+
   const paintNode = useCallback(
     (node: GraphNode, ctx: CanvasRenderingContext2D) => {
       const { x = 0, y = 0, label, isolated, degree, color } = node;
@@ -169,14 +172,14 @@ export default function RoomsGraphPage() {
 
       // Font in graph coordinates: scales with zoom in lockstep with the node.
       const fontGraphUnits = radius * 0.5;
-      ctx.font = `${fontGraphUnits}px DM Sans, sans-serif`;
+      ctx.font = `${fontGraphUnits}px ${canvas.fontFamily}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillStyle = isolated ? "#9097A0" : "#F2F2F2";
+      ctx.fillStyle = isolated ? canvas.labelMuted : canvas.label;
       const truncated = label.length > 32 ? label.slice(0, 31) + "…" : label;
       ctx.fillText(truncated, x, y + radius + fontGraphUnits * 0.4);
     },
-    [],
+    [canvas],
   );
 
   const handleNodeClick = useCallback(
@@ -217,7 +220,7 @@ export default function RoomsGraphPage() {
           overflow: "hidden",
           border: "1px solid",
           borderColor: "divider",
-          backgroundColor: "#0A0C0D",
+          backgroundColor: canvas.background,
           position: "relative",
         }}
       >
@@ -303,7 +306,7 @@ export default function RoomsGraphPage() {
           graphData={{ nodes, links }}
           width={dimensions.width}
           height={dimensions.height}
-          backgroundColor="#0A0C0D"
+          backgroundColor={canvas.background}
           nodeRelSize={1}
           nodeCanvasObject={paintNode}
           nodePointerAreaPaint={(node, color, ctx) => {
@@ -314,7 +317,7 @@ export default function RoomsGraphPage() {
             ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI);
             ctx.fill();
           }}
-          linkColor={() => "#ffffff40"}
+          linkColor={() => canvas.link}
           linkWidth={1}
           linkDirectionalArrowLength={5}
           linkDirectionalArrowRelPos={1}

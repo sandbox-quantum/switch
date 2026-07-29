@@ -21,6 +21,7 @@ import DataTable from "../../components/DataTable";
 import { type BridgeDetail, deleteBridge, updateBridge } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges } from "../../data/hooks";
+import { formatDate, titleCase } from "../../theme/hootFormat";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
 
 type BridgeRow = BridgeDetail & { id: string };
@@ -72,7 +73,7 @@ export default function CollaborationsPage() {
         headerName: "Type",
         width: 130,
         renderCell: ({ value }) => (
-          <Chip label={value} size="small" sx={{ textTransform: "capitalize" }} />
+          <Chip label={titleCase(String(value))} size="small" />
         ),
       },
       {
@@ -81,7 +82,7 @@ export default function CollaborationsPage() {
         width: 130,
         renderCell: ({ value }) => (
           <Chip
-            label={value}
+            label={titleCase(String(value))}
             size="small"
             color={STATUS_COLOR[value as string] ?? "default"}
           />
@@ -104,7 +105,12 @@ export default function CollaborationsPage() {
           />
         ),
       },
-      { field: "created_at", headerName: "Created", width: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        width: 140,
+        valueFormatter: (value) => formatDate(value as string),
+      },
       ...(isAdmin
         ? [
             {
