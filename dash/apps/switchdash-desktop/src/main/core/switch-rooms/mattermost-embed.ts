@@ -1,4 +1,4 @@
-import { session as electronSession } from 'electron';
+import { net, session as electronSession } from 'electron';
 import {
   managedServerSecretsKey,
   managedServerStateDir,
@@ -40,12 +40,19 @@ async function mattermostOriginFor(serverId: string): Promise<string | null> {
  * Log the shared `user` account into Mattermost so the webview's partition
  * holds a live session.
  *
- * The login runs through the partition's own session with `credentials:
- * 'include'`, so Chromium writes the response's cookies straight into the jar
- * the webview will read. Doing it that way is not a stylistic choice: the Fetch
- * spec makes `Set-Cookie` a forbidden response header, so a plain `net.fetch`
- * cannot see the cookies at all and can only reconstruct them — which loses
- * MMUSERID and MMCSRF, the two the web app reads to decide it is signed in.
+ * Mattermost issues three cookies on login and marks only MMAUTHTOKEN
+ * HttpOnly: its web app reads MMUSERID and MMCSRF from `document.cookie` to
+ * decide it is signed in, so a session missing those renders a login page
+ * despite being valid. We therefore need the real cookies, not a reconstructed
+ * one — and `Set-Cookie` is a forbidden response header under the Fetch spec,
+ * so the response object cannot show them to us.
+ *
+ * So: let the net stack store them, then move them. Electron's `net.fetch`
+ * writes cookies into the DEFAULT session's jar regardless of the session the
+ * request was made on (electron#44456), so the login runs there and the
+ * resulting cookies are copied into the partition with their flags intact and
+ * cleared from the default jar afterwards, since an auth cookie for someone
+ * else's server has no business outliving this call there.
  *
  * Throws on failure; an embed that silently renders a login page is worse than
  * a stated error.
@@ -56,10 +63,7 @@ async function installMattermostSession(origin: string, serverId: string): Promi
 
   const secrets = await loadOrCreateSecrets({ secretsKey: managedServerSecretsKey(server) });
 
-  const partition = mattermostPartition(serverId);
-  const partitionSession = electronSession.fromPartition(partition);
-
-  const response = await partitionSession.fetch(`${origin}/api/v4/users/login`, {
+  const response = await net.fetch(`${origin}/api/v4/users/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -75,15 +79,38 @@ async function installMattermostSession(origin: string, serverId: string): Promi
     );
   }
 
-  // Read the jar rather than the response: this asserts the thing the webview
-  // actually depends on, instead of a proxy for it.
+  const partition = mattermostPartition(serverId);
+  const partitionSession = electronSession.fromPartition(partition);
+  const defaultJar = electronSession.defaultSession.cookies;
+
+  const issued = await defaultJar.get({ url: origin });
+  for (const cookie of issued) {
+    await partitionSession.cookies.set({
+      url: origin,
+      name: cookie.name,
+      value: cookie.value,
+      path: cookie.path ?? '/',
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly,
+      sameSite: cookie.sameSite,
+      ...(cookie.expirationDate ? { expirationDate: cookie.expirationDate } : {}),
+    });
+    await defaultJar.remove(origin, cookie.name);
+  }
+  await partitionSession.cookies.flushStore();
+
+  // Assert against the jar the webview reads, not the response — that is the
+  // state the embed actually depends on.
   const stored = await partitionSession.cookies.get({ url: origin });
-  const names = new Set(stored.map((c) => c.name));
-  if (!names.has(MATTERMOST_AUTH_COOKIE)) {
+  const names = stored.map((c) => c.name);
+  if (!names.includes(MATTERMOST_AUTH_COOKIE)) {
+    // Report both jars: "issued none" means the net stack never stored the
+    // login's cookies anywhere, which is a different problem from a copy that
+    // dropped them, and the two need different fixes.
     throw new Error(
-      `Mattermost login succeeded but stored no ${MATTERMOST_AUTH_COOKIE} cookie (got: ${
-        [...names].join(', ') || 'none'
-      })`
+      `Mattermost login succeeded but the webview partition has no ${MATTERMOST_AUTH_COOKIE}. ` +
+        `Issued by login: ${issued.map((c) => c.name).join(', ') || 'none'}. ` +
+        `In partition: ${names.join(', ') || 'none'}.`
     );
   }
 
