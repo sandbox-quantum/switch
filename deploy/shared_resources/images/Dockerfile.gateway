@@ -4,6 +4,12 @@ WORKDIR /app
 COPY gateway/package.json gateway/package-lock.json ./
 RUN npm ci
 COPY gateway/ .
+
+# MUI X Pro licence key for the data grid. Injected into the bundle at build
+# time; the grids render with a watermark without it.
+ARG VITE_MUI_X_LICENSE_KEY
+ENV VITE_MUI_X_LICENSE_KEY=$VITE_MUI_X_LICENSE_KEY
+
 RUN npm run build
 
 FROM nginx:alpine

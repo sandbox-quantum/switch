@@ -9,8 +9,11 @@ import { CssBaseline, GlobalStyles, InitColorSchemeScript, ThemeProvider } from 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { registerMuiLicense } from "./muiLicense";
 import { GLOBAL_STYLE } from "./theme/global-style";
 import { APP_THEME } from "./theme/theme";
+
+registerMuiLicense();
 
 const theme = APP_THEME();
 
