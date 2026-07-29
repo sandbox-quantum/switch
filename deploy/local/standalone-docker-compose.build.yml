@@ -21,8 +21,6 @@ services:
     build:
       context: .
       dockerfile: deploy/shared_resources/images/Dockerfile.gateway
-      args:
-        VITE_MUI_X_LICENSE_KEY: ${VITE_MUI_X_LICENSE_KEY:-}
 
   setup:
     build:

@@ -4,15 +4,15 @@ WORKDIR /app
 COPY gateway/package.json gateway/package-lock.json ./
 RUN npm ci
 COPY gateway/ .
-
-# MUI X Pro licence key for the data grid. Injected into the bundle at build
-# time; the grids render with a watermark without it.
-ARG VITE_MUI_X_LICENSE_KEY
-ENV VITE_MUI_X_LICENSE_KEY=$VITE_MUI_X_LICENSE_KEY
-
 RUN npm run build
 
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY deploy/shared_resources/gateway-nginx.conf /etc/nginx/conf.d/default.conf
+
+# Per-deployment settings (e.g. the MUI X licence key) are written into
+# config.js at container start — the image is published prebuilt, so they
+# cannot be baked into the bundle.
+COPY deploy/shared_resources/gateway-runtime-config.sh /docker-entrypoint.d/40-gateway-runtime-config.sh
+RUN chmod +x /docker-entrypoint.d/40-gateway-runtime-config.sh
 EXPOSE 3000
