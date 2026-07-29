@@ -4,7 +4,7 @@ import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import UnarchiveOutlined from "@mui/icons-material/UnarchiveOutlined";
 import { Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
-import type { GridColDef, GridRowId } from "@mui/x-data-grid-pro";
+import type { GridColDef, GridRowId } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { AccessChip } from "../../components/AccessControls";

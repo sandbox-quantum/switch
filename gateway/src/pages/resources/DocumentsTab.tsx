@@ -1,5 +1,5 @@
 import { Alert, Box, CircularProgress } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid-pro";
+import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";

@@ -139,16 +139,6 @@ gateway:
   image: gateway:latest
   imagePullPolicy: Always
   replicaCount: 1
-  # The dashboard's tables use MUI X Pro, which needs a licence key. MUI
-  # licences cannot be redistributed, so the published image ships without one:
-  # supply your organisation's own key here, or the tables render with a
-  # "Missing license key" watermark. The key is applied at runtime, so changing
-  # it is a `helm upgrade` — no image rebuild.
-  # Set `value` directly, or point `existingSecret` at a Secret you manage.
-  muiLicenseKey:
-    value: ""
-    existingSecret: ""
-    secretKey: "mui-x-license-key"
   service:
     type: ClusterIP
     port: 3000

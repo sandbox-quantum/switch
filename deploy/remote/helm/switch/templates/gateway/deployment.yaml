@@ -28,19 +28,6 @@ spec:
           ports:
             - containerPort: 3000
               protocol: TCP
-          env:
-            # MUI X Pro licence key for the data grid. A licence cannot be
-            # redistributed, so the published image carries none — supply your
-            # organisation's own key or the grids show a watermark.
-            - name: MUI_X_LICENSE_KEY
-              {{- if .Values.gateway.muiLicenseKey.existingSecret }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.gateway.muiLicenseKey.existingSecret }}
-                  key: {{ .Values.gateway.muiLicenseKey.secretKey }}
-              {{- else }}
-              value: {{ .Values.gateway.muiLicenseKey.value | quote }}
-              {{- end }}
           volumeMounts:
             - name: nginx-config
               mountPath: /etc/nginx/conf.d/default.conf

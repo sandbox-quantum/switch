@@ -16,7 +16,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid-pro";
+import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type ApiKeyDetail, deleteApiKey, revealApiKey } from "../../data/api";

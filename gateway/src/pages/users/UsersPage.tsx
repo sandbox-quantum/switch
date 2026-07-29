@@ -1,6 +1,6 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import { Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid-pro";
+import type { GridColDef } from "@mui/x-data-grid";
 import { useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import type { UserInfo } from "../../data/api";

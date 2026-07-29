@@ -1,9 +1,10 @@
 import {
-  DataGridPro,
+  DataGrid,
   type GridColDef,
   type GridRowId,
   type GridRowParams,
-} from "@mui/x-data-grid-pro";
+  type GridRowSelectionModel,
+} from "@mui/x-data-grid";
 import { Box, type SxProps, type Theme } from "@mui/material";
 
 interface DataTableProps<T extends { id: string | number }> {
@@ -78,7 +79,7 @@ export default function DataTable<T extends { id: string | number }>({
 }: DataTableProps<T>) {
   const extraSx = Array.isArray(sx) ? sx : sx ? [sx] : [];
   const grid = (
-    <DataGridPro
+    <DataGrid
       rows={rows}
       columns={columns}
       initialState={{
@@ -89,7 +90,7 @@ export default function DataTable<T extends { id: string | number }>({
       checkboxSelection={checkboxSelection}
       onRowSelectionModelChange={
         onRowSelectionModelChange
-          ? (model) => onRowSelectionModelChange([...model.ids])
+          ? (model: GridRowSelectionModel) => onRowSelectionModelChange([...model.ids])
           : undefined
       }
       onRowClick={onRowClick}

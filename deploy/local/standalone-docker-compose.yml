@@ -120,8 +120,6 @@ services:
   gateway:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:-latest}
     profiles: ["gateway"]
-    environment:
-      MUI_X_LICENSE_KEY: ${MUI_X_LICENSE_KEY:-}
     ports:
       - "${SWITCH_BIND_ADDR:-0.0.0.0}:${GATEWAY_HOST_PORT:-3000}:3000"
     depends_on:
