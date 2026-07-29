@@ -264,17 +264,71 @@ class TestCodexKnownAgent:
         opts = CodexOptions(repo_dir="/Users/x/repo")
         msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
         assert msg is not None
-        assert 'cd /Users/x/repo && codex "connect to switch room hub"' in msg
+        # The path is quoted so a repo_dir with spaces still produces a valid
+        # paste command.
+        assert 'cd "/Users/x/repo" && codex "connect to switch room hub"' in msg
         # It must NOT suggest a claude command or Claude-specific flags.
         assert "claude" not in msg
         assert "--dangerously-load-development-channels" not in msg
+        # The footer must not falsely promise auto-start (this message only shows
+        # when no session is being auto-spawned); it points at a manual start.
+        assert "auto-starts one when I'm addressed" not in msg
+        assert "start Codex manually" in msg
+
+    def test_repo_dir_with_spaces_stays_quoted(self) -> None:
+        opts = CodexOptions(repo_dir="/Users/alice/my project")
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert 'cd "/Users/alice/my project" && codex' in msg
+
+    def test_connected_not_live_opening(self) -> None:
+        opts = CodexOptions(repo_dir="/r")
+        msg = CodexKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", connected_not_live=True
+        )
+        assert msg is not None
+        assert "isn't reporting" in msg
+        assert "I don't have a session connected to this room." not in msg
+        assert "claude" not in msg
+
+    def test_other_room_names_branch(self) -> None:
+        opts = CodexOptions(repo_dir="/r")
+        msg = CodexKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", other_room_names=["hub", "triage"]
+        )
+        assert msg is not None
+        assert "**hub**" in msg
+        assert "**triage**" in msg
+        assert "claude" not in msg
+
+    def test_assume_role_folded_into_prompt(self) -> None:
+        opts = CodexOptions(repo_dir="/r")
+        msg = CodexKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", assume_role="reviewer"
+        )
+        assert msg is not None
+        assert 'codex "connect to switch room ops and assume the role reviewer"' in msg
+
+    def test_empty_string_repo_dir_normalised_to_placeholder(self) -> None:
+        opts = CodexOptions(repo_dir="")
+        assert opts.repo_dir is None
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "triage")
+        assert msg is not None
+        assert 'cd "<codex-dir>"' in msg
+
+    def test_empty_string_notify_user_normalised_to_none(self) -> None:
+        opts = CodexOptions(notify_user="")
+        assert opts.notify_user is None
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert not msg.startswith("@")
 
     def test_no_repo_dir_uses_codex_placeholder(self) -> None:
         msg = CodexKnownAgent.start_session_instructions(
             CodexOptions(repo_dir=None), _agent({}), "triage"
         )
         assert msg is not None
-        assert "cd <codex-dir>" in msg
+        assert 'cd "<codex-dir>"' in msg
 
     def test_notify_user_prepended_as_at_mention(self) -> None:
         opts = CodexOptions(repo_dir="/x", notify_user="cmcd")

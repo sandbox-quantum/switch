@@ -13,7 +13,7 @@ import {
 import * as toml from 'smol-toml';
 
 export const CODEX_HOOKS_PATH = '.codex/hooks.json';
-const CODEX_CONFIG_PATH = '.codex/config.toml';
+export const CODEX_CONFIG_PATH = '.codex/config.toml';
 
 const LEGACY_CODEX_NOTIFY_COMMAND = [
   'bash',

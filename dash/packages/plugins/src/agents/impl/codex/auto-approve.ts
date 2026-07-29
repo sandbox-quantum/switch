@@ -40,7 +40,7 @@ function resolveEnum<T extends string>(
  * the rollout session id used for resume) without the interactive trust prompt
  * that automated sessions cannot answer.
  */
-export function buildCodexAutoApproveFlag(env: Record<string, string | undefined> = {}): string {
+export function buildCodexAutoApproveFlag(env: Record<string, string | undefined>): string {
   const sandboxMode = resolveEnum(
     env.CODEX_SANDBOX_MODE,
     CODEX_SANDBOX_MODES,

@@ -1,8 +1,6 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
-import { CODEX_HOOKS_PATH, buildCodexHookConfig } from './hooks';
-
-const CODEX_CONFIG_PATH = '.codex/config.toml';
+import { CODEX_CONFIG_PATH, CODEX_HOOKS_PATH, buildCodexHookConfig } from './hooks';
 
 function createMemoryFs(initial: Record<string, string> = {}): PluginFs {
   const files = new Map(Object.entries(initial));
@@ -84,6 +82,15 @@ describe('buildCodexHookConfig.parseHookEvent', () => {
   it('defers unrelated events to the default parser', () => {
     expect(parseHookEvent('stop', {})).toMatchObject({ kind: 'status', type: 'stop' });
     expect(parseHookEvent('totally-unknown', {})).toEqual({ kind: 'ignore' });
+  });
+
+  it('handles an empty notification body without a stop/permission misclassification', () => {
+    // nt undefined and no `type: agent-turn-complete` → falls to the default
+    // parser, which yields a plain notification status (not a spurious stop).
+    expect(parseHookEvent('notification', {})).toMatchObject({
+      kind: 'status',
+      type: 'notification',
+    });
   });
 });
 

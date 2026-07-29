@@ -97,6 +97,10 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
         agentId: registered.id,
       });
     } else {
+      // Two credential-keying conventions exist and the readers (auto-session
+      // watcher + notification poller) try both via a fallback chain:
+      //   - behavior providers (Claude) key by agent NAME (writeCredentials above)
+      //   - non-behavior providers (Codex) key by agent ID (this branch)
       // Providers without repo-agent definitions (e.g. Codex) have no
       // `writeCredentials` hook, so their Switch credentials would never land on
       // disk — leaving the session with no `SWITCH_*` to inject and the

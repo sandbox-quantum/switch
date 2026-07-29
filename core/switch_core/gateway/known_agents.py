@@ -317,10 +317,11 @@ class CodexOptions(KnownAgentOptions):
     unavailable-session message so the operator gets a notification. Bare name,
     no leading `@`. None → post without a mention."""
 
-    # switchdash sends `channels_enabled` for every provider; Codex has no
-    # connector channel, so it does not affect the profile. Accepted (and
-    # ignored) for request-shape compatibility with the claude-code options.
     channels_enabled: bool = True
+    """switchdash sends `channels_enabled` for every provider; Codex has no
+    connector channel of its own, so it does not affect the registered profile.
+    Accepted (and ignored) for request-shape compatibility with the claude-code
+    options so the shared registration path needs no special-casing."""
 
     @field_validator("repo_dir", "notify_user", mode="before")
     @classmethod
@@ -382,7 +383,7 @@ class CodexKnownAgent(KnownAgent):
         prompt = f"connect to switch room {room_name}"
         if assume_role:
             prompt += f" and assume the role {assume_role}"
-        cmd = f'cd {dir_token} && codex "{prompt}"'
+        cmd = f'cd "{dir_token}" && codex "{prompt}"'
 
         prefix = f"@{options.notify_user}\n\n" if options.notify_user else ""
         if connected_not_live:
@@ -405,8 +406,8 @@ class CodexKnownAgent(KnownAgent):
                 "session connected to this room, my operator should run:"
             )
         return (
-            f"{prefix}{opening}\n\n```\n{cmd}\n```\n\n(Codex sessions are normally "
-            "managed by switchdash — it auto-starts one when I'm addressed.)"
+            f"{prefix}{opening}\n\n```\n{cmd}\n```\n\n(or start Codex manually and "
+            "ask me to connect to the room.)"
         )
 
 

@@ -1,5 +1,5 @@
 import type { CommandContext } from '@switchdash/core/agents/plugins';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { provider } from './index';
 
 function build(ctx: CommandContext) {
@@ -14,17 +14,34 @@ const base: CommandContext = {
   model: '',
 };
 
+// The default (unset) sandbox/approval flag, split the way buildStandardCommand
+// splits it on whitespace.
+const AUTO_FLAGS = [
+  '-c',
+  'approval_policy="never"',
+  '-c',
+  'sandbox_mode="danger-full-access"',
+  '--dangerously-bypass-hook-trust',
+];
+
 describe('codex buildCommand', () => {
-  it('starts a fresh session with the prompt positional and no session-id flag', () => {
+  // Neutralize any ambient CODEX_SANDBOX_MODE / CODEX_APPROVAL_POLICY on the dev
+  // machine so the auto-approve flag is deterministic (blank → defaults).
+  beforeEach(() => {
+    vi.stubEnv('CODEX_SANDBOX_MODE', '');
+    vi.stubEnv('CODEX_APPROVAL_POLICY', '');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('starts a fresh session with auto-approve flags then the positional prompt', () => {
     const cmd = build({ ...base, autoApprove: true, initialPrompt: 'Fix the bug' });
 
     expect(cmd.command).toBe('codex');
     // sessionIdOnResumeOnly → the switchdash UUID is never injected on a fresh run.
-    expect(cmd.args).not.toContain('switchdash-session');
-    // auto-approve applied and hook-trust bypass always present.
-    expect(cmd.args).toContain('--dangerously-bypass-hook-trust');
-    // The prompt is the final positional argument.
-    expect(cmd.args.at(-1)).toBe('Fix the bug');
+    // Full structural check: auto-approve flags in order, prompt last.
+    expect(cmd.args).toEqual([...AUTO_FLAGS, 'Fix the bug']);
   });
 
   it('omits auto-approve args when autoApprove is false', () => {
@@ -39,6 +56,18 @@ describe('codex buildCommand', () => {
     expect(cmd.args[1]).toBe('rollout-9');
     // No positional prompt is added on resume.
     expect(cmd.args).not.toContain('Fix the bug');
+  });
+
+  it('orders resume subcommand + id BEFORE the auto-approve flags on resume', () => {
+    const cmd = build({
+      ...base,
+      isResuming: true,
+      providerSessionId: 'rollout-9',
+      autoApprove: true,
+    });
+    // Regression guard on arg order: `resume <id>` must precede the -c flags,
+    // and no positional prompt is appended on resume.
+    expect(cmd.args).toEqual(['resume', 'rollout-9', ...AUTO_FLAGS]);
   });
 
   it('falls back to `resume --last` as split args when no rollout id was captured', () => {

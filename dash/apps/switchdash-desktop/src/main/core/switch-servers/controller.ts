@@ -235,12 +235,11 @@ export const switchServersController = createRPCController({
   }): Promise<AgentDefaults> => suggestAgentDefaults(params.dir, params.providerId),
 
   /**
-   * Register a new Claude Code agent on the chosen server (owned by the
-   * signed-in user) and write its credentials into the directory's
-   * `.claude/settings.local.json`. This is the desktop equivalent of running
-   * the switch-connector `configure` skill. Recoverable gateway failures are
-   * mapped to a typed result; the minted token is written to disk and never
-   * returned.
+   * Register a new agent on the chosen server (owned by the signed-in user) and
+   * write its credentials into the directory's `.claude/settings.local.json`.
+   * This is the desktop equivalent of running the switch-connector `configure`
+   * skill. Recoverable gateway failures are mapped to a typed result; the minted
+   * token is written to disk and never returned.
    */
   provisionAgent: async (params: ProvisionAgentParams): Promise<ProvisionAgentResult> => {
     const server = await requireServer(params.serverId);
