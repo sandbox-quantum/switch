@@ -1,14 +1,10 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import type { CanonicalHookEvent, HookRegistration } from '@switchdash/core/agents/plugins';
 import {
-  SWITCHDASH_MARKER,
-  buildNestedEntry,
+  buildNestedJsonHookConfig,
   defaultHookEventParser,
-  filterUserHooks,
   makeHookPostCommand,
   makeNotificationHookCommand,
-  readJsonConfig,
-  writeJsonConfig,
 } from '@switchdash/core/agents/plugins/helpers';
 import * as toml from 'smol-toml';
 
@@ -94,53 +90,18 @@ function parseCodexHookEvent(eventType: string, body: Record<string, unknown>): 
 }
 
 export function buildCodexHookConfig() {
-  const stopCmd = makeNotificationHookCommand('idle_prompt');
-  const permCmd = makeNotificationHookCommand('permission_prompt');
-  const sessionCmd = makeCodexSessionStartCommand();
+  const base = buildNestedJsonHookConfig(CODEX_HOOKS_PATH, [
+    { hookKey: 'Stop', command: makeNotificationHookCommand('idle_prompt') },
+    { hookKey: 'PermissionRequest', command: makeNotificationHookCommand('permission_prompt') },
+    { hookKey: 'SessionStart', command: makeCodexSessionStartCommand() },
+  ]);
 
   return {
-    async readHooks(fs: PluginFs): Promise<HookRegistration[]> {
-      const config = await readJsonConfig(fs, CODEX_HOOKS_PATH);
-      const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
-      const installed = ['Stop', 'PermissionRequest', 'SessionStart'].some((k) => {
-        const entries = Array.isArray(hooks[k]) ? hooks[k] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
-      });
-      return installed ? [{ event: 'switchdash', command: SWITCHDASH_MARKER }] : [];
-    },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
-      const config = await readJsonConfig(fs, CODEX_HOOKS_PATH);
-      const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
-      for (const [key, cmd] of [
-        ['Stop', stopCmd],
-        ['PermissionRequest', permCmd],
-        ['SessionStart', sessionCmd],
-      ] as [string, string][]) {
-        const existing = Array.isArray(hooks[key]) ? hooks[key] : [];
-        hooks[key] = [
-          ...filterUserHooks(existing as Record<string, unknown>[]),
-          buildNestedEntry(cmd),
-        ];
-      }
-      await writeJsonConfig(fs, CODEX_HOOKS_PATH, { ...config, hooks });
-      await removeLegacyCodexNotify(fs).catch(() => {});
-      return [CODEX_HOOKS_PATH];
-    },
-    async deleteHooks(fs: PluginFs): Promise<void> {
-      const config = await readJsonConfig(fs, CODEX_HOOKS_PATH);
-      const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
-      for (const key of Object.keys(hooks)) {
-        hooks[key] = filterUserHooks(hooks[key] as Record<string, unknown>[]);
-      }
-      await writeJsonConfig(fs, CODEX_HOOKS_PATH, { ...config, hooks });
-    },
-    async getHooksInstalled(fs: PluginFs): Promise<boolean> {
-      const config = await readJsonConfig(fs, CODEX_HOOKS_PATH);
-      const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
-      return ['Stop', 'PermissionRequest', 'SessionStart'].some((k) => {
-        const entries = Array.isArray(hooks[k]) ? hooks[k] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
-      });
+    ...base,
+    async writeHooks(fs: PluginFs, hooks: HookRegistration[]): Promise<string[]> {
+      const paths = await base.writeHooks(fs, hooks);
+      await removeLegacyCodexNotify(fs);
+      return paths;
     },
     parseHookEvent: parseCodexHookEvent,
   };

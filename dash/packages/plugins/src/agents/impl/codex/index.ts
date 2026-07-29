@@ -74,7 +74,10 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
-        autoApproveFlag: buildCodexAutoApproveFlag(process.env),
+        // Resolved only when it will actually be used: an unrecognised
+        // CODEX_SANDBOX_MODE is a hard error, and a session that never
+        // auto-approves has no business failing to launch over it.
+        autoApproveFlag: ctx.autoApprove ? buildCodexAutoApproveFlag(process.env) : '',
         initialPromptFlag: '',
         resumeFlag: 'resume',
         sessionIdFlag: ' ',

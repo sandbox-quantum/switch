@@ -105,13 +105,10 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     commands: ['codex'],
     versionArgs: ['--version'],
     cli: 'codex',
-    // `--dangerously-bypass-hook-trust` lets Codex run switchdash's own hooks (notably the
-    // SessionStart hook that reports the rollout session id) without an interactive trust
-    // prompt. Automations always auto-approve and can't answer that prompt, so without this
-    // the session id is never captured and resume falls back to `codex resume --last`,
-    // reattaching the globally-most-recent Codex session instead of this one.
-    autoApproveFlag:
-      '-c approval_policy="never" -c sandbox_mode="danger-full-access" --dangerously-bypass-hook-trust',
+    // No `autoApproveFlag` here: Codex's sandbox/approval args are configurable
+    // (CODEX_SANDBOX_MODE / CODEX_APPROVAL_POLICY) and are built by
+    // `buildCodexAutoApproveFlag` in the plugin. A literal copy in this metadata
+    // registry could only ever go stale.
     initialPromptFlag: '',
     resumeFlag: 'resume',
     sessionIdFlag: ' ',

@@ -77,6 +77,20 @@ describe('codex buildCommand', () => {
     expect(cmd.args.slice(0, 2)).toEqual(['resume', '--last']);
   });
 
+  it('rejects an invalid sandbox mode when the session actually auto-approves', () => {
+    vi.stubEnv('CODEX_SANDBOX_MODE', 'full');
+    expect(() => build({ ...base, autoApprove: true, initialPrompt: 'hi' })).toThrow(
+      /Invalid CODEX_SANDBOX_MODE="full"/
+    );
+  });
+
+  it('does not resolve the sandbox env for a session that never auto-approves', () => {
+    // The flag is unused on this path, so a typo in the env must not stop the
+    // session from launching at all.
+    vi.stubEnv('CODEX_SANDBOX_MODE', 'full');
+    expect(build({ ...base, initialPrompt: 'hi' }).args).toEqual(['hi']);
+  });
+
   it('deduplicates the bypass-approvals-and-sandbox singleton flag', () => {
     const cmd = build({
       ...base,

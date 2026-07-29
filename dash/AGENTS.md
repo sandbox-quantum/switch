@@ -392,8 +392,11 @@ pnpm run test
     `-c sandbox_mode=…` / `-c approval_policy=…` flags switchdash passes to Codex,
     defaulting to `danger-full-access` / `never` for headless auto-sessions. An
     unrecognized value is a hard error (it will not silently fall back to full
-    access); the value is validated when a Codex **session launches**, not at app
-    startup, so a bad value surfaces as a session-start failure. See
+    access); the value is resolved when an **auto-approving Codex session
+    launches**, not at app startup, so a bad value surfaces as a session-start
+    failure — and only for the sessions that would actually use the flag. Note
+    that on the resume/restore paths a spawn failure is logged rather than shown,
+    so a typo there reads as "the session did not come back". See
     `packages/plugins/src/agents/impl/codex/auto-approve.ts`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the

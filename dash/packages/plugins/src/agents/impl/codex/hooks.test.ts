@@ -159,4 +159,29 @@ describe('buildCodexHookConfig install/read/delete', () => {
     // Unrelated config is left intact.
     expect(rewritten).toContain('gpt-5');
   });
+
+  it('refuses to install hooks over an unparseable hooks file', async () => {
+    // Rewriting from scratch would silently discard every hook the user has
+    // configured, so a file we cannot parse must stop the install.
+    const fs = createMemoryFs({ [CODEX_HOOKS_PATH]: '{ not json' });
+
+    await expect(buildCodexHookConfig().writeHooks(fs, [])).rejects.toThrow(/not valid JSON/);
+    expect(await fs.read(CODEX_HOOKS_PATH)).toBe('{ not json');
+  });
+
+  it('refuses to delete hooks from an unparseable hooks file', async () => {
+    const fs = createMemoryFs({ [CODEX_HOOKS_PATH]: '{ not json' });
+
+    await expect(buildCodexHookConfig().deleteHooks(fs)).rejects.toThrow(/not valid JSON/);
+    expect(await fs.read(CODEX_HOOKS_PATH)).toBe('{ not json');
+  });
+
+  it('propagates a failed hooks-file read instead of rewriting from scratch', async () => {
+    const fs = createMemoryFs();
+    fs.read = async () => {
+      throw new Error('transport failure');
+    };
+
+    await expect(buildCodexHookConfig().writeHooks(fs, [])).rejects.toThrow('transport failure');
+  });
 });
