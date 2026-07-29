@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# Answer the two questions PR #79 could not settle from the Codex binary alone:
+#
+#   1. Does Codex deliver a hook's event payload on stdin, with no positional
+#      operands?  Commit "post the real hook payload from the generated command"
+#      drops a `${1:-$(cat)}` fallback on the strength of `$SHELL -lc` and a
+#      `stdin_error` outcome found in the binary. If `$#` is 0 and stdin carries
+#      the JSON, that reasoning holds.
+#
+#   2. What shape does `tool_response` take for an MCP tool call? Claude Code
+#      unwraps the MCP result; if Codex forwards the `CallToolResult` envelope
+#      instead, the payload sits under `structuredContent` / `content[0].text`.
+#      The enricher handles either, but the answer belongs in the PR.
+#
+# Runs against an isolated CODEX_HOME so your real ~/.codex is untouched. It
+# does spend one Codex turn on your account. Nothing is written outside the
+# probe directory.
+#
+# Usage:  scripts/codex-hook-probe/run.sh [--keep]
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROBE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-hook-probe.XXXXXX")"
+CODEX_HOME="$PROBE_DIR/home"
+DUMPS="$PROBE_DIR/dumps"
+KEEP="${1:-}"
+
+cleanup() {
+  if [ "$KEEP" = "--keep" ]; then
+    echo
+    echo "Probe directory kept at: $PROBE_DIR"
+  else
+    rm -rf "$PROBE_DIR"
+  fi
+}
+trap cleanup EXIT
+
+mkdir -p "$CODEX_HOME" "$DUMPS"
+
+# Codex resolves credentials from CODEX_HOME, so the isolated home needs a copy.
+if [ ! -r "$HOME/.codex/auth.json" ]; then
+  echo "error: no ~/.codex/auth.json — run 'codex login' first." >&2
+  exit 1
+fi
+cp "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
+chmod 600 "$CODEX_HOME/auth.json"
+
+# A hook command that records what Codex actually handed it: the operand count,
+# the first operand, and stdin. Deliberately NOT the command switchdash
+# generates — this measures the delivery mechanism, not our shell.
+probe_cmd() {
+  printf 'printf "argc=%%s\\narg1=%%s\\n" "$#" "${1:-<unset>}" > %s/%s.meta; cat > %s/%s.stdin' \
+    "$DUMPS" "$1" "$DUMPS" "$1"
+}
+
+cat > "$CODEX_HOME/hooks.json" <<EOF
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "$(probe_cmd session-start)" }] }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*__connect_to_room",
+        "hooks": [{ "type": "command", "command": "$(probe_cmd post-tool-use)" }]
+      }
+    ]
+  }
+}
+EOF
+
+cat > "$CODEX_HOME/config.toml" <<EOF
+[features]
+hooks = true
+
+[mcp_servers.switch]
+command = "uv"
+args = ["run", "--project", "$REPO_ROOT/core", "python", "$REPO_ROOT/scripts/codex-hook-probe/mcp_probe.py"]
+EOF
+
+echo "Probe home: $CODEX_HOME"
+echo "Running a Codex turn that calls connect_to_room…"
+echo
+
+CODEX_HOME="$CODEX_HOME" codex exec \
+  --dangerously-bypass-approvals-and-sandbox \
+  --skip-git-repo-check \
+  -C "$PROBE_DIR" \
+  'Call the connect_to_room tool on the switch MCP server with room_id "r1". Then stop and say DONE. Do not do anything else.' \
+  >"$PROBE_DIR/codex.log" 2>&1 || {
+    echo "codex exec failed; tail of its output:" >&2
+    tail -30 "$PROBE_DIR/codex.log" >&2
+    exit 1
+  }
+
+echo "──────────────────────────────────────────────────────────────────────"
+echo "Q1  Payload delivery — expect argc=0 and non-empty stdin"
+echo "──────────────────────────────────────────────────────────────────────"
+for event in session-start post-tool-use; do
+  echo
+  echo "[$event]"
+  if [ -r "$DUMPS/$event.meta" ]; then
+    sed 's/^/  /' "$DUMPS/$event.meta"
+    bytes=$(wc -c <"$DUMPS/$event.stdin" | tr -d ' ')
+    echo "  stdin_bytes=$bytes"
+  else
+    echo "  HOOK DID NOT FIRE"
+  fi
+done
+
+echo
+echo "──────────────────────────────────────────────────────────────────────"
+echo "Q2  tool_response shape — payload direct, or CallToolResult envelope?"
+echo "──────────────────────────────────────────────────────────────────────"
+if [ -s "$DUMPS/post-tool-use.stdin" ]; then
+  python3 - "$DUMPS/post-tool-use.stdin" <<'PY'
+import json, sys
+
+body = json.load(open(sys.argv[1]))
+tr = body.get("tool_response")
+print(f"  tool_name      : {body.get('tool_name')}")
+print(f"  tool_response  : {type(tr).__name__}")
+if isinstance(tr, dict):
+    print(f"  top-level keys : {sorted(tr)}")
+    if "room_id" in tr:
+        print("  VERDICT        : UNWRAPPED — payload is at the top level (Claude-like)")
+    elif "structuredContent" in tr or "content" in tr:
+        print("  VERDICT        : ENVELOPE — CallToolResult forwarded intact")
+    else:
+        print("  VERDICT        : UNKNOWN — neither payload nor envelope")
+else:
+    print(f"  VERDICT        : non-dict ({tr!r:.120})")
+print()
+print("  raw tool_response:")
+print(json.dumps(tr, indent=2)[:1500])
+PY
+else
+  echo "  no PostToolUse payload captured — see $PROBE_DIR/codex.log"
+fi
