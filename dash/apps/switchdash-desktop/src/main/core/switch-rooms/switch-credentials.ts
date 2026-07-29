@@ -1,6 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { SWITCH_SETTINGS_RELATIVE_PATH } from '@main/core/agents/switch-settings-paths';
+import type { PluginFs } from '@switchdash/core/agents/plugins';
+import {
+  agentSettingsRelativePath,
+  SWITCH_SETTINGS_RELATIVE_PATH,
+} from '@main/core/agents/switch-settings-paths';
 
 export interface SwitchAgentCredentials {
   agentId: string;
@@ -64,17 +68,8 @@ export async function readSwitchAgentCredentialsFromSettings(
   return parseSwitchAgentCredentials(raw, log);
 }
 
-/**
- * Read an agent's Switch credentials from a settings file and return them as the
- * `SWITCH_*` env vars a launched session needs, or `{}` when the file is
- * missing/incomplete. Used to inject an agent's identity at launch from its
- * provider-neutral `.switch/agents/<id>.json` (CHOO-1440).
- */
-export async function readAgentSwitchEnv(
-  settingsPath: string,
-  log: CredentialsLogger
-): Promise<Record<string, string>> {
-  const creds = await readSwitchAgentCredentialsFromSettings(settingsPath, log);
+/** The `SWITCH_*` env vars a launched session needs to act as the agent. */
+function credentialsAsEnv(creds: SwitchAgentCredentials | null): Record<string, string> {
   if (!creds) return {};
   return {
     SWITCH_API_ENDPOINT: creds.apiEndpoint,
@@ -84,15 +79,46 @@ export async function readAgentSwitchEnv(
 }
 
 /**
- * Parse Switch agent credentials from the raw text of a `.claude/settings.local.json`.
- * Transport-agnostic (no filesystem): used by both the local readers above and
- * the remote preflight, which fetches the file over SFTP. Returns null when the
- * text is unparseable or any of the three values is absent.
+ * Read an agent's Switch credentials from a settings file and return them as the
+ * `SWITCH_*` env vars a launched session needs, or `{}` when the file is
+ * missing/incomplete. Used to inject an agent's identity at launch from its
+ * provider-neutral `.switch/agents/<name>.json` (CHOO-1440).
+ */
+export async function readAgentSwitchEnv(
+  settingsPath: string,
+  log: CredentialsLogger
+): Promise<Record<string, string>> {
+  return credentialsAsEnv(await readSwitchAgentCredentialsFromSettings(settingsPath, log));
+}
+
+/**
+ * The {@link readAgentSwitchEnv} equivalent over a {@link PluginFs} rooted at the
+ * agent's working directory, so the local and remote (SFTP) launch paths inject
+ * the same identity from the same `.switch/agents/<slug>.json`.
+ */
+export async function readAgentSwitchEnvFromFs(
+  workspaceFs: PluginFs,
+  slug: string,
+  log: CredentialsLogger
+): Promise<Record<string, string>> {
+  const raw = await workspaceFs.read(agentSettingsRelativePath(slug));
+  return credentialsAsEnv(parseSwitchAgentCredentials(raw, log));
+}
+
+/**
+ * Parse Switch agent credentials from the raw text of a settings file, or `null`
+ * for an absent one. Transport-agnostic (no filesystem): used by both the local
+ * readers above and the remote preflight, which fetches the file over SFTP.
+ * Returns null when the file is absent, the text is unparseable, or any of the
+ * three values is missing — but only warns for text it could not parse, since an
+ * absent file is an ordinary "this agent isn't provisioned here" answer.
  */
 export function parseSwitchAgentCredentials(
-  raw: string,
+  raw: string | null,
   log: CredentialsLogger
 ): SwitchAgentCredentials | null {
+  if (raw === null) return null;
+
   let env: ClaudeSettingsEnv | undefined;
   try {
     env = (JSON.parse(raw) as { env?: ClaudeSettingsEnv })?.env;

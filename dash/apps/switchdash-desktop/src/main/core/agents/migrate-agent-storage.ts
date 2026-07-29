@@ -102,12 +102,9 @@ async function migrateOne(agent: Agent): Promise<MigrateResult> {
     const neutral = name === agent.id ? null : await workspace.fs.read(namedRelPath);
     if (neutral === null) {
       const creds =
-        parseSwitchAgentCredentials((await workspace.fs.read(idKeyedRelPath)) ?? '', log) ??
+        parseSwitchAgentCredentials(await workspace.fs.read(idKeyedRelPath), log) ??
         (behavior ? toCreds(await behavior.readLaunchEnv(workspace.fs, name)) : null) ??
-        parseSwitchAgentCredentials(
-          (await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH)) ?? '',
-          log
-        );
+        parseSwitchAgentCredentials(await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH), log);
       if (creds) {
         await writeNeutralAgentSettingsFs(workspace.fs, {
           slug: name,
