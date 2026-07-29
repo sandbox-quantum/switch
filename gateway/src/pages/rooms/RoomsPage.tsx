@@ -132,7 +132,7 @@ export default function RoomsPage() {
       {
         field: "read_visibility",
         headerName: "Access",
-        width: 120,
+        width: 108,
         renderCell: ({ row }) => <AccessChip pair={row} />,
       },
       {
@@ -146,17 +146,17 @@ export default function RoomsPage() {
             <Missing />
           ),
       },
-      { field: "agent_count", headerName: "Agents", width: 90, type: "number" },
+      { field: "agent_count", headerName: "Agents", width: 84, type: "number" },
       {
         field: "connected_user_count",
-        headerName: "Connected Users",
-        width: 140,
+        headerName: "Users",
+        width: 84,
         type: "number",
       },
       {
         field: "bridge_display_name",
         headerName: "Bridge",
-        width: 160,
+        width: 130,
         renderCell: ({ value }) =>
           value ? (
             <Chip label={value} size="small" />
@@ -167,13 +167,13 @@ export default function RoomsPage() {
       {
         field: "created_at",
         headerName: "Created",
-        width: 140,
+        width: 116,
         valueFormatter: (value) => formatDate(value as string),
       },
       {
         field: "actions",
         headerName: "",
-        width: 140,
+        width: 116,
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => (
