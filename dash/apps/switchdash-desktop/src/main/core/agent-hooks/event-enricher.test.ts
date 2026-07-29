@@ -42,12 +42,25 @@ describe('parseHookEvent', () => {
     expect(parsed).toEqual(expectedRoom);
   });
 
-  it('unwraps a full MCP CallToolResult carrying both content and structuredContent', async () => {
+  it('unwraps the CallToolResult Codex actually forwards', async () => {
+    // Verbatim `tool_response` captured from Codex CLI 0.146.0 via
+    // `scripts/codex-hook-probe/run.sh`, calling a FastMCP tool declared like
+    // the real `connect_to_room` (async, returning `dict[str, Any]`). Codex
+    // forwards the envelope rather than unwrapping it the way Claude Code does,
+    // so reading `tool_response.room_id` finds nothing — kept literal so a
+    // future Codex change fails here rather than silently stranding the poller
+    // on the room the session spawned in.
     const parsed = await parseHookEvent(
       raw('switch_room_connect', {
+        tool_name: 'mcp__switch__connect_to_room',
         tool_response: {
-          content: [{ type: 'text', text: JSON.stringify(roomResult) }],
-          structuredContent: roomResult,
+          content: [
+            {
+              type: 'text',
+              text: '{"room_id":"room-1","agent_id":"agent-1","name":"Room One","participants":[]}',
+            },
+          ],
+          structuredContent: { ...roomResult, participants: [] },
           isError: false,
         },
       }),
@@ -55,7 +68,7 @@ describe('parseHookEvent', () => {
       log
     );
 
-    expect(parsed).toEqual(expectedRoom);
+    expect(parsed).toEqual({ ...expectedRoom, ctx });
     expect(log.warn).not.toHaveBeenCalled();
   });
 

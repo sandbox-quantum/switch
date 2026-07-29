@@ -27,10 +27,15 @@ CODEX_HOME="$PROBE_DIR/home"
 DUMPS="$PROBE_DIR/dumps"
 KEEP="${1:-}"
 
+# Anything short of a clean run keeps the directory: a probe you cannot inspect
+# after it fails is worse than no probe.
+KEEP_ON_EXIT=1
 cleanup() {
-  if [ "$KEEP" = "--keep" ]; then
+  if [ "$KEEP" = "--keep" ] || [ "$KEEP_ON_EXIT" = "1" ]; then
     echo
-    echo "Probe directory kept at: $PROBE_DIR"
+    echo "Probe directory: $PROBE_DIR"
+    echo "  codex output:  $PROBE_DIR/codex.log"
+    echo "  hook dumps:    $DUMPS"
   else
     rm -rf "$PROBE_DIR"
   fi
@@ -47,34 +52,47 @@ fi
 cp "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
 chmod 600 "$CODEX_HOME/auth.json"
 
-# A hook command that records what Codex actually handed it: the operand count,
-# the first operand, and stdin. Deliberately NOT the command switchdash
+# The hook commands record what Codex actually handed them: the operand count,
+# the first operand, and stdin. Deliberately NOT the commands switchdash
 # generates — this measures the delivery mechanism, not our shell.
-probe_cmd() {
-  printf 'printf "argc=%%s\\narg1=%%s\\n" "$#" "${1:-<unset>}" > %s/%s.meta; cat > %s/%s.stdin' \
-    "$DUMPS" "$1" "$DUMPS" "$1"
+#
+# Built with json.dumps rather than a heredoc: the commands contain quotes, and
+# Codex responds to malformed hooks.json with a warning buried in the transcript
+# and then runs no hooks at all, which reads exactly like "hooks don't fire".
+python3 - "$CODEX_HOME/hooks.json" "$DUMPS" <<'PY'
+import json, sys
+
+out_path, dumps = sys.argv[1], sys.argv[2]
+
+
+def probe(event: str) -> str:
+    meta, stdin = f"{dumps}/{event}.meta", f"{dumps}/{event}.stdin"
+    return (
+        f'printf "argc=%s\\narg1=%s\\n" "$#" "${{1:-<unset>}}" > {meta}; '
+        f"cat > {stdin}"
+    )
+
+
+config = {
+    "hooks": {
+        "SessionStart": [{"hooks": [{"type": "command", "command": probe("session-start")}]}],
+        "PostToolUse": [
+            {
+                "matcher": "mcp__.*__connect_to_room",
+                "hooks": [{"type": "command", "command": probe("post-tool-use")}],
+            }
+        ],
+    }
 }
 
-cat > "$CODEX_HOME/hooks.json" <<EOF
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "$(probe_cmd session-start)" }] }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "mcp__.*__connect_to_room",
-        "hooks": [{ "type": "command", "command": "$(probe_cmd post-tool-use)" }]
-      }
-    ]
-  }
-}
-EOF
+with open(out_path, "w") as fh:
+    json.dump(config, fh, indent=2)
+PY
+
+python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$CODEX_HOME/hooks.json" \
+  || { echo "error: generated hooks.json is not valid JSON" >&2; exit 1; }
 
 cat > "$CODEX_HOME/config.toml" <<EOF
-[features]
-hooks = true
-
 [mcp_servers.switch]
 command = "uv"
 args = ["run", "--project", "$REPO_ROOT/core", "python", "$REPO_ROOT/scripts/codex-hook-probe/mcp_probe.py"]
@@ -84,8 +102,14 @@ echo "Probe home: $CODEX_HOME"
 echo "Running a Codex turn that calls connect_to_room…"
 echo
 
+# `--dangerously-bypass-hook-trust` is required: Codex persists a `trusted_hash`
+# per hook and silently skips any it has not been told to trust, so without it
+# the probe reports "HOOK DID NOT FIRE" for reasons that have nothing to do with
+# what it is measuring. switchdash passes the same flag (see
+# `buildCodexAutoApproveFlag`).
 CODEX_HOME="$CODEX_HOME" codex exec \
   --dangerously-bypass-approvals-and-sandbox \
+  --dangerously-bypass-hook-trust \
   --skip-git-repo-check \
   -C "$PROBE_DIR" \
   'Call the connect_to_room tool on the switch MCP server with room_id "r1". Then stop and say DONE. Do not do anything else.' \
@@ -95,13 +119,28 @@ CODEX_HOME="$CODEX_HOME" codex exec \
     exit 1
   }
 
+if grep -q 'failed to parse hooks config' "$PROBE_DIR/codex.log"; then
+  echo "error: Codex rejected the hooks config, so no hook ran:" >&2
+  grep 'failed to parse hooks config' "$PROBE_DIR/codex.log" | sed 's/^/  /' >&2
+  exit 1
+fi
+
+if ! grep -qi 'connect_to_room' "$PROBE_DIR/codex.log"; then
+  echo "warning: the transcript never mentions connect_to_room — the model may" >&2
+  echo "         not have called the tool, so PostToolUse would not fire." >&2
+fi
+
+echo "Codex version under test: $(codex --version 2>/dev/null || echo unknown)"
+
 echo "──────────────────────────────────────────────────────────────────────"
 echo "Q1  Payload delivery — expect argc=0 and non-empty stdin"
 echo "──────────────────────────────────────────────────────────────────────"
+fired=0
 for event in session-start post-tool-use; do
   echo
   echo "[$event]"
   if [ -r "$DUMPS/$event.meta" ]; then
+    fired=1
     sed 's/^/  /' "$DUMPS/$event.meta"
     bytes=$(wc -c <"$DUMPS/$event.stdin" | tr -d ' ')
     echo "  stdin_bytes=$bytes"
@@ -109,6 +148,25 @@ for event in session-start post-tool-use; do
     echo "  HOOK DID NOT FIRE"
   fi
 done
+
+if [ "$fired" = "0" ]; then
+  echo
+  echo "Neither hook fired. Last 25 lines of the Codex transcript:"
+  tail -25 "$PROBE_DIR/codex.log" | sed 's/^/  /'
+fi
+
+if [ -s "$DUMPS/session-start.stdin" ]; then
+  echo
+  echo "  session-start body keys:"
+  python3 -c "
+import json, sys
+body = json.load(open(sys.argv[1]))
+print('   ', sorted(body))
+for key in ('session_id', 'resource_id', 'resourceId', 'sessionId'):
+    if key in body:
+        print(f'    parseCodexHookEvent reads {key!r} -> {body[key]!r}')
+" "$DUMPS/session-start.stdin" || true
+fi
 
 echo
 echo "──────────────────────────────────────────────────────────────────────"
@@ -138,4 +196,9 @@ print(json.dumps(tr, indent=2)[:1500])
 PY
 else
   echo "  no PostToolUse payload captured — see $PROBE_DIR/codex.log"
+fi
+
+# Only a run that answered both questions is clean enough to discard.
+if [ -s "$DUMPS/session-start.stdin" ] && [ -s "$DUMPS/post-tool-use.stdin" ]; then
+  KEEP_ON_EXIT=0
 fi
