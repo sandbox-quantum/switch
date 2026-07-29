@@ -16,7 +16,6 @@ declare global {
             partition?: string;
             preload?: string;
             useragent?: string;
-            allowpopups?: string;
           },
           HTMLElement
         >;

@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { BrowserWindow } from 'electron';
 import appIcon from '@/assets/images/switchdash/switchdash_logo.png?asset';
 import { log } from '@main/lib/logger';
-import { registerExternalLinkHandlers } from '@main/utils/externalLinks';
+import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { APP_ORIGIN } from './protocol';
 
@@ -95,6 +95,12 @@ function constrainEmbeddedWebviews(window: BrowserWindow): void {
       log.warn('Blocked webview attach for non-http source', { src: params.src });
       event.preventDefault();
     }
+  });
+
+  // A guest inherits none of the window's link handling, so wire it up as each
+  // one attaches — otherwise every link in a message is silently inert.
+  window.webContents.on('did-attach-webview', (_event, guest) => {
+    registerGuestLinkHandlers(guest);
   });
 }
 

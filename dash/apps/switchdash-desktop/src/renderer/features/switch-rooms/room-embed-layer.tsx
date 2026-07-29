@@ -9,6 +9,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
 import { currentMattermostTheme } from './theme-tokens';
+import { WEBVIEW_ALLOW_POPUPS } from './webview-attrs';
 
 /**
  * How many rooms keep a live `<webview>` once visited. Each one is a real
@@ -126,12 +127,30 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     if (!startedRef.current.has(activeRoomId)) void resolve(activeRoomId);
   }, [activeRoomId, resolve]);
 
-  // A theme switch has to be pushed to Mattermost, so re-resolve what is on
-  // screen. Rooms in the background pick it up when next opened.
+  /*
+   * A theme switch needs the guest reloaded, not just re-pushed.
+   *
+   * Mattermost reads the theme preference when its client boots and renders it
+   * into `:root` custom properties. Changing the preference underneath a page
+   * that is already running does not restyle it, and overriding those
+   * properties from the preload only half works — measured against 11.9.0, the
+   * channel background follows but its text colour does not, which would leave
+   * dark text on a dark pane.
+   *
+   * So push the new preference and reload. Since the theme is part of each
+   * webview's key, that happens by remount. Backgrounded rooms are dropped
+   * rather than reloaded in place: they would all reload at once for something
+   * the user cannot see, and re-resolving on next open is cheaper.
+   */
   const themeRef = useRef(effectiveTheme);
   useEffect(() => {
     if (themeRef.current === effectiveTheme) return;
     themeRef.current = effectiveTheme;
+
+    startedRef.current = new Set(activeRoomId ? [activeRoomId] : []);
+    orderRef.current = activeRoomId ? [activeRoomId] : [];
+    setStates(new Map());
+
     if (activeRoomId) void resolve(activeRoomId);
   }, [effectiveTheme, activeRoomId, resolve]);
 
@@ -205,9 +224,18 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
       {[...states.entries()].map(([roomId, state]) =>
         state.phase === 'ready' && state.embed.kind === 'inline' ? (
           <webview
-            key={`${state.embed.partition}:${state.embed.url}`}
+            // The theme is part of the identity: Mattermost only picks up a
+            // theme change at boot, so a switch has to remount the guest.
+            key={`${state.embed.partition}:${state.embed.url}:${effectiveTheme}`}
             src={state.embed.url}
             partition={state.embed.partition}
+            // Required for links to work at all: Mattermost renders external
+            // links as target="_blank", and without this the guest's popups are
+            // blocked outright — they never reach the window-open handler, so
+            // clicking a link does nothing. No window is actually created; the
+            // handler in the main process denies every request and routes
+            // http(s) to the user's browser instead.
+            {...WEBVIEW_ALLOW_POPUPS}
             className={cn('h-full w-full', roomId === activeRoomId ? 'flex' : 'hidden')}
           />
         ) : null
