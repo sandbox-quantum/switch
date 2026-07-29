@@ -317,11 +317,11 @@ class CodexOptions(KnownAgentOptions):
     unavailable-session message so the operator gets a notification. Bare name,
     no leading `@`. None → post without a mention."""
 
-    channels_enabled: bool = True
-    """switchdash sends `channels_enabled` for every provider; Codex has no
-    connector channel of its own, so it does not affect the registered profile.
-    Accepted (and ignored) for request-shape compatibility with the claude-code
-    options so the shared registration path needs no special-casing."""
+    # No `channels_enabled`: switchdash sends it for every provider, but Codex
+    # has no connector channel of its own, so nothing here could act on it.
+    # `KnownAgentOptions` ignores unknown keys, so the shared registration path
+    # still works — and the schema-driven gateway form does not render a control
+    # that silently does nothing.
 
     @field_validator("repo_dir", "notify_user", mode="before")
     @classmethod
@@ -359,6 +359,15 @@ class CodexKnownAgent(KnownAgent):
             post_invocation_mediation=[],
             event_reporting=[],
             task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
+            # Same story as Claude Code: Codex is a TUI, so reset / compact /
+            # interrupt only work when switchdash is driving the session and can
+            # inject keystrokes. A standalone `codex` can't be controlled, so all
+            # three resolve per live session via AgentRuntimeState.
+            command_capabilities=CommandCapabilities(
+                reset="session_dependent",
+                compact="session_dependent",
+                interrupt="session_dependent",
+            ),
         )
 
     @classmethod

@@ -260,6 +260,17 @@ class TestCodexKnownAgent:
         assert profile.task_protocol.can_delegate is True
         assert profile.task_protocol.can_accept is True
 
+    def test_commands_are_session_dependent(self) -> None:
+        # Codex is a TUI driven by switchdash keystroke injection, same as Claude
+        # Code — so reset/compact/interrupt depend on a live managed session.
+        # Must stay in step with `BY_PROVIDER.codex` in switchdash's
+        # `main/core/switch-rooms/session-control.ts`; declaring a command here
+        # that switchdash cannot execute yields a worse message than "unsupported".
+        caps = CodexKnownAgent.build_profile(CodexOptions()).command_capabilities
+        assert caps.reset == "session_dependent"
+        assert caps.compact == "session_dependent"
+        assert caps.interrupt == "session_dependent"
+
     def test_start_session_instructions_emit_codex_not_claude(self) -> None:
         opts = CodexOptions(repo_dir="/Users/x/repo")
         msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
@@ -336,10 +347,15 @@ class TestCodexKnownAgent:
         assert msg is not None
         assert msg.startswith("@cmcd\n\n")
 
-    def test_channels_enabled_is_accepted_but_ignored(self) -> None:
-        # switchdash sends channels_enabled for every provider; Codex accepts it
-        # without it affecting the profile.
+    def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
+        # switchdash sends channels_enabled for every provider, so registration
+        # must still accept it — but Codex has no channel, so it is not a field.
+        # The gateway renders the options form from this schema; a declared field
+        # would be an interactive control that changes nothing.
+        assert "channels_enabled" not in CodexOptions.model_json_schema()["properties"]
+
         opts = CodexOptions.model_validate({"channels_enabled": False})
+        assert "channels_enabled" not in opts.model_dump()
         assert (
             CodexKnownAgent.build_profile(opts).connection_model
             == "session_addressable"
