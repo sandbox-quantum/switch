@@ -108,7 +108,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
       dir: params.dir,
       message:
         sshHost === null
-          ? 'This directory is not configured as a Switch agent. Configure the agent first (run the switch-connector configure skill) before adding it.'
+          ? "This directory is not configured as a Switch agent. Configure it first — from Settings → Agents, or with the Claude Code connector's `configure` skill — before adding it."
           : `The remote directory ${params.dir} on ${sshHost} is not configured as a Switch agent.`,
     });
   }

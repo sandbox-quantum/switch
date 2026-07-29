@@ -33,6 +33,13 @@ export type McpServerRegistration = {
   url?: string;
   headers?: Record<string, string>;
   env?: Record<string, string>;
+  /**
+   * Name of an environment variable holding the bearer token, for agents that
+   * resolve it at request time rather than taking the secret inline. Declared
+   * rather than left to the index signature so a typo is a compile error and
+   * not a silently unauthenticated server.
+   */
+  bearer_token_env_var?: string;
   [key: string]: unknown;
 };
 

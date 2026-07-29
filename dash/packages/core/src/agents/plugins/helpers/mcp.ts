@@ -197,18 +197,31 @@ export function codexMcpAdapter(configPath = '.codex/config.toml') {
     serversKey: 'mcp_servers',
     /**
      * Codex takes config overrides as `-c <dotted.key>=<TOML value>`, at higher
-     * precedence than any config file. Every key is emitted on every call: an
-     * override of `mcp_servers.<name>.url` replaces that server's whole table
-     * rather than merging into it, so a partial set would silently drop the
-     * fields left out.
+     * precedence than any config file.
+     *
+     * Only HTTP servers can be expressed this way. An override of
+     * `mcp_servers.<name>.url` replaces that server's whole table rather than
+     * merging into it, so every key a server needs has to be emitted together —
+     * which rules out a stdio server, whose `args` and `env` are arrays and
+     * tables rather than scalars. Rather than emit a partial table that would
+     * launch a subtly broken server, reject anything but an HTTP server.
      */
     launchArgsForServer(server: McpServerRegistration): string[] {
-      const entries: Array<[string, string]> = [];
-      if (typeof server.url === 'string') entries.push(['url', server.url]);
-      if (typeof server.bearer_token_env_var === 'string') {
+      if (server.command !== undefined || server.args !== undefined || server.env !== undefined) {
+        throw new Error(
+          `Codex cannot receive the stdio MCP server '${server.name}' on argv; register it in config instead.`
+        );
+      }
+      if (typeof server.url !== 'string' || !server.url) {
+        throw new Error(
+          `Codex can only receive an HTTP MCP server on argv; '${server.name}' has no url.`
+        );
+      }
+
+      const entries: Array<[string, string]> = [['url', server.url]];
+      if (server.bearer_token_env_var !== undefined) {
         entries.push(['bearer_token_env_var', server.bearer_token_env_var]);
       }
-      if (typeof server.command === 'string') entries.push(['command', server.command]);
       return entries.flatMap(([key, value]) => [
         '-c',
         `mcp_servers.${server.name}.${key}=${JSON.stringify(value)}`,

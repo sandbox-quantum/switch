@@ -252,3 +252,56 @@ describe('codexMcpAdapter', () => {
     expect(result[0].http_headers).toBeUndefined();
   });
 });
+
+describe('codexMcpAdapter.launchArgsForServer', () => {
+  const adapter = codexMcpAdapter('.codex/config.toml');
+
+  it('emits url and token env var together as -c overrides', () => {
+    // A `-c mcp_servers.<name>.<key>` override replaces that server's whole
+    // table rather than merging into it, so both keys have to travel together.
+    expect(
+      adapter.launchArgsForServer!({
+        name: 'switch',
+        transport: 'http',
+        url: 'https://switch.test/api/mcp/',
+        bearer_token_env_var: 'SWITCH_API_TOKEN',
+      })
+    ).toEqual([
+      '-c',
+      'mcp_servers.switch.url="https://switch.test/api/mcp/"',
+      '-c',
+      'mcp_servers.switch.bearer_token_env_var="SWITCH_API_TOKEN"',
+    ]);
+  });
+
+  it('names the token env var rather than embedding the secret', () => {
+    const args = adapter.launchArgsForServer!({
+      name: 'switch',
+      transport: 'http',
+      url: 'https://switch.test/api/mcp/',
+      bearer_token_env_var: 'SWITCH_API_TOKEN',
+    }).join(' ');
+
+    // argv is world-readable via `ps`; only the variable's name may appear.
+    expect(args).toContain('bearer_token_env_var');
+    expect(args).not.toMatch(/Bearer\s/);
+  });
+
+  it('omits the token override when the server has no token env var', () => {
+    expect(
+      adapter.launchArgsForServer!({ name: 'docs', transport: 'http', url: 'https://d/mcp/' })
+    ).toEqual(['-c', 'mcp_servers.docs.url="https://d/mcp/"']);
+  });
+
+  it('refuses a stdio server rather than emitting a partial table', () => {
+    // Dropping `args`/`env` would register a server that launches and then
+    // misbehaves, which is worse than refusing to register it at all.
+    expect(() =>
+      adapter.launchArgsForServer!({ name: 'local', command: 'bun', args: ['server.ts'] })
+    ).toThrow(/stdio MCP server 'local'/);
+  });
+
+  it('refuses a server with no url', () => {
+    expect(() => adapter.launchArgsForServer!({ name: 'broken' })).toThrow(/has no url/);
+  });
+});
