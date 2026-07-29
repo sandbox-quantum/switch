@@ -4,6 +4,7 @@ import { dirTrustService } from '@main/core/agent-hooks/dir-trust-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
+import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
@@ -23,7 +24,6 @@ import { providerOverrideSettings } from '@main/core/settings/provider-settings-
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
-import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';

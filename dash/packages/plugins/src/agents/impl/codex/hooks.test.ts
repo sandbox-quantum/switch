@@ -1,6 +1,11 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
-import { CODEX_CONFIG_PATH, CODEX_HOOKS_PATH, buildCodexHookConfig } from './hooks';
+import {
+  CODEX_CONFIG_PATH,
+  CODEX_HOOKS_PATH,
+  CODEX_ROOM_CONNECT_MATCHER,
+  buildCodexHookConfig,
+} from './hooks';
 
 function createMemoryFs(initial: Record<string, string> = {}): PluginFs {
   const files = new Map(Object.entries(initial));
@@ -103,10 +108,34 @@ describe('buildCodexHookConfig install/read/delete', () => {
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
       hooks: Record<string, unknown[]>;
     };
-    for (const key of ['Stop', 'PermissionRequest', 'SessionStart']) {
+    for (const key of ['Stop', 'PermissionRequest', 'SessionStart', 'PostToolUse']) {
       expect(config.hooks[key]).toHaveLength(1);
       expect(JSON.stringify(config.hooks[key][0])).toContain('SWITCHDASH_HOOK_PORT');
     }
+  });
+
+  it('tracks the room via a PostToolUse hook scoped to the Switch connect tool', async () => {
+    // Without this the poller stays pinned to the room the session spawned in:
+    // an agent that hops rooms keeps getting room A's messages while sitting in
+    // room B, with nothing raised. The hook makes every connect_to_room correct
+    // the association.
+    const fs = createMemoryFs();
+    await buildCodexHookConfig().writeHooks(fs, []);
+    const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
+      hooks: Record<string, Array<{ matcher?: string }>>;
+    };
+
+    const entry = config.hooks.PostToolUse[0];
+    expect(entry.matcher).toBe(CODEX_ROOM_CONNECT_MATCHER);
+    // Matches the Switch tool on any server name, but not unrelated tools.
+    const matcher = new RegExp(`^${CODEX_ROOM_CONNECT_MATCHER}$`);
+    expect(matcher.test('mcp__switch__connect_to_room')).toBe(true);
+    expect(matcher.test('mcp__plugin_switch-connector_switch__connect_to_room')).toBe(true);
+    expect(matcher.test('mcp__switch__post_message')).toBe(false);
+    expect(matcher.test('Bash')).toBe(false);
+    // Reports the same event type Claude's connector emits, so both providers
+    // land on one enricher path.
+    expect(JSON.stringify(entry)).toContain('switch_room_connect');
   });
 
   it('reflects installation state through getHooksInstalled + readHooks', async () => {

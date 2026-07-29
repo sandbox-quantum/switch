@@ -127,8 +127,9 @@ export class RemoteSwitchSetupService {
     if (fromMarketplace) return fromMarketplace;
     const { stdout: pluginStdout } = await this.run(bin, ['plugin', 'list', '--json']);
     return (
-      rules.parseAdvertisedVersions(parseJsonLoose(pluginStdout), marketplaceName).get(pluginName) ??
-      null
+      rules
+        .parseAdvertisedVersions(parseJsonLoose(pluginStdout), marketplaceName)
+        .get(pluginName) ?? null
     );
   }
 

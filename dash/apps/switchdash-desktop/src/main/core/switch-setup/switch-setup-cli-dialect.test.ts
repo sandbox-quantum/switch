@@ -64,9 +64,9 @@ describe('codex dialect', () => {
   });
 
   it('reports no advertised versions, since Codex only versions installed plugins', () => {
-    expect(rules.parseAdvertisedVersions(JSON.parse(CODEX_PLUGIN_LIST), 'switch-plugins').size).toBe(
-      0
-    );
+    expect(
+      rules.parseAdvertisedVersions(JSON.parse(CODEX_PLUGIN_LIST), 'switch-plugins').size
+    ).toBe(0);
   });
 
   it('looks for plugin manifests under .codex-plugin but marketplaces under .claude-plugin', () => {

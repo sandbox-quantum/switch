@@ -97,7 +97,8 @@ const claudeCode: SwitchSetupCliRules = {
     ).find((m) => m.name === marketplaceName);
     const versions = new Map<string, string>();
     for (const p of market?.plugins ?? []) {
-      if (typeof p.name === 'string' && typeof p.version === 'string') versions.set(p.name, p.version);
+      if (typeof p.name === 'string' && typeof p.version === 'string')
+        versions.set(p.name, p.version);
     }
     return versions;
   },
@@ -127,7 +128,9 @@ const codex: SwitchSetupCliRules = {
       if (typeof e.pluginId !== 'string') return [];
       // `source.path` is the marketplace source directory, which holds the
       // manifest; the entry's own `version` is authoritative either way.
-      return [{ ref: e.pluginId, version: e.version ?? null, manifestPath: e.source?.path ?? null }];
+      return [
+        { ref: e.pluginId, version: e.version ?? null, manifestPath: e.source?.path ?? null },
+      ];
     });
   },
 
