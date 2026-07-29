@@ -7,6 +7,7 @@ import { readPersistedPorts } from '@main/core/managed-switch-server/ports';
 import { loadOrCreateSecrets } from '@main/core/managed-switch-server/secrets';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
+import type { MattermostTheme } from '@shared/core/switch-rooms/mattermost-theme';
 import {
   channelUrlFromDeeplink,
   mattermostPartition,
@@ -105,6 +106,55 @@ async function installMattermostSession(origin: string, serverId: string): Promi
 }
 
 /**
+ * Apply switchdash's palette to the Mattermost account the embed signs in as.
+ *
+ * Mattermost stores this as a per-user preference, so it themes itself rather
+ * than us overriding its stylesheet from the guest preload — menus, hovers and
+ * code blocks stay coherent instead of half-converted.
+ *
+ * Best-effort: a room that renders in Mattermost's default colours is a
+ * cosmetic problem, not a reason to fall back to the deeplink. Logged rather
+ * than swallowed.
+ */
+async function applyMattermostTheme(
+  origin: string,
+  partition: string,
+  theme: MattermostTheme
+): Promise<void> {
+  const partitionSession = electronSession.fromPartition(partition);
+  const request = (path: string, init?: { method?: string; body?: string }) =>
+    partitionSession.fetch(`${origin}${path}`, {
+      credentials: 'include',
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        // Same requirement as the login: Mattermost rejects cookie-authenticated
+        // writes that do not look like XHR.
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+
+  try {
+    const meResponse = await request('/api/v4/users/me');
+    if (!meResponse.ok) throw new Error(`GET /users/me returned ${meResponse.status}`);
+    const { id } = (await meResponse.json()) as { id: string };
+
+    // The preference value is a JSON *string*, not an object.
+    const saved = await request(`/api/v4/users/${id}/preferences`, {
+      method: 'PUT',
+      body: JSON.stringify([
+        { user_id: id, category: 'theme', name: '', value: JSON.stringify(theme) },
+      ]),
+    });
+    if (!saved.ok) throw new Error(`PUT /preferences returned ${saved.status}`);
+  } catch (cause) {
+    log.warn('Could not apply the switchdash theme to Mattermost; using its defaults', {
+      reason: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+}
+
+/**
  * Decide how to show a room's conversation, and prepare whatever that choice
  * needs (a logged-in partition, for the inline case).
  *
@@ -116,8 +166,9 @@ export async function resolveChannelEmbed(params: {
   serverId: string;
   bridgeType: string | null;
   externalChannelUrl: string | null;
+  theme: MattermostTheme | null;
 }): Promise<RoomEmbed> {
-  const { serverId, bridgeType, externalChannelUrl } = params;
+  const { serverId, bridgeType, externalChannelUrl, theme } = params;
 
   if (!bridgeType) {
     return {
@@ -154,6 +205,7 @@ export async function resolveChannelEmbed(params: {
 
   try {
     const partition = await installMattermostSession(origin, serverId);
+    if (theme) await applyMattermostTheme(origin, partition, theme);
     return { kind: 'inline', url, partition, chromeless: true };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);

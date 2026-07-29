@@ -1,3 +1,4 @@
+import type { MattermostTheme } from '@shared/core/switch-rooms/mattermost-theme';
 import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
 import type { SessionRoomConnection } from '@shared/core/switch-rooms/switch-rooms';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -17,5 +18,6 @@ export const switchRoomsController = createRPCController({
     serverId: string;
     bridgeType: string | null;
     externalChannelUrl: string | null;
+    theme: MattermostTheme | null;
   }): Promise<RoomEmbed> => resolveChannelEmbed(params),
 });

@@ -2,10 +2,12 @@ import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
 import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
+import { currentMattermostTheme } from './theme-tokens';
 
 type EmbedState =
   | { phase: 'resolving' }
@@ -37,6 +39,7 @@ function RoomNotice({
 export const RoomMainPanel = observer(function RoomMainPanel() {
   const { params } = useParams('room');
   const roomId = params.roomId;
+  const { effectiveTheme } = useTheme();
   const [state, setState] = useState<EmbedState>({ phase: 'resolving' });
 
   const resolve = useCallback(async () => {
@@ -54,6 +57,7 @@ export const RoomMainPanel = observer(function RoomMainPanel() {
         serverId,
         bridgeType: switchRoomsStore.roomBridgeTypeById(roomId),
         externalChannelUrl: switchRoomsStore.roomChannelUrl(roomId),
+        theme: currentMattermostTheme(effectiveTheme),
       });
       setState({ phase: 'ready', embed });
     } catch (cause) {
@@ -62,7 +66,9 @@ export const RoomMainPanel = observer(function RoomMainPanel() {
         message: cause instanceof Error ? cause.message : String(cause),
       });
     }
-  }, [roomId]);
+    // Re-resolving on a theme switch re-pushes the palette, so the embedded
+    // channel follows the app instead of keeping whatever it was opened with.
+  }, [roomId, effectiveTheme]);
 
   useEffect(() => {
     void resolve();
@@ -119,13 +125,19 @@ export const RoomMainPanel = observer(function RoomMainPanel() {
   }
 
   return (
-    <webview
-      // Remounting on url/partition change is intentional: <webview> does not
-      // reliably re-navigate when its src attribute is swapped in place.
-      key={`${embed.partition}:${embed.url}`}
-      src={embed.url}
-      partition={embed.partition}
-      className="h-full w-full"
-    />
+    // The guest is a plain rectangle inside a window with rounded corners, so
+    // without clipping the window's own background shows through at the bottom
+    // corners as dark notches. Only the bottom edge can be a window corner —
+    // the top sits under the titlebar.
+    <div className="h-full w-full overflow-hidden rounded-b-[10px] bg-background">
+      <webview
+        // Remounting on url/partition change is intentional: <webview> does not
+        // reliably re-navigate when its src attribute is swapped in place.
+        key={`${embed.partition}:${embed.url}`}
+        src={embed.url}
+        partition={embed.partition}
+        className="h-full w-full"
+      />
+    </div>
   );
 });
