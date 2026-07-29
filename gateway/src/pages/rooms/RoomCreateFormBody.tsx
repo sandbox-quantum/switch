@@ -237,7 +237,7 @@ export default function RoomCreateFormBody() {
 
       <Divider />
       <Stack spacing={1}>
-        <Typography variant="subtitle2" color="text.secondary">
+        <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
           Roles (optional)
         </Typography>
         <Typography variant="caption" color="text.secondary">

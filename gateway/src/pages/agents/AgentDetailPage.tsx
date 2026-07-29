@@ -106,7 +106,6 @@ export default function AgentDetailPage() {
           <Chip
             label={titleCase(agent.connection_model)}
             size="small"
-            color="info"
             variant="outlined"
           />
         )}

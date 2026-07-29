@@ -50,7 +50,7 @@ export default function RoomResourcesSection({ roomId }: Props) {
 
   return (
     <Stack spacing={3}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Resources
       </Typography>
       <RoomReferences
@@ -92,7 +92,6 @@ function PackageChips({
           label={`via ${packageDescriptions[pid] ?? "package"}`}
           size="small"
           variant="outlined"
-          color="info"
           onClick={(e) => {
             e.stopPropagation();
             navigate(`/resources/packages/${pid}`);

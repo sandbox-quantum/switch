@@ -249,7 +249,7 @@ export default function AddressingPolicySection({
   return (
     <Stack spacing={2}>
       <Box>
-        <Typography variant="subtitle2" color="text.secondary">
+        <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
           Addressing policy
         </Typography>
         <Typography variant="caption" color="text.secondary">

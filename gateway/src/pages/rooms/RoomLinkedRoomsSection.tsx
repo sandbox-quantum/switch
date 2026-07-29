@@ -81,7 +81,7 @@ export default function RoomLinkedRoomsSection({ roomId }: Props) {
               }}
               onClick={() => navigate(`/rooms/${link.target_room_id}`)}
             >
-              <Chip label={link.label} size="small" color="primary" />
+              <Chip label={link.label} size="small" />
               <Stack sx={{ flexGrow: 1, minWidth: 0 }}>
                 <Typography variant="body2" noWrap>
                   {link.target_room_name}

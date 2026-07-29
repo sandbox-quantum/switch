@@ -118,7 +118,7 @@ export default function RoomDetailPage() {
           <Chip label={channelTypeLabel(room.channel_type)} size="small" />
         )}
         {room.bridge_display_name && (
-          <Chip label={room.bridge_display_name} size="small" color="info" />
+          <Chip label={room.bridge_display_name} size="small" />
         )}
         <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
           Export to YAML

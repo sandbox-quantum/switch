@@ -138,7 +138,7 @@ export default function RoomsPage() {
       {
         field: "channel_type",
         headerName: "Type",
-        width: 120,
+        width: 150,
         renderCell: ({ value }) =>
           value ? (
             <Chip label={channelTypeLabel(value as string)} size="small" />
@@ -159,7 +159,7 @@ export default function RoomsPage() {
         width: 160,
         renderCell: ({ value }) =>
           value ? (
-            <Chip label={value} size="small" color="info" />
+            <Chip label={value} size="small" />
           ) : (
             <Missing />
           ),

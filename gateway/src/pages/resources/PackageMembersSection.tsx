@@ -156,7 +156,7 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
 
   return (
     <Stack spacing={3}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Members
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}

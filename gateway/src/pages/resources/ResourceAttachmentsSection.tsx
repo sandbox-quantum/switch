@@ -101,7 +101,7 @@ export default function ResourceAttachmentsSection({ kind, resourceId }: Props) 
 
   return (
     <Stack spacing={1}>
-      <Typography variant="subtitle2" color="text.secondary">
+      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Attached to
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
