@@ -1,10 +1,11 @@
-import "@fontsource/dm-sans/300.css";
-import "@fontsource/dm-sans/400.css";
-import "@fontsource/dm-sans/500.css";
-import "@fontsource/dm-sans/700.css";
-import "@fontsource/dm-sans/900.css";
+import "@fontsource/space-grotesk/300.css";
+import "@fontsource/space-grotesk/400.css";
+import "@fontsource/space-grotesk/500.css";
+import "@fontsource/space-grotesk/600.css";
+import "@fontsource/space-grotesk/700.css";
+import "./theme/hoot.css";
 
-import { CssBaseline, GlobalStyles, ThemeProvider } from "@mui/material";
+import { CssBaseline, GlobalStyles, InitColorSchemeScript, ThemeProvider } from "@mui/material";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -15,7 +16,8 @@ const theme = APP_THEME();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ThemeProvider theme={theme} disableTransitionOnChange noSsr>
+    <InitColorSchemeScript attribute="data-mui-color-scheme" defaultMode="light" />
+    <ThemeProvider theme={theme} disableTransitionOnChange noSsr defaultMode="light">
       <CssBaseline />
       <GlobalStyles styles={GLOBAL_STYLE} />
       <App />

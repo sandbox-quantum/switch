@@ -1,0 +1,191 @@
+/* Hoot theme tokens — the SINGLE SOURCE OF TRUTH for token values.
+   Vendored from the Hoot design system (vibe-playground `src/hoot/hoot.css`).
+
+   Only two things are adapted from upstream:
+     - the theme selectors target MUI's `data-mui-color-scheme` attribute
+       instead of `data-hoot-theme`, so MUI's colour-scheme switching drives them;
+     - the Tailwind-specific `.text-*` / `.font-hoot` rules are dropped — the type
+       ramp is applied through MUI's typography instead, reading the vars below.
+
+   Token VALUES are otherwise byte-identical to upstream: re-syncing is a copy.
+   `hoot-tokens.ts` is GENERATED from this file (`npm run gen:tokens`) — MUI's
+   palette needs parseable colours, so the oklch values here are converted to
+   sRGB there. Never hand-edit that file; edit this one and regenerate. */
+
+:root,
+[data-mui-color-scheme="light"] {
+  --hoot-background: oklch(0.978 0.004 77.9);
+  --hoot-foreground: oklch(0.14 0.012 42.65);
+  --hoot-cream: oklch(0.95 0.01 78 / 20%);
+  --hoot-card: oklch(0.995 0.002 78);
+  --hoot-card-foreground: oklch(0.141 0.005 285.823);
+  --hoot-popover: oklch(0.995 0.002 78);
+  --hoot-popover-foreground: oklch(0.141 0.005 285.823);
+  --hoot-primary: oklch(0.21 0.006 285.885);
+  --hoot-primary-foreground: oklch(0.965 0.005 78);
+  --hoot-secondary: oklch(0.955 0.005 78);
+  --hoot-secondary-foreground: oklch(0.21 0.006 285.885);
+  --hoot-muted: oklch(0.955 0.005 78);
+  --hoot-muted-foreground: oklch(0.37 0.013 285.805);
+  --hoot-accent: oklch(0.955 0.005 78);
+  --hoot-accent-foreground: oklch(0.21 0.006 285.885);
+  --hoot-destructive: oklch(0.577 0.245 27.325);
+  --hoot-destructive-foreground: oklch(1 0 0);
+  --hoot-destructive-muted: oklch(0.577 0.245 27.325 / 15%);
+  --hoot-success: oklch(0.596 0.145 163.225);
+  --hoot-success-foreground: oklch(1 0 0);
+  --hoot-success-muted: oklch(0.596 0.145 163.225 / 15%);
+  --hoot-warning: oklch(0.769 0.188 70.08);
+  --hoot-warning-foreground: oklch(1 0 0);
+  --hoot-warning-muted: oklch(0.769 0.188 70.08 / 15%);
+  --hoot-action-blocked: oklch(0.589 0.187 18.9);
+  --hoot-action-blocked-foreground: oklch(1 0 0);
+  --hoot-action-blocked-muted: oklch(0.589 0.187 18.9 / 15%);
+  --hoot-action-redacted: oklch(0.692 0.176 37.7);
+  --hoot-action-redacted-foreground: oklch(1 0 0);
+  --hoot-action-redacted-muted: oklch(0.692 0.176 37.7 / 15%);
+  --hoot-action-alerted: oklch(0.823 0.104 69.3);
+  --hoot-action-alerted-foreground: oklch(0.14 0.012 42.65);
+  --hoot-action-alerted-muted: oklch(0.823 0.104 69.3 / 50%);
+  --hoot-border: oklch(0.92 0.005 78);
+  --hoot-border-strong: oklch(0.82 0.01 78);
+  --hoot-input: oklch(0.92 0.005 78);
+  --hoot-ring: oklch(0.705 0.015 286.067);
+  --hoot-chart-1: oklch(0.871 0.006 286.286);
+  --hoot-chart-2: oklch(0.552 0.016 285.938);
+  --hoot-chart-3: oklch(0.442 0.017 285.786);
+  --hoot-chart-4: oklch(0.37 0.013 285.805);
+  --hoot-chart-5: oklch(0.274 0.006 286.033);
+  --hoot-radius: 0.625rem;
+  --hoot-surface: oklch(0.98 0.007 78);
+  --hoot-sidebar: oklch(0.975 0.004 78);
+  --hoot-sidebar-foreground: oklch(0.141 0.005 285.823);
+  --hoot-sidebar-primary: oklch(0.21 0.006 285.885);
+  --hoot-sidebar-primary-foreground: oklch(0.965 0.005 78);
+  --hoot-sidebar-accent: oklch(0.955 0.005 78);
+  --hoot-sidebar-accent-foreground: oklch(0.21 0.006 285.885);
+  --hoot-sidebar-border: oklch(0.92 0.005 78);
+  --hoot-sidebar-ring: oklch(0.705 0.015 286.067);
+}
+
+[data-mui-color-scheme="dark"] {
+  --hoot-background: oklch(0.141 0.005 285.823);
+  --hoot-foreground: oklch(0.985 0 0);
+  --hoot-cream: oklch(0.95 0.01 78 / 8%);
+  --hoot-card: oklch(0.21 0.006 285.885);
+  --hoot-card-foreground: oklch(0.985 0 0);
+  --hoot-popover: oklch(0.21 0.006 285.885);
+  --hoot-popover-foreground: oklch(0.985 0 0);
+  --hoot-primary: oklch(0.92 0.004 286.32);
+  --hoot-primary-foreground: oklch(0.21 0.006 285.885);
+  --hoot-secondary: oklch(0.274 0.006 286.033);
+  --hoot-secondary-foreground: oklch(0.985 0 0);
+  --hoot-muted: oklch(0.274 0.006 286.033);
+  --hoot-muted-foreground: oklch(0.705 0.015 286.067);
+  --hoot-accent: oklch(0.274 0.006 286.033);
+  --hoot-accent-foreground: oklch(0.985 0 0);
+  --hoot-destructive: oklch(0.704 0.191 22.216);
+  --hoot-destructive-foreground: oklch(1 0 0);
+  --hoot-destructive-muted: oklch(0.704 0.191 22.216 / 15%);
+  --hoot-success: oklch(0.696 0.17 162.48);
+  --hoot-success-foreground: oklch(1 0 0);
+  --hoot-success-muted: oklch(0.696 0.17 162.48 / 15%);
+  --hoot-warning: oklch(0.82 0.16 84.429);
+  --hoot-warning-foreground: oklch(1 0 0);
+  --hoot-warning-muted: oklch(0.82 0.16 84.429 / 15%);
+  --hoot-action-blocked: oklch(0.589 0.187 18.9);
+  --hoot-action-blocked-foreground: oklch(1 0 0);
+  --hoot-action-blocked-muted: oklch(0.589 0.187 18.9 / 15%);
+  --hoot-action-redacted: oklch(0.692 0.176 37.7);
+  --hoot-action-redacted-foreground: oklch(1 0 0);
+  --hoot-action-redacted-muted: oklch(0.692 0.176 37.7 / 15%);
+  --hoot-action-alerted: oklch(0.823 0.104 69.3);
+  --hoot-action-alerted-foreground: oklch(0.14 0.012 42.65);
+  --hoot-action-alerted-muted: oklch(0.823 0.104 69.3 / 50%);
+  --hoot-border: oklch(1 0 0 / 10%);
+  --hoot-border-strong: oklch(1 0 0 / 20%);
+  --hoot-input: oklch(1 0 0 / 15%);
+  --hoot-ring: oklch(0.552 0.016 285.938);
+  --hoot-chart-1: oklch(0.871 0.006 286.286);
+  --hoot-chart-2: oklch(0.552 0.016 285.938);
+  --hoot-chart-3: oklch(0.442 0.017 285.786);
+  --hoot-chart-4: oklch(0.37 0.013 285.805);
+  --hoot-chart-5: oklch(0.274 0.006 286.033);
+  --hoot-radius: 0.625rem;
+  --hoot-surface: oklch(0.24 0.012 78);
+  --hoot-sidebar: oklch(0.21 0.006 285.885);
+  --hoot-sidebar-foreground: oklch(0.985 0 0);
+  --hoot-sidebar-primary: oklch(0.488 0.243 264.376);
+  --hoot-sidebar-primary-foreground: oklch(0.985 0 0);
+  --hoot-sidebar-accent: oklch(0.274 0.006 286.033);
+  --hoot-sidebar-accent-foreground: oklch(0.985 0 0);
+  --hoot-sidebar-border: oklch(1 0 0 / 10%);
+  --hoot-sidebar-ring: oklch(0.552 0.016 285.938);
+}
+
+:root {
+  --hoot-text-xs:   0.75rem;    /* 12px */
+  --hoot-text-sm:   0.875rem;   /* 14px */
+  --hoot-text-base: 0.9375rem;  /* 15px */
+  --hoot-text-lg:   1.0625rem;  /* 17px */
+  --hoot-text-xl:   1.1875rem;  /* 19px */
+  --hoot-text-2xl:  1.4375rem;  /* 23px */
+  --hoot-text-3xl:  1.8125rem;  /* 29px */
+
+  --hoot-leading-xs:   1rem;     /* 16px */
+  --hoot-leading-sm:   1.25rem;  /* 20px */
+  --hoot-leading-base: 1.5rem;   /* 24px */
+  --hoot-leading-lg:   1.625rem; /* 26px */
+  --hoot-leading-xl:   1.75rem;  /* 28px */
+  --hoot-leading-2xl:  2rem;     /* 32px */
+  --hoot-leading-3xl:  2.25rem;  /* 36px */
+
+  /* Border radius — theme-independent. Signature = --hoot-radius (10px). */
+  --hoot-radius-none:      0;
+  --hoot-radius-px:        1px;
+  --hoot-radius-sm:        0.125rem;  /* 2px  */
+  --hoot-radius-base:      0.25rem;   /* 4px  */
+  --hoot-radius-md:        0.375rem;  /* 6px  */
+  --hoot-radius-lg:        0.5rem;    /* 8px  */
+  --hoot-radius-signature: 0.625rem;  /* 10px — mirrors --hoot-radius */
+  --hoot-radius-xl:        0.75rem;   /* 12px */
+  --hoot-radius-2xl:       1rem;      /* 16px */
+  --hoot-radius-full:      9999px;
+
+  /* Spacing — theme-independent, standard 4px scale (only steps Hoot uses).
+     Dots in step names are encoded as `_` (CSS vars can't contain `.`). */
+  --hoot-space-0:   0;
+  --hoot-space-0_5: 0.125rem;  /* 2px  */
+  --hoot-space-1:   0.25rem;   /* 4px  */
+  --hoot-space-1_5: 0.375rem;  /* 6px  */
+  --hoot-space-2:   0.5rem;    /* 8px  */
+  --hoot-space-2_5: 0.625rem;  /* 10px */
+  --hoot-space-3:   0.75rem;   /* 12px */
+  --hoot-space-3_5: 0.875rem;  /* 14px */
+  --hoot-space-4:   1rem;      /* 16px */
+  --hoot-space-5:   1.25rem;   /* 20px */
+  --hoot-space-6:   1.5rem;    /* 24px */
+  --hoot-space-7:   1.75rem;   /* 28px */
+  --hoot-space-8:   2rem;      /* 32px */
+  --hoot-space-9:   2.25rem;   /* 36px */
+  --hoot-space-10:  2.5rem;    /* 40px */
+  --hoot-space-12:  3rem;      /* 48px */
+  --hoot-space-16:  4rem;      /* 64px */
+  --hoot-space-20:  5rem;      /* 80px */
+  --hoot-space-24:  6rem;      /* 96px */
+
+  /* Elevation — "depth is whispered": a single soft ambient glow, never a
+     hard drop shadow. Ladder: surface -> card -> popover -> modal. */
+  --hoot-shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --hoot-shadow-surface: 0 0 12px 0 rgb(0 0 0 / 0.04);
+  --hoot-shadow-rail-active: 0 0 12px 2px rgb(0 0 0 / 0.04);
+  --hoot-shadow-popover: 0 0 4px 0 rgb(0 0 0 / 0.1), 0 1px 10px 0 rgb(0 0 0 / 0.06);
+  --hoot-shadow-modal: 0 0 8px 0 rgb(0 0 0 / 0.12), 0 8px 32px 0 rgb(0 0 0 / 0.12);
+
+  /* Hoot's canvas: the warm off-white the whole app floats on. */
+  --hoot-canvas: #f4eee6;
+}
+
+[data-mui-color-scheme="dark"] {
+  --hoot-canvas: oklch(0.11 0.004 285.823);
+}

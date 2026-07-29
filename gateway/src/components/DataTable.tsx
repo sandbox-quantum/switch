@@ -21,6 +21,50 @@ interface DataTableProps<T extends { id: string | number }> {
   sx?: SxProps<Theme>;
 }
 
+/** Hoot's grid treatment: a bordered 16px-radius surface with a cream header
+ *  band, generous 52px rows, and tabular figures so numeric columns line up.
+ *  Ported from the Hoot design system's DataTable. */
+const HOOT_GRID_SX: SxProps<Theme> = {
+  border: "1px solid var(--hoot-border)",
+  borderRadius: "16px",
+  "--DataGrid-rowBorderColor": "var(--hoot-border)",
+  "& .MuiDataGrid-columnHeaders": {
+    "--DataGrid-containerBackground": "var(--hoot-cream)",
+  },
+  "& .MuiDataGrid-columnHeader": {
+    fontSize: "0.875rem",
+    fontWeight: 500,
+    letterSpacing: "-0.01em",
+  },
+  "& .MuiDataGrid-columnHeaderTitle": { fontWeight: 500, opacity: 0.7 },
+  "& .MuiDataGrid-row": { minHeight: "52px !important" },
+  "& .MuiDataGrid-row:hover": { backgroundColor: "rgb(0 0 0 / 0.03)" },
+  "& .MuiDataGrid-row.Mui-selected": {
+    backgroundColor: "var(--hoot-muted)",
+    "&:hover": { backgroundColor: "var(--hoot-muted)" },
+  },
+  "& .MuiDataGrid-cell": {
+    minHeight: 52,
+    fontSize: "0.9375rem",
+    fontVariantNumeric: "tabular-nums",
+    borderTopColor: "var(--hoot-border)",
+  },
+  "& .MuiDataGrid-footerContainer": {
+    backgroundColor: "var(--hoot-cream)",
+    borderTopColor: "var(--hoot-border)",
+    borderBottomLeftRadius: "16px",
+    borderBottomRightRadius: "16px",
+  },
+  "& .MuiDataGrid-columnSeparator": { display: "none" },
+  "& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within, & .MuiDataGrid-columnHeader:focus, & .MuiDataGrid-columnHeader:focus-within":
+    { outline: "2px solid var(--hoot-ring)", outlineOffset: "-2px" },
+  "& .MuiDataGrid-overlay": {
+    fontSize: "0.875rem",
+    color: "var(--hoot-muted-foreground)",
+    backgroundColor: "transparent",
+  },
+};
+
 export default function DataTable<T extends { id: string | number }>({
   rows,
   columns,
@@ -50,14 +94,7 @@ export default function DataTable<T extends { id: string | number }>({
       }
       onRowClick={onRowClick}
       disableRowSelectionOnClick
-      sx={[
-        {
-          border: "none",
-          height: fillHeight ? "100%" : height,
-          "& .MuiDataGrid-cell": { minHeight: 48 },
-        },
-        ...extraSx,
-      ]}
+      sx={[HOOT_GRID_SX, { height: fillHeight ? "100%" : height }, ...extraSx]}
     />
   );
 
