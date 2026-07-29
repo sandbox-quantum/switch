@@ -58,6 +58,13 @@ spec:
               value: "true"
             - name: MM_TEAMSETTINGS_ENABLEOPENSERVER
               value: "true"
+            # For switchdash's embedded room view (CHOO-1674): suppress the
+            # onboarding modal, and linkify the `switchdash://` deeplinks
+            # agents post. Kept in step with the standalone compose.
+            - name: MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW
+              value: "false"
+            - name: MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES
+              value: "switchdash"
             - name: MM_TEAMSETTINGS_MAXUSERSPERTEAM
               value: {{ .Values.mattermost.maxUsersPerTeam | default 1000 | quote }}
           readinessProbe:
