@@ -33,7 +33,7 @@ const ADMIN_ITEMS: NavItem[] = [{ label: "Users", path: "/users", icon: PeopleOu
 const TARGET = 44;
 // The logo sits slightly inside the nav button footprint: it is a solid mark
 // against thin-stroke icons, so matching the container would read as heavier.
-const LOGO = 32;
+const LOGO = 28;
 
 function RailItem({ item, active }: { item: NavItem; active: boolean }) {
   return (
