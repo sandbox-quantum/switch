@@ -58,12 +58,36 @@ function suppressLandingInterstitial(): void {
   }
 }
 
+/**
+ * Run `attach` as soon as `<html>` exists.
+ *
+ * A preload runs before the parser has produced anything: `document` is there
+ * but `document.documentElement` is still null (measured against Mattermost
+ * 11.9.0 — `readyState: "loading"`, documentElement/head/body all null). So the
+ * style element has nowhere to go yet, and appending unconditionally throws.
+ * Waiting for DOMContentLoaded instead would risk painting the full chrome
+ * first, so watch for the root element and attach the instant it appears.
+ */
+function whenDocumentElement(attach: () => void): void {
+  if (document.documentElement) {
+    attach();
+    return;
+  }
+  new MutationObserver((_records, observer) => {
+    if (document.documentElement) {
+      observer.disconnect();
+      attach();
+    }
+  }).observe(document, { childList: true });
+}
+
 function injectChromelessCss(): void {
-  const style = document.createElement('style');
-  style.setAttribute('data-switchdash', 'chromeless');
-  style.textContent = CHROMELESS_CSS;
-  // documentElement exists at document-start even though body does not.
-  document.documentElement.appendChild(style);
+  whenDocumentElement(() => {
+    const style = document.createElement('style');
+    style.setAttribute('data-switchdash', 'chromeless');
+    style.textContent = CHROMELESS_CSS;
+    document.documentElement.appendChild(style);
+  });
 }
 
 /**
@@ -88,6 +112,19 @@ function swallowHiddenSidebarShortcuts(): void {
   );
 }
 
-suppressLandingInterstitial();
-injectChromelessCss();
-swallowHiddenSidebarShortcuts();
+// Independently, so one failing step cannot take the others with it — a
+// throw in the CSS injection previously left the shortcut guard unregistered
+// too, which made a styling bug look like a keyboard bug as well.
+for (const step of [
+  suppressLandingInterstitial,
+  injectChromelessCss,
+  swallowHiddenSidebarShortcuts,
+]) {
+  try {
+    step();
+  } catch (cause) {
+    // Nothing here is load-bearing enough to justify blanking the pane, but a
+    // silent partial failure is what cost us the last round of debugging.
+    console.error(`switchdash guest preload: ${step.name} failed`, cause);
+  }
+}

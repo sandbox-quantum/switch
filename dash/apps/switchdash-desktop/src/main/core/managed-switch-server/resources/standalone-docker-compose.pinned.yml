@@ -104,6 +104,10 @@ services:
       MM_SQLSETTINGS_DATASOURCE: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/mattermost?sslmode=disable
       MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTERMOST_HOST_PORT:-8065}
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      # The first-run onboarding checklist opens a modal over a dimmed page,
+      # which in the embedded room view is chrome the user cannot meaningfully
+      # act on and has to dismiss per account.
+      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       # Lets the bridge hard-delete (permanent=true) an agent's transient
