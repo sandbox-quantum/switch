@@ -48,16 +48,35 @@ const CLI_AGENT = {
   },
 };
 
-const NONE_AGENT = {
+const CODEX_AGENT = {
   metadata: { id: 'codex' },
   capabilities: {
-    switchSetup: { kind: 'none' },
+    switchSetup: {
+      kind: 'cli',
+      pluginName: 'switch-connector-codex',
+      marketplaceName: 'switch-plugins',
+      marketplaceSource: 'sandbox-quantum/switch',
+      scope: 'user',
+      dialect: 'codex',
+    },
     hostDependency: { binaryNames: ['codex'] },
+  },
+};
+
+const NONE_AGENT = {
+  metadata: { id: 'no-switch-agent' },
+  capabilities: {
+    switchSetup: { kind: 'none' },
+    hostDependency: { binaryNames: ['nosw'] },
   },
 };
 
 const INSTALL_PATH = '/cache/switch-plugins/switch-connector/0.1.0';
 const MARKET_LOCATION = '/marketplaces/switch-plugins';
+
+const CODEX_REF = 'switch-connector-codex@switch-plugins';
+const CODEX_INSTALL_PATH = '/cache/codex/plugins/switch-connector-codex';
+const CODEX_MARKET_ROOT = '/cache/codex/marketplaces/switch-plugins';
 
 /** Default happy-path exec: installed 0.1.0, marketplace present. */
 function execImpl(installedVersion: string | null) {
@@ -94,6 +113,73 @@ function execImpl(installedVersion: string | null) {
   };
 }
 
+/**
+ * Codex's CLI wraps both listings in an object and names its fields differently
+ * (`pluginId`/`source.path`, `marketplaces`/`marketplaceSource`), so the shapes
+ * are spelled out here rather than reusing the Claude fixtures.
+ */
+function codexExecImpl(installedVersion: string | null) {
+  return (_bin: string, args: string[] = []) => {
+    const a = args.join(' ');
+    if (a === 'plugin list --json') {
+      return Promise.resolve({
+        stdout: JSON.stringify({
+          installed:
+            installedVersion === null
+              ? []
+              : [
+                  {
+                    pluginId: CODEX_REF,
+                    name: 'switch-connector-codex',
+                    marketplaceName: 'switch-plugins',
+                    version: installedVersion,
+                    installed: true,
+                    enabled: true,
+                    source: { source: 'local', path: CODEX_INSTALL_PATH },
+                  },
+                ],
+          available: [],
+        }),
+        stderr: '',
+      });
+    }
+    if (a === 'plugin marketplace list --json') {
+      return Promise.resolve({
+        stdout: JSON.stringify({
+          marketplaces: [
+            {
+              name: 'switch-plugins',
+              root: CODEX_MARKET_ROOT,
+              marketplaceSource: { sourceType: 'github', source: 'sandbox-quantum/switch' },
+            },
+          ],
+        }),
+        stderr: '',
+      });
+    }
+    return Promise.resolve({ stdout: '', stderr: '' });
+  };
+}
+
+function codexReadFileImpl(installedManifestVersion: string, advertisedVersion: string) {
+  return (path: string) => {
+    if (path === `${CODEX_INSTALL_PATH}/.codex-plugin/plugin.json`) {
+      return Promise.resolve(JSON.stringify({ version: installedManifestVersion }));
+    }
+    if (path === `${CODEX_MARKET_ROOT}/.claude-plugin/marketplace.json`) {
+      return Promise.resolve(
+        JSON.stringify({
+          plugins: [{ name: 'switch-connector-codex', source: './connectors/codex-plugin' }],
+        })
+      );
+    }
+    if (path === `${CODEX_MARKET_ROOT}/connectors/codex-plugin/.codex-plugin/plugin.json`) {
+      return Promise.resolve(JSON.stringify({ version: advertisedVersion }));
+    }
+    return Promise.reject(new Error('ENOENT'));
+  };
+}
+
 function readFileImpl(installedManifestVersion: string, advertisedVersion: string) {
   return (path: string) => {
     if (path === `${INSTALL_PATH}/.claude-plugin/plugin.json`) {
@@ -122,7 +208,7 @@ beforeEach(() => {
 describe('switchSetupService.getStatus', () => {
   it('reports unsupported for agents with kind: none', async () => {
     mocks.getPlugin.mockReturnValue(NONE_AGENT);
-    const status = await switchSetupService.getStatus('codex');
+    const status = await switchSetupService.getStatus('no-switch-agent');
     expect(status.supported).toBe(false);
     expect(status.installed).toBe(false);
     expect(mocks.exec).not.toHaveBeenCalled();
@@ -324,5 +410,114 @@ describe('switchSetupService mutations', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toBe('no write access');
+  });
+});
+
+describe('switchSetupService with the codex dialect', () => {
+  function calls(): string[] {
+    return mocks.exec.mock.calls.map((c) => (c[1] as string[]).join(' '));
+  }
+
+  beforeEach(() => {
+    mocks.getPlugin.mockReturnValue(CODEX_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/codex');
+  });
+
+  it('reads the object-wrapped listings and the .codex-plugin manifest', async () => {
+    // The CLI listing reports a stale 0.1.0; only a read of the install dir's
+    // `.codex-plugin/plugin.json` (Claude's lives under `.claude-plugin/`) finds
+    // the real 0.2.0, and every other path in the fixture is ENOENT.
+    mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0', '0.3.0'));
+
+    const status = await switchSetupService.getStatus('codex');
+
+    expect(status).toMatchObject({
+      supported: true,
+      installed: true,
+      installedVersion: '0.2.0',
+      latestVersion: '0.3.0',
+      updateAvailable: true,
+    });
+  });
+
+  it('reports not-installed when the object-wrapped list is empty', async () => {
+    mocks.exec.mockImplementation(codexExecImpl(null));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0', '0.3.0'));
+
+    const status = await switchSetupService.getStatus('codex');
+
+    expect(status).toMatchObject({
+      supported: true,
+      installed: false,
+      installedVersion: null,
+      updateAvailable: false,
+    });
+  });
+
+  it('installs with add and no scope flag', async () => {
+    mocks.exec.mockImplementation(codexExecImpl(null));
+
+    const result = await switchSetupService.install('codex');
+
+    expect(result.success).toBe(true);
+    expect(mocks.exec).toHaveBeenCalledWith(
+      '/usr/bin/codex',
+      ['plugin', 'add', CODEX_REF],
+      expect.anything()
+    );
+  });
+
+  it('uninstalls with remove and no scope flag', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
+
+    const result = await switchSetupService.uninstall('codex');
+
+    expect(result.success).toBe(true);
+    expect(mocks.exec).toHaveBeenCalledWith(
+      '/usr/bin/codex',
+      ['plugin', 'remove', CODEX_REF],
+      expect.anything()
+    );
+  });
+
+  it('refreshes the marketplace with upgrade rather than update', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.1.0', '0.1.0'));
+
+    const status = await switchSetupService.checkForUpdates('codex');
+
+    expect(status.refreshError).toBeNull();
+    expect(calls()).toContain('plugin marketplace upgrade switch-plugins');
+    expect(calls()).not.toContain('plugin marketplace update switch-plugins');
+  });
+
+  it('updates by removing then re-adding, in that order', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
+
+    const result = await switchSetupService.update('codex');
+
+    expect(result.success).toBe(true);
+    expect(calls()).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+  });
+
+  it('reports the plugin as removed-but-not-reinstalled when the re-add fails', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin add ${CODEX_REF}`) {
+        // With no stderr to relay, our own wording is all the user gets — and it
+        // has to say the host now has no connector, not just "update failed".
+        return Promise.reject(Object.assign(new Error('exit 1'), { code: 1, stderr: '' }));
+      }
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    const result = await switchSetupService.update('codex');
+
+    expect(calls()).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+    expect(result).toEqual({
+      success: false,
+      message:
+        'Update failed: the plugin was removed but could not be reinstalled. Install it again from Settings → Agents.',
+    });
   });
 });

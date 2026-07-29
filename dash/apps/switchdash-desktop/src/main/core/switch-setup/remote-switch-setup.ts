@@ -1,5 +1,4 @@
 import { resolveCommandPath } from '@switchdash/core/deps/runtime';
-import semver from 'semver';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
@@ -7,7 +6,7 @@ import { log } from '@main/lib/logger';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
 import type { SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
-import { marketplaceMatchesSource } from './switch-setup-service';
+import { isNewerVersion, marketplaceMatchesSource } from './switch-setup-service';
 
 const EXEC_TIMEOUT_MS = 120_000;
 
@@ -54,13 +53,6 @@ function parseJsonLoose(stdout: string): unknown {
     }
   }
   return null;
-}
-
-function isNewerVersion(installed: string, latest: string): boolean {
-  const a = semver.coerce(installed);
-  const b = semver.coerce(latest);
-  if (a === null || b === null) return false;
-  return semver.gt(b, a);
 }
 
 /**
@@ -121,15 +113,8 @@ export class RemoteSwitchSetupService {
     rules: SwitchSetupCliRules
   ): Promise<string | null> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    const fromMarketplace = rules
-      .parseAdvertisedVersions(parseJsonLoose(stdout), marketplaceName)
-      .get(pluginName);
-    if (fromMarketplace) return fromMarketplace;
-    const { stdout: pluginStdout } = await this.run(bin, ['plugin', 'list', '--json']);
     return (
-      rules
-        .parseAdvertisedVersions(parseJsonLoose(pluginStdout), marketplaceName)
-        .get(pluginName) ?? null
+      rules.parseAdvertisedVersions(parseJsonLoose(stdout), marketplaceName).get(pluginName) ?? null
     );
   }
 

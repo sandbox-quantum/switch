@@ -53,10 +53,11 @@ export type SwitchSetupCliRules = {
   parsePluginList(parsed: unknown): InstalledPlugin[];
   parseMarketplaceList(parsed: unknown): RegisteredMarketplace[];
   /**
-   * Versions the marketplace advertises, read from the CLI's own listing rather
-   * than from on-disk manifests (the remote driver has no cheap filesystem
-   * access). Keyed by plugin name. An empty map means "unknown", which callers
-   * must treat as "no update detected" rather than "up to date".
+   * Versions the marketplace advertises, keyed by plugin name. Fed parsed
+   * `plugin marketplace list --json` output and nothing else — plugin-list
+   * output never carries advertised versions — so the remote driver can read
+   * them without a filesystem round-trip. An empty map means "unknown", which
+   * callers must treat as "no update detected" rather than "up to date".
    */
   parseAdvertisedVersions(parsed: unknown, marketplaceName: string): Map<string, string>;
 };
@@ -145,10 +146,9 @@ const codex: SwitchSetupCliRules = {
   },
 
   /**
-   * Codex reports a version only for plugins that are actually installed — the
-   * `available` list carries none — so there is no advertised version to compare
-   * against from CLI output alone. Callers get an empty map, i.e. "unknown", and
-   * must not read that as "up to date".
+   * Codex's marketplace listing carries no plugin versions at all, so there is
+   * no advertised version to compare against from CLI output alone. Callers get
+   * an empty map, i.e. "unknown", and must not read that as "up to date".
    *
    * This only limits the remote driver. Locally, `advertisedVersion` reads the
    * marketplace's on-disk manifests instead, which works for both dialects.

@@ -62,7 +62,8 @@ function unsupported(agentId: string): SwitchSetupStatus {
   };
 }
 
-function isNewerVersion(installed: string, latest: string): boolean {
+/** Whether `latest` is a newer semver than `installed`; false when either is unparseable. */
+export function isNewerVersion(installed: string, latest: string): boolean {
   const a = semver.coerce(installed);
   const b = semver.coerce(latest);
   if (a === null || b === null) return false;

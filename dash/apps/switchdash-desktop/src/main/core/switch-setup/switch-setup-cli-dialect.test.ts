@@ -63,9 +63,9 @@ describe('codex dialect', () => {
     expect(rules.marketplaceRefreshArgs('m')).toEqual(['plugin', 'marketplace', 'upgrade', 'm']);
   });
 
-  it('reports no advertised versions, since Codex only versions installed plugins', () => {
+  it("reports no advertised versions, since Codex's marketplace listing carries none", () => {
     expect(
-      rules.parseAdvertisedVersions(JSON.parse(CODEX_PLUGIN_LIST), 'switch-plugins').size
+      rules.parseAdvertisedVersions(JSON.parse(CODEX_MARKETPLACE_LIST), 'switch-plugins').size
     ).toBe(0);
   });
 
