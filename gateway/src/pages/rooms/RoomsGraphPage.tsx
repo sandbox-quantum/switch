@@ -246,8 +246,9 @@ export default function RoomsGraphPage() {
               left: 12,
               zIndex: 2,
               p: 1.25,
-              borderRadius: 1.5,
-              backgroundColor: "rgba(10,12,13,0.78)",
+              borderRadius: "12px",
+              backgroundColor: "background.paper",
+              boxShadow: "var(--hoot-shadow-popover)",
               border: "1px solid",
               borderColor: "divider",
               maxWidth: 220,
@@ -277,7 +278,7 @@ export default function RoomsGraphPage() {
                       flexShrink: 0,
                     }}
                   />
-                  <Typography variant="caption" sx={{ color: "#E0E3E7" }}>
+                  <Typography variant="caption" sx={{ color: "text.primary" }}>
                     {entry.name}
                   </Typography>
                 </Stack>
