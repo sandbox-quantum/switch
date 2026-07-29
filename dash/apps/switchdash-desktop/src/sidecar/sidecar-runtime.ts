@@ -120,7 +120,7 @@ export class SidecarRuntime {
 
     let parsed: ParsedHookEvent;
     try {
-      parsed = await parseHookEvent(raw, this.resolveContext);
+      parsed = await parseHookEvent(raw, this.resolveContext, this.deps.log);
     } catch (error) {
       this.deps.log.warn('SidecarRuntime: failed to parse hook event', {
         type: raw.type,

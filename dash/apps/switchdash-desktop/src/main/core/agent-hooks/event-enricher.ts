@@ -31,27 +31,78 @@ export type ParsedHookEvent =
   | { kind: 'ignore' };
 
 /**
- * Event type emitted by the Claude `connect_to_room` PostToolUse hook (see the
- * claude plugin hook config). The hook fires for the Switch MCP tool only, via
- * its `mcp__.*__connect_to_room` matcher.
+ * Minimal logger the parser needs. Injected rather than imported so the parser
+ * can run in the remote sidecar bundle, which must not pull in the
+ * Electron-bound main-process file logger.
+ */
+export interface HookEventLogger {
+  warn(message: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * Event type emitted by the `connect_to_room` PostToolUse hook that switchdash
+ * registers for both Claude and Codex (`buildClaudeHookConfig` and
+ * `buildCodexHookConfig` in `@switchdash/plugins`). Both scope it to the Switch
+ * MCP tool with the same `mcp__.*__connect_to_room` matcher.
  */
 const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
 
+/** The value as a plain object, or null for anything else. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 /**
- * Claude reports the tool result under `tool_response`, which may arrive as an
- * already-parsed object or a JSON string. The Switch `connect_to_room` result
- * carries `room_id` and `agent_id`.
+ * The value as a Switch `connect_to_room` result — a plain object carrying a
+ * string `room_id` — or null. The `room_id` probe is what tells the payload
+ * apart from an MCP envelope wrapping it, since both are plain objects.
+ */
+function asRoomResult(value: unknown): Record<string, unknown> | null {
+  const record = asRecord(value);
+  return record && typeof record.room_id === 'string' ? record : null;
+}
+
+/**
+ * Extract the Switch `connect_to_room` result — which carries `room_id`,
+ * `agent_id` and `name` — from the hook's `tool_response`.
+ *
+ * How deeply it is wrapped depends on how far the agent CLI unwraps the MCP
+ * `CallToolResult` before handing it to the hook. Claude reports the payload
+ * itself (as an object or a JSON string); an envelope-aware CLI such as Codex
+ * may pass the `CallToolResult` through, which puts the payload under
+ * `structuredContent` (or `structuredContent.result` when the tool returned a
+ * non-dict) and repeats it as JSON in the first `text` content block.
+ * Malformed input yields null rather than throwing.
  */
 function parseToolResponse(body: Record<string, unknown>): Record<string, unknown> | null {
-  const raw = body.tool_response;
-  if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
-  if (typeof raw === 'string') {
+  let value = body.tool_response;
+  if (typeof value === 'string') {
     try {
-      const value: unknown = JSON.parse(raw);
-      if (value && typeof value === 'object') return value as Record<string, unknown>;
-    } catch {}
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
   }
-  return null;
+
+  const direct = asRoomResult(value);
+  if (direct) return direct;
+
+  const envelope = asRecord(value);
+  if (!envelope) return null;
+
+  const structured = asRecord(envelope.structuredContent);
+  const fromStructured = asRoomResult(structured) ?? asRoomResult(structured?.result);
+  if (fromStructured) return fromStructured;
+
+  const content: unknown[] = Array.isArray(envelope.content) ? envelope.content : [];
+  const text = content.map(asRecord).find((item) => item?.type === 'text')?.text;
+  if (typeof text !== 'string') return null;
+  try {
+    return asRoomResult(JSON.parse(text) as unknown);
+  } catch {
+    return null;
+  }
 }
 
 function parseBody(raw: RawHookRequest): Record<string, unknown> {
@@ -85,7 +136,8 @@ function canonicalToAgentEvent(
 
 export async function parseHookEvent(
   raw: RawHookRequest,
-  resolveContext: ContextResolver
+  resolveContext: ContextResolver,
+  log: HookEventLogger
 ): Promise<ParsedHookEvent> {
   const ctx = await resolveContext(raw.ptyId);
   if (!ctx) {
@@ -99,7 +151,19 @@ export async function parseHookEvent(
     const roomId = typeof response?.room_id === 'string' ? response.room_id : null;
     const agentId = typeof response?.agent_id === 'string' ? response.agent_id : null;
     const roomName = typeof response?.name === 'string' ? response.name : null;
-    if (!roomId || !agentId) return { kind: 'ignore' };
+    if (!roomId || !agentId) {
+      const toolResponse = body.tool_response;
+      log.warn('event-enricher: switch_room_connect carried no usable connect_to_room result', {
+        providerId: ctx.providerId,
+        ptyId: ctx.ptyId,
+        toolResponseType: typeof toolResponse,
+        toolResponseKeys:
+          toolResponse !== null && typeof toolResponse === 'object'
+            ? Object.keys(toolResponse)
+            : undefined,
+      });
+      return { kind: 'ignore' };
+    }
     return { kind: 'switch-room', ctx, roomId, agentId, roomName };
   }
 

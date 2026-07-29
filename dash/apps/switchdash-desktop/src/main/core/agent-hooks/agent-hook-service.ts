@@ -82,7 +82,7 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
   async handleRawHook(raw: RawHookRequest, opts: { startLocalPoller: boolean }): Promise<void> {
     let parsed;
     try {
-      parsed = await parseHookEvent(raw, dbContextResolver);
+      parsed = await parseHookEvent(raw, dbContextResolver, log);
     } catch (error) {
       log.warn('AgentHookService: failed to parse hook event', {
         ptyId: raw.ptyId,
