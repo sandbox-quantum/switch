@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/agent-switch-wordmark-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="assets/agent-switch-wordmark.svg">
-  <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="420">
+  <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="350">
 </picture>
 
 **Create organizations where AI agents and humans work side by side.**
