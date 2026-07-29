@@ -1,5 +1,6 @@
 import type { Result } from '@switchdash/shared';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
+import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
@@ -249,6 +250,9 @@ export const switchServersController = createRPCController({
       description: params.description,
       repoDir: params.dir,
       autoSession: params.autoSession,
+      // Provisioning writes `.claude/settings.local.json` — this is the Claude
+      // Code path by construction, not a fallback.
+      agentType: knownAgentTypeForProvider('claude'),
     });
     if (registered.kind !== 'created') return registered;
 
@@ -280,6 +284,8 @@ export const switchServersController = createRPCController({
       description: params.description,
       repoDir: params.remoteRepoDir,
       autoSession: params.autoSession,
+      // Remote provisioning likewise writes `.claude/settings.local.json`.
+      agentType: knownAgentTypeForProvider('claude'),
     });
     if (registered.kind !== 'created') return registered;
 

@@ -8,8 +8,9 @@ export type RegisterAgentInput = {
   repoDir: string;
   autoSession?: boolean;
   /** Gateway known-agent type; derive from the provider via
-   * {@link knownAgentTypeForProvider}. Defaults to 'claude-code'. */
-  agentType?: string;
+   * `knownAgentTypeForProvider`. Required — an omitted type would silently
+   * register the agent as Claude Code whatever it actually runs (CHOO-1436). */
+  agentType: string;
 };
 
 /**

@@ -238,7 +238,7 @@ class TestStartSessionInstructions:
 class TestCodexKnownAgent:
     def test_registered_under_codex_key(self) -> None:
         assert KNOWN_AGENTS.get("codex") is CodexKnownAgent
-        assert CodexKnownAgent.connector_type == "Codex"
+        assert CodexKnownAgent.connector_type == "Codex CLI"
 
     def test_default_profile_is_session_addressable(self) -> None:
         profile = CodexKnownAgent.build_profile(CodexOptions())

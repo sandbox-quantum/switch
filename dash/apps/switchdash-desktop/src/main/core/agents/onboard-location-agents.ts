@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { err, ok } from '@switchdash/shared';
 import type { Result } from '@switchdash/shared';
+import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
@@ -114,6 +115,9 @@ async function resolveIdentity(
     description: description ?? `Claude Code agent ${name}`,
     repoDir: ctx.dir,
     autoSession: true,
+    // This path onboards `.claude/agents/*.md` definitions, so the identity is a
+    // Claude Code one by construction.
+    agentType: knownAgentTypeForProvider('claude'),
   });
   if (registered.kind !== 'created') {
     const message = 'message' in registered ? registered.message : '';

@@ -332,7 +332,7 @@ class CodexOptions(KnownAgentOptions):
 
 
 class CodexKnownAgent(KnownAgent):
-    connector_type = "Codex"
+    connector_type = "Codex CLI"
     options_schema = CodexOptions
     tools = [
         ToolSpec(name="Shell", description="Executes shell commands"),
