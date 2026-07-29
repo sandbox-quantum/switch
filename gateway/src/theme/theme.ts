@@ -203,15 +203,22 @@ export const APP_THEME = () =>
       },
       MuiDivider: { styleOverrides: { root: { borderColor: hootVar("border") } } },
       MuiDrawer: {
-        defaultProps: { elevation: 0 },
+        defaultProps: {
+          elevation: 0,
+          slotProps: { backdrop: { sx: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
+        },
         styleOverrides: { paper: { backgroundColor: hootVar("canvas"), borderRight: "none" } },
       },
+      // Modals rest above a dimmed backdrop. Scoped to Dialog and Drawer —
+      // menus and popovers mount an invisible backdrop that must stay invisible.
       MuiDialog: {
+        defaultProps: {
+          slotProps: { backdrop: { sx: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
+        },
         styleOverrides: {
           paper: { borderRadius: RADIUS_LG, boxShadow: MODAL, backgroundColor: hootVar("card") },
         },
       },
-      MuiBackdrop: { styleOverrides: { root: { backgroundColor: "rgb(0 0 0 / 0.6)" } } },
       MuiIconButton: {
         defaultProps: { size: "small" },
         styleOverrides: { root: { borderRadius: RADIUS } },
