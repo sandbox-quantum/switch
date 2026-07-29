@@ -7,6 +7,7 @@ import { AccessChip } from "../../components/AccessControls";
 import type { PackageDetail } from "../../data/api";
 import { usePackages } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
+import { formatDate } from "../../theme/hootFormat";
 
 interface Props {
   refreshKey: number;
@@ -72,7 +73,12 @@ export default function PackagesTab({ refreshKey }: Props) {
         width: 90,
         type: "number",
       },
-      { field: "created_at", headerName: "Created", width: 180 },
+      {
+        field: "created_at",
+        headerName: "Created",
+        width: 116,
+        valueFormatter: (value) => formatDate(value as string),
+      },
     ],
     [],
   );
