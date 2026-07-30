@@ -115,6 +115,11 @@ describe('resolveAgentSessionCommandArgs', () => {
     });
 
     expect(result.command).toBe('codex');
-    expect(result.args).toEqual(['resume', 'provider-session-1']);
+    // Hook trust leads every Codex invocation, before the subcommand.
+    expect(result.args).toEqual([
+      '--dangerously-bypass-hook-trust',
+      'resume',
+      'provider-session-1',
+    ]);
   });
 });

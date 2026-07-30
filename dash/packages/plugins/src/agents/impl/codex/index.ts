@@ -6,7 +6,7 @@ import {
   npmDependency,
 } from '@switchdash/core/agents/plugins/helpers';
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
-import { buildCodexAutoApproveFlag } from './auto-approve';
+import { buildCodexAutoApproveFlag, CODEX_HOOK_TRUST_FLAG } from './auto-approve';
 import { buildCodexHookConfig } from './hooks';
 import { icon } from './icon';
 
@@ -83,6 +83,10 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
+        // Every session, not just auto-approving ones: Codex runs no hook it has
+        // no persisted trust entry for, and switchdash's room tracking and
+        // rollout-id capture are hooks.
+        defaultArgs: [CODEX_HOOK_TRUST_FLAG],
         // Resolved only when it will actually be used: an unrecognised
         // CODEX_SANDBOX_MODE is a hard error, and a session that never
         // auto-approves has no business failing to launch over it.
