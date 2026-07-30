@@ -56,18 +56,31 @@ describe('resolveSessionControl', () => {
     }
   );
 
-  it('interrupts before clearing on codex, which refuses /clear mid-turn', () => {
-    expect(resolveSessionControl('codex').plan('reset', ctx)?.slice(0, 2)).toEqual([
+  // Codex gates both slash commands behind `available_during_task()` and drops
+  // them outright mid-turn, so each has to interrupt first — otherwise the
+  // command is discarded and the follow-up announces work that never happened.
+  it.each([
+    ['reset', '/clear'],
+    ['compact', '/compact'],
+  ])('interrupts before %s on codex, which drops slash commands mid-turn', (command, slash) => {
+    expect(resolveSessionControl('codex').plan(command, ctx)?.slice(0, 2)).toEqual([
       { kind: 'raw', data: ESC },
-      { kind: 'prompt', text: '/clear' },
+      { kind: 'prompt', text: slash },
     ]);
   });
 
-  it.each(['claude', 'codex'])('compacts %s with /compact then a reconnect', (providerId) => {
+  // Claude queues a slash command typed mid-turn, so it needs no interrupt.
+  it('compacts claude with /compact and no preceding interrupt', () => {
+    expect(resolveSessionControl('claude').plan('compact', ctx)?.[0]).toEqual({
+      kind: 'prompt',
+      text: '/compact',
+    });
+  });
+
+  it.each(['claude', 'codex'])('announces the compaction back to the room on %s', (providerId) => {
     const steps = resolveSessionControl(providerId).plan('compact', ctx);
     expect(steps).not.toBeNull();
-    expect(steps![0]).toEqual({ kind: 'prompt', text: '/compact' });
-    expect((steps![1] as { text: string }).text).toContain('context has been compacted');
+    expect((steps!.at(-1) as { text: string }).text).toContain('context has been compacted');
   });
 
   it('omits the role and thread clauses when there is neither', () => {
