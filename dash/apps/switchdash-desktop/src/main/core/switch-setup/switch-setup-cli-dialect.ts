@@ -137,11 +137,14 @@ const codex: SwitchSetupCliRules = {
       // for onboarding with its Switch tooling inert, so drop it and let the
       // caller report the connector as absent — which is what it is, in effect.
       if (e.enabled === false) return [];
-      // `source.path` is the marketplace source directory, which holds the
-      // manifest; the entry's own `version` is authoritative either way.
-      return [
-        { ref: e.pluginId, version: e.version ?? null, manifestPath: e.source?.path ?? null },
-      ];
+      // No manifest path. Codex copies the plugin into a versioned cache
+      // (`<CODEX_HOME>/plugins/cache/<marketplace>/<plugin>/<version>/`) but
+      // reports `source.path` as the marketplace SOURCE directory, so reading a
+      // manifest there yields the version the marketplace currently advertises,
+      // not the one installed. Handing that back as the installed version makes
+      // a stale install report itself up to date. `version` is the CLI's own
+      // account of what it installed, which is the thing we want.
+      return [{ ref: e.pluginId, version: e.version ?? null, manifestPath: null }];
     });
   },
 

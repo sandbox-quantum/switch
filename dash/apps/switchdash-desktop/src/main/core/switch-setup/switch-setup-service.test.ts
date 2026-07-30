@@ -430,11 +430,14 @@ describe('switchSetupService with the codex dialect', () => {
     mocks.resolveCommandPath.mockResolvedValue('/usr/bin/codex');
   });
 
-  it('reads the object-wrapped listings and the .codex-plugin manifest', async () => {
-    // The CLI listing reports a stale 0.1.0; only a read of
-    // `.codex-plugin/plugin.json` finds the real 0.2.0. Claude's
-    // `.claude-plugin/plugin.json` sits alongside it reporting 9.9.9, so a
-    // reader that went to the wrong manifest dir fails here.
+  it('takes the installed version from the CLI and the advertised one from the manifest', async () => {
+    // Codex copies the plugin into a versioned cache but reports `source.path`
+    // as the marketplace SOURCE directory. Reading a manifest there would give
+    // the advertised version and report it as installed, so a stale install
+    // would claim to be up to date. The CLI's own `version` is the installed
+    // one; the marketplace manifest under `.codex-plugin/` is the advertised
+    // one. Claude's `.claude-plugin/plugin.json` sits alongside reporting
+    // 9.9.9, so a reader that went to the wrong manifest dir fails here.
     mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
     mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0'));
 
@@ -443,12 +446,18 @@ describe('switchSetupService with the codex dialect', () => {
     expect(status).toMatchObject({
       supported: true,
       installed: true,
+      installedVersion: '0.1.0',
+      latestVersion: '0.2.0',
+      updateAvailable: true,
+    });
+  });
+
+  it('reports up to date when the installed version matches the marketplace', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('0.2.0'));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0'));
+
+    expect(await switchSetupService.getStatus('codex')).toMatchObject({
       installedVersion: '0.2.0',
-      // Codex points `source.path` at the marketplace source directory, so for
-      // a local-path marketplace the installed and advertised manifests are the
-      // same file and an update can never be detected. Remote is worse: it has
-      // no manifest to read at all and reports null. Codex connector updates
-      // are effectively install-time only until Codex advertises versions.
       latestVersion: '0.2.0',
       updateAvailable: false,
     });

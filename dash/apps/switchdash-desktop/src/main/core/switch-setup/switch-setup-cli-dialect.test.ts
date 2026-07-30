@@ -39,11 +39,15 @@ describe('codex dialect', () => {
     // Claude's shape uses `id`/`installPath`; Codex uses `pluginId`/`source.path`.
     // Parsing Codex output with Claude's reader yields nothing, which is how the
     // connector would look permanently uninstalled without this dialect.
+    //
+    // `manifestPath` is null on purpose: `source.path` is the marketplace source
+    // directory, not the install directory, so a manifest read there reports the
+    // advertised version as the installed one and a stale install looks current.
     expect(rules.parsePluginList(JSON.parse(CODEX_PLUGIN_LIST))).toEqual([
       {
         ref: 'switch-connector-codex@switch-plugins',
         version: '0.1.0',
-        manifestPath: '/repo/connectors/codex-plugin',
+        manifestPath: null,
       },
     ]);
     expect(cliRulesFor('claude-code').parsePluginList(JSON.parse(CODEX_PLUGIN_LIST))).toEqual([]);
