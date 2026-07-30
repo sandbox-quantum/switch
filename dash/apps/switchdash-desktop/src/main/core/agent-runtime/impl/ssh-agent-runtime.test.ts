@@ -118,7 +118,6 @@ function emitReconnected(connectionId: string): void {
 }
 
 const { events } = await import('@main/lib/events');
-const { getAgentById } = await import('@main/core/agents/getAgentById');
 
 type ProviderState = {
   known: boolean;
@@ -184,6 +183,7 @@ function session(): Session {
   return {
     id: 'session-1',
     agentId: 'agent-1',
+    agentName: 'codex-hoot',
     providerId: 'codex',
     title: 'Session 1',
     shellId: 'system',
@@ -253,10 +253,6 @@ describe('SshAgentRuntime', () => {
     // Codex has no `repoAgents` behavior, so there is no `readLaunchEnv` hook to
     // go through — the runtime must still read `.switch/agents/<name>.json` from
     // the VM, or the remote session authenticates to Switch as nobody.
-    vi.mocked(getAgentById).mockResolvedValueOnce({
-      autoApprove: false,
-      name: 'codex-hoot',
-    } as never);
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
 

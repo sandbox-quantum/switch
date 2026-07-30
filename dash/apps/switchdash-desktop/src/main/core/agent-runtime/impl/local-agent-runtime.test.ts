@@ -55,12 +55,6 @@ vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
   },
 }));
 
-// Stubbed so importing the runtime doesn't pull in the DB client (no Electron
-// `app` in tests). The agent row is what resolves the credentials-file slug.
-vi.mock('@main/core/agents/getAgentById', () => ({
-  getAgentById: vi.fn(async () => ({ name: 'codex-hoot' })),
-}));
-
 vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
   readAgentSwitchEnvFromFs: vi.fn(async () => ({})),
 }));
@@ -202,6 +196,7 @@ function session(): Session {
   return {
     id: 'session-1',
     agentId: 'agent-1',
+    agentName: 'codex-hoot',
     providerId: 'codex',
     title: 'Session 1',
     shellId: 'system',

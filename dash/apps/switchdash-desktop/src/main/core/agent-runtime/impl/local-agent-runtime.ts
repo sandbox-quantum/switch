@@ -5,7 +5,7 @@ import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
-import { resolveAgentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -208,7 +208,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       const subagentVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
-          : await readAgentSwitchEnvFromFs(workspaceFs, await resolveAgentCredsSlug(session), log);
+          : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
       const pty = spawnLocalPty({
         id: ptySessionId,

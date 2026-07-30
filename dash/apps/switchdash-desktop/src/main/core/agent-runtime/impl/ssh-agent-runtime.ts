@@ -3,7 +3,7 @@ import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
-import { agentCredsSlug, resolveAgentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { reapStaleSidecarsForAgent } from '@main/core/agents/reap-stale-sidecars';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
@@ -215,7 +215,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       repoDir: this.sessionPath,
       deeplinkScheme: DEEPLINK_SCHEME,
       autoApprove: agent?.autoApprove ?? false,
-      credsSlug: agentCredsSlug(agent, session),
+      credsSlug: agentCredsSlug(session),
       agentName: agent?.name ?? session.agentName ?? null,
       ctx: this.ctx,
       connectionId: this.connectionId,
@@ -305,7 +305,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           repoDir: this.sessionPath,
           deeplinkScheme: DEEPLINK_SCHEME,
           autoApprove: agent?.autoApprove ?? false,
-          credsSlug: agentCredsSlug(agent, session),
+          credsSlug: agentCredsSlug(session),
           agentName: agent?.name ?? session.agentName ?? null,
           ctx: this.ctx,
           connectionId: this.connectionId,
@@ -460,7 +460,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       const identityVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
-          : await readAgentSwitchEnvFromFs(remoteFs, await resolveAgentCredsSlug(session), log);
+          : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 

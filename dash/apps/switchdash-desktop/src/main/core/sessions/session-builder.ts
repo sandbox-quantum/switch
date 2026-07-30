@@ -1,4 +1,4 @@
-import { resolveAgentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import {
   agentSettingsRelativePath,
   SWITCH_SETTINGS_RELATIVE_PATH,
@@ -115,7 +115,7 @@ export async function buildSessionFromRuntime(
   // yet migrated (CHOO-1440).
   const credsRelPaths = [
     ...new Set([
-      agentSettingsRelativePath(await resolveAgentCredsSlug(session)),
+      agentSettingsRelativePath(agentCredsSlug(session)),
       agentSettingsRelativePath(session.agentId),
     ]),
     SWITCH_SETTINGS_RELATIVE_PATH,
