@@ -51,15 +51,18 @@ describe('materializeAgentCommand', () => {
     expect(cmd.env).toEqual({ BASE: '1', SHARED: 'override', HOOK: 'x' });
   });
 
-  it('throws when the session-id token is missing', () => {
-    expect(() =>
-      materializeAgentCommand(spec({ args: [INITIAL_PROMPT_PLACEHOLDER] }), {
-        sessionId: 'c',
-        initialPrompt: 'p',
-        extraEnv: {},
-        switchApiEndpoint: undefined,
-      })
-    ).toThrow(SESSION_ID_PLACEHOLDER);
+  it('launches a provider that takes no session id on a fresh session', () => {
+    // Codex mints its own rollout id and only accepts one when resuming, so its
+    // spec carries no session-id token. switchdash correlates the spawn through
+    // the pty id in the hook env, not through argv.
+    const cmd = materializeAgentCommand(spec({ args: ['-c', 'x', INITIAL_PROMPT_PLACEHOLDER] }), {
+      sessionId: 'c',
+      initialPrompt: 'connect to switch room room-x',
+      extraEnv: {},
+      switchApiEndpoint: undefined,
+    });
+
+    expect(cmd.args).toEqual(['-c', 'x', 'connect to switch room room-x']);
   });
 
   it('throws when the initial-prompt token is missing', () => {

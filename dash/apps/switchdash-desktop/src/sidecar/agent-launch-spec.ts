@@ -19,9 +19,10 @@ export interface AgentLaunchSpec {
   /** Executable to run (absolute path resolved on the host at deploy time). */
   command: string;
   /**
-   * Argv for a fresh session. Exactly one element equals
-   * {@link SESSION_ID_PLACEHOLDER} and one equals {@link INITIAL_PROMPT_PLACEHOLDER};
-   * the watcher swaps those for the real values per spawn.
+   * Argv for a fresh session. One element equals {@link INITIAL_PROMPT_PLACEHOLDER};
+   * the watcher swaps it for the real prompt per spawn. {@link SESSION_ID_PLACEHOLDER}
+   * and {@link SWITCH_API_ENDPOINT_PLACEHOLDER} appear only for providers that take
+   * those on argv, and are substituted when present.
    */
   args: string[];
   /** Base provider env (custom env + provider env); the per-spawn hook env is merged on top. */
@@ -52,10 +53,17 @@ export interface MaterializedAgentCommand {
  * the session id, initial prompt and Switch API endpoint into the spec's argv,
  * and merging the per-spawn env (hook env) over the base env.
  *
- * Throws if the session id or prompt placeholder is missing from the spec's
- * argv — a spec that cannot carry them would silently spawn a session that
- * never connects to the room, so we fail loud instead. The endpoint token is
- * optional: only providers that receive their MCP server on argv emit one.
+ * Throws if the prompt placeholder is missing: the prompt is what tells the
+ * agent which room to connect to, so a spec that cannot carry it would spawn a
+ * session that just sits there.
+ *
+ * The session id and endpoint tokens are substituted when present and are not
+ * required. Not every provider takes a session id on a fresh session — Codex
+ * mints its own rollout id and only accepts one when resuming — and switchdash
+ * does not depend on the argv value either way: it correlates the spawn through
+ * the pty id in the hook env, and learns the provider's own id from the
+ * SessionStart hook. Likewise only providers that receive their MCP server on
+ * argv emit an endpoint token.
  *
  * Throws if any `__SWITCHDASH_` token survives substitution, so a provider that
  * grows a new placeholder cannot quietly launch an agent pointed at literal
@@ -75,10 +83,8 @@ export function materializeAgentCommand(
     [INITIAL_PROMPT_PLACEHOLDER]: params.initialPrompt,
   };
 
-  for (const placeholder of [SESSION_ID_PLACEHOLDER, INITIAL_PROMPT_PLACEHOLDER]) {
-    if (!spec.args.includes(placeholder)) {
-      throw new Error(`agent launch spec is missing the ${placeholder} argv token`);
-    }
+  if (!spec.args.includes(INITIAL_PROMPT_PLACEHOLDER)) {
+    throw new Error(`agent launch spec is missing the ${INITIAL_PROMPT_PLACEHOLDER} argv token`);
   }
 
   const endpoint = normalizeSwitchApiEndpoint(params.switchApiEndpoint);

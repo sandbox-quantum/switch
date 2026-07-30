@@ -29,7 +29,13 @@ vi.mock('@main/core/settings/provider-settings-service', () => ({
 }));
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({ hostDependencyStore: {} }));
 
+import { buildStandardCommand } from '@switchdash/core/agents/plugins/helpers';
 import { SWITCH_API_ENDPOINT_PLACEHOLDER } from '@shared/core/switch-rooms/switch-mcp-endpoint';
+import {
+  INITIAL_PROMPT_PLACEHOLDER,
+  materializeAgentCommand,
+  SESSION_ID_PLACEHOLDER,
+} from '../../../sidecar/agent-launch-spec';
 import { generateAgentLaunchSpec } from './generate-agent-launch-spec';
 
 const baseParams = {
@@ -102,5 +108,89 @@ describe('generateAgentLaunchSpec', () => {
 
     expect(launchArgsForServer).not.toHaveBeenCalled();
     expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
+  });
+});
+
+/**
+ * The suite above mocks `buildCommand`, which is what let a real defect through:
+ * Codex sets `sessionIdOnResumeOnly`, so its fresh-session argv carries no
+ * session-id token at all, and the watcher rejected every spec it produced. A
+ * mocked command builder cannot show that. These drive the real provider spec.
+ */
+describe('generateAgentLaunchSpec against real provider command builders', () => {
+  const CODEX_SPEC = {
+    autoApproveFlag: '-c approval_policy="never" --dangerously-bypass-hook-trust',
+    initialPromptFlag: '',
+    resumeFlag: 'resume',
+    sessionIdFlag: ' ',
+    sessionIdOnResumeOnly: true,
+    resumeWithoutSessionFlag: 'resume --last',
+  };
+
+  /** What `generateAgentLaunchSpec` asks a provider to build. */
+  function buildSpecArgs(providerSpec: Parameters<typeof buildStandardCommand>[1]): string[] {
+    return buildStandardCommand(
+      {
+        cli: '/usr/bin/agent',
+        extraArgs: [],
+        agentArgs: ['-c', `mcp_servers.switch.url="${SWITCH_API_ENDPOINT_PLACEHOLDER}/mcp/"`],
+        autoApprove: true,
+        initialPrompt: INITIAL_PROMPT_PLACEHOLDER,
+        sessionId: SESSION_ID_PLACEHOLDER,
+        providerSessionId: undefined,
+        isResuming: false,
+        model: '',
+      },
+      providerSpec
+    ).args;
+  }
+
+  it('produces a Codex spec the watcher can materialize', () => {
+    const args = buildSpecArgs(CODEX_SPEC);
+    expect(args).not.toContain(SESSION_ID_PLACEHOLDER);
+
+    const cmd = materializeAgentCommand(
+      {
+        command: '/usr/bin/codex',
+        args,
+        env: {},
+        cwd: '/home/agent/repo',
+        providerId: 'codex',
+        deeplinkScheme: 'switchdash',
+      },
+      {
+        sessionId: 's1',
+        initialPrompt: 'connect to switch room room-x',
+        extraEnv: {},
+        switchApiEndpoint: 'https://switch.test/api',
+      }
+    );
+
+    expect(cmd.args).toContain('mcp_servers.switch.url="https://switch.test/api/mcp/"');
+    expect(cmd.args).toContain('connect to switch room room-x');
+  });
+
+  it('still carries the session id for a provider that takes one when fresh', () => {
+    const args = buildSpecArgs({ initialPromptFlag: '', sessionIdFlag: '--session-id' });
+    expect(args).toContain(SESSION_ID_PLACEHOLDER);
+
+    const cmd = materializeAgentCommand(
+      {
+        command: '/usr/bin/claude',
+        args,
+        env: {},
+        cwd: '/home/agent/repo',
+        providerId: 'claude',
+        deeplinkScheme: 'switchdash',
+      },
+      {
+        sessionId: 's1',
+        initialPrompt: 'p',
+        extraEnv: {},
+        switchApiEndpoint: 'https://switch.test/api',
+      }
+    );
+
+    expect(cmd.args).toContain('s1');
   });
 });

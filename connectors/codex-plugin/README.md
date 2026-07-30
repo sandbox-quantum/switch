@@ -23,10 +23,14 @@ with literal `${SWITCH_API_TOKEN}` text. So this plugin ships no `.mcp.json`
 and never references its own path.
 
 Instead, **switchdash registers the Switch MCP server when it launches the
-Codex session**, passing the resolved endpoint and per-agent credentials as
-`-c mcp_servers.switch.*` overrides. The skill assumes those tools are
-present under the `switch` server; if they are missing, the session was
-launched without the Switch MCP config.
+Codex session**, passing the resolved endpoint and the *name* of the token
+environment variable (`bearer_token_env_var = "SWITCH_API_TOKEN"`) as
+`-c mcp_servers.switch.*` overrides. The token itself never reaches argv —
+switchdash injects it, along with `SWITCH_API_ENDPOINT` and
+`SWITCH_AGENT_ID`, into the session's environment from the agent's
+`.switch/agents/<slug>.json`, and Codex reads it at request time. The skill
+assumes those tools are present under the `switch` server; if they are
+missing, the session was launched without the Switch MCP config.
 
 Attachments are handled the same way — there is no channel process for
 Codex, so the skill documents `curl` against the bridge media endpoint
