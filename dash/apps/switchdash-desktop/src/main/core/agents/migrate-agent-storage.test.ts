@@ -80,7 +80,7 @@ const h = vi.hoisted(() => {
     writeDefinition,
     discoverLocal,
     updateAgent: vi.fn(async () => undefined),
-    isComplete: vi.fn(async () => false),
+    completedGeneration: vi.fn(async () => 0),
     markComplete: vi.fn(async () => undefined),
   };
 });
@@ -104,7 +104,8 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: v
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  isAgentStorageMigrationComplete: h.isComplete,
+  AGENT_STORAGE_MIGRATION_GENERATION: 2,
+  completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
 
@@ -206,14 +207,39 @@ describe('migrateAgentStorage', () => {
     expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
   });
 
-  it('skips the whole pass (no workspace opened) once the marker is set', async () => {
-    h.isComplete.mockResolvedValueOnce(true);
+  it('skips the whole pass (no workspace opened) once the current generation is latched', async () => {
+    h.completedGeneration.mockResolvedValueOnce(2);
     const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
 
     await migrateAgentStorage();
 
     expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
     expect(h.markComplete).not.toHaveBeenCalled();
+  });
+
+  it('re-running for generation 2 opens no workspace for a provider generation 1 already did', async () => {
+    // Generation 2 only broadened the credential step to providers WITHOUT a
+    // behavior, so re-opening a Claude agent's workspace — an SSH connect and an
+    // SFTP channel for a remote one — could not change anything.
+    h.completedGeneration.mockResolvedValueOnce(1);
+    const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
+
+    await migrateAgentStorage();
+
+    expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-running for generation 2 still migrates a provider generation 1 skipped', async () => {
+    h.completedGeneration.mockResolvedValueOnce(1);
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
+    h.state.repoAgents = null;
+    const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-1') });
+    h.state.workspace = ws;
+
+    await migrateAgentStorage();
+
+    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
   });
 
   it('latches the marker after a clean pass', async () => {

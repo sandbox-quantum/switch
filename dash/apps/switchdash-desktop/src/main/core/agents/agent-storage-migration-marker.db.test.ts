@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
 import { kv } from '@main/db/schema';
 import {
-  isAgentStorageMigrationComplete,
+  AGENT_STORAGE_MIGRATION_GENERATION,
+  completedAgentStorageMigrationGeneration,
   markAgentStorageMigrationComplete,
 } from './agent-storage-migration-marker';
 
@@ -35,12 +36,16 @@ describe('agent storage migration marker', () => {
   });
 
   it('reports incomplete when no marker has been written', async () => {
-    expect(await isAgentStorageMigrationComplete()).toBe(false);
+    expect(await completedAgentStorageMigrationGeneration()).toBeLessThan(
+      AGENT_STORAGE_MIGRATION_GENERATION
+    );
   });
 
   it('reports complete after a clean pass latches it', async () => {
     await markAgentStorageMigrationComplete();
-    expect(await isAgentStorageMigrationComplete()).toBe(true);
+    expect(await completedAgentStorageMigrationGeneration()).toBe(
+      AGENT_STORAGE_MIGRATION_GENERATION
+    );
   });
 
   it('reports incomplete for a marker latched by an earlier migration generation', async () => {
@@ -51,7 +56,9 @@ describe('agent storage migration marker', () => {
       .insert(kv)
       .values({ key: MARKER_KEY, value: '1', updatedAt: sql`CURRENT_TIMESTAMP` });
 
-    expect(await isAgentStorageMigrationComplete()).toBe(false);
+    expect(await completedAgentStorageMigrationGeneration()).toBeLessThan(
+      AGENT_STORAGE_MIGRATION_GENERATION
+    );
   });
 
   it('upgrades a stale marker in place rather than inserting a second row', async () => {
@@ -61,7 +68,9 @@ describe('agent storage migration marker', () => {
 
     await markAgentStorageMigrationComplete();
 
-    expect(await isAgentStorageMigrationComplete()).toBe(true);
+    expect(await completedAgentStorageMigrationGeneration()).toBe(
+      AGENT_STORAGE_MIGRATION_GENERATION
+    );
     expect(await fixture.db.select().from(kv).where(eq(kv.key, MARKER_KEY))).toHaveLength(1);
   });
 });

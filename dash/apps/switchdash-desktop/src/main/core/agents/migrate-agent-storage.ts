@@ -4,7 +4,8 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import {
-  isAgentStorageMigrationComplete,
+  AGENT_STORAGE_MIGRATION_GENERATION,
+  completedAgentStorageMigrationGeneration,
   markAgentStorageMigrationComplete,
 } from './agent-storage-migration-marker';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -30,16 +31,15 @@ export async function migrateAgentStorage(): Promise<void> {
   // Once a full pass has migrated every agent, never re-run: the steady-state
   // migration re-opens each agent's workspace filesystem (an SSH/SFTP round trip
   // per remote agent) on every boot for no benefit.
-  if (await isAgentStorageMigrationComplete()) return;
+  const completed = await completedAgentStorageMigrationGeneration();
+  if (completed >= AGENT_STORAGE_MIGRATION_GENERATION) return;
 
   const agents = await getAgents();
   let migrated = 0;
   let allComplete = true;
   for (const agent of agents) {
     try {
-      const result = await migrateOne(agent);
-      if (result.changed) migrated += 1;
-      if (!result.complete) allComplete = false;
+      if (await migrateOne(agent, completed)) migrated += 1;
     } catch (error) {
       allComplete = false;
       log.warn('migrateAgentStorage: failed to migrate agent', {
@@ -57,24 +57,29 @@ export async function migrateAgentStorage(): Promise<void> {
   if (allComplete) await markAgentStorageMigrationComplete();
 }
 
-interface MigrateResult {
-  /** Whether this pass wrote anything for the agent. */
-  changed: boolean;
-  /** Whether the agent is now fully in the new layout (nothing left to retry). */
-  complete: boolean;
-}
-
-/** Migrate one agent (local or remote). */
-async function migrateOne(agent: Agent): Promise<MigrateResult> {
+/**
+ * Migrate one agent (local or remote). Returns whether anything was written.
+ *
+ * `completedGeneration` is the generation this install already finished, so a
+ * re-run can skip agents the new generation cannot change — the check happens
+ * before the workspace filesystem is opened, which for a remote agent is an SSH
+ * connect and an SFTP channel.
+ */
+async function migrateOne(agent: Agent, completedGeneration: number): Promise<boolean> {
   // A provider may have no repo-agent behavior (e.g. Codex): it has no on-disk
-  // definition and no `writeCredentials`/`readLaunchEnv` hooks, but its
-  // provider-neutral credentials still need collapsing onto the one name-keyed
-  // key-space. So the credential migration runs for every provider; only the
-  // definition step (2) is behavior-gated.
+  // definition and no `readLaunchEnv` hook, but its provider-neutral credentials
+  // still need collapsing onto the one name-keyed key-space. So the credential
+  // migration runs for every provider; only the definition step (2) is
+  // behavior-gated.
   const behavior = getPlugin(agent.providerId).behavior.repoAgents;
 
+  // Generation 2 only broadened step 1 to providers WITHOUT a behavior; for one
+  // that has it, every step is what generation 1 already ran. Skipping here is
+  // what keeps the generation bump from re-opening a workspace per Claude agent.
+  if (completedGeneration >= 1 && behavior) return false;
+
   const location = await getLocationById(agent.locationId);
-  if (!location) return { changed: false, complete: true };
+  if (!location) return false;
 
   const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
   try {
@@ -134,7 +139,7 @@ async function migrateOne(agent: Agent): Promise<MigrateResult> {
       changed = true;
     }
 
-    return { changed, complete: true };
+    return changed;
   } finally {
     workspace.close();
   }
