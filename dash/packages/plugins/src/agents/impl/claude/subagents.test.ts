@@ -207,7 +207,7 @@ describe('claudeRepoAgentsBehavior.attributeFields', () => {
 });
 
 describe('claudeRepoAgentsBehavior.removeLocal', () => {
-  it('deletes both the definition and credentials files', async () => {
+  it('deletes the definition and the legacy per-agent settings', async () => {
     const workspaceFs = fakeFs({
       [defRel('reviewer')]: '---\nname: reviewer\ndescription: x\n---\n',
       [settingsRel('reviewer')]: '{"env":{}}',
@@ -217,5 +217,17 @@ describe('claudeRepoAgentsBehavior.removeLocal', () => {
 
     expect(await workspaceFs.exists(defRel('reviewer'))).toBe(false);
     expect(await workspaceFs.exists(settingsRel('reviewer'))).toBe(false);
+  });
+
+  it('leaves the provider-neutral credentials to the caller, which removes them for every provider', async () => {
+    const neutralRel = path.join('.switch', 'agents', 'reviewer.json');
+    const workspaceFs = fakeFs({
+      [defRel('reviewer')]: '---\nname: reviewer\ndescription: x\n---\n',
+      [neutralRel]: '{"env":{}}',
+    });
+
+    await claudeRepoAgentsBehavior.removeLocal(workspaceFs, 'reviewer');
+
+    expect(await workspaceFs.exists(neutralRel)).toBe(true);
   });
 });

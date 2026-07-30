@@ -22,6 +22,7 @@ import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
 import { removeSwitchCredentials } from './remove-switch-settings';
+import { agentSettingsRelativePath } from './switch-settings-paths';
 
 export type DeleteAgentOptions = {
   /**
@@ -80,6 +81,10 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         });
       });
     }
+    // The per-agent credentials are written for every provider, so they are
+    // removed for every provider — a provider without repo-agent definitions has
+    // no `removeLocal` to carry the token file out with it.
+    await ctx.fs.delete(agentSettingsRelativePath(agent.name ?? agent.id));
     await removeSwitchCredentials(agent.providerId, ctx.fs);
   } finally {
     ctx.close();

@@ -497,7 +497,6 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
 
   async removeLocal(workspaceFs, name): Promise<void> {
     await workspaceFs.delete(definitionRelPath(name));
-    await workspaceFs.delete(neutralSettingsRelPath(name));
     await workspaceFs.delete(settingsRelPath(name));
   },
 };

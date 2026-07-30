@@ -110,7 +110,10 @@ export type IRepoAgentsBehavior = {
   /** The current attribute values for an existing agent definition, keyed to
    * {@link attributeFields}, or null if no definition exists. */
   readDefinition(workspaceFs: PluginFs, name: string): Promise<RepoAgentAttributes | null>;
-  /** Remove a named agent's definition and credentials files (workspace scope). */
+  /** Remove a named agent's provider-specific files — its definition and any
+   * legacy per-agent settings (workspace scope). The provider-neutral Switch
+   * credentials are not this hook's to remove: they are written for every
+   * provider, so they are torn down by the caller for every provider too. */
   removeLocal(workspaceFs: PluginFs, name: string): Promise<void>;
 };
 
