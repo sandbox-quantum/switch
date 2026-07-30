@@ -117,7 +117,7 @@ bridge as a real platform file upload (Slack, Mattermost).
   name is bolded in the file's comment instead.
 - **No channel tool available?** (e.g. a switchdash-managed session where the
   channel process is not running): upload directly to the bridge API —
-  `curl -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media"
+  `curl -fsS -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media"
   -H "Authorization: Bearer $SWITCH_API_TOKEN" -F "files=@/path/to/report.md"
   -F "caption=..."` (optional `-F "thread_id=..."`; repeat `-F "files=@..."`
   for several files in one message). Returns the posted `event_id`.
