@@ -31,25 +31,31 @@ KEEP="${1:-}"
 # after it fails is worse than no probe.
 KEEP_ON_EXIT=1
 cleanup() {
+  # The auth copy goes regardless of why we are exiting — a kept probe
+  # directory is for reading hook dumps, not for leaving credentials in /tmp.
+  rm -f "$CODEX_HOME/auth.json"
   if [ "$KEEP" = "--keep" ] || [ "$KEEP_ON_EXIT" = "1" ]; then
     echo
-    echo "Probe directory: $PROBE_DIR"
+    echo "Probe directory: $PROBE_DIR   (auth copy removed)"
     echo "  codex output:  $PROBE_DIR/codex.log"
     echo "  hook dumps:    $DUMPS"
+    echo "  remove with:   rm -rf $PROBE_DIR"
   else
     rm -rf "$PROBE_DIR"
   fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 mkdir -p "$CODEX_HOME" "$DUMPS"
 
 # Codex resolves credentials from CODEX_HOME, so the isolated home needs a copy.
+# mktemp -d gives 0700; the copy is narrowed to 0600 and removed on every exit
+# path by the trap above, including when the probe directory itself is kept.
 if [ ! -r "$HOME/.codex/auth.json" ]; then
   echo "error: no ~/.codex/auth.json — run 'codex login' first." >&2
   exit 1
 fi
-cp "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
+( umask 077 && cp "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json" )
 chmod 600 "$CODEX_HOME/auth.json"
 
 # The hook commands record what Codex actually handed them: the operand count,

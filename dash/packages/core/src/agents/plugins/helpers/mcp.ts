@@ -199,12 +199,17 @@ export function codexMcpAdapter(configPath = '.codex/config.toml') {
      * Codex takes config overrides as `-c <dotted.key>=<TOML value>`, at higher
      * precedence than any config file.
      *
-     * Only HTTP servers can be expressed this way. An override of
-     * `mcp_servers.<name>.url` replaces that server's whole table rather than
-     * merging into it, so every key a server needs has to be emitted together —
-     * which rules out a stdio server, whose `args` and `env` are arrays and
-     * tables rather than scalars. Rather than emit a partial table that would
-     * launch a subtly broken server, reject anything but an HTTP server.
+     * Only HTTP servers can be expressed this way, so anything else is rejected
+     * rather than rendered into a server that would misbehave: a stdio server's
+     * `args` and `env` are arrays and tables rather than scalars.
+     *
+     * Each override is merged into the config's table for that server, not
+     * substituted for it. Verified against Codex 0.146.0: overriding
+     * `mcp_servers.<name>.url` on a name the config already defines as a stdio
+     * server yields a table with both `command` and `url`, and Codex then
+     * refuses to load its config at all — the session does not start. So the
+     * server name here must be one the user's `~/.codex/config.toml` does not
+     * already define.
      */
     launchArgsForServer(server: McpServerRegistration): string[] {
       if (server.command !== undefined || server.args !== undefined || server.env !== undefined) {

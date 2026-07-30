@@ -105,7 +105,7 @@ variables (`SWITCH_API_ENDPOINT`, `SWITCH_AGENT_ID`, `SWITCH_API_TOKEN`).
   and an `mxc` URI. Download the bytes, then read the local file:
 
   ```bash
-  curl -sS -G "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media" \
+  curl -fsS -G "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media" \
     -H "Authorization: Bearer $SWITCH_API_TOKEN" \
     --data-urlencode "mxc=<mxc://...>" \
     -o /tmp/switch-attachment.png
@@ -117,7 +117,7 @@ variables (`SWITCH_API_ENDPOINT`, `SWITCH_AGENT_ID`, `SWITCH_API_TOKEN`).
   posted `event_id`:
 
   ```bash
-  curl -sS -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media" \
+  curl -fsS -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media" \
     -H "Authorization: Bearer $SWITCH_API_TOKEN" \
     -F "file=@/path/to/image.png" \
     -F "caption=..."

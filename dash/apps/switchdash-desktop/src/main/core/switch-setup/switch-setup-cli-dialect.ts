@@ -125,8 +125,18 @@ const codex: SwitchSetupCliRules = {
     const list = (parsed as { installed?: unknown } | null)?.installed;
     if (!Array.isArray(list)) return [];
     return list.flatMap((raw) => {
-      const e = raw as { pluginId?: string; version?: string; source?: { path?: string } };
+      const e = raw as {
+        pluginId?: string;
+        version?: string;
+        enabled?: boolean;
+        source?: { path?: string };
+      };
       if (typeof e.pluginId !== 'string') return [];
+      // Codex lists a disabled plugin among the installed ones, but does not
+      // load its skill. Treating that as installed would offer the agent type
+      // for onboarding with its Switch tooling inert, so drop it and let the
+      // caller report the connector as absent — which is what it is, in effect.
+      if (e.enabled === false) return [];
       // `source.path` is the marketplace source directory, which holds the
       // manifest; the entry's own `version` is authoritative either way.
       return [

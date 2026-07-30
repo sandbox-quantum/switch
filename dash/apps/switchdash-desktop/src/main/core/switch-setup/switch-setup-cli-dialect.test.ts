@@ -49,6 +49,15 @@ describe('codex dialect', () => {
     expect(cliRulesFor('claude-code').parsePluginList(JSON.parse(CODEX_PLUGIN_LIST))).toEqual([]);
   });
 
+  it('drops a disabled plugin, which Codex lists but does not load', () => {
+    const disabled = JSON.parse(CODEX_PLUGIN_LIST) as {
+      installed: Array<{ enabled: boolean }>;
+    };
+    disabled.installed[0].enabled = false;
+
+    expect(rules.parsePluginList(disabled)).toEqual([]);
+  });
+
   it('reads marketplaces from the object-wrapped list', () => {
     expect(rules.parseMarketplaceList(JSON.parse(CODEX_MARKETPLACE_LIST))).toEqual([
       { name: 'switch-plugins', source: '/repo', root: '/repo' },

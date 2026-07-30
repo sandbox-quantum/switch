@@ -75,8 +75,13 @@ const INSTALL_PATH = '/cache/switch-plugins/switch-connector/0.1.0';
 const MARKET_LOCATION = '/marketplaces/switch-plugins';
 
 const CODEX_REF = 'switch-connector-codex@switch-plugins';
-const CODEX_INSTALL_PATH = '/cache/codex/plugins/switch-connector-codex';
-const CODEX_MARKET_ROOT = '/cache/codex/marketplaces/switch-plugins';
+// Codex reports `source.path` as the marketplace SOURCE directory, not a
+// per-install cache — see the verbatim 0.145.0 capture in
+// switch-setup-cli-dialect.test.ts. For a local-path marketplace the installed
+// plugin therefore IS the checkout, and the installed and advertised manifests
+// resolve to the same file.
+const CODEX_MARKET_ROOT = '/repo';
+const CODEX_INSTALL_PATH = `${CODEX_MARKET_ROOT}/connectors/codex-plugin`;
 
 /** Default happy-path exec: installed 0.1.0, marketplace present. */
 function execImpl(installedVersion: string | null) {
@@ -161,10 +166,15 @@ function codexExecImpl(installedVersion: string | null) {
   };
 }
 
-function codexReadFileImpl(installedManifestVersion: string, advertisedVersion: string) {
+function codexReadFileImpl(manifestVersion: string) {
   return (path: string) => {
     if (path === `${CODEX_INSTALL_PATH}/.codex-plugin/plugin.json`) {
-      return Promise.resolve(JSON.stringify({ version: installedManifestVersion }));
+      return Promise.resolve(JSON.stringify({ version: manifestVersion }));
+    }
+    // Present, and wrong, so a reader that went to Claude's manifest dir is
+    // caught rather than accidentally passing.
+    if (path === `${CODEX_INSTALL_PATH}/.claude-plugin/plugin.json`) {
+      return Promise.resolve(JSON.stringify({ version: '9.9.9' }));
     }
     if (path === `${CODEX_MARKET_ROOT}/.claude-plugin/marketplace.json`) {
       return Promise.resolve(
@@ -172,9 +182,6 @@ function codexReadFileImpl(installedManifestVersion: string, advertisedVersion: 
           plugins: [{ name: 'switch-connector-codex', source: './connectors/codex-plugin' }],
         })
       );
-    }
-    if (path === `${CODEX_MARKET_ROOT}/connectors/codex-plugin/.codex-plugin/plugin.json`) {
-      return Promise.resolve(JSON.stringify({ version: advertisedVersion }));
     }
     return Promise.reject(new Error('ENOENT'));
   };
@@ -424,11 +431,12 @@ describe('switchSetupService with the codex dialect', () => {
   });
 
   it('reads the object-wrapped listings and the .codex-plugin manifest', async () => {
-    // The CLI listing reports a stale 0.1.0; only a read of the install dir's
-    // `.codex-plugin/plugin.json` (Claude's lives under `.claude-plugin/`) finds
-    // the real 0.2.0, and every other path in the fixture is ENOENT.
+    // The CLI listing reports a stale 0.1.0; only a read of
+    // `.codex-plugin/plugin.json` finds the real 0.2.0. Claude's
+    // `.claude-plugin/plugin.json` sits alongside it reporting 9.9.9, so a
+    // reader that went to the wrong manifest dir fails here.
     mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
-    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0', '0.3.0'));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0'));
 
     const status = await switchSetupService.getStatus('codex');
 
@@ -436,14 +444,19 @@ describe('switchSetupService with the codex dialect', () => {
       supported: true,
       installed: true,
       installedVersion: '0.2.0',
-      latestVersion: '0.3.0',
-      updateAvailable: true,
+      // Codex points `source.path` at the marketplace source directory, so for
+      // a local-path marketplace the installed and advertised manifests are the
+      // same file and an update can never be detected. Remote is worse: it has
+      // no manifest to read at all and reports null. Codex connector updates
+      // are effectively install-time only until Codex advertises versions.
+      latestVersion: '0.2.0',
+      updateAvailable: false,
     });
   });
 
   it('reports not-installed when the object-wrapped list is empty', async () => {
     mocks.exec.mockImplementation(codexExecImpl(null));
-    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0', '0.3.0'));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.2.0'));
 
     const status = await switchSetupService.getStatus('codex');
 
@@ -483,7 +496,7 @@ describe('switchSetupService with the codex dialect', () => {
 
   it('refreshes the marketplace with upgrade rather than update', async () => {
     mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
-    mocks.readFile.mockImplementation(codexReadFileImpl('0.1.0', '0.1.0'));
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.1.0'));
 
     const status = await switchSetupService.checkForUpdates('codex');
 
