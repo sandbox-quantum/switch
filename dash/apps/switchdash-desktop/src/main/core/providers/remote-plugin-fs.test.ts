@@ -58,10 +58,26 @@ describe('createRemotePluginFs', () => {
   });
 
   it('delete removes the path and ignores a missing file', async () => {
-    const remove = vi.fn(async () => ({ success: false, error: 'File not found' }));
+    // The literal SshFileSystem.remove produces when its stat finds nothing.
+    const remove = vi.fn(async () => ({ success: false, error: 'File not found: gone' }));
     const fs = adapter({ remove });
     await expect(fs.delete('gone')).resolves.toBeUndefined();
     expect(remove).toHaveBeenCalledWith('gone');
+  });
+
+  it('delete resolves when the remove succeeds', async () => {
+    const fs = adapter({ remove: vi.fn(async () => ({ success: true })) });
+    await expect(fs.delete('x')).resolves.toBeUndefined();
+  });
+
+  it('delete throws (fails loud) when the file is there but cannot be removed', async () => {
+    // `remove` reports failure through its result rather than throwing, so a
+    // caller that ignores the result reports an undeletable Switch token as
+    // revoked.
+    const fs = adapter({
+      remove: vi.fn(async () => ({ success: false, error: 'Permission denied' })),
+    });
+    await expect(fs.delete('.switch/agents/a.json')).rejects.toThrow(/Permission denied/);
   });
 
   it('exists passes through', async () => {

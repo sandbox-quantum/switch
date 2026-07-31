@@ -84,7 +84,17 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
     // The per-agent credentials are written for every provider, so they are
     // removed for every provider — a provider without repo-agent definitions has
     // no `removeLocal` to carry the token file out with it.
-    await ctx.fs.delete(agentSettingsRelativePath(agent.name ?? agent.id));
+    //
+    // Isolated like `removeLocal` above: each teardown step must run even if an
+    // earlier one fails, or one unwritable file leaves the rest of the agent's
+    // credentials behind.
+    await ctx.fs.delete(agentSettingsRelativePath(agent.name ?? agent.id)).catch((error) => {
+      log.warn('deleteAgent: failed to remove the per-agent Switch credentials', {
+        agentId: agent.id,
+        name: agent.name,
+        error: String(error),
+      });
+    });
     await removeSwitchCredentials(agent.providerId, ctx.fs);
   } finally {
     ctx.close();

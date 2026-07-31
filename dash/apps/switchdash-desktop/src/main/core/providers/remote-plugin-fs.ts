@@ -1,5 +1,6 @@
 import { posix as pathPosix } from 'node:path';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
+import { assertRemoved } from '@main/core/fs/assert-removed';
 import type { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 
@@ -46,8 +47,7 @@ export function createRemotePluginFs(fs: SshFileSystem): PluginFs {
     },
 
     async delete(path: string): Promise<void> {
-      // Match the local fs: a missing file is not an error, so ignore the result.
-      await fs.remove(path);
+      assertRemoved(path, await fs.remove(path));
     },
 
     async exists(path: string): Promise<boolean> {

@@ -1,5 +1,6 @@
 import { dirname } from 'node:path/posix';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
+import { assertRemoved } from '@main/core/fs/assert-removed';
 import {
   FileSystemError,
   FileSystemErrorCodes,
@@ -47,7 +48,7 @@ export function createRemotePluginFs(fs: FileSystemProvider): PluginFs {
     },
 
     async delete(path: string): Promise<void> {
-      await fs.remove(path);
+      assertRemoved(path, await fs.remove(path));
     },
 
     async exists(path: string): Promise<boolean> {

@@ -44,10 +44,18 @@ export function createPluginFs(root: string): PluginFs {
     },
 
     async delete(path: string): Promise<void> {
+      const abs = resolveSafe(path);
       try {
-        await fs.unlink(resolveSafe(path));
-      } catch {
-        // Silently ignore if file doesn't exist
+        await fs.unlink(abs);
+      } catch (error) {
+        // Only "already absent" is success, on the same reasoning as read().
+        // A permission error or an I/O failure must propagate: delete is how an
+        // agent's Switch token is revoked from disk, and a silent no-op there
+        // reports a credential as destroyed while it is still readable.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          throw error;
+        }
       }
     },
 
