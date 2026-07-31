@@ -27,10 +27,12 @@ const h = vi.hoisted(() => {
     row: Record<string, unknown> | undefined;
     fs: PluginFs;
     repoAgents: object | null;
+    nameTaken: boolean;
   } = {
     row: undefined,
     fs: fakeFs(),
     repoAgents: { readDefinition, writeDefinition, removeLocal },
+    nameTaken: false,
   };
   return { state, readDefinition, writeDefinition, removeLocal };
 });
@@ -46,7 +48,15 @@ vi.mock('./agent-workspace-fs', () => ({
   resolveWorkspaceFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./getAgentById', () => ({
-  getAgentById: vi.fn(async () => ({ id: 'agent-1', name: 'old-name', providerId: 'claude' })),
+  getAgentById: vi.fn(async () => ({
+    id: 'agent-1',
+    name: 'old-name',
+    providerId: 'claude',
+    locationId: 'loc-1',
+  })),
+}));
+vi.mock('./agent-name-taken', () => ({
+  agentNameTaken: vi.fn(async () => h.state.nameTaken),
 }));
 vi.mock('./connect-remote-agent', () => ({ connectRemoteAgent: vi.fn() }));
 vi.mock('./remote-watcher', () => ({ ensureRemoteWatcher: vi.fn(async () => {}) }));
@@ -76,6 +86,7 @@ const CREDS = JSON.stringify({
 describe('renameAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.state.nameTaken = false;
     h.state.row = { id: 'agent-1', name: 'new-name', providerId: 'claude' };
     h.state.repoAgents = {
       readDefinition: h.readDefinition,
@@ -155,5 +166,43 @@ describe('renameAgent', () => {
 
     expect(await fs.read(agentSettingsRelativePath('old-name'))).toBe(CREDS);
     expect(h.removeLocal).not.toHaveBeenCalled();
+  });
+
+  it('refuses a name a sibling in the same location already holds', async () => {
+    // Nothing keys agent state by id: the credentials live at
+    // `.switch/agents/<name>.json`. Renaming onto a sibling would overwrite that
+    // sibling's token with this agent's and then delete the original, leaving the
+    // sibling authenticating to Switch as somebody else.
+    const SIBLING = JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://s',
+        SWITCH_API_TOKEN: 'tok-sib',
+        SWITCH_AGENT_ID: 'sw-2',
+      },
+    });
+    h.state.nameTaken = true;
+    const fs = fakeFs({
+      [agentSettingsRelativePath('old-name')]: CREDS,
+      [agentSettingsRelativePath('new-name')]: SIBLING,
+    });
+    h.state.fs = fs;
+
+    const result = await renameAgent({ agentId: 'agent-1', newName: 'new-name' });
+
+    expect(result).toEqual({
+      success: false,
+      error: { type: 'name-taken', name: 'new-name' },
+    });
+    expect(await fs.read(agentSettingsRelativePath('new-name'))).toBe(SIBLING);
+    expect(await fs.read(agentSettingsRelativePath('old-name'))).toBe(CREDS);
+    expect(h.writeDefinition).not.toHaveBeenCalled();
+  });
+
+  it('returns the renamed agent on success', async () => {
+    h.state.fs = fakeFs({ [agentSettingsRelativePath('old-name')]: CREDS });
+
+    const result = await renameAgent({ agentId: 'agent-1', newName: 'new-name' });
+
+    expect(result.success).toBe(true);
   });
 });

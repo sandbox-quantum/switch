@@ -24,13 +24,19 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
 // simulate a provider without repo-agent definitions (e.g. Codex).
 const h = vi.hoisted(() => {
   const writeDefinition = vi.fn(async () => {});
-  const state: { workspace: PluginFs | null; repoAgents: object | null } = {
+  const state: {
+    workspace: PluginFs | null;
+    repoAgents: object | null;
+    nameTaken: boolean;
+  } = {
     workspace: null,
     repoAgents: { writeDefinition },
+    nameTaken: false,
   };
   return {
     state,
     writeDefinition,
+    agentNameTaken: vi.fn(async () => state.nameTaken),
     registerAgentIdentity: vi.fn(async () => ({
       kind: 'created' as const,
       id: 'sw-1',
@@ -56,7 +62,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
 }));
 vi.mock('@main/core/locations/store', () => ({
   ensureLocation: vi.fn(async () => ({ id: 'loc-1' })),
+  getLocationByHostDir: vi.fn(async () => ({ id: 'loc-1' })),
 }));
+vi.mock('./agent-name-taken', () => ({ agentNameTaken: h.agentNameTaken }));
 vi.mock('@main/core/locations/path-utils', () => ({ checkIsValidDirectory: () => true }));
 vi.mock('@main/core/locations/location-manager', () => ({
   locationManager: { openLocation: vi.fn(async () => {}) },
@@ -93,6 +101,7 @@ function credsOf(fs: PluginFs, slug: string): Promise<Record<string, string>> {
 describe('addAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.state.nameTaken = false;
     h.state.repoAgents = { writeDefinition: h.writeDefinition };
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
@@ -154,6 +163,17 @@ describe('addAgent', () => {
 
     expect((await addAgent(params())).kind).toBe('name-conflict');
     expect(await fs.read(agentSettingsRelativePath('codex-hoot'))).toBeNull();
+    expect(h.createAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses a name already taken in the location, without minting an identity', async () => {
+    // The gateway's 409 is scoped to the Switch server, so it cannot see a name
+    // that is free there and taken in this directory — where both agents would
+    // then share one `.switch/agents/<name>.json`.
+    h.state.nameTaken = true;
+
+    expect((await addAgent(params())).kind).toBe('name-conflict');
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.createAgent).not.toHaveBeenCalled();
   });
 });

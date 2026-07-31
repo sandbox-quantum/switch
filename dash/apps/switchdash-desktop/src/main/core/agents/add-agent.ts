@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
-import { ensureLocation } from '@main/core/locations/store';
+import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -10,6 +10,7 @@ import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
+import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { knownAgentTypeForProvider } from './known-agent-type';
@@ -67,6 +68,14 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
 
   const server = await getServer(params.serverId);
   if (!server) return { kind: 'error', message: `No Switch server with id ${params.serverId}` };
+
+  // Before minting an identity: the gateway's uniqueness check is scoped to the
+  // Switch server, so it cannot see a name already taken in this directory. Two
+  // same-named agents here would share one `.switch/agents/<name>.json`.
+  const existingLocation = await getLocationByHostDir(params.sshHost, params.dir);
+  if (existingLocation && (await agentNameTaken(existingLocation.id, params.name, null))) {
+    return { kind: 'name-conflict' };
+  }
 
   const registered = await registerAgentIdentity(server, {
     name: params.name,

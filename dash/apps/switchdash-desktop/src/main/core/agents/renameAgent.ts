@@ -1,3 +1,4 @@
+import { type Result, err, ok } from '@switchdash/shared';
 import { eq, sql } from 'drizzle-orm';
 import {
   agentSidecarTmuxName,
@@ -9,6 +10,7 @@ import { agents } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import type { Agent, RenameAgentParams } from '@shared/core/agents/agents';
 import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
+import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
@@ -98,18 +100,37 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
   }
 }
 
-export async function renameAgent(params: RenameAgentParams): Promise<Agent | undefined> {
+export type RenameAgentError = { type: 'agent-not-found' } | { type: 'name-taken'; name: string };
+
+/**
+ * Rename an agent and move the on-disk state keyed by its old name.
+ *
+ * The name must be free in the agent's location before anything is written:
+ * {@link moveProvisionedFiles} writes the credentials to the destination
+ * unconditionally, so renaming onto a sibling would hand that sibling this
+ * agent's Switch token and then delete the original.
+ */
+export async function renameAgent(
+  params: RenameAgentParams
+): Promise<Result<Agent, RenameAgentError>> {
   const previous = await getAgentById(params.agentId);
+  if (!previous) return err({ type: 'agent-not-found' });
+
+  if (await agentNameTaken(previous.locationId, params.newName, previous.id)) {
+    return err({ type: 'name-taken', name: params.newName });
+  }
+
   const [row] = await db
     .update(agents)
     .set({ name: params.newName, updatedAt: sql`CURRENT_TIMESTAMP` })
     .where(eq(agents.id, params.agentId))
     .returning();
-  if (!row) return undefined;
+  if (!row) return err({ type: 'agent-not-found' });
+
   const renamed = mapAgentRowToAgent(row);
-  if (previous && previous.name !== renamed.name) {
+  if (previous.name !== renamed.name) {
     await moveProvisionedFiles(previous, renamed);
     await moveSidecarToNewName(previous, renamed);
   }
-  return renamed;
+  return ok(renamed);
 }

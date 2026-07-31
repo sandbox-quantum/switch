@@ -429,7 +429,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     if (result.kind === 'name-conflict') {
       toast({
         title: 'Agent name already taken',
-        description: 'An agent with this name already exists on the server. Pick another name.',
+        description:
+          'An agent with this name already exists in this directory or on the server. Pick another name.',
         variant: 'destructive',
       });
       return;
