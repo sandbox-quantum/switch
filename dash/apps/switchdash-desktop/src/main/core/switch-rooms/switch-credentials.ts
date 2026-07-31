@@ -95,14 +95,26 @@ export async function readAgentSwitchEnv(
  * The {@link readAgentSwitchEnv} equivalent over a {@link PluginFs} rooted at the
  * agent's working directory, so the local and remote (SFTP) launch paths inject
  * the same identity from the same `.switch/agents/<slug>.json`.
+ *
+ * An empty result is a degraded launch, not a neutral one: the session starts
+ * without a Switch identity, and only Claude recovers by reading
+ * `.claude/settings.local.json` natively. Every other provider silently is not
+ * the agent, so the miss is warned about here rather than at each call site.
  */
 export async function readAgentSwitchEnvFromFs(
   workspaceFs: PluginFs,
   slug: string,
   log: CredentialsLogger
 ): Promise<Record<string, string>> {
-  const raw = await workspaceFs.read(agentSettingsRelativePath(slug));
-  return credentialsAsEnv(parseSwitchAgentCredentials(raw, log));
+  const relPath = agentSettingsRelativePath(slug);
+  const env = credentialsAsEnv(parseSwitchAgentCredentials(await workspaceFs.read(relPath), log));
+  if (Object.keys(env).length === 0) {
+    log.warn(
+      'readAgentSwitchEnvFromFs: no Switch identity for agent; session will not authenticate as it',
+      { slug, path: relPath }
+    );
+  }
+  return env;
 }
 
 /**

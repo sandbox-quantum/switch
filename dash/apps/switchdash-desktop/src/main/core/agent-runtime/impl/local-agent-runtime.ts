@@ -202,10 +202,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // settings file and reach the spawned MCP server, so inject the agent's
       // identity last (highest precedence): a subagent from its definition creds,
       // and a plain agent from its provider-neutral `.switch/agents/<slug>.json`
-      // (empty when absent — the session then falls back to settings.local.json,
-      // which Claude reads natively).
+      // (empty when absent — only Claude then recovers, by reading
+      // settings.local.json natively; any other provider launches unidentified).
       const workspaceFs = createPluginFs(this.sessionPath);
-      const subagentVars =
+      const identityVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
@@ -223,7 +223,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           }),
           ...colorEnv,
           ...this.sessionEnvVars,
-          ...subagentVars,
+          ...identityVars,
         },
         cols: spawnSize.cols,
         rows: spawnSize.rows,
