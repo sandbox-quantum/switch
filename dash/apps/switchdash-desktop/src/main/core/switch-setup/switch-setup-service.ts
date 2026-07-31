@@ -171,8 +171,8 @@ class SwitchSetupService {
     rules: SwitchSetupCliRules
   ): Promise<void> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    // An unreadable listing yields no entries, so we fall through and attempt the
-    // add — which is idempotent — rather than treating it as fatal.
+    // An unreadable listing yields no entries; the add below is idempotent, so
+    // attempting it is safer than treating an unparseable listing as fatal.
     const existing = rules
       .parseMarketplaceList(parseJsonOrNull(stdout))
       .find((m) => m.name === marketplaceName);

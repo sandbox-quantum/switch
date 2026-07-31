@@ -143,7 +143,7 @@ const codex: SwitchSetupCliRules = {
       // manifest there yields the version the marketplace currently advertises,
       // not the one installed. Handing that back as the installed version makes
       // a stale install report itself up to date. `version` is the CLI's own
-      // account of what it installed, which is the thing we want.
+      // account of what it installed, which is what this returns.
       return [{ ref: e.pluginId, version: e.version ?? null, manifestPath: null }];
     });
   },

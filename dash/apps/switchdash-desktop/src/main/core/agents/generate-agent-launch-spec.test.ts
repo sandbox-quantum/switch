@@ -112,10 +112,10 @@ describe('generateAgentLaunchSpec', () => {
 });
 
 /**
- * The suite above mocks `buildCommand`, which is what let a real defect through:
- * Codex sets `sessionIdOnResumeOnly`, so its fresh-session argv carries no
- * session-id token at all, and the watcher rejected every spec it produced. A
- * mocked command builder cannot show that. These drive the real provider spec.
+ * The suite above mocks `buildCommand`, so it cannot see provider-specific argv
+ * constraints. Codex sets `sessionIdOnResumeOnly`: its fresh-session argv carries
+ * no session-id token at all, and a watcher that requires one rejects every spec
+ * it produces. These drive the real provider spec instead.
  */
 describe('generateAgentLaunchSpec against real provider command builders', () => {
   const CODEX_SPEC = {
