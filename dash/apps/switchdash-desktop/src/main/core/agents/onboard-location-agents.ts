@@ -41,8 +41,6 @@ export type OnboardLocationResult = Result<Agent[], OnboardAgentError>;
 /** The Switch identity an onboarded definition should run under. */
 type ResolvedIdentity = { switchAgentId: string; apiEndpoint: string };
 
-type RepoAgentsBehavior = NonNullable<ReturnType<typeof getPlugin>['behavior']['repoAgents']>;
-
 /** Map a recoverable registration failure to an onboard error. */
 function registrationError(
   kind: 'unauthenticated' | 'name-conflict' | 'invalid-name' | 'error',
@@ -78,7 +76,6 @@ async function resolveIdentity(
   description: string | null,
   ctx: {
     server: SwitchServer;
-    behavior: RepoAgentsBehavior;
     workspace: WorkspaceFs;
     credsByName: Map<string, { switchAgentId: string | null; apiEndpoint: string | null }>;
     dir: string;
@@ -214,7 +211,6 @@ export async function onboardLocationAgents(
     for (const def of selected) {
       const resolved = await resolveIdentity(def.name, def.description, {
         server,
-        behavior,
         workspace,
         credsByName,
         dir: params.dir,
