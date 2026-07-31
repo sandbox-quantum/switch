@@ -3,6 +3,7 @@ import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
+import { assertSwitchMcpNameFree } from '@main/core/agent-runtime/switch-mcp-preflight';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -442,6 +443,12 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
           : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
+
+      // `remoteFs` is rooted at the repo dir, not the VM's home, and switchdash
+      // mounts no home scope for a remote agent — so the MCP name collision that
+      // makes the agent reject its config cannot be detected here. Passing null
+      // logs that gap rather than letting an unreadable config read as "clear".
+      await assertSwitchMcpNameFree(plugin, session.providerId, null);
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,

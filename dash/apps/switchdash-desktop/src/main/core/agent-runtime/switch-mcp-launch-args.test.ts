@@ -29,9 +29,12 @@ describe('switchMcpLaunchArgs', () => {
     expect(args).not.toMatch(/Bearer\s/);
   });
 
-  it('emits url and token together, because -c replaces a server table wholesale', () => {
-    // Overriding one key of mcp_servers.<name> discards the rest, so a partial
-    // set would leave the server unauthenticated rather than merged.
+  it('emits url and token together, since -c merges key-by-key into the table', () => {
+    // `-c mcp_servers.<name>.<key>` sets that one key and leaves the rest of the
+    // table as it was — it does not substitute a whole server definition — so
+    // emitting only `url` would register the server unauthenticated. (The same
+    // merge is why the name must not already exist in the user's config: see the
+    // codexMcpAdapter docblock.)
     const keys = switchMcpLaunchArgs(codexPlugin, 'https://switch.test/api')
       .filter((a) => a !== '-c')
       .map((a) => a.split('=')[0]);

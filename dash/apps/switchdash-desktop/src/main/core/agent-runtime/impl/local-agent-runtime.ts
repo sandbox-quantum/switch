@@ -5,6 +5,7 @@ import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
+import { assertSwitchMcpNameFree } from '@main/core/agent-runtime/switch-mcp-preflight';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
@@ -170,6 +171,11 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
+
+      // Before argv is built: registering the Switch server on the command line
+      // over a name the user's own config already defines would make the agent
+      // reject its whole config and exit without explanation.
+      await assertSwitchMcpNameFree(plugin, session.providerId, createPluginFs(homedir()));
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
