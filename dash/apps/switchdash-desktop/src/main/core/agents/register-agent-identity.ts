@@ -1,3 +1,4 @@
+import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import { GatewayError, registerKnownAgent } from '@main/core/switch-servers/gateway-client';
 import type { ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -10,7 +11,7 @@ export type RegisterAgentInput = {
   /** Gateway known-agent type; derive from the provider via
    * `knownAgentTypeForProvider`. Required — an omitted type would silently
    * register the agent as Claude Code whatever it actually runs (CHOO-1436). */
-  agentType: string;
+  agentType: KnownAgentType;
 };
 
 /**
