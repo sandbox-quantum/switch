@@ -16,6 +16,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
 import { sshConnectionEventChannel } from '@shared/core/ssh/sshEvents';
+import { updateCheckUnavailable } from '@shared/core/switch-setup/update-check';
 import { GhAuthPanel } from './gh-auth-panel';
 import { hostSetupQueryKey } from './query-keys';
 
@@ -502,12 +503,19 @@ function AgentTypeRow({
           ? 'partial'
           : 'ready';
 
+  // Not "no update available": this agent type advertises no versions on a
+  // remote host, so `updateAvailable` is structurally always false and saying
+  // nothing would read as "current".
+  const currencyUnknown = plugin !== undefined && updateCheckUnavailable(plugin);
+
   const pluginStepLabel =
     plugin?.installed && plugin.updateAvailable
       ? 'Plugin · update available'
-      : plugin?.installed
-        ? `Plugin ${plugin.installedVersion ?? ''}`.trim()
-        : 'Switch plugin';
+      : plugin?.installed && currencyUnknown
+        ? `Plugin ${plugin.installedVersion ?? ''} · updates not detectable`.trim()
+        : plugin?.installed
+          ? `Plugin ${plugin.installedVersion ?? ''}`.trim()
+          : 'Switch plugin';
 
   const steps: Step[] = [
     {
@@ -562,14 +570,18 @@ function AgentTypeRow({
             {checkUpdates.isPending ? 'Checking…' : 'Check for updates'}
           </Button>
         )}
-        {cliInstalled && plugin?.installed && plugin.updateAvailable && (
+        {cliInstalled && plugin?.installed && (plugin.updateAvailable || currencyUnknown) && (
           <Button
             size="sm"
             variant="outline"
             disabled={pending}
             onClick={() => updatePlugin.mutate()}
           >
-            {updatePlugin.isPending ? 'Updating…' : 'Update plugin'}
+            {updatePlugin.isPending
+              ? 'Updating…'
+              : plugin.updateAvailable
+                ? 'Update plugin'
+                : 'Reinstall plugin'}
           </Button>
         )}
       </div>

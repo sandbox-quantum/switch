@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
+import { updateCheckUnavailable } from '@shared/core/switch-setup/update-check';
 
 function switchSetupQueryKey(agentId: string) {
   return ['switch-setup', agentId] as const;
@@ -48,6 +49,13 @@ export function useSwitchSetup(agentId: string) {
           title: 'Could not refresh the plugin marketplace — showing cached status',
           description: status.refreshError,
           variant: 'destructive',
+        });
+      } else if (updateCheckUnavailable(status)) {
+        // No advertised version to compare against, so the refresh proved
+        // nothing. Saying "up to date" here would assert what was not checked.
+        toast({
+          title: 'Could not determine whether an update exists',
+          description: 'This agent type does not report plugin versions on a remote host.',
         });
       } else if (status.supported && status.installed && !status.updateAvailable) {
         toast({ title: 'Switch connector is up to date' });
