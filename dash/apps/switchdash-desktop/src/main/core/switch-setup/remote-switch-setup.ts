@@ -235,11 +235,28 @@ export class RemoteSwitchSetupService {
       : { success: false, message: res.stderr.trim() || 'Install failed.' };
   }
 
+  /**
+   * The marketplace is repaired first, exactly as `install` does: the re-add
+   * below resolves against whatever marketplace is registered, so a stale source
+   * would otherwise fail it after the uninstall has already succeeded.
+   */
   async update(agentId: string): Promise<SwitchSetupResult> {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
     const { descriptor, bin, ref, rules } = resolved;
+
+    try {
+      await this.ensureMarketplace(
+        bin,
+        descriptor.marketplaceName,
+        descriptor.marketplaceSource,
+        rules
+      );
+    } catch (err) {
+      return { success: false, message: `Could not add marketplace: ${String(err)}` };
+    }
+
     const updateArgs = rules.updateArgs(ref, descriptor.scope);
     if (updateArgs) {
       const res = await this.run(bin, updateArgs);

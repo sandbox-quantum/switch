@@ -210,6 +210,57 @@ describe('RemoteSwitchSetupService.getStatus', () => {
 });
 
 describe('RemoteSwitchSetupService.update', () => {
+  it('repairs a stale marketplace before removing the installed plugin', async () => {
+    // With no per-plugin update verb the update is destructive: a marketplace
+    // still pointing at a pre-migration source would fail the re-add *after* the
+    // remove succeeded, leaving the host with no connector.
+    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch-legacy'));
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.update('codex');
+
+    expect(result.success).toBe(true);
+    const seen = calls();
+    expect(seen).toContain('plugin marketplace remove switch-plugins');
+    expect(seen.indexOf('plugin marketplace add sandbox-quantum/switch')).toBeLessThan(
+      seen.indexOf(`plugin remove ${CODEX_REF}`)
+    );
+  });
+
+  it('reports a marketplace failure without removing the installed plugin', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      if (args.join(' ') === 'plugin marketplace add sandbox-quantum/switch') {
+        return Promise.reject(
+          Object.assign(new Error('exit 1'), { code: 1, stderr: 'no network' })
+        );
+      }
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.update('codex');
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/Could not add marketplace/);
+    expect(calls()).not.toContain(`plugin remove ${CODEX_REF}`);
+  });
+
+  it('surfaces a refreshError when the codex marketplace upgrade fails', async () => {
+    const base = codexExecImpl('sandbox-quantum/switch');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === 'plugin marketplace upgrade switch-plugins') {
+        return Promise.reject(Object.assign(new Error('exit 1'), { code: 1, stderr: 'offline' }));
+      }
+      return base(bin, args);
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const status = await service.checkForUpdates('codex');
+
+    expect(status.refreshError).toMatch(/offline/);
+    expect(status.installed).toBe(true);
+  });
+
   it('removes then re-adds for codex, which has no per-plugin update verb', async () => {
     mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
 
@@ -217,7 +268,13 @@ describe('RemoteSwitchSetupService.update', () => {
     const result = await service.update('codex');
 
     expect(result.success).toBe(true);
-    expect(calls()).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+    // The marketplace is repaired first: the re-add resolves against it, so a
+    // stale source must not be discovered after the remove has succeeded.
+    expect(calls()).toEqual([
+      'plugin marketplace list --json',
+      `plugin remove ${CODEX_REF}`,
+      `plugin add ${CODEX_REF}`,
+    ]);
   });
 
   it('reports the plugin as removed-but-not-reinstalled when the re-add fails', async () => {
@@ -233,7 +290,7 @@ describe('RemoteSwitchSetupService.update', () => {
     const service = await getRemoteSwitchSetupService(SSH_HOST);
     const result = await service.update('codex');
 
-    expect(calls()).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+    expect(calls().slice(-2)).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
     expect(result).toEqual({
       success: false,
       message:
@@ -255,7 +312,7 @@ describe('RemoteSwitchSetupService.checkForUpdates', () => {
   });
 
   it('re-points a same-named marketplace registered against a stale source', async () => {
-    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/napoleon'));
+    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch-legacy'));
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
     const status = await service.checkForUpdates('codex');

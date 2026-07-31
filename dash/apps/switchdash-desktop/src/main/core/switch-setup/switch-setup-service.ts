@@ -298,12 +298,27 @@ class SwitchSetupService {
    * (Codex) are updated by uninstalling and reinstalling; a failed reinstall is
    * reported as such rather than as a plain update failure, because it leaves
    * the agent with no connector rather than with the previous version.
+   *
+   * The marketplace is repaired first, exactly as `install` does. The re-add
+   * resolves against whatever marketplace is registered, so a stale source would
+   * otherwise fail it — after the uninstall has already succeeded.
    */
   async update(agentId: string): Promise<SwitchSetupResult> {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
     const { descriptor, bin, ref, rules } = resolved;
+
+    try {
+      await this.ensureMarketplace(
+        bin,
+        descriptor.marketplaceName,
+        descriptor.marketplaceSource,
+        rules
+      );
+    } catch (err) {
+      return { success: false, message: `Could not add marketplace: ${String(err)}` };
+    }
 
     const updateArgs = rules.updateArgs(ref, descriptor.scope);
     if (updateArgs) {

@@ -306,7 +306,7 @@ describe('switchSetupService.checkForUpdates', () => {
             {
               name: 'switch-plugins',
               source: 'github',
-              repo: 'sandbox-quantum/napoleon',
+              repo: 'sandbox-quantum/switch-legacy',
               installLocation: MARKET_LOCATION,
             },
           ]),
@@ -514,13 +514,91 @@ describe('switchSetupService with the codex dialect', () => {
     expect(calls()).not.toContain('plugin marketplace update switch-plugins');
   });
 
+  it('repairs a stale marketplace before removing the installed plugin', async () => {
+    // The destructive branch: with no per-plugin update verb, a marketplace still
+    // pointing at a pre-migration source would fail the re-add *after* the remove
+    // succeeded, leaving no connector at all.
+    const base = codexExecImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === 'plugin marketplace list --json') {
+        return Promise.resolve({
+          stdout: JSON.stringify({
+            marketplaces: [
+              {
+                name: 'switch-plugins',
+                root: CODEX_MARKET_ROOT,
+                marketplaceSource: {
+                  sourceType: 'github',
+                  source: 'sandbox-quantum/switch-legacy',
+                },
+              },
+            ],
+          }),
+          stderr: '',
+        });
+      }
+      return base(bin, args);
+    });
+
+    const result = await switchSetupService.update('codex');
+
+    expect(result.success).toBe(true);
+    const seen = calls();
+    expect(seen).toContain('plugin marketplace remove switch-plugins');
+    expect(seen).toContain('plugin marketplace add sandbox-quantum/switch');
+    expect(seen.indexOf('plugin marketplace add sandbox-quantum/switch')).toBeLessThan(
+      seen.indexOf(`plugin remove ${CODEX_REF}`)
+    );
+  });
+
+  it('reports a marketplace failure without removing the installed plugin', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      const a = args.join(' ');
+      if (a === 'plugin marketplace add sandbox-quantum/switch') {
+        return Promise.reject(
+          Object.assign(new Error('exit 1'), { code: 1, stderr: 'no network' })
+        );
+      }
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    const result = await switchSetupService.update('codex');
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/Could not add marketplace/);
+    // Repairing first is what keeps this safe: nothing destructive ran.
+    expect(calls()).not.toContain(`plugin remove ${CODEX_REF}`);
+  });
+
+  it('surfaces a refreshError when the codex marketplace upgrade fails', async () => {
+    const base = codexExecImpl('0.1.0');
+    mocks.exec.mockImplementation((bin: string, args: string[] = []) => {
+      if (args.join(' ') === 'plugin marketplace upgrade switch-plugins') {
+        return Promise.reject(Object.assign(new Error('exit 1'), { code: 1, stderr: 'offline' }));
+      }
+      return base(bin, args);
+    });
+    mocks.readFile.mockImplementation(codexReadFileImpl('0.1.0'));
+
+    const status = await switchSetupService.checkForUpdates('codex');
+
+    expect(status.refreshError).toMatch(/offline/);
+    expect(status.installed).toBe(true);
+  });
+
   it('updates by removing then re-adding, in that order', async () => {
     mocks.exec.mockImplementation(codexExecImpl('0.1.0'));
 
     const result = await switchSetupService.update('codex');
 
     expect(result.success).toBe(true);
-    expect(calls()).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+    // The marketplace is repaired first: the re-add resolves against it, so a
+    // stale source must not be discovered after the remove has succeeded.
+    expect(calls()).toEqual([
+      'plugin marketplace list --json',
+      `plugin remove ${CODEX_REF}`,
+      `plugin add ${CODEX_REF}`,
+    ]);
   });
 
   it('reports the plugin as removed-but-not-reinstalled when the re-add fails', async () => {
@@ -535,7 +613,7 @@ describe('switchSetupService with the codex dialect', () => {
 
     const result = await switchSetupService.update('codex');
 
-    expect(calls()).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
+    expect(calls().slice(-2)).toEqual([`plugin remove ${CODEX_REF}`, `plugin add ${CODEX_REF}`]);
     expect(result).toEqual({
       success: false,
       message:
