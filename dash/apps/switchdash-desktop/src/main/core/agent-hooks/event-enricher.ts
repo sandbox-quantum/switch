@@ -54,13 +54,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * The value as a Switch `connect_to_room` result — a plain object carrying a
- * string `room_id` — or null. The `room_id` probe is what tells the payload
- * apart from an MCP envelope wrapping it, since both are plain objects.
+ * The value as a Switch `connect_to_room` result — a plain object carrying both
+ * a string `room_id` and a string `agent_id` — or null. Those two fields are
+ * what tell the payload apart from an MCP envelope wrapping it, since both are
+ * plain objects.
+ *
+ * Both are required because the caller returns on the first match: a partial
+ * `structuredContent` that satisfied a `room_id`-only probe would win over the
+ * text block that carries the whole result, and the event would then be dropped
+ * for a missing `agent_id` that was available all along.
  */
 function asRoomResult(value: unknown): Record<string, unknown> | null {
   const record = asRecord(value);
-  return record && typeof record.room_id === 'string' ? record : null;
+  if (!record) return null;
+  return typeof record.room_id === 'string' && typeof record.agent_id === 'string' ? record : null;
 }
 
 /**

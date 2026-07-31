@@ -82,6 +82,25 @@ describe('parseHookEvent', () => {
     expect(parsed).toEqual(expectedRoom);
   });
 
+  it('falls through to the text block when structuredContent is missing agent_id', async () => {
+    // structuredContent is tried before the text block and the first match wins,
+    // so a probe satisfied by room_id alone would take this partial envelope and
+    // then drop the event for a missing agent_id the text block was carrying.
+    const parsed = await parseHookEvent(
+      raw('switch_room_connect', {
+        tool_response: {
+          structuredContent: { room_id: 'room-1' },
+          content: [{ type: 'text', text: JSON.stringify(roomResult) }],
+        },
+      }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual(expectedRoom);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
   it('unwraps structuredContent.result when the tool return was wrapped', async () => {
     const parsed = await parseHookEvent(
       raw('switch_room_connect', {
