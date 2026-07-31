@@ -1,5 +1,5 @@
 import type { CommandContext } from '@switchdash/core/agents/plugins';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { provider } from './index';
 
 function build(ctx: CommandContext) {
@@ -19,21 +19,11 @@ const base: CommandContext = {
 // rollout id.
 const TRUST_FLAG = '--dangerously-bypass-hook-trust';
 
-// The default (unset) sandbox/approval flag, split the way buildStandardCommand
-// splits it on whitespace.
+// The sandbox/approval flag, split the way buildStandardCommand splits it on
+// whitespace.
 const AUTO_FLAGS = ['-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"'];
 
 describe('codex buildCommand', () => {
-  // Neutralize any ambient CODEX_SANDBOX_MODE / CODEX_APPROVAL_POLICY on the dev
-  // machine so the auto-approve flag is deterministic (blank → defaults).
-  beforeEach(() => {
-    vi.stubEnv('CODEX_SANDBOX_MODE', '');
-    vi.stubEnv('CODEX_APPROVAL_POLICY', '');
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it('starts a fresh session with auto-approve flags then the positional prompt', () => {
     const cmd = build({ ...base, autoApprove: true, initialPrompt: 'Fix the bug' });
 
@@ -44,8 +34,9 @@ describe('codex buildCommand', () => {
   });
 
   it('omits auto-approve args when autoApprove is false, but keeps hook trust', () => {
-    // Gating hook trust on auto-approve left a default agent running none of
-    // switchdash's hooks, so room tracking and rollout-id capture were dead.
+    // Hook trust is orthogonal to the sandbox: gate it on auto-approve and a
+    // default agent runs none of switchdash's hooks, taking room tracking and
+    // rollout-id capture with them.
     const cmd = build({ ...base, initialPrompt: 'hello' });
     expect(cmd.args).not.toContain('approval_policy="never"');
     expect(cmd.args).toEqual([TRUST_FLAG, 'hello']);
@@ -81,20 +72,6 @@ describe('codex buildCommand', () => {
     // Regression guard: the multi-token fallback must be two argv elements,
     // not a single "resume --last" string.
     expect(cmd.args.slice(1, 3)).toEqual(['resume', '--last']);
-  });
-
-  it('rejects an invalid sandbox mode when the session actually auto-approves', () => {
-    vi.stubEnv('CODEX_SANDBOX_MODE', 'full');
-    expect(() => build({ ...base, autoApprove: true, initialPrompt: 'hi' })).toThrow(
-      /Invalid CODEX_SANDBOX_MODE="full"/
-    );
-  });
-
-  it('does not resolve the sandbox env for a session that never auto-approves', () => {
-    // The flag is unused on this path, so a typo in the env must not stop the
-    // session from launching at all.
-    vi.stubEnv('CODEX_SANDBOX_MODE', 'full');
-    expect(build({ ...base, initialPrompt: 'hi' }).args).toEqual([TRUST_FLAG, 'hi']);
   });
 
   it('deduplicates the bypass-approvals-and-sandbox singleton flag', () => {

@@ -2,8 +2,9 @@
 
 ## Main Shared Areas
 
-- Agent provider registry:
-  - `src/shared/core/agents/agent-provider-registry.ts`
+- Agent provider registry (ids, display metadata, and a descriptive argv mirror; behavior
+  lives in `packages/plugins/src/agents/impl/<id>/index.ts`):
+  - `src/shared/core/providers/agent-provider-registry.ts`
 - IPC primitives:
   - `src/shared/ipc/rpc.ts` — typed RPC router, controller, and client
   - `src/shared/ipc/events.ts` — typed event emitter
@@ -36,9 +37,11 @@ Aliases are resolved at build time by electron-vite. No runtime monkey-patching 
 
 When adding a provider:
 
-1. update `src/shared/core/agents/agent-provider-registry.ts`
-2. add any required env passthrough in `src/main/core/pty/pty-env.ts`
-3. add or update hook/plugin installation in `src/main/core/agent-hooks/` if the provider
-   supports explicit events
-4. update renderer surfaces that assume provider metadata
-5. add tests for non-standard spawn or detection behavior
+1. add the plugin under `packages/plugins/src/agents/impl/<id>/index.ts`
+2. add the id to `AGENT_PROVIDER_IDS` and a display entry to `AGENT_PROVIDERS` in
+   `src/shared/core/providers/agent-provider-registry.ts`
+3. add any required env passthrough in `src/main/core/pty/pty-env.ts`
+4. declare the provider's `hooks` capability in the plugin if it supports explicit events;
+   `src/main/core/agent-hooks/` writes the config files from that declaration
+5. update renderer surfaces that assume provider metadata
+6. add tests for non-standard spawn or detection behavior

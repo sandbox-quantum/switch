@@ -94,6 +94,13 @@ export type AgentProviderDefinition = {
   supportsHooks?: boolean;
 };
 
+/**
+ * Provider ids and display metadata, plus a mirror of each provider's argv shape.
+ *
+ * The argv fields here are descriptive, not authoritative: nothing reads them at
+ * spawn time. `packages/plugins/src/agents/impl/<id>/index.ts` builds the real
+ * command, so change the plugin first and update the mirror to match.
+ */
 export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
   {
     id: 'codex',
@@ -105,10 +112,12 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     commands: ['codex'],
     versionArgs: ['--version'],
     cli: 'codex',
-    // No `autoApproveFlag` here: Codex's sandbox/approval args are configurable
-    // (CODEX_SANDBOX_MODE / CODEX_APPROVAL_POLICY) and are built by
-    // `buildCodexAutoApproveFlag` in the plugin. A literal copy in this metadata
-    // registry could only ever go stale.
+    // Hook trust is a default arg, not an auto-approve one: Codex skips any hook
+    // it has no persisted trust entry for, and switchdash's room tracking and
+    // rollout-id capture are hooks. Kept in sync with the plugin by the parity
+    // test in src/main/core/providers/provider-argv-parity.test.ts.
+    defaultArgs: ['--dangerously-bypass-hook-trust'],
+    autoApproveFlag: '-c approval_policy="never" -c sandbox_mode="danger-full-access"',
     initialPromptFlag: '',
     resumeFlag: 'resume',
     sessionIdFlag: ' ',

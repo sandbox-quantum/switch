@@ -2,8 +2,8 @@
 
 `connect_to_room` is declared exactly as the real tool is — an async FastMCP
 tool returning `dict[str, Any]` — so FastMCP serialises the result the same way
-here as in `switch_core.bridges.agent.mcp.server`. What Codex then puts in the
-PostToolUse hook's `tool_response` is the open question this probe answers.
+here as in `switch_core.bridges.agent.mcp.server`. Running the probe shows what
+Codex puts in the PostToolUse hook's `tool_response` for that call.
 """
 
 from typing import Any

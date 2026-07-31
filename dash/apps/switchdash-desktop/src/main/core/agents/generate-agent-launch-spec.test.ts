@@ -119,7 +119,8 @@ describe('generateAgentLaunchSpec', () => {
  */
 describe('generateAgentLaunchSpec against real provider command builders', () => {
   const CODEX_SPEC = {
-    autoApproveFlag: '-c approval_policy="never" --dangerously-bypass-hook-trust',
+    defaultArgs: ['--dangerously-bypass-hook-trust'],
+    autoApproveFlag: '-c approval_policy="never" -c sandbox_mode="danger-full-access"',
     initialPromptFlag: '',
     resumeFlag: 'resume',
     sessionIdFlag: ' ',

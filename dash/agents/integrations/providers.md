@@ -2,7 +2,10 @@
 
 ## Source Of Truth
 
-- `src/shared/core/agents/agent-provider-registry.ts`
+- `packages/plugins/src/agents/impl/<id>/index.ts` — the provider plugin. Authoritative for
+  everything behavioral.
+- `src/shared/core/providers/agent-provider-registry.ts` — ids, display metadata, and a
+  descriptive mirror of the plugin's argv. Never authoritative.
 - `src/main/core/dependencies/registry.ts`
 - `src/main/core/pty/`
 
@@ -10,16 +13,24 @@
 
 codex, claude, grok, devin, cursor, gemini, antigravity, qwen, droid, amp, commandcode, opencode, hermes, copilot, charm, auggie, goose, kimi, kilocode, kiro, rovo, cline, continue, codebuff, freebuff, mistral, jules, junie, pi, letta, autohand
 
-## Provider Metadata Includes
+## Where Provider Metadata Lives
 
-- CLI and detection commands
-- version args
-- install command and docs URL
-- auto-approve flags
-- initial prompt handling
-- keystroke injection behavior
-- resume and session flags
-- optional plan activation and auto-start commands
+The plugin (`packages/plugins/src/agents/impl/<id>/index.ts`) owns everything that affects
+behavior:
+
+- argv shaping — auto-approve flags, initial prompt handling, resume and session flags,
+  default args — via the `buildStandardCommand` spec in `behavior.prompt.buildCommand`
+- CLI name, detection commands, and version args — via `hostDependency`
+- prompt delivery mode, including keystroke injection — via `capabilities.prompt.kind`
+- hook support — via `capabilities.hooks`
+- the provider icon — via the plugin's `icon` asset
+
+`agent-provider-registry.ts` holds the `AGENT_PROVIDER_IDS` list, per-provider display
+metadata (name, one-line description, docs URL, icon, install command), and a mirror of the
+argv fields above. It builds no commands and nothing reads the mirror at spawn time — it
+exists so the provider table can be read in one place. Change the plugin first, then the
+mirror. `src/main/core/providers/provider-argv-parity.test.ts` fails if Codex's two drift
+apart; the other providers' mirrors are unguarded, so treat them as hints, not facts.
 
 ## Agent Hooks And Notifications
 
@@ -38,9 +49,11 @@ or notify an inferred status for that event.
 
 ## Adding Or Changing A Provider
 
-1. update `src/shared/core/agents/agent-provider-registry.ts`
-2. update allowlisted agent env vars in `src/main/core/pty/pty-env.ts` if needed
-3. add or update hook/plugin installation in `src/main/core/agent-hooks/` if the provider
-   supports explicit events
+1. add or update the plugin in `packages/plugins/src/agents/impl/<id>/index.ts` — this is where
+   argv, dependencies, capabilities, and hooks are defined
+2. for a new provider only, add the id to `AGENT_PROVIDER_IDS` and a display entry to
+   `AGENT_PROVIDERS` in `src/shared/core/providers/agent-provider-registry.ts`
+   (`plugin-registry.ts` fails at load if the id list and the plugins disagree)
+3. update allowlisted agent env vars in `src/main/core/pty/pty-env.ts` if needed
 4. validate detection behavior in `src/main/core/dependencies/`
 5. add or update tests for any non-standard behavior

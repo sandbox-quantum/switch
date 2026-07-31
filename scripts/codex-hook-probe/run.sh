@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 #
-# Answer the two questions PR #79 could not settle from the Codex binary alone:
+# Measure two things about Codex's hook contract that cannot be settled by
+# reading the binary:
 #
 #   1. Does Codex deliver a hook's event payload on stdin, with no positional
-#      operands?  Commit "post the real hook payload from the generated command"
-#      drops a `${1:-$(cat)}` fallback on the strength of `$SHELL -lc` and a
-#      `stdin_error` outcome found in the binary. If `$#` is 0 and stdin carries
-#      the JSON, that reasoning holds.
+#      operands? switchdash's hook commands read stdin and rely on `$#` being 0,
+#      so a positional payload would leave them posting an empty body.
 #
 #   2. What shape does `tool_response` take for an MCP tool call? Claude Code
-#      unwraps the MCP result; if Codex forwards the `CallToolResult` envelope
-#      instead, the payload sits under `structuredContent` / `content[0].text`.
-#      The enricher handles either, but the answer belongs in the PR.
+#      unwraps the MCP result; Codex forwards the `CallToolResult` envelope, so
+#      the payload sits under `structuredContent` / `content[0].text`. The hook
+#      enricher handles either shape.
 #
 # Runs against an isolated CODEX_HOME so your real ~/.codex is untouched. It
 # does spend one Codex turn on your account. Nothing is written outside the
@@ -111,8 +110,9 @@ echo
 # `--dangerously-bypass-hook-trust` is required: Codex persists a `trusted_hash`
 # per hook and silently skips any it has not been told to trust, so without it
 # the probe reports "HOOK DID NOT FIRE" for reasons that have nothing to do with
-# what it is measuring. switchdash passes the same flag (see
-# `buildCodexAutoApproveFlag`).
+# what it is measuring. switchdash passes the same flag on every Codex session
+# (see `CODEX_HOOK_TRUST_FLAG` in
+# dash/packages/plugins/src/agents/impl/codex/hooks.ts).
 CODEX_HOME="$CODEX_HOME" codex exec \
   --dangerously-bypass-approvals-and-sandbox \
   --dangerously-bypass-hook-trust \

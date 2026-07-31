@@ -370,7 +370,11 @@ pnpm run test
 
 ## Extensibility Hooks
 
-- Agent providers are defined in `src/shared/core/agents/agent-provider-registry.ts`.
+- Agent providers are defined in `packages/plugins/src/agents/impl/<id>/index.ts`.
+  `src/shared/core/providers/agent-provider-registry.ts` holds the id list, per-provider
+  display metadata, and a mirror of each provider's argv shape. The mirror is
+  descriptive: nothing reads it at spawn time, so change the plugin first and update the
+  mirror to match. `provider-argv-parity.test.ts` pins Codex's.
 - Provider detection lives in `src/main/core/dependencies/dependency-manager.ts`.
 - Provider PTY behavior and env passthrough live under `src/main/core/pty/`.
 - Provider event hooks and plugins live under `src/main/core/agent-hooks/`.
@@ -385,19 +389,22 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, `CODEX_SANDBOX_MODE`,
-  and `CODEX_APPROVAL_POLICY`.
-  - `CODEX_SANDBOX_MODE` (`read-only` | `workspace-write` | `danger-full-access`)
-    and `CODEX_APPROVAL_POLICY` (`untrusted` | `on-request` | `never`) override the
-    `-c sandbox_mode=…` / `-c approval_policy=…` flags switchdash passes to Codex,
-    defaulting to `danger-full-access` / `never` for headless auto-sessions. An
-    unrecognized value is a hard error (it will not silently fall back to full
-    access); the value is resolved when an **auto-approving Codex session
-    launches**, not at app startup, so a bad value surfaces as a session-start
-    failure — and only for the sessions that would actually use the flag. Note
-    that on the resume/restore paths a spawn failure is logged rather than shown,
-    so a typo there reads as "the session did not come back". See
-    `packages/plugins/src/agents/impl/codex/auto-approve.ts`.
+  `SWITCHDASH_DISABLE_PTY`, and `SWITCHDASH_REGISTER_DEEPLINK`.
+- Codex sandboxing is not configurable. An auto-approving Codex session always
+  launches with `-c approval_policy="never" -c sandbox_mode="danger-full-access"`,
+  overriding any `sandbox_mode` in the user's `~/.codex/config.toml`. This is
+  load-bearing, not a default: switchdash's hooks are `curl`s to
+  `http://127.0.0.1:$SWITCHDASH_HOOK_PORT/hook` that end in `|| true`, and every
+  Codex sandbox below `danger-full-access` blocks network access including
+  loopback — so under one the hooks fail *silently*, taking room tracking and
+  rollout-id capture with them. See
+  `packages/plugins/src/agents/impl/codex/index.ts`.
+- Every switchdash-launched Codex session — not only auto-approving ones — carries
+  `--dangerously-bypass-hook-trust`. Codex skips any hook it has no persisted
+  `trusted_hash` for, which would take switchdash's own hooks with it; the flag is
+  per-invocation and also un-gates hooks the user added to `~/.codex/hooks.json`
+  themselves. Rationale and the rejected alternative are on `CODEX_HOOK_TRUST_FLAG` in
+  `packages/plugins/src/agents/impl/codex/hooks.ts`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

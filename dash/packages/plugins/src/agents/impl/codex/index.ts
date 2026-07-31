@@ -6,8 +6,7 @@ import {
   npmDependency,
 } from '@switchdash/core/agents/plugins/helpers';
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
-import { buildCodexAutoApproveFlag, CODEX_HOOK_TRUST_FLAG } from './auto-approve';
-import { buildCodexHookConfig } from './hooks';
+import { buildCodexHookConfig, CODEX_HOOK_TRUST_FLAG } from './hooks';
 import { icon } from './icon';
 
 export const plugin = definePlugin(
@@ -83,14 +82,14 @@ export const provider = registerPluginBehavior(plugin, {
   prompt: {
     buildCommand: (ctx) =>
       buildStandardCommand(ctx, {
-        // Every session, not just auto-approving ones: Codex runs no hook it has
-        // no persisted trust entry for, and switchdash's room tracking and
-        // rollout-id capture are hooks.
+        // Every session, not just auto-approving ones. See the flag's docblock.
         defaultArgs: [CODEX_HOOK_TRUST_FLAG],
-        // Resolved only when it will actually be used: an unrecognised
-        // CODEX_SANDBOX_MODE is a hard error, and a session that never
-        // auto-approves has no business failing to launch over it.
-        autoApproveFlag: ctx.autoApprove ? buildCodexAutoApproveFlag(process.env) : '',
+        // Deliberately overrides any sandbox_mode in the user's
+        // ~/.codex/config.toml. Codex's own default, workspace-write, blocks
+        // network access including loopback, and switchdash's hooks are curls
+        // to 127.0.0.1 that end in `|| true` — under a sandbox they fail
+        // silently, taking room tracking and rollout-id capture with them.
+        autoApproveFlag: '-c approval_policy="never" -c sandbox_mode="danger-full-access"',
         initialPromptFlag: '',
         resumeFlag: 'resume',
         sessionIdFlag: ' ',
