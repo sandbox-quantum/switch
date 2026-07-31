@@ -141,10 +141,11 @@ async def connect_to_room(
         field — agent-facing guidance for that resource — alongside a short
         `description`. `roles` lists the room's assumable roles, each
         `{name, exclusive, instructions_preview, held_by, assumable_by_me}` —
-        `held_by` is the list of agent names currently holding it (live lease;
-        empty if free, and a shared role may list several), so you can see
-        which roles are taken and by whom before calling
-        `assume_role`. `linked_rooms` lists directed pointers from this room
+        `held_by` lists the live holders as objects
+        `{name, present_here, session_room}` (empty if free; a shared role may
+        list several), mirroring `list_roles` — so you can see which roles are
+        taken, by whom, and whether that holder's session is actually in this
+        room, before calling `assume_role`. `linked_rooms` lists directed pointers from this room
         to other Switch rooms: each entry has `target_room_id`,
         `target_room_name`, `target_room_description`, `label` (free-text
         relationship hint set by the operator) and `access` —
@@ -274,9 +275,11 @@ async def list_references(ctx: Context) -> dict[str, Any]:
     connected room.
 
     Returns:
-        {reference_types, references, documents, packages} — same shape as
-        the equivalent fields in `connect_to_room`. Use this to refresh
-        after attachments change mid-session.
+        {reference_types, references, documents, packages, linked_rooms} —
+        same shape as the equivalent fields in `connect_to_room`. Use this to
+        refresh after attachments change mid-session. Note `linked_rooms` here
+        is the raw pointer list, without the per-room `access` decoration
+        `connect_to_room` adds.
 
     External references carry their `value` inline (URLs / IDs); fetch the
     underlying content using your own tools as described in
@@ -331,8 +334,8 @@ async def load_internal_documents(ids: list[str], ctx: Context) -> list[dict[str
             connect payload or `list_references`).
 
     Returns:
-        List of {id, description, content} entries in the same order as
-        the requested ids. Raises an error if any id is not attached to the
+        List of {id, name, description, content} entries in the same order
+        as the requested ids. Raises an error if any id is not attached to the
         current room.
 
     The load goes through the Switch resource manager as a Matrix event
@@ -529,7 +532,10 @@ async def list_participants(ctx: Context) -> list[dict[str, Any]]:
         connect_to_room first.
 
     Returns:
-        List of {id, name, type} dicts for each participant.
+        List of {id, name, type, status, alias} dicts for each participant.
+        `status` is the agent's reported status (null for users and for agents
+        that have not reported one); `alias` is the participant's room-scoped
+        alias, or null when it has none.
     """
     _get_agent_id()
     room_id = await _require_connected_room(ctx)
@@ -615,8 +621,10 @@ async def send_targeted_message(
         `target_statuses` reports each addressed *agent*'s reachability at send
         time — for a role target, that is each of its live holders: `live`
         (will receive immediately), `awaiting_manual_poll` (must read context
-        to see it), `no_session`/`disconnected` (not reachable; may not see the
-        message until they reconnect). User targets are omitted — their
+        to see it), `dormant` (an auto_session agent with no live
+        session here, but a connector watching that will start one on demand),
+        `no_session`/`disconnected` (not reachable; may not see the message
+        until they reconnect). User targets are omitted — their
         reachability is the collaboration bridge's concern. A role with no live
         holder contributes no entries.
     """
@@ -645,7 +653,12 @@ async def send_targeted_message(
 async def delegate_task(
     performer_agent_id: str, summary: str, description: str, ctx: Context
 ) -> dict[str, str]:
-    """Delegate a task to a performer agent. Requires can_delegate capability.
+    """Delegate a task to a performer agent.
+
+    `can_delegate` on your own participant entry advertises whether you are
+    *meant* to delegate; it is not enforced here. What is enforced: you and the
+    performer must both be members of the connected room, and the performer's
+    addressing policy must permit you to address it.
 
     Args:
         performer_agent_id: The id of the agent to assign the task to. Must
@@ -677,7 +690,11 @@ async def delegate_task(
 
 @mcp.tool
 async def accept_task(task_id: str, ctx: Context) -> dict[str, Any]:
-    """Accept a delegated task. Requires can_accept capability.
+    """Accept a delegated task.
+
+    `can_accept` advertises whether you are meant to take tasks; it is not
+    enforced here. What is enforced: you must be the task's assigned performer
+    and a member of its room, and the task must still be `pending`.
 
     Args:
         task_id: The id of the task to accept (from the task_delegate event
@@ -707,7 +724,10 @@ async def accept_task(task_id: str, ctx: Context) -> dict[str, Any]:
 
 @mcp.tool
 async def update_task(task_id: str, update: str, ctx: Context) -> dict[str, Any]:
-    """Post a progress update on an assigned task. Requires can_accept capability.
+    """Post a progress update on an assigned task.
+
+    `can_accept` advertises whether you are meant to take tasks; it is not
+    enforced here. What is enforced: you must be the task's assigned performer.
 
     Args:
         task_id: The id of an ongoing task you have accepted.
@@ -728,7 +748,10 @@ async def update_task(task_id: str, update: str, ctx: Context) -> dict[str, Any]
 
 @mcp.tool
 async def finalise_task(task_id: str, outcome: str, ctx: Context) -> dict[str, Any]:
-    """Complete a task with final outcome. Requires can_accept capability.
+    """Complete a task with final outcome.
+
+    `can_accept` advertises whether you are meant to take tasks; it is not
+    enforced here. What is enforced: you must be the task's assigned performer.
 
     Args:
         task_id: The id of an ongoing task you have accepted.
@@ -773,10 +796,12 @@ async def cancel_task(task_id: str, reason: str, ctx: Context) -> dict[str, Any]
     agent_id = _get_agent_id()
     await _require_connected_room(ctx)
 
-    protocol = _get_protocol()
-    await protocol.cancel_task(agent_id, task_id, reason)
-    task = await protocol.get_task(agent_id, task_id)
-    return {"status": task.status, "reason": reason}
+    # `cancel_task` raises on every failure (missing task, not the requester,
+    # not a room member), so reaching here means the status is "cancelled".
+    # Reading it back would only add a second failure point after the state
+    # change already committed, turning a successful cancel into an error.
+    await _get_protocol().cancel_task(agent_id, task_id, reason)
+    return {"status": "cancelled", "reason": reason}
 
 
 @mcp.tool
@@ -1085,8 +1110,9 @@ async def assume_role(ctx: Context, role: str) -> dict[str, Any]:
 
     Returns `{"role", "instructions"}` — the role's instruction delta to layer
     on top of the room context you already have. Any room member may assume a
-    role. Fails if you already hold a role (release it first), or if the role
-    is exclusive and currently held by another live agent.
+    role. Fails if you already hold a *different* role — release it first;
+    re-assuming the role you already hold just refreshes its lease. Also fails
+    if the role is exclusive and currently held by another live agent.
 
     For exclusive roles, this acquires a lease with a fast heartbeat: while
     your session stays alive the seat is yours, and it auto-releases shortly
@@ -1471,9 +1497,15 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
 
+    The returned detail also carries `addressing_policy` — the rules
+    governing who may address this agent — which is non-null for agents whose
+    addressing is scoped.
+
     Args:
-        agent_id: The target agent's id (from `list_participants` or
-            `list_all_rooms`/`get_room_detail`).
+        agent_id: The target agent's id — the `id` field from
+            `list_participants` (room-scoped) or `list_agents` (instance-wide).
+            Not the agent's name, and not available from `list_all_rooms` or
+            `get_room_detail`, which carry names only.
 
     Returns:
         {id, name, description, connector_type, connection_model,
@@ -1505,10 +1537,14 @@ async def update_agent_detail(
     Editable fields:
         - `options`: a PARTIAL map of the agent's known-agent options to
           change — only the keys you pass are updated; the rest are left as-is.
-          For a claude-code agent the options are `repo_dir` (the working
-          directory), `channels_enabled`, `notify_user`, and `subagent_name`.
-          The merged options are validated against the agent type's schema and
-          its integration profile is rebuilt to match.
+          The available keys depend on the agent's type; call `get_agent_detail`
+          to see the ones it currently carries. All types share `repo_dir` (the
+          working directory), `notify_user`, and `auto_session`; claude-code
+          adds `channels_enabled` and `subagent_name`. The merged options are
+          validated against the agent type's schema and its integration profile
+          is rebuilt to match. A key the type does not define is dropped rather
+          than rejected, so check the spelling against `get_agent_detail` —
+          a typo reads as a successful update that changed nothing.
         - `parent_agent_id`: set the agent's parent (e.g. to make it a subagent
           of another agent). Validated against self-parenting and cycles.
         - `clear_parent`: pass True to detach the agent from its parent (make it
@@ -1545,7 +1581,8 @@ async def get_room_detail(room_id: str) -> dict[str, Any]:
         aliases (per-room agent aliases, keyed by agent name → alias),
         roles (the room's assumable roles, mirroring list_roles: each entry has
         name, exclusive, instructions_preview, held_by (holder objects with
-        presence), and assumable_by_me)}.
+        presence), and assumable_by_me), join_event_listeners (names of the
+        agents configured to receive `room_join` events here), archived}.
     """
     agent_id = _get_agent_id()
     protocol = _get_protocol()
