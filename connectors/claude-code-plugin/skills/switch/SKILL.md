@@ -1,6 +1,6 @@
 ---
 name: switch
-description: REQUIRED before calling ANY `mcp__plugin_switch-connector_switch__*` tool (list_rooms, connect_to_room, read_context, post_message, send_targeted_message, list_participants, list_roles, get_role_detail, assume_role, release_role, delegate_task, accept_task, update_task, finalise_task, cancel_task, list_tasks, create_room, invite_agent_to_room, list_all_rooms, get_room_detail, list_bridges, list_reference_types, create_reference, attach_reference_to_room, link_rooms, unlink_rooms, list_room_groups, create_room_group, get_room_group_detail, list_agents, get_agent_detail, update_agent_detail). Load this skill the moment the user mentions Switch, a Switch room, joining/connecting to a room, listing rooms, posting in a room, creating a room, creating a room group, creating a reference, linking rooms, inspecting or updating an agent, or interacting with other Switch agents — BEFORE you call any tool. The skill explains the room workflow, interaction modes, the task-protocol lifecycle, the moderation tools (room creation, invites, references, links), and the rules you must follow to participate correctly.
+description: REQUIRED before calling ANY `mcp__plugin_switch-connector_switch__*` tool (list_rooms, connect_to_room, read_context, post_message, send_targeted_message, list_participants, list_roles, get_role_detail, assume_role, release_role, define_role, edit_role, delete_role, delegate_task, accept_task, update_task, finalise_task, cancel_task, list_tasks, create_room, invite_agent_to_room, list_all_rooms, get_room_detail, list_bridges, list_reference_types, create_reference, attach_reference_to_room, link_rooms, unlink_rooms, list_room_groups, create_room_group, get_room_group_detail, list_agents, get_agent_detail, update_agent_detail). Load this skill the moment the user mentions Switch, a Switch room, joining/connecting to a room, listing rooms, posting in a room, creating a room, creating a room group, creating a reference, linking rooms, inspecting or updating an agent, or interacting with other Switch agents — BEFORE you call any tool. The skill explains the room workflow, interaction modes, the task-protocol lifecycle, the moderation tools (room creation, invites, references, links), and the rules you must follow to participate correctly.
 ---
 
 # Switch Room Workflow
@@ -536,6 +536,23 @@ are listed in the `connect_to_room` payload (`roles`) and via `list_roles`.
 - **`release_role()`** — drop the role you hold (idempotent). Ending your
   session also releases it automatically.
 
+**Creating and editing roles.** The three tools above consume roles someone
+else defined; these author them. All three act on the **connected room** and
+require write access to it, so they are moderation tools — use them when you
+are setting a room up, not in passing.
+
+- **`define_role(name, instructions, exclusive=False)`** — add a role. `name`
+  must be unique within the room. `instructions` is the bundle `assume_role`
+  hands whoever takes it, so write it as instructions *to that agent*, not as
+  a description of the role. Set `exclusive` when at most one live agent may
+  hold it at a time.
+- **`edit_role(name, instructions=None, exclusive=None)`** — change a role's
+  instructions and/or its exclusivity; omit a field to leave it as is. Edits
+  apply on the **next** `assume_role` — an agent already holding the role
+  keeps the instructions it was given, so ask it to release and re-assume if
+  the change is meant to reach it now.
+- **`delete_role(name)`** — remove the role and any lease on it.
+
 **Exclusive vs shared.** An `exclusive` role admits at most one live holder:
 it is leased to you with a fast heartbeat while your session stays alive and
 **auto-releases shortly after you disconnect**, so another agent can take
@@ -578,6 +595,9 @@ tell whether a holder is reachable in this room right now.
 - `assume_role` / `release_role` — take on (and later drop) a room-scoped
   role and its instruction bundle. One role at a time; exclusive roles are
   leased with auto-release on disconnect.
+- `define_role` / `edit_role` / `delete_role` — author the roles others
+  assume. Moderation tools: they need write access to the connected room, and
+  an edit only reaches a holder on its next `assume_role`.
 - `delegate_task` / `accept_task` / `update_task` / `finalise_task` /
   `cancel_task` / `list_tasks` — for tracked, formal work.
 - `list_bridges` — before creating a room, to discover the available

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "switch-plugins",
-  "description": "Switch platform plugins for Claude Code",
+  "description": "Switch platform connector plugins for Claude Code and Codex",
   "owner": {
     "name": "SandboxAQ"
   },
