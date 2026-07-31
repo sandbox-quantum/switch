@@ -18,10 +18,16 @@ import {
  * also injected as real env vars (the credentials file's `env` block is not
  * reliably propagated to the spawned MCP server otherwise).
  */
+/**
+ * Forward-slash literals, never `path.join`: these are relative paths handed to
+ * a `PluginFs`, which is either the local disk or a remote POSIX host over SFTP,
+ * and `path.join` emits backslashes when switchdash runs on Windows. Same rule
+ * as `switch-settings-paths.ts`.
+ */
 export const CLAUDE_SUBAGENTS = {
-  dirRelative: path.join('.claude', 'switch-subagents'),
+  dirRelative: '.claude/switch-subagents',
   settingsSuffix: '.settings.json',
-  definitionsDirRelative: path.join('.claude', 'agents'),
+  definitionsDirRelative: '.claude/agents',
 } as const;
 
 const SWITCH_ENV_KEYS = ['SWITCH_API_ENDPOINT', 'SWITCH_API_TOKEN', 'SWITCH_AGENT_ID'] as const;
@@ -326,12 +332,12 @@ function parseSettingsObject(raw: string | null): Record<string, unknown> {
 
 /** Legacy per-subagent credentials file under `.claude/switch-subagents/`. */
 function settingsRelPath(name: string): string {
-  return path.join(CLAUDE_SUBAGENTS.dirRelative, `${name}${CLAUDE_SUBAGENTS.settingsSuffix}`);
+  return `${CLAUDE_SUBAGENTS.dirRelative}/${name}${CLAUDE_SUBAGENTS.settingsSuffix}`;
 }
 
 /** Provider-neutral per-agent credentials file (the current location). */
 function neutralSettingsRelPath(name: string): string {
-  return path.join(SWITCH_AGENT_SETTINGS_DIR, `${name}.json`);
+  return `${SWITCH_AGENT_SETTINGS_DIR}/${name}.json`;
 }
 
 /**
@@ -349,7 +355,7 @@ async function readCredsObject(
 }
 
 function definitionRelPath(name: string): string {
-  return path.join(CLAUDE_SUBAGENTS.definitionsDirRelative, `${name}${MD_SUFFIX}`);
+  return `${CLAUDE_SUBAGENTS.definitionsDirRelative}/${name}${MD_SUFFIX}`;
 }
 
 /** Description/model from a subagent's definition, project scope then user scope. */
@@ -424,7 +430,7 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     return Promise.all(
       files.map(async (file) => {
         const content =
-          (await workspaceFs.read(path.join(CLAUDE_SUBAGENTS.definitionsDirRelative, file))) ?? '';
+          (await workspaceFs.read(`${CLAUDE_SUBAGENTS.definitionsDirRelative}/${file}`)) ?? '';
         const fm = parseFrontmatter(content);
         const name = fm.name ?? file.slice(0, -MD_SUFFIX.length);
         const registered = await workspaceFs.exists(settingsRelPath(name));
@@ -440,11 +446,15 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
   },
 
   launchArgs(workingDir, agentName): string[] {
+    // `path.posix`: workingDir is the agent's dir on whatever host it runs on,
+    // which for a remote agent is a POSIX path on the VM. Plain `path.join` on a
+    // Windows switchdash would emit backslash separators into a flag that a
+    // Linux shell then has to parse.
     return [
       '--agent',
       agentName,
       '--settings',
-      path.join(workingDir, neutralSettingsRelPath(agentName)),
+      path.posix.join(workingDir, neutralSettingsRelPath(agentName)),
     ];
   },
 

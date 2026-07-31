@@ -1,4 +1,3 @@
-import path from 'node:path';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
@@ -28,10 +27,13 @@ function fakeFs(files: Record<string, string>): PluginFs {
   };
 }
 
+// Forward-slash literals, not `path.join`: these keys are what a PluginFs sees,
+// and on Windows `path.join` would produce backslashes here *and* in the code
+// under test, so the two would agree with each other and with nothing else.
 const settingsRel = (name: string) =>
-  path.join(CLAUDE_SUBAGENTS.dirRelative, `${name}${CLAUDE_SUBAGENTS.settingsSuffix}`);
+  `${CLAUDE_SUBAGENTS.dirRelative}/${name}${CLAUDE_SUBAGENTS.settingsSuffix}`;
 /** Provider-neutral per-agent credentials file (the current write location). */
-const defRel = (name: string) => path.join(CLAUDE_SUBAGENTS.definitionsDirRelative, `${name}.md`);
+const defRel = (name: string) => `${CLAUDE_SUBAGENTS.definitionsDirRelative}/${name}.md`;
 
 describe('claudeRepoAgentsBehavior.launchArgs', () => {
   it('builds --agent and --settings for a subagent', () => {
@@ -39,8 +41,16 @@ describe('claudeRepoAgentsBehavior.launchArgs', () => {
       '--agent',
       'reviewer',
       '--settings',
-      path.join('/repo/agent', '.switch', 'agents', 'reviewer.json'),
+      '/repo/agent/.switch/agents/reviewer.json',
     ]);
+  });
+
+  it('keeps a remote POSIX path POSIX', () => {
+    // launchArgs is handed `remoteRepoDir` / the SSH session path for a remote
+    // agent, and the flag is parsed by a shell on that Linux host.
+    const args = claudeRepoAgentsBehavior.launchArgs('/home/agent/repo', 'reviewer');
+    expect(args[3]).toBe('/home/agent/repo/.switch/agents/reviewer.json');
+    expect(args[3]).not.toContain('\\');
   });
 });
 
@@ -220,7 +230,7 @@ describe('claudeRepoAgentsBehavior.removeLocal', () => {
   });
 
   it('leaves the provider-neutral credentials to the caller, which removes them for every provider', async () => {
-    const neutralRel = path.join('.switch', 'agents', 'reviewer.json');
+    const neutralRel = '.switch/agents/reviewer.json';
     const workspaceFs = fakeFs({
       [defRel('reviewer')]: '---\nname: reviewer\ndescription: x\n---\n',
       [neutralRel]: '{"env":{}}',
