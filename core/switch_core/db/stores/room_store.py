@@ -266,6 +266,14 @@ class RoomStore:
         )
         await session.flush()
 
+    async def remove_client_from_all_rooms(
+        self, session: AsyncSession, client_id: str
+    ) -> None:
+        await session.execute(
+            delete(ClientRoom).where(ClientRoom.client_id == client_id)
+        )
+        await session.flush()
+
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)

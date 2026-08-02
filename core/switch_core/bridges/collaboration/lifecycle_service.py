@@ -248,6 +248,7 @@ class CollaborationBridgeLifecycleService:
     async def remove(self, bridge_id: str) -> None:
         await self.stop(bridge_id)
         async with self._session_factory() as session:
+            bridge = await self._bridge_store.get(session, bridge_id)
             dependent_rooms = await self._room_store.get_by_bridge(session, bridge_id)
             if dependent_rooms:
                 logger.warning(
@@ -261,6 +262,11 @@ class CollaborationBridgeLifecycleService:
                     await self._room_store.clear_bridge(session, room.id)
             await self._external_user_store.delete_by_bridge(session, bridge_id)
             await self._bridge_store.delete(session, bridge_id)
+            if bridge is not None:
+                await self._room_store.remove_client_from_all_rooms(
+                    session, bridge.client_id
+                )
+                await self._client_store.delete(session, bridge.client_id)
             await session.commit()
         logger.info("Removed collaboration bridge %s", bridge_id)
 

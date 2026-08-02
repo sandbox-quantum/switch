@@ -10,6 +10,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.db.models import Client, CollaborationBridge, ExternalUser, Room
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
@@ -25,7 +26,7 @@ def _service(
         bridge_message_map_store=MagicMock(),
         room_store=RoomStore(),
         agent_store=MagicMock(),
-        client_store=MagicMock(),
+        client_store=ClientStore(),
         client_lifecycle=MagicMock(),
         room_service=MagicMock(),
         matrix_admin=MagicMock(),
@@ -46,7 +47,8 @@ async def _make_client(session: AsyncSession, *, client_type: str) -> str:
     return client.id
 
 
-async def _make_bridge(session: AsyncSession) -> str:
+async def _make_bridge(session: AsyncSession) -> tuple[str, str]:
+    """Returns (bridge_id, bridge_client_id)."""
     client_id = await _make_client(session, client_type="bridge")
     bridge = CollaborationBridge(
         type="mattermost",
@@ -56,7 +58,7 @@ async def _make_bridge(session: AsyncSession) -> str:
     )
     session.add(bridge)
     await session.flush()
-    return bridge.id
+    return bridge.id, client_id
 
 
 async def _make_bridged_room(session: AsyncSession, *, bridge_id: str) -> str:
@@ -92,14 +94,14 @@ async def test_remove_detaches_dependent_rooms(
 ) -> None:
     """Removing a bridge that still has dependent rooms must not FK-violate.
 
-    Regression for the DELETE /collab/bridges 500: rooms.bridge_id references
-    collaboration_bridges.id with no ON DELETE rule, so deleting the bridge
-    while rooms point at it raised a raw FK error. remove() now detaches the
-    rooms (non-destructive) before deleting the bridge.
+    Regression for the DELETE /collab/bridges 500 (CHOO-1484): rooms.bridge_id
+    references collaboration_bridges.id with no ON DELETE rule, so deleting the
+    bridge while rooms point at it raised a raw FK error. remove() now detaches
+    the rooms (non-destructive) before deleting the bridge.
     """
     service = _service(session_factory)
     async with session_factory() as session:
-        bridge_id = await _make_bridge(session)
+        bridge_id, _ = await _make_bridge(session)
         room_id = await _make_bridged_room(session, bridge_id=bridge_id)
         external_user_id = await _make_external_user(session, bridge_id=bridge_id)
         await session.commit()
@@ -121,15 +123,47 @@ async def test_remove_detaches_dependent_rooms(
 
 
 @pytest.mark.asyncio
-async def test_remove_without_dependent_rooms_still_deletes(
+async def test_remove_deletes_bridge_own_client(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """The bridge's own Client (and its room memberships) is torn down on remove.
+
+    Regression for CHOO-1489: register() mints a dedicated bridge Client, but
+    remove() left it (and its client_rooms rows) orphaned in the DB after every
+    onboard->remove cycle. remove() now clears the bridge client's memberships
+    and deletes the Client row alongside the bridge.
+    """
     service = _service(session_factory)
     async with session_factory() as session:
-        bridge_id = await _make_bridge(session)
+        bridge_id, bridge_client_id = await _make_bridge(session)
+        room_id = await _make_bridged_room(session, bridge_id=bridge_id)
+        # The bridge client is a member of the room it bridges.
+        await RoomStore().add_client(session, bridge_client_id, room_id)
         await session.commit()
 
     await service.remove(bridge_id)
 
     async with session_factory() as session:
         assert await CollaborationBridgeStore().get(session, bridge_id) is None
+        # The bridge's own Client row is gone (no orphan).
+        assert await ClientStore().get(session, bridge_client_id) is None
+        # Its room membership is gone; the room itself survives (detached).
+        member_ids = await RoomStore().get_client_ids(session, room_id)
+        assert bridge_client_id not in member_ids
+        assert await RoomStore().get(session, room_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_remove_without_dependent_rooms_still_deletes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = _service(session_factory)
+    async with session_factory() as session:
+        bridge_id, bridge_client_id = await _make_bridge(session)
+        await session.commit()
+
+    await service.remove(bridge_id)
+
+    async with session_factory() as session:
+        assert await CollaborationBridgeStore().get(session, bridge_id) is None
+        assert await ClientStore().get(session, bridge_client_id) is None
