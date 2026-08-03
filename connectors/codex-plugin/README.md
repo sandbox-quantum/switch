@@ -10,8 +10,8 @@ Manifest: `.codex-plugin/plugin.json`. Registered in the repo marketplace
 (`.claude-plugin/marketplace.json`) as `switch-connector-codex`.
 
 This is the sibling of `connectors/claude-code-plugin/`, which additionally
-ships an MCP config, hooks, and a local channel process. Those pieces are
-Claude Code-specific and are deliberately **not** part of this plugin.
+ships an MCP config and hooks. Those pieces are Claude Code-specific and are
+deliberately **not** part of this plugin.
 
 ## The Switch MCP server is not registered by this plugin
 
@@ -23,14 +23,21 @@ with literal `${SWITCH_API_TOKEN}` text. So this plugin ships no `.mcp.json`
 and never references its own path.
 
 Instead, **switchdash registers the Switch MCP server when it launches the
-Codex session**, passing the resolved endpoint and the *name* of the token
-environment variable (`bearer_token_env_var = "SWITCH_API_TOKEN"`) as
-`-c mcp_servers.switch.*` overrides. The token itself never reaches argv —
-switchdash injects it, along with `SWITCH_API_ENDPOINT` and
-`SWITCH_AGENT_ID`, into the session's environment from the agent's
-`.switch/agents/<slug>.json`, and Codex reads it at request time. The skill
-assumes those tools are present under the `switch` server; if they are
-missing, the session was launched without the Switch MCP config.
+Codex session** — as a per-agent Codex *profile*. It writes
+`$CODEX_HOME/<agent-slug>.config.toml` (under `~/.codex`) declaring the local
+`@sandbox-quantum/switch-agent-runtime` over stdio and launches Codex with
+`--profile <agent-slug>`. The profile is static and holds no secret: the
+runtime reads `SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` / `SWITCH_AGENT_ID`
+(and `SWITCH_CONNECTION_ID`) from the session environment it inherits, which
+switchdash injects from the agent's `.switch/agents/<slug>.json`. Because a
+profile layers over — and cleanly overrides — the user's base
+`~/.codex/config.toml`, it never clobbers a `switch` server the user defined
+themselves. The skill assumes those tools are present under the `switch`
+server; if they are missing, the session was launched without the profile.
+
+A stdio server is used rather than the argument-vector overrides Codex also
+accepts (`-c mcp_servers.switch.*`) because the profile is the single unit
+that will also carry per-agent model, reasoning effort, and instructions.
 
 Attachments are handled the same way — there is no channel process for
 Codex, so the skill documents `curl` against the bridge media endpoint

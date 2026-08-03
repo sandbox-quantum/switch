@@ -370,7 +370,8 @@ forgotten and someone will debug a build they think is newer than it is.
 |---|---|---|
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
-| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and `.mcp.json` pins an exact version that must move with it |
+| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (it ships only the skill) — installs will not pick it up otherwise |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published and its version is pinned in two places that must move with it — the Claude connector `.mcp.json`, and `src/shared/core/switch-rooms/switch-agent-runtime.ts` (which the Codex profile uses); `switch-agent-runtime.test.ts` fails if they drift |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
 dependencies. A comment or a rename that changes nothing does not need one.
