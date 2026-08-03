@@ -15,6 +15,7 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
+import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
@@ -427,6 +428,7 @@ class RemoteSessionReconciler {
       autoApprove: agent.autoApprove,
       credsSlug: agent.name ?? agent.id,
       agentName: agent.name ?? null,
+      specialization: toSwitchSpecialization(agent.providerConfig),
       ctx: conn.ctx,
       connectionId: conn.connectionId,
       host: conn.host,

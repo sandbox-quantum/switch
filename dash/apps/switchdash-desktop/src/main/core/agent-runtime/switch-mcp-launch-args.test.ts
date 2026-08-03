@@ -41,11 +41,26 @@ describe('resolveSwitchLaunchProfile', () => {
       hasSwitchIdentity: true,
     });
     expect(profile).not.toBeNull();
-    expect(profile!.relativePath).toBe('.codex/codex-hoot.config.toml');
+    expect(profile!.files[0].relativePath).toBe('.codex/codex-hoot.config.toml');
     expect(profile!.args).toEqual(['--profile', 'codex-hoot']);
-    expect(profile!.content).toContain('[mcp_servers.switch]');
-    expect(profile!.content).toContain('command = "npx"');
-    expect(profile!.content).toContain('@sandbox-quantum/switch-agent-runtime@');
+    expect(profile!.files[0].content).toContain('[mcp_servers.switch]');
+    expect(profile!.files[0].content).toContain('command = "npx"');
+    expect(profile!.files[0].content).toContain('@sandbox-quantum/switch-agent-runtime@');
+  });
+
+  it('folds per-agent specialization into the profile files', () => {
+    const profile = resolveSwitchLaunchProfile(codexPlugin, {
+      slug: 'codex-hoot',
+      hasSwitchIdentity: true,
+      specialization: { model: 'gpt-5.6-terra', reasoningEffort: 'high', instructions: 'be terse' },
+    })!;
+    expect(profile.files[0].content).toContain('model = "gpt-5.6-terra"');
+    expect(profile.files[0].content).toContain('model_reasoning_effort = "high"');
+    expect(profile.files).toHaveLength(2);
+    expect(profile.files[1]).toEqual({
+      relativePath: '.codex/codex-hoot.instructions.md',
+      content: 'be terse',
+    });
   });
 
   it('never puts a secret in the profile — the runtime reads its token from the env', () => {
@@ -53,7 +68,7 @@ describe('resolveSwitchLaunchProfile', () => {
       slug: 'a',
       hasSwitchIdentity: true,
     })!;
-    expect(profile.content).not.toMatch(/Bearer|SWITCH_API_TOKEN/);
+    expect(profile.files[0].content).not.toMatch(/Bearer|SWITCH_API_TOKEN/);
   });
 
   it('returns null when the provider resolves MCP servers some other way', () => {

@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { versionedJsonColumn } from '@main/db/versioned-column';
+import { agentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
@@ -160,6 +161,9 @@ export const agents = sqliteTable(
     // Defaults false for local agents; onboarding seeds it true for remote
     // agents (see onboard-agent). Editable per agent in location settings.
     autoApprove: integer('auto_approve', { mode: 'boolean' }).notNull().default(false),
+    // Per-agent, provider-specific launch config (Codex model / effort /
+    // instructions folded into the agent's Codex profile). Null when unset.
+    providerConfig: versionedJsonColumn(agentProviderConfig)('provider_config'),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

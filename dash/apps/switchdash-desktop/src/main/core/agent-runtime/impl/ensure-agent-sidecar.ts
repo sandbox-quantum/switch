@@ -1,3 +1,4 @@
+import type { SwitchLaunchSpecialization } from '@switchdash/core/agents/plugins';
 import { generateAgentLaunchSpec } from '@main/core/agents/generate-agent-launch-spec';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { log } from '@main/lib/logger';
@@ -27,6 +28,9 @@ export interface AgentSidecarParams {
   /** The agent's name — so auto-started sessions launch as it with its own
    * identity (a definitions-capable provider passes it as `--agent <name>`). */
   agentName: string | null;
+  /** Per-agent model / effort / instructions folded into auto-started sessions'
+   * launch profile. */
+  specialization?: SwitchLaunchSpecialization;
   ctx: IExecutionContext;
   connectionId: string;
   host: SidecarHost;
@@ -40,6 +44,7 @@ async function buildLauncher(params: AgentSidecarParams): Promise<RemoteSidecarL
     autoApprove: params.autoApprove,
     agentName: params.agentName,
     credsSlug: params.credsSlug,
+    specialization: params.specialization,
     ctx: params.ctx,
     connectionId: params.connectionId,
   });

@@ -11,8 +11,7 @@ const launchArgs = vi.fn((dir: string, name: string) => [
 const launchProfile = vi.fn((params: { slug: string; switchServer: unknown | null }) =>
   params.switchServer
     ? {
-        relativePath: `.codex/${params.slug}.config.toml`,
-        content: 'PROFILE',
+        files: [{ relativePath: `.codex/${params.slug}.config.toml`, content: 'PROFILE' }],
         args: ['--profile', params.slug],
       }
     : null

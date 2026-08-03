@@ -1,3 +1,4 @@
+import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -25,6 +26,9 @@ export type Agent = {
    * "bypass permissions" flag. Defaults false for local agents and true for
    * remote agents (seeded at onboarding); editable per agent. */
   autoApprove: boolean;
+  /** Per-agent, provider-specific launch config (e.g. Codex model / effort /
+   * instructions). Null when unset. */
+  providerConfig: AgentProviderConfig | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -43,6 +47,8 @@ export type CreateAgentParams = {
   /** Seed for the per-agent bypass-permissions flag: false for local agents,
    * true for remote agents. */
   autoApprove: boolean;
+  /** Optional per-agent provider config set at creation. */
+  providerConfig?: AgentProviderConfig | null;
 };
 
 export type RenameAgentParams = {

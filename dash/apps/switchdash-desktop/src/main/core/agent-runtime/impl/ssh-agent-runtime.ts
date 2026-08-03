@@ -1,3 +1,4 @@
+import type { SwitchLaunchSpecialization } from '@switchdash/core/agents/plugins';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
@@ -27,6 +28,7 @@ import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credent
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
 import { log } from '@main/lib/logger';
+import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { AgentSessionConfig } from '@shared/core/providers/agent-session';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
@@ -205,30 +207,34 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   /**
-   * Register the Switch MCP server for a provider that writes a per-agent launch
-   * profile under the VM's home (Codex). `this.fs` is rooted at the repo dir, not
-   * the home, so the profile is written over `ctx.exec`: the content rides as
-   * base64 and the shell resolves `$HOME` and creates the parent dir. Returns the
-   * argv that loads the profile, or `[]` when there is nothing to register.
+   * Register the Switch MCP server for a provider that writes per-agent launch
+   * files under the VM's home (Codex: a profile, plus an instructions file when
+   * set). `this.fs` is rooted at the repo dir, not the home, so each file is
+   * written over `ctx.exec`: the content rides as base64 and the shell resolves
+   * `$HOME` and creates the parent dir. Returns the argv that loads the profile,
+   * or `[]` when there is nothing to write.
    */
   private async registerRemoteSwitchMcp(
     plugin: ReturnType<typeof getPlugin>,
     slug: string,
-    hasSwitchIdentity: boolean
+    hasSwitchIdentity: boolean,
+    specialization: SwitchLaunchSpecialization | undefined
   ): Promise<string[]> {
-    const profile = resolveSwitchLaunchProfile(plugin, { slug, hasSwitchIdentity });
+    const profile = resolveSwitchLaunchProfile(plugin, { slug, hasSwitchIdentity, specialization });
     if (!profile) return [];
 
-    const encoded = Buffer.from(profile.content, 'utf8').toString('base64');
-    // $1 = home-relative path, $2 = base64 content. Both positional so the slug
-    // and content cannot break out of the command.
-    await this.ctx.exec('sh', [
-      '-c',
-      'set -e; mkdir -p "$HOME/$(dirname "$1")"; printf %s "$2" | base64 -d > "$HOME/$1"',
-      'sh',
-      profile.relativePath,
-      encoded,
-    ]);
+    for (const file of profile.files) {
+      const encoded = Buffer.from(file.content, 'utf8').toString('base64');
+      // $1 = home-relative path, $2 = base64 content. Both positional so the
+      // path and content cannot break out of the command.
+      await this.ctx.exec('sh', [
+        '-c',
+        'set -e; mkdir -p "$HOME/$(dirname "$1")"; printf %s "$2" | base64 -d > "$HOME/$1"',
+        'sh',
+        file.relativePath,
+        encoded,
+      ]);
+    }
     return profile.args;
   }
 
@@ -247,6 +253,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       autoApprove: agent?.autoApprove ?? false,
       credsSlug: agentCredsSlug(session),
       agentName: agent?.name ?? session.agentName ?? null,
+      specialization: toSwitchSpecialization(agent?.providerConfig),
       ctx: this.ctx,
       connectionId: this.connectionId,
       host,
@@ -337,6 +344,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           autoApprove: agent?.autoApprove ?? false,
           credsSlug: agentCredsSlug(session),
           agentName: agent?.name ?? session.agentName ?? null,
+          specialization: toSwitchSpecialization(agent?.providerConfig),
           ctx: this.ctx,
           connectionId: this.connectionId,
           host: this.createSidecarHost(),
@@ -473,14 +481,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
       // Register the Switch MCP server (Codex writes a profile under the VM's
-      // ~/.codex). `remoteFs` is rooted at the repo dir, so open a throwaway FS
-      // rooted at the VM home and close it afterwards to avoid leaking an SFTP
-      // channel. A session with no MCP server still beats no session, so a home
-      // we cannot resolve is logged and skipped rather than fatal.
+      // ~/.codex), folding in the agent's per-agent model / effort / instructions.
+      const agentRecord = await getAgentById(session.agentId);
       const switchMcpArgs = await this.registerRemoteSwitchMcp(
         plugin,
         agentCredsSlug(session),
-        !!identityVars.SWITCH_API_ENDPOINT
+        !!identityVars.SWITCH_API_ENDPOINT,
+        toSwitchSpecialization(agentRecord?.providerConfig)
       );
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({

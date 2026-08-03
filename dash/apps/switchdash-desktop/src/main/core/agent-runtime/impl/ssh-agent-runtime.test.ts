@@ -311,8 +311,9 @@ describe('SshAgentRuntime', () => {
               launchProfile: (params: { slug: string; switchServer: unknown | null }) =>
                 params.switchServer
                   ? {
-                      relativePath: `.codex/${params.slug}.config.toml`,
-                      content: 'PROFILE',
+                      files: [
+                        { relativePath: `.codex/${params.slug}.config.toml`, content: 'PROFILE' },
+                      ],
                       args: ['--profile', params.slug],
                     }
                   : null,

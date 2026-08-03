@@ -1,4 +1,8 @@
-import type { SwitchLaunchProfile, SwitchMcpLaunchServer } from '@switchdash/core/agents/plugins';
+import type {
+  SwitchLaunchProfile,
+  SwitchLaunchSpecialization,
+  SwitchMcpLaunchServer,
+} from '@switchdash/core/agents/plugins';
 import { stringify as stringifyTOML } from 'smol-toml';
 
 /**
@@ -8,6 +12,16 @@ import { stringify as stringifyTOML } from 'smol-toml';
  * even when a user already defines their own `switch` server.
  */
 export const CODEX_PROFILE_SWITCH_SERVER_NAME = 'switch';
+
+/**
+ * Reasoning-effort levels Codex accepts for `model_reasoning_effort`, in
+ * ascending order. Stable across model catalog changes (unlike the model list),
+ * so they are declared here and drive the per-agent effort picker; a model that
+ * does not support the highest tiers simply ignores them. Empty string = leave
+ * the base config's default.
+ */
+export const CODEX_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
 
 /**
  * An agent's profile path relative to the user's home, loaded via
@@ -20,39 +34,74 @@ export function codexProfileRelativePath(slug: string): string {
   return `.codex/${slug}.config.toml`;
 }
 
+/** The per-agent instructions file, relative to the user's home. */
+export function codexInstructionsRelativePath(slug: string): string {
+  return `.codex/${slug}.instructions.md`;
+}
+
+/**
+ * The instructions file path as Codex reads it — relative to CODEX_HOME
+ * (`~/.codex`), where `model_instructions_file` is resolved. Kept relative so a
+ * baked profile needs no knowledge of the VM's absolute home.
+ */
+function instructionsFileForProfile(slug: string): string {
+  return `${slug}.instructions.md`;
+}
+
+export type CodexProfileInputs = {
+  switchServer: SwitchMcpLaunchServer | null;
+} & SwitchLaunchSpecialization;
+
 /**
  * Render an agent's Codex profile as TOML. A profile is layered on top of the
  * user's base `~/.codex/config.toml` via `--profile <slug>`; it carries only
- * what switchdash owns per agent, leaving the user's model/provider/auth intact.
+ * what switchdash owns per agent, leaving the user's provider/auth intact.
+ * `model` / `model_reasoning_effort` are scalar overrides; a system prompt is
+ * referenced as `model_instructions_file` and written as a separate file.
  */
-export function buildCodexProfileToml(inputs: { switchServer: SwitchMcpLaunchServer }): string {
-  const profile: Record<string, unknown> = {
-    mcp_servers: {
+export function buildCodexProfileToml(slug: string, inputs: CodexProfileInputs): string {
+  const profile: Record<string, unknown> = {};
+
+  if (inputs.model) profile.model = inputs.model;
+  if (inputs.reasoningEffort) profile.model_reasoning_effort = inputs.reasoningEffort;
+  if (inputs.instructions) profile.model_instructions_file = instructionsFileForProfile(slug);
+
+  if (inputs.switchServer) {
+    profile.mcp_servers = {
       [CODEX_PROFILE_SWITCH_SERVER_NAME]: {
         command: inputs.switchServer.command,
         args: inputs.switchServer.args,
       },
-    },
-  };
+    };
+  }
 
   return stringifyTOML(profile);
 }
 
 /**
- * Compute an agent's Codex launch profile: the file to write under `~/.codex`
- * and the `--profile <slug>` argv that loads it. Pure — the caller writes the
- * file — so it serves both a direct write (local/SSH) and a launch spec the VM
- * sidecar writes. Returns `null` when there is no Switch identity to register.
+ * Compute an agent's Codex launch profile: the files to write under `~/.codex`
+ * (the profile, plus an instructions file when a system prompt is set) and the
+ * `--profile <slug>` argv that loads them. Pure — the caller writes the files —
+ * so it serves both a direct write (local/SSH) and a launch spec the VM sidecar
+ * writes. Returns `null` when there is nothing to register or specialize.
  */
-export function codexLaunchProfile(params: {
-  slug: string;
-  switchServer: SwitchMcpLaunchServer | null;
-}): SwitchLaunchProfile | null {
-  if (!params.switchServer) return null;
+export function codexLaunchProfile(
+  params: { slug: string } & CodexProfileInputs
+): SwitchLaunchProfile | null {
+  const { slug, ...inputs } = params;
+  if (!inputs.switchServer && !inputs.model && !inputs.reasoningEffort && !inputs.instructions) {
+    return null;
+  }
 
-  return {
-    relativePath: codexProfileRelativePath(params.slug),
-    content: buildCodexProfileToml({ switchServer: params.switchServer }),
-    args: ['--profile', params.slug],
-  };
+  const files = [
+    { relativePath: codexProfileRelativePath(slug), content: buildCodexProfileToml(slug, inputs) },
+  ];
+  if (inputs.instructions) {
+    files.push({
+      relativePath: codexInstructionsRelativePath(slug),
+      content: inputs.instructions,
+    });
+  }
+
+  return { files, args: ['--profile', slug] };
 }

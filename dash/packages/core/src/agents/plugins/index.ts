@@ -72,6 +72,8 @@ export type {
   IMcpBehavior,
   McpServerRegistration,
   SwitchLaunchProfile,
+  SwitchLaunchProfileFile,
+  SwitchLaunchSpecialization,
   SwitchMcpLaunchServer,
 } from './capabilities/mcp';
 export type { IPlugins } from './capabilities/plugins';

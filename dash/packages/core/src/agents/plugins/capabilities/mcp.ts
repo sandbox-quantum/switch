@@ -15,19 +15,34 @@ export type SwitchMcpLaunchServer = {
   args: string[];
 };
 
+/** A single per-agent launch config file, path relative to the agent's home. */
+export type SwitchLaunchProfileFile = {
+  relativePath: string;
+  content: string;
+};
+
 /**
- * A per-agent launch config file plus the argv that loads it — the result of
- * {@link IMcpBehavior.launchProfile}. Pure data so it can be written directly
- * (local/SSH runtimes) or baked into a precomputed launch spec and written by
- * the headless VM sidecar, which has no plugin registry.
+ * A per-agent launch config — the files to write plus the argv that loads them —
+ * the result of {@link IMcpBehavior.launchProfile}. Pure data so it can be
+ * written directly (local/SSH runtimes) or baked into a precomputed launch spec
+ * and written by the headless VM sidecar, which has no plugin registry. Carries
+ * more than one file because a per-agent instructions/system-prompt is a separate
+ * file the profile references.
  */
 export type SwitchLaunchProfile = {
-  /** File path relative to the agent's home directory. */
-  relativePath: string;
-  /** Full file content to write at {@link relativePath}. */
-  content: string;
+  files: SwitchLaunchProfileFile[];
   /** Extra argv the launch command needs to load the profile. */
   args: string[];
+};
+
+/** Optional per-agent specialization folded into the launch profile. */
+export type SwitchLaunchSpecialization = {
+  /** Model id, e.g. a Codex `model` override. */
+  model?: string;
+  /** Reasoning-effort id, e.g. a Codex `model_reasoning_effort` override. */
+  reasoningEffort?: string;
+  /** A system-prompt/instructions body, written to a file the profile references. */
+  instructions?: string;
 };
 
 export type IMcpBehavior = {
@@ -36,25 +51,29 @@ export type IMcpBehavior = {
   removeServer(fs: PluginFs, name: string): Promise<void>;
   /**
    * Compute the launch config that registers the Switch MCP server for a
-   * session, for agents whose connector plugin cannot resolve a per-session
-   * server from a bundled config. Pure: it returns the file to write and the
-   * argv to load it, leaving the write to the caller so the same result serves
-   * a direct write (local/SSH) and a baked launch spec the sidecar writes.
+   * session (and folds in any per-agent specialization), for agents whose
+   * connector plugin cannot resolve a per-session server from a bundled config.
+   * Pure: it returns the files to write and the argv to load them, leaving the
+   * write to the caller so the same result serves a direct write (local/SSH) and
+   * a baked launch spec the sidecar writes.
    *
    * Claude Code leaves this undefined: its plugin expands environment variables
    * in a bundled `.mcp.json`, so the config is already per-session. Codex
    * performs no such expansion and a stdio server cannot ride argv across the
    * `resume` subcommand cleanly, so it returns a per-agent profile
-   * (`~/.codex/<slug>.config.toml`) plus `--profile <slug>`. The profile layers
-   * over the user's base config, so it never clobbers a `switch` server the user
-   * defined themselves.
+   * (`~/.codex/<slug>.config.toml`, plus an instructions file when set) and
+   * `--profile <slug>`. The profile layers over the user's base config, so it
+   * never clobbers a `switch` server the user defined themselves.
    *
-   * Returns `null` when there is nothing to register (no Switch identity).
+   * Returns `null` when there is nothing to write (no Switch identity and no
+   * specialization).
    */
-  launchProfile?(params: {
-    slug: string;
-    switchServer: SwitchMcpLaunchServer | null;
-  }): SwitchLaunchProfile | null;
+  launchProfile?(
+    params: {
+      slug: string;
+      switchServer: SwitchMcpLaunchServer | null;
+    } & SwitchLaunchSpecialization
+  ): SwitchLaunchProfile | null;
 };
 
 export type McpServerRegistration = {

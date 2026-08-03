@@ -6,6 +6,7 @@ import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
+import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { basenameFromAnyPath } from '@shared/path-name';
@@ -39,6 +40,10 @@ export type AddAgentParams = {
    * keyed by the provider's attribute fields. `name`/`description` are set from
    * the params above. */
   definitionAttributes: RepoAgentAttributes;
+  /** Per-agent provider config folded into the agent's launch (Codex model /
+   * effort / instructions). Distinct from `definitionAttributes`, which is the
+   * repo-agent definition surface Codex does not use. */
+  providerConfig?: AgentProviderConfig | null;
 };
 
 export type AddAgentResult =
@@ -126,6 +131,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
     apiEndpoint: server.apiUrl,
     serverId: params.serverId,
     autoApprove: params.autoApprove,
+    providerConfig: params.providerConfig ?? null,
   });
 
   // Seed the local auto_session mirror + watcher from the gateway profile so an

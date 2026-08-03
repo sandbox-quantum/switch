@@ -7,6 +7,7 @@ import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve
 import { prepareSwitchMcpLaunch } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { getAgentById } from '@main/core/agents/getAgentById';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -29,6 +30,7 @@ import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
 import { log } from '@main/lib/logger';
+import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
@@ -174,12 +176,15 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
       // Register the Switch MCP server for providers that cannot resolve it from
       // a bundled config (Codex): writes a per-agent profile under `~/.codex` and
-      // returns `--profile <slug>`. A no-op for Claude, whose plugin expands its
-      // own `.mcp.json`.
+      // returns `--profile <slug>`, folding in the agent's per-agent model /
+      // effort / instructions. A no-op for Claude, whose plugin expands its own
+      // `.mcp.json`.
+      const agentRecord = await getAgentById(session.agentId);
       const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
         hasSwitchIdentity: !!subagentVars.SWITCH_API_ENDPOINT,
+        specialization: toSwitchSpecialization(agentRecord?.providerConfig),
       });
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({

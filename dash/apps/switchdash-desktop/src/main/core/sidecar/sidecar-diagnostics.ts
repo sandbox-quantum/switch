@@ -5,6 +5,7 @@ import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgents } from '@main/core/agents/getAgents';
 import { registerDiagnosticSection } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
+import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 
 const DIAGNOSTIC_TAIL_LINES = 200;
@@ -54,6 +55,7 @@ async function collectForAgent(agent: Agent): Promise<string> {
         autoApprove: agent.autoApprove,
         credsSlug: agent.name ?? agent.id,
         agentName: agent.name ?? null,
+        specialization: toSwitchSpecialization(agent.providerConfig),
         ctx: conn.ctx,
         connectionId: conn.connectionId,
         host: conn.host,

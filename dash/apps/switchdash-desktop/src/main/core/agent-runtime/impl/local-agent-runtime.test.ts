@@ -62,6 +62,12 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
   readAgentSwitchEnvFromFs: vi.fn(async () => ({})),
 }));
 
+// Loading the agent record to fold in per-agent Codex config would pull in the
+// DB client, which has no database in this unit test.
+vi.mock('@main/core/agents/getAgentById', () => ({
+  getAgentById: vi.fn(async () => null),
+}));
+
 // Reads the app's userData path and shells out to `gh`; neither exists here,
 // and these tests are about the spawn, not the registry.
 vi.mock('@main/core/switch-rooms/npm-registry-auth', () => ({

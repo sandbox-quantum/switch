@@ -1,3 +1,4 @@
+import type { SwitchLaunchSpecialization } from '@switchdash/core/agents/plugins';
 import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
 import { resolveSwitchLaunchProfile } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
@@ -41,6 +42,8 @@ export async function generateAgentLaunchSpec(params: {
   /** Per-agent creds slug (the agent's name) — keys the Switch launch profile a
    * provider that registers the server itself writes (Codex). */
   credsSlug: string;
+  /** Per-agent model / effort / instructions folded into the launch profile. */
+  specialization?: SwitchLaunchSpecialization;
   ctx: IExecutionContext;
   connectionId: string;
 }): Promise<AgentLaunchSpec> {
@@ -51,6 +54,7 @@ export async function generateAgentLaunchSpec(params: {
     autoApprove,
     agentName,
     credsSlug,
+    specialization,
     ctx,
     connectionId,
   } = params;
@@ -79,6 +83,7 @@ export async function generateAgentLaunchSpec(params: {
   const switchProfile = resolveSwitchLaunchProfile(plugin, {
     slug: credsSlug,
     hasSwitchIdentity: true,
+    specialization,
   });
 
   const repoAgents = plugin.behavior.repoAgents;
@@ -104,9 +109,10 @@ export async function generateAgentLaunchSpec(params: {
     args: agentCommand.args,
     env: { ...agentCommand.env, ...(providerConfig?.env ?? {}) },
     cwd: remoteRepoDir,
-    launchFiles: switchProfile
-      ? [{ homeRelativePath: switchProfile.relativePath, content: switchProfile.content }]
-      : undefined,
+    launchFiles: switchProfile?.files.map((file) => ({
+      homeRelativePath: file.relativePath,
+      content: file.content,
+    })),
     providerId,
     deeplinkScheme,
   };
