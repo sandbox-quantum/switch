@@ -2,8 +2,7 @@ import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
-import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
-import { assertSwitchMcpNameFree } from '@main/core/agent-runtime/switch-mcp-preflight';
+import { resolveSwitchLaunchProfile } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -203,6 +202,34 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         error: String(error),
       });
     }
+  }
+
+  /**
+   * Register the Switch MCP server for a provider that writes a per-agent launch
+   * profile under the VM's home (Codex). `this.fs` is rooted at the repo dir, not
+   * the home, so the profile is written over `ctx.exec`: the content rides as
+   * base64 and the shell resolves `$HOME` and creates the parent dir. Returns the
+   * argv that loads the profile, or `[]` when there is nothing to register.
+   */
+  private async registerRemoteSwitchMcp(
+    plugin: ReturnType<typeof getPlugin>,
+    slug: string,
+    hasSwitchIdentity: boolean
+  ): Promise<string[]> {
+    const profile = resolveSwitchLaunchProfile(plugin, { slug, hasSwitchIdentity });
+    if (!profile) return [];
+
+    const encoded = Buffer.from(profile.content, 'utf8').toString('base64');
+    // $1 = home-relative path, $2 = base64 content. Both positional so the slug
+    // and content cannot break out of the command.
+    await this.ctx.exec('sh', [
+      '-c',
+      'set -e; mkdir -p "$HOME/$(dirname "$1")"; printf %s "$2" | base64 -d > "$HOME/$1"',
+      'sh',
+      profile.relativePath,
+      encoded,
+    ]);
+    return profile.args;
   }
 
   private async launchSidecar(session: Session): Promise<SidecarEndpoint> {
@@ -437,19 +464,24 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       // from its neutral `.switch/agents/<slug>.json` on the VM. A `--settings`
       // file's env block is not reliably propagated to the spawned MCP server, so
       // inject it directly, matching the local runtime.
-      // Resolved before the command is built because an agent that cannot expand
-      // variables in its MCP config needs the endpoint on argv (see below).
+      // Resolved before the command is built because a provider that registers the
+      // Switch server at launch keys it on this identity (see below).
       const remoteFs = createRemotePluginFs(this.fs);
       const identityVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
           : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
-      // `remoteFs` is rooted at the repo dir, not the VM's home, and switchdash
-      // mounts no home scope for a remote agent — so the MCP name collision that
-      // makes the agent reject its config cannot be detected here. Passing null
-      // logs that gap rather than letting an unreadable config read as "clear".
-      await assertSwitchMcpNameFree(plugin, session.providerId, null);
+      // Register the Switch MCP server (Codex writes a profile under the VM's
+      // ~/.codex). `remoteFs` is rooted at the repo dir, so open a throwaway FS
+      // rooted at the VM home and close it afterwards to avoid leaking an SFTP
+      // channel. A session with no MCP server still beats no session, so a home
+      // we cannot resolve is logged and skipped rather than fatal.
+      const switchMcpArgs = await this.registerRemoteSwitchMcp(
+        plugin,
+        agentCredsSlug(session),
+        !!identityVars.SWITCH_API_ENDPOINT
+      );
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
@@ -463,7 +495,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...switchMcpLaunchArgs(plugin, identityVars.SWITCH_API_ENDPOINT),
+          ...switchMcpArgs,
         ],
         autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,

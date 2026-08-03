@@ -1,7 +1,16 @@
-import {
-  normalizeSwitchApiEndpoint,
-  SWITCH_API_ENDPOINT_PLACEHOLDER,
-} from '@shared/core/switch-rooms/switch-mcp-endpoint';
+/**
+ * A config file the sidecar must write on the VM before spawning, path relative
+ * to the agent's home directory. Baked into the spec because the watcher is
+ * provider-agnostic — it cannot build provider config itself, so switchdash
+ * precomputes it. Used for Codex's per-agent profile registering the Switch MCP
+ * runtime (`~/.codex/<slug>.config.toml`).
+ */
+export interface AgentLaunchFile {
+  /** Path relative to the agent's home directory on the VM. */
+  homeRelativePath: string;
+  /** Full file content to write. */
+  content: string;
+}
 
 /**
  * A serialised recipe for launching a fresh agent CLI session on the VM.
@@ -21,14 +30,18 @@ export interface AgentLaunchSpec {
   /**
    * Argv for a fresh session. One element equals {@link INITIAL_PROMPT_PLACEHOLDER};
    * the watcher swaps it for the real prompt per spawn. {@link SESSION_ID_PLACEHOLDER}
-   * and {@link SWITCH_API_ENDPOINT_PLACEHOLDER} appear only for providers that take
-   * those on argv, and are substituted when present.
+   * appears only for providers that take it on argv, and is substituted when present.
    */
   args: string[];
   /** Base provider env (custom env + provider env); the per-spawn hook env is merged on top. */
   env: Record<string, string>;
   /** Absolute remote working dir the agent runs in (the agent's repo dir). */
   cwd: string;
+  /**
+   * Home-relative config files the sidecar writes before spawning, e.g. Codex's
+   * per-agent profile. Static across spawns, so the watcher writes them verbatim.
+   */
+  launchFiles?: AgentLaunchFile[];
   providerId: string;
   deeplinkScheme: string;
 }
@@ -50,20 +63,21 @@ export interface MaterializedAgentCommand {
 
 /**
  * Resolve a launch spec into a concrete command for one spawn by substituting
- * the session id, initial prompt and Switch API endpoint into the spec's argv,
- * and merging the per-spawn env (hook env) over the base env.
+ * the session id and initial prompt into the spec's argv, and merging the
+ * per-spawn env (hook env) over the base env.
  *
  * Throws if the prompt placeholder is missing: the prompt is what tells the
  * agent which room to connect to, so a spec that cannot carry it would spawn a
  * session that just sits there.
  *
- * The session id and endpoint tokens are substituted when present and are not
- * required. Not every provider takes a session id on a fresh session — Codex
- * mints its own rollout id and only accepts one when resuming — and switchdash
- * does not depend on the argv value either way: it correlates the spawn through
- * the pty id in the hook env, and learns the provider's own id from the
- * SessionStart hook. Likewise only providers that receive their MCP server on
- * argv emit an endpoint token.
+ * The session id token is substituted when present and is not required. Not
+ * every provider takes a session id on a fresh session — Codex mints its own
+ * rollout id and only accepts one when resuming — and switchdash does not depend
+ * on the argv value either way: it correlates the spawn through the pty id in the
+ * hook env, and learns the provider's own id from the SessionStart hook. The
+ * Switch MCP server no longer rides argv; the runtime reads its endpoint and
+ * credentials from the env, and Codex loads it from a baked profile
+ * ({@link AgentLaunchSpec.launchFiles}).
  *
  * Throws if any `__SWITCHDASH_` token survives substitution, so a provider that
  * grows a new placeholder cannot quietly launch an agent pointed at literal
@@ -75,7 +89,6 @@ export function materializeAgentCommand(
     sessionId: string;
     initialPrompt: string;
     extraEnv: Record<string, string>;
-    switchApiEndpoint: string | undefined;
   }
 ): MaterializedAgentCommand {
   const substitutions: Record<string, string> = {
@@ -87,14 +100,7 @@ export function materializeAgentCommand(
     throw new Error(`agent launch spec is missing the ${INITIAL_PROMPT_PLACEHOLDER} argv token`);
   }
 
-  const endpoint = normalizeSwitchApiEndpoint(params.switchApiEndpoint);
-  const args = spec.args.map((arg) => {
-    const whole = substitutions[arg];
-    if (whole !== undefined) return whole;
-    // The endpoint is embedded inside a larger argument, so it is replaced as a
-    // substring rather than swapped for a whole argv element.
-    return endpoint === null ? arg : arg.replaceAll(SWITCH_API_ENDPOINT_PLACEHOLDER, endpoint);
-  });
+  const args = spec.args.map((arg) => substitutions[arg] ?? arg);
 
   const unresolved = args.find((arg) => arg.includes(PLACEHOLDER_PREFIX));
   if (unresolved !== undefined) {

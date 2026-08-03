@@ -1,10 +1,9 @@
 import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
-import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
+import { resolveSwitchLaunchProfile } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
-import { SWITCH_API_ENDPOINT_PLACEHOLDER } from '@shared/core/switch-rooms/switch-mcp-endpoint';
 import {
   type AgentLaunchSpec,
   INITIAL_PROMPT_PLACEHOLDER,
@@ -39,11 +38,22 @@ export async function generateAgentLaunchSpec(params: {
    * prompt, tools, and Switch identity. Null for a provider/agent with no
    * on-disk definition (CHOO-1440). */
   agentName: string | null;
+  /** Per-agent creds slug (the agent's name) — keys the Switch launch profile a
+   * provider that registers the server itself writes (Codex). */
+  credsSlug: string;
   ctx: IExecutionContext;
   connectionId: string;
 }): Promise<AgentLaunchSpec> {
-  const { providerId, remoteRepoDir, deeplinkScheme, autoApprove, agentName, ctx, connectionId } =
-    params;
+  const {
+    providerId,
+    remoteRepoDir,
+    deeplinkScheme,
+    autoApprove,
+    agentName,
+    credsSlug,
+    ctx,
+    connectionId,
+  } = params;
   const plugin = getPlugin(providerId);
   if (!plugin.behavior.prompt) {
     throw new Error(
@@ -61,17 +71,25 @@ export async function generateAgentLaunchSpec(params: {
     connectionId,
   });
 
+  // Auto-started sessions always run as the agent, so they have a Switch
+  // identity. A provider that registers the server itself (Codex) returns the
+  // profile file to bake into the spec and the `--profile <slug>` argv; the
+  // sidecar writes the file on the VM. Null for providers whose plugin resolves
+  // the server from a bundled config (Claude).
+  const switchProfile = resolveSwitchLaunchProfile(plugin, {
+    slug: credsSlug,
+    hasSwitchIdentity: true,
+  });
+
   const repoAgents = plugin.behavior.repoAgents;
   const agentCommand = plugin.behavior.prompt.buildCommand({
     cli,
     extraArgs: parseExtraArgs(providerConfig?.extraArgs),
     // The provider owns how to run as the named agent (CHOO-1440); kept distinct
-    // from user extra args. A provider that receives its Switch MCP server on
-    // argv gets the endpoint as a placeholder the watcher resolves per spawn,
-    // since the endpoint is only known on the VM.
+    // from user extra args.
     agentArgs: [
       ...(agentName && repoAgents ? repoAgents.launchArgs(remoteRepoDir, agentName) : []),
-      ...switchMcpLaunchArgs(plugin, SWITCH_API_ENDPOINT_PLACEHOLDER),
+      ...(switchProfile?.args ?? []),
     ],
     autoApprove,
     initialPrompt: INITIAL_PROMPT_PLACEHOLDER,
@@ -86,6 +104,9 @@ export async function generateAgentLaunchSpec(params: {
     args: agentCommand.args,
     env: { ...agentCommand.env, ...(providerConfig?.env ?? {}) },
     cwd: remoteRepoDir,
+    launchFiles: switchProfile
+      ? [{ homeRelativePath: switchProfile.relativePath, content: switchProfile.content }]
+      : undefined,
     providerId,
     deeplinkScheme,
   };

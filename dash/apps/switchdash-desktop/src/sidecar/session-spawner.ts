@@ -1,10 +1,14 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { type AgentLaunchSpec, materializeAgentCommand } from './agent-launch-spec';
+import { atomicWriteFile } from './atomic-file';
 import type { SessionSpawner, WatcherLogger } from './notification-watcher';
 import { makeAgentTmuxSessionName } from './vm-tmux';
 
@@ -171,9 +175,9 @@ export class InProcessSessionSpawner implements SessionSpawner {
       sessionId,
       initialPrompt: `connect to switch room ${roomId}`,
       extraEnv: hookEnv,
-      switchApiEndpoint: this.deps.switchEnv.SWITCH_API_ENDPOINT,
     });
 
+    await this.writeLaunchFiles();
     await this.startDetachedTmux(tmuxTarget, spec.cwd, command.env, command.command, command.args);
     this.launched.set(roomId, { sessionId, tmuxTarget });
     log.info('InProcessSessionSpawner: launched session for room', {
@@ -181,6 +185,19 @@ export class InProcessSessionSpawner implements SessionSpawner {
       sessionId,
       tmuxTarget,
     });
+  }
+
+  /**
+   * Write the spec's baked config files (e.g. Codex's Switch profile) under the
+   * VM home before spawning. Static across spawns and safe to rewrite, so this
+   * runs every launch rather than tracking whether it already ran.
+   */
+  private async writeLaunchFiles(): Promise<void> {
+    for (const file of this.spec.launchFiles ?? []) {
+      const absPath = join(homedir(), file.homeRelativePath);
+      await mkdir(dirname(absPath), { recursive: true });
+      await atomicWriteFile(absPath, file.content);
+    }
   }
 
   /** Launch a command in a fresh detached tmux session with env set on the process. */

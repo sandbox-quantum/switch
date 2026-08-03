@@ -1,60 +1,106 @@
-import { codexMcpAdapter } from '@switchdash/core/agents/plugins/helpers';
+import type { PluginFs } from '@switchdash/core/agents/plugins';
+import { pluginRegistry } from '@switchdash/plugins/agents';
 import { describe, expect, it } from 'vitest';
 import type { getPlugin } from '@main/core/providers/plugin-registry';
-import { switchMcpLaunchArgs } from './switch-mcp-launch-args';
+import { prepareSwitchMcpLaunch, resolveSwitchLaunchProfile } from './switch-mcp-launch-args';
 
 type Plugin = ReturnType<typeof getPlugin>;
 
-/** The real Codex MCP behavior — it renders servers onto argv. */
-const codexPlugin = { behavior: { mcp: codexMcpAdapter() } } as unknown as Plugin;
+/** The real Codex plugin — it registers the Switch server via a profile. */
+const codexPlugin = pluginRegistry.get('codex')! as unknown as Plugin;
 
 /** A provider whose connector resolves MCP servers itself, as Claude's does. */
 const claudeLikePlugin = { behavior: { mcp: {} } } as unknown as Plugin;
 
-describe('switchMcpLaunchArgs', () => {
-  it('registers the Switch server by endpoint, naming the token env var rather than embedding it', () => {
-    const args = switchMcpLaunchArgs(codexPlugin, 'https://switch.test/api');
-    expect(args).toEqual([
-      '-c',
-      'mcp_servers.switch.url="https://switch.test/api/mcp/"',
-      '-c',
-      'mcp_servers.switch.bearer_token_env_var="SWITCH_API_TOKEN"',
-    ]);
+function memoryFs(): PluginFs & { files: Map<string, string> } {
+  const files = new Map<string, string>();
+  return {
+    files,
+    async read(p) {
+      return files.get(p) ?? null;
+    },
+    async write(p, c) {
+      files.set(p, c);
+    },
+    async delete(p) {
+      files.delete(p);
+    },
+    async exists(p) {
+      return files.has(p);
+    },
+    async list() {
+      return [];
+    },
+  };
+}
+
+describe('resolveSwitchLaunchProfile', () => {
+  it('returns a Codex profile registering the local stdio runtime, keyed on the slug', () => {
+    const profile = resolveSwitchLaunchProfile(codexPlugin, {
+      slug: 'codex-hoot',
+      hasSwitchIdentity: true,
+    });
+    expect(profile).not.toBeNull();
+    expect(profile!.relativePath).toBe('.codex/codex-hoot.config.toml');
+    expect(profile!.args).toEqual(['--profile', 'codex-hoot']);
+    expect(profile!.content).toContain('[mcp_servers.switch]');
+    expect(profile!.content).toContain('command = "npx"');
+    expect(profile!.content).toContain('@sandbox-quantum/switch-agent-runtime@');
   });
 
-  it('never puts the token itself on argv', () => {
-    // argv is world-readable via `ps`; only the variable's *name* may appear.
-    const args = switchMcpLaunchArgs(codexPlugin, 'https://switch.test/api').join(' ');
-    expect(args).toContain('bearer_token_env_var');
-    expect(args).not.toMatch(/Bearer\s/);
+  it('never puts a secret in the profile — the runtime reads its token from the env', () => {
+    const profile = resolveSwitchLaunchProfile(codexPlugin, {
+      slug: 'a',
+      hasSwitchIdentity: true,
+    })!;
+    expect(profile.content).not.toMatch(/Bearer|SWITCH_API_TOKEN/);
   });
 
-  it('emits url and token together, since -c merges key-by-key into the table', () => {
-    // `-c mcp_servers.<name>.<key>` sets that one key and leaves the rest of the
-    // table as it was — it does not substitute a whole server definition — so
-    // emitting only `url` would register the server unauthenticated. (The same
-    // merge is why the name must not already exist in the user's config: see the
-    // codexMcpAdapter docblock.)
-    const keys = switchMcpLaunchArgs(codexPlugin, 'https://switch.test/api')
-      .filter((a) => a !== '-c')
-      .map((a) => a.split('=')[0]);
-    expect(keys).toEqual(['mcp_servers.switch.url', 'mcp_servers.switch.bearer_token_env_var']);
+  it('returns null when the provider resolves MCP servers some other way', () => {
+    expect(
+      resolveSwitchLaunchProfile(claudeLikePlugin, { slug: 'x', hasSwitchIdentity: true })
+    ).toBeNull();
   });
 
-  it('normalises trailing slashes on the endpoint', () => {
-    expect(switchMcpLaunchArgs(codexPlugin, 'https://switch.test/api///')).toContain(
-      'mcp_servers.switch.url="https://switch.test/api/mcp/"'
-    );
+  it('returns null when the session has no Switch identity', () => {
+    expect(
+      resolveSwitchLaunchProfile(codexPlugin, { slug: 'x', hasSwitchIdentity: false })
+    ).toBeNull();
+  });
+});
+
+describe('prepareSwitchMcpLaunch', () => {
+  it('writes the profile under ~/.codex and returns the --profile argv', async () => {
+    const fs = memoryFs();
+    const args = await prepareSwitchMcpLaunch(codexPlugin, {
+      homeFs: fs,
+      slug: 'codex-hoot',
+      hasSwitchIdentity: true,
+    });
+    expect(args).toEqual(['--profile', 'codex-hoot']);
+    expect(fs.files.get('.codex/codex-hoot.config.toml')).toContain('[mcp_servers.switch]');
   });
 
-  it('emits nothing when the provider resolves MCP servers some other way', () => {
-    expect(switchMcpLaunchArgs(claudeLikePlugin, 'https://switch.test/api')).toEqual([]);
+  it('writes nothing and returns [] when the session has no Switch identity', async () => {
+    const fs = memoryFs();
+    const args = await prepareSwitchMcpLaunch(codexPlugin, {
+      homeFs: fs,
+      slug: 'x',
+      hasSwitchIdentity: false,
+    });
+    expect(args).toEqual([]);
+    expect(fs.files.size).toBe(0);
   });
 
-  it('emits nothing when the session has no Switch identity', () => {
-    // No credentials means no endpoint; a half-formed server is worse than none.
-    for (const endpoint of [undefined, '', '   ']) {
-      expect(switchMcpLaunchArgs(codexPlugin, endpoint)).toEqual([]);
-    }
+  it('emits nothing for a provider that resolves MCP servers itself', async () => {
+    const fs = memoryFs();
+    expect(
+      await prepareSwitchMcpLaunch(claudeLikePlugin, {
+        homeFs: fs,
+        slug: 'x',
+        hasSwitchIdentity: true,
+      })
+    ).toEqual([]);
+    expect(fs.files.size).toBe(0);
   });
 });

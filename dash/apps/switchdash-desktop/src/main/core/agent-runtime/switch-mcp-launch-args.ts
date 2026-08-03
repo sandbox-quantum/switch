@@ -1,42 +1,49 @@
+import type { PluginFs, SwitchLaunchProfile } from '@switchdash/core/agents/plugins';
 import type { getPlugin } from '@main/core/providers/plugin-registry';
-import { switchMcpUrl } from '@shared/core/switch-rooms/switch-mcp-endpoint';
+import { switchAgentRuntimeCommand } from '@shared/core/switch-rooms/switch-agent-runtime';
 
 /** MCP server name the Switch tools are registered under. */
 export const SWITCH_MCP_SERVER_NAME = 'switch';
 
-/** Env var the agent reads the Switch bearer token from at request time. */
-export const SWITCH_MCP_TOKEN_ENV_VAR = 'SWITCH_API_TOKEN';
+/**
+ * The launch profile that registers the Switch MCP server for a session, or null
+ * when the provider resolves the server another way (Claude's bundled `.mcp.json`)
+ * or the session has no Switch identity.
+ *
+ * Pure — no write — so the caller decides where the profile lands: a direct write
+ * for local/SSH sessions, or a baked launch spec the VM sidecar writes for remote
+ * auto-sessions. The runtime it registers is static and secret-free; it reads its
+ * `SWITCH_*` credentials from the session env it inherits.
+ */
+export function resolveSwitchLaunchProfile(
+  plugin: ReturnType<typeof getPlugin>,
+  params: { slug: string; hasSwitchIdentity: boolean }
+): SwitchLaunchProfile | null {
+  const launchProfile = plugin.behavior.mcp?.launchProfile;
+  if (!launchProfile) return null;
+
+  return launchProfile({
+    slug: params.slug,
+    switchServer: params.hasSwitchIdentity ? switchAgentRuntimeCommand() : null,
+  });
+}
 
 /**
- * Launch arguments registering the Switch MCP server for this session, for
- * agents that must receive it on argv.
+ * Register the Switch MCP server for a launching session by writing its launch
+ * profile into `homeFs` (rooted at the agent's home dir) and returning the argv
+ * that loads it. Returns `[]` when there is nothing to register.
  *
- * Only the endpoint is passed. The token is named, not embedded: the agent reads
- * it from the injected `SWITCH_API_TOKEN` at request time, so a per-agent secret
- * never reaches a process listing or a config file.
- *
- * Returns nothing when the provider resolves MCP servers some other way (its
- * connector plugin expands env vars) or when the session has no Switch identity
- * — an agent with no credentials has no endpoint to point at.
- *
- * `apiEndpoint` may be `SWITCH_API_ENDPOINT_PLACEHOLDER` when precomputing a
- * launch spec for the on-VM watcher, which substitutes the real endpoint per
- * spawn.
+ * Used by the local and SSH runtimes, which write at launch. Remote auto-sessions
+ * instead bake the profile into their launch spec (see {@link
+ * resolveSwitchLaunchProfile}) and the sidecar writes it.
  */
-export function switchMcpLaunchArgs(
+export async function prepareSwitchMcpLaunch(
   plugin: ReturnType<typeof getPlugin>,
-  apiEndpoint: string | undefined
-): string[] {
-  const buildArgs = plugin.behavior.mcp?.launchArgsForServer;
-  if (!buildArgs) return [];
+  params: { homeFs: PluginFs; slug: string; hasSwitchIdentity: boolean }
+): Promise<string[]> {
+  const profile = resolveSwitchLaunchProfile(plugin, params);
+  if (!profile) return [];
 
-  const url = switchMcpUrl(apiEndpoint);
-  if (url === null) return [];
-
-  return buildArgs({
-    name: SWITCH_MCP_SERVER_NAME,
-    transport: 'http',
-    url,
-    bearer_token_env_var: SWITCH_MCP_TOKEN_ENV_VAR,
-  });
+  await params.homeFs.write(profile.relativePath, profile.content);
+  return profile.args;
 }

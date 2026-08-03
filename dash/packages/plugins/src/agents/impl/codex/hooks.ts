@@ -76,22 +76,6 @@ async function removeLegacyCodexNotify(fs: PluginFs): Promise<void> {
 }
 
 /**
- * Tool-name pattern for the Switch `connect_to_room` MCP tool. The server name
- * is part of the tool name, and switchdash registers the server as `switch`,
- * but a session may reach Switch through a differently-named server — so match
- * any server exposing the tool rather than pinning to one name.
- */
-export const CODEX_ROOM_CONNECT_MATCHER = 'mcp__.*__connect_to_room';
-
-/**
- * Event type the room-tracking hook reports. Consumed by the hook service's
- * event enricher, which reads `room_id`/`agent_id` out of the tool response and
- * repoints the session's room. Claude's hook config emits the same event from
- * its equivalent PostToolUse hook, so both providers share one enricher path.
- */
-const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
-
-/**
  * Codex sends `{ type: 'agent-turn-complete' }` as its stop signal instead
  * of a plain 'stop' event type, and uses fixed `notification_type` values
  * in its hook payloads rather than piping JSON.
@@ -121,17 +105,15 @@ function parseCodexHookEvent(eventType: string, body: Record<string, unknown>): 
 }
 
 export function buildCodexHookConfig() {
+  // No PostToolUse room-tracking hook: since the agent-bridge push transport
+  // (CHOO-1857), a session's room is driven by the connection switchdash opens
+  // and hands it as SWITCH_CONNECTION_ID, so `connect_to_room` claims the room
+  // on that connection and the server reports it back. Only lifecycle events
+  // remain, none matcher-scoped.
   const base = buildNestedJsonHookConfig(CODEX_HOOKS_PATH, [
     { hookKey: 'Stop', command: makeNotificationHookCommand('idle_prompt') },
     { hookKey: 'PermissionRequest', command: makeNotificationHookCommand('permission_prompt') },
     { hookKey: 'SessionStart', command: makeStdinHookCommand('session-start') },
-    // Matcher-scoped to the Switch connect tool; the rest are lifecycle events
-    // that carry no matcher.
-    {
-      hookKey: 'PostToolUse',
-      command: makeStdinHookCommand(SWITCH_ROOM_CONNECT_EVENT),
-      matcher: CODEX_ROOM_CONNECT_MATCHER,
-    },
   ]);
 
   return {

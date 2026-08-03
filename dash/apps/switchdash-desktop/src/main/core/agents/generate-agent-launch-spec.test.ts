@@ -8,12 +8,17 @@ const launchArgs = vi.fn((dir: string, name: string) => [
   `${dir}/.switch/agents/${name}.json`,
 ]);
 
-const launchArgsForServer = vi.fn((server: { name: string; url?: string }) => [
-  '-c',
-  `mcp_servers.${server.name}.url=${JSON.stringify(server.url)}`,
-]);
-/** Set per test: whether the mocked provider receives MCP servers on argv. */
-let mcpBehavior: { launchArgsForServer?: typeof launchArgsForServer } | undefined;
+const launchProfile = vi.fn((params: { slug: string; switchServer: unknown | null }) =>
+  params.switchServer
+    ? {
+        relativePath: `.codex/${params.slug}.config.toml`,
+        content: 'PROFILE',
+        args: ['--profile', params.slug],
+      }
+    : null
+);
+/** Set per test: whether the mocked provider registers the Switch server itself. */
+let mcpBehavior: { launchProfile?: typeof launchProfile } | undefined;
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({
@@ -30,7 +35,6 @@ vi.mock('@main/core/settings/provider-settings-service', () => ({
 vi.mock('@main/core/dependencies/host-dependency-store', () => ({ hostDependencyStore: {} }));
 
 import { buildStandardCommand } from '@switchdash/core/agents/plugins/helpers';
-import { SWITCH_API_ENDPOINT_PLACEHOLDER } from '@shared/core/switch-rooms/switch-mcp-endpoint';
 import {
   INITIAL_PROMPT_PLACEHOLDER,
   materializeAgentCommand,
@@ -43,6 +47,7 @@ const baseParams = {
   remoteRepoDir: '/home/agent/repo',
   deeplinkScheme: 'switchdash',
   agentName: null,
+  credsSlug: 'hoot',
   ctx: {} as never,
   connectionId: 'conn-1',
 };
@@ -51,7 +56,7 @@ describe('generateAgentLaunchSpec', () => {
   beforeEach(() => {
     buildCommand.mockClear();
     launchArgs.mockClear();
-    launchArgsForServer.mockClear();
+    launchProfile.mockClear();
     mcpBehavior = undefined;
   });
 
@@ -88,26 +93,29 @@ describe('generateAgentLaunchSpec', () => {
     expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
   });
 
-  it('bakes an endpoint placeholder for a provider that takes MCP servers on argv', async () => {
-    // The endpoint is only known on the VM, so the spec carries a token the
-    // watcher substitutes per spawn. Without it a remote auto-started Codex
-    // session gets its token from the sidecar but no `switch` tools at all.
-    mcpBehavior = { launchArgsForServer };
+  it('bakes the profile args and launch file for a provider that registers the server itself', async () => {
+    // The endpoint and credentials reach the runtime through the env, so the spec
+    // carries the profile file the sidecar writes on the VM plus `--profile <slug>`
+    // to load it — no argv endpoint token any more.
+    mcpBehavior = { launchProfile };
 
-    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+    const spec = await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
 
+    expect(launchProfile).toHaveBeenCalledWith(expect.objectContaining({ slug: 'hoot' }));
     expect(buildCommand).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentArgs: ['-c', `mcp_servers.switch.url="${SWITCH_API_ENDPOINT_PLACEHOLDER}/mcp/"`],
-      })
+      expect.objectContaining({ agentArgs: ['--profile', 'hoot'] })
     );
+    expect(spec.launchFiles).toEqual([
+      { homeRelativePath: '.codex/hoot.config.toml', content: 'PROFILE' },
+    ]);
   });
 
-  it('adds no MCP args for a provider that resolves servers from config', async () => {
-    await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+  it('bakes no MCP args or launch files for a provider that resolves servers from config', async () => {
+    const spec = await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
 
-    expect(launchArgsForServer).not.toHaveBeenCalled();
+    expect(launchProfile).not.toHaveBeenCalled();
     expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
+    expect(spec.launchFiles).toBeUndefined();
   });
 });
 
@@ -134,7 +142,7 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
       {
         cli: '/usr/bin/agent',
         extraArgs: [],
-        agentArgs: ['-c', `mcp_servers.switch.url="${SWITCH_API_ENDPOINT_PLACEHOLDER}/mcp/"`],
+        agentArgs: ['--profile', 'hoot'],
         autoApprove: true,
         initialPrompt: INITIAL_PROMPT_PLACEHOLDER,
         sessionId: SESSION_ID_PLACEHOLDER,
@@ -149,6 +157,7 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
   it('produces a Codex spec the watcher can materialize', () => {
     const args = buildSpecArgs(CODEX_SPEC);
     expect(args).not.toContain(SESSION_ID_PLACEHOLDER);
+    expect(args).toContain('--profile');
 
     const cmd = materializeAgentCommand(
       {
@@ -163,11 +172,10 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
         sessionId: 's1',
         initialPrompt: 'connect to switch room room-x',
         extraEnv: {},
-        switchApiEndpoint: 'https://switch.test/api',
       }
     );
 
-    expect(cmd.args).toContain('mcp_servers.switch.url="https://switch.test/api/mcp/"');
+    expect(cmd.args).toContain('hoot');
     expect(cmd.args).toContain('connect to switch room room-x');
   });
 
@@ -188,7 +196,6 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
         sessionId: 's1',
         initialPrompt: 'p',
         extraEnv: {},
-        switchApiEndpoint: 'https://switch.test/api',
       }
     );
 

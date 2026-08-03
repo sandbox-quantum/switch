@@ -4,8 +4,7 @@ import { dirTrustService } from '@main/core/agent-hooks/dir-trust-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
-import { switchMcpLaunchArgs } from '@main/core/agent-runtime/switch-mcp-launch-args';
-import { assertSwitchMcpNameFree } from '@main/core/agent-runtime/switch-mcp-preflight';
+import { prepareSwitchMcpLaunch } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
@@ -165,18 +164,23 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // and a plain agent from its provider-neutral `.switch/agents/<slug>.json`
       // (empty when absent — the session then falls back to settings.local.json,
       // which Claude reads natively).
-      // Resolved before the command is built because an agent that cannot expand
-      // variables in its MCP config needs the endpoint on argv (see below).
+      // Resolved before the command is built because a provider that registers
+      // the Switch server at launch keys it on this identity (see below).
       const workspaceFs = createPluginFs(this.sessionPath);
       const subagentVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
-      // Before argv is built: registering the Switch server on the command line
-      // over a name the user's own config already defines would make the agent
-      // reject its whole config and exit without explanation.
-      await assertSwitchMcpNameFree(plugin, session.providerId, createPluginFs(homedir()));
+      // Register the Switch MCP server for providers that cannot resolve it from
+      // a bundled config (Codex): writes a per-agent profile under `~/.codex` and
+      // returns `--profile <slug>`. A no-op for Claude, whose plugin expands its
+      // own `.mcp.json`.
+      const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
+        homeFs: createPluginFs(homedir()),
+        slug: agentCredsSlug(session),
+        hasSwitchIdentity: !!subagentVars.SWITCH_API_ENDPOINT,
+      });
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({
         cli: executableCli,
@@ -188,7 +192,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...switchMcpLaunchArgs(plugin, subagentVars.SWITCH_API_ENDPOINT),
+          ...switchMcpArgs,
         ],
         autoApprove: session.autoApprove ?? false,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,

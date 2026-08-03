@@ -54,9 +54,6 @@ type McpConfigShape = {
   serversKey: string;
   toNative(server: McpServerRegistration): Record<string, unknown>;
   fromNative(name: string, raw: Record<string, unknown>): McpServerRegistration;
-  /** See {@link IMcpBehavior.launchArgsForServer}. Omit when the agent has no
-   * need to receive a server on argv. */
-  launchArgsForServer?(server: McpServerRegistration): string[];
 };
 
 function parseMcpFile(content: string, format: 'json' | 'toml'): Record<string, unknown> {
@@ -138,9 +135,6 @@ export function createMcpAdapter(shape: McpConfigShape) {
         await removeFromPath(fs, legacyPath, name);
       }
     },
-    ...(shape.launchArgsForServer
-      ? { launchArgsForServer: shape.launchArgsForServer.bind(shape) }
-      : {}),
   };
 }
 
@@ -195,43 +189,6 @@ export function codexMcpAdapter(configPath = '.codex/config.toml') {
     configPath,
     format: 'toml',
     serversKey: 'mcp_servers',
-    /**
-     * Codex takes config overrides as `-c <dotted.key>=<TOML value>`, at higher
-     * precedence than any config file.
-     *
-     * Only HTTP servers can be expressed this way, so anything else is rejected
-     * rather than rendered into a server that would misbehave: a stdio server's
-     * `args` and `env` are arrays and tables rather than scalars.
-     *
-     * Each override is merged into the config's table for that server, not
-     * substituted for it. Verified against Codex 0.146.0: overriding
-     * `mcp_servers.<name>.url` on a name the config already defines as a stdio
-     * server yields a table with both `command` and `url`, and Codex then
-     * refuses to load its config at all — the session does not start. So the
-     * server name here must be one the user's `~/.codex/config.toml` does not
-     * already define.
-     */
-    launchArgsForServer(server: McpServerRegistration): string[] {
-      if (server.command !== undefined || server.args !== undefined || server.env !== undefined) {
-        throw new Error(
-          `Codex cannot receive the stdio MCP server '${server.name}' on argv; register it in config instead.`
-        );
-      }
-      if (typeof server.url !== 'string' || !server.url) {
-        throw new Error(
-          `Codex can only receive an HTTP MCP server on argv; '${server.name}' has no url.`
-        );
-      }
-
-      const entries: Array<[string, string]> = [['url', server.url]];
-      if (server.bearer_token_env_var !== undefined) {
-        entries.push(['bearer_token_env_var', server.bearer_token_env_var]);
-      }
-      return entries.flatMap(([key, value]) => [
-        '-c',
-        `mcp_servers.${server.name}.${key}=${JSON.stringify(value)}`,
-      ]);
-    },
     toNative(s) {
       const entry = deepClone(s) as Record<string, unknown>;
       const isHttp =

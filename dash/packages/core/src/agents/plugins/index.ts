@@ -68,7 +68,12 @@ export type { PluginFs } from '../runtime/fs';
 // Capability behavior interfaces — needed for dts portability
 export type { IHostDependencyBehavior } from '../../host-dependencies/capability';
 export type { IHooksBehavior } from './capabilities/hooks';
-export type { IMcpBehavior, McpServerRegistration } from './capabilities/mcp';
+export type {
+  IMcpBehavior,
+  McpServerRegistration,
+  SwitchLaunchProfile,
+  SwitchMcpLaunchServer,
+} from './capabilities/mcp';
 export type { IPlugins } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
 export { SWITCH_AGENT_SETTINGS_DIR, SWITCH_CONNECTOR_TOOL_RULES } from './capabilities/repo-agents';

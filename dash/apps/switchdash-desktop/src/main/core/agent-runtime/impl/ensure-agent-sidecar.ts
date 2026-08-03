@@ -39,6 +39,7 @@ async function buildLauncher(params: AgentSidecarParams): Promise<RemoteSidecarL
     deeplinkScheme: params.deeplinkScheme,
     autoApprove: params.autoApprove,
     agentName: params.agentName,
+    credsSlug: params.credsSlug,
     ctx: params.ctx,
     connectionId: params.connectionId,
   });

@@ -760,6 +760,26 @@ async def finalise_task(task_id: str, outcome: str) -> dict[str, Any]:
 
 
 @operation
+async def cancel_task(task_id: str, reason: str) -> dict[str, str]:
+    """Abandon a task you delegated. Only the requester can cancel.
+
+    Args:
+        task_id: The id of a task this agent delegated.
+        reason: Why the task is no longer needed. Recorded on the task and
+            posted to the room so the performer learns it has been dropped.
+
+    Returns:
+        {"status": "cancelled", "reason": "<reason>"}.
+    """
+    agent_id = get_agent_id()
+    await require_connected_room()
+
+    protocol = get_protocol()
+    await protocol.cancel_task(agent_id, task_id, reason)
+    return {"status": "cancelled", "reason": reason}
+
+
+@operation
 async def list_tasks(
     role: str | None = None, status: str | None = None
 ) -> list[dict[str, Any]]:

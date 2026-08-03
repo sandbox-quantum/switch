@@ -5,12 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
-import {
-  CODEX_CONFIG_PATH,
-  CODEX_HOOKS_PATH,
-  CODEX_ROOM_CONNECT_MATCHER,
-  buildCodexHookConfig,
-} from './hooks';
+import { CODEX_CONFIG_PATH, CODEX_HOOKS_PATH, buildCodexHookConfig } from './hooks';
 
 const execFileAsync = promisify(execFile);
 
@@ -174,34 +169,26 @@ describe('buildCodexHookConfig install/read/delete', () => {
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
       hooks: Record<string, unknown[]>;
     };
-    for (const key of ['Stop', 'PermissionRequest', 'SessionStart', 'PostToolUse']) {
+    for (const key of ['Stop', 'PermissionRequest', 'SessionStart']) {
       expect(config.hooks[key]).toHaveLength(1);
       expect(JSON.stringify(config.hooks[key][0])).toContain('SWITCHDASH_HOOK_PORT');
     }
   });
 
-  it('tracks the room via a PostToolUse hook scoped to the Switch connect tool', async () => {
-    // Without this the poller stays pinned to the room the session spawned in:
-    // an agent that hops rooms keeps getting room A's messages while sitting in
-    // room B, with nothing raised. The hook makes every connect_to_room correct
-    // the association.
+  it('installs no PostToolUse room-tracking hook — the room is connection-driven', async () => {
+    // Since the agent-bridge push transport (CHOO-1857), a session's room is
+    // claimed on the connection switchdash opens and hands it as
+    // SWITCH_CONNECTION_ID, so the server reports the room back. The old
+    // PostToolUse `connect_to_room` scrape is gone; only lifecycle hooks remain.
     const fs = createMemoryFs();
     await buildCodexHookConfig().writeHooks(fs, []);
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
-      hooks: Record<string, Array<{ matcher?: string }>>;
+      hooks: Record<string, unknown>;
     };
 
-    const entry = config.hooks.PostToolUse[0];
-    expect(entry.matcher).toBe(CODEX_ROOM_CONNECT_MATCHER);
-    // Matches the Switch tool on any server name, but not unrelated tools.
-    const matcher = new RegExp(`^${CODEX_ROOM_CONNECT_MATCHER}$`);
-    expect(matcher.test('mcp__switch__connect_to_room')).toBe(true);
-    expect(matcher.test('mcp__plugin_switch-connector_switch__connect_to_room')).toBe(true);
-    expect(matcher.test('mcp__switch__post_message')).toBe(false);
-    expect(matcher.test('Bash')).toBe(false);
-    // Reports the same event type switchdash's Claude hook config emits, so both
-    // providers land on one enricher path.
-    expect(JSON.stringify(entry)).toContain('switch_room_connect');
+    expect(config.hooks.PostToolUse).toBeUndefined();
+    expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
+    expect(JSON.stringify(config.hooks)).not.toContain('switch_room_connect');
   });
 
   it('reflects installation state through getHooksInstalled + readHooks', async () => {
@@ -293,13 +280,10 @@ describe('the installed Codex hook commands actually post', () => {
     SWITCHDASH_PTY_ID: 'codex:s1',
   };
 
-  it.each(['SessionStart', 'PostToolUse'])(
+  it.each(['SessionStart'])(
     'the %s command reaches the hook server with the payload intact',
     async (event) => {
-      const payload = JSON.stringify({
-        session_id: 's1',
-        tool_response: { room_id: 'r1', agent_id: 'a1' },
-      });
+      const payload = JSON.stringify({ session_id: 's1' });
       const { url, body } = await runHookCommand((await installedCommands())[event], {
         env: ENV,
         stdin: payload,

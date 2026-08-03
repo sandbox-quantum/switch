@@ -295,10 +295,11 @@ describe('SshAgentRuntime', () => {
     );
   });
 
-  it('registers the Switch MCP server on argv for a provider that needs it there', async () => {
-    // The token reaches the session as an env var, but Codex only learns the
-    // server exists from argv. Without this a remote Codex session comes up
-    // authenticated and with no `switch` tools — configured-looking and inert.
+  it('registers the Switch MCP server via a profile written to the VM home', async () => {
+    // The endpoint and token reach the session as env vars, but Codex only learns
+    // the server exists from a profile loaded with `--profile`. Without this a
+    // remote Codex session comes up authenticated and with no `switch` tools.
+    const ctx = makeCtx();
     vi.mocked(getPlugin).mockImplementation(
       (id: string) =>
         ({
@@ -307,10 +308,14 @@ describe('SshAgentRuntime', () => {
           behavior: {
             prompt: { buildCommand: buildCommandMock },
             mcp: {
-              launchArgsForServer: (server: { name: string; url?: string }) => [
-                '-c',
-                `mcp_servers.${server.name}.url=${JSON.stringify(server.url)}`,
-              ],
+              launchProfile: (params: { slug: string; switchServer: unknown | null }) =>
+                params.switchServer
+                  ? {
+                      relativePath: `.codex/${params.slug}.config.toml`,
+                      content: 'PROFILE',
+                      args: ['--profile', params.slug],
+                    }
+                  : null,
             },
           },
         }) as never
@@ -322,6 +327,7 @@ describe('SshAgentRuntime', () => {
     mockSpawn([]);
 
     await sshProvider({
+      ctx,
       fs: makeRemoteFs({
         '.switch/agents/codex-hoot.json': JSON.stringify({
           env: {
@@ -334,9 +340,13 @@ describe('SshAgentRuntime', () => {
     }).start(session());
 
     expect(buildCommandMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        agentArgs: ['-c', 'mcp_servers.switch.url="https://switch.example.com/mcp/"'],
-      })
+      expect.objectContaining({ agentArgs: ['--profile', 'codex-hoot'] })
+    );
+    // The profile is written to the VM home over ctx.exec (base64), not the
+    // repo-dir filesystem.
+    expect(ctx.exec).toHaveBeenCalledWith(
+      'sh',
+      expect.arrayContaining(['.codex/codex-hoot.config.toml'])
     );
   });
 
