@@ -1,19 +1,23 @@
+import { randomUUID } from 'node:crypto';
+import { SwitchEventStream } from '@sandbox-quantum/switch-agent-runtime';
 import type { SwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
-import type { AgentBridgeEventResponse } from '@main/core/switch-rooms/switch-event-format';
 
-const NOTIF_POLL_TIMEOUT_S = 10;
-const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 30_000;
-// Refresh the "watching" heartbeat well under the server's ALWAYS_ON_TTL (90s)
-// so a dormant agent reports DORMANT (and the server replies "Starting a
-// session…") while the sidecar is watching on the VM.
-const WATCH_HEARTBEAT_INTERVAL_MS = 30_000;
+// How often the auto_session gate is re-read, so toggling it takes effect
+// without restarting the sidecar. Matches the cadence the old idle loop woke
+// at, so enabling auto_session still takes effect within about a second rather
+// than becoming noticeably laggier. The connection's own heartbeat runs at the
+// protocol's 2s cadence inside SwitchEventStream; this only decides whether
+// that connection should exist at all.
+const GATE_POLL_INTERVAL_MS = 1_000;
 const SPAWN_MAX_ATTEMPTS = 3;
 const SPAWN_RETRY_DELAY_MS = 2000;
-// How long a room stays "spawn in flight" before the guard is cleared. Covers
-// the boot+connect window; once the spawned tmux session is live, the
-// live-session check no-ops further notifications anyway. If the spawn failed,
-// clearing lets the next notification retry.
+// How long a room stays "spawn in flight" before the guard is cleared.
+//
+// This covers the window the server cannot: it learns a session exists only
+// when that session's connection claims the room, tens of seconds after the
+// process starts. Until then the room looks unattended and every further
+// addressed message would spawn again. Cleared early once the session is live;
+// this TTL is the backstop for a spawn that failed.
 const INFLIGHT_TTL_MS = 120_000;
 
 export interface WatcherLogger {
@@ -48,8 +52,16 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export interface SessionSpawner {
   /** True when a session this watcher started is already attending the room. */
   isRoomLive(roomId: string): Promise<boolean>;
-  /** Launch one fresh session bound to the room. Throws on failure so the watcher can retry. */
-  launch(roomId: string): Promise<void>;
+  /**
+   * Launch one fresh session bound to the room. Throws on failure so the
+   * watcher can retry.
+   *
+   * `startCursor` is where the new session's own connection should begin
+   * reading. The watcher has already consumed the triggering event — that is
+   * how it knows to spawn — so a session opening at head comes up having
+   * missed the very message it exists to answer.
+   */
+  launch(roomId: string, startCursor?: number): Promise<void>;
 }
 
 /** Post a message to a room on the agent's behalf (the spawn-failure notice). Throws on non-OK. */
@@ -62,19 +74,6 @@ async function postRoomMessage(
     method: 'POST',
     headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ room_id: roomId, content }),
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-}
-
-/** Refresh the agent's "watching" heartbeat. Throws on non-OK. */
-async function postWatchHeartbeat(
-  creds: SwitchAgentCredentials,
-  signal: AbortSignal
-): Promise<void> {
-  const resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/watch/heartbeat`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
-    signal,
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
 }
@@ -96,6 +95,10 @@ export class NotificationWatcher {
   /** Room ids with a spawn in flight (booting / connecting) → guards against
    * duplicate spawns while a notification storm lands during the boot window. */
   private readonly inFlight = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Chosen once so the connection survives a dropped socket. */
+  private readonly connectionId = randomUUID();
+  /** Aborts the watch connection when auto_session is toggled off. */
+  private streamAbort: AbortController | null = null;
 
   constructor(
     private readonly deps: {
@@ -115,82 +118,89 @@ export class NotificationWatcher {
   start(): void {
     const { creds, log } = this.deps;
     log.info('NotificationWatcher: started', { agentId: creds.agentId });
-    void this.notificationLoop();
-    void this.watchHeartbeatLoop();
+    void this.gateLoop();
   }
 
   stop(): void {
     this.abort.abort();
+    this.closeStream();
     for (const timer of this.inFlight.values()) clearTimeout(timer);
     this.inFlight.clear();
     this.deps.log.info('NotificationWatcher: stopped');
   }
 
-  private async watchHeartbeatLoop(): Promise<void> {
-    const { creds, watchEnabled, log } = this.deps;
+  /**
+   * Hold the watch connection open exactly while auto_session is enabled.
+   *
+   * The connection carries both jobs the two old loops did: it delivers the
+   * addressed events that trigger a spawn, and its heartbeat is what makes the
+   * agent report DORMANT so the server answers "Starting a session…". Tying
+   * both to the gate keeps that promise honest — a sidecar that will not start
+   * a session should not be advertising that it will.
+   */
+  private async gateLoop(): Promise<void> {
+    const { watchEnabled } = this.deps;
     const { signal } = this.abort;
     while (!signal.aborted) {
-      if (!watchEnabled()) {
-        await sleep(WATCH_HEARTBEAT_INTERVAL_MS, signal);
-        continue;
-      }
-      try {
-        await postWatchHeartbeat(creds, signal);
-      } catch (error) {
-        if (signal.aborted) return;
-        log.warn('NotificationWatcher: watch heartbeat error', {
-          agentId: creds.agentId,
-          error: String(error),
-        });
-      }
-      await sleep(WATCH_HEARTBEAT_INTERVAL_MS, signal);
+      if (watchEnabled()) this.openStream();
+      else this.closeStream();
+      await sleep(GATE_POLL_INTERVAL_MS, signal);
     }
   }
 
-  private async notificationLoop(): Promise<void> {
-    const { creds, watchEnabled, log } = this.deps;
-    const { signal } = this.abort;
-    const url = `${creds.apiEndpoint}/agents/${creds.agentId}/notifications?timeout=${NOTIF_POLL_TIMEOUT_S}`;
-    let backoff = INITIAL_BACKOFF_MS;
-    log.debug('NotificationWatcher: notification loop started', { agentId: creds.agentId, url });
-
-    while (!signal.aborted) {
-      // Auto_session disabled → do not poll (the stream is a destructive queue,
-      // so draining it while we won't act would swallow events). Idle instead.
-      if (!watchEnabled()) {
-        await sleep(INITIAL_BACKOFF_MS, signal);
-        continue;
-      }
-      try {
-        const resp = await fetch(url, {
-          headers: { Authorization: `Bearer ${creds.token}` },
-          signal,
-        });
-        if (resp.status === 204) {
-          backoff = INITIAL_BACKOFF_MS;
-          continue;
-        }
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-
-        backoff = INITIAL_BACKOFF_MS;
-        const data = (await resp.json()) as AgentBridgeEventResponse;
-        for (const event of data.events) {
-          this.handleNotification(event.room_id);
-        }
-      } catch (error) {
-        if (signal.aborted) return;
-        log.warn('NotificationWatcher: notification poll error', {
+  private openStream(): void {
+    if (this.streamAbort) return;
+    const { creds, log } = this.deps;
+    const streamAbort = new AbortController();
+    this.streamAbort = streamAbort;
+    log.info('NotificationWatcher: opening watch connection', {
+      agentId: creds.agentId,
+      connectionId: this.connectionId,
+    });
+    new SwitchEventStream({
+      creds: { agentId: creds.agentId, apiEndpoint: creds.apiEndpoint, token: creds.token },
+      connectionId: this.connectionId,
+      // Every room the agent belongs to except those a session's connection has
+      // claimed — the server, not this process, decides which those are.
+      scope: 'all',
+      filter: 'addressed',
+      rooms: [],
+      // Same promise as switchdash's watcher: this process will spawn.
+      spawnCapable: true,
+      onEvent: (event) => {
+        if (event.room_id) this.handleNotification(event.room_id, event.sequence);
+      },
+      onGap: (info) => {
+        log.warn('NotificationWatcher: gap — may have missed a spawn trigger', {
           agentId: creds.agentId,
-          error: String(error),
+          fromSequence: info.fromSequence,
+          reason: info.reason,
         });
-        await sleep(backoff, signal);
-        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-      }
-    }
+      },
+      onEvicted: (reason) => {
+        log.warn('NotificationWatcher: watch connection evicted', {
+          agentId: creds.agentId,
+          reason,
+        });
+      },
+      log: {
+        debug: (message, meta) => log.debug(message, meta),
+        warn: (message, meta) => log.warn(message, meta),
+        error: (message, meta) => log.warn(message, meta),
+      },
+      signal: AbortSignal.any([streamAbort.signal, this.abort.signal]),
+    }).start();
+  }
+
+  private closeStream(): void {
+    if (!this.streamAbort) return;
+    this.streamAbort.abort();
+    this.streamAbort = null;
+    this.deps.log.info('NotificationWatcher: watch connection closed (auto_session off)');
   }
 
   /** Decide whether to spawn for a notified room, with a per-room in-flight guard. */
-  private handleNotification(roomId: string): void {
+  private handleNotification(roomId: string, sequence?: number): void {
     if (this.inFlight.has(roomId)) {
       this.deps.log.info(
         'NotificationWatcher: notification for room with a spawn already in flight — skipping duplicate spawn',
@@ -202,7 +212,12 @@ export class NotificationWatcher {
     const timer = setTimeout(() => this.inFlight.delete(roomId), INFLIGHT_TTL_MS);
     this.inFlight.set(roomId, timer);
 
-    void this.spawnForRoom(roomId).catch((error) => {
+    // One before the trigger, so the session's stream replays it. Overlapping
+    // by an event is cheap — a connection only receives events for the room it
+    // claims — where a gap is the bug this exists to prevent.
+    const startCursor = sequence === undefined ? undefined : Math.max(sequence - 1, 0);
+
+    void this.spawnForRoom(roomId, startCursor).catch((error) => {
       this.deps.log.warn('NotificationWatcher: spawn failed', { roomId, error: String(error) });
     });
   }
@@ -217,7 +232,7 @@ export class NotificationWatcher {
     this.clearInFlight(roomId);
   }
 
-  private async spawnForRoom(roomId: string): Promise<void> {
+  private async spawnForRoom(roomId: string, startCursor?: number): Promise<void> {
     const { spawner, creds, log } = this.deps;
 
     // A session this watcher started is already attending the room — its own
@@ -231,10 +246,16 @@ export class NotificationWatcher {
     for (let attempt = 1; attempt <= SPAWN_MAX_ATTEMPTS; attempt += 1) {
       if (this.abort.signal.aborted) return;
       try {
-        await spawner.launch(roomId);
+        await spawner.launch(roomId, startCursor);
+        // Half of a hand-off logged at both ends, so a session that comes up
+        // without its triggering message can be diagnosed from the log alone:
+        // this says where the session should start reading, and the runtime's
+        // `switch_session_connection_open` says where it actually started.
         log.info('NotificationWatcher: spawned session for room', {
+          event: 'auto_session_spawned',
           agentId: creds.agentId,
           roomId,
+          startFrom: startCursor ?? 'head',
         });
         return;
       } catch (error) {

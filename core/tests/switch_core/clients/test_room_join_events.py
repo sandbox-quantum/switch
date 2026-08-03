@@ -48,7 +48,7 @@ def _client(meta: RoomMeta | None = None, *, receives: bool = True) -> SimpleNam
         yield SimpleNamespace()
 
     return SimpleNamespace(
-        _event_queue=_FakeQueue(),
+        _event_buffer=_FakeQueue(),
         agent=SimpleNamespace(id="agent-1"),
         _resolve_room_meta=_resolve_room_meta,
         _room_store=_FakeRoomStore(receives),
@@ -86,8 +86,8 @@ class TestRoomJoinEnqueue:
         client = _client()
         await _run(client, _member_event())
 
-        assert len(client._event_queue.enqueued) == 1
-        agent_id, room_id, event = client._event_queue.enqueued[0]
+        assert len(client._event_buffer.enqueued) == 1
+        agent_id, room_id, event = client._event_buffer.enqueued[0]
         assert agent_id == "agent-1"
         assert room_id == "room-1"
         assert event.type == "room_join"
@@ -106,8 +106,8 @@ class TestRoomJoinEnqueue:
         client = _client(receives=False)
         await _run(client, _member_event())
 
-        assert len(client._event_queue.enqueued) == 1
-        _, _, event = client._event_queue.enqueued[0]
+        assert len(client._event_buffer.enqueued) == 1
+        _, _, event = client._event_buffer.enqueued[0]
         assert event.payload.listening is False
 
     async def test_missing_displayname_falls_back_to_localpart(self) -> None:
@@ -117,20 +117,20 @@ class TestRoomJoinEnqueue:
             _member_event(displayname=None, state_key="@bob:switch.local"),
         )
 
-        assert len(client._event_queue.enqueued) == 1
-        _, _, event = client._event_queue.enqueued[0]
+        assert len(client._event_buffer.enqueued) == 1
+        _, _, event = client._event_buffer.enqueued[0]
         assert event.payload.member_name == "bob"
 
     async def test_leave_does_not_enqueue(self) -> None:
         client = _client()
         await _run(client, _member_event(membership="leave", prev_membership="join"))
-        assert client._event_queue.enqueued == []
+        assert client._event_buffer.enqueued == []
 
     async def test_profile_update_does_not_enqueue(self) -> None:
         # membership-preserving update (e.g. display-name change): join -> join.
         client = _client()
         await _run(client, _member_event(membership="join", prev_membership="join"))
-        assert client._event_queue.enqueued == []
+        assert client._event_buffer.enqueued == []
 
     async def test_no_room_meta_does_not_enqueue(self) -> None:
         async def _none(_matrix_room_id: str) -> RoomMeta | None:
@@ -139,7 +139,7 @@ class TestRoomJoinEnqueue:
         client = _client()
         client._resolve_room_meta = _none
         await _run(client, _member_event())
-        assert client._event_queue.enqueued == []
+        assert client._event_buffer.enqueued == []
 
 
 class TestRoomJoinPayloadRegistry:

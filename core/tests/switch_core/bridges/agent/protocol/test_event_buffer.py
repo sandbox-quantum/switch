@@ -1,4 +1,4 @@
-"""Unit tests for the EventQueue notification fan-out (CHOO-889).
+"""Unit tests for the EventBuffer notification fan-out (CHOO-889).
 
 The auto_session watcher consumes a separate, agent-scoped notification stream.
 The critical invariant: fanning an event out to that stream must NOT remove it
@@ -8,7 +8,7 @@ would steal events from connected rooms.
 
 from __future__ import annotations
 
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     MessagePayload,
@@ -60,7 +60,7 @@ def _task_delegate() -> AgentEvent:
 
 
 async def test_addressed_message_fans_out_without_draining_room_queue() -> None:
-    q = EventQueue()
+    q = EventBuffer()
     q.enqueue(AGENT, ROOM, _message(addressed=True))
 
     # The notification stream sees it...
@@ -74,7 +74,7 @@ async def test_addressed_message_fans_out_without_draining_room_queue() -> None:
 
 
 async def test_unaddressed_message_does_not_fan_out() -> None:
-    q = EventQueue()
+    q = EventBuffer()
     q.enqueue(AGENT, ROOM, _message(addressed=False))
 
     assert await q.poll_notifications(AGENT, timeout=0) == []
@@ -84,7 +84,7 @@ async def test_unaddressed_message_does_not_fan_out() -> None:
 
 
 async def test_task_event_fans_out() -> None:
-    q = EventQueue()
+    q = EventBuffer()
     q.enqueue(AGENT, ROOM, _task_delegate())
     notifs = await q.poll_notifications(AGENT, timeout=0)
     assert len(notifs) == 1
@@ -92,7 +92,7 @@ async def test_task_event_fans_out() -> None:
 
 
 async def test_room_join_fans_out_only_when_listening() -> None:
-    q = EventQueue()
+    q = EventBuffer()
     q.enqueue(AGENT, ROOM, _room_join(listening=False))
     assert await q.poll_notifications(AGENT, timeout=0) == []
 
@@ -103,7 +103,7 @@ async def test_room_join_fans_out_only_when_listening() -> None:
 
 
 async def test_remove_clears_notification_queue() -> None:
-    q = EventQueue()
+    q = EventBuffer()
     q.enqueue(AGENT, ROOM, _message(addressed=True))
     q.remove(AGENT)
     assert await q.poll_notifications(AGENT, timeout=0) == []

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deriveAgentStatus } from '@main/core/agent-hooks/derive-agent-status';
@@ -82,7 +83,7 @@ export class SidecarRuntime {
   /** Notified when a session connects to a room, so the notification watcher can
    * hand its per-room in-flight guard off to the live-room check (mirrors the
    * local AutoSessionWatcher's room-connection subscription). */
-  private roomConnectedListener: ((roomId: string) => void) | null = null;
+  private roomConnectedListener: ((roomId: string, sessionId: string) => void) | null = null;
 
   constructor(private readonly deps: SidecarRuntimeDeps) {
     this.resolveContext = async (ptyId) => {
@@ -96,8 +97,17 @@ export class SidecarRuntime {
     };
   }
 
-  /** Register the room-connected listener (the notification watcher's guard hand-off). */
-  onRoomConnected(listener: (roomId: string) => void): void {
+  /**
+   * Register the room-connected listener (the notification watcher's guard
+   * hand-off).
+   *
+   * Carries the session id as well as the room because the spawn guards are
+   * keyed differently: the watcher's in-flight guard by room, the spawner's
+   * launched-session entry by session. Both end at the moment a session
+   * connects, and after that the runtime's own room map is the only thing that
+   * should decide whether a room is covered.
+   */
+  onRoomConnected(listener: (roomId: string, sessionId: string) => void): void {
     this.roomConnectedListener = listener;
   }
 
@@ -154,6 +164,21 @@ export class SidecarRuntime {
     // has no database to update.
   }
 
+  /**
+   * Open a session's connection before it launches, and return the id to hand
+   * it in its environment. Mirrors switchdash's `ensureForSession`.
+   *
+   * The connection must exist before the session's first `connect_to_room`,
+   * which arrives tagged with this id. It also makes the room server-driven
+   * here too: the claim lands on this connection and comes back as
+   * `subscription_changed`, so the sidecar stops depending on parsing the hook.
+   */
+  ensureForSession(sessionId: string, providerId: string, startCursor?: number): string {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing.connection.connection;
+    return this.openConnection(sessionId, providerId, null, null, startCursor);
+  }
+
   private connectRoom(
     sessionId: string,
     providerId: string,
@@ -165,7 +190,17 @@ export class SidecarRuntime {
     // in-flight queue and renew loop are preserved — but still hand off the
     // watcher's spawn guard (idempotent), since a session is attending the room.
     if (existing && existing.roomId === roomId) {
-      this.roomConnectedListener?.(roomId);
+      this.roomConnectedListener?.(roomId, sessionId);
+      return;
+    }
+    if (existing && existing.roomId === null) {
+      // We opened this connection at launch and the server has not named a
+      // room yet. The claim is in flight; trust it rather than rebuilding.
+      this.deps.log.debug('SidecarRuntime: hook named a room before the server did', {
+        sessionId,
+        roomId,
+      });
+      this.roomConnectedListener?.(roomId, sessionId);
       return;
     }
     // A session re-targeting to a new room supersedes ITS OWN prior room only —
@@ -173,11 +208,25 @@ export class SidecarRuntime {
     // connect_to_room re-targeting independently).
     if (existing) existing.connection.stop();
 
+    this.openConnection(sessionId, providerId, roomId, roomName);
+    this.roomConnectedListener?.(roomId, sessionId);
+  }
+
+  private openConnection(
+    sessionId: string,
+    providerId: string,
+    roomId: string | null,
+    roomName: string | null,
+    startCursor?: number
+  ): string {
     const tmuxTarget = makeAgentTmuxSessionName(sessionId);
+    const connectionId = randomUUID();
     const connection = this.deps.createConnection({
       creds: this.deps.creds,
       roomId,
       roomName,
+      connectionId,
+      startCursor,
       sessionId,
       sink: new TmuxInjectionSink(tmuxTarget, this.deps.tmuxRun, () =>
         this.deps.isPaneLive(tmuxTarget)
@@ -190,13 +239,33 @@ export class SidecarRuntime {
       // can't gate on human typing yet — a known follow-up for the attached case.
       isHumanTyping: () => false,
       mediaDir: path.join(os.tmpdir(), 'switchdash-switch-media', sessionId),
+      // The server naming this connection's room is what records it here, so a
+      // session that moves rooms is followed without re-reading a hook.
+      onRoomChanged: (room) => {
+        const entry = this.sessions.get(sessionId);
+        if (entry) entry.roomId = room;
+        if (room) {
+          this.deps.registry.record({ sessionId, roomId: room, providerId, tmuxTarget });
+          this.roomConnectedListener?.(room, sessionId);
+        }
+      },
       log: this.deps.log,
     });
     this.sessions.set(sessionId, { connection, roomId, tmuxTarget });
-    this.deps.registry.record({ sessionId, roomId, providerId, tmuxTarget });
-    this.deps.log.debug('SidecarRuntime: room connected', { sessionId, roomId, roomName });
+    if (roomId) this.deps.registry.record({ sessionId, roomId, providerId, tmuxTarget });
+    // The other end of the watcher's hand-off. If a spawned session comes up
+    // without the message that triggered it, this says whether a cursor was
+    // handed over and honoured, or whether it opened at head and read past it.
+    this.deps.log.info('SidecarRuntime: connection opened', {
+      event: 'switch_session_connection_open',
+      sessionId,
+      roomId,
+      roomName,
+      connectionId,
+      startFrom: startCursor ?? 'head',
+    });
     connection.start();
-    this.roomConnectedListener?.(roomId);
+    return connectionId;
   }
 
   /**

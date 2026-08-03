@@ -54,11 +54,38 @@ function messageEvent(
 }
 
 /**
- * Serves one batch of events on the first `/events` poll, then parks the loop
- * (a never-resolving promise) so the test controls exactly one poll cycle.
- * runtime-state + connection/renew always succeed; their request bodies are
- * captured on the returned mock for assertions.
+ * Serves one batch of events on the `/events` SSE stream, then holds the stream
+ * open (never closing it) so the connection neither reconnects nor spins.
+ *
+ * The stream is the transport under test, so this speaks real SSE framing —
+ * `event:`/`id:`/`data:` — rather than handing the client pre-parsed objects.
+ * `connection/beat` and `runtime-state` always succeed; their request bodies
+ * are captured on the returned mock for assertions.
  */
+function sseBody(events: AgentBridgeEvent[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          'event: connection_state\n' +
+            `data: ${JSON.stringify({ connection_id: 'c1', rooms: ['room-1'], cursor: 0 })}\n\n`
+        )
+      );
+      events.forEach((event, i) => {
+        controller.enqueue(
+          encoder.encode(
+            `id: ${i + 1}\nevent: ${event.type}\n` +
+              `data: ${JSON.stringify({ ...event, sequence: i + 1 })}\n\n`
+          )
+        );
+      });
+      // Deliberately left open: closing would look like a dropped stream and
+      // trigger a reconnect mid-assertion.
+    },
+  });
+}
+
 function makeFetch(events: AgentBridgeEvent[]) {
   let served = false;
   return vi.fn(async (url: string, _opts?: RequestInit) => {
@@ -74,7 +101,7 @@ function makeFetch(events: AgentBridgeEvent[]) {
     if (u.includes('/events')) {
       if (!served) {
         served = true;
-        return { ok: true, status: 200, json: async () => ({ events }), text: async () => '' };
+        return { ok: true, status: 200, body: sseBody(events), text: async () => '' };
       }
       return new Promise(() => {});
     }
@@ -120,6 +147,7 @@ describe('RoomConnection', () => {
       creds,
       roomId: 'room-1',
       roomName: 'Room One',
+      connectionId: 'conn-1',
       sessionId: 'session-1',
       sink,
       injector,
@@ -493,15 +521,16 @@ describe('RoomConnection', () => {
     conn.stop();
   });
 
-  it('recovers the renew loop when a renew request hangs (aborts and retries)', async () => {
-    // First renew hangs until its signal aborts; later renews succeed. A wedge
-    // would mean only the one hung call is ever seen.
-    let renewCount = 0;
+  it('recovers the heartbeat when a beat request hangs (aborts and retries)', async () => {
+    // First beat hangs until its signal aborts; later beats succeed. A wedge
+    // would mean only the one hung call is ever seen — and a heartbeat that has
+    // stopped is a connection the server declares dead within its 6s TTL.
+    let beats = 0;
     const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
       const u = String(url);
-      if (u.includes('/connection/renew')) {
-        renewCount += 1;
-        if (renewCount === 1) {
+      if (u.includes('/connection/beat')) {
+        beats += 1;
+        if (beats === 1) {
           return new Promise((_resolve, reject) => {
             opts?.signal?.addEventListener('abort', () =>
               reject(new DOMException('aborted', 'AbortError'))
@@ -528,6 +557,7 @@ describe('RoomConnection', () => {
       creds,
       roomId: 'room-1',
       roomName: 'Room One',
+      connectionId: 'conn-1',
       sessionId: 'session-1',
       sink: { acquire: () => ({ write: vi.fn() }) },
       injector,
@@ -539,14 +569,13 @@ describe('RoomConnection', () => {
     });
     conn.start();
 
-    // The hung renew aborts on its own request timeout (RENEW_REQUEST_TIMEOUT_MS),
-    // then the loop backs off CONNECTION_RENEW_INTERVAL_MS and tries again. Wait
-    // past the timeout + interval and confirm a second renew was attempted.
-    await new Promise((r) => setTimeout(r, 4_000 + 2_000 + 500));
-    expect(renewCount).toBeGreaterThanOrEqual(2);
+    // The hung beat aborts on its own request timeout (4s), which counts as a
+    // failure, so the loop waits out one backoff (4s) before trying again.
+    await new Promise((r) => setTimeout(r, 4_000 + 4_000 + 1_000));
+    expect(beats).toBeGreaterThanOrEqual(2);
 
     conn.stop();
-  }, 15_000);
+  }, 20_000);
 
   it('reset without a prior role reconnects without an assume-role clause', async () => {
     const target: InjectionTarget = { write: vi.fn() };
@@ -560,17 +589,120 @@ describe('RoomConnection', () => {
     conn.stop();
   });
 
-  it('renews the role lease so an assumed role does not auto-release', async () => {
-    // Without a /leases/renew heartbeat the server drops the seat within
-    // LEASE_TTL (~6s), so any role assumed from a switchdash session releases
-    // "instantly". Confirm the loop posts to /leases/renew.
+  it('sends one heartbeat and none of the three renews it replaced', async () => {
+    // /connection/renew, /leases/renew and /watch/heartbeat collapse into
+    // /connection/beat. The server unions connection liveness into presence and
+    // role-lease liveness, so the seat and the session survive on this alone —
+    // still posting the old renews would be duplicate work against endpoints
+    // this client no longer depends on.
     const target: InjectionTarget = { write: vi.fn() };
     const { conn, fetchMock } = connect({ acquire: () => target }, []);
     await flush();
 
-    const leaseCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/leases/renew'));
-    expect(leaseCalls.length).toBeGreaterThanOrEqual(1);
-    expect((leaseCalls[0][1] as RequestInit).method).toBe('POST');
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    const beats = urls.filter((u) => u.includes('/connection/beat'));
+    expect(beats.length).toBeGreaterThanOrEqual(1);
+    expect(urls.some((u) => u.includes('/connection/renew'))).toBe(false);
+    expect(urls.some((u) => u.includes('/leases/renew'))).toBe(false);
+    expect(urls.some((u) => u.includes('/watch/heartbeat'))).toBe(false);
+    conn.stop();
+  });
+
+  it('reports its cursor on every beat so a reconnect can resume', async () => {
+    // The cursor is what the whole transport turns on: without it the server
+    // cannot know what this client has consumed, and resume degrades to the
+    // poll's "whatever is in the queue now".
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    // Past one beat interval: the first beat fires before the stream has
+    // delivered anything, so a second is needed to observe the cursor move.
+    await new Promise((r) => setTimeout(r, 2_500));
+
+    const beats = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/connection/beat'));
+    expect(beats.length).toBeGreaterThanOrEqual(1);
+    const bodies = beats.map((c) => JSON.parse((c[1] as RequestInit).body as string));
+    expect(bodies[0].connection_id).toEqual(expect.any(String));
+    // The first beat fires before anything has been read, so it legitimately
+    // reports 0; what matters is that the cursor is reported and advances once
+    // an event has been delivered.
+    expect(bodies[bodies.length - 1].cursor).toBeGreaterThanOrEqual(1);
+    conn.stop();
+  }, 10_000);
+
+  it('declares its room when opening the stream, not after', async () => {
+    // A room subscribed after the stream opens arrives too late for catch-up:
+    // buffered events for it are skipped as "not covered" AND the cursor is
+    // advanced past them, losing exactly what resume exists to recover.
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, []);
+    await flush();
+
+    const open = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
+    expect(open).toBeDefined();
+    expect(String(open![0])).toContain('rooms=room-1');
+    expect((open![1] as RequestInit).headers).toMatchObject({
+      Accept: 'text/event-stream',
+    });
+    conn.stop();
+  });
+
+  it('tells the agent to re-read context when the server reports a gap', async () => {
+    // A gap must never be silent: the session would otherwise carry on
+    // believing its history is complete.
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async (): Promise<string> => '',
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'event: gap\n' +
+                    `data: ${JSON.stringify({
+                      from_sequence: 7,
+                      resumed_at: 7,
+                      reason: 'the server restarted since your last connection',
+                    })}\n\n`
+                )
+              );
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const target: InjectionTarget = { write: vi.fn() };
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => target },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    await flush(8);
+
+    const written = (target.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    const notice = written.find((w) => w.includes('read_context'));
+    expect(notice).toBeDefined();
+    expect(notice).toContain('missed');
     conn.stop();
   });
 
@@ -578,14 +710,15 @@ describe('RoomConnection', () => {
    * An endpoint that is simply gone — a managed server's port after the stack
    * was destroyed — used to produce an unbounded stream of warnings: two renew
    * loops retrying every 2s with no backoff, plus a watchdog announcing the
-   * staleness they were already reporting.
+   * staleness they were already reporting. One heartbeat replaced all three;
+   * these keep the lesson attached to it.
    */
-  describe('renew against a dead endpoint', () => {
-    /** Fails every renew; parks the poll loop so only renews are under test. */
+  describe('heartbeat against a dead endpoint', () => {
+    /** Fails every beat; parks the stream so only the heartbeat is under test. */
     function makeFailingFetch(shouldFail: () => boolean) {
       return vi.fn(async (url: string) => {
         const u = String(url);
-        if (u.includes('/renew')) {
+        if (u.includes('/connection/beat')) {
           if (shouldFail()) throw new TypeError('fetch failed');
           return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
         }
@@ -600,6 +733,7 @@ describe('RoomConnection', () => {
         creds,
         roomId: 'room-1',
         roomName: 'Room One',
+        connectionId: 'conn-1',
         sessionId: 'session-1',
         sink: { acquire: () => ({ write: vi.fn() }) },
         injector,
@@ -621,18 +755,20 @@ describe('RoomConnection', () => {
       vi.useRealTimers();
     });
 
-    it('backs off instead of retrying every two seconds forever', async () => {
+    it('backs off instead of beating every two seconds forever', async () => {
       vi.useFakeTimers();
       const fetchMock = makeFailingFetch(() => true);
       const conn = connectWith(fetchMock);
 
       await vi.advanceTimersByTimeAsync(120_000);
       const attempts = fetchMock.mock.calls.filter((c) =>
-        String(c[0]).includes('/connection/renew')
+        String(c[0]).includes('/connection/beat')
       ).length;
 
-      // Unbounded retries at the 2s heartbeat would be ~60 in two minutes; with
-      // the backoff capped at 30s it settles near a tenth of that.
+      // A beat that has already missed the server's 6s TTL cannot save the
+      // connection — reopening the stream is what does that — so hammering at
+      // the healthy cadence buys nothing. Unbounded retries would be ~60 in two
+      // minutes; capped at 30s it settles near a tenth of that.
       expect(attempts).toBeLessThan(15);
       conn.stop();
     });
@@ -643,7 +779,7 @@ describe('RoomConnection', () => {
 
       await vi.advanceTimersByTimeAsync(120_000);
 
-      const reported = warnings('connection renew error');
+      const reported = warnings('heartbeat failed');
       expect(reported.length).toBeGreaterThan(0);
       expect(reported.length).toBeLessThan(8);
       // The first failure is always reported, with the endpoint that failed.
@@ -654,29 +790,353 @@ describe('RoomConnection', () => {
       conn.stop();
     });
 
-    it('stays quiet about staleness while the loop is failing loudly', async () => {
-      vi.useFakeTimers();
-      const conn = connectWith(makeFailingFetch(() => true));
-
-      await vi.advanceTimersByTimeAsync(120_000);
-
-      expect(warnings('renew stale')).toHaveLength(0);
-      conn.stop();
-    });
-
     it('says so when the endpoint comes back', async () => {
       vi.useFakeTimers();
       let failing = true;
       const conn = connectWith(makeFailingFetch(() => failing));
 
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
       failing = false;
       await vi.advanceTimersByTimeAsync(60_000);
 
-      const recovered = warnings('connection renew recovered');
+      const recovered = warnings('heartbeat recovered');
       expect(recovered).toHaveLength(1);
-      expect(recovered[0][1]).toMatchObject({ event: 'room_renew_recovered' });
+      expect(recovered[0][1]).toMatchObject({ event: 'switch_beat_recovered' });
       conn.stop();
     });
+  });
+});
+
+/**
+ * The room comes from the server, on this connection's own stream.
+ *
+ * switchdash used to learn it by reading the agent's `connect_to_room` tool
+ * response through a hook — inference about another process, from a payload
+ * shape nobody had agreed to keep stable. It broke the moment that shape
+ * changed, and the failure was silent: no room in the sidebar, and no
+ * connection started either, because both hang off the same dispatch.
+ *
+ * Now the session's tool call lands on this connection, the server claims the
+ * room on it, and says so.
+ */
+describe('the room is set by the server', () => {
+  function sseWithFrames(frames: string[]): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+      },
+    });
+  }
+
+  function connectWithFrames(frames: string[], roomId: string | null = null) {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) {
+        return {
+          ok: true,
+          status: 200,
+          body: sseWithFrames(frames),
+          text: async (): Promise<string> => '',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const rooms: (string | null)[] = [];
+    const conn = new RoomConnection({
+      creds,
+      roomId,
+      roomName: null,
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      onRoomChanged: (room) => rooms.push(room),
+      log: silentLog,
+    });
+    conn.start();
+    return { conn, rooms, fetchMock };
+  }
+
+  it('opens with no room when the session has not connected to one yet', async () => {
+    const { conn, fetchMock } = connectWithFrames([]);
+    await flush();
+
+    const open = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
+    expect(String(open?.[0])).not.toContain('rooms=');
+    expect(conn.room).toBeNull();
+    conn.stop();
+  });
+
+  it('takes the room from connection_state', async () => {
+    const { conn, rooms } = connectWithFrames([
+      `event: connection_state\ndata: ${JSON.stringify({ rooms: ['room-9'] })}\n\n`,
+    ]);
+    await flush(8);
+
+    expect(conn.room).toBe('room-9');
+    expect(rooms).toEqual(['room-9']);
+    conn.stop();
+  });
+
+  it('follows a subscription_changed when the session moves room', async () => {
+    const { conn, rooms } = connectWithFrames([
+      `event: connection_state\ndata: ${JSON.stringify({ rooms: ['room-9'] })}\n\n`,
+      `event: subscription_changed\ndata: ${JSON.stringify({ rooms: ['room-10'] })}\n\n`,
+    ]);
+    await flush(8);
+
+    expect(conn.room).toBe('room-10');
+    expect(rooms).toEqual(['room-9', 'room-10']);
+    conn.stop();
+  });
+
+  it('does not re-announce a room that has not changed', async () => {
+    // The server repeats the room on every reconnect; treating each as a change
+    // would rewrite the session→room mapping and re-emit to the renderer for
+    // nothing.
+    const { conn, rooms } = connectWithFrames([
+      `event: connection_state\ndata: ${JSON.stringify({ rooms: ['room-9'] })}\n\n`,
+      `event: subscription_changed\ndata: ${JSON.stringify({ rooms: ['room-9'] })}\n\n`,
+    ]);
+    await flush(8);
+
+    expect(rooms).toEqual(['room-9']);
+    conn.stop();
+  });
+
+  it('reports the room going away', async () => {
+    const { conn, rooms } = connectWithFrames([
+      `event: connection_state\ndata: ${JSON.stringify({ rooms: ['room-9'] })}\n\n`,
+      `event: subscription_changed\ndata: ${JSON.stringify({ rooms: [] })}\n\n`,
+    ]);
+    await flush(8);
+
+    expect(conn.room).toBeNull();
+    expect(rooms).toEqual(['room-9', null]);
+    conn.stop();
+  });
+
+  it('declares a room it already knows, so catch-up covers it', async () => {
+    // A restored or adopted session: we know the room before the stream opens,
+    // and buffered events for it must be part of the first read.
+    const { conn, fetchMock } = connectWithFrames([], 'room-known');
+    await flush();
+
+    const open = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
+    expect(String(open?.[0])).toContain('rooms=room-known');
+    conn.stop();
+  });
+
+  it('ignores a control command that arrives before the room is known', async () => {
+    // `reset` re-types a prompt naming the room; naming the wrong one would
+    // move the session. Refusing beats guessing.
+    const { conn } = connectWithFrames([
+      `id: 1\nevent: command\ndata: ${JSON.stringify({
+        type: 'command',
+        room_id: 'room-9',
+        payload: { command: 'reset', args: '', user_id: '@u', user_name: 'u', thread_id: null },
+      })}\n\n`,
+    ]);
+    await flush(8);
+
+    expect(
+      silentLog.warn.mock.calls.some((c) => String(c[0]).includes('control command before'))
+    ).toBe(true);
+    conn.stop();
+  });
+});
+
+/**
+ * A session spawned to answer a message must start from before that message.
+ *
+ * The watcher consumed the triggering event — that is how it knew to spawn — so
+ * by the time the session's connection opens, the message is already behind
+ * head. Opening at head starts the session *after* the one thing it exists to
+ * handle, and it comes up to silence.
+ *
+ * This worked before the push transport by accident: the notification queue and
+ * the per-room queue were separate, so consuming one left the other intact.
+ * With a single buffer and per-connection cursors, the start position has to be
+ * passed explicitly.
+ */
+describe('a spawned session starts from its trigger', () => {
+  function openWith(startCursor: number | undefined) {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/events')) {
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({ start() {} }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: null,
+      roomName: null,
+      connectionId: 'conn-1',
+      startCursor,
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    return { conn, fetchMock };
+  }
+
+  function openUrl(fetchMock: ReturnType<typeof vi.fn>): string {
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
+    return String(call?.[0]);
+  }
+
+  it('opens at the given cursor rather than at head', async () => {
+    const { conn, fetchMock } = openWith(41);
+    await flush();
+
+    expect(openUrl(fetchMock)).toContain('start_from=41');
+    expect(openUrl(fetchMock)).not.toContain('start_from=head');
+    conn.stop();
+  });
+
+  it('sends Last-Event-ID so the server resumes from there', async () => {
+    const { conn, fetchMock } = openWith(41);
+    await flush();
+
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
+    expect(call).toBeDefined();
+    expect((call![1] as RequestInit).headers).toMatchObject({ 'Last-Event-ID': '41' });
+    conn.stop();
+  });
+
+  it('still opens at head when nothing triggered the session', async () => {
+    // A session the operator started themselves has no message waiting for it;
+    // replaying history into it would be wrong.
+    const { conn, fetchMock } = openWith(undefined);
+    await flush();
+
+    expect(openUrl(fetchMock)).toContain('start_from=head');
+    conn.stop();
+  });
+});
+
+/**
+ * A restored session claims the room we remembered for it.
+ *
+ * Normally the room arrives from the server, because the session's
+ * `connect_to_room` claims it on this connection. A resumed session never
+ * calls the tool again — it does not re-run its initial prompt — so nothing is
+ * coming. Waiting leaves the connection room-less forever: the session is
+ * silent, and the watcher spawns a duplicate for the next message.
+ */
+describe('repointing a restored session', () => {
+  it('claims the remembered room on the existing connection', async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/events')) {
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({ start() {} }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: null,
+      roomName: null,
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    await flush();
+
+    await conn.repointTo('room-remembered', 'Remembered');
+
+    const subscribe = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes('/connection/subscribe')
+    );
+    expect(subscribe).toBeDefined();
+    expect(String((subscribe![1] as RequestInit).body)).toContain('room-remembered');
+    conn.stop();
+  });
+
+  it('does nothing when it already holds that room', async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/events')) {
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream<Uint8Array>({ start() {} }),
+          text: async (): Promise<string> => '',
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    await flush();
+
+    await conn.repointTo('room-1', 'Room One');
+
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/connection/subscribe'))).toBe(
+      false
+    );
+    conn.stop();
   });
 });

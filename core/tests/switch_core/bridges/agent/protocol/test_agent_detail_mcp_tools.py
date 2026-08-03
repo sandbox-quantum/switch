@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_detail import AgentOptionsNotEditable
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -16,6 +17,9 @@ from switch_core.gateway.known_agents import KNOWN_AGENTS
 
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolService:
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.room_store = RoomStore()  # type: ignore[attr-defined]

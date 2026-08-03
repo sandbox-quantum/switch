@@ -21,6 +21,18 @@ below:
 
 ### [Unreleased]
 
+### [0.11.0] - 2026-08-03
+
+#### Added
+- Agent bridge push transport (design + Stages A & B): a sequenced,
+  non-destructive per-agent event buffer plus a push connection with SSE
+  delivery (`GET /agents/{id}/events`, one `POST /connection/beat` for liveness
+  and cursor), replacing long-poll's destroy-on-read queue; presence becomes a
+  union of heartbeat and live connection, and connection status is derived from
+  what a connection observes rather than a declared `connection_model`. Backward
+  compatible — polling keeps working and old/new state are read together
+  (CHOO-1857, #100).
+
 ### [0.10.0] - 2026-07-30
 
 #### Added
@@ -138,6 +150,29 @@ below:
 ## switchdash
 
 ### [Unreleased]
+
+### [0.16.0] - 2026-08-03
+
+#### Added
+- Move switchdash and the remote sidecar onto the agent-bridge push stream: one
+  shared connection per session claims its room server-side instead of scraping
+  it from a hook, backed by the new `@sandbox-quantum/switch-agent-runtime`
+  shared protocol client used by both switchdash and the connector plugin
+  (CHOO-1857, #100).
+
+#### Removed
+- First-run welcome page and residual Emdash artwork; first run now lands on the
+  existing home empty state with an "Add Switch agent" action (CHOO-1398, #96).
+
+### [0.15.3] - 2026-07-31
+
+#### Fixed
+- Unbreak remote hosts with `IdentitiesOnly` or restricted agent forwarding: the
+  `IdentitiesOnly` key-filter now extends ssh2's `BaseAgent` so it's no longer
+  silently discarded (which had broken auth for keychain-only keys and failed
+  connects under `ForwardAgent yes`), and a host that refuses agent forwarding
+  now degrades to "everything except forwarding" — with a warning — instead of
+  failing every command (#98).
 
 ### [0.15.2] - 2026-07-30
 

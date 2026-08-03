@@ -1,5 +1,7 @@
 import type { Client, ClientCallback, ClientChannel, ClientSFTPCallback, ExecOptions } from 'ssh2';
+import { log } from '@main/lib/logger';
 import { captureRemoteShellProfile, type RemoteShellProfile } from './remote-shell-profile';
+import { disableAgentForwarding, isAgentForwardRefusal } from './ssh-agent-forward-refusal';
 import { SshChannelTimeoutError } from './ssh-channel-open-failure';
 
 type RemoteShellProfileState =
@@ -109,6 +111,27 @@ export class SshClientProxy {
     return promise;
   }
 
+  /**
+   * Turn a server's refusal of agent forwarding into a degraded connection
+   * rather than a dead one. Returns true when forwarding was just switched off
+   * and the caller should retry its channel open once.
+   *
+   * The capability is optional — switchdash needs none of it, and it is only
+   * requested because the user's ssh config asks for it — so a host that
+   * declines it (`AllowAgentForwarding no`) must not lose every remote command.
+   * The loss is real for anything on the host relying on the forwarded agent
+   * (e.g. `git push` over SSH with the user's local keys), hence the warning.
+   */
+  private recoverFromAgentForwardRefusal(error: unknown): boolean {
+    if (!this._client || !isAgentForwardRefusal(error)) return false;
+    if (!disableAgentForwarding(this._client)) return false;
+    log.warn('SshClientProxy: host refused agent forwarding, continuing without it', {
+      event: 'ssh.agent_forward_refused',
+      connectionId: this.connectionId,
+    });
+    return true;
+  }
+
   /** Run `fn` once an exec slot is free; queues it when at capacity. */
   private acquireExecSlot(fn: () => void): void {
     if (this.activeExec < MAX_CONCURRENT_EXEC) {
@@ -183,35 +206,57 @@ export class SshClientProxy {
         this.releaseExecSlot();
       };
 
-      const wrappedCallback = this.withChannelOpenTimeout('exec', (err, channel) => {
-        if (!err && channel && typeof channel.once === 'function') {
-          // Free the slot when the command's channel finishes.
-          channel.once('close', release);
-          channel.once('error', release);
-        } else {
-          release();
-        }
-        userCallback?.(err, channel);
-      });
+      const attempt = (retrying: boolean): void => {
+        const wrappedCallback = this.withChannelOpenTimeout('exec', (err, channel) => {
+          if (err && !retrying && this.recoverFromAgentForwardRefusal(err)) {
+            attempt(true);
+            return;
+          }
+          if (!err && channel && typeof channel.once === 'function') {
+            // Free the slot when the command's channel finishes.
+            channel.once('close', release);
+            channel.once('error', release);
+          } else {
+            release();
+          }
+          userCallback?.(err, channel);
+        });
 
-      try {
-        if (options) {
-          this.client.exec(command, options, wrappedCallback);
-        } else {
-          this.client.exec(command, wrappedCallback);
+        try {
+          if (options) {
+            this.client.exec(command, options, wrappedCallback);
+          } else {
+            this.client.exec(command, wrappedCallback);
+          }
+        } catch (err) {
+          // e.g. connection not available — surface via callback, don't leak the slot.
+          release();
+          userCallback?.(err as Error, undefined as never);
         }
-      } catch (err) {
-        // e.g. connection not available — surface via callback, don't leak the slot.
-        release();
-        userCallback?.(err as Error, undefined as never);
-      }
+      };
+
+      attempt(false);
     });
   }
 
   execPty(command: string, options: ExecOptions, callback: ClientCallback): void {
     // The timeout guards only the channel OPEN; the pty channel itself is
     // long-lived (it is the interactive terminal).
-    this.client.exec(command, options, this.withChannelOpenTimeout('pty', callback));
+    const attempt = (retrying: boolean): void => {
+      this.client.exec(
+        command,
+        options,
+        this.withChannelOpenTimeout('pty', (err, channel) => {
+          if (err && !retrying && this.recoverFromAgentForwardRefusal(err)) {
+            attempt(true);
+            return;
+          }
+          callback(err, channel);
+        })
+      );
+    };
+
+    attempt(false);
   }
 
   /**

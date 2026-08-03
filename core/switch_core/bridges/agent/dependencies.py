@@ -5,7 +5,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.collaboration.lifecycle_service import (
@@ -35,7 +36,8 @@ def init_dependencies(
     room_service: RoomService,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    event_queue: EventQueue,
+    event_buffer: EventBuffer,
+    connections: ConnectionRegistry,
     task_store: TaskStore,
     request_tracker: RequestTracker,
     resource_request_tracker: ResourceRequestTracker,
@@ -52,7 +54,8 @@ def init_dependencies(
     _state["room_service"] = room_service
     _state["client_lifecycle"] = client_lifecycle
     _state["collab_lifecycle"] = collab_lifecycle
-    _state["event_queue"] = event_queue
+    _state["event_buffer"] = event_buffer
+    _state["connections"] = connections
     _state["task_store"] = task_store
     _state["request_tracker"] = request_tracker
     _state["resource_request_tracker"] = resource_request_tracker
@@ -70,7 +73,8 @@ def init_dependencies(
         room_service=room_service,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
+        connections=connections,
         task_store=task_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
@@ -104,8 +108,8 @@ def get_client_lifecycle() -> ClientLifecycleService:
     return _state["client_lifecycle"]  # type: ignore[no-any-return]
 
 
-def get_event_queue() -> EventQueue:
-    return _state["event_queue"]  # type: ignore[no-any-return]
+def get_event_buffer() -> EventBuffer:
+    return _state["event_buffer"]  # type: ignore[no-any-return]
 
 
 def get_task_store() -> TaskStore:

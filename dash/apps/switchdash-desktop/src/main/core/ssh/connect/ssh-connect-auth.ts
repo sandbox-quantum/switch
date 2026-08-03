@@ -3,7 +3,7 @@
 // are always transient, so password/passphrase come inline from the connect
 // config rather than a credential-service lookup keyed by a persisted row id.
 import ssh2, {
-  type BaseAgent,
+  BaseAgent,
   type ConnectConfig,
   type IdentityCallback,
   type ParsedKey,
@@ -44,7 +44,13 @@ function comparablePublicKey(key: AgentPublicKey): ParsedKey | Buffer | string {
   return key;
 }
 
-class IdentityFilteredAgent implements BaseAgent {
+/**
+ * Extends ssh2's `BaseAgent` class rather than only implementing its shape:
+ * ssh2 gates a custom agent on `instanceof BaseAgent` and silently discards
+ * one that fails the check, which then surfaces as "You must set a valid agent
+ * path to allow agent forwarding" whenever ForwardAgent is enabled.
+ */
+class IdentityFilteredAgent extends BaseAgent {
   readonly kind = 'identity-filtered-agent';
   declare getStream?: BaseAgent['getStream'];
 
@@ -53,6 +59,7 @@ class IdentityFilteredAgent implements BaseAgent {
     private readonly agent: BaseAgent,
     private readonly allowedKeys: ParsedKey[]
   ) {
+    super();
     if (agent.getStream) {
       this.getStream = agent.getStream.bind(agent);
     }

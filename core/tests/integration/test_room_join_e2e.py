@@ -2,7 +2,7 @@
 
 Drives the genuine path: RoomService adds an agent to a room → Matrix invite →
 the watcher's AgentClient sync loop receives the join → on_member_event enqueues
-a `room_join` AgentEvent → it is read off the EventQueue. No mocks, no HTTP layer.
+a `room_join` AgentEvent → it is read off the event buffer. No mocks, no HTTP layer.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ async def _drain_room_join(
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         remaining = deadline - asyncio.get_event_loop().time()
-        events = await harness.event_queue.poll_room(
+        events = await harness.event_buffer.poll_room(
             agent_id, room_id, timeout=min(5, max(0.1, remaining))
         )
         for ev in events:

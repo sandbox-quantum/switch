@@ -7,7 +7,7 @@ description: Set up the Switch connector — register this Claude Code instance 
 
 This skill registers the current Claude Code instance as a Switch agent and
 writes the resulting credentials into Claude Code settings so the `switch`
-MCP server and `switch-channel` background process can connect.
+local Switch runtime can connect.
 
 ## How the plugin reads config
 
@@ -23,6 +23,82 @@ Claude Code populates these from the `env` block in a settings file. By
 choosing project-local vs. user-global settings, the user decides whether
 this Switch identity is tied to one repo or shared across all of them.
 This skill walks through registration and writes that block.
+
+Separately from the agent's identity, the runtime itself is fetched from a
+private registry, which needs its own one-time setup — Step 0.
+
+## Step 0 — Registry access for the runtime
+
+The plugin's MCP server is fetched with
+`npx @sandbox-quantum/switch-agent-runtime`. That package is published to
+**GitHub Packages** and is private, so npm needs to know which registry
+serves the `@sandbox-quantum` scope and how to authenticate. Without both,
+`npx` fails — and it fails **misleadingly**: a private package you are not
+authorised for returns **404**, not 403, because registries do not admit that
+private packages exist. "Package not found" almost always means "not logged
+in" here.
+
+Sessions launched by switchdash get this handed to them and need nothing.
+This step is for **standalone Claude Code**, where nothing is injecting it.
+
+First check whether it is already set up:
+
+```bash
+npm config get @sandbox-quantum:registry
+```
+
+If that prints `https://npm.pkg.github.com`, skip to Step 1.
+
+Otherwise it needs the GitHub CLI, authenticated **and holding the
+`read:packages` scope**:
+
+```bash
+gh auth status
+```
+
+If `gh` is missing or logged out, stop and tell the user to install it and run
+`gh auth login` — everything below depends on it, and guessing a token is not
+something to attempt.
+
+Then look at the `Token scopes:` line. **`gh auth login` does not request
+`read:packages`** — the default scopes are `gist`, `read:org`, `repo` and
+`workflow`. A perfectly healthy login therefore produces a token the registry
+refuses:
+
+```
+npm error 403 Permission permission_denied: The token provided does not match expected scopes.
+```
+
+If `read:packages` is absent, have the user add it:
+
+```bash
+gh auth refresh -h github.com -s read:packages
+```
+
+That opens a device-code prompt in a browser. If they cannot complete it (a
+headless box, for instance), the alternative is a classic PAT with
+`read:packages`, used in place of `gh auth token` below.
+
+Then, with the user's agreement (this writes to their `~/.npmrc`):
+
+```bash
+npm config set @sandbox-quantum:registry https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
+```
+
+Verify it resolves before moving on, so a failure surfaces here rather than as
+a broken MCP server later:
+
+```bash
+npm view @sandbox-quantum/switch-agent-runtime version
+```
+
+Two things to tell the user plainly rather than leave them to discover:
+
+- This writes a **real token into `~/.npmrc`** (mode 0600). It is how npm
+  authenticates to any private registry, but it is a credential at rest.
+- It **expires when `gh` rotates its token**, and the symptom is the same
+  misleading 404. Re-running the two `npm config set` lines fixes it.
 
 ## Step 1 — Check existing config
 
@@ -386,7 +462,7 @@ Report to the user:
 - Which settings file was written.
 - That they need to **restart Claude Code** (or reload the session) for
   the new `env` block to take effect — the `switch` MCP server and
-  `switch-channel` process only read environment variables at startup,
+  Switch runtime only reads environment variables at startup,
   so an active session won't see the new values.
 
 Do **not** print the API token. It's now in the settings file; the user

@@ -22,6 +22,7 @@ import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
+import { npmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
@@ -202,6 +203,48 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 
+      const ptyId = makePtyId(session.providerId, this.sessionId);
+      const port = agentHookService.getPort();
+      const token = agentHookService.getToken();
+      const colorEnv = await getTerminalColorEnv();
+
+      // Open this session's Switch connection before the session exists, and
+      // hand it the id. Its tool calls then arrive on the connection switchdash
+      // is reading, so `connect_to_room` claims the room *there* and the server
+      // tells us which room the session is in. Before this, the two held
+      // separate connections and switchdash had to infer the room by scraping
+      // the agent's tool response through a hook.
+      //
+      // Order matters: the server refuses a call naming a connection that is
+      // not open, and the session may call connect_to_room immediately.
+      // Null when the session has no Switch credentials — most sessions —
+      // in which case nothing here applies and the var is simply absent.
+      const switchConnectionId = await switchNotificationPoller.ensureForSession({
+        sessionId: this.sessionId,
+        providerId: session.providerId,
+        ptyId,
+      });
+
+      // The Claude Code plugin resolves its MCP server with `npx` from a
+      // private registry, so the session needs to know where that registry is
+      // and how to authenticate. Empty when `gh` has no token, which lets the
+      // session start regardless — a session with no MCP server beats no
+      // session, and the missing login is reported at host setup.
+      const npmAuthEnv = await npmRegistryAuthEnv();
+
+      const sessionEnv = {
+        ...buildAgentEnv({
+          hook: port > 0 ? { port, ptyId, token } : undefined,
+          providerVars,
+          shellProfile: this.shellProfile,
+        }),
+        ...colorEnv,
+        ...this.sessionEnvVars,
+        ...subagentVars,
+        ...npmAuthEnv,
+        ...(switchConnectionId ? { SWITCH_CONNECTION_ID: switchConnectionId } : {}),
+      };
+
       const resolved = resolveLocalPtySpawn({
         platform: process.platform,
         env: process.env,
@@ -212,6 +255,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           shellProfile: this.shellProfile,
           shellSetup: this.shellSetup,
           tmuxSessionName,
+          paneEnv: tmuxSessionName ? sessionEnv : undefined,
         },
       });
 
@@ -219,26 +263,12 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         sessionId: ptySessionId,
       });
 
-      const ptyId = makePtyId(session.providerId, this.sessionId);
-      const port = agentHookService.getPort();
-      const token = agentHookService.getToken();
-      const colorEnv = await getTerminalColorEnv();
-
       const pty = spawnLocalPty({
         id: ptySessionId,
         command: resolved.command,
         args: resolved.args,
         cwd: resolved.cwd,
-        env: {
-          ...buildAgentEnv({
-            hook: port > 0 ? { port, ptyId, token } : undefined,
-            providerVars,
-            shellProfile: this.shellProfile,
-          }),
-          ...colorEnv,
-          ...this.sessionEnvVars,
-          ...subagentVars,
-        },
+        env: sessionEnv,
         cols: spawnSize.cols,
         rows: spawnSize.rows,
       });
@@ -297,7 +327,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // resume polling that room — the connect_to_room hook only fires on a
       // live tool call, so a resumed session would otherwise go silent.
       void switchRoomService
-        .restorePoller({
+        .restoreConnection({
           sessionId: this.sessionId,
           providerId: session.providerId,
           ptyId,

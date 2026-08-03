@@ -19,7 +19,7 @@
  * Bump policy: `x` on a wire break (and only then), `y` on every release that
  * changes the sidecar.
  */
-export const SIDECAR_VERSION = '1.0';
+export const SIDECAR_VERSION = '1.3';
 
 /**
  * Oldest major this client can still speak to. Raise it only when support for an

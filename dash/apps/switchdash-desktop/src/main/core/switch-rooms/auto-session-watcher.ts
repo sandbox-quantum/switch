@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { SwitchEventStream } from '@sandbox-quantum/switch-agent-runtime';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import {
@@ -8,9 +9,7 @@ import {
 } from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
 import { sessionService } from '@main/core/sessions/session-service';
-import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import {
   listAutoSessionAgentIds,
   listAutoSessionSubagents,
@@ -22,22 +21,18 @@ import {
   readSwitchAgentCredentialsFromSettings,
   type SwitchAgentCredentials,
 } from './switch-credentials';
-import type { AgentBridgeEventResponse } from './switch-event-format';
+import { switchNotificationPoller } from './switch-notification-poller';
 import { switchRoomService } from './switch-room-service';
 
-const NOTIF_POLL_TIMEOUT_S = 10;
-const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 30_000;
-// Refresh the global "watching" heartbeat well under the server's ALWAYS_ON_TTL
-// (90s) so a dormant agent reports DORMANT (and replies "Starting a session…")
-// while switchdash is up.
-const WATCH_HEARTBEAT_INTERVAL_MS = 30_000;
 const SPAWN_MAX_ATTEMPTS = 3;
 const SPAWN_RETRY_DELAY_MS = 2000;
-// How long a room stays "spawn in flight" before the guard is cleared. Covers
-// the boot+connect window; once the session connects, the live-session check
-// no-ops further notifications anyway. If the spawn failed, clearing lets the
-// next notification retry.
+// How long a room stays "spawn in flight" before the guard is cleared.
+//
+// This covers the window the server cannot: it learns a session exists only
+// when that session's connection claims the room, tens of seconds after the
+// process starts. Until then the room looks unattended and every further
+// addressed message would spawn again. Cleared early once the session
+// connects; this TTL is the backstop for a spawn that failed.
 const INFLIGHT_TTL_MS = 120_000;
 
 interface AgentWatcher {
@@ -49,9 +44,21 @@ interface AgentWatcher {
   /** When set, spawn sessions as this Claude Code subagent of `localAgentId`. */
   agentName?: string;
   creds: SwitchAgentCredentials;
-  /** Room ids with a spawn in flight (booting / connecting) → guards against
-   * duplicate spawns while a notification storm lands during the boot window. */
+  /**
+   * Room ids with a spawn in flight (booting / connecting) → guards against
+   * duplicate spawns while a notification storm lands during the boot window.
+   *
+   * This is NOT made redundant by the server's room slots. The server goes dark
+   * on a room only once the spawned session's connection claims it, which is
+   * tens of seconds after we start the process — until then the room genuinely
+   * has nobody in it as far as the server can tell, and every further message
+   * would spawn another session. No protocol rule can close that window,
+   * because the fact "a process is booting here" exists only on this machine.
+   */
   inFlight: Map<string, ReturnType<typeof setTimeout>>;
+  /** Chosen once per watcher so the connection survives a dropped socket. */
+  connectionId: string;
+  stream?: SwitchEventStream;
 }
 
 /** Watcher map key for a subagent (distinct from its parent's plain id). */
@@ -66,19 +73,6 @@ async function getAgentLocalDir(localAgentId: string): Promise<string | null> {
   const location = await getLocationById(agent.locationId);
   if (!location || location.sshHost !== null) return null;
   return location.dir;
-}
-
-/** Refresh the agent's global "watching" heartbeat. Throws on non-OK. */
-async function postWatchHeartbeat(
-  creds: SwitchAgentCredentials,
-  signal: AbortSignal
-): Promise<void> {
-  const resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/watch/heartbeat`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
-    signal,
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
 }
 
 /** Post a message to a room on the agent's behalf (used for the spawn-failure
@@ -165,7 +159,13 @@ class AutoSessionWatcher {
    */
   private subscribeToRoomConnections(): void {
     if (this.roomChangeUnsub) return;
-    this.roomChangeUnsub = events.on(sessionRoomChangedChannel, ({ roomId, agentId }) => {
+    // An in-process subscription, NOT the `events` bus. In main, `events.emit`
+    // is webContents.send and `events.on` is ipcMain.on — opposite directions
+    // of the renderer bridge — so this listener never fired for a room
+    // connected in main. The guard was therefore only ever cleared by its 120s
+    // TTL, which is why a room whose session had already arrived kept
+    // reporting "a spawn is already in flight".
+    this.roomChangeUnsub = switchRoomService.onSessionRoomChanged(({ roomId, agentId }) => {
       if (!roomId || !agentId) return;
       for (const watcher of this.watchers.values()) {
         if (watcher.creds.agentId === agentId) this.clearInFlight(watcher, roomId);
@@ -260,7 +260,12 @@ class AutoSessionWatcher {
     creds: SwitchAgentCredentials;
   }): void {
     const abort = new AbortController();
-    const watcher: AgentWatcher = { ...init, abort, inFlight: new Map() };
+    const watcher: AgentWatcher = {
+      ...init,
+      abort,
+      inFlight: new Map(),
+      connectionId: randomUUID(),
+    };
     this.watchers.set(init.key, watcher);
     log.info('AutoSessionWatcher: watching agent', {
       key: init.key,
@@ -269,8 +274,7 @@ class AutoSessionWatcher {
       agentId: init.creds.agentId,
     });
 
-    void this.notificationLoop(watcher);
-    void this.watchHeartbeatLoop(watcher);
+    void this.startStream(watcher);
   }
 
   /** Stop watching one local agent (toggle off / shutdown). */
@@ -311,74 +315,81 @@ class AutoSessionWatcher {
     for (const id of [...this.watchers.keys()]) this.stopForAgent(id);
   }
 
-  private async watchHeartbeatLoop(watcher: AgentWatcher): Promise<void> {
+  /**
+   * Open the watcher's connection: `all` scope, `addressed` filter.
+   *
+   * One connection replaces the `/notifications` poll AND the
+   * `/watch/heartbeat` loop — its heartbeat is what makes the agent report
+   * DORMANT (and answer "Starting a session…") rather than DISCONNECTED.
+   *
+   * `all` scope means the server delivers every room the agent belongs to
+   * *except* those a session's connection has claimed. That is the split-brain
+   * fix: "a session is already attending this room" stops being a fact
+   * switchdash keeps its own copy of and starts being one the server enforces —
+   * we simply never hear about a covered room.
+   */
+  private startStream(watcher: AgentWatcher): void {
     const { abort, creds } = watcher;
-    log.debug('AutoSessionWatcher: watch-heartbeat loop started', {
+    log.debug('AutoSessionWatcher: opening watch connection', {
       localAgentId: watcher.localAgentId,
       agentId: creds.agentId,
-      intervalMs: WATCH_HEARTBEAT_INTERVAL_MS,
-    });
-    while (!abort.signal.aborted) {
-      try {
-        await postWatchHeartbeat(creds, abort.signal);
-      } catch (error) {
-        if (abort.signal.aborted) return;
-        log.warn('AutoSessionWatcher: watch heartbeat error', {
-          agentId: creds.agentId,
-          error: String(error),
-        });
-      }
-      await new Promise((r) => setTimeout(r, WATCH_HEARTBEAT_INTERVAL_MS));
-    }
-  }
-
-  private async notificationLoop(watcher: AgentWatcher): Promise<void> {
-    const { abort, creds } = watcher;
-    const url = `${creds.apiEndpoint}/agents/${creds.agentId}/notifications?timeout=${NOTIF_POLL_TIMEOUT_S}`;
-    let backoff = INITIAL_BACKOFF_MS;
-    log.debug('AutoSessionWatcher: notification loop started', {
-      localAgentId: watcher.localAgentId,
-      agentId: creds.agentId,
-      url,
+      connectionId: watcher.connectionId,
     });
 
-    while (!abort.signal.aborted) {
-      try {
-        const resp = await fetch(url, {
-          headers: { Authorization: `Bearer ${creds.token}` },
-          signal: abort.signal,
-        });
-        if (resp.status === 204) {
-          backoff = INITIAL_BACKOFF_MS;
-          continue;
-        }
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-
-        backoff = INITIAL_BACKOFF_MS;
-        const data = (await resp.json()) as AgentBridgeEventResponse;
-        for (const event of data.events) {
-          this.handleNotification(watcher, event.room_id);
-        }
-      } catch (error) {
-        if (abort.signal.aborted) return;
-        log.warn('AutoSessionWatcher: notification poll error', {
+    const stream = new SwitchEventStream({
+      creds: { agentId: creds.agentId, apiEndpoint: creds.apiEndpoint, token: creds.token },
+      connectionId: watcher.connectionId,
+      scope: 'all',
+      // Only reasons to start a session: addressed messages, task events, and
+      // opted-in joins. Room chatter is not one.
+      filter: 'addressed',
+      rooms: [],
+      // This watcher exists to spawn sessions; saying so is what licenses the
+      // server's "Starting a session…" reply instead of reporting the agent
+      // offline.
+      spawnCapable: true,
+      onEvent: (event) => {
+        if (event.room_id) this.handleNotification(watcher, event.room_id, event.sequence);
+      },
+      onGap: (info) => {
+        // A gap here means we may have missed a request to start a session.
+        // There is nothing to replay it from, so say so loudly rather than let
+        // an unanswered mention look like an idle agent.
+        log.warn('AutoSessionWatcher: gap — may have missed a spawn trigger', {
+          localAgentId: watcher.localAgentId,
           agentId: creds.agentId,
-          error: String(error),
+          fromSequence: info.fromSequence,
+          reason: info.reason,
         });
-        await new Promise((r) => setTimeout(r, backoff));
-        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-      }
-    }
+      },
+      onEvicted: (reason) => {
+        log.warn('AutoSessionWatcher: watch connection evicted', {
+          localAgentId: watcher.localAgentId,
+          agentId: creds.agentId,
+          reason,
+        });
+      },
+      log,
+      signal: abort.signal,
+    });
+    watcher.stream = stream;
+    stream.start();
   }
 
-  /** Decide whether to spawn for a notified room, with a per-room in-flight guard. */
-  private handleNotification(watcher: AgentWatcher, roomId: string): void {
-    // A live session is already attending this room — the existing per-room
-    // poller delivers the message; nothing to do.
-    const hasLiveSession = switchRoomService
-      .getConnections()
-      .some((c) => c.roomId === roomId && c.agentId === watcher.creds.agentId);
-    if (hasLiveSession) return;
+  /**
+   * Decide whether to spawn for a notified room, with a per-room in-flight guard.
+   *
+   * There is no longer a "does a session already cover this room?" check here.
+   * The server answers that by never delivering the event: a session's
+   * connection claims the room and this `all`-scope connection goes dark on it.
+   * Keeping a local copy of that fact is what let switchdash and Switch
+   * disagree — a stale map meaning either a duplicate session or none at all.
+   *
+   * The in-flight guard is a different thing and stays: it covers the window
+   * between deciding to spawn and the spawned session claiming the room, which
+   * the server cannot know about.
+   */
+  private handleNotification(watcher: AgentWatcher, roomId: string, sequence?: number): void {
     if (watcher.inFlight.has(roomId)) {
       log.info(
         'AutoSessionWatcher: notification for room with a spawn already in flight — skipping duplicate spawn',
@@ -386,6 +397,54 @@ class AutoSessionWatcher {
       );
       return;
     }
+
+    // A session of ours is already attending this room, even though the server
+    // has not been told yet.
+    //
+    // In steady state the server answers this for us — it goes dark on a room a
+    // session's connection has claimed, so we never hear about it. That leaves
+    // two windows where only we can know: a session booting (the guard above),
+    // and one being restored after a restart, whose connection is open but has
+    // not yet claimed its room. Receiving an event for a room we are already
+    // covering means we are in one of those windows, not that the room is
+    // free — and spawning would give the user a second session beside a
+    // perfectly good one.
+    //
+    // Read from the live connection map rather than the persisted one: a stale
+    // row would block spawning forever, turning a duplicate session into an
+    // unreachable agent, which is both worse and far harder to notice.
+    const attending = switchRoomService
+      .getConnections()
+      .some((c) => c.roomId === roomId && c.agentId === watcher.creds.agentId);
+    if (attending) {
+      log.info('AutoSessionWatcher: a session of ours already attends this room', {
+        event: 'auto_session_spawn_skipped_session_present',
+        localAgentId: watcher.localAgentId,
+        roomId,
+      });
+      return;
+    }
+
+    // Tell the poller where the session it is about to open should start
+    // reading. We have already consumed this event — that is how we know to
+    // spawn — so a session starting at head would come up having missed the
+    // very message it exists to answer.
+    if (sequence !== undefined) {
+      switchNotificationPoller.noteSpawnTrigger(watcher.creds.agentId, sequence);
+    }
+    // The two halves of the hand-off are logged at both ends, so a session that
+    // comes up without its triggering message can be diagnosed from the log
+    // alone: this line says which event the spawn is for and where the session
+    // should therefore start reading, and the poller's counterpart says where
+    // it actually started.
+    log.info('AutoSessionWatcher: spawning for event', {
+      event: 'auto_session_spawn_trigger',
+      localAgentId: watcher.localAgentId,
+      agentId: watcher.creds.agentId,
+      roomId,
+      triggerSequence: sequence ?? null,
+      sessionWillStartFrom: sequence === undefined ? 'head' : Math.max(sequence - 1, 0),
+    });
 
     const timer = setTimeout(() => watcher.inFlight.delete(roomId), INFLIGHT_TTL_MS);
     watcher.inFlight.set(roomId, timer);

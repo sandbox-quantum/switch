@@ -38,6 +38,50 @@ type ConnectionState = SessionRoomConnection & {
  */
 class SwitchRoomService implements IDisposable {
   private readonly connections = new Map<string, ConnectionState>();
+  private readonly roomListeners = new Set<
+    (change: { sessionId: string; roomId: string | null; agentId: string | null }) => void
+  >();
+
+  /**
+   * Subscribe, **in this process**, to a session's room changing.
+   *
+   * Deliberately not the `events` bus. In main, `events.emit` is
+   * `webContents.send` and `events.on` is `ipcMain.on` — one direction each,
+   * renderer-bound. A main-process emit therefore never reaches a
+   * main-process listener, so anything in main that subscribed that way
+   * silently received nothing. AutoSessionWatcher did exactly that, and its
+   * per-room spawn guard was consequently never cleared on connect: it sat
+   * until the 120s TTL, blocking respawns for a room whose session had long
+   * since arrived.
+   *
+   * Returns an unsubscribe function.
+   */
+  onSessionRoomChanged(
+    listener: (change: { sessionId: string; roomId: string | null; agentId: string | null }) => void
+  ): () => void {
+    this.roomListeners.add(listener);
+    return () => this.roomListeners.delete(listener);
+  }
+
+  private notifyRoomChanged(change: {
+    sessionId: string;
+    roomId: string | null;
+    agentId: string | null;
+  }): void {
+    // To the renderer, for the UI…
+    events.emit(sessionRoomChangedChannel, change);
+    // …and to this process, for the logic that reacts to it.
+    for (const listener of this.roomListeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        log.warn('SwitchRoomService: room-change listener failed', {
+          sessionId: change.sessionId,
+          error: String(error),
+        });
+      }
+    }
+  }
 
   /**
    * Record (or replace) the room a session is connected to. A session holds at
@@ -83,11 +127,7 @@ class SwitchRoomService implements IDisposable {
       agentId,
     });
 
-    events.emit(sessionRoomChangedChannel, {
-      sessionId: ctx.sessionId,
-      roomId,
-      agentId,
-    });
+    this.notifyRoomChanged({ sessionId: ctx.sessionId, roomId, agentId });
   }
 
   /**
@@ -120,24 +160,24 @@ class SwitchRoomService implements IDisposable {
       agentId,
     });
 
-    events.emit(sessionRoomChangedChannel, {
-      sessionId: ctx.sessionId,
-      roomId,
-      agentId,
-    });
+    this.notifyRoomChanged({ sessionId: ctx.sessionId, roomId, agentId });
   }
 
   /**
-   * Re-establish a session's room connection and poller from persisted state.
-   * Called when a session's PTY (re)launches — e.g. after an app restart — so
-   * the agent keeps receiving addressed room events without having to call
-   * connect_to_room again. No-op when the session has no persisted room.
+   * Re-establish a session's connection to its room from persisted state.
+   *
+   * Called when a session's PTY (re)launches — e.g. after an app restart. A
+   * resumed session does not re-run its initial prompt, so it never calls
+   * `connect_to_room` again: nobody else is going to say which room it was in,
+   * and without this it comes back connected to nothing.
+   *
+   * No-op when the session has no persisted room.
    */
-  async restorePoller(ctx: SessionRoomContext): Promise<void> {
+  async restoreConnection(ctx: SessionRoomContext): Promise<void> {
     const persisted = await getPersistedRoomConnection(ctx.sessionId);
     if (!persisted) return;
 
-    log.info('SwitchRoomService: restoring room poller for resumed session', {
+    log.info('SwitchRoomService: restoring the room connection for a resumed session', {
       sessionId: ctx.sessionId,
       roomId: persisted.roomId,
     });
@@ -162,11 +202,7 @@ class SwitchRoomService implements IDisposable {
 
     log.info('SwitchRoomService: session disconnected from room', { sessionId });
 
-    events.emit(sessionRoomChangedChannel, {
-      sessionId,
-      roomId: null,
-      agentId: null,
-    });
+    this.notifyRoomChanged({ sessionId, roomId: null, agentId: null });
   }
 
   /**

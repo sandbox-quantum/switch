@@ -158,4 +158,29 @@ describe('InProcessSessionSpawner.drop', () => {
 
     expect(spawner.spawnedSessions()).toHaveLength(1);
   });
+
+  // A session started for room A that moves to room B leaves A uncovered, and a
+  // ping there must spawn again. The launched entry is keyed by the room the
+  // session was started for and its pane is still alive in room B, so left in
+  // place it vouches for A forever and A becomes permanently unspawnable.
+  it('frees the original room once its session has moved elsewhere', async () => {
+    const rooms = new Map<string, string>();
+    const runtime = {
+      hasLiveRoom: vi.fn((r: string) => [...rooms.values()].includes(r)),
+    };
+    const { spawner } = makeSpawner({ isPaneLive: () => true, runtime });
+
+    await spawner.launch('room-a');
+    const sessionId = spawner.spawnedSessions()[0]!.sessionId;
+
+    // Connects to the room it was started for: still covered.
+    rooms.set(sessionId, 'room-a');
+    spawner.drop(sessionId);
+    await expect(spawner.isRoomLive('room-a')).resolves.toBe(true);
+
+    // Re-targets to another room. Its pane is still live — that is the trap.
+    rooms.set(sessionId, 'room-b');
+    await expect(spawner.isRoomLive('room-b')).resolves.toBe(true);
+    await expect(spawner.isRoomLive('room-a')).resolves.toBe(false);
+  });
 });

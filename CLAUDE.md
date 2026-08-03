@@ -81,12 +81,18 @@ each ships its own copy of the Switch room-workflow skill at
 `skills/switch/SKILL.md`:
 
 - `connectors/claude-code-plugin/` — manifest `.claude-plugin/plugin.json`.
-  Ships the skill plus an MCP config (`.mcp.json`), hooks, and a local channel
-  process.
+  Ships the skill plus an MCP config (`.mcp.json`) and hooks. It contains **no
+  runtime code**: the MCP server is `@sandbox-quantum/switch-agent-runtime`,
+  fetched with `npx` and built from `dash/packages/switch-agent-runtime/`.
+  switchdash imports the same package for its protocol client, so there is one
+  implementation of the agent protocol rather than a copy per consumer.
 - `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships
   **only** the skill. Codex does not expand `${VAR}` in a plugin-bundled
   `.mcp.json` and has no `${CLAUDE_PLUGIN_ROOT}` equivalent, so switchdash
-  registers the Switch MCP server on argv when it launches the session instead.
+  registers the same local `switch-agent-runtime` MCP server itself when it
+  launches the session — through a per-agent Codex profile
+  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`), since a
+  stdio server cannot be expressed on argv the way an HTTP one can.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, or anything an agent-facing client needs to know:
@@ -95,15 +101,19 @@ commands, room workflow, or anything an agent-facing client needs to know:
   `connectors/claude-code-plugin/skills/switch/SKILL.md` *and*
   `connectors/codex-plugin/skills/switch/SKILL.md` so the documented workflow
   matches actual behavior on both hosts.
-- **Bump both plugin versions** —
-  `connectors/claude-code-plugin/.claude-plugin/plugin.json` and
-  `connectors/codex-plugin/.codex-plugin/plugin.json` — so installs pick up the
-  change.
+- **Bump the versions of whatever you changed, in the same commit.** Not at
+  release time — it gets forgotten, and then a version number is a claim nobody
+  can trust. `dash/AGENTS.md` has the table (both plugins, runtime package,
+  sidecar) and the rules for which digit moves.
 - **Diff the two skills after editing.** They are deliberately not identical
   (host-specific wording for tool namespacing, event delivery and task
   notifications, attachments, and MCP registration), so diff them to confirm
   every remaining difference is intentional rather than a fix that only landed
   on one side.
+- **Publishing the runtime is a tag**, not a merge:
+  `git tag switch-agent-runtime-v<version> && git push origin <tag>`. It works
+  from a branch, so a version can be tested before it lands. The tag must match
+  the version in `package.json` or the workflow fails.
 
 ## Code Style
 

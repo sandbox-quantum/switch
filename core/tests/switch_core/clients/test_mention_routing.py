@@ -10,6 +10,23 @@ from switch_core.clients.agent_client import (
 )
 
 
+def _no_connections() -> SimpleNamespace:
+    """A connection registry with nothing live.
+
+    Presence is the union of the heartbeat rows and the live connections
+    (CHOO-1857); these tests drive the DB arm, so the connection arm must
+    contribute nothing.
+    """
+    return SimpleNamespace(
+        live_agent_ids=lambda: set(),
+        is_live=lambda _agent_id: False,
+        live_in_room=lambda _agent_id, _room_id: False,
+        has_session_in=lambda _agent_id, _room_id: False,
+        can_spawn_for=lambda _agent_id, _room_id: False,
+        for_agent=lambda _agent_id: [],
+    )
+
+
 def _event(body: str, formatted_body: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(body=body, formatted_body=formatted_body)
 
@@ -137,12 +154,13 @@ def _role_client(agent_name: str, held_role: str | None) -> SimpleNamespace:
     async def _session_factory():  # type: ignore[no-untyped-def]
         yield object()
 
-    async def _agent_room_role(_session, _room_id, _agent_id):  # type: ignore[no-untyped-def]
+    async def _agent_room_role(_session, _room_id, _agent_id, _alive=()):  # type: ignore[no-untyped-def]
         return held_role
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name=agent_name),
         session_factory=_session_factory,
+        _connections=_no_connections(),
         _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
     )
 
@@ -207,6 +225,7 @@ def _alias_client(agent_name: str, alias_by_room: dict[str, str]) -> SimpleNames
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name=agent_name),
         session_factory=_session_factory,
+        _connections=_no_connections(),
         _room_store=SimpleNamespace(get_alias=_get_alias),
     )
 
@@ -311,7 +330,7 @@ def _unavailable_client(
     async def _live_connected_rooms(_session, _agent_id):  # type: ignore[no-untyped-def]
         return list(live_rooms)
 
-    async def _agent_room_role(_session, _room_id, _agent_id):  # type: ignore[no-untyped-def]
+    async def _agent_room_role(_session, _room_id, _agent_id, _alive=()):  # type: ignore[no-untyped-def]
         return "worker" if role_here else None
 
     async def _has_room_binding(_session, _agent_id, _room_id):  # type: ignore[no-untyped-def]
@@ -341,6 +360,7 @@ def _unavailable_client(
         agent=agent,
         _fresh_agent=_fresh_agent,
         session_factory=_session_factory,
+        _connections=_no_connections(),
         _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
         _agent_session_store=SimpleNamespace(
             live_connected_rooms=_live_connected_rooms,

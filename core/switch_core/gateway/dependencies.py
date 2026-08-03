@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
@@ -41,7 +41,7 @@ def init_dependencies(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
     connector_store: ServerConnectorStore,
-    event_queue: EventQueue,
+    event_buffer: EventBuffer,
     session_factory: Any,
     user_store: UserStore,
     external_user_store: ExternalUserStore,
@@ -59,7 +59,7 @@ def init_dependencies(
     _state["collab_lifecycle"] = collab_lifecycle
     _state["connector_lifecycle"] = connector_lifecycle
     _state["connector_store"] = connector_store
-    _state["event_queue"] = event_queue
+    _state["event_buffer"] = event_buffer
     _state["session_factory"] = session_factory
     _state["user_store"] = user_store
     _state["external_user_store"] = external_user_store
@@ -120,8 +120,8 @@ def get_collab_lifecycle() -> CollaborationBridgeLifecycleService:
     return _state["collab_lifecycle"]  # type: ignore[no-any-return]
 
 
-def get_event_queue() -> EventQueue:
-    return _state["event_queue"]  # type: ignore[no-any-return]
+def get_event_buffer() -> EventBuffer:
+    return _state["event_buffer"]  # type: ignore[no-any-return]
 
 
 def get_user_store() -> UserStore:

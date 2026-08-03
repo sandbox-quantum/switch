@@ -16,7 +16,7 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({ behavior: { hooks: undefined }, capabilities: { prompt: { kind: 'argv' } } }),
 }));
 
-const silentLog = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+const silentLog = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 function fakeConnection(): ManagedConnection {
   return { start: vi.fn(), stop: vi.fn(), onAgentStatusChange: vi.fn() };
@@ -87,6 +87,26 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(created[0].deps.roomId).toBe('room-1');
     expect(created[0].deps.sessionId).toBe('session-a');
     expect(created[0].conn.start).toHaveBeenCalledTimes(1);
+  });
+
+  // The receiving half of the watcher's hand-off. The watcher already consumed
+  // the event that made it spawn, so the session's own connection has to rewind
+  // to it — opened at head, the session misses the message it exists to answer.
+  it('opens a spawned session at the cursor the watcher handed over', () => {
+    const { runtime, created } = makeRuntime();
+
+    runtime.ensureForSession('session-a', 'codex', 41);
+
+    expect(created).toHaveLength(1);
+    expect(created[0].deps.startCursor).toBe(41);
+  });
+
+  it('opens a session at head when no cursor was handed over', () => {
+    const { runtime, created } = makeRuntime();
+
+    runtime.ensureForSession('session-a', 'codex');
+
+    expect(created[0].deps.startCursor).toBeUndefined();
   });
 
   it('records every hooked session (hasSeen) so /sessions can scope tmux to this agent', async () => {
@@ -198,6 +218,23 @@ describe('SidecarRuntime (multi-session)', () => {
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
 
     expect(connected).toEqual(['room-1', 'room-1']);
+  });
+
+  // The spawner's launched entry is keyed by session, not room, so the listener
+  // has to carry the session id — without it the entry cannot be dropped, and it
+  // keeps vouching for the room the session was started for after it has moved.
+  it('tells the listener which session connected, on first connect and on a move', async () => {
+    const { runtime } = makeRuntime();
+    const connected: Array<[string, string]> = [];
+    runtime.onRoomConnected((roomId, sessionId) => connected.push([roomId, sessionId]));
+
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+    await runtime.handleHook(switchRoomHook('room-2', PTY_A));
+
+    expect(connected).toEqual([
+      ['room-1', 'session-a'],
+      ['room-2', 'session-a'],
+    ]);
   });
 
   it('roomIdForSession returns the attended room, or null when unknown', async () => {

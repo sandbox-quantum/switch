@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from nio import MatrixRoom, RoomMessage, RoomMessageText
 
 from switch_core.bridges.agent.commands import dispatch_admin_command
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     AdminMessageType,
@@ -53,6 +54,7 @@ class AdminClient(ClientBase[ClientConfig]):
         agent_store: AgentStore,
         room_store: RoomStore,
         room_role_store: RoomRoleStore,
+        connections: ConnectionRegistry,
         document_store: DocumentStore,
         reference_store: ReferenceStore,
         agent_session_store: AgentSessionStore,
@@ -64,6 +66,7 @@ class AdminClient(ClientBase[ClientConfig]):
         self._agent_store = agent_store
         self._room_store = room_store
         self._room_role_store = room_role_store
+        self._connections = connections
         self._document_store = document_store
         self._reference_store = reference_store
         self._agent_session_store = agent_session_store
@@ -145,7 +148,9 @@ class AdminClient(ClientBase[ClientConfig]):
             for role in roles:
                 if mention_regex(role.name).search(strip_emphasis(body)) is None:
                     continue
-                if not await self._room_role_store.has_live_holder(session, role.id):
+                if not await self._room_role_store.has_live_holder(
+                    session, role.id, self._connections.live_agent_ids()
+                ):
                     unreachable.append(role.name)
         handle = self._sender_handle(event)
         for name in unreachable:

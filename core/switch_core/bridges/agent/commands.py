@@ -278,7 +278,11 @@ async def _dispatch_control_command(
     if level == "session_dependent":
         async with client.session_factory() as session:
             statuses = await compute_agent_statuses(
-                session, [agent], meta.room_id, client._agent_session_store
+                session,
+                [agent],
+                meta.room_id,
+                client._agent_session_store,
+                client._connections,
             )
             runtime = await AgentRuntimeStateStore().get(
                 session, agent.id, meta.room_id
@@ -289,7 +293,7 @@ async def _dispatch_control_command(
             # command args so the controller can fold it into the reconnect
             # prompt.
             role = await client._room_role_store.agent_room_role(
-                session, meta.room_id, agent.id
+                session, meta.room_id, agent.id, client._connections.live_agent_ids()
             )
         live = statuses.get(agent.id) == AgentStatus.LIVE
         caps = (runtime.control_capabilities or {}) if runtime else {}
@@ -309,7 +313,7 @@ async def _dispatch_control_command(
     # switchdash when we know its deeplink.
     body = f"{ack} ([Open in SwitchDash]({deeplink}))" if deeplink else ack
     await _reply(client, room, event, body)
-    client._event_queue.enqueue(
+    client._event_buffer.enqueue(
         client.agent.id,
         meta.room_id,
         AgentEvent(
@@ -697,7 +701,11 @@ async def _cmd_status(
             await _reply(client, room, event, "No agents in this room.")
             return
         statuses = await compute_agent_statuses(
-            session, agents, meta.room_id, client._agent_session_store
+            session,
+            agents,
+            meta.room_id,
+            client._agent_session_store,
+            client._connections,
         )
         runtime_rows = await AgentRuntimeStateStore().get_by_room(session, meta.room_id)
         runtime_states = {row.agent_id: row.state for row in runtime_rows}
@@ -730,7 +738,7 @@ async def _cmd_roles(
             await _reply(client, room, event, "No roles defined in this room.")
             return
         holders = await client._room_role_store.live_holders_for_room(
-            session, meta.room_id
+            session, meta.room_id, client._connections.live_agent_ids()
         )
         holder_names: dict[str, str] = {}
         for holder_id in {h for ids in holders.values() for h in ids}:

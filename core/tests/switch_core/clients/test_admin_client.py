@@ -9,6 +9,23 @@ from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.events import CommandEvent
 
 
+def _no_connections() -> SimpleNamespace:
+    """A connection registry with nothing live.
+
+    Presence is the union of the heartbeat rows and the live connections
+    (CHOO-1857); these tests drive the DB arm, so the connection arm must
+    contribute nothing.
+    """
+    return SimpleNamespace(
+        live_agent_ids=lambda: set(),
+        is_live=lambda _agent_id: False,
+        live_in_room=lambda _agent_id, _room_id: False,
+        has_session_in=lambda _agent_id, _room_id: False,
+        can_spawn_for=lambda _agent_id, _room_id: False,
+        for_agent=lambda _agent_id: [],
+    )
+
+
 def _event(body: str, sender_name: str = "alice") -> SimpleNamespace:
     """A room message as the admin client sees it: body + sender + the
     bridge-provided sender_name in content (used to tag the asker)."""
@@ -53,7 +70,7 @@ def _admin_client(
     async def _list_roles(_session, _room_id):  # type: ignore[no-untyped-def]
         return roles
 
-    async def _has_live_holder(_session, role_id):  # type: ignore[no-untyped-def]
+    async def _has_live_holder(_session, role_id, _alive=()):  # type: ignore[no-untyped-def]
         return role_id in live_role_ids
 
     async def _get_by_name_insensitive(_session, name):  # type: ignore[no-untyped-def]
@@ -79,6 +96,7 @@ def _admin_client(
 
     client = SimpleNamespace(
         session_factory=_session_factory,
+        _connections=_no_connections(),
         send_message=_send_message,
         _room_store=SimpleNamespace(get_agent_ids=_get_agent_ids),
         _room_role_store=SimpleNamespace(

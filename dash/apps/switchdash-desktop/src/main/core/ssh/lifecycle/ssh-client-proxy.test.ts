@@ -413,3 +413,90 @@ describe('SshClientProxy channel health reporting', () => {
     expect(reporter.reportChannelError).toHaveBeenCalledWith('ssh-1', sftpError);
   });
 });
+
+describe('SshClientProxy agent-forward refusal', () => {
+  function refusingClient(refusals: number) {
+    const commands: string[] = [];
+    let seen = 0;
+    const client = {
+      config: { allowAgentFwd: true },
+      exec: (command: string, optionsOrCb: unknown, maybeCb?: unknown) => {
+        const callback = (typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb) as (
+          err: Error | undefined,
+          channel?: unknown
+        ) => void;
+        commands.push(command);
+        if (seen++ < refusals && client.config.allowAgentFwd) {
+          callback(new Error('Unable to request agent forwarding'));
+          return;
+        }
+        callback(undefined, {
+          once: (event: string, listener: () => void) => {
+            // Free the proxy's exec slot the way a real channel does.
+            if (event === 'close') setTimeout(listener, 0);
+          },
+        });
+      },
+    };
+    return { client, commands };
+  }
+
+  it('retries exec without forwarding when the host refuses it', async () => {
+    const { client, commands } = refusingClient(1);
+    const proxy = new SshClientProxy('ssh-1');
+    proxy.update(client as never);
+
+    const result = await new Promise<{ err: Error | undefined; channel: unknown }>((resolve) => {
+      proxy.exec('echo hi', (err, channel) => resolve({ err, channel }));
+    });
+
+    expect(result.err).toBeUndefined();
+    expect(result.channel).toBeDefined();
+    expect(commands).toEqual(['echo hi', 'echo hi']);
+    expect(client.config.allowAgentFwd).toBe(false);
+  });
+
+  it('retries a pty channel without forwarding when the host refuses it', async () => {
+    const { client, commands } = refusingClient(1);
+    const proxy = new SshClientProxy('ssh-1');
+    proxy.update(client as never);
+
+    const result = await new Promise<Error | undefined>((resolve) => {
+      proxy.execPty('tmux a', {}, (err) => resolve(err));
+    });
+
+    expect(result).toBeUndefined();
+    expect(commands).toHaveLength(2);
+    expect(client.config.allowAgentFwd).toBe(false);
+  });
+
+  it('surfaces the error when a retry is not possible', async () => {
+    const { client, commands } = refusingClient(1);
+    client.config.allowAgentFwd = false;
+    const proxy = new SshClientProxy('ssh-1');
+    proxy.update(client as never);
+
+    const result = await new Promise<Error | undefined>((resolve) => {
+      proxy.exec('echo hi', (err) => resolve(err));
+    });
+
+    // Nothing to disable, so the refusal is reported rather than looped on.
+    expect(result).toBeUndefined();
+    expect(commands).toEqual(['echo hi']);
+  });
+
+  it('does not leak exec slots across a forwarding retry', async () => {
+    const { client, commands } = refusingClient(1);
+    const proxy = new SshClientProxy('ssh-1');
+    proxy.update(client as never);
+
+    for (let i = 0; i < 8; i++) {
+      await new Promise<void>((resolve) => {
+        proxy.exec(`cmd-${i}`, () => resolve());
+      });
+    }
+
+    // 8 commands, one of which was retried after the refusal.
+    expect(commands).toHaveLength(9);
+  });
+});

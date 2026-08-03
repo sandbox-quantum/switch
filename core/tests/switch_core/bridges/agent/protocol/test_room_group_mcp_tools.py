@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Room
 from switch_core.db.stores.room_group_store import RoomGroupStore
@@ -14,6 +15,9 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolServi
     # exercise them on an un-__init__'d instance (matching the other protocol
     # tests) with just those attributes set.
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.room_group_store = RoomGroupStore()  # type: ignore[attr-defined]
     return svc

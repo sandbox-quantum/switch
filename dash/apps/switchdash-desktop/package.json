@@ -1,6 +1,6 @@
 {
   "name": "@switchdash/switchdash-desktop",
-  "version": "0.15.2",
+  "version": "0.16.0",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",
@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@parcel/watcher": "^2.5.6",
+    "@sandbox-quantum/switch-agent-runtime": "workspace:*",
     "@switchdash/core": "workspace:*",
     "@switchdash/plugins": "workspace:*",
     "@switchdash/shared": "workspace:*",
