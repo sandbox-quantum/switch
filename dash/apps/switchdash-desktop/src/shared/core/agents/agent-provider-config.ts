@@ -17,7 +17,8 @@ const agentProviderConfigV1 = z.object({
   model: z.string().optional(),
   /** Reasoning-effort id, e.g. a Codex `model_reasoning_effort` value. */
   effort: z.string().optional(),
-  /** System-prompt/instructions body, written to the agent's instructions file. */
+  /** System-prompt/instructions body, carried in the agent's Codex profile as
+   * `developer_instructions` — additive to Codex's own instructions. */
   instructions: z.string().optional(),
 });
 

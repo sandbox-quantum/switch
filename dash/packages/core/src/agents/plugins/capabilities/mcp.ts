@@ -6,13 +6,24 @@ export type McpTransport = 'stdio' | 'http';
 
 /**
  * The Switch MCP runtime as a stdio command, handed to {@link
- * IMcpBehavior.launchProfile}. Static and secret-free: the runtime reads its
- * `SWITCH_*` credentials from the session env it inherits, so only the command
- * and args are needed.
+ * IMcpBehavior.launchProfile}.
+ *
+ * Static and secret-free — but not self-sufficient. An agent host spawns an MCP
+ * server with an environment of its own choosing, not a copy of its own: Codex
+ * passes a fixed allowlist (`HOME`, `PATH`, `SHELL`, `USER`, `TMPDIR`, …) and
+ * drops everything else. `envVars` names what the host must route through for
+ * the runtime to authenticate and to resolve its package, carrying names only
+ * so no credential is written anywhere.
  */
 export type SwitchMcpLaunchServer = {
   command: string;
   args: string[];
+  /**
+   * Environment variable names the host must forward from its own environment.
+   * Required rather than optional: a launch server that omits them produces a
+   * session whose Switch tools silently never start.
+   */
+  envVars: string[];
 };
 
 /** A single per-agent launch config file, path relative to the agent's home. */
@@ -25,9 +36,9 @@ export type SwitchLaunchProfileFile = {
  * A per-agent launch config — the files to write plus the argv that loads them —
  * the result of {@link IMcpBehavior.launchProfile}. Pure data so it can be
  * written directly (local/SSH runtimes) or baked into a precomputed launch spec
- * and written by the headless VM sidecar, which has no plugin registry. Carries
- * more than one file because a per-agent instructions/system-prompt is a separate
- * file the profile references.
+ * and written by the headless VM sidecar, which has no plugin registry. A list
+ * rather than a single file so a host that needs the config split across several
+ * is not a change to this type; Codex today returns exactly one.
  */
 export type SwitchLaunchProfile = {
   files: SwitchLaunchProfileFile[];
@@ -41,7 +52,9 @@ export type SwitchLaunchSpecialization = {
   model?: string;
   /** Reasoning-effort id, e.g. a Codex `model_reasoning_effort` override. */
   reasoningEffort?: string;
-  /** A system-prompt/instructions body, written to a file the profile references. */
+  /** A system-prompt/instructions body, carried in the profile itself (Codex:
+   * `developer_instructions`), which adds to the host's own operating
+   * instructions rather than replacing them. */
   instructions?: string;
 };
 
@@ -61,9 +74,9 @@ export type IMcpBehavior = {
    * in a bundled `.mcp.json`, so the config is already per-session. Codex
    * performs no such expansion and a stdio server cannot ride argv across the
    * `resume` subcommand cleanly, so it returns a per-agent profile
-   * (`~/.codex/<slug>.config.toml`, plus an instructions file when set) and
-   * `--profile <slug>`. The profile layers over the user's base config, so it
-   * never clobbers a `switch` server the user defined themselves.
+   * (`~/.codex/<name>.config.toml`) and `--profile <name>`. That profile must
+   * also name the environment it needs;
+   * see {@link SwitchMcpLaunchServer.envVars}.
    *
    * Returns `null` when there is nothing to write (no Switch identity and no
    * specialization).

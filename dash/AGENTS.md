@@ -346,6 +346,7 @@ The pairs that must stay in step:
 | Desktop | Sidecar | Shared by |
 |---|---|---|
 | `agent-runtime/impl/local-agent-runtime.ts` (spawn env) | `sidecar/session-spawner.ts` + `sidecar/index.ts` | nothing — **the usual place to forget** |
+| `agent-hooks/hook-config-service.ts` + `ssh-agent-runtime.installRemoteHooks` | `sidecar/session-spawner.installHooks` | nothing — same failure mode: one side quietly installs fewer hooks |
 | `switch-rooms/auto-session-watcher.ts` | `sidecar/notification-watcher.ts` | nothing — two implementations of one watcher |
 | `switch-rooms/room-connection.ts` | — | shared: the sidecar constructs the same class |
 | protocol client (stream, heartbeat, cursor) | — | shared: `@sandbox-quantum/switch-agent-runtime` |
@@ -361,7 +362,7 @@ too.
 
 ## Versioned Artifacts — Bump Them
 
-Three things here ship independently of the app and carry their own version.
+Four things here ship independently of the app and carry their own version.
 **If you make a non-trivial change to one, bump its version in the same commit.**
 Not at release time, not "later" — in the commit that changes it, or it will be
 forgotten and someone will debug a build they think is newer than it is.
@@ -371,16 +372,33 @@ forgotten and someone will debug a build they think is newer than it is.
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
 | Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (it ships only the skill) — installs will not pick it up otherwise |
-| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published and its version is pinned in two places that must move with it — the Claude connector `.mcp.json`, and `src/shared/core/switch-rooms/switch-agent-runtime.ts` (which the Codex profile uses); `switch-agent-runtime.test.ts` fails if they drift |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and two pins name the version sessions actually run — the Claude connector `.mcp.json`, and `SWITCH_AGENT_RUNTIME_VERSION` in `src/shared/core/switch-rooms/switch-agent-runtime.ts` (which the Codex profile uses) |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
 dependencies. A comment or a rename that changes nothing does not need one.
+
+**The runtime's version and its two pins move at different times, in this
+order.** Bump `package.json` with the change; the pins must keep naming a
+version that is *published*, so they stay behind until the tag exists
+(`git tag switch-agent-runtime-v<version> && git push origin <tag>`), and only
+then move to it. Pinning ahead points every session at something the registry
+does not have. `switch-agent-runtime.test.ts` enforces exactly this: the two
+pins must agree with each other, and neither may run ahead of `package.json`.
+The cost of the lag is real and worth stating in the PR — a change to `bin.ts`
+reaches no session until the tag is pushed and the pins follow.
 
 Two traps worth knowing rather than rediscovering:
 
 - **A sidecar major replaces every sidecar on sight, live sessions included.**
   It is judged on the contract *switchdash* speaks to, not on how much changed
   inside. Changing how the sidecar talks to Switch is not a major.
+- **A *new* sidecar endpoint is a minor, not a major.** A major only achieves
+  anything if `MIN_SUPPORTED_SIDECAR_MAJOR` moves with it, and that kills every
+  older sidecar on sight — including one an older switchdash on the same host
+  then kills right back, each replacing the other forever. The client owns the
+  detection instead: call the endpoint, and when an older sidecar 404s it, fail
+  the operation with a message naming the upgrade rather than continuing
+  without whatever the endpoint was for.
 - **Redeploy is decided by the bundle's content hash, not by the version.** So a
   forgotten bump does not strand a VM on old code — but it does make the version
   a lie, which is worse in its own way, because it is the number people reason
@@ -448,14 +466,14 @@ pnpm run test
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
   `SWITCHDASH_DISABLE_PTY`, and `SWITCHDASH_REGISTER_DEEPLINK`.
-- Codex sandboxing is not configurable. An auto-approving Codex session always
-  launches with `-c approval_policy="never" -c sandbox_mode="danger-full-access"`,
-  overriding any `sandbox_mode` in the user's `~/.codex/config.toml`. This is
-  load-bearing, not a default: switchdash's hooks are `curl`s to
-  `http://127.0.0.1:$SWITCHDASH_HOOK_PORT/hook` that end in `|| true`, and every
-  Codex sandbox below `danger-full-access` blocks network access including
-  loopback — so under one the hooks fail *silently*, taking room tracking and
-  rollout-id capture with them. See
+- An auto-approving Codex session launches with `-c approval_policy="never"` and
+  nothing else. The sandbox is deliberately **not** overridden: "Bypass
+  permissions" promises unattended approvals, not unattended filesystem and
+  network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
+  stands. Measured against codex-cli 0.146.0, Codex runs hooks **outside** the
+  sandbox, so switchdash's `curl http://127.0.0.1:$SWITCHDASH_HOOK_PORT/hook`
+  hooks return 200 under `workspace-write` — the loopback block applies to
+  model-generated commands only. See
   `packages/plugins/src/agents/impl/codex/index.ts`.
 - Every switchdash-launched Codex session — not only auto-approving ones — carries
   `--dangerously-bypass-hook-trust`. Codex skips any hook it has no persisted

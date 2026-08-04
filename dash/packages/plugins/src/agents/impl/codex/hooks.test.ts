@@ -3,9 +3,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { PluginFs } from '@switchdash/core/agents/plugins';
+import type { HookEvent, PluginFs } from '@switchdash/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
 import { CODEX_CONFIG_PATH, CODEX_HOOKS_PATH, buildCodexHookConfig } from './hooks';
+import { plugin } from './index';
 
 const execFileAsync = promisify(execFile);
 
@@ -189,6 +190,32 @@ describe('buildCodexHookConfig install/read/delete', () => {
     expect(config.hooks.PostToolUse).toBeUndefined();
     expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
     expect(JSON.stringify(config.hooks)).not.toContain('switch_room_connect');
+  });
+
+  it('declares exactly the events its installed hooks can produce', async () => {
+    // The declaration is what the rest of the app reasons about a provider from,
+    // so an event no installed hook emits is a claim nothing can honour.
+    const producible: Record<string, HookEvent> = {
+      Stop: 'stop',
+      PermissionRequest: 'notification',
+      SessionStart: 'session',
+    };
+
+    const fs = createMemoryFs();
+    await buildCodexHookConfig().writeHooks(fs, []);
+    const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
+      hooks: Record<string, unknown>;
+    };
+
+    const emitted = Object.keys(config.hooks).map((key) => {
+      const event = producible[key];
+      if (!event) throw new Error(`unmapped Codex hook key ${key}`);
+      return event;
+    });
+    const hooks = plugin.capabilities.hooks;
+    const declared = hooks.kind === 'none' ? [] : hooks.supportedEvents;
+
+    expect([...declared].sort()).toEqual([...new Set(emitted)].sort());
   });
 
   it('reflects installation state through getHooksInstalled + readHooks', async () => {

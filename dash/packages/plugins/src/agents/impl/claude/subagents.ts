@@ -6,6 +6,7 @@ import {
   type RepoAgentAttributes,
   type RepoAgentDefinition,
   type RepoAgentField,
+  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
   SWITCH_AGENT_SETTINGS_DIR,
   SWITCH_CONNECTOR_TOOL_RULES,
 } from '@switchdash/core/agents/plugins';
@@ -37,8 +38,10 @@ const SWITCH_ENV_KEYS = ['SWITCH_API_ENDPOINT', 'SWITCH_API_TOKEN', 'SWITCH_AGEN
  * Claude Code reads as "all tools"). */
 const SWITCH_MCP_TOOL_PREFIX = 'mcp__plugin_switch-connector_switch';
 
-/** Non-literal view of the connector rules for `.includes` over arbitrary strings. */
-const SWITCH_RULES: readonly string[] = SWITCH_CONNECTOR_TOOL_RULES;
+/** Rules to strip on read-back, so the form shows only the user's own tools.
+ * Wider than what is written, so a definition authored by an older switchdash
+ * does not surface a retired rule as if the user had chosen it. */
+const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES;
 
 const MD_SUFFIX = '.md';
 

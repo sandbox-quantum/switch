@@ -40,10 +40,18 @@ export interface HookEventLogger {
 }
 
 /**
- * Event type emitted by the `connect_to_room` PostToolUse hook that switchdash
- * registers for both Claude and Codex (`buildClaudeHookConfig` and
- * `buildCodexHookConfig` in `@switchdash/plugins`). Both scope it to the Switch
- * MCP tool with the same `mcp__.*__connect_to_room` matcher.
+ * Event type emitted by the `connect_to_room` PostToolUse hook that
+ * `buildClaudeHookConfig` in `@switchdash/plugins` registers, scoped to the
+ * Switch MCP tool by an `mcp__.*__connect_to_room` matcher.
+ *
+ * Claude only. A session switchdash launched learns its room from the server
+ * instead: it carries a `SWITCH_CONNECTION_ID` and its `connect_to_room` claims
+ * the room on that connection. The hook covers what that path misses — a Claude
+ * session started outside switchdash and adopted afterwards, which joined a room
+ * on a connection of its own. Codex has no equivalent case, so
+ * `buildCodexHookConfig` registers no room hook: its Switch MCP server exists
+ * only in the per-agent profile switchdash writes and launches it with, so a
+ * Codex session switchdash did not start has no `connect_to_room` to call.
  */
 const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
 
@@ -51,6 +59,20 @@ const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+/**
+ * A string is decoded as JSON; anything else passes through untouched. Applied
+ * at each level of the response because an agent CLI that re-serialises a nested
+ * field hands it over as a string rather than as the object it stands for.
+ */
+function decodeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -79,37 +101,32 @@ function asRoomResult(value: unknown): Record<string, unknown> | null {
  * itself (as an object or a JSON string); an envelope-aware CLI such as Codex
  * may pass the `CallToolResult` through, which puts the payload under
  * `structuredContent` (or `structuredContent.result` when the tool returned a
- * non-dict) and repeats it as JSON in the first `text` content block.
- * Malformed input yields null rather than throwing.
+ * non-dict) and repeats it as JSON in a `text` content block; a CLI that unwraps
+ * the result but not its content list hands over the bare content array.
+ *
+ * Every content block is tried, so a server that narrates before returning its
+ * JSON still parses. Malformed input yields null rather than throwing.
  */
 function parseToolResponse(body: Record<string, unknown>): Record<string, unknown> | null {
-  let value = body.tool_response;
-  if (typeof value === 'string') {
-    try {
-      value = JSON.parse(value) as unknown;
-    } catch {
-      return null;
-    }
-  }
+  const value = decodeJson(body.tool_response);
 
   const direct = asRoomResult(value);
   if (direct) return direct;
 
   const envelope = asRecord(value);
-  if (!envelope) return null;
-
-  const structured = asRecord(envelope.structuredContent);
-  const fromStructured = asRoomResult(structured) ?? asRoomResult(structured?.result);
+  const structured = asRecord(decodeJson(envelope?.structuredContent));
+  const fromStructured = asRoomResult(structured) ?? asRoomResult(decodeJson(structured?.result));
   if (fromStructured) return fromStructured;
 
-  const content: unknown[] = Array.isArray(envelope.content) ? envelope.content : [];
-  const text = content.map(asRecord).find((item) => item?.type === 'text')?.text;
-  if (typeof text !== 'string') return null;
-  try {
-    return asRoomResult(JSON.parse(text) as unknown);
-  } catch {
-    return null;
+  const blocks = Array.isArray(value) ? value : envelope?.content;
+  if (!Array.isArray(blocks)) return null;
+  for (const block of blocks) {
+    const text = asRecord(block)?.text;
+    if (typeof text !== 'string') continue;
+    const fromText = asRoomResult(decodeJson(text));
+    if (fromText) return fromText;
   }
+  return null;
 }
 
 function parseBody(raw: RawHookRequest): Record<string, unknown> {

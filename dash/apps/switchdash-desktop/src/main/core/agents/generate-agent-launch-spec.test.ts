@@ -1,4 +1,7 @@
+import { pluginRegistry } from '@switchdash/plugins/agents';
+import { parse as parseTOML } from 'smol-toml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { switchAgentRuntimeCommand } from '@shared/core/switch-rooms/switch-agent-runtime';
 
 const buildCommand = vi.fn(() => ({ command: 'claude', args: ['--x'], env: { E: '1' } }));
 const launchArgs = vi.fn((dir: string, name: string) => [
@@ -109,6 +112,44 @@ describe('generateAgentLaunchSpec', () => {
     ]);
   });
 
+  it('bakes a profile that names the credentials and carries none of them', async () => {
+    // The sidecar writes this file verbatim on the VM, so whatever is baked here
+    // is what a remote session runs with — and a value baked in would be a secret
+    // shipped to the box and re-read on every poll.
+    mcpBehavior = (pluginRegistry.get('codex')!.behavior as { mcp?: typeof mcpBehavior }).mcp;
+
+    const spec = await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+
+    const content = spec.launchFiles![0].content;
+    const server = (parseTOML(content) as { mcp_servers: Record<string, { env_vars?: string[] }> })
+      .mcp_servers.switch;
+
+    expect(server.env_vars).toEqual(switchAgentRuntimeCommand().envVars);
+    expect(content).not.toMatch(/Bearer |tok-/);
+  });
+
+  it('bakes a system prompt into the profile file rather than the argv', async () => {
+    // The sidecar re-renders these args as a shell command line for the tmux
+    // pane, so a free-form body there would be flattened or executed. It also
+    // has to survive `resume`, which only inherits what the profile carries.
+    mcpBehavior = (pluginRegistry.get('codex')!.behavior as { mcp?: typeof mcpBehavior }).mcp;
+    const instructions = 'be terse\n$(whoami) and "quotes"';
+
+    const spec = await generateAgentLaunchSpec({
+      ...baseParams,
+      autoApprove: false,
+      specialization: { instructions },
+    });
+
+    const parsed = parseTOML(spec.launchFiles![0].content) as Record<string, unknown>;
+    expect(spec.launchFiles).toHaveLength(1);
+    expect(parsed.developer_instructions).toBe(instructions);
+    expect(spec.launchFiles![0].homeRelativePath).not.toContain('instructions.md');
+    expect(buildCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ agentArgs: ['--profile', 'hoot'] })
+    );
+  });
+
   it('bakes no MCP args or launch files for a provider that resolves servers from config', async () => {
     const spec = await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
 
@@ -127,7 +168,7 @@ describe('generateAgentLaunchSpec', () => {
 describe('generateAgentLaunchSpec against real provider command builders', () => {
   const CODEX_SPEC = {
     defaultArgs: ['--dangerously-bypass-hook-trust'],
-    autoApproveFlag: '-c approval_policy="never" -c sandbox_mode="danger-full-access"',
+    autoApproveFlag: '-c approval_policy="never"',
     initialPromptFlag: '',
     resumeFlag: 'resume',
     sessionIdFlag: ' ',

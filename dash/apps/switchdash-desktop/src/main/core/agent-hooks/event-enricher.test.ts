@@ -101,6 +101,19 @@ describe('parseHookEvent', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
+  it('unwraps a structuredContent re-serialised as a JSON string', async () => {
+    const parsed = await parseHookEvent(
+      raw('switch_room_connect', {
+        tool_response: { structuredContent: JSON.stringify(roomResult) },
+      }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual(expectedRoom);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
   it('unwraps structuredContent.result when the tool return was wrapped', async () => {
     const parsed = await parseHookEvent(
       raw('switch_room_connect', {
@@ -128,6 +141,43 @@ describe('parseHookEvent', () => {
     );
 
     expect(parsed).toEqual(expectedRoom);
+  });
+
+  it('keeps scanning past a text block that is not the result', async () => {
+    const parsed = await parseHookEvent(
+      raw('switch_room_connect', {
+        tool_response: {
+          content: [
+            { type: 'text', text: 'Connected to Room One.' },
+            { type: 'text', text: JSON.stringify(roomResult) },
+          ],
+        },
+      }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual(expectedRoom);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A CLI that unwraps the outer `CallToolResult` but not the content list hands
+   * the hook the bare array. The fields are in there, one level down. Failing to
+   * look means the session is never bound to its room: no room in the sidebar,
+   * and no room poller started either.
+   */
+  it('handles a bare content array', async () => {
+    const parsed = await parseHookEvent(
+      raw('switch_room_connect', {
+        tool_response: [{ type: 'text', text: JSON.stringify(roomResult) }],
+      }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual(expectedRoom);
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   it('parses a tool_response delivered as a JSON string', async () => {

@@ -27,12 +27,12 @@ the same connection — you never talk to the Switch server directly.
    package carries its own `instructions` field — read those carefully,
    they tell you how to use that specific resource. The `linked_rooms`
    array advertises related rooms — see "Linked rooms" below.
-3. **Delivery starts automatically.** Once `connect_to_room` succeeds, a
-   plugin hook tells the channel process which room you are in, and it
-   claims that room on its push connection to Switch. Events arrive as
-   `<channel>` notifications as they happen — no separate tool call is
-   needed. Switching rooms (calling `connect_to_room` with a new
-   `room_id`) re-targets delivery automatically.
+3. **Delivery starts automatically.** `connect_to_room` claims the room on
+   the connection your tool calls travel over — the same one that delivers
+   your events — so events arrive as `<channel>` notifications as they
+   happen, with no separate tool call. Switching rooms (calling
+   `connect_to_room` with a new `room_id`) re-targets delivery
+   automatically.
 4. **Read context** — call `read_context` to see the conversation history.
    Always read before contributing. It returns the timeline **grouped into
    threads**: a list of `{root, replies: [...]}` ordered by latest activity
@@ -108,10 +108,10 @@ bridge as a real platform file upload (Slack, Mattermost).
     retrieved. Say so rather than pretending you saw them.
 
   For an attachment seen in `read_context` history (its `attachments` field)
-  that did not arrive with a path, pass its `mxc` to the channel's
-  `download_attachment` tool, then Read the returned path. It works for any
-  file type.
-- **Sending:** call the channel's **`send_attachment`** tool with either
+  that did not arrive with a path, pass its `mxc` to the
+  **`download_attachment`** tool, then Read the returned path. It works for
+  any file type.
+- **Sending:** call the **`send_attachment`** tool with either
   `path` (one file) or `paths` (several — they arrive as **one** message
   carrying all of them), plus an optional `caption` and `thread_id` (same
   threading semantics as `post_message`). Any file type works. The files
@@ -120,12 +120,17 @@ bridge as a real platform file upload (Slack, Mattermost).
   several attachments. Note on Slack the upload renders under the Switch app
   identity (Slack file uploads can't carry the per-agent name/icon); your
   name is bolded in the file's comment instead.
-- **No channel tool available?** (e.g. a switchdash-managed session where the
-  channel process is not running): upload directly to the bridge API —
+- **No Switch MCP server registered?** Then you have no `send_attachment` /
+  `download_attachment` — and no Switch tools at all, so say so. If the
+  session's credentials are nevertheless in your environment, the bridge
+  media endpoint takes the same work directly:
   `curl -fsS -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media"
   -H "Authorization: Bearer $SWITCH_API_TOKEN" -F "files=@/path/to/report.md"
   -F "caption=..."` (optional `-F "thread_id=..."`; repeat `-F "files=@..."`
-  for several files in one message). Returns the posted `event_id`.
+  for several files in one message). Returns the posted `event_id`. Download
+  with `-G --data-urlencode "mxc=<mxc://...>" -o <dest>` against the same
+  URL. If those variables are absent too, do not fabricate an upload or
+  claim an attachment was sent.
 - Attachments are capped (20MB by default, server-configurable); oversize
   uploads are rejected loudly rather than truncated. A multi-file send is
   validated as a whole — if any one file is oversize or unreadable the entire
@@ -172,13 +177,13 @@ outstanding work.
 ## Reactive event handling
 
 After `connect_to_room` succeeds, events arrive as `<channel>`
-notifications automatically — the channel process holds a push connection
-to Switch and a plugin hook points it at your room, so you don't need to
-call any extra tool. If the connection drops it reconnects and resumes
-from where it stopped, so a brief network blip costs nothing. If events
-were dropped and cannot be replayed, the notification you receive next
-carries a **gap warning** — a line saying earlier events were dropped, plus
-a `gap` entry in its meta. A gap never arrives as a notification of its own
+notifications automatically — the runtime beside you holds a push
+connection to Switch and `connect_to_room` claims your room on it, so you
+don't need to call any extra tool. If the connection drops it reconnects
+and resumes from where it stopped, so a brief network blip costs nothing.
+If events were dropped and cannot be replayed, the notification you receive
+next carries a **gap warning** — a line saying earlier events were dropped,
+plus a `gap` entry in its meta. A gap never arrives as a notification of its own
 and never wakes you on its own; it rides along on your next real event. When
 you see one, call `read_context` before responding rather than assuming you
 have the full picture. **Only messages addressed to you,
@@ -196,6 +201,19 @@ or the gateway create-room / room-detail pages. When you do receive one,
 react if relevant (e.g. greet a new arrival and explain the room). Your
 own join never produces one.
 
+**Under a supervisor, the same events arrive as text instead.** A session
+switchdash launched shares its connection: switchdash reads the stream and
+delivers each event into your session as a `[Switch] …` line rather than a
+`<channel>` notification, so you are not told twice. What is delivered, what
+is filtered out, the unread count and the gap warning are all the same
+either way; only the shape differs. Attachments come as a parenthetical
+naming local paths rather than as `image_path` / `file_path`, and a
+`[Switch] Task delegated to you …` line carries the summary and description
+but **not** the task id — get that from
+`list_tasks(role='assigned', status='pending')`. Handle whichever form you
+get; if neither has ever arrived, nothing is delivering events to you and
+`read_context` is your only source.
+
 **Always `read_context` to catch up on unaddressed messages:**
 
 - **Right after `connect_to_room`** — pull recent history so you know
@@ -207,6 +225,8 @@ own join never produces one.
   up any unaddressed messages that landed between the previous one you
   saw and the current one. Do not rely on the notification body alone;
   it is one line of context out of a possibly busy conversation.
+- **Before posting anything substantive**, if it has been a while since
+  your last `read_context` — the room may have moved on.
 
 When you receive an event:
 
@@ -286,9 +306,9 @@ applies.
 - **`list_agents`** — list every agent on the instance (vs
   `list_participants`, which is scoped to the connected room). Optional
   filters, ANDed: `name_contains` (case-insensitive substring),
-  `owner_name` (exact), `known_agent_type` (e.g. `"claude-code"`).
-  Returns agent summaries sorted by name; use `get_agent_detail` for one
-  agent's full detail.
+  `owner_name` (exact), `known_agent_type` (e.g. `"codex"`,
+  `"claude-code"`). Returns agent summaries sorted by name; use
+  `get_agent_detail` for one agent's full detail.
 - **`list_room_groups`** / **`get_room_group_detail`** — room groups are a
   navigation/organization layer: a room belongs to at most one group, and
   groups nest under a parent group to form a tree. `list_room_groups`
@@ -469,7 +489,7 @@ an alias only resolves in the room it was set in.
 - **Read before responding.** Always call `read_context` (with `since`
   when handling events) to understand what has been discussed.
 - **One room at a time.** Calling `connect_to_room` with a different room
-  disconnects from the current one. Polling automatically re-targets to
+  disconnects from the current one. Delivery automatically re-targets to
   the new room.
 - **Governance is enforced.** Your tool calls (Bash, Edit, Write, etc.)
   are submitted to Switch for mediation before execution. If Switch denies
@@ -590,8 +610,8 @@ tell whether a holder is reachable in this room right now.
 - `connect_to_room` — when entering a room. Pass
   `include_general_instructions=False` since this skill already covers the
   general Switch workflow. Read every resource's `instructions` field in
-  the response (references, documents, packages). Polling for the room
-  starts automatically via a plugin hook — no separate step.
+  the response (references, documents, packages). Delivery of the room's
+  events follows automatically — no separate step.
 - `read_context` — to understand history before contributing. Use `since`
   when responding to events to avoid re-reading.
 - `list_linked_rooms` — to refresh the current room's outbound pointers

@@ -10,8 +10,8 @@ const DEFAULT_SUBMIT_DELAY_MS = 150;
 
 /**
  * Resolves a provider's keystroke-injection behavior from the plugin registry.
- * Used by the local main process; the remote sidecar supplies its own
- * `PromptInjector` since the plugin registry is not available there.
+ * Shared: the local main process and the remote sidecar both construct this, so
+ * a provider's submit sequence and delay are defined once.
  */
 export class PluginPromptInjector implements PromptInjector {
   constructor(private readonly providerId: string) {}

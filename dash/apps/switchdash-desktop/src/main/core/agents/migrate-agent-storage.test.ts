@@ -109,6 +109,7 @@ vi.mock('./agent-storage-migration-marker', () => ({
   markAgentStorageMigrationComplete: h.markComplete,
 }));
 
+import { log } from '@main/lib/logger';
 import { migrateAgentStorage } from './migrate-agent-storage';
 
 const baseAgent = {
@@ -166,7 +167,7 @@ describe('migrateAgentStorage', () => {
     expect(h.writeDefinition).not.toHaveBeenCalled();
   });
 
-  it('falls back to .claude/settings.local.json when no neutral file exists', async () => {
+  it('falls back to .claude/settings.local.json when its identity matches the Claude row', async () => {
     const ws = fakeFs({
       '.claude/settings.local.json': credsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
@@ -177,6 +178,86 @@ describe('migrateAgentStorage', () => {
 
     const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
+    expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
+    expect(written.env.SWITCH_API_ENDPOINT).toBe('http://switch.example');
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('never reads .claude/settings.local.json for a provider without repo-agents', async () => {
+    // The shared settings file is written only by provisionAgent /
+    // provisionRemoteAgent, always as the Claude "main" agent, so for any other
+    // provider it is a different agent's identity and token. Adopting it would
+    // make the session launch AS that agent — a silent success where launching
+    // unidentified is a visible failure.
+    h.state.agents = [
+      { ...baseAgent, providerId: 'codex', name: 'codex-hoot', switchAgentId: 'sw-codex' },
+    ];
+    h.state.repoAgents = null;
+    const ws = fakeFs({ '.claude/settings.local.json': credsJson('sw-CLAUDE-MAIN') });
+    const read = vi.spyOn(ws, 'read');
+    h.state.workspace = ws;
+
+    await migrateAgentStorage();
+
+    expect(read).not.toHaveBeenCalledWith('.claude/settings.local.json');
+    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
+  });
+
+  it('does not adopt .claude/settings.local.json for a provider without repo-agents when the row has no identity to compare', async () => {
+    // A row with no `switchAgentId` has nothing to compare against, so the
+    // behavior gate — not the identity cross-check — is what keeps the Claude
+    // main agent's credentials out of this agent's file.
+    h.state.agents = [
+      { ...baseAgent, providerId: 'codex', name: 'codex-hoot', switchAgentId: null },
+    ];
+    h.state.repoAgents = null;
+    const ws = fakeFs({ '.claude/settings.local.json': credsJson('sw-CLAUDE-MAIN') });
+    h.state.workspace = ws;
+
+    await migrateAgentStorage();
+
+    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
+  });
+
+  it('skips visibly when .claude/settings.local.json names a different agent than the Claude row', async () => {
+    // Multiple Claude agents can share a location; only one of them owns the
+    // shared settings file. Adopting a mismatched identity is never right.
+    const ws = fakeFs({
+      '.claude/settings.local.json': credsJson('sw-other'),
+      '.claude/agents/cc-hoot-main.md': '# def',
+    });
+    h.state.workspace = ws;
+
+    await migrateAgentStorage();
+
+    expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(false);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('different Switch agent'),
+      expect.objectContaining({
+        agentId: 'agent-id-1',
+        agentName: 'cc-hoot-main',
+        expectedSwitchAgentId: 'sw-1',
+        foundSwitchAgentId: 'sw-other',
+      })
+    );
+  });
+
+  it('keeps a mismatched id-keyed neutral file instead of adopting or deleting it', async () => {
+    // The token exists nowhere else, so a skip must not take the only copy with
+    // it: without a name-keyed file the stale-file cleanup has to stay its hand.
+    h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
+    h.state.repoAgents = null;
+    const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-other') });
+    h.state.workspace = ws;
+
+    await migrateAgentStorage();
+
+    expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
+    expect(await ws.read('.switch/agents/agent-id-1.json')).toBe(credsJson('sw-other'));
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('different Switch agent'),
+      expect.objectContaining({ foundSwitchAgentId: 'sw-other', providerId: 'codex' })
+    );
   });
 
   it('does nothing when the name-keyed file already exists and the definition is present', async () => {

@@ -1,6 +1,9 @@
 import { getLocationById } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
+import {
+  parseSwitchAgentCredentials,
+  type SwitchAgentCredentials,
+} from '@main/core/switch-rooms/switch-credentials';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import {
@@ -69,8 +72,8 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   // A provider may have no repo-agent behavior (e.g. Codex): it has no on-disk
   // definition and no `readLaunchEnv` hook, but its provider-neutral credentials
   // still need collapsing onto the one name-keyed key-space. So the credential
-  // migration runs for every provider; only the definition step (2) is
-  // behavior-gated.
+  // migration runs for every provider; its Claude-specific sources, and the
+  // definition step (2), are behavior-gated.
   const behavior = getPlugin(agent.providerId).behavior.repoAgents;
 
   // Generation 2 only broadened step 1 to providers WITHOUT a behavior; for one
@@ -92,30 +95,44 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     let changed = false;
 
     // 1. Credentials: if the name-keyed neutral file is absent, adopt whatever
-    //    complete credentials already exist on disk, in priority order:
+    //    complete credentials already exist on disk *for this agent*, in priority
+    //    order:
     //      a. a stale ID-keyed neutral file `.switch/agents/<agentId>.json` — an
     //         earlier layout keyed the neutral file by agent id, not name (this
     //         includes Codex agents added on the pre-rework id-keyed scheme);
     //      b. the legacy per-agent file (via readLaunchEnv: name-keyed neutral
-    //         then `.claude/switch-subagents/<name>.settings.json`) — behavior
-    //         providers only;
+    //         then `.claude/switch-subagents/<name>.settings.json`);
     //      c. the shared `.claude/settings.local.json` (legacy "main" agent).
+    //    (b) and (c) are Claude-only sources, hence behavior-gated: the shared
+    //    settings file is written solely by `provisionAgent`/`provisionRemoteAgent`,
+    //    always as the Claude "main" agent, so for any other provider it holds a
+    //    *different* agent's identity and token.
     //    The token is minted once and lives only on disk, so this is the only way
     //    to recover it — nothing can reconstruct it from the gateway.
     const idKeyedRelPath = agentSettingsRelativePath(agent.id);
     const namedRelPath = agentSettingsRelativePath(name);
     const neutral = name === agent.id ? null : await workspace.fs.read(namedRelPath);
     if (neutral === null) {
-      const creds =
+      const recovered =
         parseSwitchAgentCredentials(await workspace.fs.read(idKeyedRelPath), log) ??
         (behavior ? toCreds(await behavior.readLaunchEnv(workspace.fs, name)) : null) ??
-        parseSwitchAgentCredentials(await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH), log);
-      if (creds) {
+        (behavior
+          ? parseSwitchAgentCredentials(await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH), log)
+          : null);
+      if (recovered && !belongsToAgent(agent, recovered)) {
+        log.warn('migrateAgentStorage: recovered credentials name a different Switch agent', {
+          agentId: agent.id,
+          agentName: name,
+          providerId: agent.providerId,
+          expectedSwitchAgentId: agent.switchAgentId,
+          foundSwitchAgentId: recovered.agentId,
+        });
+      } else if (recovered) {
         await writeNeutralAgentSettingsFs(workspace.fs, {
           slug: name,
-          apiEndpoint: creds.apiEndpoint,
-          apiToken: creds.token,
-          agentId: creds.agentId,
+          apiEndpoint: recovered.apiEndpoint,
+          apiToken: recovered.token,
+          agentId: recovered.agentId,
         });
         changed = true;
       }
@@ -145,10 +162,19 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   }
 }
 
+/**
+ * Whether recovered credentials are this agent's own. The row's `switchAgentId`
+ * is the authority on which Switch identity the agent has, so a file naming a
+ * different one belongs to a different agent — adopting it would launch this
+ * agent under that agent's identity and token, which looks like it worked. A row
+ * with no recorded identity has nothing to contradict.
+ */
+function belongsToAgent(agent: Agent, creds: SwitchAgentCredentials): boolean {
+  return agent.switchAgentId === null || agent.switchAgentId === creds.agentId;
+}
+
 /** Build credentials from a launch-env map, or null when any value is missing. */
-function toCreds(
-  env: Record<string, string>
-): { apiEndpoint: string; token: string; agentId: string } | null {
+function toCreds(env: Record<string, string>): SwitchAgentCredentials | null {
   const apiEndpoint = env.SWITCH_API_ENDPOINT;
   const token = env.SWITCH_API_TOKEN;
   const agentId = env.SWITCH_AGENT_ID;

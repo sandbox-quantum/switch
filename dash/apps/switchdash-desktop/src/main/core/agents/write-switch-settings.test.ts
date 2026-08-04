@@ -50,7 +50,7 @@ describe('writeSwitchSettings', () => {
     });
     // The Switch connector tools are auto-approved ("don't ask").
     expect(settings.permissions).toEqual({
-      allow: ['mcp__plugin_switch-connector_switch', 'mcp__plugin_switch-connector_switch-channel'],
+      allow: ['mcp__plugin_switch-connector_switch'],
     });
 
     // The detector should now recognise the directory as a configured agent.
@@ -84,11 +84,7 @@ describe('writeSwitchSettings', () => {
     const settings = await readSettings();
     // Existing allow rules are preserved; the Switch rules are unioned in.
     expect(settings.permissions).toEqual({
-      allow: [
-        'Bash',
-        'mcp__plugin_switch-connector_switch',
-        'mcp__plugin_switch-connector_switch-channel',
-      ],
+      allow: ['Bash', 'mcp__plugin_switch-connector_switch'],
     });
     expect(settings.env).toEqual({
       EXISTING_KEY: 'keep-me',
@@ -153,11 +149,7 @@ describe('writeNeutralAgentSettingsFs', () => {
     // The connector's MCP tools are auto-approved on top of whatever the agent
     // already allowed, so a Switch agent never has to ask to reach its room.
     expect(settings.permissions).toEqual({
-      allow: [
-        'Bash',
-        'mcp__plugin_switch-connector_switch',
-        'mcp__plugin_switch-connector_switch-channel',
-      ],
+      allow: ['Bash', 'mcp__plugin_switch-connector_switch'],
     });
   });
 
@@ -302,7 +294,8 @@ describe('removeSwitchSettings', () => {
     expect(result.kind).toBe('write');
     const parsed = JSON.parse((result as { content: string }).content) as Record<string, unknown>;
 
-    // Both blocks held only our contributions, so both are dropped entirely.
+    // Both blocks held only our contributions — including the retired
+    // switch-channel rule an older switchdash wrote — so both are dropped.
     expect(parsed).toEqual({ hooks: { PostToolUse: [{ command: 'x' }] } });
     expect('env' in parsed).toBe(false);
     expect('permissions' in parsed).toBe(false);

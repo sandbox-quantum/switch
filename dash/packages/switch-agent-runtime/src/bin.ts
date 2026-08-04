@@ -1,19 +1,29 @@
 #!/usr/bin/env node
 /**
- * Switch channel for Claude Code.
+ * The Switch agent runtime: one stdio MCP server, shared by every host.
  *
- * Holds a push connection to the Switch Agent Bridge (server-sent events) and
- * pushes addressed messages and task events into the Claude Code session as
- * channel notifications.
+ * It serves the Switch tool surface — fetched from the server at startup rather
+ * than hardcoded, so it cannot drift — and turns each call into
+ * `POST /agents/{id}/ops/{tool}` on a connection to the Agent Bridge. That
+ * connection is a server-sent event stream, which is also how addressed
+ * messages and task events arrive; unless notifications are suppressed they are
+ * surfaced to the session.
  *
- * The room is set by the PostToolUse hook on connect_to_room, which
- * POSTs the room id to a localhost port this server exposes. The port is
- * advertised at `${CLAUDE_PLUGIN_DATA}/sessions/${ppid}/port`, where ppid is
- * this process's parent PID (the Claude Code session). The hook resolves the
- * same path from its own getppid(), so each session's hook reaches its own
- * channel without any cross-session coordination.
+ * The room comes from `connect_to_room`, which claims it on this process's
+ * connection — or, when a supervisor handed one over in `SWITCH_CONNECTION_ID`,
+ * on the supervisor's. Either way the room is known here without observing
+ * anything.
  *
- * Config comes from env vars set via .mcp.json env block (SWITCH_*).
+ * A localhost hook port remains for the one case that misses: a Claude Code
+ * session nobody supervised, whose `PostToolUse` hook POSTs the room id here.
+ * The port is advertised at `~/.switch/sessions/${ppid}/port`, where ppid is
+ * this process's parent PID (the host session). The hook resolves the same path
+ * from its own getppid(), so each session's hook reaches its own runtime
+ * without any cross-session coordination.
+ *
+ * Config comes from `SWITCH_*` env vars: the Claude connector sets them in its
+ * `.mcp.json` env block, the Codex profile in `env_vars`, and switchdash puts
+ * them in the session's environment when it launches one itself.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -46,6 +56,32 @@ function looksUnresolved(value: string): boolean {
   return value.startsWith('${') && value.endsWith('}');
 }
 
+const SESSION_PPID = process.ppid;
+const SESSION_DIR = path.join(os.homedir(), '.switch', 'sessions', String(SESSION_PPID));
+const PORT_FILE = path.join(SESSION_DIR, 'port');
+const STARTUP_ERROR_FILE = path.join(SESSION_DIR, 'startup-error.log');
+
+/** True once the transport is serving; before that, any failure is fatal. */
+let serving = false;
+
+/**
+ * Refuse to start, saying why in the two places someone can find it.
+ *
+ * A host reports a server that dies before the handshake as nothing more than a
+ * closed connection, and does not surface the child's stderr — so every cause
+ * looks identical from the outside. The file is what makes them tell apart.
+ */
+function failStartup(reason: string): never {
+  process.stderr.write(`switch: ${reason}\n`);
+  try {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    fs.writeFileSync(STARTUP_ERROR_FILE, `${new Date().toISOString()} ${reason}\n`);
+  } catch {
+    // Best effort: stderr already carries the reason.
+  }
+  process.exit(1);
+}
+
 if (
   !API_ENDPOINT ||
   !API_TOKEN ||
@@ -54,25 +90,28 @@ if (
   looksUnresolved(API_TOKEN) ||
   looksUnresolved(AGENT_ID)
 ) {
-  process.stderr.write(
-    `switch: missing or unresolved config — need SWITCH_API_ENDPOINT, SWITCH_API_TOKEN, and SWITCH_AGENT_ID\n` +
+  failStartup(
+    `missing or unresolved config — need SWITCH_API_ENDPOINT, SWITCH_API_TOKEN, and SWITCH_AGENT_ID\n` +
       `  endpoint=${API_ENDPOINT || 'MISSING'}\n` +
       `  token=${API_TOKEN ? 'set' : 'MISSING'}\n` +
       `  agent_id=${AGENT_ID || 'MISSING'}\n` +
-      `If these look like \`\${SWITCH_*}\`, the env block in \`.claude/settings.local.json\` has not been expanded — run the \`configure\` skill.\n`
+      `If these look like \`\${SWITCH_*}\`, the env block in \`.claude/settings.local.json\` has not been expanded — run the \`configure\` skill.\n` +
+      `If they are simply absent, the host did not pass them through: Codex forwards only the names listed in \`env_vars\` on its \`mcp_servers\` entry.`
   );
-  process.exit(1);
 }
 
-const SESSION_PPID = process.ppid;
-const SESSION_DIR = path.join(os.homedir(), '.switch', 'sessions', String(SESSION_PPID));
-const PORT_FILE = path.join(SESSION_DIR, 'port');
 process.stderr.write(`switch: ppid=${SESSION_PPID} session_dir=${SESSION_DIR}\n`);
 
+// Before the transport is serving these must be fatal. A listener that only
+// logs takes Node's own fatal-error path away, so a rejected top-level await
+// leaves the process to drain its event loop and exit having answered nothing
+// — the least debuggable shape this failure can take.
 process.on('unhandledRejection', (err) => {
+  if (!serving) failStartup(`unhandled rejection during startup: ${err}`);
   process.stderr.write(`switch: unhandled rejection: ${err}\n`);
 });
 process.on('uncaughtException', (err) => {
+  if (!serving) failStartup(`uncaught exception during startup: ${err}`);
   process.stderr.write(`switch: uncaught exception: ${err}\n`);
 });
 
@@ -221,7 +260,7 @@ let cursor = 0;
 // Whether the currently open stream declared a room when it opened.
 let streamHasRoom = false;
 
-// Unaddressed room messages are filtered out (never reach Claude as a
+// Unaddressed room messages are filtered out (never surfaced as a
 // notification), so the agent silently falls behind on room chatter. We tally
 // how many we've dropped since the agent last read context and surface that
 // count on every notification we DO emit, so the agent knows when to call
@@ -324,7 +363,7 @@ const DOWNLOAD_ATTACHMENT_TOOL = {
 };
 
 // The outbound counterpart of download_attachment: the agent names a local
-// file (e.g. a screenshot it produced) and the channel uploads the bytes to
+// file (e.g. a screenshot it produced) and this runtime uploads the bytes to
 // the agent bridge, which posts them into the room as an m.image / m.file
 // event — from there the collaboration bridges relay it out to Slack /
 // Mattermost like any other room message.
@@ -390,9 +429,19 @@ type SwitchOperation = {
 
 let operations: SwitchOperation[] = [];
 
+/**
+ * How long to wait for the operation list before giving up.
+ *
+ * Unbounded, an unreachable endpoint holds the handshake open until the host's
+ * own startup timeout fires, which reports a timeout and names no cause. A
+ * bounded wait fails first and says what it was waiting for.
+ */
+const OPERATIONS_FETCH_TIMEOUT_MS = 15_000;
+
 async function loadOperations(): Promise<void> {
   const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/ops`, {
     headers: { Authorization: `Bearer ${API_TOKEN}` },
+    signal: AbortSignal.timeout(OPERATIONS_FETCH_TIMEOUT_MS),
   });
   if (!resp.ok) {
     // Without the operation list this process cannot serve the agent at all.
@@ -1236,9 +1285,9 @@ async function handleEvent(event: AgentEvent) {
 
 const MEDIA_DIR = path.join(SESSION_DIR, 'media');
 
-// Download an inbound attachment from the agent bridge to a local file so
-// Claude can Read it. The bridge proxies the bytes out of the Matrix media
-// repo (the channel holds only the bridge API token, not Matrix creds).
+// Download an inbound attachment from the agent bridge to a local file so the
+// agent can read it. The bridge proxies the bytes out of the Matrix media repo
+// (this runtime holds only the bridge API token, not Matrix creds).
 // Returns the local path, or null on failure (logged, never throws).
 function sanitiseName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'attachment';
@@ -1349,9 +1398,16 @@ unpublishPort();
 
 // Load the operation list before serving: a tool surface that is empty
 // because a fetch failed is worse than a process that refuses to start.
-await loadOperations();
+try {
+  await loadOperations();
+} catch (err) {
+  failStartup(
+    `cannot reach Switch at ${API_ENDPOINT} to load its operations: ${err instanceof Error ? err.message : err}`
+  );
+}
 
 await mcp.connect(transport);
+serving = true;
 
 startHookListener();
 

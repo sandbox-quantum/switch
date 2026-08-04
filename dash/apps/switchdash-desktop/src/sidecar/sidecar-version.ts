@@ -18,8 +18,16 @@
  *
  * Bump policy: `x` on a wire break (and only then), `y` on every release that
  * changes the sidecar.
+ *
+ * A *new* endpoint is not a wire break. Raising `x` past what a running sidecar
+ * reports only helps if `MIN_SUPPORTED_SIDECAR_MAJOR` moves with it, and that
+ * kills every older sidecar on sight — including one an older switchdash on the
+ * same host will then kill right back, each replacing the other forever. So the
+ * client owns this instead: call the endpoint, and when an older sidecar 404s
+ * it, fail the operation with a message naming the upgrade rather than
+ * continuing without whatever the endpoint was for.
  */
-export const SIDECAR_VERSION = '1.4';
+export const SIDECAR_VERSION = '1.6';
 
 /**
  * Oldest major this client can still speak to. Raise it only when support for an

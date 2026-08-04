@@ -6,7 +6,24 @@ export interface SidecarChannelOpener {
 }
 
 /**
- * Speak HTTP/1.1 GET directly over the provided duplex and parse the JSON body.
+ * A response the sidecar answered with that was not a success. Carries the
+ * status because callers act on it: a 404 means the running sidecar predates
+ * the endpoint, which is a different problem from an unreachable host and has a
+ * different remedy.
+ */
+export class SidecarHttpStatusError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = 'SidecarHttpStatusError';
+  }
+}
+
+/**
+ * Speak one HTTP/1.1 request directly over the provided duplex and read the
+ * reply.
  *
  * We can't use `http.request` here: the sidecar listens on the REMOTE host's
  * loopback, reachable only through the SSH-forwarded channel, but `http.request`
@@ -15,17 +32,20 @@ export interface SidecarChannelOpener {
  * `Connection: close` makes the server end the socket after the response, so we
  * read to EOF; the sidecar always sends an explicit `Content-Length`, so we
  * finish as soon as that many body bytes have arrived without de-chunking.
+ *
+ * `wantBody` false resolves the moment the status line has arrived, for an
+ * endpoint whose reply carries nothing worth waiting for.
  */
-export function httpGetJsonOverChannel<T>(
+function exchangeOverChannel(
   channel: Duplex,
-  opts: { port: number; token: string; path: string; timeoutMs: number }
-): Promise<T> {
-  const { port, token, path, timeoutMs } = opts;
-  return new Promise<T>((resolve, reject) => {
+  opts: { method: string; path: string; timeoutMs: number; wantBody: boolean; request: Buffer[] }
+): Promise<{ status: number; body: string }> {
+  const { method, path, timeoutMs, wantBody, request } = opts;
+  return new Promise((resolve, reject) => {
     let settled = false;
     const chunks: Buffer[] = [];
 
-    const finish = (err: Error | null, value?: T): void => {
+    const finish = (err: Error | null, value?: { status: number; body: string }): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -33,10 +53,10 @@ export function httpGetJsonOverChannel<T>(
       else resolve(value!);
     };
 
-    const timer = setTimeout(() => finish(new Error(`GET ${path} timed out`)), timeoutMs);
+    const timer = setTimeout(() => finish(new Error(`${method} ${path} timed out`)), timeoutMs);
 
     /**
-     * Try to parse the accumulated bytes as a complete HTTP response. `atEof` is
+     * Try to read the accumulated bytes as a complete HTTP response. `atEof` is
      * true when the readable side has ended and no more bytes will arrive — only
      * then is an incomplete buffer an error. While still streaming we return
      * quietly and wait for the next chunk.
@@ -52,26 +72,24 @@ export function httpGetJsonOverChannel<T>(
       const head = raw.slice(0, sep);
       const statusLine = head.slice(0, head.indexOf('\r\n'));
       const status = Number.parseInt(statusLine.split(' ')[1] ?? '', 10);
-      if (status !== 200) {
-        finish(new Error(`GET ${path} returned status ${status || statusLine}`));
+      if (!Number.isFinite(status) || status === 0) {
+        finish(new Error(`${method} ${path} returned an unparseable status: ${statusLine}`));
         return;
       }
       const body = raw.slice(sep + 4);
-      const contentLength = /content-length:\s*(\d+)/i.exec(head);
-      if (contentLength) {
-        if (Buffer.byteLength(body, 'utf8') < Number.parseInt(contentLength[1]!, 10)) {
-          if (atEof) finish(new Error(`truncated HTTP response from sidecar ${path}`));
+      if (wantBody) {
+        const contentLength = /content-length:\s*(\d+)/i.exec(head);
+        if (contentLength) {
+          if (Buffer.byteLength(body, 'utf8') < Number.parseInt(contentLength[1]!, 10)) {
+            if (atEof) finish(new Error(`truncated HTTP response from sidecar ${path}`));
+            return;
+          }
+        } else if (!atEof) {
+          // No Content-Length: the body runs to EOF, so wait for end/close.
           return;
         }
-      } else if (!atEof) {
-        // No Content-Length: the body runs to EOF, so wait for end/close.
-        return;
       }
-      try {
-        finish(null, JSON.parse(body) as T);
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)));
-      }
+      finish(null, { status, body });
     };
 
     channel.on('data', (chunk: Buffer) => {
@@ -82,71 +100,94 @@ export function httpGetJsonOverChannel<T>(
     channel.on('end', () => tryParse(true));
     channel.on('close', () => tryParse(true));
 
-    channel.write(
-      `GET ${path} HTTP/1.1\r\n` +
-        `Host: 127.0.0.1:${port}\r\n` +
-        `x-switchdash-token: ${token}\r\n` +
-        `Connection: close\r\n\r\n`
-    );
+    for (const part of request) channel.write(part);
   });
 }
 
+function requestHead(
+  method: string,
+  opts: { port: number; token: string; path: string },
+  contentLength: number | null
+): Buffer {
+  const { port, token, path } = opts;
+  return Buffer.from(
+    `${method} ${path} HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${port}\r\n` +
+      `x-switchdash-token: ${token}\r\n` +
+      (contentLength === null
+        ? ''
+        : `Content-Type: application/json\r\nContent-Length: ${contentLength}\r\n`) +
+      `Connection: close\r\n\r\n`,
+    'utf8'
+  );
+}
+
+function parseJsonBody<T>(path: string, body: string): T {
+  try {
+    return JSON.parse(body) as T;
+  } catch (error) {
+    throw new Error(`malformed JSON body from sidecar ${path}: ${String(error)}`);
+  }
+}
+
+/** GET a JSON document from the sidecar over an SSH-forwarded channel. */
+export async function httpGetJsonOverChannel<T>(
+  channel: Duplex,
+  opts: { port: number; token: string; path: string; timeoutMs: number }
+): Promise<T> {
+  const { status, body } = await exchangeOverChannel(channel, {
+    method: 'GET',
+    path: opts.path,
+    timeoutMs: opts.timeoutMs,
+    wantBody: true,
+    request: [requestHead('GET', opts, null)],
+  });
+  if (status !== 200) {
+    throw new SidecarHttpStatusError(status, `GET ${opts.path} returned status ${status}`);
+  }
+  return parseJsonBody<T>(opts.path, body);
+}
+
 /**
- * Speak HTTP/1.1 POST directly over the provided duplex, sending a JSON body,
- * and resolve once a 2xx response is received. Same transport constraints as
- * `httpGetJsonOverChannel` (the sidecar is on the remote loopback), but we only
- * need the status — the sidecar's `/disconnect` replies with an empty 200 body.
+ * POST a JSON body to the sidecar and resolve once a 2xx comes back. For an
+ * endpoint whose reply is empty — `/disconnect` answers with a bare 200.
  */
-export function httpPostJsonOverChannel(
+export async function httpPostJsonOverChannel(
   channel: Duplex,
   opts: { port: number; token: string; path: string; body: unknown; timeoutMs: number }
 ): Promise<void> {
-  const { port, token, path, body, timeoutMs } = opts;
-  return new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const chunks: Buffer[] = [];
-
-    const finish = (err: Error | null): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (err) reject(err);
-      else resolve();
-    };
-
-    const timer = setTimeout(() => finish(new Error(`POST ${path} timed out`)), timeoutMs);
-
-    const tryParse = (atEof: boolean): void => {
-      if (settled) return;
-      const raw = Buffer.concat(chunks).toString('utf8');
-      const sep = raw.indexOf('\r\n\r\n');
-      if (sep === -1) {
-        if (atEof) finish(new Error(`malformed HTTP response from sidecar ${path}`));
-        return;
-      }
-      const statusLine = raw.slice(0, raw.indexOf('\r\n'));
-      const status = Number.parseInt(statusLine.split(' ')[1] ?? '', 10);
-      if (status >= 200 && status < 300) finish(null);
-      else finish(new Error(`POST ${path} returned status ${status || statusLine}`));
-    };
-
-    channel.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-      tryParse(false);
-    });
-    channel.on('error', (err: Error) => finish(err));
-    channel.on('end', () => tryParse(true));
-    channel.on('close', () => tryParse(true));
-
-    const payload = Buffer.from(JSON.stringify(body), 'utf8');
-    channel.write(
-      `POST ${path} HTTP/1.1\r\n` +
-        `Host: 127.0.0.1:${port}\r\n` +
-        `x-switchdash-token: ${token}\r\n` +
-        `Content-Type: application/json\r\n` +
-        `Content-Length: ${payload.byteLength}\r\n` +
-        `Connection: close\r\n\r\n`
-    );
-    channel.write(payload);
+  const payload = Buffer.from(JSON.stringify(opts.body), 'utf8');
+  const { status } = await exchangeOverChannel(channel, {
+    method: 'POST',
+    path: opts.path,
+    timeoutMs: opts.timeoutMs,
+    wantBody: false,
+    request: [requestHead('POST', opts, payload.byteLength), payload],
   });
+  if (status < 200 || status >= 300) {
+    throw new SidecarHttpStatusError(status, `POST ${opts.path} returned status ${status}`);
+  }
+}
+
+/**
+ * POST a JSON body to the sidecar and parse the JSON document it answers with.
+ * For an endpoint whose reply is the point of the call — `/connection` returns
+ * the id the session must be launched with.
+ */
+export async function httpPostForJsonOverChannel<T>(
+  channel: Duplex,
+  opts: { port: number; token: string; path: string; body: unknown; timeoutMs: number }
+): Promise<T> {
+  const payload = Buffer.from(JSON.stringify(opts.body), 'utf8');
+  const { status, body } = await exchangeOverChannel(channel, {
+    method: 'POST',
+    path: opts.path,
+    timeoutMs: opts.timeoutMs,
+    wantBody: true,
+    request: [requestHead('POST', opts, payload.byteLength), payload],
+  });
+  if (status < 200 || status >= 300) {
+    throw new SidecarHttpStatusError(status, `POST ${opts.path} returned status ${status}`);
+  }
+  return parseJsonBody<T>(opts.path, body);
 }

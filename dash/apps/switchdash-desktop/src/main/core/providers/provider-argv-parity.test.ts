@@ -25,8 +25,8 @@ function buildCodexArgs(autoApprove: boolean): string[] {
 /**
  * The registry's argv fields describe the plugin rather than driving it, so
  * nothing at runtime notices when the two disagree. Codex is the entry worth
- * pinning: its flags disable the sandbox and bypass hook trust, so a stale
- * mirror misrepresents how much access a session is launched with.
+ * pinning: its flags suppress approval prompts and bypass hook trust, so a
+ * stale mirror misrepresents how much access a session is launched with.
  */
 describe('codex registry metadata matches the argv the plugin builds', () => {
   it('emits the mirrored defaultArgs and autoApproveFlag', () => {
@@ -37,6 +37,16 @@ describe('codex registry metadata matches the argv the plugin builds', () => {
     expect(def.autoApproveFlag).toBeDefined();
     expect(containsSequence(args, def.defaultArgs!)).toBe(true);
     expect(containsSequence(args, splitFlag(def.autoApproveFlag!))).toBe(true);
+  });
+
+  it('leaves the sandbox to the user config on both sides of the mirror', () => {
+    // Auto-approve means unattended approvals, not unattended filesystem and
+    // network access. Codex runs hooks outside the sandbox, so switchdash's
+    // loopback hook curls do not need one relaxed on their behalf.
+    const def = getProvider('codex')!;
+
+    expect(def.autoApproveFlag).not.toContain('sandbox_mode');
+    expect(buildCodexArgs(true).join(' ')).not.toContain('sandbox_mode');
   });
 
   it('emits defaultArgs on a session that does not auto-approve', () => {

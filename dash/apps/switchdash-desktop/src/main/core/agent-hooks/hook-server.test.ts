@@ -202,4 +202,63 @@ describe('HookServer /events endpoint', () => {
     );
     expect(res.status).toBe(404);
   });
+
+  // The id is the whole point of the call: the session is launched carrying it,
+  // and its room is claimed on that connection. A reply that loses it leaves the
+  // remote session addressable by nobody.
+  it('answers /connection with the id the handler opened', async () => {
+    const connectionHandler = vi.fn(() => 'conn-abc');
+    server = new HookServer(noopLog);
+    await server.start(async () => {}, { connectionHandler });
+
+    const ok = await post(
+      server.getPort(),
+      '/connection',
+      server.getToken(),
+      JSON.stringify({ sessionId: 'session-1', providerId: 'codex' })
+    );
+
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.body)).toEqual({ connectionId: 'conn-abc' });
+    expect(connectionHandler).toHaveBeenCalledWith('session-1', 'codex');
+
+    const forbidden = await post(
+      server.getPort(),
+      '/connection',
+      'wrong',
+      JSON.stringify({ sessionId: 'session-1', providerId: 'codex' })
+    );
+    expect(forbidden.status).toBe(403);
+  });
+
+  it('rejects /connection without a sessionId and providerId', async () => {
+    const connectionHandler = vi.fn(() => 'conn-abc');
+    server = new HookServer(noopLog);
+    await server.start(async () => {}, { connectionHandler });
+
+    const res = await post(
+      server.getPort(),
+      '/connection',
+      server.getToken(),
+      JSON.stringify({ sessionId: 'session-1' })
+    );
+
+    expect(res.status).toBe(400);
+    expect(connectionHandler).not.toHaveBeenCalled();
+  });
+
+  // The 404 a client sees from a sidecar too old to have the endpoint. It must
+  // stay a 404 rather than any success shape, because that is what the client
+  // keys its "restart the sidecar" error on.
+  it('does not serve /connection when no handler is configured', async () => {
+    server = new HookServer(noopLog);
+    await server.start(async () => {});
+    const res = await post(
+      server.getPort(),
+      '/connection',
+      server.getToken(),
+      JSON.stringify({ sessionId: 'session-1', providerId: 'codex' })
+    );
+    expect(res.status).toBe(404);
+  });
 });

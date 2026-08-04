@@ -151,11 +151,21 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 
 ## Reference Documentation
 
-The target architecture docs are in `docs/`:
-- `docs/ARCHITECTURE.md` — system overview
-- `docs/switch-core/CODEBASE.md` — module structure and interfaces
-- `docs/switch-core/DATA_MODEL.md` — database schema
-- `docs/switch-core/ROOM_DESIGN.md` — room design and client types
-- `docs/api/API.md` — HTTP API spec
-- `docs/api/MCP.md` — MCP server spec
-- `docs/bridges/` — bridge specifications
+Everything under `docs/` is listed here; if it is not in this list, it does not
+exist:
+- `docs/ARCHITECTURE.md` — system overview: components, domain model, key flows,
+  entry points, and a code map from area to module
+- `docs/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
+  event stream, room slots, failure handling). Authoritative where it and
+  `ARCHITECTURE.md` overlap
+- `docs/bridges/` — collaboration bridge setup: `README.md` plus one page each
+  for Slack, Mattermost, Discord, and Teams
+
+There is no separate schema, room-design, HTTP-API or MCP-surface document. Read
+those from the code: `core/switch_core/db/models.py` for the schema,
+`core/switch_core/room_service.py` for room provisioning and lifecycle,
+`core/switch_core/bridges/agent/api/handlers.py` for the HTTP surface, and
+`core/switch_core/bridges/agent/operations/definitions.py` for the agent tool
+surface — one definition serves both the MCP server
+(`bridges/agent/mcp/server.py`) and the HTTP front door
+(`bridges/agent/api/operations.py`), so the two cannot drift.

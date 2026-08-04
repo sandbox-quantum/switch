@@ -19,9 +19,9 @@ export const CODEX_CONFIG_PATH = '.codex/config.toml';
  * skips any hook it has no entry for. Verified against 0.146.0: in `codex exec`
  * that skip is silent — no dump, no mention of the hook in the transcript — and
  * in the TUI it is a blocking startup review pane that a detached session has
- * nobody to answer. Either way switchdash's own hooks would not run, taking
- * room tracking and rollout-id capture with them, and rewriting a hook command
- * invalidates the entry a user had already granted.
+ * nobody to answer. Either way switchdash's own hooks would not run, taking the
+ * session's status signals and its rollout-id capture with them, and rewriting a
+ * hook command invalidates the entry a user had already granted.
  *
  * switchdash writes those hooks itself, which is the case the flag is documented
  * for ("automation that already vets hook sources"). It is per-invocation and

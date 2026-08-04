@@ -232,6 +232,14 @@ async function main(): Promise<void> {
         for (const s of runtime.connectedSessions()) byId.set(s.sessionId, s.roomId);
         return [...byId].map(([sessionId, roomId]) => ({ sessionId, roomId }));
       },
+      // switchdash is about to start a session over SSH: open its room
+      // connection here first and hand back the id, so the session's tool calls
+      // land on the connection this sidecar reads and injects from. Without it
+      // the session holds a connection nobody on the VM is listening to, and
+      // never learns which room it is in. No room yet — the agent's
+      // connect_to_room claims one and the server reports it back.
+      connectionHandler: (sessionId, providerId) =>
+        runtime.ensureForSession(sessionId, providerId, null),
       // switchdash deleted a session: stop its room connection (ends the renew
       // heartbeat keeping the agent live) and forget any watcher-launched entry.
       // A deliberate delete/kill (terminated) is also broadcast to every attached

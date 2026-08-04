@@ -168,13 +168,34 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
     });
 
     const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
-    expect(raw).toContain(
-      'tools: Read, Grep, mcp__plugin_switch-connector_switch, mcp__plugin_switch-connector_switch-channel'
-    );
+    expect(raw).toContain('tools: Read, Grep, mcp__plugin_switch-connector_switch');
 
     // Read-back strips the Switch rules so the form shows only the user's tools.
     const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
     expect(attrs?.tools).toEqual(['Read', 'Grep']);
+  });
+
+  it('strips the retired switch-channel rule an older switchdash wrote', async () => {
+    const workspaceFs = fakeFs({
+      [defRel('reviewer')]: [
+        '---',
+        'name: reviewer',
+        'description: Reviews diffs',
+        'tools: Read, mcp__plugin_switch-connector_switch, mcp__plugin_switch-connector_switch-channel',
+        '---',
+        'body',
+        '',
+      ].join('\n'),
+    });
+
+    const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
+    expect(attrs?.tools).toEqual(['Read']);
+
+    // And it is not written back: only the rule switchdash still authors is.
+    await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, attrs ?? {});
+    const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
+    expect(raw).toContain('tools: Read, mcp__plugin_switch-connector_switch\n');
+    expect(raw).not.toContain('switch-channel');
   });
 
   it('serialises optional scalar, number, and boolean fields and omits empty ones', async () => {

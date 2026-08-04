@@ -6,7 +6,7 @@ Switch Agent Bridge HTTP API for pre/post tool mediation and event reporting.
 
 Config is read from environment variables set in the user's
 `.claude/settings.local.json` env block (the same values consumed by the MCP
-servers in `.mcp.json`):
+server in `.mcp.json`):
   SWITCH_API_ENDPOINT  — Switch server URL
   SWITCH_API_TOKEN     — Agent API key
   CLAUDE_PLUGIN_DATA   — Persistent plugin data directory (auto-injected)
@@ -78,13 +78,13 @@ def _parse_response(raw: object) -> dict:
 
 
 def _channel_port_path() -> str:
-    # The bun channel writes its port to ~/.switch/sessions/<ppid>/port,
+    # The Switch agent runtime writes its port to ~/.switch/sessions/<ppid>/port,
     # where ppid is the Claude Code session PID. This hook is also a direct
     # child of that same Claude Code process, so getppid() returns the same
     # value, and both sides resolve to the same path independently.
     #
     # NOTE: if hooks.json ever wraps this in a shell (e.g. `bash -c "python …"`),
-    # the shell becomes the parent and getppid() will not match the channel's
+    # the shell becomes the parent and getppid() will not match the runtime's
     # ppid. Keep the hook invocation a direct `python <script>` call.
     return os.path.join(
         os.path.expanduser("~"), ".switch", "sessions", str(os.getppid()), "port"

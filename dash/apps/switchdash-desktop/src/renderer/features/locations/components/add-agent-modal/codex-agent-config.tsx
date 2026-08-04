@@ -48,7 +48,7 @@ const CODEX_CONFIG_FIELDS: RepoAgentField[] = [
     label: 'Instructions',
     type: 'textarea',
     placeholder: "A system prompt for this agent, e.g. 'You are a careful reviewer…'",
-    help: 'Added to the agent as its instructions file. Blank keeps Codex defaults.',
+    help: "Added to Codex's own instructions as extra developer guidance. Blank keeps Codex defaults.",
   },
 ];
 

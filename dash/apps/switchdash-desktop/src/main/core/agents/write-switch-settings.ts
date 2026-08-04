@@ -1,6 +1,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { SWITCH_CONNECTOR_TOOL_RULES } from '@switchdash/core/agents/plugins';
+import {
+  RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
+  SWITCH_CONNECTOR_TOOL_RULES,
+} from '@switchdash/core/agents/plugins';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import {
@@ -194,10 +197,9 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
       ? { ...(existing.permissions as Record<string, unknown>) }
       : null;
   if (perms && Array.isArray(perms.allow)) {
-    const connectorRules = SWITCH_CONNECTOR_TOOL_RULES as readonly string[];
     const allow = (perms.allow as unknown[])
       .map(String)
-      .filter((rule) => !connectorRules.includes(rule));
+      .filter((rule) => !RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES.includes(rule));
     if (allow.length > 0) {
       perms.allow = allow;
     } else {

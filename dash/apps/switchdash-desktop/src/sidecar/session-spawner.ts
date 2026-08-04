@@ -4,6 +4,8 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { createPluginFs } from '@main/core/providers/plugin-fs';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
 import { makePtyId } from '@shared/core/pty/ptyId';
@@ -181,6 +183,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
     });
 
     await this.writeLaunchFiles();
+    await this.installHooks();
     await this.startDetachedTmux(tmuxTarget, spec.cwd, command.env, command.command, command.args);
     this.launched.set(roomId, { sessionId, tmuxTarget });
     log.info('InProcessSessionSpawner: launched session for room', {
@@ -201,6 +204,42 @@ export class InProcessSessionSpawner implements SessionSpawner {
       await mkdir(dirname(absPath), { recursive: true });
       await atomicWriteFile(absPath, file.content);
     }
+  }
+
+  /**
+   * Install the provider's agent hooks on this VM before spawning, mirroring
+   * what the desktop does for a session it starts itself. The pane is launched
+   * with `SWITCHDASH_HOOK_*` pointing at this sidecar, but nothing posts to it
+   * unless the provider's own config registers the hook commands — and without
+   * them the session never reports that it has stopped, so the room it was
+   * spawned to answer shows it working forever. Idempotent, so it runs per
+   * launch rather than being tracked. Throws: the watcher retries a failed
+   * launch and reports it in the room, which beats a session that comes up deaf.
+   */
+  private async installHooks(): Promise<void> {
+    const providerId = this.spec.providerId;
+    const plugin = getPlugin(providerId);
+    const hooks = plugin.capabilities.hooks;
+    if (hooks.kind === 'none') return;
+    if (hooks.kind !== 'config' || !plugin.behavior.hooks) {
+      this.deps.log.error('InProcessSessionSpawner: provider hooks cannot be installed here', {
+        providerId,
+        kind: hooks.kind,
+      });
+      return;
+    }
+    if (hooks.scope !== 'global' && hooks.scope !== 'workspace') {
+      throw new Error(
+        `InProcessSessionSpawner: no hook root for scope '${String(hooks.scope)}' — the session ` +
+          'would run with no hooks and never report that it has stopped'
+      );
+    }
+    const root = hooks.scope === 'global' ? homedir() : this.spec.cwd;
+    await plugin.behavior.hooks.writeHooks(createPluginFs(root), []);
+    this.deps.log.info('InProcessSessionSpawner: installed agent hooks', {
+      providerId,
+      scope: hooks.scope,
+    });
   }
 
   /** Launch a command in a fresh detached tmux session with env set on the process. */

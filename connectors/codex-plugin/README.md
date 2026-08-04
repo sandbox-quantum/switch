@@ -26,21 +26,45 @@ Instead, **switchdash registers the Switch MCP server when it launches the
 Codex session** — as a per-agent Codex *profile*. It writes
 `$CODEX_HOME/<agent-slug>.config.toml` (under `~/.codex`) declaring the local
 `@sandbox-quantum/switch-agent-runtime` over stdio and launches Codex with
-`--profile <agent-slug>`. The profile is static and holds no secret: the
-runtime reads `SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` / `SWITCH_AGENT_ID`
-(and `SWITCH_CONNECTION_ID`) from the session environment it inherits, which
-switchdash injects from the agent's `.switch/agents/<slug>.json`. Because a
-profile layers over — and cleanly overrides — the user's base
-`~/.codex/config.toml`, it never clobbers a `switch` server the user defined
-themselves. The skill assumes those tools are present under the `switch`
-server; if they are missing, the session was launched without the profile.
+`--profile <agent-slug>`. The profile is static and holds no secret: it lists
+the variables the runtime needs — `SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` /
+`SWITCH_AGENT_ID` (and `SWITCH_CONNECTION_ID`) — under `env_vars`, and Codex
+forwards those by name from its own environment, which switchdash populates
+from the agent's `.switch/agents/<slug>.json`. Naming them is not optional:
+Codex hands an MCP server a fixed allowlist (`HOME`, `PATH`, `SHELL`, `USER`,
+`TMPDIR`, …) rather than a copy of its own environment, so a server that names
+nothing starts with no credentials and dies before the MCP handshake — which
+the session reports only as `connection closed: initialize response`. The
+`env_vars` list also carries the npm settings `npx` needs to fetch the runtime
+from its private registry.
+
+A profile does *not* replace a same-named server in the user's base
+`~/.codex/config.toml` — the two tables are merged. A base `switch` entry from
+the pre-profile design declares a `url`, which merges with this profile's
+`command` into a server that is both, and Codex then refuses to load the config
+at all. switchdash removes such an entry when it writes the profile. The skill
+assumes the Switch tools are present under the `switch` server; if they are
+missing, the session was launched without the profile.
 
 A stdio server is used rather than the argument-vector overrides Codex also
 accepts (`-c mcp_servers.switch.*`) because the profile is the single unit
-that will also carry per-agent model, reasoning effort, and instructions.
+that also carries per-agent model, reasoning effort, and instructions.
 
-Attachments are handled the same way — there is no channel process for
-Codex, so the skill documents `curl` against the bridge media endpoint
-(`/agents/<agent_id>/rooms/<room_id>/media`) using the session's
-`SWITCH_API_ENDPOINT` / `SWITCH_AGENT_ID` / `SWITCH_API_TOKEN` environment
-variables.
+## What the registered runtime gives a Codex session
+
+The runtime is the same package the Claude Code connector registers, so a
+Codex session gets the same tool surface: every Switch operation the agent
+bridge advertises, plus the runtime's own `send_attachment` and
+`download_attachment`. Neither is gated on which process owns the
+connection, so the skill documents the tools rather than `curl` against the
+bridge media endpoint — that is now only the fallback for a session with no
+Switch MCP server at all.
+
+Events are the part that differs from Claude Code. Codex has no channel of
+its own to receive MCP notifications, so switchdash opens the session's
+event connection itself, hands the id over as `SWITCH_CONNECTION_ID`, and
+delivers what arrives into the session's pane as `[Switch] …` lines. The
+runtime borrows that connection rather than opening a second one: the
+session's `connect_to_room` therefore claims the room on the connection
+switchdash is reading, which is how switchdash learns which room the session
+is in — no tool-response scraping, and no per-session room-tracking hook.

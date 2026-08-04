@@ -107,10 +107,13 @@ export function isNewerVersion(installed: string, latest: string): boolean {
 }
 
 /**
- * Drives an agent's plugin-marketplace CLI (the Claude-Code model:
- * `<bin> plugin install/update/uninstall`, `<bin> plugin marketplace add/update/list`)
- * to manage that agent's Switch connector plugin. Status reads are local and fast;
- * the marketplace refresh used for update detection runs only on checkForUpdates.
+ * Drives an agent's plugin-marketplace CLI (`<bin> plugin ...`,
+ * `<bin> plugin marketplace ...`) to manage that agent's Switch connector
+ * plugin. The verbs, flags and JSON shapes differ per host, so everything
+ * host-specific comes from the dialect in `switch-setup-cli-dialect.ts` and this
+ * driver stays generic across Claude Code and Codex. Status reads are local and
+ * fast; the marketplace refresh used for update detection runs only on
+ * checkForUpdates.
  */
 class SwitchSetupService {
   private readonly ctx = new LocalExecutionContext();

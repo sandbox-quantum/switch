@@ -4,6 +4,7 @@ import type {
   SwitchLaunchSpecialization,
 } from '@switchdash/core/agents/plugins';
 import type { getPlugin } from '@main/core/providers/plugin-registry';
+import { log } from '@main/lib/logger';
 import { switchAgentRuntimeCommand } from '@shared/core/switch-rooms/switch-agent-runtime';
 
 /** MCP server name the Switch tools are registered under. */
@@ -17,8 +18,9 @@ export const SWITCH_MCP_SERVER_NAME = 'switch';
  *
  * Pure — no write — so the caller decides where the files land: a direct write
  * for local/SSH sessions, or a baked launch spec the VM sidecar writes for remote
- * auto-sessions. The runtime it registers is static and secret-free; it reads its
- * `SWITCH_*` credentials from the session env it inherits.
+ * auto-sessions. The runtime it registers is static and secret-free: the profile
+ * names the variables the provider must route into the server's process rather
+ * than carrying their values, so the same profile is safe to bake and ship.
  */
 export function resolveSwitchLaunchProfile(
   plugin: ReturnType<typeof getPlugin>,
@@ -55,8 +57,41 @@ export async function prepareSwitchMcpLaunch(
   const profile = resolveSwitchLaunchProfile(plugin, params);
   if (!profile) return [];
 
+  await removeLegacyHttpSwitchServer(plugin, params.homeFs);
   for (const file of profile.files) {
     await params.homeFs.write(file.relativePath, file.content);
   }
   return profile.args;
+}
+
+/**
+ * Drop a `switch` server left in the base config by the pre-profile design,
+ * which registered the runtime over HTTP.
+ *
+ * A profile does not replace a same-named server in the base config, it merges
+ * with it — so the old entry's `url` meets this one's `command` and Codex
+ * rejects the merged result outright, taking down every session started with
+ * the profile rather than just its Switch tools. Removing the whole entry is
+ * the only repair: one stripped of its transport is rejected in turn.
+ *
+ * Scoped to entries carrying a `url`, which is what the old registration wrote;
+ * a `switch` server a user defined themselves over stdio is left alone.
+ */
+async function removeLegacyHttpSwitchServer(
+  plugin: ReturnType<typeof getPlugin>,
+  homeFs: PluginFs
+): Promise<void> {
+  const mcp = plugin.behavior.mcp;
+  if (!mcp?.readServers || !mcp.removeServer) return;
+
+  const legacy = (await mcp.readServers(homeFs)).find(
+    (server) => server.name === SWITCH_MCP_SERVER_NAME && !!server.url && !server.command
+  );
+  if (!legacy) return;
+
+  log.warn(
+    `switch-mcp: removing the legacy HTTP '${SWITCH_MCP_SERVER_NAME}' server from the base config; ` +
+      'it conflicts with the per-agent profile and blocks the whole config from loading'
+  );
+  await mcp.removeServer(homeFs, SWITCH_MCP_SERVER_NAME);
 }

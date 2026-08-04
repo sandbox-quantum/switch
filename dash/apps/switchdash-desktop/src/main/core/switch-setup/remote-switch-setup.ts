@@ -57,9 +57,12 @@ function parseJsonLoose(stdout: string): unknown {
 
 /**
  * Remote counterpart of SwitchSetupService: drives an agent type's
- * plugin-marketplace CLI (`<bin> plugin install/update/...`) on an SSH host to
- * manage its Switch connector plugin. Versions come from the CLI's own JSON
- * output (not on-disk manifests) so no SFTP round-trips are needed.
+ * plugin-marketplace CLI (`<bin> plugin ...`) on an SSH host to manage its
+ * Switch connector plugin, taking the host's verbs, flags and JSON shapes from
+ * the same dialect table the local driver uses. Versions come from the CLI's own
+ * JSON output (not on-disk manifests) so no SFTP round-trips are needed — which
+ * is why a dialect that advertises no versions (Codex) reports "unknown" here
+ * rather than "up to date".
  */
 export class RemoteSwitchSetupService {
   constructor(private readonly ctx: SshExecutionContext) {}
@@ -72,7 +75,13 @@ export class RemoteSwitchSetupService {
     if (!binaryName) return null;
     const bin = (await resolveCommandPath(binaryName, this.ctx)) ?? binaryName;
     const ref = `${descriptor.pluginName}@${descriptor.marketplaceName}`;
-    return { descriptor, bin, ref, rules: cliRulesFor(descriptor.dialect) };
+    return {
+      descriptor,
+      bin,
+      ref,
+      marketplaceSource: descriptor.marketplaceSource,
+      rules: cliRulesFor(descriptor.dialect),
+    };
   }
 
   private async run(bin: string, args: string[]): Promise<RunResult> {
@@ -192,15 +201,10 @@ export class RemoteSwitchSetupService {
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
-    const { descriptor, bin, rules } = resolved;
+    const { descriptor, bin, marketplaceSource, rules } = resolved;
     let refreshError: string | null = null;
     try {
-      await this.ensureMarketplace(
-        bin,
-        descriptor.marketplaceName,
-        descriptor.marketplaceSource,
-        rules
-      );
+      await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
       const res = await this.run(bin, rules.marketplaceRefreshArgs(descriptor.marketplaceName));
       if (res.code !== 0) {
         throw new Error(
@@ -218,14 +222,9 @@ export class RemoteSwitchSetupService {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref, rules } = resolved;
+    const { descriptor, bin, ref, marketplaceSource, rules } = resolved;
     try {
-      await this.ensureMarketplace(
-        bin,
-        descriptor.marketplaceName,
-        descriptor.marketplaceSource,
-        rules
-      );
+      await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
       return { success: false, message: `Could not add marketplace: ${String(err)}` };
     }
@@ -244,15 +243,10 @@ export class RemoteSwitchSetupService {
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
-    const { descriptor, bin, ref, rules } = resolved;
+    const { descriptor, bin, ref, marketplaceSource, rules } = resolved;
 
     try {
-      await this.ensureMarketplace(
-        bin,
-        descriptor.marketplaceName,
-        descriptor.marketplaceSource,
-        rules
-      );
+      await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
       return { success: false, message: `Could not add marketplace: ${String(err)}` };
     }

@@ -129,6 +129,18 @@ export type SidecarSessionsProvider = () => SidecarSessionInfo[] | Promise<Sidec
  */
 export type SidecarDisconnectHandler = (sessionId: string, terminated: boolean) => void;
 
+/**
+ * Open (or return) the Switch connection a VM session's tool calls ride on, and
+ * answer with its id.
+ *
+ * A session's room is claimed on the connection whose id it is handed as
+ * `SWITCH_CONNECTION_ID`, and only the process reading that connection sees the
+ * room's events. The sidecar mints one itself for every session its own watcher
+ * starts; this is the same hand-off for a session switchdash starts over SSH,
+ * which would otherwise own a connection nobody on the VM reads.
+ */
+export type SidecarConnectionHandler = (sessionId: string, providerId: string) => string;
+
 export class HookServer {
   private server: http.Server | null = null;
   private port = 0;
@@ -136,6 +148,7 @@ export class HookServer {
   private eventLog: HookEventLog | null = null;
   private sessionsProvider: SidecarSessionsProvider | null = null;
   private disconnectHandler: SidecarDisconnectHandler | null = null;
+  private connectionHandler: SidecarConnectionHandler | null = null;
 
   constructor(private readonly log: HookServerLogger) {}
 
@@ -146,7 +159,10 @@ export class HookServer {
    * `sessionsProvider` is provided it also exposes a token-gated `GET /sessions`
    * snapshot so switchdash can reconcile VM-spawned sessions into its UI. When
    * `disconnectHandler` is provided it exposes a token-gated `POST /disconnect`
-   * so switchdash can drop a session's room connection when it deletes it.
+   * so switchdash can drop a session's room connection when it deletes it. When
+   * `connectionHandler` is provided it exposes a token-gated `POST /connection`
+   * so switchdash can open a room connection here for a session it is about to
+   * start over SSH.
    */
   async start(
     handler: HookHandler,
@@ -154,6 +170,7 @@ export class HookServer {
       eventLog?: HookEventLog;
       sessionsProvider?: SidecarSessionsProvider;
       disconnectHandler?: SidecarDisconnectHandler;
+      connectionHandler?: SidecarConnectionHandler;
     }
   ): Promise<void> {
     if (this.server) return;
@@ -161,6 +178,7 @@ export class HookServer {
     this.eventLog = options?.eventLog ?? null;
     this.sessionsProvider = options?.sessionsProvider ?? null;
     this.disconnectHandler = options?.disconnectHandler ?? null;
+    this.connectionHandler = options?.connectionHandler ?? null;
 
     this.server = http.createServer((req, res) => {
       if (req.headers['x-switchdash-token'] !== this.token) {
@@ -190,6 +208,15 @@ export class HookServer {
         (req.url ?? '').startsWith('/disconnect')
       ) {
         this.serveDisconnect(req, res, this.disconnectHandler);
+        return;
+      }
+
+      if (
+        req.method === 'POST' &&
+        this.connectionHandler &&
+        (req.url ?? '').startsWith('/connection')
+      ) {
+        this.serveConnection(req, res, this.connectionHandler);
         return;
       }
 
@@ -334,6 +361,52 @@ export class HookServer {
     });
   }
 
+  private serveConnection(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    handler: SidecarConnectionHandler
+  ): void {
+    let body = '';
+    req.on('data', (chunk: Buffer) => {
+      body += chunk.toString();
+      if (body.length > 1_000_000) req.destroy();
+    });
+    req.on('end', () => {
+      let sessionId = '';
+      let providerId = '';
+      try {
+        const parsed = JSON.parse(body) as { sessionId?: unknown; providerId?: unknown };
+        if (typeof parsed.sessionId === 'string') sessionId = parsed.sessionId;
+        if (typeof parsed.providerId === 'string') providerId = parsed.providerId;
+      } catch {
+        sessionId = '';
+      }
+      if (!sessionId || !providerId) {
+        this.log.warn('HookServer: /connection missing sessionId or providerId');
+        res.writeHead(400);
+        res.end();
+        return;
+      }
+      let connectionId: string;
+      try {
+        connectionId = handler(sessionId, providerId);
+      } catch (err) {
+        this.log.warn('HookServer: /connection handler error', { error: String(err) });
+        res.writeHead(500);
+        res.end();
+        return;
+      }
+      const payload = Buffer.from(JSON.stringify({ connectionId }), 'utf8');
+      // Explicit Content-Length (not chunked) so the caller reading the raw HTTP
+      // response off an SSH-forwarded socket gets the body verbatim.
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': payload.byteLength,
+      });
+      res.end(payload);
+    });
+  }
+
   stop(): void {
     if (this.server) {
       this.server.close();
@@ -342,6 +415,7 @@ export class HookServer {
       this.eventLog = null;
       this.sessionsProvider = null;
       this.disconnectHandler = null;
+      this.connectionHandler = null;
     }
   }
   getPort(): number {

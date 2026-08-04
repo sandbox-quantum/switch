@@ -4,13 +4,18 @@
 # reading the binary:
 #
 #   1. Does Codex deliver a hook's event payload on stdin, with no positional
-#      operands? switchdash's hook commands read stdin and rely on `$#` being 0,
-#      so a positional payload would leave them posting an empty body.
+#      operands? switchdash's hook commands pipe stdin into curl (`-d @-`), so a
+#      payload handed over as a positional operand instead would leave them
+#      posting an empty body. This one is live: SessionStart is how switchdash
+#      captures the rollout id.
 #
 #   2. What shape does `tool_response` take for an MCP tool call? Claude Code
 #      unwraps the MCP result; Codex forwards the `CallToolResult` envelope, so
 #      the payload sits under `structuredContent` / `content[0].text`. The hook
-#      enricher handles either shape.
+#      enricher handles either shape. switchdash no longer installs a PostToolUse
+#      hook for Codex — a session's room comes from the connection switchdash
+#      hands it — so this is a record of Codex's delivery contract, kept for when
+#      a PostToolUse hook is wanted again, not something shipping code depends on.
 #
 # Runs against an isolated CODEX_HOME so your real ~/.codex is untouched. It
 # does spend one Codex turn on your account. Nothing is written outside the

@@ -495,8 +495,8 @@ async def read_context(
     `attachments` is a (usually empty) list of files on the message, each
     {"filename", "mimetype", "size", "mxc", "msgtype"}. Any file type can
     appear, and a message may carry several. To actually view one, pass its
-    `mxc` to the channel's `download_attachment` tool, which fetches it to a
-    local file you can read.
+    `mxc` to the `download_attachment` tool, which fetches it to a local file
+    you can read.
 
     Args:
         limit: Maximum number of messages to scan (default 50), grouped into
@@ -533,7 +533,8 @@ async def list_participants() -> list[dict[str, Any]]:
         connect_to_room first.
 
     Returns:
-        List of {id, name, type} dicts for each participant.
+        List of {id, name, type, status, alias} dicts for each participant.
+        `status` and `alias` are null when unset.
     """
     get_agent_id()
     room_id = await require_connected_room()

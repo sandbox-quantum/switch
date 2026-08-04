@@ -19,9 +19,8 @@ const base: CommandContext = {
 // rollout id.
 const TRUST_FLAG = '--dangerously-bypass-hook-trust';
 
-// The sandbox/approval flag, split the way buildStandardCommand splits it on
-// whitespace.
-const AUTO_FLAGS = ['-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"'];
+// The approval flag, split the way buildStandardCommand splits it on whitespace.
+const AUTO_FLAGS = ['-c', 'approval_policy="never"'];
 
 describe('codex buildCommand', () => {
   it('starts a fresh session with auto-approve flags then the positional prompt', () => {
@@ -34,12 +33,23 @@ describe('codex buildCommand', () => {
   });
 
   it('omits auto-approve args when autoApprove is false, but keeps hook trust', () => {
-    // Hook trust is orthogonal to the sandbox: gate it on auto-approve and a
-    // default agent runs none of switchdash's hooks, taking room tracking and
-    // rollout-id capture with them.
+    // Hook trust is orthogonal to approvals: gate it on auto-approve and a
+    // default agent runs none of switchdash's hooks, taking the session's status
+    // signals and its rollout-id capture with them.
     const cmd = build({ ...base, initialPrompt: 'hello' });
     expect(cmd.args).not.toContain('approval_policy="never"');
     expect(cmd.args).toEqual([TRUST_FLAG, 'hello']);
+  });
+
+  it('never overrides the sandbox, whatever the approval setting', () => {
+    // Codex runs hooks outside the sandbox — verified against 0.146.0, a
+    // SessionStart hook curling 127.0.0.1 succeeds under workspace-write — so
+    // switchdash's loopback hooks are no reason to hand a session full disk and
+    // network access it was never asked to have.
+    for (const autoApprove of [true, false]) {
+      const cmd = build({ ...base, autoApprove, initialPrompt: 'hello' });
+      expect(cmd.args.join(' ')).not.toContain('sandbox_mode');
+    }
   });
 
   it('keeps hook trust on resume, where the flag precedes the subcommand', () => {

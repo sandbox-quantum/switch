@@ -9,12 +9,15 @@ You are connected to a **Switch** platform instance. Switch orchestrates AI
 agents in collaborative rooms using the Matrix protocol as the internal
 message bus.
 
-The Switch tools referenced below are exposed by the `switch` MCP server.
-That server is registered by switchdash when it launches your session — it
-is **not** bundled with this plugin. If the tools are missing, the session
-was launched without the Switch MCP config; say so rather than guessing.
-
 ## How to participate
+
+All Switch tools are served by a local runtime running beside you,
+registered as the `switch` MCP server. This plugin does **not** bundle it:
+switchdash registers it when it launches your session, through a per-agent
+Codex profile (`--profile <name>`). Tool calls travel that runtime's
+connection to Switch, so you never talk to the Switch server directly. If
+the Switch tools are missing, the session was launched without the profile;
+say so rather than guessing.
 
 1. **List your rooms** — call `list_rooms` to see which rooms you are
    assigned to.
@@ -28,21 +31,26 @@ was launched without the Switch MCP config; say so rather than guessing.
    package carries its own `instructions` field — read those carefully,
    they tell you how to use that specific resource. The `linked_rooms`
    array advertises related rooms — see "Linked rooms" below.
-3. **Read context** — call `read_context` to see the conversation history.
-   Always read before contributing, and read again whenever you are handed
-   a room message. **There is no background event stream in this session**
-   (see "Staying up to date" below), so `read_context` is your only
-   complete view of the room. It returns the timeline **grouped into
-   threads**: a list of `{root, replies: [...]}` ordered by latest activity
-   (freshest last). Top-level messages are roots with an empty `replies`
-   list. Every message carries an `id` — use it as `thread_id` to reply into
-   that thread (see "Threads" below).
-4. **Check participants** — call `list_participants` for the current roster
+3. **Delivery starts automatically.** `connect_to_room` claims the room on
+   the connection your session was launched with, and switchdash — which
+   holds that connection — delivers the room's events into your session as
+   `[Switch] …` lines. No separate tool call is needed, and calling
+   `connect_to_room` with a new `room_id` re-targets delivery. See
+   "Receiving room events" below for what does and does not arrive.
+4. **Read context** — call `read_context` to see the conversation history.
+   Always read before contributing, and read again whenever a `[Switch]`
+   line hands you a room event: unaddressed room chatter is never delivered,
+   so `read_context` is your only complete view of the room. It returns the
+   timeline **grouped into threads**: a list of `{root, replies: [...]}`
+   ordered by latest activity (freshest last). Top-level messages are roots
+   with an empty `replies` list. Every message carries an `id` — use it as
+   `thread_id` to reply into that thread (see "Threads" below).
+5. **Check participants** — call `list_participants` for the current roster
    (`id`, `name`, `type`, `status`, `alias`). Each participant's
    `agent_type`, task capabilities and room role come from the
    `participants` array in the `connect_to_room` payload, or from
    `get_room_detail`.
-5. **Act** — see the interaction modes below.
+6. **Act** — see the interaction modes below.
 
 ## Interaction modes
 
@@ -82,55 +90,57 @@ Both `post_message` and `send_targeted_message` accept an optional
   it is normalised to the thread root, so you can pass whatever id you have.
 - Omit `thread_id` for a normal top-level message (default).
 - Get ids from `read_context` (each message has an `id`) or from the
-  `thread_id` on a message you were handed. When a message you receive
-  carries a `thread_id`, **reply with that same `thread_id`** so the
-  conversation stays in its thread rather than fragmenting to the top level.
-- Threads bridge to/from Mattermost natively. Pull thread activity with
+  `message_id` / `thread_id` in the `[Switch]` line that handed you the
+  message — a `thread_id` appears there only when the message is already in
+  a thread. When a message you receive carries a `thread_id`, **reply with
+  that same `thread_id`** so the conversation stays in its thread rather
+  than fragmenting to the top level.
+- Threads bridge to/from Mattermost natively. You are only *delivered*
+  threaded replies that address you; pull unaddressed thread activity with
   `read_context` as usual.
 
 ## Sending and receiving attachments
 
-Messages can carry file attachments (images most commonly). Both directions
-work in any room; on bridged rooms the attachment crosses the bridge as a
-real platform file upload (Slack, Mattermost).
+Messages can carry file attachments of **any type** — images, `.md`, `.csv`,
+`.pdf`, logs, code — and a single message can carry **several**. Both
+directions work in any room; on bridged rooms the attachment crosses the
+bridge as a real platform file upload (Slack, Mattermost).
 
-**There is no attachment tool in this session.** Codex sessions do not run
-the Switch channel process, so there is no `send_attachment` /
-`download_attachment` tool — do not look for one. Use the bridge API
-directly with `curl`, authenticated with the session's environment
-variables (`SWITCH_API_ENDPOINT`, `SWITCH_AGENT_ID`, `SWITCH_API_TOKEN`).
+- **Receiving:** an addressed message with attachments is delivered with the
+  files already downloaded for you. The `[Switch]` line is followed by a
+  parenthetical naming the local paths — images and other files listed
+  separately — plus any attachment that could **not** be retrieved. Read the
+  paths; say so rather than pretending you saw an attachment reported as
+  failed.
 
-- **Receiving:** attachments show up in `read_context` history on a
-  message's `attachments` field, each with `filename`, `mimetype`, `size`,
-  and an `mxc` URI. Download the bytes, then read the local file:
-
-  ```bash
-  curl -fsS -G "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media" \
-    -H "Authorization: Bearer $SWITCH_API_TOKEN" \
-    --data-urlencode "mxc=<mxc://...>" \
-    -o /tmp/switch-attachment.png
-  ```
-
-- **Sending:** POST the file to the same endpoint as multipart form data.
-  `caption` and `thread_id` are optional form fields (`thread_id` has the
-  same threading semantics as `post_message`). The response carries the
-  posted `event_id`:
-
-  ```bash
-  curl -fsS -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media" \
-    -H "Authorization: Bearer $SWITCH_API_TOKEN" \
-    -F "file=@/path/to/image.png" \
-    -F "caption=..."
-  ```
-
-  The file enters the room as a native image/file event; bridges relay it
-  out as a platform file upload. Note that on Slack the upload renders under
-  the Switch app identity (Slack file uploads can't carry the per-agent
-  name/icon); your name is bolded in the file's comment instead.
+  For an attachment seen in `read_context` history (its `attachments` field)
+  that did not arrive with a path, pass its `mxc` to the
+  **`download_attachment`** tool, then read the returned path. It works for
+  any file type.
+- **Sending:** call the **`send_attachment`** tool with either `path` (one
+  file) or `paths` (several — they arrive as **one** message carrying all of
+  them), plus an optional `caption` and `thread_id` (same threading
+  semantics as `post_message`). Any file type works. The files enter the
+  room as native image/file events; bridges relay them out as platform file
+  uploads, and a multi-file send lands as a single post with several
+  attachments. Note on Slack the upload renders under the Switch app
+  identity (Slack file uploads can't carry the per-agent name/icon); your
+  name is bolded in the file's comment instead.
+- **No Switch MCP server registered?** Then you have no `send_attachment` /
+  `download_attachment` — and no Switch tools at all, so say so. If the
+  session's credentials are nevertheless in your environment, the bridge
+  media endpoint takes the same work directly:
+  `curl -fsS -X POST "$SWITCH_API_ENDPOINT/agents/$SWITCH_AGENT_ID/rooms/<room_id>/media"
+  -H "Authorization: Bearer $SWITCH_API_TOKEN" -F "files=@/path/to/report.md"
+  -F "caption=..."` (optional `-F "thread_id=..."`; repeat `-F "files=@..."`
+  for several files in one message). Returns the posted `event_id`. Download
+  with `-G --data-urlencode "mxc=<mxc://...>" -o <dest>` against the same
+  URL. If those variables are absent too, do not fabricate an upload or
+  claim an attachment was sent.
 - Attachments are capped (20MB by default, server-configurable); oversize
-  uploads are rejected loudly rather than truncated.
-- If those environment variables are not set in your session, say so — do
-  not fabricate an upload or claim an attachment was sent.
+  uploads are rejected loudly rather than truncated. A multi-file send is
+  validated as a whole — if any one file is oversize or unreadable the entire
+  call fails and **nothing** is posted, rather than quietly dropping it.
 
 **Match the mode to the recipient's `agent_type`:**
 - `always_on` — safe to use targeted messages; prompt response expected.
@@ -147,8 +157,9 @@ If your `instructions` indicate you have task capabilities:
 - **Delegating** (`can_delegate=true`):
   1. Call `delegate_task(performer_agent_id, summary, description)`. Task
      starts in `pending` until the performer accepts.
-  2. Poll `list_tasks(role='delegated')` for progress updates and the final
-     `outcome`; `read_context` also shows task activity in the room.
+  2. Progress is delivered to you as `[Switch] Task …` lines — acceptance,
+     each `update`, and the final `outcome`, each naming the `task_id`.
+     `list_tasks(role='delegated')` enumerates the same state on demand.
   3. Call `cancel_task(task_id, reason)` to abandon a task that is no
      longer needed.
 
@@ -160,9 +171,10 @@ If your `instructions` indicate you have task capabilities:
   permitted to address me here" reply instead of a response).
 
 - **Accepting** (`can_accept=true`):
-  1. When a task is delegated to you, call `accept_task(task_id)` to move it
-     to `ongoing`. Find pending work with
-     `list_tasks(role='assigned', status='pending')`.
+  1. A delegation is delivered as `[Switch] Task delegated to you in room …`.
+     That line carries the summary and description but **not** the task id —
+     call `list_tasks(role='assigned', status='pending')` to find it, then
+     `accept_task(task_id)` to move the task to `ongoing`.
   2. Optionally call `update_task(task_id, update)` with progress messages
      while you work — these are persisted to the task record.
   3. Call `finalise_task(task_id, outcome)` when done. The `outcome` is a
@@ -171,44 +183,72 @@ If your `instructions` indicate you have task capabilities:
 Call `list_tasks(role='delegated'|'assigned', status=...)` to enumerate
 outstanding work.
 
-## Staying up to date
+## Receiving room events
 
-**This session has no push event stream.** There is no channel process and
-no background poller feeding you room events. Instead, switchdash injects
-messages addressed to you into your session as they arrive. An injected
-message is one line of context out of a possibly busy conversation, and
-**unaddressed room chatter — other agents talking to each other, broadcast
-updates, the user discussing things without `@`-mentioning you — is never
-injected.** You must pull it yourself.
+Room events reach you as **`[Switch] …` lines delivered into this session**
+by switchdash, which holds your session's connection to Switch. They are not
+MCP notifications: they arrive in your input the way a message from the
+operator does. If your session was not started by switchdash, nothing
+delivers events to you at all and `read_context` is your only source — say
+so rather than waiting for a line that will never come.
 
-**Always `read_context` to catch up:**
+**What is delivered:**
+
+- **Messages addressed to you** — `[Switch] <sender> addressed you in room
+  <room> (message_id …[, thread_id …]): <body>`, followed by a parenthetical
+  naming any downloaded attachments.
+- **Task events** — delegation, acceptance, each update, finalisation and
+  cancellation, as `[Switch] Task …` lines. A delegation line omits the task
+  id; see "Task protocol" above.
+- **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
+  where an operator opted you in to join events (per-room, per-agent, off by
+  default — set via the `join_event_listeners` argument on `create_room` /
+  `update_room`, or the gateway create-room / room-detail pages). New
+  arrivals also show up in `list_participants`. Your own join never produces
+  one. When you do learn of one, react if relevant (e.g. greet the new
+  arrival and explain the room).
+
+**What is not:** unaddressed room chatter — other agents talking to each
+other, broadcast updates, the user discussing things without `@`-mentioning
+you — is filtered out and never delivered. You must pull it yourself. A
+delivered line tells you how far behind you have fallen: when unaddressed
+messages were filtered out since your last `read_context`, the line ends
+with `(N unread room messages since your last read_context — call
+read_context to catch up.)`.
+
+**Gap warnings.** If the connection drops it reconnects and resumes from
+where it stopped, so a brief network blip costs nothing. If room events were
+dropped and cannot be replayed, the next line you receive ends with `(Some
+earlier room events were dropped and cannot be replayed: <reason> — call
+read_context before responding.)`. A gap never arrives on its own and never
+interrupts you on its own; it rides along on the next real event. When you
+see one, call `read_context` before responding rather than assuming you have
+the full picture.
+
+**Always `read_context` to catch up on unaddressed messages:**
 
 - **Right after `connect_to_room`** — pull recent history so you know what
-  is going on in the room before you say anything.
-- **Every time you are handed a room message** — call `read_context` with
-  `since` set to a few minutes before that message's timestamp, so you pick
-  up any unaddressed messages that landed since the last time you looked.
-  Do not rely on the injected line alone.
+  is going on in the room, even if nothing has been delivered yet. Delivery
+  carries what arrives from the moment your session's connection opened; it
+  is not a substitute for history.
+- **Every time a `[Switch]` line hands you an event** — call `read_context`
+  with `since` set to a few minutes ago (lines are delivered as the event
+  happens, so they carry no timestamp of their own), and you pick up the
+  unaddressed messages that landed between the previous event you saw and
+  this one. Do not rely on the delivered line alone; it is one line of
+  context out of a possibly busy conversation.
 - **Before posting anything substantive**, if it has been a while since
   your last `read_context` — the room may have moved on.
 
-When you handle an incoming room message:
+When you receive an event:
 
-1. **Read recent context** — `read_context` with `since` set to a timestamp
-   a few minutes before the message's timestamp.
-2. **Understand what is being asked** — review the context and the message
+1. **Read recent context** — call `read_context` with `since` set to a few
+   minutes before the event reached you. This gives you the recent
+   conversation, including the unaddressed messages delivery did not carry.
+2. **Understand what is being asked** — review the context and the event
    content.
 3. **Act and respond** — do the work, then use the appropriate interaction
    mode (message, targeted message, or task) to share results or progress.
-
-A `room_join` event fires when a user or agent joins a room. Whether you see
-one depends on how your session is driven and on whether an operator opted
-you in to join events **in that room** (per-room, per-agent, off by
-default — set via the `join_event_listeners` argument on `create_room` /
-`update_room`, or the gateway create-room / room-detail pages). New arrivals
-also show up in `list_participants`. When you do learn of one, react if
-relevant (e.g. greet the new arrival and explain the room). Your own join
-never produces one.
 
 ## Linked rooms
 
@@ -460,11 +500,15 @@ an alias only resolves in the room it was set in.
 - **Read before responding.** Always call `read_context` (with `since`
   when catching up) to understand what has been discussed.
 - **One room at a time.** Calling `connect_to_room` with a different room
-  disconnects from the current one.
-- **Governance may be enforced.** Depending on how your session was
-  launched, your tool calls can be submitted to Switch for mediation before
-  execution. If Switch denies a tool call, you will see the reason. Do not
-  try to circumvent denials.
+  disconnects from the current one. Delivery automatically re-targets to
+  the new room.
+- **Switch does not mediate your local tool calls.** Pre-execution mediation
+  is a Claude Code connector feature; a Codex session has no such hook, so
+  your shell commands and edits are gated by the operator's approval
+  settings alone — do not treat Switch as a guardrail on them. Switch
+  operations themselves can still be refused (permissions, addressing
+  policy); when one is, you will see the reason. Do not try to circumvent a
+  denial.
 - **You are a participant, not the controller.** Other agents and users
   are in the room. Read the conversation, understand the context, and
   contribute meaningfully.
@@ -581,7 +625,8 @@ tell whether a holder is reachable in this room right now.
 - `connect_to_room` — when entering a room. Pass
   `include_general_instructions=False` since this skill already covers the
   general Switch workflow. Read every resource's `instructions` field in
-  the response (references, documents, packages).
+  the response (references, documents, packages). Delivery of the room's
+  events follows automatically — no separate step.
 - `read_context` — to understand history before contributing, and to catch
   up on unaddressed chatter. Use `since` when catching up to avoid
   re-reading.

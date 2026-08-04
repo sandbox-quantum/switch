@@ -113,11 +113,11 @@ export const AGENT_PROVIDERS: AgentProviderDefinition[] = [
     versionArgs: ['--version'],
     cli: 'codex',
     // Hook trust is a default arg, not an auto-approve one: Codex skips any hook
-    // it has no persisted trust entry for, and switchdash's room tracking and
+    // it has no persisted trust entry for, and switchdash's status signals and
     // rollout-id capture are hooks. Kept in sync with the plugin by the parity
     // test in src/main/core/providers/provider-argv-parity.test.ts.
     defaultArgs: ['--dangerously-bypass-hook-trust'],
-    autoApproveFlag: '-c approval_policy="never" -c sandbox_mode="danger-full-access"',
+    autoApproveFlag: '-c approval_policy="never"',
     initialPromptFlag: '',
     resumeFlag: 'resume',
     sessionIdFlag: ' ',

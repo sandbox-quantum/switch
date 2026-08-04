@@ -28,7 +28,7 @@ export const plugin = definePlugin(
     hooks: {
       kind: 'config',
       scope: 'global',
-      supportedEvents: ['notification', 'stop', 'session', 'tool-done'],
+      supportedEvents: ['notification', 'stop', 'session'],
     },
     hostDependency: npmDependency({
       id: 'codex',
@@ -85,12 +85,12 @@ export const provider = registerPluginBehavior(plugin, {
       buildStandardCommand(ctx, {
         // Every session, not just auto-approving ones. See the flag's docblock.
         defaultArgs: [CODEX_HOOK_TRUST_FLAG],
-        // Deliberately overrides any sandbox_mode in the user's
-        // ~/.codex/config.toml. Codex's own default, workspace-write, blocks
-        // network access including loopback, and switchdash's hooks are curls
-        // to 127.0.0.1 that end in `|| true` — under a sandbox they fail
-        // silently, taking room tracking and rollout-id capture with them.
-        autoApproveFlag: '-c approval_policy="never" -c sandbox_mode="danger-full-access"',
+        // Approvals only — the sandbox is left to the user's config. "Bypass
+        // permissions" promises unattended approval, not unattended filesystem
+        // and network access, and Codex runs hooks outside the sandbox, so
+        // switchdash's loopback curls reach the hook server under
+        // workspace-write just as they do under danger-full-access.
+        autoApproveFlag: '-c approval_policy="never"',
         initialPromptFlag: '',
         resumeFlag: 'resume',
         sessionIdFlag: ' ',

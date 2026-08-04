@@ -112,6 +112,20 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(created[0].deps.roomId).toBe('room-1');
   });
 
+  // What `/connection` answers switchdash with. The returned id has to be the
+  // one the connection was actually opened under, or the session is launched
+  // naming a connection the server has never heard of and every tool call fails.
+  it('returns the id of the connection it opened, for a session with no room yet', () => {
+    const { runtime, created } = makeRuntime();
+
+    const connectionId = runtime.ensureForSession('session-a', 'codex', null);
+
+    expect(created).toHaveLength(1);
+    expect(created[0].deps.connectionId).toBe(connectionId);
+    expect(created[0].deps.roomId).toBeNull();
+    expect(created[0].conn.start).toHaveBeenCalledTimes(1);
+  });
+
   it('opens a session at head when no cursor was handed over', () => {
     const { runtime, created } = makeRuntime();
 
