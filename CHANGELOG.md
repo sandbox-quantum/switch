@@ -151,6 +151,21 @@ below:
 
 ### [Unreleased]
 
+### [0.17.2] - 2026-08-04
+
+#### Added
+- Status-aware "update available" UX: the sidebar indicator shows the target
+  version when an update is available, live percentage + transfer rate while
+  downloading, a restart prompt once ready, and a warning tint on failure — and
+  opens a panel (current → new version, the right action, a link to the GitHub
+  release) instead of just jumping to Settings. User-triggered failures are
+  toasted and the real error message is shown (CHOO-1434, #107).
+
+#### Fixed
+- The onboarding/home page can drag the window again: the empty home surface is
+  now a drag region (action buttons opted out), so the window is no longer stuck
+  when Home is the active view (CHOO-1430, #106).
+
 ### [0.17.1] - 2026-08-04
 
 #### Added

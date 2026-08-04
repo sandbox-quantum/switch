@@ -169,7 +169,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // Resolved before the command is built because a provider that registers
       // the Switch server at launch keys it on this identity (see below).
       const workspaceFs = createPluginFs(this.sessionPath);
-      const subagentVars =
+      const identityVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
@@ -183,7 +183,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
-        hasSwitchIdentity: !!subagentVars.SWITCH_API_ENDPOINT,
+        hasSwitchIdentity: !!identityVars.SWITCH_API_ENDPOINT,
         specialization: toSwitchSpecialization(agentRecord?.providerConfig),
       });
 
@@ -249,7 +249,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         }),
         ...colorEnv,
         ...this.sessionEnvVars,
-        ...subagentVars,
+        ...identityVars,
         ...npmAuthEnv,
         ...(switchConnectionId ? { SWITCH_CONNECTION_ID: switchConnectionId } : {}),
       };

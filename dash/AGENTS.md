@@ -465,7 +465,8 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, and `SWITCHDASH_REGISTER_DEEPLINK`.
+  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, and
+  `SWITCHDASH_FAKE_UPDATE`.
 - An auto-approving Codex session launches with `-c approval_policy="never"` and
   nothing else. The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
@@ -481,6 +482,16 @@ pnpm run test
   per-invocation and also un-gates hooks the user added to `~/.codex/hooks.json`
   themselves. Rationale and the rejected alternative are on `CODEX_HOOK_TRUST_FLAG` in
   `packages/plugins/src/agents/impl/codex/hooks.ts`.
+- App updates in dev: the update service is inert outside packaged builds, so the
+  "update available" UI cannot be exercised by `pnpm run dev` alone. Set
+  `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —
+  `available`, `download-error`, `check-error`, `auth-required`, or `up-to-date`.
+  An unrecognised value fails at startup rather than silently doing nothing.
+  `SWITCHDASH_FAKE_UPDATE_VERSION` overrides the offered version (default: the
+  current minor, bumped) and `SWITCHDASH_FAKE_UPDATE_MS` the simulated download
+  duration. Nothing is downloaded or installed, and the harness cannot activate in
+  a packaged build. Example:
+  `SWITCHDASH_FAKE_UPDATE=available pnpm run dev`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

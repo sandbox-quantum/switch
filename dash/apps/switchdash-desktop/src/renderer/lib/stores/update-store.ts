@@ -15,6 +15,7 @@ import {
   updateNotAvailableEvent,
   updateProgressEvent,
 } from '@shared/events/updateEvents';
+import { switchdashReleaseUrl } from '@shared/urls';
 
 const LAST_NOTIFIED_KEY = 'switchdash:update:lastNotified';
 const SNOOZE_HOURS = 6;
@@ -26,16 +27,81 @@ type DownloadProgress = {
   bytesPerSecond?: number;
 };
 
+export type UpdateReleaseInfo = {
+  version: string;
+  releaseDate?: string;
+  releaseName?: string | null;
+};
+
 export type UpdateState =
   | { status: 'idle' }
   | { status: 'checking' }
-  | { status: 'available'; info?: { version: string } }
+  | { status: 'available'; info?: UpdateReleaseInfo }
   | { status: 'not-available' }
   | { status: 'downloading'; progress?: DownloadProgress }
   | { status: 'downloaded' }
   | { status: 'installing' }
   | { status: 'error'; message: string }
   | { status: 'auth-required' };
+
+/** Statuses where main is mid-flight and a fresh check would interrupt it. */
+const IN_FLIGHT_STATUSES: ReadonlySet<UpdateState['status']> = new Set([
+  'downloading',
+  'downloaded',
+  'installing',
+]);
+
+/**
+ * Shape of the main-process update state, described structurally so the
+ * renderer does not import from @main. Keep in sync with UpdateState in
+ * src/main/core/updates/update-service.ts.
+ */
+type MainUpdateState = {
+  status:
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'installing'
+    | 'error'
+    | 'auth-required';
+  currentVersion: string;
+  availableVersion?: string;
+  updateInfo?: { version: string; releaseDate?: string; releaseName?: string | null };
+  downloadProgress?: DownloadProgress;
+  error?: string;
+};
+
+export function mainStateToRendererState(main: MainUpdateState): UpdateState {
+  switch (main.status) {
+    case 'checking':
+      return { status: 'checking' };
+    case 'available':
+      return {
+        status: 'available',
+        info: main.availableVersion
+          ? {
+              version: main.availableVersion,
+              releaseDate: main.updateInfo?.releaseDate,
+              releaseName: main.updateInfo?.releaseName,
+            }
+          : undefined,
+      };
+    case 'downloading':
+      return { status: 'downloading', progress: main.downloadProgress };
+    case 'downloaded':
+      return { status: 'downloaded' };
+    case 'installing':
+      return { status: 'installing' };
+    case 'error':
+      return { status: 'error', message: main.error || 'The update could not be completed.' };
+    case 'auth-required':
+      return { status: 'auth-required' };
+    default:
+      return { status: 'idle' };
+  }
+}
 
 export class UpdateStore {
   state: UpdateState = { status: 'idle' };
@@ -50,6 +116,8 @@ export class UpdateStore {
       setState: action,
       hasUpdate: computed,
       progressLabel: computed,
+      latestVersion: computed,
+      releaseUrl: computed,
     });
   }
 
@@ -68,6 +136,18 @@ export class UpdateStore {
     return `${p.toFixed(0)}%`;
   }
 
+  /** Version being offered/downloaded, independent of the current status. */
+  get latestVersion(): string | undefined {
+    if (this.state.status === 'available' && this.state.info?.version) {
+      return this.state.info.version;
+    }
+    return this.availableVersion;
+  }
+
+  get releaseUrl(): string {
+    return switchdashReleaseUrl(this.latestVersion);
+  }
+
   start(): void {
     void rpc.app.getAppVersion().then((v) => {
       runInAction(() => {
@@ -84,7 +164,14 @@ export class UpdateStore {
     events.on(updateAvailableEvent, (d) => {
       runInAction(() => {
         this.availableVersion = d.version;
-        this.state = { status: 'available', info: { version: d.version } };
+        this.state = {
+          status: 'available',
+          info: {
+            version: d.version,
+            releaseDate: d.updateInfo?.releaseDate,
+            releaseName: d.updateInfo?.releaseName,
+          },
+        };
       });
       this._maybeToastAvailable(d.version);
     });
@@ -115,8 +202,9 @@ export class UpdateStore {
       });
     });
 
-    events.on(updateDownloadedEvent, () => {
+    events.on(updateDownloadedEvent, (d) => {
       runInAction(() => {
+        if (d?.version) this.availableVersion = d.version;
         this.state = { status: 'downloaded' };
       });
     });
@@ -140,10 +228,35 @@ export class UpdateStore {
     });
 
     events.on(menuCheckForUpdatesChannel, () => {
-      rpc.update.check().catch(() => {});
+      void this.check();
     });
 
-    rpc.update.check().catch(() => {});
+    // Adopt whatever main already knows before kicking off a new check: a
+    // renderer reload during a download would otherwise show idle while the
+    // download continues in the background.
+    void this._resyncFromMain().then(() => {
+      if (IN_FLIGHT_STATUSES.has(this.state.status)) return;
+      rpc.update.check().catch(() => {});
+    });
+  }
+
+  private async _resyncFromMain(): Promise<void> {
+    try {
+      const res = await rpc.update.getState();
+      if (!res?.success || !res.data) return;
+      const main = res.data;
+
+      runInAction(() => {
+        if (main.currentVersion && main.currentVersion !== 'unknown') {
+          this.currentVersion = main.currentVersion;
+        }
+        this.availableVersion = main.availableVersion;
+        this.state = mainStateToRendererState(main);
+      });
+    } catch {
+      // A failed resync is not itself an update failure — the check that
+      // follows will establish real state.
+    }
   }
 
   async check(): Promise<void> {
@@ -182,21 +295,14 @@ export class UpdateStore {
     try {
       const res = await rpc.update.download();
       if (!res) {
-        runInAction(() => {
-          this.state = { status: 'error', message: 'Update API unavailable' };
-        });
+        this._failUserAction('Update API unavailable');
         return;
       }
       if (!res.success) {
-        const message = res.error ?? 'Failed to download update';
-        runInAction(() => {
-          this.state = { status: 'error', message };
-        });
+        this._failUserAction(res.error ?? 'Failed to download update');
       }
     } catch {
-      runInAction(() => {
-        this.state = { status: 'error', message: 'Failed to download update' };
-      });
+      this._failUserAction('Failed to download update');
     }
   }
 
@@ -207,20 +313,14 @@ export class UpdateStore {
     try {
       const res = await rpc.update.quitAndInstall();
       if (!res) {
-        runInAction(() => {
-          this.state = { status: 'error', message: 'Update API unavailable' };
-        });
+        this._failUserAction('Update API unavailable');
         return;
       }
       if (!res.success) {
-        runInAction(() => {
-          this.state = { status: 'error', message: res.error ?? 'Failed to install update' };
-        });
+        this._failUserAction(res.error ?? 'Failed to install update');
       }
     } catch {
-      runInAction(() => {
-        this.state = { status: 'error', message: 'Failed to install update' };
-      });
+      this._failUserAction('Failed to install update');
     }
   }
 
@@ -230,6 +330,28 @@ export class UpdateStore {
     } catch {
       // openLatest quits the app — errors are best-effort
     }
+  }
+
+  /** Open this update's GitHub release page in the user's browser. */
+  async openReleasePage(): Promise<void> {
+    const url = this.releaseUrl;
+    try {
+      await rpc.app.openExternal(url);
+    } catch {
+      toast.error('Could not open the release page', { description: url });
+    }
+  }
+
+  /**
+   * Record a failure the user personally triggered. Background check failures
+   * only tint the sidebar indicator; a click that fails gets a toast, because
+   * the user is waiting on an answer.
+   */
+  private _failUserAction(message: string): void {
+    runInAction(() => {
+      this.state = { status: 'error', message };
+    });
+    toast.error('Update failed', { description: message, duration: 8_000 });
   }
 
   private _maybeToastAvailable(version: string): void {
