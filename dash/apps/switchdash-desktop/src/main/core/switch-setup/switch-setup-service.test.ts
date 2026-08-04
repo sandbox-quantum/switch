@@ -6,7 +6,10 @@ const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
   listPlugins: vi.fn(),
   readFile: vi.fn(),
+  probeLocalGhAuth: vi.fn(),
 }));
+
+vi.mock('./local-gh-auth', () => ({ probeLocalGhAuth: mocks.probeLocalGhAuth }));
 
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
   LocalExecutionContext: class {
@@ -210,6 +213,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.resolveCommandPath.mockResolvedValue('/usr/bin/claude');
   mocks.getPlugin.mockReturnValue(CLI_AGENT);
+  mocks.probeLocalGhAuth.mockResolvedValue({
+    ghInstalled: true,
+    authenticated: true,
+    canReadPackages: true,
+    account: 'octocat',
+    envShadowed: false,
+    detail: null,
+  });
 });
 
 describe('switchSetupService.getStatus', () => {
@@ -278,6 +289,30 @@ describe('switchSetupService.listOnboardable', () => {
     const onboardable = await switchSetupService.listOnboardable();
 
     expect(onboardable).toEqual([]);
+  });
+
+  // An installed plugin still resolves its MCP server from a private registry
+  // at session start. Offering the agent type on the strength of the install
+  // alone onboards an agent that comes up with no Switch tools.
+  it.each([
+    ['gh is not installed', { ghInstalled: false, authenticated: false, canReadPackages: false }],
+    ['there is no login', { ghInstalled: true, authenticated: false, canReadPackages: false }],
+    [
+      'the token cannot read packages',
+      { ghInstalled: true, authenticated: true, canReadPackages: false },
+    ],
+  ])('offers nothing when %s, even with the connector installed', async (_label, gh) => {
+    mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
+    mocks.exec.mockImplementation(execImpl('0.1.0'));
+    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
+    mocks.probeLocalGhAuth.mockResolvedValue({
+      ...gh,
+      account: null,
+      envShadowed: false,
+      detail: 'nope',
+    });
+
+    expect(await switchSetupService.listOnboardable()).toEqual([]);
   });
 });
 

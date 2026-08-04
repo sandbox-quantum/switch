@@ -5,7 +5,8 @@ repository** (`sandbox-quantum/switch`). The repo is private, so the release
 downloads are automatically limited to people with repo-read access — there is
 no separate sign-up or allowlist. No need to build from source.
 
-> Builds are currently **macOS arm64** (Apple Silicon) only.
+> Builds are currently **macOS arm64** (Apple Silicon) and **Linux x64**.
+> Windows is not built yet.
 
 ## Download
 
@@ -17,7 +18,8 @@ no separate sign-up or allowlist. No need to build from source.
    page.
 3. Find the latest release titled **`switchdash <version>`** (tag
    `switchdash-v<version>`).
-4. Under **Assets**, download the `.dmg` file.
+4. Under **Assets**, download the file for your platform — `.dmg` on macOS, or
+   one of `.AppImage` / `.deb` / `.rpm` on Linux.
 
 If you don't have repo access the assets return a 404 — ask in the Switch
 Workforce hub to be added as a repo reader.
@@ -28,10 +30,15 @@ Workforce hub to be added as a repo reader.
 # Latest switchdash release (requires `gh auth login` with repo access):
 gh release list --repo sandbox-quantum/switch | grep switchdash-v
 
-# Download the .dmg from a specific release:
+# Download the installer from a specific release (macOS):
 gh release download switchdash-v<version> \
   --repo sandbox-quantum/switch \
   --pattern '*.dmg'
+
+# Linux — pick the format your distro uses:
+gh release download switchdash-v<version> \
+  --repo sandbox-quantum/switch \
+  --pattern '*.AppImage'   # or '*.deb' / '*.rpm'
 ```
 
 > A plain `curl` of the asset URL will **not** work — private-repo release
@@ -57,6 +64,33 @@ Gatekeeper blocks the first launch. Clear it once, either way:
   ```
 
 After that, launch switchdash normally.
+
+## Install (Linux x64)
+
+Linux builds are **unsigned**. Pick the format your distro uses:
+
+- **AppImage** — no install step; make it executable and run it:
+
+  ```bash
+  chmod +x switchdash-x86_64.AppImage
+  ./switchdash-x86_64.AppImage
+  ```
+
+- **Debian / Ubuntu** (`.deb`):
+
+  ```bash
+  sudo apt install ./switchdash-amd64.deb
+  ```
+
+- **Fedora / RHEL** (`.rpm`):
+
+  ```bash
+  sudo dnf install ./switchdash-x86_64.rpm
+  ```
+
+> The app does not yet set a `desktopName`, so desktop environments may not
+> associate its windows with the installed `.desktop` entry (the icon can appear
+> as a duplicate or generic entry in the taskbar). Tracked under CHOO-1905.
 
 ## Updating
 

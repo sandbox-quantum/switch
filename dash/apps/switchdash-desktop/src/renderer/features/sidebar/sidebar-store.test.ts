@@ -6,6 +6,7 @@ import type { Agent } from '@shared/core/agents/agents';
 import {
   agentRoomGroupKey,
   applyManualOrder,
+  roomAgentGroupKey,
   roomViewGroupKey,
   SidebarStore,
 } from './sidebar-store';
@@ -159,6 +160,16 @@ describe('SidebarStore grouping', () => {
     expect(store.expandedLocationIds.has('location-1')).toBe(true);
     expect(store.isGroupExpanded(agentRoomGroupKey('location-1', 'room-1'))).toBe(true);
     expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(true);
+  });
+
+  it('collapses one agent-under-room without collapsing the same agent elsewhere', () => {
+    // An agent in two rooms is two rows in two places, not one row drawn twice.
+    // Keyed by agent alone they collapsed and highlighted together.
+    const store = new SidebarStore(locationManager([]));
+    store.toggleGroupExpanded(roomAgentGroupKey('room-1', 'agent-1'));
+
+    expect(store.isGroupExpanded(roomAgentGroupKey('room-1', 'agent-1'))).toBe(false);
+    expect(store.isGroupExpanded(roomAgentGroupKey('room-2', 'agent-1'))).toBe(true);
   });
 
   it('tracks and clears a pending scroll-to-session request', () => {

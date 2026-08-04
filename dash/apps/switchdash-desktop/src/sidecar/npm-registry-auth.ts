@@ -3,9 +3,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
-  lacksReadPackages,
+  GH_AUTH_STATUS_ARGS,
+  isEnvShadowedToken,
   NPMRC_CONTENTS,
   npmRegistryEnv,
+  parseGhAuthStatus,
   READ_PACKAGES_FIX,
 } from '@shared/core/npm-registry';
 import type { WatcherLogger } from './notification-watcher';
@@ -43,7 +45,7 @@ async function ghToken(log: WatcherLogger): Promise<string | null> {
 }
 
 /**
- * Warn when the token cannot read packages.
+ * Warn when the credentials `gh` will use cannot fetch the runtime.
  *
  * `gh auth login` asks for `gist`, `read:org`, `repo` and `workflow` — not
  * `read:packages`. So the default, perfectly healthy login produces a token
@@ -51,22 +53,39 @@ async function ghToken(log: WatcherLogger): Promise<string | null> {
  * "expected scopes", several layers below anything that mentions `gh`.
  *
  * Checked here so the cause is stated at spawn, where it is actionable, rather
- * than inferred later from an npx failure. Only a warning: the scope list is
- * parsed from human-readable output, and being wrong about it must not stop a
- * session starting.
+ * than inferred later from an npx failure. Only a warning: an unrecognised
+ * answer must not stop a session starting.
  */
-async function warnIfCannotReadPackages(log: WatcherLogger): Promise<void> {
+async function warnAboutGhAuth(log: WatcherLogger): Promise<void> {
   try {
-    // `gh auth status` prints scopes on stderr.
-    const { stdout, stderr } = await execFileAsync('gh', ['auth', 'status'], { timeout: 10_000 });
-    if (!lacksReadPackages(`${stdout}${stderr}`)) return;
-    log.warn('npmRegistryAuth: the GitHub token cannot read packages', {
-      event: 'npm_registry_auth_missing_scope',
-      fix: READ_PACKAGES_FIX,
-      detail:
-        'gh auth login does not request read:packages, so the registry will refuse ' +
-        'with 403 and the session will start without its MCP tools',
-    });
+    const { stdout } = await execFileAsync('gh', GH_AUTH_STATUS_ARGS, { timeout: 10_000 });
+    const state = parseGhAuthStatus(stdout);
+    if (isEnvShadowedToken(state)) {
+      log.warn('npmRegistryAuth: an environment token is shadowing the gh login', {
+        event: 'npm_registry_auth_env_shadowed',
+        tokenSource: state.status === 'unknown' ? 'unknown' : state.tokenSource,
+        detail:
+          'gh prefers GH_TOKEN/GITHUB_TOKEN over the keyring, so authenticating on ' +
+          'this host will not change which token is used until that variable is unset',
+      });
+    }
+    if (state.status === 'missing-scope') {
+      log.warn('npmRegistryAuth: the GitHub token cannot read packages', {
+        event: 'npm_registry_auth_missing_scope',
+        account: state.login,
+        scopes: state.scopes.join(', '),
+        fix: READ_PACKAGES_FIX,
+        detail:
+          'gh auth login does not request read:packages, so the registry will refuse ' +
+          'with 403 and the session will start without its MCP tools',
+      });
+    } else if (state.status === 'invalid') {
+      log.warn('npmRegistryAuth: the active GitHub token is not usable', {
+        event: 'npm_registry_auth_invalid_token',
+        tokenSource: state.tokenSource,
+        detail: state.detail,
+      });
+    }
   } catch {
     // Never fatal — this is a diagnostic, not a gate.
   }
@@ -93,7 +112,7 @@ export async function npmRegistryAuthEnv(
     return {};
   }
 
-  await warnIfCannotReadPackages(log);
+  await warnAboutGhAuth(log);
 
   const dir = path.join(repoDir, '.switchdash');
   const npmrc = path.join(dir, 'npmrc');

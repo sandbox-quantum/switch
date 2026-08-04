@@ -1,8 +1,51 @@
+import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { Button } from '@renderer/lib/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { openRoomChannel } from './room-links';
+
+/**
+ * Opens the room's channel in the messaging app it is bridged to. The embedded
+ * view is a convenience, not a replacement — threads, search and notifications
+ * live in the real client, so there is always a way out to it.
+ *
+ * Rendered only when the gateway supplied a deeplink; an unbridged room has no
+ * messaging app to open, and a button that quietly does nothing is worse than
+ * no button.
+ */
+const OpenInMessagingApp = observer(function OpenInMessagingApp({ roomId }: { roomId: string }) {
+  const bridgeType = switchRoomsStore.roomBridgeTypeById(roomId);
+  if (!switchRoomsStore.roomChannelUrl(roomId)) return null;
+
+  const platform = bridgeType ?? 'messaging app';
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="size-7 p-0"
+            aria-label={`Open in ${platform}`}
+            onClick={() => openRoomChannel(roomId)}
+          >
+            {hasBridgeIcon(bridgeType) ? (
+              <BridgeIcon bridgeType={bridgeType} size={16} className="size-4" />
+            ) : (
+              <ExternalLink className="size-4" />
+            )}
+          </Button>
+        }
+      />
+      <TooltipContent side="bottom">Open in {platform}</TooltipContent>
+    </Tooltip>
+  );
+});
 
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
@@ -22,6 +65,11 @@ const RoomTitlebar = observer(function RoomTitlebar() {
             </>
           )}
           <span className="max-w-56 truncate">{name ?? 'Room'}</span>
+        </div>
+      }
+      rightSlot={
+        <div className="mr-2 flex items-center gap-1">
+          <OpenInMessagingApp roomId={params.roomId} />
         </div>
       }
     />

@@ -2,6 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { AppMenuEvents } from './app/app-menu-events';
 import { Workspace } from './app/workspace';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
+import { SwitchToolsUnavailableListener } from './features/switch-rooms/switch-tools-unavailable-listener';
 import { WorkspaceLayoutContextProvider } from './lib/layout/layout-provider';
 import { WorkspaceViewProvider } from './lib/layout/provider';
 import { ModalRenderer } from './lib/modal/modal-renderer';
@@ -19,6 +20,7 @@ function AppContent() {
           <WorkspaceViewProvider>
             <AppMenuEvents />
             <SessionDeeplinkListener />
+            <SwitchToolsUnavailableListener />
             <RightSidebarProvider>
               <ThemeProvider>
                 <ModalRenderer />

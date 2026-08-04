@@ -2,6 +2,7 @@ import type {
   AddressingPolicy,
   RemoteAgentRoom,
   RemoteAgentSummary,
+  RemoteBridge,
   RemoteExternalUser,
   RemoteRoomGroup,
   RemoteRoomRole,
@@ -75,10 +76,31 @@ export class GatewayError extends Error {
   constructor(
     readonly kind: GatewayErrorKind,
     message: string,
-    readonly status?: number
+    readonly status?: number,
+    /** The gateway's own explanation, unwrapped from the FastAPI `{"detail":…}`
+     * envelope. Present only when the body carried one. Prefer this over
+     * `message` when showing a failure to the user: `message` is prefixed with
+     * the raw status line, which reads as noise in a form. */
+    readonly detail?: string
   ) {
     super(message);
     this.name = 'GatewayError';
+  }
+}
+
+/**
+ * Unwrap FastAPI's `{"detail": "…"}` error envelope. Returns undefined for any
+ * other body shape (an HTML error page, a 422 validation array, empty), leaving
+ * the caller with the full status-prefixed message rather than a misleading
+ * fragment.
+ */
+function parseErrorDetail(body: string): string | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    return typeof parsed.detail === 'string' ? parsed.detail : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -156,11 +178,12 @@ async function gatewayFetch(
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
   if (!response.ok) {
-    const detail = await response.text().catch(() => '');
+    const body = await response.text().catch(() => '');
     throw new GatewayError(
       'http',
-      `Switch gateway returned ${response.status}${detail ? `: ${detail}` : ''}`,
-      response.status
+      `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
+      response.status,
+      parseErrorDetail(body)
     );
   }
   return response;
@@ -445,18 +468,41 @@ export async function fetchRoomGroups(server: SwitchServer): Promise<RemoteRoomG
 }
 
 /**
+ * List the collaboration bridges configured on a server (`GET /collaborations`).
+ * Returns every bridge regardless of status — callers that need a usable one
+ * (room creation) filter on `status === 'active'` themselves, so they can tell
+ * "no bridges at all" apart from "the bridge is down".
+ */
+export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]> {
+  const res = await gatewayFetch(server, '/collaborations', { authenticated: true });
+  const json = (await res.json()) as Array<{
+    bridge_id: string;
+    bridge_type: string;
+    display_name: string;
+    status: string;
+    is_default?: boolean;
+  }>;
+  return json.map((b) => ({
+    id: b.bridge_id,
+    type: b.bridge_type,
+    displayName: b.display_name,
+    status: b.status,
+    isDefault: b.is_default ?? false,
+  }));
+}
+
+/**
  * Union of external (bridged human) users across every bridge on the server
  * (`GET /collaborations`, then each bridge's `/users`). The addressing policy's
  * `users` dimension keys off these ExternalUser ids.
  */
 export async function fetchAllExternalUsers(server: SwitchServer): Promise<RemoteExternalUser[]> {
-  const bridgesRes = await gatewayFetch(server, '/collaborations', { authenticated: true });
-  const bridges = (await bridgesRes.json()) as Array<{ bridge_id: string }>;
+  const bridges = await fetchBridges(server);
   const byId = new Map<string, RemoteExternalUser>();
   for (const bridge of bridges) {
     const res = await gatewayFetch(
       server,
-      `/collaborations/${encodeURIComponent(bridge.bridge_id)}/users`,
+      `/collaborations/${encodeURIComponent(bridge.id)}/users`,
       { authenticated: true }
     );
     const users = (await res.json()) as Array<{ id: string; external_username: string }>;
@@ -550,21 +596,24 @@ export async function fetchRoomRoles(
   }));
 }
 
-export async function fetchRooms(server: SwitchServer): Promise<RemoteRoomSummary[]> {
-  const res = await gatewayFetch(server, '/rooms', { authenticated: true });
-  const json = (await res.json()) as Array<{
-    id: string;
-    name: string;
-    description: string;
-    channel_type: string | null;
-    agent_count: number;
-    bridge_display_name: string | null;
-    bridge_type?: string | null;
-    external_channel_url?: string | null;
-    archived: boolean;
-    created_at: string;
-  }>;
-  return json.map((r) => ({
+/** The gateway `RoomSummary` wire shape. `RoomDetail` (returned by create) is a
+ * superset, so the same mapper serves both. */
+type RoomSummaryJson = {
+  id: string;
+  name: string;
+  description: string;
+  channel_type: string | null;
+  agent_count: number;
+  bridge_display_name: string | null;
+  bridge_type?: string | null;
+  external_channel_url?: string | null;
+  owner_id?: string | null;
+  archived: boolean;
+  created_at: string;
+};
+
+function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
+  return {
     id: r.id,
     name: r.name,
     description: r.description,
@@ -573,7 +622,100 @@ export async function fetchRooms(server: SwitchServer): Promise<RemoteRoomSummar
     bridgeDisplayName: r.bridge_display_name,
     bridgeType: r.bridge_type ?? null,
     externalChannelUrl: r.external_channel_url ?? null,
+    ownerId: r.owner_id ?? null,
     archived: r.archived,
     createdAt: r.created_at,
-  }));
+  };
+}
+
+export async function fetchRooms(server: SwitchServer): Promise<RemoteRoomSummary[]> {
+  const res = await gatewayFetch(server, '/rooms', { authenticated: true });
+  const json = (await res.json()) as RoomSummaryJson[];
+  return json.map(mapRoomSummary);
+}
+
+/**
+ * Switch agent ids that are members of a room (`GET /rooms/{id}`). One call for
+ * the whole room, rather than asking every candidate agent what it belongs to.
+ * Connecting to a room is only meaningful for an agent already in it, so this is
+ * what scopes the agent picker when starting a session from a room.
+ */
+export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): Promise<string[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as { agent_ids?: string[] };
+  return json.agent_ids ?? [];
+}
+
+/**
+ * Add agents to an existing room (`POST /rooms/{id}/agents`). Requires write
+ * access to the room. Agents already in the room are ignored server-side, so
+ * this is safe to call with a set that overlaps the current membership.
+ */
+export async function addRoomAgents(
+  server: SwitchServer,
+  roomId: string,
+  agentIds: string[]
+): Promise<void> {
+  await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/agents`, {
+    authenticated: true,
+    method: 'POST',
+    body: { agent_ids: agentIds },
+  });
+}
+
+/**
+ * Remove one agent from a room (`DELETE /rooms/{id}/agents/{agentId}`). Requires
+ * write access. This is membership only — the agent itself, its credentials and
+ * its sessions are untouched; it simply stops being in this room.
+ */
+export async function removeRoomAgent(
+  server: SwitchServer,
+  roomId: string,
+  agentId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+}
+
+/**
+ * Create a room on `server` (session-authed `POST /gateway/rooms`), owned by the
+ * signed-in user. Provisioning stays entirely server-side — this is the same
+ * endpoint the operator web app posts to.
+ *
+ * `bridgeId` is required by switchdash even though the gateway allows an
+ * unbridged room: a room with no messaging app attached is unreachable for the
+ * humans it is being created for. `channel_type` is always `channel_public` for
+ * now; the gateway demands the field whenever a new channel is provisioned.
+ *
+ * Failures throw `GatewayError` — see `createRoomOnServer` for the mapping onto
+ * a user-facing result.
+ */
+export async function createRoom(
+  server: SwitchServer,
+  params: {
+    name: string;
+    description: string;
+    instructions?: string;
+    bridgeId: string;
+    agentIds: string[];
+  }
+): Promise<RemoteRoomSummary> {
+  const res = await gatewayFetch(server, '/rooms', {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      name: params.name,
+      description: params.description,
+      instructions: params.instructions?.trim() ? params.instructions : null,
+      bridge_id: params.bridgeId,
+      channel_type: 'channel_public',
+      agent_ids: params.agentIds,
+    },
+  });
+  return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }

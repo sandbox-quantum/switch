@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
  * 5432 / 3000 never hits a "port is already allocated" failure.
  */
 export type LocalServerPorts = {
-  /** Operator gateway (dashboard) — what "Open web app" and management calls use. */
+  /** Operator gateway (dashboard) — what "Open admin interface" and management calls use. */
   gateway: number;
   /** switch-core agent bridge API — a connector's `SWITCH_API_ENDPOINT`. */
   api: number;

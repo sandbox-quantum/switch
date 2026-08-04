@@ -39,6 +39,8 @@ class SwitchNotificationPoller {
   private readonly connections = new Map<string, RoomConnection>();
   /** Agent id → buffer position the next session for it should start from. */
   private readonly pendingStart = new Map<string, number>();
+  /** Session id → the room it is being started for, before it exists. */
+  private readonly pendingRoom = new Map<string, { roomId: string; roomName: string | null }>();
 
   /**
    * Open this session's connection before it launches, and return the id to
@@ -56,7 +58,28 @@ class SwitchNotificationPoller {
   async ensureForSession(ctx: SessionRoomContext): Promise<string | null> {
     const existing = this.connections.get(ctx.sessionId);
     if (existing) return existing.connection;
-    return await this.start(ctx, null, null);
+    // Consumed, not just read: the room belongs to this session's launch.
+    const intended = this.pendingRoom.get(ctx.sessionId);
+    this.pendingRoom.delete(ctx.sessionId);
+    return await this.start(ctx, intended?.roomId ?? null, intended?.roomName ?? null);
+  }
+
+  /**
+   * The room a session about to be spawned is meant to be in.
+   *
+   * A session started for a specific room otherwise sits under "Unassigned"
+   * until the agent boots and calls `connect_to_room` — which can take a while,
+   * and never happens if it ignores the prompt. Declaring the room when the
+   * connection opens makes the server claim it there and then, and it comes
+   * back over the same `subscription_changed` signal as any other claim, so the
+   * server stays the one authority on which room a session is in.
+   *
+   * The agent's own `connect_to_room` is still wanted, and still happens — it
+   * is the only thing that returns the room's instructions, and re-claiming a
+   * room already held by the same connection is a no-op.
+   */
+  noteIntendedRoom(sessionId: string, roomId: string, roomName: string | null): void {
+    this.pendingRoom.set(sessionId, { roomId, roomName });
   }
 
   /**

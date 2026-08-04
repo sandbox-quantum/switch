@@ -21,8 +21,12 @@ vi.mock('./switch-room-service', () => ({
     onSessionRoomChanged: () => () => {},
   },
 }));
+const noteIntendedRoom = vi.fn();
 vi.mock('./switch-notification-poller', () => ({
-  switchNotificationPoller: { noteSpawnTrigger: vi.fn() },
+  switchNotificationPoller: {
+    noteSpawnTrigger: vi.fn(),
+    noteIntendedRoom: (...args: unknown[]) => noteIntendedRoom(...args),
+  },
 }));
 
 vi.mock('@main/core/agents/getAgentById', () => ({
@@ -203,5 +207,19 @@ describe('AutoSessionWatcher.handleNotification', () => {
       handle(watcher, 'room-x');
       await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
     });
+  });
+
+  it('declares the room for the session it is about to create', async () => {
+    // The session exists because of a message in this room, so its connection
+    // opens already claiming it. Without this it starts room-less and only
+    // joins once the agent gets round to connect_to_room — until then it shows
+    // outside the room it was started for.
+    const watcher = fakeWatcher();
+
+    handle(watcher, 'room-x');
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+
+    const sessionId = (createSession.mock.calls[0][0] as { id: string }).id;
+    expect(noteIntendedRoom).toHaveBeenCalledWith(sessionId, 'room-x', null);
   });
 });

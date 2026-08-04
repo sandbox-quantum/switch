@@ -95,16 +95,27 @@ describe('SidecarRuntime (multi-session)', () => {
   it('opens a spawned session at the cursor the watcher handed over', () => {
     const { runtime, created } = makeRuntime();
 
-    runtime.ensureForSession('session-a', 'codex', 41);
+    runtime.ensureForSession('session-a', 'codex', 'room-1', 41);
 
     expect(created).toHaveLength(1);
     expect(created[0].deps.startCursor).toBe(41);
   });
 
+  // A session is auto-started to answer a message in a room, so it opens
+  // already claiming it. Waiting for the agent's own connect_to_room left it
+  // room-less — sitting outside the room it was started for.
+  it('opens a spawned session already claiming the room it was launched for', () => {
+    const { runtime, created } = makeRuntime();
+
+    runtime.ensureForSession('session-a', 'codex', 'room-1', 41);
+
+    expect(created[0].deps.roomId).toBe('room-1');
+  });
+
   it('opens a session at head when no cursor was handed over', () => {
     const { runtime, created } = makeRuntime();
 
-    runtime.ensureForSession('session-a', 'codex');
+    runtime.ensureForSession('session-a', 'codex', 'room-1');
 
     expect(created[0].deps.startCursor).toBeUndefined();
   });

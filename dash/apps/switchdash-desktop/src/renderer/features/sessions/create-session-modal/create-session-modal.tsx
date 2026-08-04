@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -37,6 +38,7 @@ import {
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
+import type { Agent } from '@shared/core/agents/agents';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
 import { buildConnectPrompt } from './build-connect-prompt';
 
@@ -68,25 +70,85 @@ function useDefaultLocationId(propLocationId?: string): string | undefined {
   }, []); // computed once on mount
 }
 
+/**
+ * The local agents that could actually take a session in `roomId`: registered on
+ * that room's server, and already a member of the room.
+ *
+ * Connecting is not a join — it is an instruction in the session's opening
+ * prompt — so an agent outside the room would start a session that then fails to
+ * connect. Offering only members keeps that failure off the table, and the empty
+ * case is surfaced rather than presented as a working choice.
+ */
+function useRoomMemberAgents(roomId: string | undefined): {
+  agents: Agent[];
+  serverId: string | null;
+  loading: boolean;
+} {
+  const serverId = roomId ? switchRoomsStore.roomServerId(roomId) : null;
+
+  useEffect(() => {
+    if (roomId) void agentsStore.load();
+  }, [roomId]);
+
+  const membersQuery = useQuery({
+    queryKey: ['roomAgentIds', serverId, roomId],
+    queryFn: () => rpc.switchServers.listRoomAgentIds({ serverId: serverId!, roomId: roomId! }),
+    enabled: !!serverId && !!roomId,
+  });
+
+  const memberIds = useMemo(() => new Set(membersQuery.data ?? []), [membersQuery.data]);
+  const agents = [...agentsStore.byLocation.values()]
+    .flat()
+    .filter((a) => a.serverId === serverId && a.switchAgentId && memberIds.has(a.switchAgentId))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return { agents, serverId, loading: membersQuery.isLoading || !agentsStore.loaded };
+}
+
 export const CreateSessionModal = observer(function CreateSessionModal({
   locationId,
   agentName,
+  roomId,
   onClose,
 }: BaseModalProps & {
   locationId?: string;
   /** When set, start the session as this Claude Code subagent of the agent. */
   agentName?: string;
+  /** When set, the session connects to THIS room and the modal asks which agent
+   * should join it — the inverse of the agent-first flow, for starting a session
+   * from a room in the sidebar. */
+  roomId?: string;
   // Accepted for source compatibility with switchdash callers; ignored in switchdash v0.
   strategy?: string;
   initialPR?: unknown;
 }) {
-  const selectedLocationId = useDefaultLocationId(locationId);
+  const defaultLocationId = useDefaultLocationId(locationId);
   const { navigate } = useNavigate();
 
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [room, setRoom] = useState<RemoteAgentRoom | null>(null);
   const [roleName, setRoleName] = useState<string>(NO_ROLE);
+  const [pickedAgent, setPickedAgent] = useState<Agent | null>(null);
+
+  // Room-first mode: the room is fixed and the agent is the open question —
+  // unless the caller already answered it (a "+" on an agent row listed under
+  // the room), in which case the picker just shows that agent, still switchable.
+  const roomFirst = !!roomId;
+  const roomMembers = useRoomMemberAgents(roomId);
+  const presetAgent =
+    roomMembers.agents.find(
+      (a) => a.name === agentName && (!locationId || a.locationId === locationId)
+    ) ?? null;
+  // Auto-pick when there is only one candidate — the choice would be a
+  // formality, and the user still sees which agent it resolved to.
+  const effectiveAgent =
+    pickedAgent ?? presetAgent ?? (roomMembers.agents.length === 1 ? roomMembers.agents[0] : null);
+  const selectedLocationId = roomFirst ? effectiveAgent?.locationId : defaultLocationId;
+  // Every switchdash agent is its own Switch identity, so a session is always
+  // owned by a named agent row (CHOO-1440) — the picked agent's name plays the
+  // same part here as the `agentName` an agent row passes in.
+  const effectiveAgentName = roomFirst ? effectiveAgent?.name : agentName;
 
   // A session belongs to an agent; resolve the location's agent up front so we
   // can offer the rooms it belongs to.
@@ -101,18 +163,20 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   // When a specific agent is named, the session joins rooms under that agent's
   // own Switch identity — its own agent row — so the room picker uses that
   // agent's id/server, matched by name (CHOO-1440).
-  const subagent = agentName ? (locationAgents.find((a) => a.name === agentName) ?? null) : null;
+  const subagent = effectiveAgentName
+    ? (locationAgents.find((a) => a.name === effectiveAgentName) ?? null)
+    : null;
 
-  const serverId = agentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
-  const switchAgentId = agentName
+  const serverId = effectiveAgentName ? (subagent?.serverId ?? null) : (agent?.serverId ?? null);
+  const switchAgentId = effectiveAgentName
     ? (subagent?.switchAgentId ?? null)
     : (agent?.switchAgentId ?? null);
 
   useEffect(() => {
-    if (serverId && switchAgentId) {
+    if (!roomFirst && serverId && switchAgentId) {
       void switchRoomsStore.fetchAgentRooms(serverId, switchAgentId);
     }
-  }, [serverId, switchAgentId]);
+  }, [roomFirst, serverId, switchAgentId]);
 
   const rooms =
     serverId && switchAgentId
@@ -120,14 +184,30 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       : [];
   const roomsLoading =
     !!serverId && !!switchAgentId && switchRoomsStore.isLoading(serverId, switchAgentId);
-  const canConnectRoom = !!serverId && !!switchAgentId;
+  const canConnectRoom = !roomFirst && !!serverId && !!switchAgentId;
+
+  // In room-first mode the room is given, not chosen; everything downstream
+  // (roles, the connect prompt) keys off the same value either way.
+  const activeRoom: RemoteAgentRoom | null = roomFirst
+    ? roomId
+      ? {
+          roomId,
+          roomName: switchRoomsStore.roomNameById(roomId) ?? 'this room',
+          archived: false,
+          status: 'no_session',
+          roomRole: null,
+        }
+      : null
+    : room;
+  const roleServerId = roomFirst ? roomMembers.serverId : serverId;
 
   // Roles are room-scoped, so only fetch once a room is chosen. The set is small
   // and changes rarely, so a plain per-room query (no shared cache) is enough.
   const rolesQuery = useQuery({
-    queryKey: ['roomRoles', serverId, room?.roomId],
-    queryFn: () => rpc.switchServers.listRoomRoles({ serverId: serverId!, roomId: room!.roomId }),
-    enabled: !!serverId && !!room,
+    queryKey: ['roomRoles', roleServerId, activeRoom?.roomId],
+    queryFn: () =>
+      rpc.switchServers.listRoomRoles({ serverId: roleServerId!, roomId: activeRoom!.roomId }),
+    enabled: !!roleServerId && !!activeRoom,
   });
   const roles = rolesQuery.data ?? [];
 
@@ -141,7 +221,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
     const id = crypto.randomUUID();
     const trimmedName = name.trim();
     const chosenRole = roleName !== NO_ROLE ? roleName : null;
-    const initialPrompt = buildConnectPrompt(room?.roomName ?? null, chosenRole, prompt);
+    const initialPrompt = buildConnectPrompt(activeRoom?.roomName ?? null, chosenRole, prompt);
 
     void (async () => {
       const freshAgents = await rpc.agents.getAgents(selectedLocationId);
@@ -149,15 +229,25 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       // from `session.agent_id → agents.name`, so the session is
       // invisible/misidentified if it points at a different agent. Resolve the
       // row by name here; error out rather than silently fall back (CHOO-1440).
-      const resolvedAgent = agentName
-        ? (subagent ?? freshAgents.find((a) => a.name === agentName) ?? null)
+      const resolvedAgent = effectiveAgentName
+        ? (subagent ?? freshAgents.find((a) => a.name === effectiveAgentName) ?? null)
         : (agent ?? freshAgents[0]);
       if (!resolvedAgent) {
         log.error('spawn session failed: no agent for location/subagent', {
           locationId: selectedLocationId,
-          agentName,
+          agentName: effectiveAgentName,
         });
         return;
+      }
+      // Declare the room before the session exists, so its connection opens
+      // already claiming it and the session shows under the right room from the
+      // start rather than after the agent's first connect_to_room.
+      if (activeRoom) {
+        await rpc.switchRooms.noteIntendedRoom({
+          sessionId: id,
+          roomId: activeRoom.roomId,
+          roomName: activeRoom.roomName,
+        });
       }
       // createSession registers the session synchronously (before its first
       // await), so it is in the manager by the time this call returns — the
@@ -168,7 +258,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         title: trimmedName || 'Session',
         autoApprove: resolvedAgent.autoApprove,
         initialPrompt,
-        agentName: agentName || undefined,
+        agentName: effectiveAgentName || undefined,
       });
       navigate('session', { locationId: selectedLocationId, sessionId: id });
       onClose();
@@ -179,10 +269,71 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   return (
     <>
       <DialogHeader className="flex items-center gap-2">
-        <DialogTitle>{agentName ? `New Session · @${agentName}` : 'New Session'}</DialogTitle>
+        <DialogTitle>
+          {roomFirst
+            ? `New Session · ${activeRoom?.roomName ?? 'room'}`
+            : agentName
+              ? `New Session · @${agentName}`
+              : 'New Session'}
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea>
         <div className="flex w-full flex-col gap-5">
+          {roomFirst && (
+            <Field>
+              <FieldLabel>Agent</FieldLabel>
+              <Combobox
+                items={roomMembers.agents}
+                value={effectiveAgent}
+                onValueChange={(next: Agent | null) => setPickedAgent(next)}
+                isItemEqualToValue={(a: Agent, b: Agent) => a.id === b.id}
+                filter={(item: Agent, query) =>
+                  item.name.toLowerCase().includes(query.toLowerCase())
+                }
+                autoHighlight
+              >
+                <ComboboxTrigger
+                  disabled={roomMembers.loading || roomMembers.agents.length === 0}
+                  className={cn(
+                    'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
+                    (roomMembers.loading || roomMembers.agents.length === 0) &&
+                      'cursor-not-allowed opacity-60'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'flex-1 truncate text-left',
+                      !effectiveAgent && 'text-foreground-muted'
+                    )}
+                  >
+                    {effectiveAgent
+                      ? effectiveAgent.name
+                      : roomMembers.loading
+                        ? 'Loading agents…'
+                        : 'Choose an agent'}
+                  </span>
+                  <ChevronDown className="size-3.5 shrink-0 text-foreground-muted" />
+                </ComboboxTrigger>
+                <ComboboxContent className="min-w-(--anchor-width)">
+                  <ComboboxInput showTrigger={false} placeholder="Search agents…" />
+                  <ComboboxList>
+                    {(item: Agent) => (
+                      <ComboboxItem key={item.id} value={item}>
+                        <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                  <ComboboxEmpty>No agents found</ComboboxEmpty>
+                </ComboboxContent>
+              </Combobox>
+              {!roomMembers.loading && roomMembers.agents.length === 0 && (
+                <p className="mt-1 text-xs text-foreground-muted">
+                  None of your agents is a member of this room yet. Add one from the room's page in
+                  the gateway, then try again.
+                </p>
+              )}
+            </Field>
+          )}
           <Field>
             <FieldLabel>Name</FieldLabel>
             <Input
@@ -246,7 +397,7 @@ export const CreateSessionModal = observer(function CreateSessionModal({
               )}
             </Field>
           )}
-          {room && (
+          {activeRoom && (
             <Field>
               <FieldLabel>Assume role</FieldLabel>
               <Select

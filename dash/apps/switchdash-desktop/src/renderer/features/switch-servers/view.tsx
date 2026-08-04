@@ -232,7 +232,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
 
             <div className={`${card} space-y-3`}>
               <p className="text-sm text-foreground-muted">
-                Managing this server's agents and rooms is done in the web app for now.
+                Configure resources, messaging apps, API keys and users in the full admin interface.
               </p>
               <Button
                 variant="outline"
@@ -245,7 +245,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                 }
               >
                 <ExternalLink className="size-4" />
-                Open web app
+                Open admin interface
               </Button>
             </div>
           </>

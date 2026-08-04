@@ -39,6 +39,7 @@ export interface InProcessSessionSpawnerDeps {
   openConnectionFor?: (
     sessionId: string,
     providerId: string,
+    roomId: string,
     startCursor?: number
   ) => string | null;
   /** The agent's Switch identity as `SWITCH_*` env, injected into every
@@ -157,9 +158,11 @@ export class InProcessSessionSpawner implements SessionSpawner {
 
     // Open the session's connection before launching it: its first
     // connect_to_room arrives tagged with this id, and the server refuses a
-    // call naming a connection that is not open.
+    // call naming a connection that is not open. The room goes with it — this
+    // session is being launched to answer a message in that room, so there is
+    // nothing to wait to be told.
     const connectionId =
-      this.deps.openConnectionFor?.(sessionId, spec.providerId, startCursor) ?? null;
+      this.deps.openConnectionFor?.(sessionId, spec.providerId, roomId, startCursor) ?? null;
 
     const hookEnv = {
       ...this.deps.switchEnv,

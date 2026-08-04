@@ -1,6 +1,10 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { rpc } from '@renderer/lib/ipc';
-import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
+import type {
+  RemoteAgentRoom,
+  RemoteRoomSummary,
+} from '@shared/core/switch-servers/switch-servers';
+import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { switchServersStore } from './switch-servers-store';
 
 /** Cache key for an agent's room membership: server + Switch agent id. */
@@ -29,6 +33,14 @@ export class SwitchRoomsStore {
   /** Room id → native deeplink that opens its channel in the messaging app's
    * desktop client, when the room is bridged and the link could be built. */
   private readonly channelUrlByRoom = new Map<string, string>();
+  /** Server id → the active rooms on that server owned by the signed-in user.
+   * The sidebar lists these even when no session is connected to them, so a
+   * room you create in switchdash is visible the moment it exists rather than
+   * only once an agent joins it. */
+  private readonly ownedRoomsByServer = new Map<string, RemoteRoomSummary[]>();
+  /** Server id → every active room on it. Listed in full for a server this
+   * install manages; elsewhere it backs lookups rather than the room list. */
+  private readonly allRoomsByServer = new Map<string, RemoteRoomSummary[]>();
   /** Keys with an in-flight fetch. */
   readonly loading = new Set<string>();
   /** Last error per key, if the most recent fetch failed. */
@@ -95,6 +107,60 @@ export class SwitchRoomsStore {
   }
 
   /**
+   * The rooms the sidebar lists on their own account, before membership is
+   * considered — the ones that are there because of what they are, not because
+   * one of this install's agents is in them.
+   *
+   * On a server this install manages, that is **every** room: you run the
+   * deployment, so there is nothing on it you should have to go elsewhere to
+   * see. On any other server it is the rooms you created, which would otherwise
+   * disappear the moment you made one and put no agent in it.
+   *
+   * The sidebar tree shows one server at a time, so these follow the same scope
+   * rule as locations do — including that no active server hides nothing.
+   */
+  get listedRoomsInActiveScope(): RemoteRoomSummary[] {
+    const activeServerId = switchServersStore.activeServerId;
+    const serverIds = activeServerId
+      ? [activeServerId]
+      : [...new Set([...this.allRoomsByServer.keys(), ...this.ownedRoomsByServer.keys()])];
+    const listed = serverIds.flatMap((serverId) => {
+      const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
+      return (
+        (managed ? this.allRoomsByServer.get(serverId) : this.ownedRoomsByServer.get(serverId)) ??
+        []
+      );
+    });
+    return listed.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * The messaging-app values worth offering as a room filter on the active
+   * server: the bridge types actually in use, plus the unbridged sentinel when
+   * some room has no messaging app. Offering a platform with no rooms behind it
+   * would be a filter that can only ever empty the list.
+   */
+  get bridgeFilterValuesInActiveScope(): string[] {
+    const present = new Set<string>();
+    for (const room of this.listedRoomsInActiveScope) {
+      present.add(room.bridgeType ?? UNBRIDGED_FILTER_VALUE);
+    }
+    // The sentinel sorts last so the real platforms lead the menu.
+    return [...present].sort((a, b) => {
+      if (a === UNBRIDGED_FILTER_VALUE) return 1;
+      if (b === UNBRIDGED_FILTER_VALUE) return -1;
+      return a.localeCompare(b);
+    });
+  }
+
+  /** Full detail for a room, when its server's room list has been loaded. */
+  roomSummaryById(roomId: string): RemoteRoomSummary | null {
+    const serverId = this.roomServerById.get(roomId);
+    if (!serverId) return null;
+    return this.allRoomsByServer.get(serverId)?.find((room) => room.id === roomId) ?? null;
+  }
+
+  /**
    * Refresh the room id → name map from every connected server's room list.
    * Best-effort: a server that fails to respond is skipped (its rooms keep
    * their last-known names, or fall back to a short id in the UI).
@@ -107,6 +173,9 @@ export class SwitchRoomsStore {
       connected.map(async (server) => {
         try {
           const rooms = await rpc.switchServers.listRemoteRooms(server.id);
+          // Ownership is per server: the same person is a different user row on
+          // each gateway, so match against that server's signed-in identity.
+          const signedInUserId = switchServersStore.statusFor(server.id)?.user?.id ?? null;
           runInAction(() => {
             for (const room of rooms) {
               this.roomNames.set(room.id, room.name);
@@ -117,6 +186,12 @@ export class SwitchRoomsStore {
                 this.channelUrlByRoom.set(room.id, room.externalChannelUrl);
               else this.channelUrlByRoom.delete(room.id);
             }
+            const active = rooms.filter((r) => !r.archived);
+            this.allRoomsByServer.set(server.id, active);
+            this.ownedRoomsByServer.set(
+              server.id,
+              signedInUserId ? active.filter((r) => r.ownerId === signedInUserId) : []
+            );
           });
         } catch {
           // skip this server; names stay best-effort
@@ -128,6 +203,21 @@ export class SwitchRoomsStore {
   /** Cached membership, or undefined if never fetched. */
   roomsFor(serverId: string, switchAgentId: string): RemoteAgentRoom[] | undefined {
     return this.roomsByAgent.get(key(serverId, switchAgentId));
+  }
+
+  /**
+   * Load membership for several agents at once. The room-grouped sidebar lists
+   * an agent under every room it belongs to, not only the rooms it happens to
+   * have a session in, so it needs the whole set up front rather than one
+   * agent's at a time.
+   */
+  async ensureMembershipsFor(
+    agents: { serverId: string; switchAgentId: string }[],
+    options: { force?: boolean } = {}
+  ): Promise<void> {
+    await Promise.all(
+      agents.map((a) => this.fetchAgentRooms(a.serverId, a.switchAgentId, options))
+    );
   }
 
   isLoading(serverId: string, switchAgentId: string): boolean {

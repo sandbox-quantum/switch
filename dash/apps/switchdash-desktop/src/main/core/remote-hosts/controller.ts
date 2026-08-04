@@ -23,6 +23,7 @@ import {
   getRemoteSwitchSetupService,
   type RemoteSwitchSetupService,
 } from '@main/core/switch-setup/remote-switch-setup';
+import { GH_AUTH_STATUS_ARGS, parseGhAuthStatus } from '@shared/core/npm-registry';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { ConnectionState, SshHealthState } from '@shared/core/ssh/ssh';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -85,27 +86,35 @@ function hostConnectionStatus(sshHost: string): HostConnectionStatus {
   };
 }
 
-/** Matches the account line of `gh auth status` across gh versions ("account NAME" / "as NAME"). */
-const GH_AUTH_ACCOUNT_RE = /Logged in to \S+ (?:account|as) (\S+)/;
-
 /**
- * Check whether `gh` is authenticated on a remote host via `gh auth status`.
- * Exit 0 means authenticated; a non-zero exit (which SshExecutionContext
- * throws on) means not logged in. A transport failure propagates — a dead
- * connection is not evidence of a missing login.
+ * Check whether `gh` is authenticated on a remote host.
+ *
+ * A non-zero exit (which SshExecutionContext throws on) means `gh` is missing
+ * or has no login at all. A transport failure propagates — a dead connection is
+ * not evidence of a missing login.
+ *
+ * `--json` exits zero even when the token is rejected, so an unusable
+ * credential arrives as a parsed `invalid` rather than as a throw, and is
+ * reported as not authenticated: a token the API refuses is no better than
+ * none, and saying "authenticated" of it sends the user looking elsewhere.
  */
 async function probeGhAuth(sshHost: string): Promise<GhAuthStatus> {
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const ctx = new SshExecutionContext(proxy);
   try {
-    const { stdout, stderr } = await ctx.exec('gh', ['auth', 'status']);
-    const output = `${stdout}\n${stderr}`;
-    const account = GH_AUTH_ACCOUNT_RE.exec(output)?.[1] ?? null;
-    // gh prints "Token scopes: 'gist', 'read:org', …". Absent on very old
-    // versions, in which case assume the scope is there rather than nagging
-    // about something we cannot see.
-    const canReadPackages = !output.includes('Token scopes:') || output.includes('read:packages');
-    return { authenticated: true, account, canReadPackages };
+    const { stdout } = await ctx.exec('gh', GH_AUTH_STATUS_ARGS);
+    const state = parseGhAuthStatus(stdout);
+    switch (state.status) {
+      case 'ok':
+        return { authenticated: true, account: state.login, canReadPackages: true };
+      case 'missing-scope':
+        return { authenticated: true, account: state.login, canReadPackages: false };
+      case 'invalid':
+        return { authenticated: false, account: null, canReadPackages: false };
+      case 'unknown':
+        // The check did not apply — do not invent a fault the host may not have.
+        return { authenticated: true, account: null, canReadPackages: true };
+    }
   } catch (error) {
     if (isTransportFailure(error)) throw error;
     return { authenticated: false, account: null, canReadPackages: false };

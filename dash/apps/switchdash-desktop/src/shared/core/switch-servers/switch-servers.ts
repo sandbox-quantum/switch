@@ -149,6 +149,11 @@ export type RemoteRoomSummary = {
    * desktop client (slack://…, mattermost://…), or null when not bridged / the
    * bridge is down / the platform has no scheme. Built server-side. */
   externalChannelUrl: string | null;
+  /** Switch user who owns the room — whoever created it. Null for rooms created
+   * before ownership was tracked, or auto-created by an inbound bridge channel.
+   * Rooms the signed-in user owns stay listed in the sidebar even with no live
+   * session, so a room you just made never vanishes on you. */
+  ownerId: string | null;
   archived: boolean;
   createdAt: string;
 };
@@ -173,6 +178,22 @@ export type RemoteAgentRoom = {
 export type RemoteRoomGroup = {
   id: string;
   name: string;
+};
+
+/**
+ * A collaboration bridge configured on a server (mirrors the gateway
+ * `BridgeDetail`). Every room switchdash creates is bridged to one of these, so
+ * the humans it is being created for can actually reach it.
+ */
+export type RemoteBridge = {
+  id: string;
+  /** Platform key (`slack`, `mattermost`, …) — drives the bridge icon. */
+  type: string;
+  displayName: string;
+  /** Only `active` bridges can back a new room. */
+  status: string;
+  /** The bridge used when a room is created without naming one. */
+  isDefault: boolean;
 };
 
 /** A bridged (external) human identity on a server. The `users` dimension of an
@@ -278,6 +299,43 @@ export type ProvisionAgentResult =
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
   | { kind: 'invalid-name'; message: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * Parameters for creating a room on a server from inside switchdash
+ * (CHOO-1875) — the minimal set that gets a user to a working room. The wider
+ * gateway surface (roles, groups, visibility, references, existing-channel
+ * binding) stays in the operator web app.
+ *
+ * A bridge is mandatory: a room nobody can reach from a messaging app is not a
+ * useful room, so there is no internal-only path here.
+ */
+export type CreateRoomParams = {
+  serverId: string;
+  name: string;
+  description: string;
+  /** Room-specific system prompt shown to agents on connect. Optional. */
+  instructions?: string;
+  bridgeId: string;
+  /** Switch agent ids to add as members. May be empty — a bridged room is
+   * valid with no agents, and members can be invited later. */
+  agentIds: string[];
+};
+
+/**
+ * Outcome of creating a room. `created` carries the new room; every other
+ * variant maps a recoverable gateway failure onto something the modal can say
+ * out loud, rather than a raw throw or a silent no-op.
+ *
+ * `bridge-unavailable` is its own case because it is the one failure a user can
+ * act on directly (start the bridge, or pick another) — the gateway reports an
+ * unknown bridge id and a stopped bridge identically, as a 400.
+ */
+export type CreateRoomResult =
+  | { kind: 'created'; room: RemoteRoomSummary }
+  | { kind: 'unauthenticated' }
+  | { kind: 'bridge-unavailable'; message: string }
+  | { kind: 'invalid'; message: string }
   | { kind: 'error'; message: string };
 
 /**

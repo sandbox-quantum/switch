@@ -646,64 +646,126 @@ describe('RoomConnection', () => {
     conn.stop();
   });
 
-  it('tells the agent to re-read context when the server reports a gap', async () => {
-    // A gap must never be silent: the session would otherwise carry on
-    // believing its history is complete.
-    const encoder = new TextEncoder();
-    const fetchMock = vi.fn(async (url: string) => {
-      const u = String(url);
-      if (u.includes('/events')) {
+  /**
+   * A gap is reported by the server on routine reconnects — an aged-out cursor,
+   * a restarted process. It used to be injected the moment it arrived, which
+   * woke the session and spent a turn to say "you might have missed something
+   * you might not care about". These pin the replacement: still never silent,
+   * but carried on the next event the session was going to receive anyway.
+   */
+  describe('gap handling', () => {
+    /** Serves a `gap` frame, then `events`, on one stream left open. */
+    function sseBodyAfterGap(events: AgentBridgeEvent[]): ReadableStream<Uint8Array> {
+      const encoder = new TextEncoder();
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: connection_state\n' +
+                `data: ${JSON.stringify({ connection_id: 'c1', rooms: ['room-1'], cursor: 0 })}\n\n`
+            )
+          );
+          controller.enqueue(
+            encoder.encode(
+              'event: gap\n' +
+                `data: ${JSON.stringify({
+                  from_sequence: 7,
+                  resumed_at: 7,
+                  reason: 'the server restarted since your last connection',
+                })}\n\n`
+            )
+          );
+          events.forEach((event, i) => {
+            controller.enqueue(
+              encoder.encode(
+                `id: ${i + 1}\nevent: ${event.type}\n` +
+                  `data: ${JSON.stringify({ ...event, sequence: i + 1 })}\n\n`
+              )
+            );
+          });
+        },
+      });
+    }
+
+    function connectAfterGap(events: AgentBridgeEvent[]) {
+      let served = false;
+      const fetchMock = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/events')) {
+          if (!served) {
+            served = true;
+            return {
+              ok: true,
+              status: 200,
+              body: sseBodyAfterGap(events),
+              text: async (): Promise<string> => '',
+            };
+          }
+          return new Promise(() => {});
+        }
         return {
           ok: true,
           status: 200,
+          json: async () => ({}),
           text: async (): Promise<string> => '',
-          body: new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(
-                encoder.encode(
-                  'event: gap\n' +
-                    `data: ${JSON.stringify({
-                      from_sequence: 7,
-                      resumed_at: 7,
-                      reason: 'the server restarted since your last connection',
-                    })}\n\n`
-                )
-              );
-            },
-          }),
         };
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({}),
-        text: async (): Promise<string> => '',
-      };
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const target: InjectionTarget = { write: vi.fn() };
-    const conn = new RoomConnection({
-      creds,
-      roomId: 'room-1',
-      roomName: 'Room One',
-      connectionId: 'conn-1',
-      sessionId: 'session-1',
-      sink: { acquire: () => target },
-      injector,
-      control,
-      deeplinkScheme: 'switchdash',
-      isHumanTyping: () => false,
-      mediaDir,
-      log: silentLog,
-    });
-    conn.start();
-    await flush(8);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const target: InjectionTarget = { write: vi.fn() };
+      const conn = new RoomConnection({
+        creds,
+        roomId: 'room-1',
+        roomName: 'Room One',
+        connectionId: 'conn-1',
+        sessionId: 'session-1',
+        sink: { acquire: () => target },
+        injector,
+        control,
+        deeplinkScheme: 'switchdash',
+        isHumanTyping: () => false,
+        mediaDir,
+        log: silentLog,
+      });
+      conn.start();
+      return { conn, target };
+    }
 
-    const written = (target.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    const notice = written.find((w) => w.includes('read_context'));
-    expect(notice).toBeDefined();
-    expect(notice).toContain('missed');
-    conn.stop();
+    function writes(target: InjectionTarget): string[] {
+      return (target.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    }
+
+    it('does not wake the session for a gap on its own', async () => {
+      const { conn, target } = connectAfterGap([]);
+      await flush(8);
+
+      expect(writes(target)).toEqual([]);
+      // Silent to the session, but not silent: it is on the record.
+      expect(silentLog.warn).toHaveBeenCalledWith(
+        expect.stringContaining('gap'),
+        expect.objectContaining({ fromSequence: 7 })
+      );
+      conn.stop();
+    });
+
+    it('carries the gap warning on the next event it surfaces', async () => {
+      const { conn, target } = connectAfterGap([messageEvent(true)]);
+      await flush(8);
+
+      const injected = writes(target).find((w) => w.includes('addressed you'));
+      expect(injected).toBeDefined();
+      expect(injected).toContain('dropped and cannot be replayed');
+      expect(injected).toContain('read_context');
+      conn.stop();
+    });
+
+    it('carries the warning once, not on every subsequent event', async () => {
+      const { conn, target } = connectAfterGap([messageEvent(true), messageEvent(true)]);
+      await flush(12);
+
+      const warned = writes(target).filter((w) => w.includes('dropped and cannot be replayed'));
+      expect(warned).toHaveLength(1);
+      conn.stop();
+    });
   });
 
   /**
@@ -934,6 +996,23 @@ describe('the room is set by the server', () => {
 
     const open = fetchMock.mock.calls.find((c) => String(c[0]).includes('/events'));
     expect(String(open?.[0])).toContain('rooms=room-known');
+    conn.stop();
+  });
+
+  it('reports the room it declared once the server confirms it', async () => {
+    // A session launched into a room declares it at open, and the server answers
+    // with the same room. That answer is the only signal the rest of the app
+    // gets that the session is in it — deduping it against the declared value
+    // left the session showing as room-less until the agent's own
+    // connect_to_room arrived, which can be a long time and may never come.
+    const { conn, rooms } = connectWithFrames(
+      [`event: connection_state\ndata: ${JSON.stringify({ rooms: ['room-declared'] })}\n\n`],
+      'room-declared'
+    );
+    await flush(8);
+
+    expect(conn.room).toBe('room-declared');
+    expect(rooms).toEqual(['room-declared']);
     conn.stop();
   });
 

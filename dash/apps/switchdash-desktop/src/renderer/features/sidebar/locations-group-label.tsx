@@ -1,7 +1,9 @@
 import { DoorOpen, Filter, Laptop, ListFilter, Plus, Server, Users } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ComponentType } from 'react';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { buttonVariants } from '@renderer/lib/ui/button';
@@ -23,7 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { cn } from '@renderer/utils/utils';
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
-import type { SidebarGrouping } from '@shared/view-state';
+import { type SidebarGrouping, UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 
 const CONNECTION_LABEL: Record<AgentConnectionKind, string> = {
   local: 'Local',
@@ -70,16 +72,131 @@ const ViewGroupingToggle = observer(function ViewGroupingToggle() {
   );
 });
 
+/** Human label for a messaging-app filter value. */
+function bridgeLabel(value: string): string {
+  if (value === UNBRIDGED_FILTER_VALUE) return 'No messaging app';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
 /**
- * Optional additive filters for the grouped sidebar — a funnel button that opens
- * checkbox sections for run location, agent type, and live-session presence. Only
- * dimensions with matching agents in the active server are offered; a dot on the
- * icon signals that filters are narrowing the tree.
+ * Filters for the room view: which messaging app a room is bridged to, and
+ * whether anything is running in it.
+ *
+ * The agent dimensions (run location, agent type) are deliberately absent. They
+ * describe an agent, and applying them here would mean "rooms containing an
+ * agent that matches" — a room disappearing because of a property of one of its
+ * members, under a control that looks like it filters rooms.
  */
-const FilterDropdown = observer(function FilterDropdown() {
+const RoomFilterSections = observer(function RoomFilterSections() {
+  const bridgeValues = switchRoomsStore.bridgeFilterValuesInActiveScope;
+
+  return (
+    <>
+      {bridgeValues.length > 0 && (
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
+            Messaging app
+          </DropdownMenuLabel>
+          {bridgeValues.map((value) => (
+            <DropdownMenuCheckboxItem
+              key={value}
+              checked={sidebarStore.filterBridgeTypes.has(value)}
+              onCheckedChange={() => sidebarStore.toggleFilterBridgeType(value)}
+            >
+              {hasBridgeIcon(value) ? (
+                <BridgeIcon bridgeType={value} size={16} className="mr-1.5" />
+              ) : (
+                <DoorOpen className="mr-1.5 h-4 w-4" />
+              )}
+              {bridgeLabel(value)}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuGroup>
+      )}
+      <DropdownMenuGroup>
+        <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
+          Activity
+        </DropdownMenuLabel>
+        <DropdownMenuCheckboxItem
+          checked={sidebarStore.filterRoomHasLiveSession}
+          onCheckedChange={(checked) => sidebarStore.setFilterRoomHasLiveSession(checked)}
+        >
+          Has running session
+        </DropdownMenuCheckboxItem>
+      </DropdownMenuGroup>
+    </>
+  );
+});
+
+/** Filters for the agent view: run location, agent type, live-session presence.
+ * Only dimensions with matching agents on the active server are offered. */
+const AgentFilterSections = observer(function AgentFilterSections() {
   const connections = sidebarStore.availableFilterConnections;
   const providerIds = sidebarStore.availableFilterProviderIds;
-  const active = sidebarStore.hasActiveFilters;
+
+  return (
+    <>
+      {connections.length > 0 && (
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
+            Run location
+          </DropdownMenuLabel>
+          {connections.map((kind) => (
+            <DropdownMenuCheckboxItem
+              key={kind}
+              checked={sidebarStore.filterConnections.has(kind)}
+              onCheckedChange={() => sidebarStore.toggleFilterConnection(kind)}
+            >
+              {kind === 'remote' ? (
+                <Server className="mr-1.5 h-4 w-4" />
+              ) : (
+                <Laptop className="mr-1.5 h-4 w-4" />
+              )}
+              {CONNECTION_LABEL[kind]}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuGroup>
+      )}
+      {providerIds.length > 0 && (
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
+            Agent type
+          </DropdownMenuLabel>
+          {providerIds.map((id) => (
+            <DropdownMenuCheckboxItem
+              key={id}
+              checked={sidebarStore.filterProviderIds.has(id)}
+              onCheckedChange={() => sidebarStore.toggleFilterProviderId(id)}
+            >
+              <AgentIcon id={id} size={16} className="mr-1.5" />
+              {getProvider(id)?.name ?? id}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuGroup>
+      )}
+      <DropdownMenuGroup>
+        <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
+          Session
+        </DropdownMenuLabel>
+        <DropdownMenuCheckboxItem
+          checked={sidebarStore.filterHasLiveSession}
+          onCheckedChange={(checked) => sidebarStore.setFilterHasLiveSession(checked)}
+        >
+          Has running session
+        </DropdownMenuCheckboxItem>
+      </DropdownMenuGroup>
+    </>
+  );
+});
+
+/**
+ * Optional additive filters for the grouped sidebar — a funnel button whose
+ * sections belong to the view you are in, since the two views filter different
+ * things. A dot on the icon signals that the view on screen is being narrowed.
+ */
+const FilterDropdown = observer(function FilterDropdown() {
+  const roomMode = sidebarStore.grouping === 'room';
+  const active = sidebarStore.hasActiveFiltersInCurrentView;
 
   return (
     <DropdownMenu>
@@ -90,7 +207,7 @@ const FilterDropdown = observer(function FilterDropdown() {
               render={
                 <button
                   type="button"
-                  aria-label="Filter agents"
+                  aria-label={roomMode ? 'Filter rooms' : 'Filter agents'}
                   className={buttonVariants({
                     size: 'icon-xs',
                     variant: 'ghost',
@@ -113,57 +230,9 @@ const FilterDropdown = observer(function FilterDropdown() {
       </Tooltip>
       <DropdownMenuContent className="min-w-52" align="end">
         <DropdownMenuGroup>
-          <DropdownMenuLabel>Filter agents</DropdownMenuLabel>
+          <DropdownMenuLabel>{roomMode ? 'Filter rooms' : 'Filter agents'}</DropdownMenuLabel>
         </DropdownMenuGroup>
-        {connections.length > 0 && (
-          <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
-              Run location
-            </DropdownMenuLabel>
-            {connections.map((kind) => (
-              <DropdownMenuCheckboxItem
-                key={kind}
-                checked={sidebarStore.filterConnections.has(kind)}
-                onCheckedChange={() => sidebarStore.toggleFilterConnection(kind)}
-              >
-                {kind === 'remote' ? (
-                  <Server className="mr-1.5 h-4 w-4" />
-                ) : (
-                  <Laptop className="mr-1.5 h-4 w-4" />
-                )}
-                {CONNECTION_LABEL[kind]}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </DropdownMenuGroup>
-        )}
-        {providerIds.length > 0 && (
-          <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
-              Agent type
-            </DropdownMenuLabel>
-            {providerIds.map((id) => (
-              <DropdownMenuCheckboxItem
-                key={id}
-                checked={sidebarStore.filterProviderIds.has(id)}
-                onCheckedChange={() => sidebarStore.toggleFilterProviderId(id)}
-              >
-                <AgentIcon id={id} size={16} className="mr-1.5" />
-                {getProvider(id)?.name ?? id}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </DropdownMenuGroup>
-        )}
-        <DropdownMenuGroup>
-          <DropdownMenuLabel className="text-xs font-normal text-foreground-muted">
-            Session
-          </DropdownMenuLabel>
-          <DropdownMenuCheckboxItem
-            checked={sidebarStore.filterHasLiveSession}
-            onCheckedChange={(checked) => sidebarStore.setFilterHasLiveSession(checked)}
-          >
-            Has running session
-          </DropdownMenuCheckboxItem>
-        </DropdownMenuGroup>
+        {roomMode ? <RoomFilterSections /> : <AgentFilterSections />}
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={!active} onClick={() => sidebarStore.clearFilters()}>
           Clear filters
@@ -175,6 +244,12 @@ const FilterDropdown = observer(function FilterDropdown() {
 
 export const LocationsGroupLabel = observer(function LocationsGroupLabel() {
   const showAddLocationModal = useShowModal('addAgentModal');
+  const showCreateRoomModal = useShowModal('createRoomModal');
+  // The add button acts on whatever the section is currently listing: adding an
+  // agent while looking at a list of rooms is not what the button appears to
+  // offer (CHOO-1875).
+  const roomMode = sidebarStore.grouping === 'room';
+  const addLabel = roomMode ? 'New Room' : 'Add Agent';
 
   return (
     <div className="flex h-[40px] items-center justify-between pr-2.5 pl-2.5">
@@ -188,7 +263,7 @@ export const LocationsGroupLabel = observer(function LocationsGroupLabel() {
                   render={
                     <button
                       type="button"
-                      aria-label="Sort agents"
+                      aria-label={roomMode ? 'Sort rooms' : 'Sort agents'}
                       className={buttonVariants({
                         size: 'icon-xs',
                         variant: 'ghost',
@@ -207,20 +282,46 @@ export const LocationsGroupLabel = observer(function LocationsGroupLabel() {
           <DropdownMenuContent className="min-w-48">
             <DropdownMenuGroup>
               <DropdownMenuLabel>Sort by</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={sidebarStore.sessionSortBy}>
-                <DropdownMenuRadioItem
-                  value="created-at"
-                  onClick={() => sidebarStore.applySort('created-at')}
-                >
-                  Created at
-                </DropdownMenuRadioItem>
-                <DropdownMenuRadioItem
-                  value="updated-at"
-                  onClick={() => sidebarStore.applySort('updated-at')}
-                >
-                  Last used
-                </DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
+              {roomMode ? (
+                // Rooms are places, so they order by their own properties, and
+                // separately from the session sort — switching view must not
+                // silently re-order the other one.
+                <DropdownMenuRadioGroup value={sidebarStore.roomSortBy}>
+                  <DropdownMenuRadioItem
+                    value="name"
+                    onClick={() => sidebarStore.setRoomSortBy('name')}
+                  >
+                    Name
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem
+                    value="created-at"
+                    onClick={() => sidebarStore.setRoomSortBy('created-at')}
+                  >
+                    Created
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem
+                    value="updated-at"
+                    onClick={() => sidebarStore.setRoomSortBy('updated-at')}
+                  >
+                    Last active
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              ) : (
+                <DropdownMenuRadioGroup value={sidebarStore.sessionSortBy}>
+                  <DropdownMenuRadioItem
+                    value="created-at"
+                    onClick={() => sidebarStore.applySort('created-at')}
+                  >
+                    Created at
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem
+                    value="updated-at"
+                    onClick={() => sidebarStore.applySort('updated-at')}
+                  >
+                    Last used
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              )}
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -230,8 +331,8 @@ export const LocationsGroupLabel = observer(function LocationsGroupLabel() {
             render={
               <button
                 type="button"
-                onClick={() => showAddLocationModal({})}
-                aria-label="Add Agent"
+                onClick={() => (roomMode ? showCreateRoomModal({}) : showAddLocationModal({}))}
+                aria-label={addLabel}
                 className={buttonVariants({
                   size: 'icon-xs',
                   variant: 'ghost',
@@ -243,8 +344,8 @@ export const LocationsGroupLabel = observer(function LocationsGroupLabel() {
             }
           />
           <TooltipContent>
-            Add Agent
-            <BoundShortcut settingsKey="newLocation" variant="badge" />
+            {addLabel}
+            {!roomMode && <BoundShortcut settingsKey="newLocation" variant="badge" />}
           </TooltipContent>
         </Tooltip>
       </div>

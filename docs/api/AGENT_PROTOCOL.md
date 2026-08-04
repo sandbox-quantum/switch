@@ -210,6 +210,15 @@ events and must re-read room context. The same applies when a client asks to
 start from a sequence number older than the buffer retains: that is an
 **error**, not a fast-forward to head.
 
+Never silent is not the same as immediate. A gap is reported to the *client*
+the moment it is detected, but a client must not wake its agent for one on its
+own: the only available response is to re-read context, and the agent cannot
+know whether anything it cared about was dropped, so an interrupt per hiccup
+buys a turn spent on a maybe. Clients hold the reason and attach it to the next
+event they surface — still ahead of any reply that stale context could skew,
+at no cost of its own. A gap that is never followed by a surfaced event is one
+the agent had no turn to misuse anyway; it stays in the client's log.
+
 ### 4.3 Confirmation
 
 Two mechanisms, both free:
@@ -427,7 +436,7 @@ New, carried on the same stream:
 |---|---|---|
 | `connection_state` | `connection_id`, `scope`, `filter`, `rooms`, `cursor`, `protocol` | first event on every stream |
 | `subscription_changed` | `rooms`, `reason` | scope changed — including a room going dark because another connection claimed it |
-| `gap` | `from_sequence`, `reason` | events were dropped; re-read context |
+| `gap` | `from_sequence`, `reason` | events were dropped; re-read context. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
 | `evicted` | `reason` | this connection lost its slot or was taken over; it must stop acting |
 
 `gap` and `evicted` exist so that degradation is always visible. A client that
@@ -699,7 +708,7 @@ Fail loud, never fake. Concretely:
 | situation | behaviour |
 |---|---|
 | resume from a cursor older than the buffer | error: missed events, re-read context |
-| buffer overflow | drop oldest, flag gap, `gap` event on next connection |
+| buffer overflow | drop oldest, flag gap, `gap` event on next connection; client attaches it to the next event it surfaces |
 | heartbeat with no stream attached | reject: reopen the stream |
 | call with unknown/dead `connection_id` | reject: reconnect and resume |
 | `connection_id` belonging to another agent | reject |

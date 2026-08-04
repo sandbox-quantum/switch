@@ -172,11 +172,22 @@ export class SidecarRuntime {
    * which arrives tagged with this id. It also makes the room server-driven
    * here too: the claim lands on this connection and comes back as
    * `subscription_changed`, so the sidecar stops depending on parsing the hook.
+   *
+   * `roomId` is the room the session is being launched for, when it is being
+   * launched for one — an auto-started session always is. Declaring it opens
+   * the connection already claiming that room, so the session belongs to it
+   * from the start instead of from whenever the agent calls connect_to_room.
+   * Null for a session opened without a room in mind.
    */
-  ensureForSession(sessionId: string, providerId: string, startCursor?: number): string {
+  ensureForSession(
+    sessionId: string,
+    providerId: string,
+    roomId: string | null,
+    startCursor?: number
+  ): string {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing.connection.connection;
-    return this.openConnection(sessionId, providerId, null, null, startCursor);
+    return this.openConnection(sessionId, providerId, roomId, null, startCursor);
   }
 
   private connectRoom(

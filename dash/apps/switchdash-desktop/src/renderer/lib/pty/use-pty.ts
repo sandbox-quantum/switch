@@ -9,6 +9,7 @@ import { ptyDataChannel, ptyExitChannel } from '@shared/core/pty/ptyEvents';
 import { TERMINAL_FONT_SIZE_DEFAULT } from '@shared/core/terminals/terminal-settings';
 import { appPasteChannel } from '@shared/events/appEvents';
 import { getDomTabNavigationDirection } from '@shared/shortcuts';
+import { isBackgroundedByDialog } from './dialog-backgrounding';
 import { usePaneSizingContext } from './pane-sizing-context';
 import type { FrontendPty, SessionTheme } from './pty';
 import { measureDimensions } from './pty-dimensions';
@@ -290,9 +291,12 @@ export function usePty(
   );
 
   const focus = useCallback(() => {
-    if (document.activeElement?.closest('[role="dialog"]')) return;
+    // Do not steal focus from an open dialog — unless this terminal is the
+    // thing inside it, in which case it is what the user is looking at.
+    const activeDialog = document.activeElement?.closest('[role="dialog"]');
+    if (activeDialog && !activeDialog.contains(containerRef.current)) return;
     termRef.current?.focus();
-  }, []);
+  }, [containerRef]);
 
   const copySelectionToClipboard = useCallback(() => {
     const selection =
@@ -438,7 +442,11 @@ export function usePty(
 
       // ── Keyboard shortcuts ─────────────────────────────────────────────────
       terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-        if (document.querySelector('[role="dialog"]')) return false;
+        // A terminal in the background must not swallow keys meant for an open
+        // dialog. One rendered *inside* the dialog is a different case: it is
+        // what the user is typing into, and refusing its keys leaves an
+        // interactive prompt with no way to answer it.
+        if (isBackgroundedByDialog(containerRef.current)) return false;
 
         if (dispatchTerminalTabNavigationHotkey(event)) {
           event.preventDefault();

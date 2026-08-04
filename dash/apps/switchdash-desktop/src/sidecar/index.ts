@@ -273,8 +273,8 @@ async function main(): Promise<void> {
     hookToken: server.getToken(),
     endpointFile,
     runtime,
-    openConnectionFor: (sessionId, providerId, startCursor) =>
-      runtime.ensureForSession(sessionId, providerId, startCursor),
+    openConnectionFor: (sessionId, providerId, roomId, startCursor) =>
+      runtime.ensureForSession(sessionId, providerId, roomId, startCursor),
     switchEnv: {
       SWITCH_API_ENDPOINT: creds.apiEndpoint,
       SWITCH_API_TOKEN: creds.token,

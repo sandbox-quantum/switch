@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { AfterPackContext, Configuration } from 'electron-builder';
 import {
   APP_ID,
+  APP_NAME_LOWER,
   ARTIFACT_PREFIX,
   PRODUCT_NAME,
   RELEASE_REPO_NAME,
@@ -51,6 +52,13 @@ const config: Configuration = {
   appId: APP_ID,
   productName: PRODUCT_NAME,
   executableName: PRODUCT_NAME,
+  // Electron reads `desktopName` from the packaged package.json and uses it as the
+  // Linux app_id / WM_CLASS. Paired with linux.syncDesktopName, the installed
+  // .desktop entry gets the same basename, so desktop environments can associate a
+  // running window with its launcher (pinning, one dock entry, correct icon).
+  extraMetadata: {
+    desktopName: `${APP_NAME_LOWER}.desktop`,
+  },
   // Claim the switchdash:// URL scheme so the OS routes deeplinks (from Slack /
   // Mattermost messages) to this app. On macOS this writes CFBundleURLTypes
   // into Info.plist — the canonical registration; the runtime
@@ -113,6 +121,10 @@ const config: Configuration = {
   },
   linux: {
     category: 'Development',
+    // fpm requires a maintainer for the .deb and .rpm targets; without it the
+    // packaging step aborts before writing any Linux artifact.
+    maintainer: 'Louis Amaudruz <louis.amaudruz@sandboxaq.com>',
+    syncDesktopName: true,
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] },

@@ -468,8 +468,15 @@ class AutoSessionWatcher {
     for (let attempt = 1; attempt <= SPAWN_MAX_ATTEMPTS; attempt += 1) {
       if (watcher.abort.signal.aborted) return;
       try {
+        const sessionId = randomUUID();
+        // This session exists *because* of a message in this room, so it has no
+        // reason to start room-less and wait to be told. Declaring it here opens
+        // its connection already claiming the room, which is what puts it under
+        // the room in the sidebar from the moment it appears rather than after
+        // the agent gets round to connect_to_room.
+        switchNotificationPoller.noteIntendedRoom(sessionId, roomId, null);
         const result = await sessionService.createSession({
-          id: randomUUID(),
+          id: sessionId,
           agentId: watcher.localAgentId,
           agentName: watcher.agentName,
           title: `Switch room ${roomId}`,

@@ -38,21 +38,89 @@ export const NPMRC_CONTENTS = [
 /** How to fix a token that authenticates but cannot read packages. */
 export const READ_PACKAGES_FIX = 'gh auth refresh -h github.com -s read:packages';
 
+export const GH_HOST = 'github.com';
+
+/** The scope the registry requires, which `gh auth login` does not request. */
+export const READ_PACKAGES_SCOPE = 'read:packages';
+
 /**
- * Whether `gh auth status` output describes a token that cannot read packages.
+ * Ask `gh` which identity it will actually use, in machine-readable form.
  *
- * `gh auth login` asks for `gist`, `read:org`, `repo` and `workflow` — not
- * `read:packages`. A perfectly healthy default login therefore yields a token
- * the registry refuses with a 403 about "expected scopes", several layers below
- * anything that mentions `gh`.
- *
- * Returns false when no scope line is present: the output is human-readable and
- * may change, and being wrong about it must never block a session from starting.
+ * `--active` narrows the answer to the account that will be used, and `--json`
+ * makes the scopes a field rather than a line of prose. Both matter: the human
+ * output lists every known account, so a scope search over it answers a
+ * question nobody asked — whether *some* account has the scope — and a second
+ * account that does have it will vouch for one that does not.
  */
-export function lacksReadPackages(ghAuthStatusOutput: string): boolean {
-  return (
-    ghAuthStatusOutput.includes('Token scopes:') && !ghAuthStatusOutput.includes('read:packages')
-  );
+export const GH_AUTH_STATUS_ARGS = ['auth', 'status', '--active', '--json', 'hosts'];
+
+/** What `gh` will do with the credentials it currently has. */
+export type GhAuthState =
+  | { status: 'ok'; login: string; scopes: string[]; tokenSource: string }
+  | { status: 'missing-scope'; login: string; scopes: string[]; tokenSource: string }
+  | { status: 'invalid'; tokenSource: string; detail: string }
+  | { status: 'unknown' };
+
+type GhAuthHostEntry = {
+  state?: string;
+  active?: boolean;
+  login?: string;
+  tokenSource?: string;
+  scopes?: string;
+  error?: string;
+};
+
+/**
+ * Interpret `gh auth status --active --json hosts`.
+ *
+ * `tokenSource` is carried through because it names the origin of the
+ * credential — a path for the keyring, or the literal `GH_TOKEN` when an
+ * environment variable is shadowing it. When a login appears not to have taken
+ * effect, that distinction is the answer, and it is not recoverable later.
+ *
+ * Unrecognised output yields `unknown` rather than a guess. This gates setup,
+ * and being confidently wrong about someone's working install is worse than
+ * admitting the check did not apply.
+ */
+export function parseGhAuthStatus(stdout: string): GhAuthState {
+  let entries: GhAuthHostEntry[];
+  try {
+    const parsed = JSON.parse(stdout) as { hosts?: Record<string, GhAuthHostEntry[]> };
+    entries = parsed.hosts?.[GH_HOST] ?? [];
+  } catch {
+    return { status: 'unknown' };
+  }
+
+  const active = entries.find((entry) => entry.active) ?? entries[0];
+  if (!active) return { status: 'unknown' };
+
+  const tokenSource = active.tokenSource ?? 'unknown';
+  if (active.state !== 'success') {
+    return {
+      status: 'invalid',
+      tokenSource,
+      detail: active.error ?? 'gh reported the active token is not usable',
+    };
+  }
+
+  if (active.scopes === undefined) return { status: 'unknown' };
+  const scopes = active.scopes
+    .split(',')
+    .map((scope) => scope.trim().replace(/^'|'$/g, ''))
+    .filter(Boolean);
+
+  return {
+    status: scopes.includes(READ_PACKAGES_SCOPE) ? 'ok' : 'missing-scope',
+    login: active.login ?? '',
+    scopes,
+    tokenSource,
+  };
+}
+
+/** Whether a token is shadowing the keyring, which survives re-authentication. */
+export function isEnvShadowedToken(state: GhAuthState): boolean {
+  if (state.status === 'unknown') return false;
+  return state.tokenSource === 'GH_TOKEN' || state.tokenSource === 'GITHUB_TOKEN';
 }
 
 /** The environment that points npm at a written npmrc. */

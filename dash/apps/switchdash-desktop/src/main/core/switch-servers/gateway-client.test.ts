@@ -7,7 +7,7 @@ const reauthenticateManagedServer = vi.hoisted(() => vi.fn());
 vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
-const { fetchMe, registerKnownAgent } = await import('./gateway-client');
+const { createRoom, fetchBridges, fetchMe, registerKnownAgent } = await import('./gateway-client');
 
 const SERVER = {
   id: 'srv-1',
@@ -194,6 +194,144 @@ describe('gatewayFetch managed-server silent re-auth', () => {
     await expect(fetchMe(SERVER)).rejects.toMatchObject({ kind: 'unauthorized' });
     expect(reauthenticateManagedServer).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+function jsonResponse(body: unknown): Response {
+  return {
+    status: 200,
+    ok: true,
+    json: async () => body,
+    headers: { getSetCookie: () => [] },
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
+}
+
+function errorResponse(status: number, body: string): Response {
+  return {
+    status,
+    ok: false,
+    json: async () => ({}),
+    headers: { getSetCookie: () => [] },
+    text: async () => body,
+  } as unknown as Response;
+}
+
+function bodyOf(call: unknown[]): Record<string, unknown> {
+  const init = call[1] as { body: string };
+  return JSON.parse(init.body) as Record<string, unknown>;
+}
+
+describe('room creation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('maps the bridge list, defaulting is_default to false when absent', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'mattermost',
+          display_name: 'Mattermost',
+          status: 'active',
+          is_default: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Slack', status: 'stopped' },
+      ]) as never
+    );
+
+    await expect(fetchBridges(SERVER)).resolves.toEqual([
+      {
+        id: 'b1',
+        type: 'mattermost',
+        displayName: 'Mattermost',
+        status: 'active',
+        isDefault: true,
+      },
+      { id: 'b2', type: 'slack', displayName: 'Slack', status: 'stopped', isDefault: false },
+    ]);
+  });
+
+  it('always names a bridge and a channel type, never the internal-only escape hatch', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 1,
+        bridge_display_name: 'Mattermost',
+        owner_id: 'u1',
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    const room = await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      bridgeId: 'b1',
+      agentIds: ['a1'],
+    });
+
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({
+      name: 'design',
+      description: 'd',
+      bridge_id: 'b1',
+      channel_type: 'channel_public',
+      agent_ids: ['a1'],
+    });
+    expect(body).not.toHaveProperty('internal_only');
+    expect(room.ownerId).toBe('u1');
+  });
+
+  it('sends blank instructions as null rather than an empty string', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        id: 'room-1',
+        name: 'design',
+        description: 'd',
+        channel_type: 'channel_public',
+        agent_count: 0,
+        bridge_display_name: null,
+        archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+      }) as never
+    );
+
+    await createRoom(SERVER, {
+      name: 'design',
+      description: 'd',
+      instructions: '   ',
+      bridgeId: 'b1',
+      agentIds: [],
+    });
+
+    expect(bodyOf(fetchMock.mock.calls[0]).instructions).toBeNull();
+  });
+
+  it("unwraps the gateway's detail envelope so a failure can be shown in the user's terms", async () => {
+    fetchMock.mockResolvedValue(errorResponse(400, '{"detail":"Bridge not running: b1"}') as never);
+
+    await expect(
+      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+    ).rejects.toMatchObject({ status: 400, detail: 'Bridge not running: b1' });
+  });
+
+  it('leaves detail unset when the error body is not a detail envelope', async () => {
+    fetchMock.mockResolvedValue(errorResponse(502, '<html>bad gateway</html>') as never);
+
+    await expect(
+      createRoom(SERVER, { name: 'x', description: 'y', bridgeId: 'b1', agentIds: [] })
+    ).rejects.toMatchObject({ status: 502, detail: undefined });
   });
 });
 

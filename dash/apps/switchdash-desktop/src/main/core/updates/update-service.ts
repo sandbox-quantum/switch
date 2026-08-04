@@ -7,7 +7,12 @@ import _electronUpdater, {
 import { resolveAppVersion } from '@main/core/app/utils';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { IS_CANARY, UPDATE_CHANNEL } from '@shared/app-identity';
+import {
+  IS_CANARY,
+  RELEASE_REPO_NAME,
+  RELEASE_REPO_OWNER,
+  UPDATE_CHANNEL,
+} from '@shared/app-identity';
 import {
   updateAuthRequiredEvent,
   updateAvailableEvent,
@@ -213,10 +218,20 @@ class UpdateService implements IInitializable, IDisposable {
       log.info('Skipping update check: no GitHub token from gh CLI (run `gh auth login`)');
       return null;
     }
-    // electron-updater selects its authenticated GitHub provider (api.github.com)
-    // from GH_TOKEN; without it, a private repo falls back to the public
-    // releases.atom feed and 404s. The header alone is not enough.
-    process.env.GH_TOKEN = token;
+    // A private repo needs electron-updater's authenticated provider
+    // (api.github.com); the public releases.atom feed 404s and the auth header
+    // alone does not select it. The token goes through setFeedURL rather than
+    // GH_TOKEN: the environment is inherited by every child process switchdash
+    // spawns — including `gh` itself, which prefers GH_TOKEN over the keyring —
+    // so a token left there outlives the login it came from and shadows the
+    // next one until the app restarts.
+    autoUpdater.setFeedURL({
+      provider: 'github',
+      owner: RELEASE_REPO_OWNER,
+      repo: RELEASE_REPO_NAME,
+      private: true,
+      token,
+    });
     autoUpdater.requestHeaders = {
       'Cache-Control': 'no-cache',
       authorization: `token ${token}`,

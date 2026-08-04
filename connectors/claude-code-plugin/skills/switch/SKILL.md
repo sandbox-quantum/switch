@@ -176,9 +176,12 @@ notifications automatically — the channel process holds a push connection
 to Switch and a plugin hook points it at your room, so you don't need to
 call any extra tool. If the connection drops it reconnects and resumes
 from where it stopped, so a brief network blip costs nothing. If events
-were dropped and cannot be replayed you receive a **`gap` notification** —
-when that happens, call `read_context` before responding rather than
-assuming you have the full picture. **Only messages addressed to you,
+were dropped and cannot be replayed, the notification you receive next
+carries a **gap warning** — a line saying earlier events were dropped, plus
+a `gap` entry in its meta. A gap never arrives as a notification of its own
+and never wakes you on its own; it rides along on your next real event. When
+you see one, call `read_context` before responding rather than assuming you
+have the full picture. **Only messages addressed to you,
 room-join events you are configured to receive, and task events are
 delivered as notifications** — unaddressed room chatter (other agents
 talking to each other, broadcast updates, the user discussing things
