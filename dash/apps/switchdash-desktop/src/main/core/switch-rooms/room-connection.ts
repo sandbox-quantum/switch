@@ -1,71 +1,32 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { SwitchEventStream } from '@sandbox-quantum/switch-agent-runtime';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
 import type { InjectionSink } from './injection-sink';
 import type { SessionControl } from './session-control';
 import {
   formatEventForInjection,
   formatAttachmentAnnotation,
-  type AgentBridgeEventResponse,
+  type AgentBridgeEvent,
   type AttachmentRef,
   type CommandPayload,
   type MessagePayload,
 } from './switch-event-format';
 
-const POLL_TIMEOUT_S = 10;
-const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 30_000;
 // Per-request timeouts. Without these a fetch on a half-open socket (e.g. during
 // a brief ALB 5xx blip) can hang forever with no response and no error, wedging
-// the await-each-tick loop it runs in — the renew loop in particular, which then
-// stops refreshing liveness so the session ages out (SESSION_TTL) and the agent
-// silently drops the room. Every fetch is bounded so a hang aborts and the
-// surrounding backoff loop continues.
+// the await-each-tick loop it runs in. Every fetch is bounded so a hang aborts
+// and the surrounding loop continues.
 //
-// The long-poll waits up to POLL_TIMEOUT_S server-side, so its client bound adds
-// slack on top. Renew is deliberately short — shorter than the server's ~6s
-// SESSION_TTL — so a hung renew aborts and retries well inside the window that
-// would otherwise drop the session.
-const POLL_REQUEST_TIMEOUT_MS = POLL_TIMEOUT_S * 1000 + 5_000;
-const RENEW_REQUEST_TIMEOUT_MS = 4_000;
+// Liveness no longer depends on these: the event stream and its heartbeat live
+// in SwitchEventStream, which owns its own timeouts and reconnect. What remains
+// here is the out-of-band reporting — runtime state and media downloads.
 const RUNTIME_STATE_REQUEST_TIMEOUT_MS = 10_000;
 const MEDIA_REQUEST_TIMEOUT_MS = 30_000;
-// Watchdog cadence + staleness bound for the renew loop. If no renew has
-// succeeded within the threshold the loop is presumed wedged (a request stalled
-// past its own timeout, or the loop otherwise stopped making progress): abort the
-// in-flight renew to force an immediate fresh attempt, and warn loudly so a
-// silently-dropped room is visible rather than mysterious.
-//
-// "Wedged" specifically means *not making progress*. A renew that fails fast —
-// a refused connection to an endpoint that is simply gone — is progress: the
-// loop is running, retrying, and reporting for itself. Firing the watchdog then
-// would abort a request that is not in flight and warn about a stall that is not
-// happening, which is how a single dead endpoint used to produce a third of a
-// warning line per second, forever.
-const RENEW_WATCHDOG_INTERVAL_MS = 2_000;
-const RENEW_STALE_THRESHOLD_MS = 8_000;
-// Backoff for the renew loops. Renews are a heartbeat, so the healthy cadence is
-// fixed and short; failures back off geometrically up to this cap. Once the
-// heartbeat has missed its TTL the session is already dropped server-side, so
-// retrying every 2s buys nothing but noise — `renew` is an upsert, so the
-// session re-establishes on the first success whenever that comes.
-const RENEW_MAX_BACKOFF_MS = 30_000;
 // Safety net for the dialog gate: if a blocking prompt (permission/elicitation)
 // never reports resolution, release the gate after this long so queued messages
 // can't get permanently stuck. Normal turns are never gated.
 const BUSY_FALLBACK_MS = 60_000;
-// Cadence for the room connection-liveness heartbeat. The server keeps the
-// agent's session "connected" only while these renews arrive (SESSION_TTL), so
-// a closed session drops to "no session" within seconds. Mirrors the connector
-// channel's CONNECTION_RENEW_INTERVAL_MS.
-const CONNECTION_RENEW_INTERVAL_MS = 2000;
-// Cadence for the role-lease heartbeat. When the managed session assumes a room
-// role, the server holds the seat only while `/leases/renew` arrives within its
-// LEASE_TTL (~6s), so without this a role assumed from switchdash auto-releases
-// within seconds. Renewed unconditionally: the server's touch is room-agnostic
-// and a no-op when no lease is held, so it keeps a held role alive and does
-// nothing otherwise. Mirrors the connector channel's LEASE_RENEW_INTERVAL_MS.
-const LEASE_RENEW_INTERVAL_MS = 2000;
 // How long to wait before re-checking the dual-writer gate while the operator
 // is typing into the pane. Short enough that delivery resumes promptly once
 // they pause.
@@ -162,8 +123,28 @@ export interface RoomConnectionLogger {
 
 export interface RoomConnectionDeps {
   creds: SwitchCredentials;
-  roomId: string;
+  /**
+   * The room the session is already known to be in, if we happen to know —
+   * restoring after a restart, or an adopted session whose hook told us. Null
+   * for a session we just launched: it has not connected to a room yet, and
+   * when it does the server tells us on the stream.
+   */
+  roomId: string | null;
   roomName: string | null;
+  /**
+   * The connection id this session uses, minted before launch and handed to the
+   * session in its environment so its tool calls land on this same connection.
+   * Stable across room changes and reconnects — that is what makes the room
+   * repointable instead of requiring a new connection each time.
+   */
+  connectionId: string;
+  /**
+   * Where this session's stream should begin, when head is wrong. Set when a
+   * watcher spawned the session to answer a specific message: that message is
+   * already behind head, so starting there would skip the one thing the
+   * session exists to handle.
+   */
+  startCursor?: number;
   /** The switchdash session id of the session this connection drives, so
    * the deeplink can resolve to the exact session on any client (the shared
    * session id is the same across clients; the local room mapping is not). */
@@ -190,21 +171,44 @@ export interface RoomConnectionDeps {
    * temp dir in the sidecar).
    */
   mediaDir: string;
+  /**
+   * Called when the server reports which room this connection covers — on
+   * connect, and again whenever it changes. This is how switchdash learns a
+   * session's room: from Switch, on the connection the session's own
+   * `connect_to_room` call landed on.
+   */
+  onRoomChanged?: (roomId: string | null) => void;
   log: RoomConnectionLogger;
 }
 
 /**
- * One agent ↔ one Switch room: long-polls the agent bridge for room events,
- * injects addressed messages / task events into the session via an
- * `InjectionSink`, keeps the room connection alive with a renew heartbeat, and
- * reports runtime state back to the bridge. Transport-agnostic — the local main
- * process drives it with a PTY-backed sink, the remote sidecar with a
- * tmux-backed one.
+ * One **session's** connection to Switch: receives its room's events on the
+ * agent bridge's push stream, injects addressed messages / task events into the
+ * session via an `InjectionSink`, and reports runtime state back to the bridge.
+ * Transport-agnostic — the local main process drives it with a PTY-backed sink,
+ * the remote sidecar with a tmux-backed one.
+ *
+ * Delivery and liveness both belong to `SwitchEventStream`: one SSE connection
+ * and one heartbeat, in place of the long-poll and the three renew loops
+ * (`/connection/renew`, `/leases/renew`, `/watch/heartbeat`) this used to run.
+ * The connection survives a dropped socket, so a reconnect resumes from the
+ * cursor rather than losing whatever arrived while it was away — the poll had
+ * no cursor at all and the server drained its queue on read.
+ *
+ * **The room is not fixed and is not ours to decide.** The connection belongs
+ * to the session and merely points at whichever room the session is in; the
+ * server says which, on this connection's own stream. When the session calls
+ * `connect_to_room`, the server claims the room on the connection the call came
+ * in on — this one, when the session was handed our id at launch — and tells us
+ * as `subscription_changed`. Before that arrived from the server we learned the
+ * room by reading the agent's tool response through a hook, which broke
+ * silently the moment that response changed shape.
  */
 export class RoomConnection {
   private readonly creds: SwitchCredentials;
-  private readonly roomId: string;
-  private readonly roomName: string | null;
+  /** The room this session is currently in, or null before the server says. */
+  private roomId: string | null;
+  private roomName: string | null;
   private readonly sessionId: string;
   private readonly sink: InjectionSink;
   private readonly injector: PromptInjector;
@@ -236,15 +240,37 @@ export class RoomConnection {
   private activityTicker: ReturnType<typeof setInterval> | null = null;
   private busyFallback: ReturnType<typeof setTimeout> | null = null;
   private humanGateTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Monotonic timestamp of the last renew that succeeded — drives the watchdog. */
-  private lastRenewOkAt = 0;
-  /** Consecutive connection-renew failures; 0 while healthy. Tells the watchdog
-   * a loop that is failing loudly apart from one that has gone quiet. */
-  private renewFailures = 0;
-  /** Aborts just the in-flight renew request (independent of the loop's own
-   * per-request timeout) so the watchdog can force an immediate retry. */
-  private renewRequestAbort: AbortController | null = null;
-  private renewWatchdog: ReturnType<typeof setInterval> | null = null;
+  /** The push transport: one SSE stream plus one heartbeat, replacing the
+   * long-poll and the three renew loops. */
+  private stream: SwitchEventStream | null = null;
+  /** Minted before launch and shared with the session, so its tool calls land
+   * on this connection. Reused across reconnects, so the server-side
+   * connection — and with it the room slot and role lease — survives a dropped
+   * socket. */
+  private readonly connectionId: string;
+  private readonly startCursor: number | undefined;
+  /** Notified whenever the server tells us which room this session is in. */
+  private readonly onRoomChanged: ((roomId: string | null) => void) | null;
+  /**
+   * The last room we passed to `onRoomChanged`. Deliberately not seeded from
+   * the declared room: a connection opened declaring one is *told* the same
+   * room back on the `connected` frame, and deduping that against the declared
+   * value would swallow the server's first word — leaving the session's room
+   * known here but never reported to anyone.
+   */
+  private reportedRoom: string | null = null;
+  /** Unaddressed room messages filtered out since the last event we surfaced. */
+  private missed = 0;
+  /**
+   * Reason from the most recent gap, held until the next event we surface.
+   *
+   * Not injected on its own: a gap is a maybe — the agent cannot tell whether
+   * anything it cared about was dropped — and interrupting a session to report
+   * a maybe costs a turn every time the stream hiccups. Carried on the next
+   * real event instead, which is still before any reply stale context could
+   * skew.
+   */
+  private pendingGapReason: string | null = null;
 
   constructor(deps: RoomConnectionDeps) {
     this.creds = deps.creds;
@@ -257,21 +283,107 @@ export class RoomConnection {
     this.deeplinkScheme = deps.deeplinkScheme;
     this.isHumanTyping = deps.isHumanTyping;
     this.mediaDir = deps.mediaDir;
+    this.connectionId = deps.connectionId;
+    this.startCursor = deps.startCursor;
+    this.onRoomChanged = deps.onRoomChanged ?? null;
     this.log = deps.log;
   }
 
-  /** Begin polling + renew loops and seed an idle runtime-state report. */
+  /** Open the event stream and seed an idle runtime-state report. */
   start(): void {
-    void this.pollLoop();
-    void this.connectionRenewLoop();
-    void this.leaseRenewLoop();
-    this.renewWatchdog = setInterval(() => this.checkRenewStale(), RENEW_WATCHDOG_INTERVAL_MS);
+    this.stream = new SwitchEventStream({
+      creds: this.creds,
+      connectionId: this.connectionId,
+      // One room per session: the connection claims it, which is what stops a
+      // second session of the same agent silently competing for the room.
+      scope: 'single',
+      filter: 'all',
+      // Empty until the session connects to one. Declared here only when we
+      // already know it — a restored session, or one adopted with a room.
+      rooms: this.roomId ? [this.roomId] : [],
+      startCursor: this.startCursor,
+      onEvent: (event) => this.handleEvent(event),
+      onRooms: (rooms) => this.adoptRoom(rooms),
+      onGap: (info) => this.handleGap(info),
+      onEvicted: (reason) =>
+        this.log.warn('RoomConnection: connection evicted', {
+          event: 'room_connection_evicted',
+          roomId: this.roomId,
+          reason,
+        }),
+      log: this.log,
+      signal: this.abort.signal,
+    });
+    this.stream.start();
 
     // Seed this room's deeplink right away (an idle report carries it) so the
     // session's `(Open in SwitchDash)` link is available in the new room's
     // !status immediately on connect/switch — not only once the agent next
     // works. idle surfaces nothing on the bridge, so this posts no message.
-    void this.postRuntimeState('idle', null).catch(() => {});
+    if (this.roomId) void this.postRuntimeState('idle', null).catch(() => {});
+  }
+
+  /**
+   * Claim a room we already know about, without waiting to be told.
+   *
+   * For a **restored** session. Normally the room arrives from the server,
+   * because the session's `connect_to_room` claims it on this connection — but
+   * a resumed session never calls the tool again: it does not re-run its
+   * initial prompt. Nothing is coming, and we are the only ones who remember
+   * which room it was in, so we assert it.
+   *
+   * Not a return to inferring rooms. This is the one case where the knowledge
+   * is genuinely ours: read back from our own persisted map for a session we
+   * are restarting. Everywhere else the server still decides.
+   */
+  async repointTo(roomId: string, roomName: string | null): Promise<void> {
+    if (this.roomId === roomId) return;
+    this.roomName = roomName;
+    this.log.debug('RoomConnection: claiming the remembered room for a restored session', {
+      event: 'room_connection_repoint',
+      sessionId: this.sessionId,
+      roomId,
+      previous: this.roomId,
+    });
+    // The server's acknowledgement comes back as `subscription_changed`, which
+    // sets `roomId` through the normal path — so there is still exactly one
+    // writer for it, and a claim that fails leaves us honestly room-less.
+    await this.stream?.repoint(roomId);
+  }
+
+  /**
+   * Take the room the server says this connection covers.
+   *
+   * The server is the authority: the session's `connect_to_room` claimed the
+   * room on this connection, and this is that fact arriving. Nothing else is
+   * allowed to set the room — inferring it anywhere else is what let switchdash
+   * and Switch disagree.
+   *
+   * A `single`-scope connection covers at most one room, so anything else in
+   * the list would be a protocol violation rather than a case to handle.
+   */
+  private adoptRoom(rooms: string[]): void {
+    const next = rooms[0] ?? null;
+    // Against what we last *reported*, not what we hold: a session launched
+    // into a room declares it at open and the server confirms the same value,
+    // which is the only signal the rest of the app ever gets that the session
+    // is in that room.
+    if (next === this.reportedRoom) return;
+
+    const previous = this.roomId;
+    this.roomId = next;
+    this.reportedRoom = next;
+    // The name is not on the wire — the renderer resolves it from the gateway's
+    // room list, and falls back to a short id when it cannot.
+    if (next !== previous) this.roomName = null;
+    this.log.debug('RoomConnection: room set by the server', {
+      event: 'room_connection_room_changed',
+      sessionId: this.sessionId,
+      previous,
+      roomId: next,
+    });
+    this.onRoomChanged?.(next);
+    if (next) void this.postRuntimeState('idle', null).catch(() => {});
   }
 
   /** Stop the loops and clear any lingering runtime-state surface. */
@@ -290,12 +402,17 @@ export class RoomConnection {
     this.abort.abort();
     if (this.busyFallback) clearTimeout(this.busyFallback);
     if (this.humanGateTimer) clearTimeout(this.humanGateTimer);
-    if (this.renewWatchdog) clearInterval(this.renewWatchdog);
     this.stopActivityTicker();
   }
 
-  get room(): string {
+  /** The room the session is in, or null until the server has said. */
+  get room(): string | null {
     return this.roomId;
+  }
+
+  /** The connection this session's tool calls are expected to arrive on. */
+  get connection(): string {
+    return this.connectionId;
   }
 
   /**
@@ -308,7 +425,7 @@ export class RoomConnection {
     const params = new URLSearchParams({
       server: this.creds.apiEndpoint,
       agent: this.creds.agentId,
-      room: this.roomId,
+      room: this.roomId ?? '',
       // The shared session id resolves to the exact session on any client
       // (a client that only adopted the session has no room mapping to match on).
       session: this.sessionId,
@@ -378,253 +495,81 @@ export class RoomConnection {
     }
   }
 
-  /** Refresh the room connection-liveness heartbeat. Throws on a non-OK response. */
-  private async postConnectionRenew(requestAbort: AbortController): Promise<void> {
-    const resp = await this.fetchWithTimeout(
-      `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/connection/renew`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.creds.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ room_id: this.roomId }),
-      },
-      RENEW_REQUEST_TIMEOUT_MS,
-      { extraSignal: requestAbort.signal }
-    );
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+  /**
+   * Handle one event from the stream.
+   *
+   * Unaddressed room messages are not surfaced; they are tallied and the count
+   * is appended to the next event that IS surfaced, so the agent knows it has
+   * fallen behind and can catch up with read_context.
+   */
+  private async handleEvent(event: AgentBridgeEvent): Promise<void> {
+    // Session-control commands aren't injected as text — they drive concrete
+    // keystrokes (interrupt/compact/reset) against the session.
+    if (event.type === 'command') {
+      void this.executeCommand(event.payload as CommandPayload);
+      return;
     }
-  }
-
-  /** Refresh the role-lease heartbeat. Throws on a non-OK response. */
-  private async postLeaseRenew(): Promise<void> {
-    const resp = await this.fetchWithTimeout(
-      `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/leases/renew`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.creds.token}`,
-          'Content-Type': 'application/json',
-        },
-      },
-      RENEW_REQUEST_TIMEOUT_MS
-    );
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+    const addressed = event.type === 'message' && (event.payload as MessagePayload).addressed;
+    const threadId =
+      event.type === 'message' ? ((event.payload as MessagePayload).thread_id ?? null) : null;
+    if (event.type === 'message' && !addressed) {
+      this.missed += 1;
     }
-  }
-
-  /**
-   * Keep the agent's session marked "connected" to the room while we poll it.
-   * The connect_to_room hook only fires on a live tool call, so after a restart
-   * (or whenever switchdash owns the session) nothing else renews this — without
-   * it the bridge would consider the session gone within seconds.
-   *
-   * Each renew is bounded by RENEW_REQUEST_TIMEOUT_MS (see fetchWithTimeout) so a
-   * hung request can never wedge this loop, and a watchdog re-aborts an in-flight
-   * renew that has stalled the loop past RENEW_STALE_THRESHOLD_MS. `renew` is an
-   * upsert server-side, so once requests flow again a TTL-expired session
-   * re-establishes on the next success — no explicit re-connect needed.
-   */
-  private async connectionRenewLoop(): Promise<void> {
-    // Seed the watchdog clock so a wedge before the first success is still caught.
-    this.lastRenewOkAt = Date.now();
-    await this.renewLoop('connection', CONNECTION_RENEW_INTERVAL_MS, async () => {
-      const requestAbort = new AbortController();
-      this.renewRequestAbort = requestAbort;
-      try {
-        await this.postConnectionRenew(requestAbort);
-        this.lastRenewOkAt = Date.now();
-      } finally {
-        if (this.renewRequestAbort === requestAbort) this.renewRequestAbort = null;
-      }
-    });
-  }
-
-  /**
-   * Drive one renew heartbeat until the connection stops.
-   *
-   * While renews succeed the cadence is fixed — this is a liveness signal and the
-   * server drops the session without it. While they fail it backs off to
-   * RENEW_MAX_BACKOFF_MS, and reports on a curve rather than per attempt: the
-   * first failure, then at exponentially sparser counts, then a line when it
-   * recovers. An endpoint that is permanently gone therefore costs a handful of
-   * lines rather than one every couple of seconds for the life of the app, while
-   * a failure that matters is still reported the moment it happens.
-   */
-  private async renewLoop(
-    kind: 'connection' | 'lease',
-    intervalMs: number,
-    attempt: () => Promise<void>
-  ): Promise<void> {
-    let failures = 0;
-    let failingSince = 0;
-
-    while (!this.abort.signal.aborted) {
-      try {
-        await attempt();
-        if (failures > 0) {
-          this.log.warn(`RoomConnection: ${kind} renew recovered`, {
-            event: 'room_renew_recovered',
-            roomId: this.roomId,
-            failures,
-            outageMs: Date.now() - failingSince,
-          });
-        }
-        failures = 0;
-        if (kind === 'connection') this.renewFailures = 0;
-      } catch (error) {
-        if (this.abort.signal.aborted) return;
-        if (failures === 0) failingSince = Date.now();
-        failures += 1;
-        if (kind === 'connection') this.renewFailures = failures;
-        // Powers of two: 1st, 2nd, 4th, 8th … failure. Dense enough to catch a
-        // blip as it starts, sparse enough that an outage cannot flood the log.
-        if ((failures & (failures - 1)) === 0) {
-          this.log.warn(`RoomConnection: ${kind} renew error`, {
-            event: 'room_renew_failed',
-            roomId: this.roomId,
-            endpoint: this.creds.apiEndpoint,
-            failures,
-            failingForMs: Date.now() - failingSince,
-            error: String(error),
-          });
-        }
-      }
-
-      const delay =
-        failures === 0
-          ? intervalMs
-          : Math.min(intervalMs * 2 ** (failures - 1), RENEW_MAX_BACKOFF_MS);
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-
-  /**
-   * Keep any role the managed session has assumed alive. The server holds the
-   * seat only while `/leases/renew` arrives within its LEASE_TTL, and the
-   * `connect_to_room`/`assume_role` hooks fire only on the agent's own tool
-   * calls — nothing else renews the lease when switchdash owns the session, so
-   * without this a role assumed from switchdash auto-releases within seconds.
-   *
-   * Renewed unconditionally: `touch_lease` is room-agnostic and a no-op when no
-   * lease is held, so this keeps a held role alive and does nothing otherwise.
-   * Each renew is bounded by RENEW_REQUEST_TIMEOUT_MS so a hung request cannot
-   * wedge the loop; the loop ends on abort, which lets the lease expire and the
-   * role auto-release shortly after the connection stops.
-   */
-  private async leaseRenewLoop(): Promise<void> {
-    await this.renewLoop('lease', LEASE_RENEW_INTERVAL_MS, () => this.postLeaseRenew());
-  }
-
-  /**
-   * Detect a renew loop that has stopped making progress — no successful renew
-   * within RENEW_STALE_THRESHOLD_MS. Abort the in-flight request so the loop
-   * retries immediately instead of waiting out a stall, and warn loudly: a
-   * silently-dropped room should be visible, not mysterious.
-   *
-   * A loop that is failing outright is not stalled: it is looping, backing off
-   * and reporting on its own schedule, and there is no in-flight request to
-   * abort. Leave it to speak for itself — this watchdog exists for the case it
-   * cannot report, where a request neither returns nor rejects.
-   */
-  private checkRenewStale(): void {
-    if (this.abort.signal.aborted) return;
-    if (this.renewFailures > 0) return;
-    const staleMs = Date.now() - this.lastRenewOkAt;
-    if (staleMs <= RENEW_STALE_THRESHOLD_MS) return;
-    this.log.warn('RoomConnection: renew stale — forcing retry', {
-      event: 'room_renew_stalled',
+    const text = formatEventForInjection(event, this.roomName);
+    this.log.debug('RoomConnection: received event', {
       roomId: this.roomId,
-      staleMs,
+      type: event.type,
+      ...(event.type === 'message'
+        ? { addressed: (event.payload as MessagePayload).addressed }
+        : {}),
+      surfaced: text !== null,
     });
-    this.renewRequestAbort?.abort();
-  }
+    if (!text) return;
 
-  private async pollLoop(): Promise<void> {
-    let backoff = INITIAL_BACKOFF_MS;
-    const url = `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/rooms/${this.roomId}/events?timeout=${POLL_TIMEOUT_S}`;
-    // Tally unaddressed room messages filtered out since the last event we DID
-    // surface, and annotate the next surfaced event with the count — mirroring
-    // the channel's missed_count so the agent knows it has fallen behind.
-    let missed = 0;
-
-    while (!this.abort.signal.aborted) {
-      try {
-        const resp = await this.fetchWithTimeout(
-          url,
-          { headers: { Authorization: `Bearer ${this.creds.token}` } },
-          POLL_REQUEST_TIMEOUT_MS
-        );
-
-        if (resp.status === 204) {
-          backoff = INITIAL_BACKOFF_MS;
-          continue;
-        }
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-        }
-
-        backoff = INITIAL_BACKOFF_MS;
-        const data = (await resp.json()) as AgentBridgeEventResponse;
-        for (const event of data.events) {
-          // Session-control commands aren't injected as text — they drive
-          // concrete keystrokes (interrupt/compact/reset) against the session.
-          if (event.type === 'command') {
-            void this.executeCommand(event.payload as CommandPayload);
-            continue;
-          }
-          const addressed = event.type === 'message' && (event.payload as MessagePayload).addressed;
-          const threadId =
-            event.type === 'message' ? ((event.payload as MessagePayload).thread_id ?? null) : null;
-          if (event.type === 'message' && !addressed) {
-            missed += 1;
-          }
-          const text = formatEventForInjection(event, this.roomName);
-          this.log.debug('RoomConnection: received event', {
-            roomId: this.roomId,
-            type: event.type,
-            ...(event.type === 'message'
-              ? { addressed: (event.payload as MessagePayload).addressed }
-              : {}),
-            surfaced: text !== null,
-          });
-          if (text) {
-            let annotated = text;
-            if (event.type === 'message') {
-              // Materialise attachments of ANY type to local files and tell the
-              // agent they are there — parity with the connector channel, which
-              // the pollers otherwise lacked. A download that fails is named in
-              // the annotation rather than dropped, so the agent is never left
-              // believing it saw everything.
-              const { imagePaths, filePaths, failed } = await this.downloadAttachments(
-                event.payload as MessagePayload
-              );
-              const annotation = formatAttachmentAnnotation(imagePaths, filePaths, failed);
-              if (annotation) {
-                annotated = `${annotated}\n${annotation}`;
-              }
-            }
-            const body =
-              missed > 0
-                ? `${annotated}\n(${missed} unread room message${missed === 1 ? '' : 's'} since your last read_context — call read_context to catch up.)`
-                : annotated;
-            missed = 0;
-            this.enqueue({ text: body, addressed, threadId });
-          }
-        }
-      } catch (error) {
-        if (this.abort.signal.aborted) return;
-        this.log.warn('RoomConnection: poll error', {
-          roomId: this.roomId,
-          error: String(error),
-        });
-        await new Promise((r) => setTimeout(r, backoff));
-        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    let annotated = text;
+    if (event.type === 'message') {
+      // Materialise attachments of ANY type to local files and tell the agent
+      // they are there — parity with the connector channel. A download that
+      // fails is named in the annotation rather than dropped, so the agent is
+      // never left believing it saw everything.
+      const { imagePaths, filePaths, failed } = await this.downloadAttachments(
+        event.payload as MessagePayload
+      );
+      const annotation = formatAttachmentAnnotation(imagePaths, filePaths, failed);
+      if (annotation) {
+        annotated = `${annotated}\n${annotation}`;
       }
     }
+    let body =
+      this.missed > 0
+        ? `${annotated}\n(${this.missed} unread room message${this.missed === 1 ? '' : 's'} since your last read_context — call read_context to catch up.)`
+        : annotated;
+    this.missed = 0;
+    if (this.pendingGapReason !== null) {
+      body = `${body}\n(Some earlier room events were dropped and cannot be replayed: ${this.pendingGapReason} — call read_context before responding.)`;
+      this.pendingGapReason = null;
+    }
+    this.enqueue({ text: body, addressed, threadId });
+  }
+
+  /**
+   * Record that the history has a hole, without waking the session for it.
+   *
+   * The server reports a gap when it cannot serve our cursor — events aged out
+   * of the buffer, or the server restarted and the numbering reset. The session
+   * must still learn about it: leaving it believing the stream was complete is
+   * the failure mode this transport exists to make impossible. But it learns on
+   * the next event we surface, not by being interrupted now — a gap fires on
+   * routine reconnects, and each interruption is a whole turn spent on a
+   * condition whose only remedy the agent can apply just as well later.
+   */
+  private handleGap(info: { fromSequence: number; reason: string }): void {
+    this.log.warn('RoomConnection: gap — deferring the warning to the next surfaced event', {
+      roomId: this.roomId,
+      fromSequence: info.fromSequence,
+      reason: info.reason,
+    });
+    this.pendingGapReason = info.reason;
   }
 
   /**
@@ -936,6 +881,18 @@ export class RoomConnection {
    */
   private async executeCommand(payload: CommandPayload): Promise<void> {
     const command = payload.command;
+    if (!this.roomId) {
+      // A control command can only have come from a room, so this means the
+      // server told us about the event before it told us about the room.
+      // Refusing beats guessing: `reset` re-types a connect prompt naming the
+      // room, and naming the wrong one would move the session.
+      this.log.warn('RoomConnection: control command before the room is known', {
+        event: 'room_connection_command_without_room',
+        sessionId: this.sessionId,
+        command,
+      });
+      return;
+    }
     const plan = this.control.plan(command, {
       room: this.roomName ?? this.roomId,
       role: payload.args || null,

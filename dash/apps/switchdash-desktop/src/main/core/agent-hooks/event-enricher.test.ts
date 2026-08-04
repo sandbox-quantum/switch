@@ -40,6 +40,77 @@ describe('parseHookEvent', () => {
     expect(parsed).toEqual({ kind: 'ignore' });
   });
 
+  /**
+   * A local MCP runtime that returns only text content — no structuredContent —
+   * surfaces the tool result as an envelope, with the fields one level down.
+   * Reading only the top level meant the hook was silently ignored: the session
+   * was never bound to its room, so the sidebar showed no room AND the room
+   * poller was never started, which looked like "messages stopped arriving".
+   */
+  describe('tool responses that arrive as an MCP content envelope', () => {
+    const payload = { room_id: 'room-1', agent_id: 'agent-1', name: 'Room One' };
+    const expected = {
+      kind: 'switch-room',
+      ctx,
+      roomId: 'room-1',
+      agentId: 'agent-1',
+      roomName: 'Room One',
+    };
+
+    it('reads structuredContent when the server provides it', async () => {
+      const parsed = await parseHookEvent(
+        raw('switch_room_connect', {
+          tool_response: {
+            content: [{ type: 'text', text: JSON.stringify(payload) }],
+            structuredContent: payload,
+          },
+        }),
+        fixedResolver
+      );
+      expect(parsed).toEqual(expected);
+    });
+
+    it('falls back to parsing the text block when it does not', async () => {
+      const parsed = await parseHookEvent(
+        raw('switch_room_connect', {
+          tool_response: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+        fixedResolver
+      );
+      expect(parsed).toEqual(expected);
+    });
+
+    it('handles a bare content array', async () => {
+      const parsed = await parseHookEvent(
+        raw('switch_room_connect', {
+          tool_response: [{ type: 'text', text: JSON.stringify(payload) }],
+        }),
+        fixedResolver
+      );
+      expect(parsed).toEqual(expected);
+    });
+
+    it('still ignores an envelope carrying no room', async () => {
+      const parsed = await parseHookEvent(
+        raw('switch_room_connect', {
+          tool_response: { content: [{ type: 'text', text: '{"ok":true}' }] },
+        }),
+        fixedResolver
+      );
+      expect(parsed).toEqual({ kind: 'ignore' });
+    });
+
+    it('prefers a direct top-level result over the envelope', async () => {
+      const parsed = await parseHookEvent(
+        raw('switch_room_connect', {
+          ...{ tool_response: { ...payload, content: [{ type: 'text', text: '{}' }] } },
+        }),
+        fixedResolver
+      );
+      expect(parsed).toEqual(expected);
+    });
+  });
+
   it('throws when the context resolver cannot resolve the ptyId', async () => {
     const nullResolver: ContextResolver = async () => null;
     await expect(parseHookEvent(raw('Stop', {}), nullResolver)).rejects.toThrow(

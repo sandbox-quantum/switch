@@ -68,7 +68,7 @@ def _fake_client() -> SimpleNamespace:
 
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="agent-a"),
-        _event_queue=queue,
+        _event_buffer=queue,
         _attachment_groups={},
         _attachment_group_timers={},
         _resolve_room_meta=_resolve_room_meta,

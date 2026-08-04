@@ -422,6 +422,7 @@ async def update_addressing_policy(
         user_store=user_store,
         agent_session_store=protocol.agent_session_store,
         room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
     )
 
 
@@ -449,4 +450,5 @@ async def get_agent_detail(
         user_store=user_store,
         agent_session_store=protocol.agent_session_store,
         room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
     )

@@ -1,5 +1,6 @@
 import { CircleAlert } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
+import { useLocalGhAuth } from '@renderer/features/settings/agents-page/LocalGhAuthRow';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useOnboardableAgentTypes } from '@renderer/lib/stores/use-switch-setup';
@@ -31,6 +32,9 @@ export function AgentTypePicker({
 }) {
   const { data: onboardable, isPending } = useOnboardableAgentTypes(sshHost);
   const { data: agents } = useAgents();
+  const { data: ghAuth } = useLocalGhAuth();
+  const githubBlocked =
+    !!ghAuth && !(ghAuth.ghInstalled && ghAuth.authenticated && ghAuth.canReadPackages);
 
   const options = useMemo(() => {
     const byId = new Map((agents ?? []).map((a) => [a.id, a]));
@@ -52,7 +56,17 @@ export function AgentTypePicker({
             but availability is per-host — the connector may well be installed
             locally and simply missing on the machine being targeted. */}
         <span>
-          {sshHost ? (
+          {/* The plugin may be installed and the agent still unusable, so the
+              GitHub reason has to be given ahead of the install advice —
+              otherwise it sends the user to install something they already
+              have. */}
+          {!sshHost && githubBlocked ? (
+            <>
+              This computer cannot reach the private GitHub packages the Switch connector needs
+              {ghAuth?.detail ? ` — ${ghAuth.detail}` : '.'} Authenticate under Settings &rarr;
+              Agents &rarr; Switch setup, then try again.
+            </>
+          ) : sshHost ? (
             <>
               No agent type is set up for Switch on <span className="font-medium">{sshHost}</span>.
               Install an agent&apos;s Switch connector on that host in Settings &rarr; Remote hosts

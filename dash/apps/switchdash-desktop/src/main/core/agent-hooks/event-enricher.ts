@@ -39,17 +39,44 @@ const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
 
 /**
  * Claude reports the tool result under `tool_response`, which may arrive as an
- * already-parsed object or a JSON string. The Switch `connect_to_room` result
- * carries `room_id` and `agent_id`.
+ * already-parsed object, a JSON string, or an MCP content envelope. The Switch
+ * `connect_to_room` result carries `room_id` and `agent_id`.
+ *
+ * The envelope case matters: a server that returns only text content — no
+ * `structuredContent` — surfaces as `{content: [{type: 'text', text: '<json>'}]}`
+ * or as the bare content array. The fields are in there, one level down. Failing
+ * to look meant the hook was silently ignored and the session was never bound to
+ * its room: no room in the sidebar, and no room poller started either.
  */
 function parseToolResponse(body: Record<string, unknown>): Record<string, unknown> | null {
-  const raw = body.tool_response;
+  const direct = coerceObject(body.tool_response);
+  if (direct && ('room_id' in direct || 'agent_id' in direct)) return direct;
+  return unwrapContentEnvelope(body.tool_response) ?? direct;
+}
+
+function coerceObject(raw: unknown): Record<string, unknown> | null {
   if (raw && typeof raw === 'object') return raw as Record<string, unknown>;
   if (typeof raw === 'string') {
     try {
       const value: unknown = JSON.parse(raw);
       if (value && typeof value === 'object') return value as Record<string, unknown>;
     } catch {}
+  }
+  return null;
+}
+
+/** Pull the first JSON object out of an MCP text-content envelope. */
+function unwrapContentEnvelope(raw: unknown): Record<string, unknown> | null {
+  const container = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const structured = coerceObject(container?.structuredContent);
+  if (structured) return structured;
+
+  const blocks = Array.isArray(raw) ? raw : container?.content;
+  if (!Array.isArray(blocks)) return null;
+  for (const block of blocks) {
+    const text = (block as Record<string, unknown> | null)?.text;
+    const parsed = typeof text === 'string' ? coerceObject(text) : null;
+    if (parsed) return parsed;
   }
   return null;
 }

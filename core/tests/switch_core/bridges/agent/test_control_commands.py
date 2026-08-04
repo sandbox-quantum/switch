@@ -61,7 +61,7 @@ def _client(
     async def _session_factory() -> Any:
         yield SimpleNamespace()
 
-    async def _agent_room_role(_s: Any, _r: str, _a: str) -> None:
+    async def _agent_room_role(_s: Any, _r: str, _a: str, _alive: Any = ()) -> None:
         return None
 
     return SimpleNamespace(
@@ -71,7 +71,10 @@ def _client(
         session_factory=_session_factory,
         _agent_session_store=SimpleNamespace(),
         _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
-        _event_queue=SimpleNamespace(enqueue=lambda *a, **k: enqueue.append((a, k))),
+        # Presence unions the heartbeat rows with the live connections
+        # (CHOO-1857); nothing is connected in these tests.
+        _connections=SimpleNamespace(live_agent_ids=lambda: set()),
+        _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: enqueue.append((a, k))),
     )
 
 

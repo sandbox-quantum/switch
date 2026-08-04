@@ -359,9 +359,21 @@ function DepRow({
   // gh reports auth separately: installed but not authenticated is still unusable.
   const needsGhAuth = isGh && !dep.ghAuth!.authenticated;
   const authed = isGh && dep.ghAuth!.authenticated;
+  // Authenticated is not the same as usable. Sessions on this host fetch their
+  // MCP runtime from GitHub Packages, and `gh auth login` does not request
+  // read:packages — so a host that logged in before we asked for it looks
+  // perfectly set up while every session it starts comes up with no tools.
+  const canReadPackages = isGh && dep.ghAuth!.canReadPackages;
+  const needsScope = authed && !canReadPackages;
 
   const readiness: Readiness =
-    dep.status === 'error' ? 'error' : !installed ? 'missing' : needsGhAuth ? 'partial' : 'ready';
+    dep.status === 'error'
+      ? 'error'
+      : !installed
+        ? 'missing'
+        : needsGhAuth || needsScope
+          ? 'partial'
+          : 'ready';
 
   const steps: Step[] = isGh
     ? [
@@ -372,6 +384,12 @@ function DepRow({
         {
           label: authed ? `Authenticated as ${dep.ghAuth!.account ?? 'you'}` : 'Authenticate',
           state: !installed ? 'pending' : authed ? 'done' : 'current',
+        },
+        {
+          label: canReadPackages
+            ? 'Can read packages'
+            : 'Needs read:packages — re-run Authenticate',
+          state: !authed ? 'pending' : canReadPackages ? 'done' : 'current',
         },
       ]
     : [];
@@ -396,9 +414,13 @@ function DepRow({
             {install.isPending ? 'Installing…' : 'Install'}
           </Button>
         )}
-        {installed && needsGhAuth && (
+        {/* Also offered when the login is fine but lacks read:packages —
+            telling someone to re-run Authenticate without giving them the
+            button is worse than not telling them. Re-running the login is the
+            fix: it now requests the scope. */}
+        {installed && (needsGhAuth || needsScope) && (
           <Button size="sm" onClick={onAuthenticate}>
-            Authenticate
+            {needsScope ? 'Re-authenticate' : 'Authenticate'}
           </Button>
         )}
       </div>

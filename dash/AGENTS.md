@@ -328,6 +328,63 @@ pnpm run lint
 - Do not bypass path-safety, shell escaping, or validation helpers.
 - Use `pnpm-lock.yaml` for dependency integrity and review dependency changes.
 
+## The Sidecar Mirrors switchdash — Check Both
+
+`src/sidecar/` is a second, headless implementation of what the desktop app does
+for a session: it starts sessions, keeps them connected to their room, and
+injects messages into their pane. It runs on the agent's VM with no Electron, no
+database and no renderer.
+
+**So whenever you add or change logic in the desktop app, ask whether the sidecar
+needs the same thing — and answer it in the same change.** Not "later": the
+sidecar has no UI, so when it lacks something the symptom is a remote session
+that quietly does less than a local one, and nobody notices until someone is
+debugging a VM.
+
+The pairs that must stay in step:
+
+| Desktop | Sidecar | Shared by |
+|---|---|---|
+| `agent-runtime/impl/local-agent-runtime.ts` (spawn env) | `sidecar/session-spawner.ts` + `sidecar/index.ts` | nothing — **the usual place to forget** |
+| `switch-rooms/auto-session-watcher.ts` | `sidecar/notification-watcher.ts` | nothing — two implementations of one watcher |
+| `switch-rooms/room-connection.ts` | — | shared: the sidecar constructs the same class |
+| protocol client (stream, heartbeat, cursor) | — | shared: `@sandbox-quantum/switch-agent-runtime` |
+
+Where a row says *shared*, a change lands in both for free — prefer putting
+logic there. Where it says *nothing*, you are editing one of two copies and the
+other will not follow you.
+
+Things that reach a session through its **environment** are the sharpest edge,
+because both sides build that separately. If you add a variable in
+`local-agent-runtime`, it almost certainly belongs in the sidecar's `switchEnv`
+too.
+
+## Versioned Artifacts — Bump Them
+
+Three things here ship independently of the app and carry their own version.
+**If you make a non-trivial change to one, bump its version in the same commit.**
+Not at release time, not "later" — in the commit that changes it, or it will be
+forgotten and someone will debug a build they think is newer than it is.
+
+| Artifact | Version lives in | Bump when |
+|---|---|---|
+| Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
+| Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and `.mcp.json` pins an exact version that must move with it |
+
+"Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
+dependencies. A comment or a rename that changes nothing does not need one.
+
+Two traps worth knowing rather than rediscovering:
+
+- **A sidecar major replaces every sidecar on sight, live sessions included.**
+  It is judged on the contract *switchdash* speaks to, not on how much changed
+  inside. Changing how the sidecar talks to Switch is not a major.
+- **Redeploy is decided by the bundle's content hash, not by the version.** So a
+  forgotten bump does not strand a VM on old code — but it does make the version
+  a lie, which is worse in its own way, because it is the number people reason
+  from when something misbehaves.
+
 ## Agent Guardrails
 
 - Load only the relevant `agents/` docs for the area being changed.
@@ -385,7 +442,18 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, and `SWITCHDASH_REGISTER_DEEPLINK`.
+  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, and
+  `SWITCHDASH_FAKE_UPDATE`.
+- App updates in dev: the update service is inert outside packaged builds, so the
+  "update available" UI cannot be exercised by `pnpm run dev` alone. Set
+  `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —
+  `available`, `download-error`, `check-error`, `auth-required`, or `up-to-date`.
+  An unrecognised value fails at startup rather than silently doing nothing.
+  `SWITCHDASH_FAKE_UPDATE_VERSION` overrides the offered version (default: the
+  current minor, bumped) and `SWITCHDASH_FAKE_UPDATE_MS` the simulated download
+  duration. Nothing is downloaded or installed, and the harness cannot activate in
+  a packaged build. Example:
+  `SWITCHDASH_FAKE_UPDATE=available pnpm run dev`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

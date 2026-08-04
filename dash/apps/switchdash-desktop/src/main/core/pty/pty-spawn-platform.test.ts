@@ -638,4 +638,64 @@ describe('resolveLocalPtySpawn - POSIX', () => {
       warnings: [],
     });
   });
+
+  // A tmux pane inherits the tmux SERVER's environment, not that of the shell
+  // running `new-session`, so env handed to the pty stops at that boundary
+  // unless `new-session -e` repeats it. Local sessions used to omit it while
+  // remote ones passed it, which left tmux-enabled local sessions without the
+  // registry config and hook credentials their non-tmux equivalents had.
+  describe('tmux pane environment', () => {
+    const paneEnv = {
+      npm_config_userconfig: '/home/me/.config/switchdash/npm/npmrc',
+      SWITCH_CONNECTION_ID: 'conn-1',
+    };
+
+    it('passes paneEnv to new-session for run-command', () => {
+      const result = resolveLocalPtySpawn({
+        platform: 'linux',
+        env: posixEnv,
+        intent: {
+          kind: 'run-command',
+          cwd: '/repo',
+          command: { kind: 'argv', command: 'claude', args: [] },
+          tmuxSessionName: 'session-1',
+          paneEnv,
+        },
+      });
+
+      const line = result.args.at(-1) ?? '';
+      expect(line).toContain("-e 'npm_config_userconfig=/home/me/.config/switchdash/npm/npmrc'");
+      expect(line).toContain("-e 'SWITCH_CONNECTION_ID=conn-1'");
+    });
+
+    it('passes paneEnv to new-session for interactive-shell', () => {
+      const result = resolveLocalPtySpawn({
+        platform: 'linux',
+        env: posixEnv,
+        intent: {
+          kind: 'interactive-shell',
+          cwd: '/repo',
+          tmuxSessionName: 'session-1',
+          paneEnv,
+        },
+      });
+
+      expect(result.args.at(-1) ?? '').toContain("-e 'SWITCH_CONNECTION_ID=conn-1'");
+    });
+
+    it('omits -e entirely when there is no paneEnv', () => {
+      const result = resolveLocalPtySpawn({
+        platform: 'linux',
+        env: posixEnv,
+        intent: {
+          kind: 'run-command',
+          cwd: '/repo',
+          command: { kind: 'argv', command: 'claude', args: [] },
+          tmuxSessionName: 'session-1',
+        },
+      });
+
+      expect(result.args.at(-1) ?? '').not.toContain('-e ');
+    });
+  });
 });

@@ -25,8 +25,12 @@ export function HomeMainPanel() {
   const isDark = effectiveTheme === 'emdark';
 
   return (
+    // Home registers no TitlebarSlot, so without a drag region here the whole
+    // main pane is dead for moving the window and only the sidebar's
+    // SidebarSpace strip drags it. The surface is empty, so it is all drag —
+    // any interactive control added below must opt out with `no-drag`.
     <motion.div
-      className="flex h-full flex-col overflow-y-auto bg-background text-foreground"
+      className="flex h-full flex-col overflow-y-auto bg-background text-foreground [-webkit-app-region:drag]"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.5, ease: 'easeOut' }}
@@ -41,7 +45,7 @@ export function HomeMainPanel() {
             />
           </div>
         </div>
-        <div className="mx-auto mt-8 flex w-full max-w-md flex-col gap-1">
+        <div className="mx-auto mt-8 flex w-full max-w-md flex-col gap-1 [-webkit-app-region:no-drag]">
           {LOCATION_ACTIONS.map((action, i) => (
             <HomeLocationAction
               key={action.label}

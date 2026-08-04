@@ -3,7 +3,7 @@
 Unlike the unit suite (which fakes the nio client), these fixtures boot a real
 Matrix homeserver and wire up the subset of `switch_core.main:run()` the feature
 under test needs, in-process. This lets a test drive the genuine path
-RoomService → Matrix invite/join → AgentClient sync loop → EventQueue.
+RoomService → Matrix invite/join → AgentClient sync loop → EventBuffer.
 
 The two containers mirror the `postgres` / `tuwunel` services in
 `deploy/local/docker-compose.yml` (see constants below — keep in sync). They get
@@ -40,7 +40,7 @@ from testcontainers.postgres import PostgresContainer
 
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
@@ -247,7 +247,7 @@ class Harness:
 
     Holds the real services and exposes the few operations a test needs:
     register agents, start their Matrix sync clients, and reach the RoomService
-    / EventQueue.
+    / EventBuffer.
     """
 
     def __init__(
@@ -257,7 +257,7 @@ class Harness:
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
         room_store: RoomStore,
-        event_queue: EventQueue,
+        event_buffer: EventBuffer,
         owner_id: str,
         session_factory: object,
     ) -> None:
@@ -265,7 +265,7 @@ class Harness:
         self.room_service = room_service
         self.client_lifecycle = client_lifecycle
         self.room_store = room_store
-        self.event_queue = event_queue
+        self.event_buffer = event_buffer
         self.owner_id = owner_id
         self.session_factory = session_factory
         self._registered: list[str] = []
@@ -424,9 +424,9 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         await session.commit()
     owner_id = owner.id
 
-    # Per-test in-memory wiring: a fresh EventQueue / client registry so queued
+    # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
     # events and client registrations never leak across tests.
-    event_queue = EventQueue()
+    event_buffer = EventBuffer()
     request_tracker = RequestTracker()
     resource_request_tracker = ResourceRequestTracker()
     collab_lifecycle = _NoBridges()
@@ -447,7 +447,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     client_factory.register(
         "agent",
         AgentClient,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         agent_store=session_env.agent_store,
         room_store=session_env.room_store,
         bridge_store=session_env.bridge_store,
@@ -487,7 +487,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         room_service=room_service,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         task_store=session_env.task_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
@@ -504,7 +504,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         room_service=room_service,
         client_lifecycle=client_lifecycle,
         room_store=session_env.room_store,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         owner_id=owner_id,
         session_factory=session_factory,
     )

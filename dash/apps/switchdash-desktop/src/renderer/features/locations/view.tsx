@@ -19,4 +19,8 @@ export const locationView = {
       ? { ok: true }
       : { ok: false, redirect: 'home' };
   },
-} satisfies ViewDefinition<{ locationId: string; agentName?: string }>;
+  // `roomId` records which room the agent was opened *from*, when it was opened
+  // from a room in the sidebar. The page itself ignores it; it is what lets the
+  // sidebar highlight the row that was clicked rather than every row for that
+  // agent, and it travels with history so back/forward stay right.
+} satisfies ViewDefinition<{ locationId: string; agentName?: string; roomId?: string }>;

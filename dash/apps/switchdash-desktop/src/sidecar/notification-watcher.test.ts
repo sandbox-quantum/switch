@@ -27,8 +27,10 @@ afterEach(() => {
 
 // spawnForRoom / handleNotification are private; reach them to test the spawn
 // decision in isolation from the long-poll loop.
-function handle(watcher: NotificationWatcher, roomId: string): void {
-  (watcher as unknown as { handleNotification: (r: string) => void }).handleNotification(roomId);
+function handle(watcher: NotificationWatcher, roomId: string, sequence?: number): void {
+  (
+    watcher as unknown as { handleNotification: (r: string, s?: number) => void }
+  ).handleNotification(roomId, sequence);
 }
 
 describe('NotificationWatcher spawn decision', () => {
@@ -47,7 +49,24 @@ describe('NotificationWatcher spawn decision', () => {
     const spawner = makeSpawner();
     handle(makeWatcher(spawner), 'room-x');
     await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
-    expect(spawner.launch).toHaveBeenCalledWith('room-x');
+    expect(spawner.launch).toHaveBeenCalledWith('room-x', undefined);
+  });
+
+  // The watcher consumed the triggering event to decide to spawn, so the
+  // session it starts must rewind to it. Launched at head, the session comes up
+  // having missed the one message it exists to answer.
+  it('starts the spawned session one event before its trigger', async () => {
+    const spawner = makeSpawner();
+    handle(makeWatcher(spawner), 'room-x', 42);
+    await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
+    expect(spawner.launch).toHaveBeenCalledWith('room-x', 41);
+  });
+
+  it('does not rewind past the start of the stream', async () => {
+    const spawner = makeSpawner();
+    handle(makeWatcher(spawner), 'room-x', 0);
+    await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
+    expect(spawner.launch).toHaveBeenCalledWith('room-x', 0);
   });
 
   it('does not launch when a live session already attends the room', async () => {

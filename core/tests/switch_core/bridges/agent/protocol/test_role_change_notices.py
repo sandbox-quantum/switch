@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 
 
@@ -67,17 +68,19 @@ class _FakeRoomRoleStore:
     async def get_role(self, _session: Any, _room_id: str, _name: str) -> Any:
         return self._role
 
-    async def get_agent_live_lease(self, _session: Any, _agent_id: str) -> Any | None:
+    async def get_agent_live_lease(
+        self, _session: Any, _agent_id: str, _alive: Any = ()
+    ) -> Any | None:
         return self._agent_lease
 
     async def acquire_lease(
-        self, _session: Any, role: Any, agent_id: str, _tx: str | None
+        self, _session: Any, role: Any, agent_id: str, _tx: str | None, _alive: Any = ()
     ) -> Any:
         self.acquired = True
         return SimpleNamespace(role_id=role.id, agent_id=agent_id)
 
     async def agent_room_role(
-        self, _session: Any, _room_id: str, _agent_id: str
+        self, _session: Any, _room_id: str, _agent_id: str, _alive: Any = ()
     ) -> str | None:
         return self._lease_role_name
 
@@ -98,6 +101,9 @@ def _build_service(
     *, role_store: _FakeRoomRoleStore, client: Any, members: list[str]
 ) -> ProtocolService:
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = role_store  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore(_ROOM, members)  # type: ignore[assignment]

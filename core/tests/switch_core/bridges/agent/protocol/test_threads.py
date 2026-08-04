@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from nio import RoomGetEventError
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 
 
@@ -55,6 +56,9 @@ class _FakeNio:
 def _service_with_client(nio: _FakeNio) -> ProtocolService:
     client = SimpleNamespace(nio_client=nio)
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
 
     async def _require_room_member(agent_id: str, room_id: str) -> SimpleNamespace:
         return SimpleNamespace(matrix_room_id="!matrix:server")

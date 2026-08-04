@@ -4,11 +4,9 @@ name: switchdash release
 # (private) repo, so anyone with repo-read access can install it without building
 # from source. Release assets inherit the repo's read access — no separate ACL.
 #
-# macOS (arm64) is signed + notarized. Linux (x64) is temporarily disabled
-# (CHOO-1339): the .deb target fails without an author email in the app
-# package.json; re-enabling with proper maintainer metadata is a follow-up.
-# Windows is not built yet (needs an Authenticode / Azure Trusted Signing
-# identity — tracked as a follow-up).
+# macOS (arm64) is signed + notarized. Linux (x64) builds AppImage, deb and rpm,
+# unsigned. Windows is not built yet (needs an Authenticode / Azure Trusted
+# Signing identity — tracked as a follow-up).
 #
 # Trigger by pushing a tag like `switchdash-v1.1.34` (the version after
 # `switchdash-v` MUST match apps/switchdash-desktop/package.json `version`).
@@ -34,9 +32,51 @@ defaults:
     working-directory: dash
 
 jobs:
+  # Creates the (assetless) Release up front so the platform jobs can run
+  # concurrently and each upload into it, rather than chaining Linux behind macOS
+  # purely to wait for the Release to exist.
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#switchdash-v}"
+          pkg_version="$(node -p "require('./apps/switchdash-desktop/package.json').version")"
+          echo "tag=$tag_version package.json=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match apps/switchdash-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#switchdash-v}"
+          notes="switchdash desktop app $version — macOS arm64 and Linux x64.
+
+          **macOS (arm64):** download the .dmg, open it, drag Switchdash to Applications. Signed and notarized with SandboxAQ's Developer ID — it opens without a Gatekeeper bypass.
+
+          **Linux (x64):** download the .AppImage (\`chmod +x\` then run), the .deb (\`sudo apt install ./<file>.deb\`) or the .rpm (\`sudo dnf install ./<file>.rpm\`). Linux builds are unsigned.
+
+          In-app updates require a GitHub login via the gh CLI (\`gh auth login\`)."
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "switchdash $version" \
+            --latest=false \
+            --notes "$notes"
+
   build-macos:
     name: Build & release (macOS arm64)
     runs-on: macos-14
+    # Runs on dispatch too, where create-release is skipped rather than run.
+    needs: create-release
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
     # Surface the cert/key secrets through env so step-level `if:` can gate on
     # them — the `secrets` context is not allowed in `if:` expressions.
     env:
@@ -104,25 +144,21 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: pnpm exec electron-builder --mac --publish never --config electron-builder.config.ts
 
-      - name: Create GitHub Release
+      - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         working-directory: dash/apps/switchdash-desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="${GITHUB_REF_NAME#switchdash-v}"
           # Upload the installable artifacts (.dmg, .zip) AND the channel manifest
           # (latest-mac.yml) + blockmaps — electron-updater needs the manifest to
           # detect/download updates, so a dmg-only release would silently break
           # auto-update.
           shopt -s nullglob
           assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
-          notes="switchdash desktop app $version (macOS arm64). Install: download the .dmg, open it, drag Switchdash to Applications. This build is signed and notarized with SandboxAQ's Developer ID — it opens without a Gatekeeper bypass. In-app updates require a GitHub login via the gh CLI (gh auth login)."
-          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "switchdash $version" \
-            --latest=false \
-            --notes "$notes"
+            --clobber
 
       - name: Upload build artifacts (dispatch runs, no Release)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -137,12 +173,10 @@ jobs:
   build-linux:
     name: Build & release (Linux x64)
     runs-on: ubuntu-latest
-    # Disabled (CHOO-1339): the .deb target fails without an author email in the
-    # app package.json. Re-enable once maintainer metadata is added (follow-up).
-    if: false
-    # On tag runs, upload into the Release the macOS job creates — depend on it so
-    # the Release exists before we upload. Linux is unsigned, so no cert secrets.
-    needs: build-macos
+    # Waits only for the Release to exist, not for the macOS build — the two
+    # platform jobs are independent. Linux is unsigned, so no cert secrets.
+    needs: create-release
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -194,9 +228,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The Release is created by the macOS job (needs: build-macos). Attach the
-          # Linux installers + the electron-updater channel manifest (latest-linux.yml)
-          # so auto-update works on Linux too.
+          # Attach the Linux installers + the electron-updater channel manifest
+          # (latest-linux.yml) so auto-update works on Linux too.
           shopt -s nullglob
           assets=(release/*.AppImage release/*.deb release/*.rpm release/*.blockmap release/latest-linux.yml)
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \

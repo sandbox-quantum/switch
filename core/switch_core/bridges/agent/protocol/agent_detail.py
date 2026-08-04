@@ -16,6 +16,7 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import AddressingPolicy
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.db.models import Agent, AgentSession
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -147,7 +148,11 @@ async def assemble_agent_detail(
     user_store: UserStore,
     agent_session_store: AgentSessionStore,
     room_role_store: RoomRoleStore,
+    connections: ConnectionRegistry,
 ) -> AgentDetail:
+    # Presence is the union of the heartbeat rows and the live connections
+    # (CHOO-1857 stage B); an empty set means "rows only".
+    alive_agent_ids = connections.live_agent_ids()
     owner_names: dict[str, str] = {}
 
     async def owner_name(owner_id: str | None) -> str | None:
@@ -173,9 +178,11 @@ async def assemble_agent_detail(
     memberships: list[AgentRoomMembership] = []
     for room in rooms:
         statuses = await compute_agent_statuses(
-            session, [agent], room.id, agent_session_store
+            session, [agent], room.id, agent_session_store, connections
         )
-        room_role = await room_role_store.agent_room_role(session, room.id, agent.id)
+        room_role = await room_role_store.agent_room_role(
+            session, room.id, agent.id, alive_agent_ids
+        )
         memberships.append(
             AgentRoomMembership(
                 room_id=room.id,
@@ -188,7 +195,8 @@ async def assemble_agent_detail(
 
     now = datetime.now(UTC)
     sessions: list[AgentSessionDetail] = []
-    for row in await agent_session_store.get_sessions_for_agent(session, agent.id):
+    session_rows = await agent_session_store.get_sessions_for_agent(session, agent.id)
+    for row in session_rows:
         room_name: str | None = None
         if row.room_id is not None:
             room_name = room_name_by_id.get(row.room_id)
@@ -204,6 +212,36 @@ async def assemble_agent_detail(
                 last_seen_at=str(row.last_seen_at),
             )
         )
+
+    # Connections are sessions too. A client on the push transport writes no
+    # agent_sessions row, so listing only the rows would show a live agent with
+    # no sessions at all — presence and the session list disagreeing is worse
+    # than either being wrong alone. Rooms already covered by a row are skipped
+    # so a client running both (a migration in progress) is not listed twice.
+    listed_rooms = {row.room_id for row in session_rows}
+    for conn in connections.for_agent(agent.id):
+        # An `all`-scope connection claiming nothing is one room-agnostic
+        # session, not none.
+        conn_rooms: list[str | None] = list(sorted(conn.rooms)) or [None]
+        for conn_room in conn_rooms:
+            if conn_room in listed_rooms:
+                continue
+            listed_rooms.add(conn_room)
+            room_name = None
+            if conn_room is not None:
+                room_name = room_name_by_id.get(conn_room)
+                if room_name is None:
+                    linked_room = await room_store.get(session, conn_room)
+                    room_name = linked_room.name if linked_room else None
+            sessions.append(
+                AgentSessionDetail(
+                    room_id=conn_room,
+                    room_name=room_name,
+                    lifecycle="connection",
+                    state="live",
+                    last_seen_at=str(now),
+                )
+            )
 
     child_agents = await agent_store.get_children(session, [agent.id])
     children = [

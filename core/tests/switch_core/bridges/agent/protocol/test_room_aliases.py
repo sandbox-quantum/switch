@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from switch_core.aliases import AliasError
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import AgentStatus
 
@@ -118,6 +119,9 @@ def _build_service(
 ) -> ProtocolService:
     room = _room()
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_store = _FakeRoomStore({room.id: room}, agent_ids, aliases or {})  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]

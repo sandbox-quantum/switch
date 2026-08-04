@@ -362,3 +362,109 @@ class TestSharedRoles:
             await session.commit()
             leases = await store.live_leases_for_room(session, room.id)
             assert [lease.agent_id for lease in leases[role.id]] == [a2.id]
+
+
+class TestLeaseLivenessIsAUnion:
+    """A lease survives on a fresh heartbeat OR a live connection (CHOO-1857).
+
+    A client on the push transport sends one connection heartbeat and no
+    `/leases/renew`, so freshness alone would drop its role within the TTL —
+    silently, and within six seconds of it migrating. `alive_agent_ids` is the
+    connection arm; an empty set means "freshness only", which is exactly what
+    an un-migrated client still relies on.
+    """
+
+    async def test_a_stale_lease_survives_while_its_agent_is_connected(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = RoomRoleStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "r1")
+            agent = await _make_agent(session, "a1")
+            role = await store.define_role(session, room.id, "manager", "lead", True)
+            await session.commit()
+
+            await store.acquire_lease(session, role, agent.id, "tx1")
+            await session.commit()
+            await _age_lease(
+                session, agent.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
+            )
+            await session.commit()
+
+            # Freshness alone: gone.
+            assert await store.live_holders_for_room(session, room.id) == {}
+            # With the connection arm: still held.
+            assert await store.live_holders_for_room(session, room.id, {agent.id}) == {
+                role.id: [agent.id]
+            }
+
+    async def test_a_connected_holder_still_blocks_an_exclusive_role(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The seat is not free just because the old heartbeat stopped.
+
+        Without this, a second session could take a role its holder still has —
+        the exact double-holder the exclusivity rule exists to prevent.
+        """
+        store = RoomRoleStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "r1")
+            a1 = await _make_agent(session, "a1")
+            a2 = await _make_agent(session, "a2")
+            role = await store.define_role(session, room.id, "manager", "lead", True)
+            await session.commit()
+
+            await store.acquire_lease(session, role, a1.id, "tx1")
+            await session.commit()
+            await _age_lease(
+                session, a1.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
+            )
+            await session.commit()
+
+            with pytest.raises(ValueError, match="exclusive"):
+                await store.acquire_lease(session, role, a2.id, "tx2", {a1.id})
+
+    async def test_an_unconnected_agent_does_not_keep_a_stale_lease(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The connection arm names specific agents; it is not a blanket amnesty."""
+        store = RoomRoleStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "r1")
+            a1 = await _make_agent(session, "a1")
+            a2 = await _make_agent(session, "a2")
+            role = await store.define_role(session, room.id, "manager", "lead", True)
+            await session.commit()
+
+            await store.acquire_lease(session, role, a1.id, "tx1")
+            await session.commit()
+            await _age_lease(
+                session, a1.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
+            )
+            await session.commit()
+
+            # Some *other* agent is connected: a1's lease is still stale.
+            assert await store.live_holders_for_room(session, room.id, {a2.id}) == {}
+
+    async def test_agent_room_role_reads_through_the_connection_arm(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = RoomRoleStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "r1")
+            agent = await _make_agent(session, "a1")
+            role = await store.define_role(session, room.id, "manager", "lead", True)
+            await session.commit()
+
+            await store.acquire_lease(session, role, agent.id, "tx1")
+            await session.commit()
+            await _age_lease(
+                session, agent.id, RoomRoleStore.LEASE_TTL + timedelta(seconds=5)
+            )
+            await session.commit()
+
+            assert await store.agent_room_role(session, room.id, agent.id) is None
+            assert (
+                await store.agent_room_role(session, room.id, agent.id, {agent.id})
+                == role.name
+            )

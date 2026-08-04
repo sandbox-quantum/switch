@@ -21,6 +21,7 @@ import { providerOverrideSettings } from '@main/core/settings/provider-settings-
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import type { SshConnectionManagerEvent } from '@main/core/ssh/lifecycle/ssh-connection-manager';
+import { remoteNpmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
@@ -480,8 +481,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       // switchdash is closed; it injects room messages into the agent's tmux pane.
       // It therefore requires tmux, must be up before the agent so the agent's
       // hook env can point at it, and shares the tmux session as its inject target.
+      // Decided before the branch below, not inside it: `launchSidecar()`
+      // assigns `this.relay`, so once it has run a fresh launch is
+      // indistinguishable from a re-attach.
+      const reattaching = Boolean(tmuxSessionName && this.relay);
+
       let hookEnv: Record<string, string> = {};
-      if (tmuxSessionName && this.relay) {
+      if (reattaching) {
         // Re-attach path (e.g. after an SSH reconnect): the agent is still
         // running in its tmux pane and the sidecar + its self-healing relay are
         // already live, so re-open the PTY onto the existing pane and skip the
@@ -511,6 +517,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         );
       }
 
+      // Skipped on the re-attach path above: the pane already has its
+      // environment and tmux applies `-e` only when it creates a session, so
+      // recomputing this would cost two round trips and change nothing.
+      const npmAuthEnv = reattaching
+        ? {}
+        : await remoteNpmRegistryAuthEnv(this.ctx, this.sessionPath);
+
       const [profile, colorEnv] = await Promise.all([
         this.proxy.getRemoteShellProfile(),
         getTerminalColorEnv(),
@@ -518,7 +531,14 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       const sshCommand = resolveSshCommand(
         'agent',
         cfg,
-        { ...providerEnv, ...colorEnv, ...this.sessionEnvVars, ...hookEnv, ...identityVars },
+        {
+          ...providerEnv,
+          ...colorEnv,
+          ...this.sessionEnvVars,
+          ...hookEnv,
+          ...npmAuthEnv,
+          ...identityVars,
+        },
         profile
       );
 

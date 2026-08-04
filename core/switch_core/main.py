@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import signal
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +16,11 @@ from alembic.config import Config as AlembicConfig
 from fastapi.responses import JSONResponse
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.connections import (
+    HEARTBEAT_TTL_SECONDS,
+    ConnectionRegistry,
+)
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.agent.server_connectors.lifecycle import (
@@ -90,6 +95,11 @@ logger = logging.getLogger(__name__)
 # after a session crashes, while staying well above the per-pass DB cost.
 _RUNTIME_STATE_SWEEP_INTERVAL = 5.0
 
+# How often to close connections whose heartbeat has lapsed. Kept well under
+# the heartbeat TTL so a dead connection's room slot and role lease are freed
+# promptly rather than at the next unrelated request.
+_CONNECTION_SWEEP_INTERVAL = 2.0
+
 
 async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
     while True:
@@ -98,6 +108,42 @@ async def _runtime_state_sweep_loop(protocol: ProtocolService) -> None:
             await protocol.sweep_runtime_states()
         except Exception:
             logger.exception("Runtime-state sweep failed")
+
+
+async def _connection_sweep_loop(protocol: ProtocolService) -> None:
+    """Expire connections whose client has stopped beating.
+
+    Skips a round after the event loop has been blocked. A stall stops us
+    *processing* heartbeats, so every connection looks lapsed at once through no
+    fault of its client — and expiring them all drops their room slots and role
+    leases, then every client reconnects together, which is a worse stall. The
+    clients were never given the chance to beat, so the honest reading is "we
+    were not listening", not "they went away".
+    """
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(_CONNECTION_SWEEP_INTERVAL)
+        overslept = (time.monotonic() - started) - _CONNECTION_SWEEP_INTERVAL
+        if overslept > HEARTBEAT_TTL_SECONDS / 2:
+            logger.warning(
+                "Connection sweep skipped: the event loop was blocked for %.1fs, "
+                "so heartbeats could not be processed and every connection would "
+                "look lapsed. Something is blocking the loop — that is the bug, "
+                "not the connections.",
+                overslept,
+            )
+            continue
+        try:
+            for conn in protocol.connections.sweep():
+                logger.info(
+                    "Connection %s for agent %s expired (heartbeat lapsed, "
+                    "%d beats received)",
+                    conn.id,
+                    conn.agent_id,
+                    conn.beats,
+                )
+        except Exception:
+            logger.exception("Connection sweep failed")
 
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -166,7 +212,7 @@ async def run() -> None:
     )
 
     # ── Event queue + request trackers ───────────────────────────────────────
-    event_queue = EventQueue()
+    event_buffer = EventBuffer()
     request_tracker = RequestTracker()
     resource_request_tracker = ResourceRequestTracker()
     connector_store = ServerConnectorStore()
@@ -180,6 +226,12 @@ async def run() -> None:
         session_factory=session_factory,
     )
 
+    # One connection registry for the process. Created here rather than inside
+    # the agent bridge because the Matrix agent clients are wired first and read
+    # presence from it — an agent is reachable if it has a live connection OR a
+    # fresh heartbeat row (CHOO-1857 stage B).
+    connections = ConnectionRegistry()
+
     # ── Client factory ───────────────────────────────────────────────────────
     client_factory = ClientFactory(
         client_store=client_store,
@@ -189,7 +241,7 @@ async def run() -> None:
     client_factory.register(
         "agent",
         AgentClient,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         agent_store=agent_store,
         room_store=room_store,
         bridge_store=bridge_store,
@@ -200,6 +252,7 @@ async def run() -> None:
         external_user_store=external_user_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
+        connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
     client_factory.register(
@@ -263,6 +316,7 @@ async def run() -> None:
         reference_store=reference_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
+        connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
 
@@ -274,7 +328,7 @@ async def run() -> None:
         room_service=room_service,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         task_store=task_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
@@ -284,6 +338,7 @@ async def run() -> None:
         bridge_store=bridge_store,
         session_factory=session_factory,
         config=config,
+        connections=connections,
     )
     collab_bridge_app = create_collaboration_bridge_app(
         bridge_store=bridge_store,
@@ -314,7 +369,7 @@ async def run() -> None:
         collab_lifecycle=collab_lifecycle,
         connector_lifecycle=connector_lifecycle,
         connector_store=connector_store,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
         external_user_store=external_user_store,
@@ -354,10 +409,14 @@ async def run() -> None:
         async with original_lifespan(app):  # type: ignore[arg-type]
             asyncio.create_task(connector_lifecycle.start_all())
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
+            connection_sweep_task = asyncio.create_task(
+                _connection_sweep_loop(protocol)
+            )
             try:
                 yield
             finally:
                 sweep_task.cancel()
+                connection_sweep_task.cancel()
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 

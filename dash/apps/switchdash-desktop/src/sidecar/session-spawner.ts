@@ -26,6 +26,18 @@ export interface InProcessSessionSpawnerDeps {
   endpointFile: string;
   /** The multi-session runtime — a room it already serves needs no new session. */
   runtime: RoomLivenessSource;
+  /**
+   * Open a connection for a session about to launch and return its id, so the
+   * session's tool calls land on the connection this sidecar is reading. Same
+   * hand-off switchdash does locally; without it the session opens its own and
+   * the sidecar is back to inferring the room from a hook.
+   */
+  openConnectionFor?: (
+    sessionId: string,
+    providerId: string,
+    roomId: string,
+    startCursor?: number
+  ) => string | null;
   /** The agent's Switch identity as `SWITCH_*` env, injected into every
    * auto-started session so it authenticates as this agent — a `--settings` env
    * block is not reliably propagated to the spawned MCP server (CHOO-1440). */
@@ -69,9 +81,16 @@ export class InProcessSessionSpawner implements SessionSpawner {
   }
 
   /**
-   * Forget a launched session by its session id (switchdash deleted it), so
-   * it is no longer reported as pending/spawned and a fresh room notification can
-   * spawn a new one. No-op if we never launched this session.
+   * Forget a launched session by its session id, so it is no longer reported as
+   * pending/spawned and a fresh room notification can spawn a new one. No-op if
+   * we never launched this session.
+   *
+   * Called both when switchdash deletes a session and when one connects to a
+   * room. The entry only covers the boot window — between launch and the first
+   * `connect_to_room` — and once the runtime knows the session, its room map is
+   * the accurate answer. Keeping the entry past that point makes it vouch for
+   * the room the session was *started for* rather than the one it is in, so a
+   * session that moves rooms leaves its old room permanently unspawnable.
    */
   drop(sessionId: string): void {
     for (const [roomId, session] of this.launched) {
@@ -127,11 +146,19 @@ export class InProcessSessionSpawner implements SessionSpawner {
     return false;
   }
 
-  async launch(roomId: string): Promise<void> {
+  async launch(roomId: string, startCursor?: number): Promise<void> {
     const { hookPort, hookToken, endpointFile, log } = this.deps;
     const spec = this.spec;
     const sessionId = randomUUID();
     const tmuxTarget = makeAgentTmuxSessionName(sessionId);
+
+    // Open the session's connection before launching it: its first
+    // connect_to_room arrives tagged with this id, and the server refuses a
+    // call naming a connection that is not open. The room goes with it — this
+    // session is being launched to answer a message in that room, so there is
+    // nothing to wait to be told.
+    const connectionId =
+      this.deps.openConnectionFor?.(sessionId, spec.providerId, roomId, startCursor) ?? null;
 
     const hookEnv = {
       ...this.deps.switchEnv,
@@ -141,6 +168,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
         token: hookToken,
         endpointFile,
       }),
+      ...(connectionId ? { SWITCH_CONNECTION_ID: connectionId } : {}),
     };
     const command = materializeAgentCommand(spec, {
       sessionId,

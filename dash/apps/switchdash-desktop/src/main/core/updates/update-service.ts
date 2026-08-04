@@ -7,7 +7,12 @@ import _electronUpdater, {
 import { resolveAppVersion } from '@main/core/app/utils';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { IS_CANARY, UPDATE_CHANNEL } from '@shared/app-identity';
+import {
+  IS_CANARY,
+  RELEASE_REPO_NAME,
+  RELEASE_REPO_OWNER,
+  UPDATE_CHANNEL,
+} from '@shared/app-identity';
 import {
   updateAuthRequiredEvent,
   updateAvailableEvent,
@@ -19,6 +24,14 @@ import {
   updateNotAvailableEvent,
   updateProgressEvent,
 } from '@shared/events/updateEvents';
+import {
+  FAKE_UPDATE_VERSION_ENV_VAR,
+  FakeUpdateDriver,
+  type UpdateSignals,
+  nextFakeVersion,
+  readFakeDownloadDuration,
+  readFakeUpdateScenario,
+} from './dev-harness';
 import { getGithubTokenFromGhCli } from './github-token';
 import { formatUpdaterError, sanitizeUpdaterLogArgs } from './utils';
 
@@ -29,6 +42,10 @@ const ALLOW_DOWNGRADE = false;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const STARTUP_DELAY_MS = 30 * 1000; // 30 seconds
 const INSTALL_RESTART_GUARD_TIMEOUT_MS = 2 * 60 * 1000;
+/** The dev harness checks promptly — nobody wants to wait 30s to see the UI. */
+const FAKE_STARTUP_DELAY_MS = 1_500;
+/** Dev builds cannot restart into a new binary, so the fake install unwinds. */
+const FAKE_INSTALL_ROLLBACK_MS = 3_000;
 
 export interface UpdateState {
   status:
@@ -64,6 +81,7 @@ class UpdateService implements IInitializable, IDisposable {
   private active = false;
   private installRequested = false;
   private installRestartGuardTimer?: NodeJS.Timeout;
+  private fake?: FakeUpdateDriver;
 
   constructor() {
     this.updateState = {
@@ -78,7 +96,10 @@ class UpdateService implements IInitializable, IDisposable {
 
     this.updateState.currentVersion = await resolveAppVersion();
 
-    if (import.meta.env.DEV) return;
+    if (import.meta.env.DEV) {
+      this.setupDevHarness();
+      return;
+    }
 
     this.setupAutoUpdater();
     this.setupEventListeners();
@@ -90,6 +111,34 @@ class UpdateService implements IInitializable, IDisposable {
     });
 
     this.scheduleNextCheck(STARTUP_DELAY_MS);
+  }
+
+  /**
+   * Activate the dev harness when SWITCHDASH_FAKE_UPDATE names a scenario.
+   * Without it the service stays inert in dev, exactly as before.
+   */
+  private setupDevHarness(): void {
+    const scenario = readFakeUpdateScenario(process.env);
+    if (!scenario) return;
+
+    const nextVersion =
+      process.env[FAKE_UPDATE_VERSION_ENV_VAR]?.trim() ||
+      nextFakeVersion(this.updateState.currentVersion);
+
+    this.fake = new FakeUpdateDriver(
+      scenario,
+      this.signals,
+      nextVersion,
+      readFakeDownloadDuration(process.env)
+    );
+    this.active = true;
+
+    log.warn(
+      `[dev] Update harness ACTIVE — scenario "${scenario}", fake version ${nextVersion}. ` +
+        'Updates are simulated; nothing is downloaded or installed.'
+    );
+
+    this.scheduleNextCheck(FAKE_STARTUP_DELAY_MS);
   }
 
   private setupAutoUpdater(): void {
@@ -108,26 +157,30 @@ class UpdateService implements IInitializable, IDisposable {
     autoUpdater.logger = updaterLogger;
   }
 
-  private setupEventListeners(): void {
-    autoUpdater.on('checking-for-update', () => {
+  /**
+   * State transitions, shared by the real autoUpdater listeners and the dev
+   * harness so both drive the app through identical states.
+   */
+  private readonly signals: UpdateSignals = {
+    checking: () => {
       this.updateState.status = 'checking';
       this.updateState.lastCheck = new Date();
       events.emit(updateCheckingEvent, undefined);
-    });
+    },
 
-    autoUpdater.on('update-available', (info: UpdateInfo) => {
+    available: (info: UpdateInfo) => {
       this.updateState.status = 'available';
       this.updateState.availableVersion = info.version;
       this.updateState.updateInfo = info;
       events.emit(updateAvailableEvent, { version: info.version, updateInfo: info });
-    });
+    },
 
-    autoUpdater.on('update-not-available', () => {
+    notAvailable: () => {
       this.updateState.status = 'idle';
       events.emit(updateNotAvailableEvent, undefined);
-    });
+    },
 
-    autoUpdater.on('error', (err: Error) => {
+    failed: (err: unknown) => {
       const errorMessage = formatUpdaterError(err);
       log.error('Auto-updater error:', errorMessage);
 
@@ -148,29 +201,47 @@ class UpdateService implements IInitializable, IDisposable {
       }
 
       events.emit(updateErrorEvent, { message: errorMessage });
-    });
+    },
 
-    autoUpdater.on('download-progress', (progressObj: ProgressInfo) => {
+    progress: (progress) => {
       this.updateState.status = 'downloading';
-      this.updateState.downloadProgress = {
-        bytesPerSecond: progressObj.bytesPerSecond,
-        percent: progressObj.percent,
-        transferred: progressObj.transferred,
-        total: progressObj.total,
-      };
-      events.emit(updateProgressEvent, {
-        bytesPerSecond: progressObj.bytesPerSecond,
-        percent: progressObj.percent,
-        transferred: progressObj.transferred,
-        total: progressObj.total,
-      });
-    });
+      this.updateState.downloadProgress = progress;
+      events.emit(updateProgressEvent, progress);
+    },
 
-    autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
+    downloaded: (version: string) => {
       this.updateState.status = 'downloaded';
       this.updateState.rollbackVersion = this.updateState.currentVersion;
-      events.emit(updateDownloadedEvent, { version: info.version });
-    });
+      events.emit(updateDownloadedEvent, { version });
+    },
+
+    authRequired: () => {
+      this.updateState.status = 'auth-required';
+      events.emit(updateAuthRequiredEvent, undefined);
+    },
+  };
+
+  private setupEventListeners(): void {
+    autoUpdater.on('checking-for-update', () => this.signals.checking());
+
+    autoUpdater.on('update-available', (info: UpdateInfo) => this.signals.available(info));
+
+    autoUpdater.on('update-not-available', () => this.signals.notAvailable());
+
+    autoUpdater.on('error', (err: Error) => this.signals.failed(err));
+
+    autoUpdater.on('download-progress', (progressObj: ProgressInfo) =>
+      this.signals.progress({
+        bytesPerSecond: progressObj.bytesPerSecond,
+        percent: progressObj.percent,
+        transferred: progressObj.transferred,
+        total: progressObj.total,
+      })
+    );
+
+    autoUpdater.on('update-downloaded', (info: UpdateInfo) =>
+      this.signals.downloaded(info.version)
+    );
   }
 
   private scheduleNextCheck(delay = CHECK_INTERVAL_MS): void {
@@ -203,20 +274,31 @@ class UpdateService implements IInitializable, IDisposable {
       this.updateState.error = undefined;
     }
 
+    if (this.fake) return this.fake.check();
+
     // The switch release feed is a private repo, so the updater needs a token.
     // Reuse the user's existing `gh` login rather than shipping a secret. Without
     // a token we stay dormant (auth-required) instead of erroring every hour.
     const token = await getGithubTokenFromGhCli();
     if (!token) {
-      this.updateState.status = 'auth-required';
-      events.emit(updateAuthRequiredEvent, undefined);
+      this.signals.authRequired();
       log.info('Skipping update check: no GitHub token from gh CLI (run `gh auth login`)');
       return null;
     }
-    // electron-updater selects its authenticated GitHub provider (api.github.com)
-    // from GH_TOKEN; without it, a private repo falls back to the public
-    // releases.atom feed and 404s. The header alone is not enough.
-    process.env.GH_TOKEN = token;
+    // A private repo needs electron-updater's authenticated provider
+    // (api.github.com); the public releases.atom feed 404s and the auth header
+    // alone does not select it. The token goes through setFeedURL rather than
+    // GH_TOKEN: the environment is inherited by every child process switchdash
+    // spawns — including `gh` itself, which prefers GH_TOKEN over the keyring —
+    // so a token left there outlives the login it came from and shadows the
+    // next one until the app restarts.
+    autoUpdater.setFeedURL({
+      provider: 'github',
+      owner: RELEASE_REPO_OWNER,
+      repo: RELEASE_REPO_NAME,
+      private: true,
+      token,
+    });
     autoUpdater.requestHeaders = {
       'Cache-Control': 'no-cache',
       authorization: `token ${token}`,
@@ -249,7 +331,8 @@ class UpdateService implements IInitializable, IDisposable {
     events.emit(updateDownloadingEvent, { version: this.updateState.availableVersion });
 
     try {
-      await autoUpdater.downloadUpdate();
+      if (this.fake) await this.fake.download();
+      else await autoUpdater.downloadUpdate();
     } catch (error: unknown) {
       const errorMessage = formatUpdaterError(error);
       log.error('Update download failed:', errorMessage, error);
@@ -305,6 +388,16 @@ class UpdateService implements IInitializable, IDisposable {
       }
       log.error(reason);
     };
+
+    if (this.fake) {
+      // A dev build has no new binary to restart into. Unwind quickly so the
+      // "ready to install" state is reachable again instead of stranding the UI
+      // on "installing" until the two-minute guard fires.
+      this.installRestartGuardTimer = setTimeout(() => {
+        rollback('[dev] Simulated install complete — no restart happens under the update harness');
+      }, FAKE_INSTALL_ROLLBACK_MS);
+      return;
+    }
 
     this.installRestartGuardTimer = setTimeout(() => {
       rollback('quitAndInstall timed out before app quit; allowing retry');
@@ -366,6 +459,7 @@ class UpdateService implements IInitializable, IDisposable {
   }
 
   dispose(): void {
+    this.fake?.dispose();
     if (this.checkTimer) {
       clearTimeout(this.checkTimer);
       this.checkTimer = undefined;

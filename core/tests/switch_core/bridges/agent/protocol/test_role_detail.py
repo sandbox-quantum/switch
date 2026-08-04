@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 
 
@@ -41,11 +42,13 @@ class _FakeRoomRoleStore:
         return None
 
     async def live_leases_for_room(
-        self, _session: Any, _room_id: str
+        self, _session: Any, _room_id: str, _alive: Any = ()
     ) -> dict[str, list[Any]]:
         return {k: list(v) for k, v in self._leases.items()}
 
-    async def get_agent_live_lease(self, _session: Any, _agent_id: str) -> Any | None:
+    async def get_agent_live_lease(
+        self, _session: Any, _agent_id: str, _alive: Any = ()
+    ) -> Any | None:
         return self._my_lease
 
 
@@ -112,6 +115,9 @@ def _build_service(
     my_lease: Any | None = None,
 ) -> ProtocolService:
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, leases, my_lease)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]

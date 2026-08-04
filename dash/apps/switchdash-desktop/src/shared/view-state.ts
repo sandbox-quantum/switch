@@ -13,6 +13,11 @@ export type NavigationSnapshot = {
 
 export type SidebarSessionSortBy = 'created-at' | 'updated-at';
 
+/** How the room-focused sidebar orders rooms. Rooms are places rather than
+ * work, so they sort by name by default; `updated-at` means the most recent
+ * session activity in the room. */
+export type SidebarRoomSortBy = 'name' | 'created-at' | 'updated-at';
+
 /** How the sidebar groups sessions: by agent (agent → room → sessions) or by
  * room (room → agents → sessions). */
 export type SidebarGrouping = 'agent' | 'room';
@@ -48,4 +53,17 @@ export type SidebarSnapshot = {
   filterConnections?: AgentConnectionKind[];
   filterProviderIds?: AgentProviderId[];
   filterHasLiveSession?: boolean;
+  /**
+   * Room-focused filters, kept apart from the agent ones above: the two views
+   * filter different things, so a dimension set in one must not silently narrow
+   * the other. `filterBridgeTypes` holds bridge types (`slack`, …) plus the
+   * sentinel {@link UNBRIDGED_FILTER_VALUE} for rooms with no messaging app.
+   */
+  roomSortBy?: SidebarRoomSortBy;
+  filterBridgeTypes?: string[];
+  filterRoomHasLiveSession?: boolean;
 };
+
+/** `filterBridgeTypes` entry standing for "no messaging app", which has no
+ * bridge type of its own but is a thing you want to filter for. */
+export const UNBRIDGED_FILTER_VALUE = '__unbridged__';

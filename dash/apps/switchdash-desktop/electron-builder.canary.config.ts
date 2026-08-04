@@ -12,6 +12,11 @@ const config: Configuration = {
   appId: APP_ID,
   productName: PRODUCT_NAME,
   executableName: PRODUCT_NAME,
+  // Canary-specific desktop entry name so it never collides with the stable
+  // channel's (see the base config for what desktopName does).
+  extraMetadata: {
+    desktopName: `${APP_NAME_LOWER}.desktop`,
+  },
   // Claim the switchdash:// scheme so the OS routes deeplinks to the app (see
   // the base config for details).
   protocols: [
@@ -67,6 +72,10 @@ const config: Configuration = {
   linux: {
     category: 'Development',
     executableName: APP_NAME_LOWER,
+    // Same fpm requirement as the stable channel — deb/rpm cannot package
+    // without it.
+    maintainer: 'Louis Amaudruz <louis.amaudruz@sandboxaq.com>',
+    syncDesktopName: true,
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] },

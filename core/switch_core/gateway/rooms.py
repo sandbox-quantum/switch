@@ -174,7 +174,9 @@ async def _list_room_role_details(
     """
     store = protocol.room_role_store
     roles = await store.list_roles(session, room_id)
-    holders = await store.live_holders_for_room(session, room_id)
+    holders = await store.live_holders_for_room(
+        session, room_id, protocol.connections.live_agent_ids()
+    )
     holder_names: dict[str, str] = {}
     for holder_id in {h for ids in holders.values() for h in ids}:
         holder = await protocol.agent_store.get(session, holder_id)

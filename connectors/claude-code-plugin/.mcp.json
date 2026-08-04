@@ -1,20 +1,8 @@
 {
   "mcpServers": {
     "switch": {
-      "type": "http",
-      "url": "${SWITCH_API_ENDPOINT}/mcp/",
-      "headers": {
-        "Authorization": "Bearer ${SWITCH_API_TOKEN}"
-      }
-    },
-    "switch-channel": {
-      "command": "sh",
-      "args": [
-        "-c",
-        "cd \"$1\" && bun install --no-summary 1>&2 && exec bun server.ts",
-        "switch-channel",
-        "${CLAUDE_PLUGIN_ROOT}/channel"
-      ],
+      "command": "npx",
+      "args": ["-y", "@sandbox-quantum/switch-agent-runtime@0.1.3"],
       "env": {
         "SWITCH_API_ENDPOINT": "${SWITCH_API_ENDPOINT}",
         "SWITCH_API_TOKEN": "${SWITCH_API_TOKEN}",

@@ -10,10 +10,12 @@ argument and never commits (the caller owns the transaction), mirroring
 `AgentSessionStore`.
 """
 
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from switch_core.db.models import RoleLease, RoomRole
 
@@ -112,8 +114,29 @@ class RoomRoleStore:
     def _cutoff(self) -> datetime:
         return datetime.now(UTC) - self.LEASE_TTL
 
+    def _live(self, alive_agent_ids: Collection[str]) -> ColumnElement[bool]:
+        """SQL predicate for "this lease is still held".
+
+        A lease is live if its heartbeat is fresh **or** its agent has a live
+        connection (CHOO-1857 stage B). Both arms are needed while both kinds
+        of client exist: a client on the push transport sends one connection
+        heartbeat and no `/leases/renew`, so the freshness arm alone would drop
+        its role within the TTL; a client still polling has only that arm.
+
+        `alive_agent_ids` comes from the connection registry and defaults to
+        empty, which means "freshness only" — today's behaviour for any caller
+        that has no registry to hand.
+        """
+        fresh = RoleLease.last_seen_at > self._cutoff()
+        if not alive_agent_ids:
+            return fresh
+        return or_(fresh, RoleLease.agent_id.in_(list(alive_agent_ids)))
+
     async def get_live_lease(
-        self, session: AsyncSession, role_id: str
+        self,
+        session: AsyncSession,
+        role_id: str,
+        alive_agent_ids: Collection[str] = (),
     ) -> RoleLease | None:
         """Return the live lease on an *exclusive* `role_id`, or None if free.
 
@@ -125,28 +148,36 @@ class RoomRoleStore:
         result = await session.execute(
             select(RoleLease)
             .where(RoleLease.role_id == role_id)
-            .where(RoleLease.last_seen_at > self._cutoff())
+            .where(self._live(alive_agent_ids))
         )
         return result.scalar_one_or_none()
 
-    async def has_live_holder(self, session: AsyncSession, role_id: str) -> bool:
+    async def has_live_holder(
+        self,
+        session: AsyncSession,
+        role_id: str,
+        alive_agent_ids: Collection[str] = (),
+    ) -> bool:
         """True if at least one live lease holds `role_id` (any exclusivity)."""
         result = await session.execute(
             select(RoleLease.id)
             .where(RoleLease.role_id == role_id)
-            .where(RoleLease.last_seen_at > self._cutoff())
+            .where(self._live(alive_agent_ids))
             .limit(1)
         )
         return result.first() is not None
 
     async def get_agent_live_lease(
-        self, session: AsyncSession, agent_id: str
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        alive_agent_ids: Collection[str] = (),
     ) -> RoleLease | None:
         """Return the agent's live lease (across any room), or None."""
         result = await session.execute(
             select(RoleLease)
             .where(RoleLease.agent_id == agent_id)
-            .where(RoleLease.last_seen_at > self._cutoff())
+            .where(self._live(alive_agent_ids))
         )
         return result.scalar_one_or_none()
 
@@ -164,7 +195,10 @@ class RoomRoleStore:
         return result.scalar_one_or_none()
 
     async def live_holders_for_room(
-        self, session: AsyncSession, room_id: str
+        self,
+        session: AsyncSession,
+        room_id: str,
+        alive_agent_ids: Collection[str] = (),
     ) -> dict[str, list[str]]:
         """Map role_id → live holder agent_ids for the room.
 
@@ -174,7 +208,7 @@ class RoomRoleStore:
         result = await session.execute(
             select(RoleLease.role_id, RoleLease.agent_id)
             .where(RoleLease.room_id == room_id)
-            .where(RoleLease.last_seen_at > self._cutoff())
+            .where(self._live(alive_agent_ids))
         )
         holders: dict[str, list[str]] = {}
         for role_id, agent_id in result.all():
@@ -182,7 +216,10 @@ class RoomRoleStore:
         return holders
 
     async def live_leases_for_room(
-        self, session: AsyncSession, room_id: str
+        self,
+        session: AsyncSession,
+        room_id: str,
+        alive_agent_ids: Collection[str] = (),
     ) -> dict[str, list[RoleLease]]:
         """Map role_id → live lease rows for the room.
 
@@ -193,7 +230,7 @@ class RoomRoleStore:
         result = await session.execute(
             select(RoleLease)
             .where(RoleLease.room_id == room_id)
-            .where(RoleLease.last_seen_at > self._cutoff())
+            .where(self._live(alive_agent_ids))
         )
         leases: dict[str, list[RoleLease]] = {}
         for lease in result.scalars().all():
@@ -201,7 +238,11 @@ class RoomRoleStore:
         return leases
 
     async def agent_room_role(
-        self, session: AsyncSession, room_id: str, agent_id: str
+        self,
+        session: AsyncSession,
+        room_id: str,
+        agent_id: str,
+        alive_agent_ids: Collection[str] = (),
     ) -> str | None:
         """Return the role NAME the agent currently (live) holds in the room."""
         result = await session.execute(
@@ -209,7 +250,7 @@ class RoomRoleStore:
             .join(RoleLease, RoleLease.role_id == RoomRole.id)
             .where(RoleLease.room_id == room_id)
             .where(RoleLease.agent_id == agent_id)
-            .where(RoleLease.last_seen_at > self._cutoff())
+            .where(self._live(alive_agent_ids))
         )
         return result.scalar_one_or_none()
 
@@ -219,6 +260,7 @@ class RoomRoleStore:
         role: RoomRole,
         agent_id: str,
         transport_session_id: str | None,
+        alive_agent_ids: Collection[str] = (),
     ) -> RoleLease:
         """Acquire the lease on `role` for `agent_id`.
 
@@ -230,7 +272,7 @@ class RoomRoleStore:
         now = datetime.now(UTC)
 
         # Reject if the agent already holds a *live* lease (one lease per session).
-        existing = await self.get_agent_live_lease(session, agent_id)
+        existing = await self.get_agent_live_lease(session, agent_id, alive_agent_ids)
         if existing is not None:
             if existing.role_id == role.id:
                 # Idempotent re-assume of the same role: just refresh.
@@ -249,7 +291,7 @@ class RoomRoleStore:
             )
 
         if role.exclusive:
-            holder = await self.get_live_lease(session, role.id)
+            holder = await self.get_live_lease(session, role.id, alive_agent_ids)
             if holder is not None and holder.agent_id != agent_id:
                 raise ValueError(
                     f"Role '{role.name}' is exclusive and currently held by another agent"

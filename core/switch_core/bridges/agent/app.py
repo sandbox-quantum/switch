@@ -7,11 +7,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from switch_core.bridges.agent.api.handlers import router as api_router
+from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import init_dependencies
 from switch_core.bridges.agent.mcp import create_mcp_app
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.collaboration.lifecycle_service import (
@@ -41,7 +43,7 @@ def create_agent_bridge_app(
     room_service: RoomService,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    event_queue: EventQueue,
+    event_buffer: EventBuffer,
     task_store: TaskStore,
     request_tracker: RequestTracker,
     resource_request_tracker: ResourceRequestTracker,
@@ -51,7 +53,15 @@ def create_agent_bridge_app(
     bridge_store: CollaborationBridgeStore,
     session_factory: object,
     config: SwitchConfig,
+    connections: ConnectionRegistry | None = None,
 ) -> tuple[FastAPI, ProtocolService]:
+    # One registry for the whole process: the live connection set is the source
+    # of truth for reachability, so every service must see the same one. The
+    # caller may supply it — main.py does, because the Matrix agent clients are
+    # wired before this app is built and read presence from the same registry.
+    if connections is None:
+        connections = ConnectionRegistry()
+
     init_dependencies(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
@@ -59,7 +69,8 @@ def create_agent_bridge_app(
         room_service=room_service,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
+        connections=connections,
         task_store=task_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
@@ -78,7 +89,8 @@ def create_agent_bridge_app(
         room_service=room_service,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
+        connections=connections,
         task_store=task_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
@@ -121,6 +133,7 @@ def create_agent_bridge_app(
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     app.include_router(api_router, prefix="/agents", tags=["api"])
+    app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
 
     app.state.config = config

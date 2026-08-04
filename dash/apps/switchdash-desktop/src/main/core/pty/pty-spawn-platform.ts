@@ -10,22 +10,34 @@ export type PtyCommandSpec =
   | { kind: 'argv'; command: string; args: string[] }
   | { kind: 'shell-line'; commandLine: string };
 
+/**
+ * Environment for the tmux pane, set with `new-session -e`.
+ *
+ * Only meaningful alongside `tmuxSessionName`. A pane inherits the tmux
+ * SERVER's environment rather than that of the shell running `new-session`,
+ * so anything handed to the pty — hook credentials, registry config, the
+ * Switch connection id — stops at that boundary unless it is repeated here.
+ * Without it a tmux session sees a materially different environment from an
+ * otherwise identical non-tmux one.
+ */
+type PaneEnv = { paneEnv?: Record<string, string> };
+
 export type PtySpawnIntent =
-  | {
+  | ({
       kind: 'interactive-shell';
       cwd: string;
       shellProfile?: ResolvedShellProfile;
       shellSetup?: string;
       tmuxSessionName?: string;
-    }
-  | {
+    } & PaneEnv)
+  | ({
       kind: 'run-command';
       cwd: string;
       command: PtyCommandSpec;
       shellProfile?: ResolvedShellProfile;
       shellSetup?: string;
       tmuxSessionName?: string;
-    };
+    } & PaneEnv);
 
 export type LocalPtySpawnWarning = 'shell_setup_ignored_on_windows' | 'tmux_unsupported_on_windows';
 
@@ -358,7 +370,7 @@ function resolvePosixSpawn(intent: PtySpawnIntent, env: NodeJS.ProcessEnv): Reso
         command: shell,
         args: [
           ...(intent.shellSetup ? setupWrapperArgs : commandArgs),
-          buildTmuxShellLine(intent.tmuxSessionName, commandLine),
+          buildTmuxShellLine(intent.tmuxSessionName, commandLine, intent.paneEnv),
         ],
         cwd: intent.cwd,
         warnings: [],
@@ -401,7 +413,10 @@ function resolvePosixSpawn(intent: PtySpawnIntent, env: NodeJS.ProcessEnv): Reso
   if (intent.tmuxSessionName) {
     return {
       command: shell,
-      args: [...commandArgs, buildTmuxShellLine(intent.tmuxSessionName, fullCommandLine)],
+      args: [
+        ...commandArgs,
+        buildTmuxShellLine(intent.tmuxSessionName, fullCommandLine, intent.paneEnv),
+      ],
       cwd: intent.cwd,
       warnings: [],
     };

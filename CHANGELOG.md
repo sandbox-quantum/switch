@@ -21,6 +21,18 @@ below:
 
 ### [Unreleased]
 
+### [0.11.0] - 2026-08-03
+
+#### Added
+- Agent bridge push transport (design + Stages A & B): a sequenced,
+  non-destructive per-agent event buffer plus a push connection with SSE
+  delivery (`GET /agents/{id}/events`, one `POST /connection/beat` for liveness
+  and cursor), replacing long-poll's destroy-on-read queue; presence becomes a
+  union of heartbeat and live connection, and connection status is derived from
+  what a connection observes rather than a declared `connection_model`. Backward
+  compatible — polling keeps working and old/new state are read together
+  (CHOO-1857, #100).
+
 ### [0.10.0] - 2026-07-30
 
 #### Added
@@ -138,6 +150,97 @@ below:
 ## switchdash
 
 ### [Unreleased]
+
+### [0.17.2] - 2026-08-04
+
+#### Added
+- Status-aware "update available" UX: the sidebar indicator shows the target
+  version when an update is available, live percentage + transfer rate while
+  downloading, a restart prompt once ready, and a warning tint on failure — and
+  opens a panel (current → new version, the right action, a link to the GitHub
+  release) instead of just jumping to Settings. User-triggered failures are
+  toasted and the real error message is shown (CHOO-1434, #107).
+
+#### Fixed
+- The onboarding/home page can drag the window again: the empty home surface is
+  now a drag region (action buttons opted out), so the window is no longer stuck
+  when Home is the active view (CHOO-1430, #106).
+
+### [0.17.1] - 2026-08-04
+
+#### Added
+- Linux x64 desktop builds are shipped again (AppImage, deb, rpm), with a stable
+  desktop-entry name so the launcher, icon and pinning behave; INSTALL docs and
+  release notes now cover Linux (CHOO-1905, #104).
+
+#### Changed
+- Release builds macOS and Linux artifacts in parallel (the GitHub Release is
+  created in its own job), cutting ~5 minutes off a release (CHOO-1905, #104).
+
+#### Fixed
+- A dropped-events "gap" no longer wakes an agent and spends a turn: switchdash
+  defers the warning onto the next event it was already going to surface, instead
+  of injecting an addressed prompt (CHOO-1906, #105).
+
+### [0.17.0] - 2026-08-04
+
+#### Added
+- In-app Switch room creation: create a room from switchdash (name, description,
+  messaging app, agents, optional instructions) instead of the operator web app —
+  the picker offers only running bridges and every created room is bridged
+  (CHOO-1875, #103).
+- Room-centric sidebar: a room tree listing rooms by membership and ownership
+  (not only rooms with a live session), showing each room's members, managing
+  membership (add/remove agents), starting a session in a room with the agent
+  pre-chosen, and opening the room in its messaging app when the gateway supplies
+  a deeplink; rooms sort and filter on their own properties (CHOO-1875, #103).
+
+#### Fixed
+- Sessions launched for a room now declare that room when their connection opens
+  — both sidebar-started and auto-spawned (messaging-app-addressed) sessions
+  appear under the correct room immediately instead of sitting under
+  "Unassigned" until the agent calls `connect_to_room` (CHOO-1875, #103).
+
+### [0.16.1] - 2026-08-03
+
+#### Added
+- Local GitHub-auth detection in Switch setup: a requirement row reporting `gh`
+  missing / not logged in / missing `read:packages`, with an inline device-flow
+  login that requests the scope. Sessions that can't fetch the runtime now toast
+  the reason instead of starting silently broken (CHOO-1873, #102).
+
+#### Fixed
+- GitHub auth changes now take effect without restarting: the updater no longer
+  leaves a boot-time token in `GH_TOKEN` (which shadowed the keyring for `gh`),
+  and the scope check judges the active account only (`gh auth status --active`)
+  rather than any known account (CHOO-1873, #102).
+- A dialog's own terminal now receives keystrokes (the `gh auth` prompt was
+  silenced inside the Agent Settings modal); agent usage — not just install — is
+  gated on GitHub access; managed servers pinned to switch-core `0.11.0` (was
+  `0.8.1`) (CHOO-1873, #102).
+
+### [0.16.0] - 2026-08-03
+
+#### Added
+- Move switchdash and the remote sidecar onto the agent-bridge push stream: one
+  shared connection per session claims its room server-side instead of scraping
+  it from a hook, backed by the new `@sandbox-quantum/switch-agent-runtime`
+  shared protocol client used by both switchdash and the connector plugin
+  (CHOO-1857, #100).
+
+#### Removed
+- First-run welcome page and residual Emdash artwork; first run now lands on the
+  existing home empty state with an "Add Switch agent" action (CHOO-1398, #96).
+
+### [0.15.3] - 2026-07-31
+
+#### Fixed
+- Unbreak remote hosts with `IdentitiesOnly` or restricted agent forwarding: the
+  `IdentitiesOnly` key-filter now extends ssh2's `BaseAgent` so it's no longer
+  silently discarded (which had broken auth for keychain-only keys and failed
+  connects under `ForwardAgent yes`), and a host that refuses agent forwarding
+  now degrades to "everything except forwarding" — with a warning — instead of
+  failing every command (#98).
 
 ### [0.15.2] - 2026-07-30
 

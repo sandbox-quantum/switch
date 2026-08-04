@@ -25,7 +25,8 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
     reparent_agent,
 )
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -117,7 +118,8 @@ class ProtocolService:
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
         collab_lifecycle: CollaborationBridgeLifecycleService,
-        event_queue: EventQueue,
+        event_buffer: EventBuffer,
+        connections: ConnectionRegistry,
         task_store: TaskStore,
         request_tracker: RequestTracker,
         resource_request_tracker: ResourceRequestTracker,
@@ -138,7 +140,12 @@ class ProtocolService:
         self.room_service = room_service
         self.client_lifecycle = client_lifecycle
         self.collab_lifecycle = collab_lifecycle
-        self.event_queue = event_queue
+        self.event_buffer = event_buffer
+        # Injected, not constructed: more than one ProtocolService exists in a
+        # running server, and a connection registered through one must be
+        # visible to all of them. Owning a registry here would split the live
+        # connection set in two.
+        self.connections = connections
         self.task_store = task_store
         self.request_tracker = request_tracker
         self.resource_request_tracker = resource_request_tracker
@@ -505,7 +512,7 @@ class ProtocolService:
         resolved_id = agent.id
         resolved_name = agent.name
         await self.client_lifecycle.stop(client_id)
-        self.event_queue.remove(resolved_id)
+        self.event_buffer.remove(resolved_id)
 
         await self._remove_bridge_identities(resolved_name)
 
@@ -578,7 +585,7 @@ class ProtocolService:
             # holds at most one role (unique agent_id), so the inverse map is
             # well-defined even for shared roles with several holders.
             live_holders = await self.room_role_store.live_holders_for_room(
-                session, room_id
+                session, room_id, self.connections.live_agent_ids()
             )
             roles = await self.room_role_store.list_roles(session, room_id)
             role_name_by_id = {r.id: r.name for r in roles}
@@ -623,7 +630,7 @@ class ProtocolService:
         room_id: str,
     ) -> dict[str, AgentStatus]:
         return await compute_agent_statuses(
-            session, agents, room_id, self.agent_session_store
+            session, agents, room_id, self.agent_session_store, self.connections
         )
 
     async def get_agent_statuses_by_name(
@@ -908,7 +915,7 @@ class ProtocolService:
                     )
                 role_by_id = {role.id: role.name for role in defined_roles}
                 holders = await self.room_role_store.live_holders_for_room(
-                    session, room_id
+                    session, room_id, self.connections.live_agent_ids()
                 )
                 for role_id, agent_ids in holders.items():
                     if role_by_id.get(role_id) not in roles:
@@ -1092,10 +1099,20 @@ class ProtocolService:
         stuck on the bridge. Each non-idle row is checked against the same
         liveness window `!status` uses; stale ones are collapsed to idle and a
         clear event is emitted.
+
+        Liveness is the same union every other reader takes (CHOO-1857): the
+        heartbeat rows for clients still polling, the live connections for
+        clients on the push transport. Checking only the rows made this sweep
+        clear the state of a perfectly live session on every pass — and because
+        the bridge deletes the "working on it…" message on idle and posts a new
+        one on the next update, the visible effect was the status message being
+        deleted and recreated on every refresh rather than edited in place.
         """
         async with self.session_factory() as session:
             rows = await self.agent_runtime_state_store.get_active(session)
         for row in rows:
+            if self.connections.has_session_in(row.agent_id, row.room_id):
+                continue
             async with self.session_factory() as session:
                 live = await self.agent_session_store.get_live_agent_ids(
                     session, [row.agent_id], row.room_id
@@ -1317,7 +1334,7 @@ class ProtocolService:
         async with self.session_factory() as session:
             await self.agent_session_store.touch_heartbeat(session, agent_id, None)
             await session.commit()
-        return await self.event_queue.poll(agent_id, timeout=timeout)
+        return await self.event_buffer.poll(agent_id, timeout=timeout)
 
     async def poll_notifications(
         self, agent_id: str, timeout: float = 10
@@ -1325,14 +1342,14 @@ class ProtocolService:
         """Long-poll the agent's notification stream across all its rooms.
 
         Returns only notifiable events (addressed messages, task events, and
-        room_join events the agent listens for) — see EventQueue. Unlike
+        room_join events the agent listens for) — see EventBuffer. Unlike
         `poll_events`, this does NOT touch any heartbeat: an auto_session
         connector maintains its "watching" presence via the dedicated
         `touch_watch_heartbeat` path, decoupled from this long-poll. Consuming
         this stream never drains the per-room queues, so live session pollers
         are unaffected.
         """
-        return await self.event_queue.poll_notifications(agent_id, timeout=timeout)
+        return await self.event_buffer.poll_notifications(agent_id, timeout=timeout)
 
     async def touch_watch_heartbeat(self, agent_id: str) -> None:
         """Refresh an auto_session connector's global "watching" heartbeat.
@@ -1358,7 +1375,7 @@ class ProtocolService:
         the long-poll cadence so the TTL can stay short.
         """
         await self.require_room_member(agent_id, room_id)
-        return await self.event_queue.poll_room(agent_id, room_id, timeout=timeout)
+        return await self.event_buffer.poll_room(agent_id, room_id, timeout=timeout)
 
     async def report_events(
         self,
@@ -1988,8 +2005,13 @@ class ProtocolService:
         could `assume_role` it right now: the caller holds no other live lease,
         and the role is either non-exclusive or not live-held by someone else.
         """
-        leases = await self.room_role_store.live_leases_for_room(session, room_id)
-        my_lease = await self.room_role_store.get_agent_live_lease(session, agent_id)
+        alive = self.connections.live_agent_ids()
+        leases = await self.room_role_store.live_leases_for_room(
+            session, room_id, alive
+        )
+        my_lease = await self.room_role_store.get_agent_live_lease(
+            session, agent_id, alive
+        )
         # Resolve holder agent ids → names.
         holder_names: dict[str, str] = {}
         for lease_list in leases.values():
@@ -2116,10 +2138,13 @@ class ProtocolService:
             role = await self.room_role_store.get_role(session, room_id, role_name)
             if role is None:
                 raise ValueError(f"Role '{role_name}' not found in this room")
-            prior = await self.room_role_store.get_agent_live_lease(session, agent_id)
+            alive = self.connections.live_agent_ids()
+            prior = await self.room_role_store.get_agent_live_lease(
+                session, agent_id, alive
+            )
             already_held = prior is not None and prior.role_id == role.id
             await self.room_role_store.acquire_lease(
-                session, role, agent_id, transport_session_id
+                session, role, agent_id, transport_session_id, alive
             )
             await session.commit()
             result = {"role": role.name, "instructions": role.instructions}
@@ -2136,12 +2161,14 @@ class ProtocolService:
         If a live lease is dropped, announce the release in its room.
         """
         async with self.session_factory() as session:
-            live = await self.room_role_store.get_agent_live_lease(session, agent_id)
+            live = await self.room_role_store.get_agent_live_lease(
+                session, agent_id, self.connections.live_agent_ids()
+            )
             released_role: str | None = None
             matrix_room_id: str | None = None
             if live is not None:
                 released_role = await self.room_role_store.agent_room_role(
-                    session, live.room_id, agent_id
+                    session, live.room_id, agent_id, self.connections.live_agent_ids()
                 )
                 room = await self.room_store.get(session, live.room_id)
                 matrix_room_id = room.matrix_room_id if room is not None else None
@@ -2491,6 +2518,7 @@ class ProtocolService:
                 user_store=self.user_store,
                 agent_session_store=self.agent_session_store,
                 room_role_store=self.room_role_store,
+                connections=self.connections,
             )
 
     async def update_agent_detail(
@@ -2545,6 +2573,7 @@ class ProtocolService:
                 user_store=self.user_store,
                 agent_session_store=self.agent_session_store,
                 room_role_store=self.room_role_store,
+                connections=self.connections,
             )
 
     async def get_room_detail(

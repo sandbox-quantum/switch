@@ -16,7 +16,12 @@ import {
   isValidProviderId,
   type AgentProviderId,
 } from '@shared/core/providers/agent-provider-registry';
-import type { SidebarGrouping, SidebarSnapshot, SidebarSessionSortBy } from '@shared/view-state';
+import type {
+  SidebarGrouping,
+  SidebarRoomSortBy,
+  SidebarSnapshot,
+  SidebarSessionSortBy,
+} from '@shared/view-state';
 
 const AGENT_CONNECTION_KINDS: readonly AgentConnectionKind[] = ['local', 'remote'];
 
@@ -50,12 +55,28 @@ export function roomViewGroupKey(roomKey: string): string {
   return `rv:${roomKey}`;
 }
 
+/**
+ * `collapsedGroupKeys` key for an agent listed under a room (room-focused view).
+ *
+ * Keyed by the pair, not by the agent: the same agent appears under every room
+ * it belongs to, and those rows are separate places in the tree. Keying on the
+ * agent alone made them one row rendered many times — collapse one and they all
+ * collapsed.
+ */
+export function roomAgentGroupKey(roomKey: string, agentId: string): string {
+  return `ra:${roomKey}|${agentId}`;
+}
+
 function parseSidebarGrouping(value: unknown): SidebarGrouping | undefined {
   return value === 'agent' || value === 'room' ? value : undefined;
 }
 
 function parseSidebarSessionSortBy(value: unknown): SidebarSessionSortBy | undefined {
   return value === 'created-at' || value === 'updated-at' ? value : undefined;
+}
+
+function parseSidebarRoomSortBy(value: unknown): SidebarRoomSortBy | undefined {
+  return value === 'name' || value === 'created-at' || value === 'updated-at' ? value : undefined;
 }
 
 export type SessionSortKind = 'created' | 'updated';
@@ -132,6 +153,16 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   filterProviderIds = observable.set<AgentProviderId>();
   filterHasLiveSession = false;
   /**
+   * Room-focused sort and filters. Separate from the agent ones because the two
+   * views filter and order different things: a room is a place, an agent is a
+   * worker, and a dimension that narrows one has no honest meaning in the other.
+   * Rooms default to name order, which is what they had before they were
+   * sortable at all.
+   */
+  roomSortBy: SidebarRoomSortBy = 'name';
+  filterBridgeTypes = observable.set<string>();
+  filterRoomHasLiveSession = false;
+  /**
    * Session whose row should scroll itself into view once it mounts. Set by the
    * deeplink handler (after revealing/expanding the tree) so the landed session
    * is centered in the sidebar; the row clears it after scrolling.
@@ -145,6 +176,7 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       collapsedGroupKeys: false,
       filterConnections: false,
       filterProviderIds: false,
+      filterBridgeTypes: false,
       sidebarRows: computed,
       pinnedSidebarEntries: computed,
       filteredLocations: computed,
@@ -234,13 +266,25 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     return false;
   }
 
-  /** Whether any filter dimension is currently narrowing the sidebar. */
+  /** Whether any agent filter is currently narrowing the agent list. Scopes the
+   * locations both trees read, so it applies whatever the grouping. */
   get hasActiveFilters(): boolean {
     return (
       this.filterConnections.size > 0 ||
       this.filterProviderIds.size > 0 ||
       this.filterHasLiveSession
     );
+  }
+
+  /** Whether any room filter is currently narrowing the room list. */
+  get hasActiveRoomFilters(): boolean {
+    return this.filterBridgeTypes.size > 0 || this.filterRoomHasLiveSession;
+  }
+
+  /** Whether the view on screen is being narrowed — what the filter button's
+   * "on" dot reflects, so it reports the filters you can actually see. */
+  get hasActiveFiltersInCurrentView(): boolean {
+    return this.grouping === 'room' ? this.hasActiveRoomFilters : this.hasActiveFilters;
   }
 
   /** A location passes when it satisfies every active filter dimension. */
@@ -394,6 +438,9 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       filterConnections: [...this.filterConnections],
       filterProviderIds: [...this.filterProviderIds],
       filterHasLiveSession: this.filterHasLiveSession,
+      roomSortBy: this.roomSortBy,
+      filterBridgeTypes: [...this.filterBridgeTypes],
+      filterRoomHasLiveSession: this.filterRoomHasLiveSession,
     };
   }
 
@@ -433,6 +480,14 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     }
     if (snapshot.filterHasLiveSession !== undefined) {
       this.filterHasLiveSession = snapshot.filterHasLiveSession;
+    }
+    const roomSortBy = parseSidebarRoomSortBy(snapshot.roomSortBy);
+    if (roomSortBy !== undefined) this.roomSortBy = roomSortBy;
+    if (snapshot.filterBridgeTypes !== undefined) {
+      this.filterBridgeTypes.replace(snapshot.filterBridgeTypes);
+    }
+    if (snapshot.filterRoomHasLiveSession !== undefined) {
+      this.filterRoomHasLiveSession = snapshot.filterRoomHasLiveSession;
     }
   }
 
@@ -477,7 +532,27 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     this.filterHasLiveSession = value;
   }
 
+  toggleFilterBridgeType(bridgeType: string): void {
+    if (this.filterBridgeTypes.has(bridgeType)) this.filterBridgeTypes.delete(bridgeType);
+    else this.filterBridgeTypes.add(bridgeType);
+  }
+
+  setFilterRoomHasLiveSession(value: boolean): void {
+    this.filterRoomHasLiveSession = value;
+  }
+
+  setRoomSortBy(sortBy: SidebarRoomSortBy): void {
+    this.roomSortBy = sortBy;
+  }
+
+  /** Clear the filters of the view on screen. The other view's stay put — they
+   * are not visible from here, so clearing them would be an unseen change. */
   clearFilters(): void {
+    if (this.grouping === 'room') {
+      this.filterBridgeTypes.clear();
+      this.filterRoomHasLiveSession = false;
+      return;
+    }
     this.filterConnections.clear();
     this.filterProviderIds.clear();
     this.filterHasLiveSession = false;

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 
 
@@ -57,6 +58,9 @@ def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> ProtocolServ
         return f"root-of-{thread_id}"
 
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.require_room_member = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
         get_by_agent_id=lambda agent_id: client

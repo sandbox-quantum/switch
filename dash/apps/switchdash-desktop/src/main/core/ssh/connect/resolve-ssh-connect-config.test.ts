@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
-import type { BaseAgent, ParsedKey, SignCallback } from 'ssh2';
-import { utils } from 'ssh2';
+import type { IdentityCallback, ParsedKey, SignCallback } from 'ssh2';
+import { BaseAgent, utils } from 'ssh2';
 import { describe, expect, it } from 'vitest';
 import type { SshConfig } from '@shared/core/ssh/ssh';
 import {
@@ -296,6 +296,44 @@ describe('resolveSshConnectConfig', () => {
         });
       })
     ).resolves.toBeInstanceOf(PassThrough);
+  });
+
+  it('builds an IdentitiesOnly agent ssh2 accepts when ForwardAgent is enabled', async () => {
+    const allowedKey = parseFixturePublicKey();
+    const result = await resolveSshConnectConfig(
+      {
+        kind: 'transient',
+        config: baseConfig({ sshConfigAlias: 'corp-dev', authType: 'agent' }),
+      },
+      deps({
+        readFile: async () =>
+          'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILI4wa2zRZoB26D015dsafYmu3jDCI7rh26bFXZrUiAp test-key',
+        env: { SSH_AUTH_SOCK: '/tmp/default-agent.sock' },
+        createAgent: () =>
+          ({
+            getIdentities: (callback: IdentityCallback) => callback(undefined, [allowedKey]),
+            sign: (_pubKey: unknown, _data: unknown, _options: unknown, callback?: SignCallback) =>
+              callback?.(undefined, Buffer.from('signature')),
+          }) as unknown as BaseAgent,
+        resolveSshConfig: async () => ({
+          hostname: 'dev.internal',
+          user: 'alice',
+          port: 22,
+          identityFile: ['~/.ssh/corp_ed25519'],
+          identityAgent: 'SSH_AUTH_SOCK',
+          identityAgentDisabled: false,
+          identitiesOnly: true,
+          proxyCommand: undefined,
+          proxyJump: undefined,
+          forwardAgent: true,
+        }),
+      })
+    );
+
+    expect(result.config.agentForward).toBe(true);
+    // ssh2 gates custom agents on `instanceof BaseAgent` and drops anything
+    // that only duck-types the interface, which breaks agent forwarding.
+    expect(result.config.agent).toBeInstanceOf(BaseAgent);
   });
 
   it('does not expose agent getStream when the wrapped agent does not support it', async () => {

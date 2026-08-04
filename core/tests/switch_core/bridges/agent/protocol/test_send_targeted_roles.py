@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import AgentStatus
 
@@ -30,7 +31,7 @@ class _FakeRoomRoleStore:
         return list(self._roles)
 
     async def live_holders_for_room(
-        self, _session: Any, _room_id: str
+        self, _session: Any, _room_id: str, _alive: Any = ()
     ) -> dict[str, list[str]]:
         return {k: list(v) for k, v in self._holders.items()}
 
@@ -57,6 +58,9 @@ def _build_service(
     sent_bodies: list[str] = []
 
     svc = object.__new__(ProtocolService)
+    # Presence unions the heartbeat rows with the live connections
+    # (CHOO-1857); an empty registry means "rows only".
+    svc.connections = ConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
     svc.room_role_store = _FakeRoomRoleStore(roles, holders)  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents)  # type: ignore[assignment]

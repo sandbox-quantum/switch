@@ -23,6 +23,7 @@ import {
   getRemoteSwitchSetupService,
   type RemoteSwitchSetupService,
 } from '@main/core/switch-setup/remote-switch-setup';
+import { GH_AUTH_STATUS_ARGS, parseGhAuthStatus } from '@shared/core/npm-registry';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { ConnectionState, SshHealthState } from '@shared/core/ssh/ssh';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -51,7 +52,23 @@ export type RemoteDependencyView = {
   ghAuth?: GhAuthStatus;
 };
 
-export type GhAuthStatus = { authenticated: boolean; account: string | null };
+export type GhAuthStatus = {
+  authenticated: boolean;
+  account: string | null;
+  /**
+   * Whether the token can read GitHub Packages.
+   *
+   * Authenticated is not sufficient: `gh auth login` requests `gist`,
+   * `read:org`, `repo` and `workflow`, and not `read:packages`. Sessions on
+   * this host fetch their MCP runtime from GitHub Packages, so without it they
+   * start with no tools and the registry's `403 … does not match expected
+   * scopes` is the only clue — reported nowhere near the host that caused it.
+   *
+   * A host set up before this was requested will be authenticated with this
+   * false; `gh auth refresh -h github.com -s read:packages` fixes it.
+   */
+  canReadPackages: boolean;
+};
 
 export type TestConnectionResult = { ok: true } | { ok: false; message: string };
 
@@ -69,25 +86,38 @@ function hostConnectionStatus(sshHost: string): HostConnectionStatus {
   };
 }
 
-/** Matches the account line of `gh auth status` across gh versions ("account NAME" / "as NAME"). */
-const GH_AUTH_ACCOUNT_RE = /Logged in to \S+ (?:account|as) (\S+)/;
-
 /**
- * Check whether `gh` is authenticated on a remote host via `gh auth status`.
- * Exit 0 means authenticated; a non-zero exit (which SshExecutionContext
- * throws on) means not logged in. A transport failure propagates — a dead
- * connection is not evidence of a missing login.
+ * Check whether `gh` is authenticated on a remote host.
+ *
+ * A non-zero exit (which SshExecutionContext throws on) means `gh` is missing
+ * or has no login at all. A transport failure propagates — a dead connection is
+ * not evidence of a missing login.
+ *
+ * `--json` exits zero even when the token is rejected, so an unusable
+ * credential arrives as a parsed `invalid` rather than as a throw, and is
+ * reported as not authenticated: a token the API refuses is no better than
+ * none, and saying "authenticated" of it sends the user looking elsewhere.
  */
 async function probeGhAuth(sshHost: string): Promise<GhAuthStatus> {
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const ctx = new SshExecutionContext(proxy);
   try {
-    const { stdout, stderr } = await ctx.exec('gh', ['auth', 'status']);
-    const account = GH_AUTH_ACCOUNT_RE.exec(`${stdout}\n${stderr}`)?.[1] ?? null;
-    return { authenticated: true, account };
+    const { stdout } = await ctx.exec('gh', GH_AUTH_STATUS_ARGS);
+    const state = parseGhAuthStatus(stdout);
+    switch (state.status) {
+      case 'ok':
+        return { authenticated: true, account: state.login, canReadPackages: true };
+      case 'missing-scope':
+        return { authenticated: true, account: state.login, canReadPackages: false };
+      case 'invalid':
+        return { authenticated: false, account: null, canReadPackages: false };
+      case 'unknown':
+        // The check did not apply — do not invent a fault the host may not have.
+        return { authenticated: true, account: null, canReadPackages: true };
+    }
   } catch (error) {
     if (isTransportFailure(error)) throw error;
-    return { authenticated: false, account: null };
+    return { authenticated: false, account: null, canReadPackages: false };
   }
 }
 
@@ -205,13 +235,31 @@ async function getHostSetup(sshHost: string): Promise<HostSetupStatus> {
  * can attach a live terminal (subscribe to output, send keystrokes) via the pty
  * RPC/events. gh prints a one-time code and a verification URL; the user opens the
  * URL in their own browser and enters the code. Returns the PTY session id.
+ *
+ * `read:packages` is requested explicitly because `gh auth login` does not ask
+ * for it — its defaults are `gist`, `read:org`, `repo` and `workflow`. Sessions
+ * on this host fetch their MCP runtime from GitHub Packages, and without that
+ * scope the registry refuses with
+ * `403 … token provided does not match expected scopes`, several layers below
+ * anything that mentions `gh`. Asking for it during the one interactive login
+ * the user already performs is the only point where it costs nothing; every
+ * other route ends in `gh auth refresh` on a box they thought was set up.
  */
 async function startGhAuth(sshHost: string): Promise<{ sessionId: string }> {
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const profile = await proxy.getRemoteShellProfile();
+  // Login when logged out, refresh when already logged in. `gh auth login` on
+  // an authenticated host stops to ask whether you meant to re-authenticate,
+  // which is a confusing thing to meet when all you needed was a scope; `gh
+  // auth refresh` adds it without disturbing the existing login. Both are the
+  // same device-code flow in this PTY, so the user sees no difference.
   const remoteCommand = buildRemoteShellCommand(
     profile,
-    'gh auth login --hostname github.com --git-protocol https --web'
+    'if gh auth status >/dev/null 2>&1; then ' +
+      'gh auth refresh --hostname github.com --scopes read:packages; ' +
+      'else ' +
+      'gh auth login --hostname github.com --git-protocol https --web --scopes read:packages; ' +
+      'fi'
   );
   const sessionId = `gh-auth:${crypto.randomUUID()}`;
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
@@ -51,7 +51,7 @@ def create_gateway_app(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
     connector_store: ServerConnectorStore,
-    event_queue: EventQueue,
+    event_buffer: EventBuffer,
     session_factory: object,
     user_store: UserStore,
     external_user_store: ExternalUserStore,
@@ -70,7 +70,7 @@ def create_gateway_app(
         collab_lifecycle=collab_lifecycle,
         connector_lifecycle=connector_lifecycle,
         connector_store=connector_store,
-        event_queue=event_queue,
+        event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
         external_user_store=external_user_store,

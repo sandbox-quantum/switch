@@ -63,7 +63,7 @@ def _fake_self(
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
         send_message=send_message,
-        _event_queue=SimpleNamespace(enqueue=lambda *a, **k: None),
+        _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: None),
     )
     # Exercise the real sender-tagging helper.
     ns._sender_handle = AgentClient._sender_handle.__get__(ns)

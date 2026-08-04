@@ -24,7 +24,8 @@ from switch_core.bridges.agent.commands import (
     _addressed_by_name_or_role,
     dispatch_command,
 )
-from switch_core.bridges.agent.protocol.event_queue import EventQueue
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
@@ -178,7 +179,7 @@ class AgentClient(ClientBase[ClientConfig]):
     def __init__(
         self,
         *,
-        event_queue: EventQueue,
+        event_buffer: EventBuffer,
         agent_store: AgentStore,
         room_store: RoomStore,
         bridge_store: CollaborationBridgeStore,
@@ -189,11 +190,12 @@ class AgentClient(ClientBase[ClientConfig]):
         external_user_store: ExternalUserStore,
         request_tracker: RequestTracker,
         resource_request_tracker: ResourceRequestTracker,
+        connections: ConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        self._event_queue = event_queue
+        self._event_buffer = event_buffer
         self._agent_store = agent_store
         self._room_store = room_store
         self._bridge_store = bridge_store
@@ -204,6 +206,7 @@ class AgentClient(ClientBase[ClientConfig]):
         self._external_user_store = external_user_store
         self._request_tracker = request_tracker
         self._resource_request_tracker = resource_request_tracker
+        self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
@@ -289,7 +292,7 @@ class AgentClient(ClientBase[ClientConfig]):
             listening = await self._room_store.get_receives_join_events(
                 session, meta.room_id, self.agent.id
             )
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -370,7 +373,7 @@ class AgentClient(ClientBase[ClientConfig]):
         )
 
         logger.debug("Enqueuing event %s", agent_event.model_dump_json(indent=2))
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             agent_event,
@@ -569,7 +572,7 @@ class AgentClient(ClientBase[ClientConfig]):
         )
 
         logger.debug("Enqueuing media event %s", agent_event.model_dump_json(indent=2))
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             agent_event,
@@ -597,7 +600,7 @@ class AgentClient(ClientBase[ClientConfig]):
         if handled:
             return
 
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -690,21 +693,40 @@ class AgentClient(ClientBase[ClientConfig]):
         # it will spin a session up to handle this — promise that rather than
         # the "elsewhere"/offline wording. With no watcher, fall through to the
         # generic offline reply below.
+        # A live connection that declared itself spawn-capable and covers this
+        # room WILL start a session, whatever the agent's configured model says.
+        # Keying the promise off the observed capability rather than the enum
+        # means a mis-set (or merely stale) connection_model can no longer
+        # produce "my connector isn't reporting in" while a watcher is sitting
+        # right there, connected, about to spawn.
+        if self._connections.can_spawn_for(self.agent.id, meta.room_id):
+            return _STARTING_SESSION_MESSAGE
+
         if connection_model == "auto_session":
             async with self.session_factory() as session:
                 watching = await self._agent_session_store.get_live_agent_ids(
                     session, [self.agent.id], None
                 )
-            if self.agent.id in watching:
+            if self.agent.id in watching or self._connections.is_live(self.agent.id):
                 return _STARTING_SESSION_MESSAGE
 
         async with self.session_factory() as session:
             room_ids = await self._agent_session_store.live_connected_rooms(
                 session, self.agent.id
             )
+            # A connection covering a room is a session in it, whether or not
+            # anything wrote an agent_sessions row for it.
+            room_ids = sorted(
+                set(room_ids)
+                | {
+                    room
+                    for conn in self._connections.for_agent(self.agent.id)
+                    for room in conn.rooms
+                }
+            )
             bound_here = await self._agent_session_store.has_room_binding(
                 session, self.agent.id, meta.room_id
-            )
+            ) or self._connections.has_session_in(self.agent.id, meta.room_id)
             names: list[str] = []
             holds_role_here = False
             other_room_ids = [rid for rid in room_ids if rid != meta.room_id]
@@ -716,7 +738,10 @@ class AgentClient(ClientBase[ClientConfig]):
                         names.append(name)
                 holds_role_here = (
                     await self._room_role_store.agent_room_role(
-                        session, meta.room_id, self.agent.id
+                        session,
+                        meta.room_id,
+                        self.agent.id,
+                        self._connections.live_agent_ids(),
                     )
                     is not None
                 )
@@ -795,6 +820,17 @@ class AgentClient(ClientBase[ClientConfig]):
         )
         if connection_model == "session_passive":
             return False
+        # Union of the two presence sources while both kinds of client exist
+        # (CHOO-1857 stage B): a client on the push transport keeps only a
+        # connection, one still polling keeps only the heartbeat row.
+        if connection_model == "always_on":
+            if self._connections.is_live(self.agent.id):
+                return True
+        elif self._connections.has_session_in(self.agent.id, room_id):
+            # A claimed room slot, not mere coverage: an `all`-scope watcher
+            # covering this room is not a session that can answer.
+            return True
+
         heartbeat_room = None if connection_model == "always_on" else room_id
         async with self.session_factory() as session:
             live = await self._agent_session_store.get_live_agent_ids(
@@ -815,7 +851,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -839,7 +875,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -861,7 +897,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -884,7 +920,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -907,7 +943,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        self._event_queue.enqueue(
+        self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
             AgentEvent(
@@ -1132,7 +1168,7 @@ class AgentClient(ClientBase[ClientConfig]):
             return False
         async with self.session_factory() as session:
             role_name = await self._room_role_store.agent_room_role(
-                session, room_id, self.agent.id
+                session, room_id, self.agent.id, self._connections.live_agent_ids()
             )
         if not role_name:
             return False

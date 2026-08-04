@@ -27,4 +27,4 @@ export const RELEASE_REPO_NAME = 'switch';
 // artifact. Bump it in lockstep with the bundled compose
 // (src/main/core/managed-switch-server/resources/standalone-docker-compose.pinned.yml)
 // so a switchdash release pins a known-good switch-core stack.
-export const COMPATIBLE_SWITCH_VERSION = '0.8.1';
+export const COMPATIBLE_SWITCH_VERSION = '0.11.0';

@@ -14,6 +14,7 @@ import { createTmuxRun } from '@main/core/switch-rooms/tmux-injection-sink';
 import { type AgentLaunchSpec } from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
 import { NotificationWatcher, type WatcherLogger } from './notification-watcher';
+import { npmRegistryAuthEnv } from './npm-registry-auth';
 import { InProcessSessionSpawner } from './session-spawner';
 import { createSidecarLogger, requireEnv } from './sidecar-logger';
 import {
@@ -272,10 +273,16 @@ async function main(): Promise<void> {
     hookToken: server.getToken(),
     endpointFile,
     runtime,
+    openConnectionFor: (sessionId, providerId, roomId, startCursor) =>
+      runtime.ensureForSession(sessionId, providerId, roomId, startCursor),
     switchEnv: {
       SWITCH_API_ENDPOINT: creds.apiEndpoint,
       SWITCH_API_TOKEN: creds.token,
       SWITCH_AGENT_ID: creds.agentId,
+      // Without this a spawned session's `npx` asks npmjs.com for a package
+      // that only exists on GitHub Packages, and reports a 404 that says
+      // nothing about registries or credentials.
+      ...(await npmRegistryAuthEnv(repoDir, log)),
     },
     isPaneLive,
     log,
@@ -326,7 +333,14 @@ async function main(): Promise<void> {
   // Hand the per-room spawn guard off to the live-room check the moment a session
   // connects — so a session torn down shortly after connecting does not leave the
   // room gated until INFLIGHT_TTL_MS (mirrors the local AutoSessionWatcher).
-  runtime.onRoomConnected((roomId) => watcher?.clearRoom(roomId));
+  // Both spawn guards end here. The launched entry in particular must go even
+  // when the session connects to a DIFFERENT room than it was started for:
+  // keyed by the room it was launched for, it would otherwise keep vouching for
+  // a room the session has left, and pings there would never spawn again.
+  runtime.onRoomConnected((roomId, sessionId) => {
+    watcher?.clearRoom(roomId);
+    spawner?.drop(sessionId);
+  });
   watcher.start();
 
   const refreshLiveness = async (): Promise<void> => {

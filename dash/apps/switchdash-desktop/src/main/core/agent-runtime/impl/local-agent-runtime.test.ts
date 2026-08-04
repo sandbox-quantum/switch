@@ -44,7 +44,7 @@ vi.mock('@main/core/agent-hooks/dir-trust-service', () => ({
 // electron-compiled.
 vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
   switchRoomService: {
-    restorePoller: vi.fn(() => Promise.resolve()),
+    restoreConnection: vi.fn(() => Promise.resolve()),
     clearSession: vi.fn(),
   },
 }));
@@ -52,11 +52,20 @@ vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
 vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
   switchNotificationPoller: {
     disconnect: vi.fn(),
+    // Sessions in these tests are not Switch agents, so no connection is
+    // opened and no SWITCH_CONNECTION_ID reaches the spawn.
+    ensureForSession: vi.fn(async () => null),
   },
 }));
 
 vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
   readAgentSwitchEnvFromFs: vi.fn(async () => ({})),
+}));
+
+// Reads the app's userData path and shells out to `gh`; neither exists here,
+// and these tests are about the spawn, not the registry.
+vi.mock('@main/core/switch-rooms/npm-registry-auth', () => ({
+  npmRegistryAuthEnv: vi.fn(async () => ({})),
 }));
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
