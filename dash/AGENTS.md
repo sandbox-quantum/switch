@@ -442,8 +442,19 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, `CODEX_SANDBOX_MODE`,
+  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`,
+  `SWITCHDASH_FAKE_UPDATE`, `CODEX_SANDBOX_MODE`,
   and `CODEX_APPROVAL_POLICY`.
+- App updates in dev: the update service is inert outside packaged builds, so the
+  "update available" UI cannot be exercised by `pnpm run dev` alone. Set
+  `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —
+  `available`, `download-error`, `check-error`, `auth-required`, or `up-to-date`.
+  An unrecognised value fails at startup rather than silently doing nothing.
+  `SWITCHDASH_FAKE_UPDATE_VERSION` overrides the offered version (default: the
+  current minor, bumped) and `SWITCHDASH_FAKE_UPDATE_MS` the simulated download
+  duration. Nothing is downloaded or installed, and the harness cannot activate in
+  a packaged build. Example:
+  `SWITCHDASH_FAKE_UPDATE=available pnpm run dev`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

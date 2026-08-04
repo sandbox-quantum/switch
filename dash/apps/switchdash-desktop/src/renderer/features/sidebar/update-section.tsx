@@ -109,7 +109,9 @@ export const UpdateSection = observer(function UpdateSection() {
         </span>
       </PopoverTrigger>
 
-      <PopoverContent side="top" align="end" sideOffset={8} className="w-72 gap-3">
+      {/* Kept narrower than the sidebar so it can align to the indicator
+          instead of being flipped away from it to avoid overflow. */}
+      <PopoverContent side="top" align="end" sideOffset={8} className="w-64 gap-3">
         <PopoverHeader>
           <PopoverTitle className="flex items-center gap-2">
             {presentation.busy && <Loader2 className="size-3.5 animate-spin" />}
@@ -140,26 +142,25 @@ export const UpdateSection = observer(function UpdateSection() {
           <Progress value={presentation.progressPercent} />
         )}
 
-        <div className="flex items-center justify-between gap-2">
-          {presentation.actionLabel ? (
-            <Button size="xs" variant="default" onClick={runAction}>
+        {/* Stacked rather than side by side: the panel is narrower than the
+            sidebar, and the two labels do not fit on one row. */}
+        <div className="flex flex-col gap-2">
+          {presentation.actionLabel && (
+            <Button size="xs" variant="default" className="w-full" onClick={runAction}>
               {ActionIcon && <ActionIcon className="size-3.5" />}
               {presentation.actionLabel}
             </Button>
-          ) : (
-            <span />
           )}
 
           {update.latestVersion && (
-            <Button
-              size="xs"
-              variant="ghost"
-              className="text-foreground-passive hover:text-foreground"
+            <button
+              type="button"
               onClick={() => void update.openReleasePage()}
+              className="inline-flex cursor-pointer items-center justify-center gap-1 text-xs text-foreground-passive underline-offset-2 hover:text-foreground hover:underline"
             >
               Release notes
               <ExternalLink className="size-3" />
-            </Button>
+            </button>
           )}
         </div>
       </PopoverContent>
