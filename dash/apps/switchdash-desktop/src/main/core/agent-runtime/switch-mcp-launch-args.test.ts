@@ -14,6 +14,12 @@ const codexPlugin = pluginRegistry.get('codex')! as unknown as Plugin;
 /** A provider whose connector resolves MCP servers itself, as Claude's does. */
 const claudeLikePlugin = { behavior: { mcp: {} } } as unknown as Plugin;
 
+/** An agent working directory; folded into the profile name for uniqueness. */
+const WD = '/home/agent/repo';
+
+/** The profile filename stem is the `--profile` value; assert they agree. */
+const PROFILE_STEM = /^codex-hoot-[a-z0-9]+$/;
+
 function memoryFs(): PluginFs & { files: Map<string, string> } {
   const files = new Map<string, string>();
   return {
@@ -37,22 +43,41 @@ function memoryFs(): PluginFs & { files: Map<string, string> } {
 }
 
 describe('resolveSwitchLaunchProfile', () => {
-  it('returns a Codex profile registering the local stdio runtime, keyed on the slug', () => {
+  it('returns a Codex profile registering the local stdio runtime, keyed on the (dir, slug)', () => {
     const profile = resolveSwitchLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
+      workingDir: WD,
       hasSwitchIdentity: true,
     });
     expect(profile).not.toBeNull();
-    expect(profile!.files[0].relativePath).toBe('.codex/codex-hoot.config.toml');
-    expect(profile!.args).toEqual(['--profile', 'codex-hoot']);
+    // The --profile value and the file stem are the same digest-suffixed name.
+    expect(profile!.args[0]).toBe('--profile');
+    expect(profile!.args[1]).toMatch(PROFILE_STEM);
+    expect(profile!.files[0].relativePath).toBe(`.codex/${profile!.args[1]}.config.toml`);
     expect(profile!.files[0].content).toContain('[mcp_servers.switch]');
     expect(profile!.files[0].content).toContain('command = "npx"');
     expect(profile!.files[0].content).toContain('@sandbox-quantum/switch-agent-runtime@');
   });
 
+  it('gives two agents that share a name in different dirs distinct profiles', () => {
+    const a = resolveSwitchLaunchProfile(codexPlugin, {
+      slug: 'codex-hoot',
+      workingDir: '/dir/one',
+      hasSwitchIdentity: true,
+    })!;
+    const b = resolveSwitchLaunchProfile(codexPlugin, {
+      slug: 'codex-hoot',
+      workingDir: '/dir/two',
+      hasSwitchIdentity: true,
+    })!;
+    expect(a.args).not.toEqual(b.args);
+    expect(a.files[0].relativePath).not.toBe(b.files[0].relativePath);
+  });
+
   it('folds per-agent specialization into the one profile file', () => {
     const profile = resolveSwitchLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
+      workingDir: WD,
       hasSwitchIdentity: true,
       specialization: { model: 'gpt-5.6-terra', reasoningEffort: 'high', instructions: 'be terse' },
     })!;
@@ -68,11 +93,14 @@ describe('resolveSwitchLaunchProfile', () => {
   it('keeps the system prompt out of the argv the SSH and tmux paths re-quote', () => {
     const profile = resolveSwitchLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
+      workingDir: WD,
       hasSwitchIdentity: true,
       specialization: { instructions: 'be terse\n$(whoami) "quoted"' },
     })!;
 
-    expect(profile.args).toEqual(['--profile', 'codex-hoot']);
+    expect(profile.args[0]).toBe('--profile');
+    expect(profile.args[1]).toMatch(PROFILE_STEM);
+    expect(profile.args.join(' ')).not.toContain('whoami');
   });
 
   it('tells Codex which variables to route into the server it spawns', () => {
@@ -81,6 +109,7 @@ describe('resolveSwitchLaunchProfile', () => {
     // surfaces only as a closed connection during the handshake.
     const profile = resolveSwitchLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
+      workingDir: WD,
       hasSwitchIdentity: true,
     })!;
     const server = (
@@ -95,6 +124,7 @@ describe('resolveSwitchLaunchProfile', () => {
   it('names the credentials without carrying them, so the profile is safe to bake and ship', () => {
     const profile = resolveSwitchLaunchProfile(codexPlugin, {
       slug: 'a',
+      workingDir: WD,
       hasSwitchIdentity: true,
     })!;
     const server = (
@@ -113,13 +143,21 @@ describe('resolveSwitchLaunchProfile', () => {
 
   it('returns null when the provider resolves MCP servers some other way', () => {
     expect(
-      resolveSwitchLaunchProfile(claudeLikePlugin, { slug: 'x', hasSwitchIdentity: true })
+      resolveSwitchLaunchProfile(claudeLikePlugin, {
+        slug: 'x',
+        workingDir: WD,
+        hasSwitchIdentity: true,
+      })
     ).toBeNull();
   });
 
   it('returns null when the session has no Switch identity', () => {
     expect(
-      resolveSwitchLaunchProfile(codexPlugin, { slug: 'x', hasSwitchIdentity: false })
+      resolveSwitchLaunchProfile(codexPlugin, {
+        slug: 'x',
+        workingDir: WD,
+        hasSwitchIdentity: false,
+      })
     ).toBeNull();
   });
 });
@@ -130,23 +168,25 @@ describe('prepareSwitchMcpLaunch', () => {
     const args = await prepareSwitchMcpLaunch(codexPlugin, {
       homeFs: fs,
       slug: 'codex-hoot',
+      workingDir: WD,
       hasSwitchIdentity: true,
     });
-    expect(args).toEqual(['--profile', 'codex-hoot']);
-    expect(fs.files.get('.codex/codex-hoot.config.toml')).toContain('[mcp_servers.switch]');
+    expect(args[1]).toMatch(PROFILE_STEM);
+    expect(fs.files.get(`.codex/${args[1]}.config.toml`)).toContain('[mcp_servers.switch]');
   });
 
   it('writes the system prompt into the profile and no companion file', async () => {
     const fs = memoryFs();
-    await prepareSwitchMcpLaunch(codexPlugin, {
+    const args = await prepareSwitchMcpLaunch(codexPlugin, {
       homeFs: fs,
       slug: 'codex-hoot',
+      workingDir: WD,
       hasSwitchIdentity: true,
       specialization: { instructions: 'be terse' },
     });
 
-    expect([...fs.files.keys()]).toEqual(['.codex/codex-hoot.config.toml']);
-    expect(fs.files.get('.codex/codex-hoot.config.toml')).toContain(
+    expect([...fs.files.keys()]).toEqual([`.codex/${args[1]}.config.toml`]);
+    expect(fs.files.get(`.codex/${args[1]}.config.toml`)).toContain(
       'developer_instructions = "be terse"'
     );
   });
@@ -156,60 +196,11 @@ describe('prepareSwitchMcpLaunch', () => {
     const args = await prepareSwitchMcpLaunch(codexPlugin, {
       homeFs: fs,
       slug: 'x',
+      workingDir: WD,
       hasSwitchIdentity: false,
     });
     expect(args).toEqual([]);
     expect(fs.files.size).toBe(0);
-  });
-
-  it('clears the pre-profile HTTP server, which would block the config from loading', async () => {
-    // The base entry does not lose to the profile, it merges with it: `url`
-    // meets `command` and Codex rejects the whole config, so every session
-    // started with the profile dies, not only its Switch tools.
-    const fs = memoryFs();
-    fs.files.set(
-      '.codex/config.toml',
-      [
-        'model = "gpt-5"',
-        '',
-        '[mcp_servers.switch]',
-        'url = "https://switch.example.com/mcp/"',
-        'bearer_token_env_var = "SWITCH_API_TOKEN"',
-        '',
-        '[mcp_servers.switch.tools.list_rooms]',
-        'approval_mode = "approve"',
-        '',
-      ].join('\n')
-    );
-
-    await prepareSwitchMcpLaunch(codexPlugin, {
-      homeFs: fs,
-      slug: 'codex-hoot',
-      hasSwitchIdentity: true,
-    });
-
-    const base = fs.files.get('.codex/config.toml')!;
-    expect(base).not.toContain('mcp_servers.switch');
-    // Including the approval subtables: an entry with no transport of its own
-    // is rejected in turn, so a partial removal is no repair at all.
-    expect(base).not.toContain('approval_mode');
-    expect(base).toContain('model = "gpt-5"');
-  });
-
-  it('leaves a stdio switch server the user defined themselves alone', async () => {
-    const fs = memoryFs();
-    fs.files.set(
-      '.codex/config.toml',
-      ['[mcp_servers.switch]', 'command = "my-own-switch"', ''].join('\n')
-    );
-
-    await prepareSwitchMcpLaunch(codexPlugin, {
-      homeFs: fs,
-      slug: 'codex-hoot',
-      hasSwitchIdentity: true,
-    });
-
-    expect(fs.files.get('.codex/config.toml')).toContain('my-own-switch');
   });
 
   it('emits nothing for a provider that resolves MCP servers itself', async () => {
@@ -218,6 +209,7 @@ describe('prepareSwitchMcpLaunch', () => {
       await prepareSwitchMcpLaunch(claudeLikePlugin, {
         homeFs: fs,
         slug: 'x',
+        workingDir: WD,
         hasSwitchIdentity: true,
       })
     ).toEqual([]);

@@ -246,7 +246,12 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     hasSwitchIdentity: boolean,
     specialization: SwitchLaunchSpecialization | undefined
   ): Promise<string[]> {
-    const profile = resolveSwitchLaunchProfile(plugin, { slug, hasSwitchIdentity, specialization });
+    const profile = resolveSwitchLaunchProfile(plugin, {
+      slug,
+      workingDir: this.sessionPath,
+      hasSwitchIdentity,
+      specialization,
+    });
     if (!profile) return [];
 
     const homeFs = createRemoteHomePluginFs(this.ctx);

@@ -8,7 +8,7 @@ import {
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
 import { buildCodexHookConfig, CODEX_HOOK_TRUST_FLAG } from './hooks';
 import { icon } from './icon';
-import { codexLaunchProfile } from './profile';
+import { codexLaunchProfile, codexProfilePaths } from './profile';
 
 export const plugin = definePlugin(
   {
@@ -106,5 +106,6 @@ export const provider = registerPluginBehavior(plugin, {
     // the local Switch runtime itself: a per-agent profile in CODEX_HOME loaded
     // with `--profile <slug>`.
     launchProfile: codexLaunchProfile,
+    launchProfilePaths: codexProfilePaths,
   },
 });

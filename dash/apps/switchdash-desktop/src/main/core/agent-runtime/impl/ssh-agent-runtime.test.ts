@@ -348,14 +348,20 @@ describe('SshAgentRuntime', () => {
       }),
     }).start(session());
 
+    // Profile name is digest-suffixed on (dir, slug); the argv and the written
+    // path must carry the same name.
     expect(buildCommandMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({ agentArgs: ['--profile', 'codex-hoot'] })
+      expect.objectContaining({
+        agentArgs: ['--profile', expect.stringMatching(/^codex-hoot-[a-z0-9]+$/)],
+      })
     );
     // The profile is written to the VM home over ctx.exec (base64), not the
     // repo-dir filesystem.
     expect(ctx.exec).toHaveBeenCalledWith(
       'sh',
-      expect.arrayContaining(['.codex/codex-hoot.config.toml'])
+      expect.arrayContaining([
+        expect.stringMatching(/^\.codex\/codex-hoot-[a-z0-9]+\.config\.toml$/),
+      ])
     );
 
     // Every credential the profile tells Codex to forward must be on the remote

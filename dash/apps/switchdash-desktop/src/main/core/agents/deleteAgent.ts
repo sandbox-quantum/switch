@@ -95,6 +95,23 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
+    // A provider that registers the Switch server itself (Codex) leaves a
+    // per-agent launch profile under the user's home; remove it too. Best-effort
+    // on a remote agent, whose home is not mounted here (the file lives on the VM).
+    const mcp = getPlugin(agent.providerId).behavior.mcp;
+    for (const path of mcp?.launchProfilePaths?.({
+      slug: agent.name ?? agent.id,
+      workingDir: location.dir,
+    }) ?? []) {
+      await ctx.homeFs.delete(path).catch((error) => {
+        log.warn('deleteAgent: failed to remove the per-agent launch profile', {
+          agentId: agent.id,
+          name: agent.name,
+          path,
+          error: String(error),
+        });
+      });
+    }
     await removeSwitchCredentials(agent.providerId, ctx.fs);
   } finally {
     ctx.close();

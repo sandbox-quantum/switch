@@ -68,3 +68,10 @@ runtime borrows that connection rather than opening a second one: the
 session's `connect_to_room` therefore claims the room on the connection
 switchdash is reading, which is how switchdash learns which room the session
 is in — no tool-response scraping, and no per-session room-tracking hook.
+
+One caveat on remote hosts: room tracking depends on that connection, which
+switchdash opens only for a session it can keep attached — i.e. a tmux session.
+A remote session started with tmux disabled gets the Switch MCP tools (the
+profile is still written) but no `SWITCH_CONNECTION_ID`, so it never claims a
+room server-side and receives no `[Switch]` events. Run remote Codex agents
+with tmux (the default) for room participation.

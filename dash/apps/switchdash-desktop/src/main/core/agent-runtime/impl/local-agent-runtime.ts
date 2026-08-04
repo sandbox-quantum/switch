@@ -183,6 +183,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
+        workingDir: this.sessionPath,
         hasSwitchIdentity: !!identityVars.SWITCH_API_ENDPOINT,
         specialization: toSwitchSpecialization(agentRecord?.providerConfig),
       });

@@ -82,6 +82,7 @@ export async function generateAgentLaunchSpec(params: {
   // the server from a bundled config (Claude).
   const switchProfile = resolveSwitchLaunchProfile(plugin, {
     slug: credsSlug,
+    workingDir: remoteRepoDir,
     hasSwitchIdentity: true,
     specialization,
   });

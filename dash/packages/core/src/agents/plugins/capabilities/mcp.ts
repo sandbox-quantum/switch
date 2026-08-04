@@ -84,9 +84,19 @@ export type IMcpBehavior = {
   launchProfile?(
     params: {
       slug: string;
+      /** The agent's working directory, mixed into the profile name so two agents
+       * that share a name in different directories get distinct profiles. */
+      workingDir: string;
       switchServer: SwitchMcpLaunchServer | null;
     } & SwitchLaunchSpecialization
   ): SwitchLaunchProfile | null;
+  /**
+   * Home-relative paths the launch profile occupies, so the agent's teardown
+   * (delete/rename) can remove them. Pure and identity-shaped — same `(slug,
+   * workingDir)` as {@link launchProfile} — so a caller can compute the paths for
+   * a name it is about to drop. Undefined for a provider that writes no profile.
+   */
+  launchProfilePaths?(params: { slug: string; workingDir: string }): string[];
 };
 
 export type McpServerRegistration = {

@@ -133,18 +133,26 @@ describe('buildCodexProfileToml', () => {
   });
 });
 
+const WD = '/home/agent/repo';
+
 describe('codexLaunchProfile', () => {
-  it('writes the profile under ~/.codex keyed on the slug and loads with --profile', () => {
-    const profile = codexLaunchProfile({ slug: 'codex-hoot', switchServer: runtime });
+  it('writes the profile under ~/.codex keyed on the (dir, slug) and loads with --profile', () => {
+    const profile = codexLaunchProfile({
+      slug: 'codex-hoot',
+      workingDir: WD,
+      switchServer: runtime,
+    });
     expect(profile).not.toBeNull();
-    expect(profile!.args).toEqual(['--profile', 'codex-hoot']);
+    expect(profile!.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
     expect(profile!.files).toEqual([
       {
-        relativePath: codexProfileRelativePath('codex-hoot'),
+        relativePath: codexProfileRelativePath('codex-hoot', WD),
         content: expect.stringContaining('[mcp_servers.switch]'),
       },
     ]);
-    expect(codexProfileRelativePath('codex-hoot')).toBe('.codex/codex-hoot.config.toml');
+    expect(codexProfileRelativePath('codex-hoot', WD)).toBe(
+      `.codex/${codexProfileName('codex-hoot', WD)}.config.toml`
+    );
   });
 
   it('keeps a system prompt inside the one profile file, off the command line', () => {
@@ -154,27 +162,33 @@ describe('codexLaunchProfile', () => {
     const instructions = 'be terse\n$(whoami) and "quotes"';
     const profile = codexLaunchProfile({
       slug: 'codex-hoot',
+      workingDir: WD,
       switchServer: runtime,
       instructions,
     })!;
 
     expect(profile.files).toHaveLength(1);
-    expect(profile.files[0].relativePath).toBe(codexProfileRelativePath('codex-hoot'));
+    expect(profile.files[0].relativePath).toBe(codexProfileRelativePath('codex-hoot', WD));
     const parsed = parseTOML(profile.files[0].content) as Record<string, unknown>;
     expect(parsed.developer_instructions).toBe(instructions);
-    expect(profile.args).toEqual(['--profile', 'codex-hoot']);
+    expect(profile.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
     expect(profile.args.join(' ')).not.toContain('whoami');
   });
 
   it('returns a profile for specialization even without a Switch identity', () => {
-    const profile = codexLaunchProfile({ slug: 'a', switchServer: null, model: 'gpt-5.6-terra' });
+    const profile = codexLaunchProfile({
+      slug: 'a',
+      workingDir: WD,
+      switchServer: null,
+      model: 'gpt-5.6-terra',
+    });
     expect(profile).not.toBeNull();
     expect(profile!.files[0].content).toContain('model = "gpt-5.6-terra"');
     expect(profile!.files[0].content).not.toContain('mcp_servers');
   });
 
   it('returns null when there is nothing to register or specialize', () => {
-    expect(codexLaunchProfile({ slug: 'a', switchServer: null })).toBeNull();
+    expect(codexLaunchProfile({ slug: 'a', workingDir: WD, switchServer: null })).toBeNull();
   });
 
   it('exposes the stable reasoning-effort levels', () => {
@@ -184,24 +198,34 @@ describe('codexLaunchProfile', () => {
 
 describe('codexProfileName', () => {
   it('rewrites a dotted Switch agent name onto the alphabet Codex accepts', () => {
-    const name = codexProfileName('codex.yak.cmcdermott');
+    const name = codexProfileName('codex.yak.cmcdermott', WD);
     expect(name).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(name).toContain('codex-yak-cmcdermott');
   });
 
-  it('leaves an already-valid slug untouched', () => {
-    expect(codexProfileName('codex-hoot_1')).toBe('codex-hoot_1');
+  it('gives two agents that share a name in different dirs distinct profiles', () => {
+    // Agent names are unique only within a location, so the working dir must
+    // discriminate — otherwise the second launch overwrites the first's profile.
+    expect(codexProfileName('hoot', '/dir/one')).not.toBe(codexProfileName('hoot', '/dir/two'));
+  });
+
+  it('is stable for the same (slug, dir)', () => {
+    expect(codexProfileName('hoot', WD)).toBe(codexProfileName('hoot', WD));
   });
 
   it('keeps slugs that differ only in rewritten characters on distinct profiles', () => {
-    expect(codexProfileName('a.b')).not.toBe(codexProfileName('a-b'));
-    expect(codexProfileName('a.b')).toBe(codexProfileName('a.b'));
+    expect(codexProfileName('a.b', WD)).not.toBe(codexProfileName('a-b', WD));
   });
 
-  it('drives the profile file and the --profile argv from the same rewritten name', () => {
+  it('drives the profile file and the --profile argv from the same name', () => {
     const slug = 'codex.yak.cmcdermott';
-    const profile = codexLaunchProfile({ slug, switchServer: runtime, instructions: 'be terse' })!;
-    const name = codexProfileName(slug);
+    const profile = codexLaunchProfile({
+      slug,
+      workingDir: WD,
+      switchServer: runtime,
+      instructions: 'be terse',
+    })!;
+    const name = codexProfileName(slug, WD);
 
     expect(profile.args).toEqual(['--profile', name]);
     expect(profile.files.map((file) => file.relativePath)).toEqual([`.codex/${name}.config.toml`]);

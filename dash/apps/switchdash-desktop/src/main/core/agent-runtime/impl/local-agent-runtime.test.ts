@@ -312,8 +312,12 @@ describe('local agent runtime respawn state', () => {
     await localProvider().start(session());
 
     expect(writtenCodexProfile()).toContain('[mcp_servers.switch]');
+    // Profile name is digest-suffixed on (dir, slug) so same-named agents in
+    // different dirs don't collide.
     expect(buildCommandMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({ agentArgs: ['--profile', 'codex-hoot'] })
+      expect.objectContaining({
+        agentArgs: ['--profile', expect.stringMatching(/^codex-hoot-[a-z0-9]+$/)],
+      })
     );
   });
 

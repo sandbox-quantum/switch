@@ -87,6 +87,15 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
 
       if (creds !== null) await ctx.fs.delete(agentSettingsRelativePath(from));
       if (behavior && definition) await behavior.removeLocal(ctx.fs, from);
+
+      // A launch profile (Codex) is keyed on the agent name, so the rename
+      // orphans the old-named one; it is rewritten under the new name on the next
+      // launch, so just drop the stale file. Best-effort on remote (home unmounted).
+      const mcp = getPlugin(previous.providerId).behavior.mcp;
+      for (const path of mcp?.launchProfilePaths?.({ slug: from, workingDir: location.dir }) ??
+        []) {
+        await ctx.homeFs.delete(path);
+      }
     } finally {
       ctx.close();
     }

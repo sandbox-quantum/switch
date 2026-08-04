@@ -145,8 +145,15 @@ describe('generateAgentLaunchSpec', () => {
     expect(spec.launchFiles).toHaveLength(1);
     expect(parsed.developer_instructions).toBe(instructions);
     expect(spec.launchFiles![0].homeRelativePath).not.toContain('instructions.md');
+    // The profile name is digest-suffixed on (dir, slug); the file stem and the
+    // --profile value must agree.
+    const profileName = spec.launchFiles![0].homeRelativePath.replace(
+      /^\.codex\/(.+)\.config\.toml$/,
+      '$1'
+    );
+    expect(profileName).toMatch(/^hoot-[a-z0-9]+$/);
     expect(buildCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ agentArgs: ['--profile', 'hoot'] })
+      expect.objectContaining({ agentArgs: ['--profile', profileName] })
     );
   });
 
