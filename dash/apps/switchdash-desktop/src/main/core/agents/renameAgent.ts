@@ -15,6 +15,7 @@ import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
+import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 import { mapAgentRowToAgent } from './utils';
 
@@ -87,18 +88,15 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
 
       if (creds !== null) await ctx.fs.delete(agentSettingsRelativePath(from));
       if (behavior && definition) await behavior.removeLocal(ctx.fs, from);
-
-      // A launch profile (Codex) is keyed on the agent name, so the rename
-      // orphans the old-named one; it is rewritten under the new name on the next
-      // launch, so just drop the stale file. Best-effort on remote (home unmounted).
-      const mcp = getPlugin(previous.providerId).behavior.mcp;
-      for (const path of mcp?.launchProfilePaths?.({ slug: from, workingDir: location.dir }) ??
-        []) {
-        await ctx.homeFs.delete(path);
-      }
     } finally {
       ctx.close();
     }
+
+    // A launch profile (Codex) is keyed on the agent name, so the rename orphans
+    // the old-named one; it is rewritten under the new name on the next launch,
+    // so just drop the stale file. Reached through its own home filesystem (the
+    // repo-dir workspace fs above has no writable home for a remote agent).
+    await removeAgentLaunchProfile(previous, location, from);
   } catch (error) {
     log.warn('renameAgent: failed to move the agent files to the new name', {
       agentId: previous.id,

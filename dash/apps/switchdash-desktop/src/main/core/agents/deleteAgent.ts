@@ -21,6 +21,7 @@ import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
+import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { removeSwitchCredentials } from './remove-switch-settings';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
@@ -95,24 +96,11 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
-    // A provider that registers the Switch server itself (Codex) leaves a
-    // per-agent launch profile under the user's home; remove it too. Best-effort
-    // on a remote agent, whose home is not mounted here (the file lives on the VM).
-    const mcp = getPlugin(agent.providerId).behavior.mcp;
-    for (const path of mcp?.launchProfilePaths?.({
-      slug: agent.name ?? agent.id,
-      workingDir: location.dir,
-    }) ?? []) {
-      await ctx.homeFs.delete(path).catch((error) => {
-        log.warn('deleteAgent: failed to remove the per-agent launch profile', {
-          agentId: agent.id,
-          name: agent.name,
-          path,
-          error: String(error),
-        });
-      });
-    }
     await removeSwitchCredentials(agent.providerId, ctx.fs);
+    // A provider that registers the Switch server itself (Codex) leaves a
+    // per-agent launch profile under the user's home — a different scope than
+    // ctx.fs, reached through its own home filesystem (local or remote).
+    await removeAgentLaunchProfile(agent, location, agent.name ?? agent.id);
   } finally {
     ctx.close();
   }
