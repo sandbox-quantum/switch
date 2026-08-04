@@ -385,19 +385,7 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, `CODEX_SANDBOX_MODE`,
-  and `CODEX_APPROVAL_POLICY`.
-  - `CODEX_SANDBOX_MODE` (`read-only` | `workspace-write` | `danger-full-access`)
-    and `CODEX_APPROVAL_POLICY` (`untrusted` | `on-request` | `never`) override the
-    `-c sandbox_mode=…` / `-c approval_policy=…` flags switchdash passes to Codex,
-    defaulting to `danger-full-access` / `never` for headless auto-sessions. An
-    unrecognized value is a hard error (it will not silently fall back to full
-    access); the value is resolved when an **auto-approving Codex session
-    launches**, not at app startup, so a bad value surfaces as a session-start
-    failure — and only for the sessions that would actually use the flag. Note
-    that on the resume/restore paths a spawn failure is logged rather than shown,
-    so a typo there reads as "the session did not come back". See
-    `packages/plugins/src/agents/impl/codex/auto-approve.ts`.
+  `SWITCHDASH_DISABLE_PTY`, and `SWITCHDASH_REGISTER_DEEPLINK`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

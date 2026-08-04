@@ -1,5 +1,5 @@
 import type { CommandContext } from '@switchdash/core/agents/plugins';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { provider } from './index';
 
 function build(ctx: CommandContext) {
@@ -14,8 +14,8 @@ const base: CommandContext = {
   model: '',
 };
 
-// The default (unset) sandbox/approval flag, split the way buildStandardCommand
-// splits it on whitespace.
+// The auto-approve flag, split the way buildStandardCommand splits it on
+// whitespace.
 const AUTO_FLAGS = [
   '-c',
   'approval_policy="never"',
@@ -25,16 +25,6 @@ const AUTO_FLAGS = [
 ];
 
 describe('codex buildCommand', () => {
-  // Neutralize any ambient CODEX_SANDBOX_MODE / CODEX_APPROVAL_POLICY on the dev
-  // machine so the auto-approve flag is deterministic (blank → defaults).
-  beforeEach(() => {
-    vi.stubEnv('CODEX_SANDBOX_MODE', '');
-    vi.stubEnv('CODEX_APPROVAL_POLICY', '');
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it('starts a fresh session with auto-approve flags then the positional prompt', () => {
     const cmd = build({ ...base, autoApprove: true, initialPrompt: 'Fix the bug' });
 
@@ -75,20 +65,6 @@ describe('codex buildCommand', () => {
     // Regression guard: the multi-token fallback must be two argv elements,
     // not a single "resume --last" string.
     expect(cmd.args.slice(0, 2)).toEqual(['resume', '--last']);
-  });
-
-  it('rejects an invalid sandbox mode when the session actually auto-approves', () => {
-    vi.stubEnv('CODEX_SANDBOX_MODE', 'full');
-    expect(() => build({ ...base, autoApprove: true, initialPrompt: 'hi' })).toThrow(
-      /Invalid CODEX_SANDBOX_MODE="full"/
-    );
-  });
-
-  it('does not resolve the sandbox env for a session that never auto-approves', () => {
-    // The flag is unused on this path, so a typo in the env must not stop the
-    // session from launching at all.
-    vi.stubEnv('CODEX_SANDBOX_MODE', 'full');
-    expect(build({ ...base, initialPrompt: 'hi' }).args).toEqual(['hi']);
   });
 
   it('deduplicates the bypass-approvals-and-sandbox singleton flag', () => {
