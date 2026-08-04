@@ -1,8 +1,8 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import type * as HomeView from '@renderer/app/home-view';
-import type * as ThemeProvider from '@renderer/lib/providers/theme-provider';
+import { afterEach, describe, expect, it } from 'vitest';
+import { HomeMainPanel } from '@renderer/app/home-view';
+import { ThemeContext } from '@renderer/lib/providers/theme-provider';
 
 /**
  * The home view is the one screen that registers no `TitlebarSlot`, so it has
@@ -13,28 +13,12 @@ import type * as ThemeProvider from '@renderer/lib/providers/theme-provider';
  * Electron is the only place a drag region actually does anything, so these
  * assertions are on the markup rather than on behaviour: they exist to catch a
  * restyle or refactor silently dropping the utility classes again.
+ *
+ * The imports above must stay static; `setup-electron-bridge.ts` exists so they
+ * can be, and explains what importing this module at runtime does to React.
  */
 
-let ThemeContext: typeof ThemeProvider.ThemeContext;
-let HomeMainPanel: typeof HomeView.HomeMainPanel;
 let container: HTMLDivElement | null = null;
-
-beforeAll(async () => {
-  // `lib/ipc` reads the preload bridge at module scope and the home view pulls
-  // it in transitively, so the bridge has to exist before the import runs.
-  Object.defineProperty(window, 'electronAPI', {
-    configurable: true,
-    value: {
-      invoke: async () => undefined,
-      eventSend: () => {},
-      eventOn: () => () => {},
-    },
-  });
-  ({ HomeMainPanel } = await import('@renderer/app/home-view'));
-  // The real ThemeProvider resolves the theme over RPC; the panel only reads
-  // `effectiveTheme` to pick logo colours, so feed the context directly.
-  ({ ThemeContext } = await import('@renderer/lib/providers/theme-provider'));
-});
 
 async function renderHome(): Promise<HTMLDivElement> {
   container = document.createElement('div');
