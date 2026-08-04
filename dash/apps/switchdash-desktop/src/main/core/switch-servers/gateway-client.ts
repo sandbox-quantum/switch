@@ -1,3 +1,4 @@
+import type { KnownAgentType } from '@main/core/agents/known-agent-type';
 import type {
   AddressingPolicy,
   RemoteAgentRoom,
@@ -215,7 +216,9 @@ export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's
- * `RegisterKnownAgentRequest.options` for the `claude-code` known-agent type. */
+ * `RegisterKnownAgentRequest.options`. The gateway validates these against the
+ * options schema of the `agent_type` being registered and ignores keys that type
+ * does not declare (Codex has no channel, so it drops `channels_enabled`). */
 export type RegisterKnownAgentOptions = {
   channels_enabled: boolean;
   repo_dir?: string;
@@ -234,8 +237,8 @@ export type RegisteredAgent = {
 };
 
 /**
- * Register a new Claude Code agent on `server`, owned by the signed-in user
- * (session-authed `POST /gateway/agents/register`). Returns the new agent id
+ * Register a new known agent of `agentType` on `server`, owned by the signed-in
+ * user (session-authed `POST /gateway/agents/register`). Returns the new agent id
  * and its API key. A 409 (name already taken) and 400 (invalid name) surface
  * as `GatewayError` with the matching `status` so the caller can react.
  */
@@ -248,7 +251,7 @@ export async function registerKnownAgent(
     /** Gateway known-agent type. Required — derive it from the provider via
      * `knownAgentTypeForProvider` rather than letting a call site fall back to
      * Claude Code's shape by omission (CHOO-1436). */
-    agentType: string;
+    agentType: KnownAgentType;
   }
 ): Promise<RegisteredAgent> {
   const res = await gatewayFetch(server, '/agents/register', {

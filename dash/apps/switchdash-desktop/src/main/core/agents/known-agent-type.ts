@@ -2,15 +2,18 @@ import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
- * Gateway known-agent types that exist server-side (`KNOWN_AGENTS` in
- * `switch_core/gateway/known_agents.py`). Only these two are real.
+ * A gateway known-agent type. The union is closed to the keys of `KNOWN_AGENTS`
+ * in `switch_core/gateway/known_agents.py` — a value outside it is rejected at
+ * registration, so it is worth catching at the call site instead.
  */
-const KNOWN_AGENT_TYPE_BY_PROVIDER: Partial<Record<AgentProviderId, string>> = {
+export type KnownAgentType = 'claude-code' | 'codex';
+
+const KNOWN_AGENT_TYPE_BY_PROVIDER: Partial<Record<AgentProviderId, KnownAgentType>> = {
   claude: 'claude-code',
   codex: 'codex',
 };
 
-const FALLBACK_KNOWN_AGENT_TYPE = 'claude-code';
+const FALLBACK_KNOWN_AGENT_TYPE: KnownAgentType = 'claude-code';
 
 /**
  * Map a switchdash provider to the gateway known-agent type it registers as.
@@ -22,7 +25,7 @@ const FALLBACK_KNOWN_AGENT_TYPE = 'claude-code';
  * mismatch is real (an operator onboarding a Gemini agent by hand is told to run
  * `claude`), so it is warned about rather than passed over silently.
  */
-export function knownAgentTypeForProvider(providerId: AgentProviderId): string {
+export function knownAgentTypeForProvider(providerId: AgentProviderId): KnownAgentType {
   const known = KNOWN_AGENT_TYPE_BY_PROVIDER[providerId];
   if (known) return known;
 

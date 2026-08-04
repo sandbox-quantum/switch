@@ -15,8 +15,8 @@ const base: CommandContext = {
 };
 
 // Emitted for every session: Codex runs no hook it has no persisted trust
-// entry for, and switchdash's hooks are how it tracks rooms and captures the
-// rollout id.
+// entry for, and switchdash's hooks are how it reads the session's status and
+// captures the rollout id.
 const TRUST_FLAG = '--dangerously-bypass-hook-trust';
 
 // The approval flag, split the way buildStandardCommand splits it on whitespace.
