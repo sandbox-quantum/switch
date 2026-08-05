@@ -42,6 +42,7 @@ import {
 } from '@renderer/lib/ui/select';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import { getProvider } from '@shared/core/providers/agent-provider-registry';
 import type { ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { AgentAdvancedConfig } from './agent-advanced-config';
@@ -50,7 +51,11 @@ import { CodexAgentConfig } from './codex-agent-config';
 import { ConfigureAgentPanel } from './configure-agent-panel';
 import { PickExistingPanel } from './content';
 import { useConfigureAgentForm, usePickMode } from './modes';
-import { OnboardExistingPanel } from './onboard-existing-panel';
+import {
+  type AdoptKind,
+  OnboardExistingPanel,
+  type OnboardableAgent,
+} from './onboard-existing-panel';
 
 // switchdash adds a Switch *agent* by pointing at a local directory that the
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
@@ -214,12 +219,55 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       }),
     enabled: !!pickState.providerId && discoverDir.trim().length > 0,
   });
+  // Agents already configured in the directory, found by their provider-neutral
+  // Switch credentials rather than by any provider's definition format. This is
+  // what an agent someone else set up on a shared host looks like, and the only
+  // way a provider with no definition concept (Codex) is visible at all
+  // (CHOO-1937). Provider-agnostic, so it does not wait on the type picker.
+  const configuredQuery = useQuery({
+    queryKey: ['discoverConfiguredAgents', discoverSshHost ?? 'local', discoverDir],
+    queryFn: () =>
+      rpc.agents.discoverConfiguredAgents({ sshHost: discoverSshHost, dir: discoverDir }),
+    enabled: discoverDir.trim().length > 0,
+  });
+
   // Definitions that can join Switch and switchdash hasn't already onboarded — the
   // ones worth offering. Already-onboarded ones (on THIS client) are excluded so
   // the modal never offers to re-add a row it already has; ones registered on the
   // gateway by another client are still offered (imported, not re-minted). CHOO-1440.
-  const onboardableAgents = (discoverQuery.data ?? []).filter((a) => a.eligible && !a.alreadyAgent);
+  const definitionAgents = (discoverQuery.data ?? []).filter((a) => a.eligible && !a.alreadyAgent);
+  const definitionNames = new Set(definitionAgents.map((a) => a.name));
+  // Credentials-only agents: those the definition scan does not already cover.
+  // A definition WITH credentials is left to the onboard path, which reuses its
+  // identity too — listing it twice would offer one agent as two rows.
+  const attachableAgents = (configuredQuery.data ?? []).filter(
+    (a) => !a.alreadyAgent && !definitionNames.has(a.name)
+  );
+  const onboardableAgents: OnboardableAgent[] = [
+    ...definitionAgents.map((a) => ({
+      name: a.name,
+      description: a.description,
+      kind: (a.registered ? 'import' : 'adopt') as AdoptKind,
+      providerLabel: null,
+    })),
+    ...attachableAgents.map((a) => {
+      const providerId = a.providerId ?? pickState.providerId ?? null;
+      return {
+        name: a.name,
+        description: null,
+        kind: 'attach' as AdoptKind,
+        providerLabel: providerId ? (getProvider(providerId)?.name ?? providerId) : null,
+      };
+    }),
+  ];
   const hasOnboardable = onboardableAgents.length > 0;
+  /** Attachable rows keyed by name, with the provider resolved for submission. */
+  const attachByName = new Map(
+    attachableAgents.flatMap((a) => {
+      const providerId = a.providerId ?? pickState.providerId ?? null;
+      return providerId ? [[a.name, providerId] as const] : [];
+    })
+  );
 
   // Branch the flow when a directory has onboardable definitions: `createMode`
   // false shows the multi-select adopt list; true reveals the create form. When
@@ -227,7 +275,14 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // are the checked definitions to onboard (default: all).
   const [createMode, setCreateMode] = useState(false);
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
-  const onboardableKey = onboardableAgents.map((a) => a.name).join('|');
+  // Default-select only what can actually be submitted: an attach row whose
+  // provider is unknown is disabled until a type is picked, and pre-checking it
+  // would just block the button with no visible cause. Picking a type unblocks
+  // the row, which changes this key and folds it into the selection.
+  const onboardableKey = onboardableAgents
+    .filter((a) => !(a.kind === 'attach' && a.providerLabel === null))
+    .map((a) => a.name)
+    .join('|');
   useEffect(() => {
     setSelectedNames(new Set(onboardableKey ? onboardableKey.split('|') : []));
     setCreateMode(false);
@@ -249,7 +304,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // form flashes up first and then flips to the onboard list when discovery lands
   // (CHOO-1440).
   const isDiscovering =
-    !!pickState.providerId && discoverDir.trim().length > 0 && discoverQuery.isPending;
+    (!!pickState.providerId && discoverDir.trim().length > 0 && discoverQuery.isPending) ||
+    (discoverDir.trim().length > 0 && configuredQuery.isPending);
   const isChecking =
     (isRemoteRun
       ? shouldDetectRemote && remoteAgentQuery.isPending
@@ -507,20 +563,51 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const handleConfigure = () => createNewAgent(configureForm);
   const handleConfigureRemote = () => createNewAgent(remoteConfigureForm);
 
-  /** Onboard (or adopt) the selected agents already defined in the picked
-   * directory — importing those already registered on the gateway and minting a
-   * fresh identity for plain provider definitions. */
+  /**
+   * Bring in the selected agents. Definitions go through the onboard path
+   * (importing a registered identity, minting one for a plain definition);
+   * credentials-only agents go through the attach path, which adopts the
+   * identity already on disk and writes nothing to the directory (CHOO-1937).
+   */
   const handleOnboard = async () => {
-    if (!pickState.serverId || !pickState.providerId || selectedNames.size === 0) return;
+    if (!pickState.serverId || selectedNames.size === 0) return;
+    const attachSelected = [...selectedNames].flatMap((name) => {
+      const providerId = attachByName.get(name);
+      return providerId ? [{ name, providerId }] : [];
+    });
+    const onboardSelected = [...selectedNames].filter((name) => !attachByName.has(name));
+    if (onboardSelected.length > 0 && !pickState.providerId) return;
     setSubmitState('creating');
     setCloseGuard(true);
     try {
+      const locationIds: string[] = [];
+      if (attachSelected.length > 0) {
+        const attached = await rpc.agents.attachConfiguredAgents({
+          sshHost: discoverSshHost,
+          dir: discoverDir,
+          serverId: pickState.serverId,
+          agents: attachSelected,
+        });
+        if (!attached.success) {
+          reportCreationError(attached.error);
+          setCloseGuard(false);
+          setSubmitState('idle');
+          return;
+        }
+        locationIds.push(...attached.data.map((a) => a.locationId));
+      }
+      if (onboardSelected.length === 0) {
+        await agentsStore.load();
+        await getLocationManagerStore().reload();
+        finishWith(locationIds[0]!);
+        return;
+      }
       const result = await rpc.agents.onboardLocationAgents({
         sshHost: discoverSshHost,
         dir: discoverDir,
-        providerId: pickState.providerId,
+        providerId: pickState.providerId!,
         serverId: pickState.serverId,
-        names: [...selectedNames],
+        names: onboardSelected,
       });
       if (!result.success) {
         reportCreationError(result.error);
@@ -545,8 +632,15 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     }
   };
 
+  // A definition still needs the picked agent type to run under; an attach row
+  // carries its own (inferred from disk, or the picked one as a fallback).
+  const selectionNeedsProviderPick = [...selectedNames].some((name) => !attachByName.has(name));
   const canOnboard =
-    hasOnboardable && selectedNames.size > 0 && !!pickState.serverId && submitState === 'idle';
+    hasOnboardable &&
+    selectedNames.size > 0 &&
+    !!pickState.serverId &&
+    (!selectionNeedsProviderPick || !!pickState.providerId) &&
+    submitState === 'idle';
   const submitLabel = submitState === 'creating' ? 'Adding...' : 'Add Agent';
 
   return (
@@ -572,9 +666,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
               onClick={() => void handleOnboard()}
               disabled={!canOnboard}
             >
-              {submitState === 'creating'
-                ? 'Onboarding...'
-                : `Onboard ${selectedNames.size} selected`}
+              {submitState === 'creating' ? 'Adding...' : `Add ${selectedNames.size} selected`}
             </ConfirmButton>
           ) : isMissingRemoteAgent ? (
             <ConfirmButton
