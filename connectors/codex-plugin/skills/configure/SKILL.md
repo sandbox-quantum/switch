@@ -42,8 +42,18 @@ reason this skill exists:
   inject anything.
 
 Standalone there is no injector, so this skill writes **literal values**, into
-the user's base config (`~/.codex/config.toml`), under the server name
-`switch` — the name the room-workflow skill assumes.
+the user's base config, under the server name `switch` — the name the
+room-workflow skill assumes.
+
+> **Resolve the Codex home once, and use it everywhere.** Codex reads its
+> config from `$CODEX_HOME`, falling back to `~/.codex`. Every path in this
+> skill must honour that override, or you will inspect one directory while
+> `codex mcp add` writes to another — reporting on a config that is not the
+> one in play. Set it first and use it in every command below:
+>
+> ```bash
+> CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+> ```
 
 > **Never write an entry that has `env` but no transport.** A
 > `[mcp_servers.switch.env]` table with no `command`/`url` of its own makes
@@ -136,7 +146,7 @@ Interpret the result before doing anything:
 - **`transport: stdio`** with a `command` of `npx …switch-agent-runtime` —
   already configured by this skill. Report the endpoint and agent id (from
   `codex mcp list`, which masks env values, or by reading
-  `~/.codex/config.toml`) and ask the user whether to keep it or re-register.
+  `$CODEX_DIR/config.toml`) and ask the user whether to keep it or re-register.
   **Default to keeping it.** Re-registering mints a fresh agent and orphans
   the old one in Switch, along with its rooms, history and task ledger.
 - **`transport: streamable_http`** (an entry with a `url`) — a leftover from
@@ -152,7 +162,7 @@ Interpret the result before doing anything:
 Also check whether switchdash has been used on this machine:
 
 ```bash
-ls ~/.codex/*.config.toml 2>/dev/null
+find "$CODEX_DIR" -maxdepth 1 -name '*.config.toml' 2>/dev/null
 ```
 
 Any file listed is a switchdash-written per-agent profile. **If there are
@@ -331,7 +341,7 @@ the user the HTTP status and response body, then stop.
 
 ## Step 7 — Register the MCP server
 
-Use the `codex mcp add` CLI rather than editing `~/.codex/config.toml` by
+Use the `codex mcp add` CLI rather than editing `$CODEX_DIR/config.toml` by
 hand. It writes a complete, valid entry (transport included), and re-running
 it cleanly **replaces** any existing server of the same name rather than
 leaving a half-merged one behind.
@@ -341,7 +351,7 @@ installed plugin rather than hardcoding one** — the runtime is versioned
 independently and a number copied into this skill would go stale silently:
 
 ```bash
-PLUGIN_MCP=$(find ~/.codex/plugins/cache -path '*switch-connector-codex*' -name .mcp.json 2>/dev/null | sort | tail -1)
+PLUGIN_MCP=$(find "$CODEX_DIR/plugins/cache" -path '*switch-connector-codex*' -name .mcp.json 2>/dev/null | sort | tail -1)
 RUNTIME=$(jq -r '.mcpServers.switch.args[-1]' "$PLUGIN_MCP" 2>/dev/null)
 ```
 
@@ -402,7 +412,8 @@ present without printing the token.
 Report to the user:
 
 - The agent name and ID registered with Switch.
-- That the `switch` MCP server is now in `~/.codex/config.toml`, and that the
+- That the `switch` MCP server is now in `$CODEX_DIR/config.toml` (name the
+  resolved path, not the literal variable), and that the
   **API token is stored there in plaintext** — it is a credential at rest, in
   a file they may sync or back up. Say this plainly rather than leaving them
   to find it.
@@ -465,11 +476,11 @@ So:
 - If the user relies on switchdash for their Codex agents, they do **not**
   need this skill, and running it will interfere. Say so.
 - If they want both, the standalone identity must be kept out of base config —
-  which means a profile of its own (`~/.codex/<name>.config.toml`, launched
+  which means a profile of its own (`$CODEX_DIR/<name>.config.toml`, launched
   with `codex --profile <name>`), written with literal `env` values rather
   than `env_vars`. That is outside this skill's flow, and note the run command
   Switch posts will not include `--profile`, so the user has to add it.
-- If `ls ~/.codex/*.config.toml` found profiles in Step 1, surface this before
+- If the Step 1 scan of `$CODEX_DIR` found profiles, surface this before
   writing anything, and let the user decide.
 
 ## Errors and safety
@@ -481,7 +492,7 @@ So:
   likely the server isn't running or the URL is wrong.
 - Never write the registration token to disk.
 - Never write the API token anywhere other than the `codex mcp add` entry.
-- Never hand-edit `~/.codex/config.toml` to add credentials. An entry without
+- Never hand-edit `$CODEX_DIR/config.toml` to add credentials. An entry without
   its own transport breaks every Codex session on the machine.
 
 ### Troubleshooting
