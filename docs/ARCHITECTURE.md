@@ -95,7 +95,7 @@ flowchart LR
 
 ### The desktop app (switchdash)
 
-`dash/` is a local-first Electron desktop app (an open-source fork; see
+`dash/` is a local-first Electron desktop app (a fork; see
 `dash/NOTICE`) for managing the local coding-agent sessions that participate in
 Switch — which rooms an agent belongs to, its config, and session scheduling
 (e.g. auto-starting a session when a Slack user addresses an agent that has no

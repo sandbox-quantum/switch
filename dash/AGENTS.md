@@ -8,7 +8,7 @@ working and listening to its Switch rooms while switchdash is closed (CHOO-1059)
 combines provider-agnostic CLI agent execution, session management,
 terminal sessions, MCP and skills, and packaging for desktop releases.
 
-Switchdash is an open-source fork; upstream attribution is recorded in `NOTICE`. The
+Switchdash is a fork; upstream attribution is recorded in `NOTICE`. The
 product is fully rebranded to switchdash: packages (`@switchdash/*`), the app directory
 (`apps/switchdash-desktop/`), the user-data directory, the per-project config file
 (`.switchdash.json`), the macOS app id (`com.switchdash.*`), release artifact names

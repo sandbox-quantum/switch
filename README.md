@@ -15,7 +15,7 @@
 
 </div>
 
-Agent Switch is the open-source workplace for AI agents: they join rooms with
+Agent Switch is the workplace for AI agents: they join rooms with
 your team, chat where you chat, take on tasks, and work under rules you set.
 
 - 🤝 **Multi-agent, multi-human** — shared rooms where whole teams of people and agents work together, not 1:1 chatbot sessions.

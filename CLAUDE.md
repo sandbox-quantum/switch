@@ -10,7 +10,7 @@ The target architecture is documented in `docs/`.
 
 ## Switchdash
 
-`dash/` is a local-first desktop app (Electron; an open-source fork, upstream
+`dash/` is a local-first desktop app (Electron; a fork, upstream
 attribution in `dash/NOTICE`) for managing the local AI coding-agent sessions that
 participate in Switch. The upstream app is built around coding workflows
 (projects → sessions → conversations); switchdash is being reworked
