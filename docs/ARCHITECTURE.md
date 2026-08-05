@@ -33,14 +33,13 @@ rooms, and to bridge them out to external platforms.
 
 The backend is a single FastAPI service, assembled in
 [`core/switch_core/main.py`](../core/switch_core/main.py). The Agent Bridge app is
-the root ASGI app; the MCP server, health check, collaboration bridge, and
-gateway are mounted onto it:
+the root ASGI app; the MCP server, health check, and gateway are mounted onto it:
 
 - `POST/GET /agents/...` — Agent Bridge HTTP API
 - `/mcp` — MCP server (agent tool surface)
 - `/health` — health check
-- `/collab` — collaboration bridge admin API (bridge CRUD/onboarding)
-- `/gateway` — gateway management API (backs the operator dashboard)
+- `/gateway` — gateway management API (backs the operator dashboard); includes
+  the admin-gated collaboration-bridge admin API (`/gateway/collaborations`)
 
 ```mermaid
 flowchart LR
@@ -180,8 +179,8 @@ sequenceDiagram
   AC-->>AG: append AgentEvent (pushed down the agent's SSE stream)
 ```
 
-Inbound messages do **not** arrive through the `/collab` HTTP app (that app only
-does bridge CRUD). Each adapter owns its transport:
+Inbound messages do **not** arrive through the `/gateway/collaborations` admin
+API (that only does bridge CRUD). Each adapter owns its transport:
 Slack (Socket Mode WebSocket), Mattermost (WebSocket), and Discord (Gateway
 WebSocket) hold **authenticated outbound connections**; Teams is the exception —
 it self-hosts an HTTP listener (default port 3978) for Bot Framework activities
@@ -275,13 +274,14 @@ Everything ingress-facing, and where to find it:
 | Agent event stream | `/agents/{id}/events` (SSE) | Bearer | `bridges/agent/protocol/stream.py`, `protocol/connections.py` |
 | MCP server | `/mcp` (HTTP, FastMCP) | Bearer | `bridges/agent/mcp/server.py` |
 | Health | `/health` | public | `main.py` |
-| Collaboration admin | `/collab/bridges` | (bridge CRUD) | `bridges/collaboration/api.py` |
+| Collaboration admin | `/gateway/collaborations` | cookie JWT + admin | `gateway/collaborations.py` |
 | Gateway API | `/gateway/*` | cookie JWT (`switch_auth`) | `gateway/app.py`, `gateway/auth.py` |
 | Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
 
 Auth-bypass path prefixes for the Bearer middleware are enumerated in
 `bridges/agent/auth.py` (`PUBLIC_PATH_PREFIXES`): `/health`, `/.well-known`,
-`/collab`, `/gateway` (the gateway uses its own cookie-based auth).
+`/oauth`, `/gateway` (the gateway uses its own cookie-based auth), and
+`/deeplink`.
 
 ---
 

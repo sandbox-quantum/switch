@@ -55,4 +55,14 @@ spec:
                 secretKeyRef:
                   name: {{ include "switch.secretName" . }}
                   key: MATTERMOST_USER_PASSWORD
+            - name: GATEWAY_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "switch.secretName" . }}
+                  key: GATEWAY_ADMIN_EMAIL
+            - name: GATEWAY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "switch.secretName" . }}
+                  key: GATEWAY_ADMIN_PASSWORD
 {{- end }}

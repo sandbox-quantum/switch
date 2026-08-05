@@ -92,7 +92,7 @@ async def test_remove_detaches_dependent_rooms(
 ) -> None:
     """Removing a bridge that still has dependent rooms must not FK-violate.
 
-    Regression for the DELETE /collab/bridges 500: rooms.bridge_id references
+    Regression for the DELETE /gateway/collaborations 500: rooms.bridge_id references
     collaboration_bridges.id with no ON DELETE rule, so deleting the bridge
     while rooms point at it raised a raw FK error. remove() now detaches the
     rooms (non-destructive) before deleting the bridge.

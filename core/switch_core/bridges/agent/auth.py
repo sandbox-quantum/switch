@@ -25,7 +25,6 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/health",
     "/.well-known",
     "/oauth",
-    "/collab",
     "/gateway",
     # Public switchdash:// deeplink HTTP redirect — followed by whoever clicks
     # the "Open in SwitchDash" link in an external channel, so no bearer token.

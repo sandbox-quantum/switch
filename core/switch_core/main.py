@@ -30,7 +30,6 @@ from switch_core.bridges.agent.server_connectors.opencode.connector import (
     OpenCodeConnectionConfig,
     OpenCodeConnector,
 )
-from switch_core.bridges.collaboration.app import create_collaboration_bridge_app
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -340,12 +339,6 @@ async def run() -> None:
         config=config,
         connections=connections,
     )
-    collab_bridge_app = create_collaboration_bridge_app(
-        bridge_store=bridge_store,
-        collab_lifecycle=collab_lifecycle,
-        session_factory=session_factory,
-    )
-
     # ── Server-side connector lifecycle ─────────────────────────────────────
     connector_lifecycle = ServerSideConnectorLifecycleService(
         connector_store=connector_store,
@@ -389,12 +382,11 @@ async def run() -> None:
         "discord", DiscordAdapter, DiscordConnectionConfig
     )
 
-    # Health check and collab bridge mounted on the agent bridge app
+    # Health check mounted on the agent bridge app
     @agent_bridge_app.get("/health")
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    agent_bridge_app.mount("/collab", collab_bridge_app)
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────

@@ -431,6 +431,10 @@ class BridgeCreateRequest(BaseModel):
     bridge_type: str
     display_name: str
     connection_config: dict[str, object]
+    # Nominate this bridge as the one new rooms land on when none is named.
+    # Set by the headless standalone bootstrap so a fresh deployment bridges
+    # rooms out of the box.
+    set_as_default: bool = False
 
 
 class ExternalUserSummary(BaseModel):

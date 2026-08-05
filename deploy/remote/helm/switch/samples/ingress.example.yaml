@@ -10,8 +10,8 @@
 #   switch.example.com -> your hostname
 #   letsencrypt-prod    -> your cert-manager ClusterIssuer (or drop TLS entirely)
 #
-# Routing mirrors the managed Ingress: the agent/MCP surface and bridge webhooks
-# go to switch-core; everything else (the gateway SPA, which proxies /gateway to
+# Routing mirrors the managed Ingress: the agent/MCP surface goes to
+# switch-core; everything else (the gateway SPA, which proxies /gateway to
 # switch-core) goes to the gateway.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -44,9 +44,6 @@ spec:
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /.well-known
-            pathType: Prefix
-            backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          - path: /collab
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
           - path: /health

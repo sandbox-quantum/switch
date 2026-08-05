@@ -56,6 +56,8 @@ async def list_bridge_types(
 @router.post("")
 async def create_bridge(
     req: BridgeCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
@@ -75,6 +77,40 @@ async def create_bridge(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    is_default = bridge.is_default
+    if req.set_as_default:
+        await bridge_store.set_default(session, bridge.id)
+        await session.commit()
+        is_default = True
+
+    return BridgeDetail(
+        bridge_id=bridge.id,
+        bridge_type=bridge.type,
+        display_name=bridge.display_name,
+        status=bridge.status,
+        agent_greetings_enabled=bridge.agent_greetings_enabled,
+        is_default=is_default,
+        room_count=0,
+        created_at=str(bridge.created_at),
+    )
+
+
+@router.post("/{bridge_id}/default")
+async def set_default_bridge(
+    bridge_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    _user: Annotated[User, Depends(require_admin)],
+) -> BridgeDetail:
+    """Nominate a bridge as the instance default, demoting the previous one."""
+    try:
+        bridge = await bridge_store.set_default(session, bridge_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await session.commit()
+
+    rooms = await room_store.get_by_bridge(session, bridge_id)
     return BridgeDetail(
         bridge_id=bridge.id,
         bridge_type=bridge.type,
@@ -82,7 +118,7 @@ async def create_bridge(
         status=bridge.status,
         agent_greetings_enabled=bridge.agent_greetings_enabled,
         is_default=bridge.is_default,
-        room_count=0,
+        room_count=len(rooms),
         created_at=str(bridge.created_at),
     )
 

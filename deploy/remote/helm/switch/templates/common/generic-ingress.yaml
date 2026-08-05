@@ -3,9 +3,9 @@
 {{- $svcGateway := printf "%s-gateway" (include "switch.fullname" .) }}
 # Generic Ingress for the Switch web surface (ingress.mode=managed).
 #
-# One host, path-routed. The agent/MCP surface and bridge webhooks go straight
-# to switch-core; everything else (the gateway SPA, which itself proxies
-# /gateway to switch-core) goes to the gateway. Bring your own ingress
+# One host, path-routed. The agent/MCP surface goes straight to switch-core;
+# everything else (the gateway SPA, which itself proxies /gateway to
+# switch-core) goes to the gateway. Bring your own ingress
 # controller: set ingress.className, ingress.host and, for HTTPS, ingress.tls.
 #
 # ingress.mode=existing renders nothing — see samples/ingress.example.yaml for

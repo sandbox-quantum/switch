@@ -39,14 +39,12 @@ ingress:
     # above, or reference a pre-created TLS Secret.
     secretName: ""
   # Path prefixes on the primary host routed to switch-core instead of the
-  # gateway: the Bearer-auth agent bridge + MCP, public OAuth/MCP discovery,
-  # and the collaboration bridge webhooks.
+  # gateway: the Bearer-auth agent bridge + MCP, and public OAuth/MCP discovery.
   agentApiPaths:
     - /agents
     - /mcp
     - /oauth
     - /.well-known
-    - /collab
     - /health
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
