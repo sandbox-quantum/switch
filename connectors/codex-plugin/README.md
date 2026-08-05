@@ -88,6 +88,27 @@ constrain how this can be done:
   config is therefore the only placement where that paste-ready command works
   as written, which is why the skill puts it there.
 
+### The npm environment is part of the contract
+
+Codex hands the MCP server a fixed env allowlist, and `npm_config_*` is not in
+it. The runtime is fetched with `npx` from a **private** registry, so the
+server must be able to resolve the `@sandbox-quantum` scope from *its own*
+environment — `~/.npmrc`, or an npmrc named explicitly on the server entry.
+
+This is worth stating because the failure is silent and the obvious check
+lies: `npm config get` in an interactive shell can report a correctly
+configured registry that the server never sees, since switchdash exports
+`npm_config_userconfig` pointing at its own npmrc. The server then queries
+`registry.npmjs.org`, gets a 404 (private packages are not admitted to exist),
+and dies before the MCP handshake — with no symptom beyond the tools being
+absent. The `configure` skill therefore verifies with a stripped environment
+and, when the effective npmrc is not `~/.npmrc`, passes `npm_config_userconfig`
+and any variable that file interpolates on the server entry.
+
+The entry also sets `startup_timeout_sec = 60`, matching the profile:
+`codex mcp add` writes no timeout, and Codex's 10s default can be exceeded by
+the `npx` fetch alone.
+
 ### What standalone does and does not get
 
 Works: the full Switch tool surface (including `send_attachment` /
