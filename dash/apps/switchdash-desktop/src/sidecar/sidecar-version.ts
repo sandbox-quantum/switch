@@ -27,7 +27,7 @@
  * it, fail the operation with a message naming the upgrade rather than
  * continuing without whatever the endpoint was for.
  */
-export const SIDECAR_VERSION = '1.6';
+export const SIDECAR_VERSION = '1.7';
 
 /**
  * Oldest major this client can still speak to. Raise it only when support for an
@@ -42,6 +42,36 @@ export function sidecarMajor(version: string | null): number {
   if (!version) return 0;
   const major = Number.parseInt(version.split('.')[0] ?? '', 10);
   return Number.isFinite(major) ? major : 0;
+}
+
+/** An `x.y` version as numbers; a missing or unparseable part reads as 0. */
+function parseSidecarVersion(version: string | null): { major: number; minor: number } {
+  if (!version) return { major: 0, minor: 0 };
+  const [rawMajor, rawMinor] = version.split('.');
+  const major = Number.parseInt(rawMajor ?? '', 10);
+  const minor = Number.parseInt(rawMinor ?? '', 10);
+  return {
+    major: Number.isFinite(major) ? major : 0,
+    minor: Number.isFinite(minor) ? minor : 0,
+  };
+}
+
+/**
+ * Order two `x.y` versions: negative when `a` is older, 0 when equal, positive
+ * when `a` is newer.
+ *
+ * This is the ONE machine decision the minor takes part in, and it is a
+ * tie-breaker rather than a build check. "Is this the same build" stays on the
+ * content hash, for the reasons above; this only answers "is the sidecar already
+ * on the host newer than what I ship", so a client never replaces a sidecar
+ * deployed by a newer switchdash. Without that ordering, two installs on
+ * different releases sharing a host each see the other's build as an upgrade and
+ * replace it in turn, forever (CHOO-1937).
+ */
+export function compareSidecarVersions(a: string | null, b: string | null): number {
+  const left = parseSidecarVersion(a);
+  const right = parseSidecarVersion(b);
+  return left.major - right.major || left.minor - right.minor;
 }
 
 /** This client's own major, for compatibility comparisons. */

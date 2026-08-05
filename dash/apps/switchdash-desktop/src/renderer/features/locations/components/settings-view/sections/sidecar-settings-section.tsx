@@ -38,6 +38,7 @@ const VERDICT_DISPLAY: Record<
   'up-to-date': { label: 'Up to date', variant: 'secondary', icon: CheckCircle2 },
   'upgrade-available': { label: 'Update available', variant: 'default', icon: RefreshCw },
   'upgrade-pending': { label: 'Update pending', variant: 'outline', icon: AlertTriangle },
+  'newer-on-host': { label: 'Newer on host', variant: 'secondary', icon: CheckCircle2 },
   incompatible: { label: 'Incompatible', variant: 'destructive', icon: AlertTriangle },
   'not-running': { label: 'Not running', variant: 'outline', icon: XCircle },
 };
