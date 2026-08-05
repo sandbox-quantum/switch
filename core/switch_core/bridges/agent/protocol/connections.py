@@ -82,6 +82,23 @@ class RoomOccupiedError(ConnectionError_):
         self.holder_id = holder_id
 
 
+def evicted_session_warning(room_id: str, evicted_connection_id: str) -> str:
+    """What to tell a caller that took a room off another live session.
+
+    One wording for every door that can evict, so a client does not have to
+    recognise the same event phrased two ways. Reported rather than logged
+    quietly: an unannounced takeover looks identical to the duplicate-session
+    bug it resolves — a session stops receiving a room and nothing says why.
+    """
+    return (
+        f"You evicted another session of this agent from room {room_id} "
+        f"(connection {evicted_connection_id}). Only one session of an agent "
+        "may act in a room, so that session has been disconnected from it and "
+        "will stop receiving its events. If that session was doing work here, "
+        "it no longer is."
+    )
+
+
 class ProtocolVersionError(ConnectionError_):
     def __init__(self, requested: int) -> None:
         super().__init__(

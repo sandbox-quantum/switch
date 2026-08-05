@@ -85,6 +85,7 @@ from switch_core.bridges.agent.protocol.connections import (
     RoomOccupiedError,
     Scope,
     UnknownConnectionError,
+    evicted_session_warning,
 )
 from switch_core.bridges.agent.protocol.service import AgentExistsError, ProtocolService
 from switch_core.bridges.agent.protocol.stream import event_stream
@@ -830,10 +831,24 @@ async def connection_subscribe(
     except RoomOccupiedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    if evicted is not None:
+        logger.warning(
+            "[CONN] agent=%s connection=%s took room %s from connection %s",
+            agent.id,
+            conn.id,
+            req.room_id,
+            evicted.id,
+        )
+
     return {
         "ok": True,
         "rooms": sorted(conn.rooms),
         "evicted_connection_id": evicted.id if evicted else None,
+        "warning": (
+            evicted_session_warning(req.room_id, evicted.id)
+            if evicted is not None
+            else None
+        ),
     }
 
 

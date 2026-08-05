@@ -176,6 +176,36 @@ describe('RemoteSessionReconciler', () => {
     expect(mirrorRemoteSessionRoom).not.toHaveBeenCalled();
   });
 
+  it('drops the room mirror once the sidecar stops reporting a room (CHOO-1419)', async () => {
+    // A remote session evicted from its room used to keep its place in the
+    // sidebar, sitting under the room next to the session that took it — the
+    // two-sessions-in-one-room illusion. The sidecar reports the room is gone;
+    // that has to reach the mirror.
+    knownRows = [{ id: 'session-evicted' }];
+    httpGetJsonOverChannel.mockResolvedValue({
+      sessions: [{ sessionId: 'session-evicted', roomId: 'room-1' }],
+    });
+    await reconcile('agent-1');
+    expect(mirrorRemoteSessionRoom).toHaveBeenCalled();
+
+    httpGetJsonOverChannel.mockResolvedValue({
+      sessions: [{ sessionId: 'session-evicted', roomId: null }],
+    });
+    await reconcile('agent-1');
+
+    expect(clearSessionRoom).toHaveBeenCalledWith('session-evicted');
+  });
+
+  it('leaves a live session alone when the poll itself failed', async () => {
+    // The room must not be cleared because the VM was briefly unreachable —
+    // an unreadable snapshot says nothing about where a session is.
+    knownRows = [{ id: 'session-live' }];
+    httpGetJsonOverChannel.mockRejectedValue(new Error('unreachable'));
+    await reconcile('agent-1');
+
+    expect(clearSessionRoom).not.toHaveBeenCalled();
+  });
+
   it('clears the room mirror when a session row is removed', async () => {
     knownRows = [{ id: 'session-term', agentId: 'agent-1' }];
     await handleRemoteTerminated('session-term');

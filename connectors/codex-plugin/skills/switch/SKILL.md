@@ -31,6 +31,13 @@ say so rather than guessing.
    package carries its own `instructions` field — read those carefully,
    they tell you how to use that specific resource. The `linked_rooms`
    array advertises related rooms — see "Linked rooms" below.
+
+   The response also carries a `warning` field, normally null. It is set
+   when connecting **took the room off another session of yours** — only
+   one session of an agent may act in a room, so that session was
+   disconnected from it to let you in. Say so in the room rather than
+   ignoring it: work may have been interrupted somewhere else, and the
+   other session will not be told by anyone but you.
 3. **Delivery starts automatically.** `connect_to_room` claims the room on
    the connection your session was launched with, and switchdash — which
    holds that connection — delivers the room's events into your session as

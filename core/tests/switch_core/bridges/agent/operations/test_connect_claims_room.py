@@ -10,6 +10,11 @@ remember. Two consequences, and the second is the point:
   supervisor holding the connection learns the room **from Switch** instead of
   reading the agent's tool result. Reading the tool result is what switchdash
   did, and it broke silently the moment the result's shape changed.
+
+The claim is also what resolves a second session (CHOO-1419): a live claimant is
+another session of this agent already in the room, so the newcomer displaces it
+rather than the two coexisting — and the eviction is reported back, because a
+takeover nobody mentions looks exactly like the bug it resolves.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from switch_core.bridges.agent.operations.definitions import (
 from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_VERSION,
     ConnectionRegistry,
+    NoStreamAttachedError,
 )
 
 AGENT = "agent-1"
@@ -95,28 +101,109 @@ def test_a_dead_sibling_does_not_lock_the_agent_out() -> None:
     assert claimant.id == CONN
 
 
-def test_a_live_sibling_keeps_the_room() -> None:
-    """A tool call does not take a room off a connection that is delivering.
+def test_a_live_sibling_is_evicted_and_the_eviction_is_reported() -> None:
+    """A second session takes the room, and is told what it cost (CHOO-1419).
 
-    The only thing a takeover here could ever win against is a live connection
-    covering the room — typically a supervisor feeding this very session. Taking
-    the slot from it stops delivery *silently*: the call succeeds, the agent
-    believes it is in the room, and nothing reaches it again.
+    A live claimant is another session of this same agent already acting in the
+    room. Only one of them may, so the newcomer displaces it rather than the two
+    coexisting — refusing instead would strand a session that was started to
+    work here and has nowhere else to go.
 
-    Ownership goes the other way: a supervisor declaring a room when it opens
-    its stream takes over; a `connect_to_room` yields.
+    The eviction is returned, not merely logged. An unannounced takeover is
+    indistinguishable from the duplicate-session bug it resolves: a session
+    stops receiving a room and nothing says why.
     """
     registry = ConnectionRegistry()
-    supervisor = _open(registry, "supervisor")
-    registry.claim_room(supervisor, ROOM)
+    incumbent = _open(registry, "first-session")
+    registry.claim_room(incumbent, ROOM)
+    _open(registry, CONN)
+
+    evicted = claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
+
+    assert evicted == "first-session"
+    claimant = registry.claimant_of(AGENT, ROOM)
+    assert claimant is not None
+    assert claimant.id == CONN
+    assert ROOM not in incumbent.rooms
+
+
+def test_the_evicted_session_is_woken_so_it_learns_it_lost_the_room() -> None:
+    """The loser has to find out, and its stream is the only way it can.
+
+    Without the wake it stays blocked on its read, still believing it holds the
+    room, and switchdash keeps showing it under that room.
+    """
+    registry = ConnectionRegistry()
+    incumbent = _open(registry, "first-session")
+    registry.claim_room(incumbent, ROOM)
+    incumbent.wake.clear()
     _open(registry, CONN)
 
     claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
 
+    assert incumbent.wake.is_set()
+
+
+def test_taking_an_unheld_room_reports_no_eviction() -> None:
+    """The warning must not fire on the ordinary case of an empty room."""
+    registry = ConnectionRegistry()
+    _open(registry, CONN)
+
+    evicted = claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
+
+    assert evicted is None
+
+
+def test_a_dead_predecessor_is_not_reported_as_an_eviction() -> None:
+    """Nothing was displaced, so nothing should be announced.
+
+    A restart meets its own dead connection constantly. Reporting that as "you
+    evicted a session" would cry wolf on the most routine event there is.
+    """
+    import time as _time
+
+    registry = ConnectionRegistry()
+    dead = _open(registry, "previous-life")
+    registry.claim_room(dead, ROOM)
+    dead.last_beat = _time.monotonic() - 3600
+    _open(registry, CONN)
+
+    evicted = claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
+
+    assert evicted is None
+
+
+def test_the_same_connection_reconnecting_is_not_a_duplicate() -> None:
+    """One session returning is not two sessions arriving.
+
+    A session keeps its connection id across reconnects, so it meets its own
+    claim. That must stay idempotent or every restart would lock itself out.
+    """
+    registry = ConnectionRegistry()
+    conn = _open(registry, CONN)
+    registry.claim_room(conn, ROOM)
+
+    evicted = claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
+
+    assert evicted is None
     claimant = registry.claimant_of(AGENT, ROOM)
     assert claimant is not None
-    assert claimant.id == "supervisor"
-    assert ROOM in supervisor.rooms
+    assert claimant.id == CONN
+
+
+def test_another_agent_holding_the_room_is_not_a_conflict() -> None:
+    """The rule is one session per agent per room, not one agent per room."""
+    registry = ConnectionRegistry()
+    theirs = _open(registry, "their-session", agent_id="agent-2")
+    registry.claim_room(theirs, ROOM)
+    _open(registry, CONN)
+
+    claim_room_on_caller_connection(_protocol(registry), AGENT, CONN, ROOM)
+
+    ours = registry.claimant_of(AGENT, ROOM)
+    assert ours is not None
+    assert ours.id == CONN
+    assert ROOM in theirs.rooms
 
 
 def test_an_unknown_connection_is_not_an_error() -> None:
@@ -139,20 +226,20 @@ def test_another_agents_connection_is_never_claimed_on() -> None:
     assert registry.claimant_of(AGENT, ROOM) is None
 
 
-def test_a_failure_to_claim_is_logged_and_not_raised(
+def test_a_fault_that_is_not_occupancy_is_logged_and_not_raised(
     caplog: Any,
 ) -> None:
-    """Membership is already written; only routing is affected.
+    """Only occupancy is fatal; other faults cost routing, not membership.
 
-    Raising here would fail a `connect_to_room` that genuinely succeeded.
+    Occupancy means someone else is in the agent's seat, which changes what the
+    caller may do. Any other connection fault leaves the room the caller's to
+    have, so failing the whole connect over it would be the harsher answer.
     """
     registry = ConnectionRegistry()
     conn = _open(registry, CONN)
 
     def _explode(*_a: Any, **_kw: Any) -> None:
-        from switch_core.bridges.agent.protocol.connections import RoomOccupiedError
-
-        raise RoomOccupiedError(ROOM, "other")
+        raise NoStreamAttachedError(CONN)
 
     registry.claim_room = _explode  # type: ignore[method-assign]
 

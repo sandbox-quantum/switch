@@ -58,14 +58,25 @@ export interface SessionRegistry {
     providerId: string;
     tmuxTarget: string;
   }): void;
+  /** Drop the session's room while keeping the session. Distinct from `record`
+   * with a null room, which means "no room information" and preserves what is
+   * already known. */
+  clearRoom(sessionId: string): void;
   forget(sessionId: string): void;
 }
 
 interface SessionConnection {
   connection: ManagedConnection;
-  /** Null for a session whose connection is open but whose room the server has
-   * not named yet — `connectRoom` already branches on exactly that state. */
+  /** Null while the session holds no room — the server has not named one yet,
+   * or it named one and then took it away. `connectRoom` branches on this. */
   roomId: string | null;
+  /** True once the server has taken this session's room away, as opposed to
+   * never having named one. The two are both `roomId: null` but must be
+   * reported differently: a session that lost its room has to be published as
+   * roomless so clients stop showing it under a room it no longer attends,
+   * whereas one that has yet to be told its room must not overwrite the room
+   * the durable registry restored for it. */
+  lostRoom: boolean;
   tmuxTarget: string;
 }
 
@@ -262,15 +273,25 @@ export class SidecarRuntime {
       // session that moves rooms is followed without re-reading a hook.
       onRoomChanged: (room) => {
         const entry = this.sessions.get(sessionId);
-        if (entry) entry.roomId = room;
+        if (entry) {
+          entry.roomId = room;
+          if (!room) entry.lostRoom = true;
+        }
         if (room) {
           this.deps.registry.record({ sessionId, roomId: room, providerId, tmuxTarget });
           this.roomConnectedListener?.(room, sessionId);
+          return;
         }
+        // Losing the room has to reach the durable registry too. It is what
+        // `/sessions` reports for a pane with no live connection and what a
+        // restart restores from, so leaving the old room there would put the
+        // session back under a room it no longer attends — and reconnect it,
+        // taking the room off whoever holds it now.
+        this.deps.registry.clearRoom(sessionId);
       },
       log: this.deps.log,
     });
-    this.sessions.set(sessionId, { connection, roomId, tmuxTarget });
+    this.sessions.set(sessionId, { connection, roomId, lostRoom: false, tmuxTarget });
     if (roomId) this.deps.registry.record({ sessionId, roomId, providerId, tmuxTarget });
     // The other end of the watcher's hand-off. If a spawned session comes up
     // without the message that triggered it, this says whether a cursor was
@@ -331,13 +352,12 @@ export class SidecarRuntime {
    * room the server has actually named, since a room-less one has nothing for
    * switchdash to reconcile against.
    */
-  connectedSessions(): Array<{ sessionId: string; roomId: string }> {
-    const out: Array<{ sessionId: string; roomId: string }> = [];
+  connectedSessions(): Array<{ sessionId: string; roomId: string | null }> {
+    const out: Array<{ sessionId: string; roomId: string | null }> = [];
     for (const [sessionId, session] of this.sessions) {
-      const roomId = session.roomId;
-      if (roomId && this.deps.isPaneLive(session.tmuxTarget)) {
-        out.push({ sessionId, roomId });
-      }
+      if (!this.deps.isPaneLive(session.tmuxTarget)) continue;
+      if (session.roomId === null && !session.lostRoom) continue;
+      out.push({ sessionId, roomId: session.roomId });
     }
     return out;
   }

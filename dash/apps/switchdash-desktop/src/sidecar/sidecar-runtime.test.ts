@@ -51,6 +51,10 @@ function fakeRegistry(): SessionRegistry & { entries: () => SidecarSessionEntry[
       const prev = sessions.get(entry.sessionId);
       sessions.set(entry.sessionId, { ...entry, roomId: entry.roomId ?? prev?.roomId ?? null });
     },
+    clearRoom: (id) => {
+      const prev = sessions.get(id);
+      if (prev) sessions.set(id, { ...prev, roomId: null });
+    },
     forget: (id) => void sessions.delete(id),
     entries: () => [...sessions.values()],
   };
@@ -227,6 +231,44 @@ describe('SidecarRuntime (multi-session)', () => {
       { sessionId: 'session-a', roomId: 'room-1' },
       { sessionId: 'session-b', roomId: 'room-2' },
     ]);
+  });
+
+  it('reports a session evicted from its room as roomless (CHOO-1419)', async () => {
+    // The eviction reaches the sidecar as the server reporting an empty room
+    // list on the session's connection. Keeping the old room here is what left
+    // an evicted session displayed under a room it no longer attends.
+    const { runtime, created, registry } = makeRuntime();
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+
+    created[0].deps.onRoomChanged?.(null);
+
+    expect(runtime.connectedSessions()).toEqual([{ sessionId: 'session-a', roomId: null }]);
+    expect(runtime.roomIdForSession('session-a')).toBeNull();
+    expect(registry.entries()).toEqual([
+      expect.objectContaining({ sessionId: 'session-a', roomId: null }),
+    ]);
+  });
+
+  it('omits a session whose room the server has not named yet', async () => {
+    // Same `roomId: null` as an eviction, and it must NOT be reported: the
+    // supervisor opens the connection before the agent connects to anything, so
+    // publishing this one as roomless would overwrite the room the durable
+    // registry restored for a pane that outlived a supervisor restart.
+    const { runtime } = makeRuntime();
+
+    await runtime.ensureForSession('session-a', 'claude-code', null);
+
+    expect(runtime.connectedSessions()).toEqual([]);
+  });
+
+  it('stops reporting an evicted room as live, so the watcher may spawn again', async () => {
+    const { runtime, created } = makeRuntime();
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+    expect(runtime.hasLiveRoom('room-1')).toBe(true);
+
+    created[0].deps.onRoomChanged?.(null);
+
+    expect(runtime.hasLiveRoom('room-1')).toBe(false);
   });
 
   it('omits a connected session whose pane has died from connectedSessions()', async () => {
