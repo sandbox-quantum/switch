@@ -23,6 +23,7 @@ type ServerEntry = {
   env?: Record<string, string>;
   bearer_token?: string;
   startup_timeout_sec?: number;
+  default_tools_approval_mode?: string;
 };
 
 function switchServerOf(toml: string): ServerEntry {
@@ -64,6 +65,29 @@ describe('buildCodexProfileToml', () => {
     // Codex defaults to 10s. Fetching the runtime from the private registry on a
     // host that has never run it can exceed that before the server does any work.
     expect(server.startup_timeout_sec).toBeGreaterThanOrEqual(60);
+  });
+
+  it('auto-approves the Switch tools, which no approval_policy would have done', () => {
+    const server = switchServerOf(buildCodexProfileToml({ switchServer: runtime }));
+
+    // An agent answering a room is unattended: a prompt on `post_message` stops
+    // the turn with nobody to release it. Measured against codex-cli 0.146.0,
+    // `approval_policy` does not govern MCP tool calls at all — a write-annotated
+    // tool is denied under `never` just as under `untrusted` — so the bypass
+    // toggle cannot cover this and only this field can.
+    expect(server.default_tools_approval_mode).toBe('approve');
+  });
+
+  it('keeps the approval mode inside the enum Codex accepts', () => {
+    const server = switchServerOf(buildCodexProfileToml({ switchServer: runtime }));
+
+    // An unrecognised value does not fail loudly: Codex drops the whole server
+    // and reports no MCP servers at all, so the session simply has no Switch
+    // tools. `approve` is also the only one of the four that admits a tool
+    // annotated as writing, which most Switch tools are.
+    expect(['auto', 'prompt', 'writes', 'approve']).toContain(
+      server.default_tools_approval_mode
+    );
   });
 
   it('omits env_vars for a launch server that needs nothing forwarded', () => {
