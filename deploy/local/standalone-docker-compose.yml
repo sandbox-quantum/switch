@@ -25,7 +25,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${POSTGRES_HOST_PORT:-5432}:5432"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -89,7 +89,7 @@ services:
     platform: linux/amd64
     profiles: ["collab"]
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${MATTERMOST_HOST_PORT:-8065}:8065"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${MATTERMOST_HOST_PORT:-8065}:8065"
     volumes:
       - mmdata:/mattermost/data
     environment:
@@ -124,7 +124,7 @@ services:
   switch:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:-latest}
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${API_HOST_PORT:-8000}:8000"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${API_HOST_PORT:-8000}:8000"
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -152,7 +152,7 @@ services:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:-latest}
     profiles: ["gateway"]
     ports:
-      - "${SWITCH_BIND_ADDR:-0.0.0.0}:${GATEWAY_HOST_PORT:-3000}:3000"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${GATEWAY_HOST_PORT:-3000}:3000"
     depends_on:
       - switch
 

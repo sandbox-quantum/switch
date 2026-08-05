@@ -7,7 +7,7 @@ import { type PromptInjector, RoomConnection } from './room-connection';
 import { resolveSessionControl } from './session-control';
 import type { AgentBridgeEvent, AttachmentRef } from './switch-event-format';
 
-const silentLog = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+const silentLog = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 const creds = { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' };
 

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
@@ -14,6 +13,7 @@ import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import { PtyInjectionSink } from './injection-sink';
 import { PluginPromptInjector } from './plugin-prompt-injector';
 import { RoomConnection } from './room-connection';
+import { sessionConnectionId } from './session-connection-id';
 import { resolveSessionControl } from './session-control';
 import {
   readSwitchAgentCredentials,
@@ -218,7 +218,11 @@ class SwitchNotificationPoller {
     noteAgentName(creds.agentId, slug);
 
     const ptySessionId = makeAgentPtySessionId(location.id, ctx.sessionId);
-    const connectionId = randomUUID();
+    // Derived, not random: a tmux-backed session survives switchdash quitting,
+    // and reattaching to a live pane cannot revise the environment it was
+    // launched with — the `-e` flags only apply to a pane being created. So a
+    // restarted switchdash has to arrive at the id that pane already holds.
+    const connectionId = sessionConnectionId(ctx.sessionId);
     // Consumed, not just read: it belongs to this session's launch, and a
     // later session must not rewind to a message this one already handled.
     const startCursor = this.pendingStart.get(creds.agentId);

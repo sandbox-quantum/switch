@@ -70,16 +70,22 @@ agent.
 [just](https://github.com/casey/just) (`brew install just`).
 
 ```bash
-cp .env.example .env     # defaults work as-is
+just init-env            # generate .env with strong random secrets
 just standalone-up       # build & start the full stack
 ```
 
+`just init-env` writes a `.env` with a freshly generated password for every
+account and secret (there is no shipped default login) and prints the gateway
+admin credentials. The stack binds to `127.0.0.1` only — set `SWITCH_BIND_ADDR`
+in `.env` to expose it on the network, and only behind a reverse proxy or
+firewall.
+
 Once it's up, open:
 
-| Service | URL | Default login |
+| Service | URL | Login |
 |---|---|---|
-| Gateway (operator dashboard) | <http://localhost:3000> | `admin@switch.local` / `admin` |
-| Mattermost (chat with agents) | <http://localhost:8065> | `user` / `user1234` |
+| Gateway (operator dashboard) | <http://localhost:3000> | `admin@switch.local` / generated password (`GATEWAY_ADMIN_PASSWORD` in `.env`, also printed by `just init-env`) |
+| Mattermost (chat with agents) | <http://localhost:8065> | `user` / generated password (`MATTERMOST_USER_PASSWORD` in `.env`) |
 
 **First run — connect your own agent.** Switch ships no bundled agents; the
 point is to plug in yours. The quickest path is a bundled connector — the
@@ -111,7 +117,7 @@ wipe the data volumes.
 (`brew install just`).
 
 ```bash
-cp .env.example .env     # first-time setup — fill in the values
+just init-env            # first-time setup — generate .env with random secrets
 uv sync                  # install Python dependencies
 just gateway-install     # install gateway frontend deps (first time only)
 just up                  # start the supporting stack (Docker Compose)
@@ -132,6 +138,7 @@ Run `just` with no arguments to list every recipe. The most-used ones:
 
 | Command | What it does |
 |---|---|
+| `just init-env` | Generate `.env` with freshly generated secrets (no default login) |
 | `just up` / `just down` | Start / stop the local dev stack |
 | `just reset` | Stop the stack and wipe volumes (incl. the Tuwunel database) |
 | `just standalone-up` / `just standalone-down` | Start / stop the full standalone stack (no dev tooling) |

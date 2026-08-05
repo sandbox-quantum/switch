@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:5432:5432"
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -32,7 +32,7 @@ services:
   tuwunel:
     image: jevolk/tuwunel:v1.7.1
     ports:
-      - "8008:8008"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8008:8008"
     volumes:
       - tuwuneldata:/var/lib/tuwunel
     environment:
@@ -49,7 +49,7 @@ services:
     image: mattermost/mattermost-team-edition:latest
     platform: linux/amd64
     ports:
-      - "8065:8065"
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8065:8065"
     volumes:
       - mmdata:/mattermost/data
     environment:

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deriveAgentStatus } from '@main/core/agent-hooks/derive-agent-status';
@@ -12,6 +11,7 @@ import {
   type RoomConnectionLogger,
   type SwitchCredentials,
 } from '@main/core/switch-rooms/room-connection';
+import { sessionConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { resolveSessionControl } from '@main/core/switch-rooms/session-control';
 import { type TmuxRun, TmuxInjectionSink } from '@main/core/switch-rooms/tmux-injection-sink';
 import { parsePtyId } from '@shared/core/pty/ptyId';
@@ -25,6 +25,9 @@ export interface ManagedConnection {
     status: Parameters<RoomConnection['onAgentStatusChange']>[0],
     notificationType?: Parameters<RoomConnection['onAgentStatusChange']>[1]
   ): void;
+  reportActivity(detail: string): void;
+  /** The connection id this session's tool calls are expected to arrive on. */
+  readonly connection: string;
 }
 
 export type RoomConnectionFactory = (deps: RoomConnectionDeps) => ManagedConnection;
@@ -60,7 +63,9 @@ export interface SessionRegistry {
 
 interface SessionConnection {
   connection: ManagedConnection;
-  roomId: string;
+  /** Null for a session whose connection is open but whose room the server has
+   * not named yet — `connectRoom` already branches on exactly that state. */
+  roomId: string | null;
   tmuxTarget: string;
 }
 
@@ -231,7 +236,10 @@ export class SidecarRuntime {
     startCursor?: number
   ): string {
     const tmuxTarget = makeAgentTmuxSessionName(sessionId);
-    const connectionId = randomUUID();
+    // Derived, not random: the session's pane outlives this process and keeps
+    // stamping the id it was launched with, so a restarted sidecar has to
+    // recompute that id rather than mint one the agent will never hear about.
+    const connectionId = sessionConnectionId(sessionId);
     const connection = this.deps.createConnection({
       creds: this.deps.creds,
       roomId,
@@ -319,13 +327,16 @@ export class SidecarRuntime {
   /**
    * Sessions the runtime has connected to a room, for switchdash to reconcile
    * into its UI. Only panes that are still live are reported so a session whose
-   * agent has exited does not surface as a ghost row.
+   * agent has exited does not surface as a ghost row — and only sessions whose
+   * room the server has actually named, since a room-less one has nothing for
+   * switchdash to reconcile against.
    */
   connectedSessions(): Array<{ sessionId: string; roomId: string }> {
     const out: Array<{ sessionId: string; roomId: string }> = [];
     for (const [sessionId, session] of this.sessions) {
-      if (this.deps.isPaneLive(session.tmuxTarget)) {
-        out.push({ sessionId, roomId: session.roomId });
+      const roomId = session.roomId;
+      if (roomId && this.deps.isPaneLive(session.tmuxTarget)) {
+        out.push({ sessionId, roomId });
       }
     }
     return out;

@@ -59,9 +59,9 @@ function makeSpawner(over: Partial<InProcessSessionSpawnerDeps> = {}) {
   const runtime = { hasLiveRoom: vi.fn(() => false) };
   const spawner = new InProcessSessionSpawner({
     spec: SPEC,
-    locationId: 'proj-1',
     hookPort: 4321,
     hookToken: 'hooktok',
+    endpointFile: `${CWD}/.switchdash/sidecar-endpoint.json`,
     runtime,
     switchEnv: {
       SWITCH_API_ENDPOINT: 'https://switch.example.com',

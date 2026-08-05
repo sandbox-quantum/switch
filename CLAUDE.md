@@ -28,7 +28,7 @@ own `dash/CLAUDE.md` (→ `AGENTS.md`); read that before working in the app.
 uv sync                          # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
-cp .env.example .env             # first-time setup
+just init-env                    # first-time setup — generate .env with random secrets
 just up                          # start Switch locally
 just down                        # stop Switch
 

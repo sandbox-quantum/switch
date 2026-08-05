@@ -460,6 +460,66 @@ async function loadOperations(): Promise<void> {
   process.stderr.write(`switch: serving ${operations.length} operations locally\n`);
 }
 
+/**
+ * Whether the server rejected a call because the connection it was stamped with
+ * no longer exists.
+ *
+ * Two status codes for one condition: `/ops/*` answers 409 and `/connection/*`
+ * answers 404, so matching on either alone misses half the surface. The id is
+ * checked too — a 409 naming some *other* connection is a different fault and
+ * must not be dressed up as this one.
+ */
+function isDeadConnection(status: number, body: string): boolean {
+  if (status !== 409 && status !== 404) return false;
+  return body.includes(CONNECTION_ID) && body.includes('is not open');
+}
+
+/** Whether the operator has already been told this connection is dead. */
+let deadConnectionReported = false;
+
+/**
+ * Explain a dead connection instead of passing the server's wording through.
+ *
+ * Raw, the rejection reads `409: connection <uuid> is not open; reconnect and
+ * resume from your cursor` — advice this process cannot take when the id was
+ * handed to it by a supervisor. It is fixed for the life of the process, so
+ * every retry fails identically. Meanwhile events keep arriving on the
+ * supervisor's own stream, so the session reads the room perfectly and is
+ * simply unable to answer: exactly the shape of failure that looks healthy.
+ *
+ * Say what happened, and that a restart is the only way out.
+ */
+function deadConnectionMessage(operation: string): string {
+  if (!OWNS_CONNECTION) {
+    if (!deadConnectionReported) {
+      deadConnectionReported = true;
+      process.stderr.write(
+        `switch: FATAL — the supervisor's connection (${CONNECTION_ID}) is gone. ` +
+          'It restarted after handing this session the id, and the id cannot be ' +
+          'refreshed from here. Every Switch tool call will fail until this ' +
+          'session is restarted.\n'
+      );
+    }
+    return (
+      `Switch is unreachable from this session: ${operation} was refused because ` +
+      `connection ${CONNECTION_ID} no longer exists on the server.\n\n` +
+      'The supervisor that launched this session (switchdash, or the sidecar on ' +
+      'this host) handed over that connection and has since restarted. The id ' +
+      'was read once at startup and cannot be refreshed, so this is permanent ' +
+      'for this session — retrying will fail the same way.\n\n' +
+      'Note that incoming events may still be arriving normally, so the session ' +
+      'looks fine while being unable to post anything. Tell the user plainly ' +
+      'that you cannot reach Switch and that the session has to be restarted.'
+    );
+  }
+  process.stderr.write(`switch: connection ${CONNECTION_ID} lapsed and was refused\n`);
+  return (
+    `Switch refused ${operation}: connection ${CONNECTION_ID} had lapsed. This ` +
+    'process owns that connection, so its heartbeat reopens the stream on the ' +
+    'same id within a couple of seconds — retry the call.'
+  );
+}
+
 async function callOperation(
   name: string,
   args: Record<string, unknown>
@@ -481,6 +541,9 @@ async function callOperation(
     });
     const text = await resp.text();
     if (!resp.ok) {
+      if (isDeadConnection(resp.status, text)) {
+        return { isError: true, content: [{ type: 'text', text: deadConnectionMessage(name) }] };
+      }
       return { isError: true, content: [{ type: 'text', text: `${resp.status}: ${text}` }] };
     }
     const data = JSON.parse(text) as { result?: unknown };

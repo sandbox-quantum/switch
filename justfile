@@ -12,6 +12,35 @@ import? 'internal/justfile'
 default:
     @just --list
 
+# ── Environment setup ──────────────────────────────────────────────────────────
+# Generate a .env from .env.example with freshly generated secrets. The example
+# ships every secret field BLANK on purpose so no known default credential (the
+# old admin/admin) can reach a running stack; this recipe fills them with random
+# values. Refuses to clobber an existing .env so it never rotates live secrets.
+init-env:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -e .env ]; then
+      echo "✋ .env already exists — refusing to overwrite it." >&2
+      echo "   Delete it first if you really want to regenerate every secret." >&2
+      exit 1
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+      echo "openssl is required to generate secrets but was not found on PATH." >&2
+      exit 1
+    fi
+    cp .env.example .env
+    for key in DB_PASSWORD MATRIX_ADMIN_PASSWORD MATRIX_REGISTRATION_SHARED_SECRET \
+               AGENT_REGISTRATION_TOKEN JWT_SECRET_KEY GATEWAY_ADMIN_PASSWORD \
+               MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
+      secret="$(openssl rand -hex 24)"
+      sed -i.bak "s|^${key}=.*|${key}=${secret}|" .env
+    done
+    rm -f .env.bak
+    echo "✅ Wrote .env with freshly generated secrets."
+    echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
+    echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
+
 # ── Dev infrastructure ─────────────────────────────────────────────────────────
 # Tuwunel self-initializes its signing key + database in its data volume on
 # first boot, so no pre-start key generation is needed.

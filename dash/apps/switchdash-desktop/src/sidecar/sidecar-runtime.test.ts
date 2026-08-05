@@ -19,7 +19,13 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 const silentLog = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 function fakeConnection(): ManagedConnection {
-  return { start: vi.fn(), stop: vi.fn(), onAgentStatusChange: vi.fn() };
+  return {
+    start: vi.fn(),
+    stop: vi.fn(),
+    onAgentStatusChange: vi.fn(),
+    reportActivity: vi.fn(),
+    connection: 'conn-1',
+  };
 }
 
 function switchRoomHook(roomId: string, ptyId: string): RawHookRequest {
@@ -60,7 +66,6 @@ function makeRuntime() {
   const registry = fakeRegistry();
   const runtime = new SidecarRuntime({
     creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
-    locationId: 'proj-1',
     deeplinkScheme: 'switchdash',
     tmuxRun: vi.fn(),
     isPaneLive: () => true,
@@ -124,6 +129,30 @@ describe('SidecarRuntime (multi-session)', () => {
     expect(created[0].deps.connectionId).toBe(connectionId);
     expect(created[0].deps.roomId).toBeNull();
     expect(created[0].conn.start).toHaveBeenCalledTimes(1);
+  });
+
+  // CHOO-1931. The pane outlives the sidecar and keeps stamping the id it was
+  // launched with, so a restarted sidecar has to arrive at that same id — a
+  // fresh random one is swept by the server and every tool call from that
+  // session 409s for the rest of its life.
+  it('gives a session the same connection id after a restart', () => {
+    const first = makeRuntime();
+    const before = first.runtime.ensureForSession('session-a', 'codex', 'room-1');
+
+    // A restart is a brand-new runtime holding none of the previous state.
+    const second = makeRuntime();
+    const after = second.runtime.ensureForSession('session-a', 'codex', 'room-1');
+
+    expect(after).toBe(before);
+    expect(second.created[0].deps.connectionId).toBe(before);
+  });
+
+  it('gives concurrent sessions distinct connection ids', () => {
+    const { runtime } = makeRuntime();
+
+    expect(runtime.ensureForSession('session-a', 'codex', 'room-1')).not.toBe(
+      runtime.ensureForSession('session-b', 'codex', 'room-2')
+    );
   });
 
   it('opens a session at head when no cursor was handed over', () => {
@@ -210,7 +239,6 @@ describe('SidecarRuntime (multi-session)', () => {
     let paneLive = true;
     const runtime = new SidecarRuntime({
       creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
-      locationId: 'proj-1',
       deeplinkScheme: 'switchdash',
       tmuxRun: vi.fn(),
       isPaneLive: () => paneLive,
