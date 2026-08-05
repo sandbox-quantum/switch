@@ -557,10 +557,11 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
           : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
-      // Apply the provider's per-agent launch specialization (Codex writes a
-      // profile under the VM's ~/.codex carrying model / effort / instructions).
-      // The Switch MCP server itself comes from the connector plugin's own
-      // bundled config, on the VM as locally.
+      // Register the Switch MCP server (Codex writes a profile under the VM's
+      // ~/.codex, also carrying model / effort / instructions). The connector
+      // plugin registers the same server from its own `.mcp.json`; this stays
+      // for installs still on a plugin that predates it — and a VM cannot even
+      // report a connector upgrade as available, so it would strand silently.
       const agentRecord = await getAgentById(session.agentId);
       // Read from the agent, not the session: the session's copy is frozen at
       // creation, so an existing session never picked up the toggle. See the

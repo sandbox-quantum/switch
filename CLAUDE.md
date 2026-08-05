@@ -96,9 +96,14 @@ each ships its own copy of the Switch room-workflow skill at
   breaking a standalone session (the Claude connector cannot do this: `${VAR}`
   expansion makes every declared variable mandatory).
 
-  switchdash still writes a per-agent Codex profile
-  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`), but only
-  for what is genuinely per-agent — model, reasoning effort, and instructions.
+  switchdash also writes a per-agent Codex profile
+  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`) carrying
+  model, reasoning effort and instructions. It **still registers the MCP server
+  there too**: a connector plugin is only upgraded when a user clicks Update in
+  settings, and Codex caches an install per version, so dropping the profile
+  registration would leave every install still on an older plugin with no
+  Switch tools and no way to notice. The duplicate registration goes when
+  there is an upgrade path, not before.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, or anything an agent-facing client needs to know:

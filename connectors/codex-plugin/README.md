@@ -65,10 +65,16 @@ there is indistinguishable from a broken server.
 switchdash writes a per-agent Codex *profile*
 (`$CODEX_HOME/<agent-slug>.config.toml`, launched with `--profile <agent-slug>`)
 carrying what is genuinely per-agent: model, reasoning effort, and
-instructions. It no longer registers the MCP server there — the plugin does
-that. switchdash's remaining job for the server is to put the credentials in
-the session's environment, which it reads from the agent's
-`.switch/agents/<slug>.json`.
+instructions. It also puts the credentials this config names into the session's
+environment, read from the agent's `.switch/agents/<slug>.json`.
+
+The profile **also still registers the Switch MCP server**, duplicating what
+this plugin now declares. That is deliberate and temporary: Codex upgrades a
+plugin only when a user clicks Update in switchdash's settings, and it caches
+each version in its own directory, so an install on an older plugin would
+otherwise be left with no Switch tools at all — and on a remote host switchdash
+cannot even detect that a connector upgrade is available. The duplicate goes
+when there is an automatic upgrade path.
 
 A profile does *not* replace a same-named server in the user's base
 `~/.codex/config.toml` — the two tables are merged. A base `switch` entry from

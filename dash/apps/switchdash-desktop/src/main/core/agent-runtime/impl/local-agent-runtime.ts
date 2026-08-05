@@ -182,10 +182,11 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
-      // Apply the provider's per-agent launch specialization: for Codex, a
-      // profile under `~/.codex` carrying model / effort / instructions, loaded
-      // with `--profile <slug>`. Both connector plugins register the Switch MCP
-      // server from their own bundled config, so it is not written here.
+      // Register the Switch MCP server and apply the provider's per-agent launch
+      // specialization: for Codex, a profile under `~/.codex` carrying model /
+      // effort / instructions, loaded with `--profile <slug>`. The Codex
+      // connector plugin registers the same server from its own `.mcp.json`;
+      // this stays for installs still on a plugin that predates it.
       const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
