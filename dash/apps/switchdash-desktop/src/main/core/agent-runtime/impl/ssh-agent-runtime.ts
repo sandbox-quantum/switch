@@ -557,9 +557,15 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
           : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
-      // Register the Switch MCP server (Codex writes a profile under the VM's
-      // ~/.codex), folding in the agent's per-agent model / effort / instructions.
+      // Apply the provider's per-agent launch specialization (Codex writes a
+      // profile under the VM's ~/.codex carrying model / effort / instructions).
+      // The Switch MCP server itself comes from the connector plugin's own
+      // bundled config, on the VM as locally.
       const agentRecord = await getAgentById(session.agentId);
+      // Read from the agent, not the session: the session's copy is frozen at
+      // creation, so an existing session never picked up the toggle. See the
+      // matching comment in local-agent-runtime.
+      const autoApprove = agentRecord?.autoApprove ?? session.autoApprove ?? false;
       const switchMcpArgs = await this.registerRemoteSwitchMcp(
         plugin,
         agentCredsSlug(session),
@@ -581,7 +587,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
             : []),
           ...switchMcpArgs,
         ],
-        autoApprove: session.autoApprove ?? false,
+        autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
         providerSessionId: session.providerSessionId ?? undefined,
@@ -602,7 +608,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         cwd: this.sessionPath,
         shellSetup: this.shellSetup,
         tmuxSessionName,
-        autoApprove: session.autoApprove ?? false,
+        autoApprove,
         resume: agentSession.isResuming,
       };
 

@@ -28,7 +28,7 @@ export const plugin = definePlugin(
     hooks: {
       kind: 'config',
       scope: 'global',
-      supportedEvents: ['notification', 'stop', 'session'],
+      supportedEvents: ['notification', 'stop', 'session', 'tool-use', 'tool-done'],
     },
     hostDependency: npmDependency({
       id: 'codex',

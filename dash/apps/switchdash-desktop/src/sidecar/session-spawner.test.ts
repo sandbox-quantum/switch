@@ -137,7 +137,13 @@ describe('InProcessSessionSpawner.launch', () => {
     const config = JSON.parse(await readFile(join(HOME, '.codex/hooks.json'), 'utf8')) as {
       hooks: Record<string, unknown[]>;
     };
-    expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
+    expect(Object.keys(config.hooks).sort()).toEqual([
+      'PermissionRequest',
+      'PostToolUse',
+      'PreToolUse',
+      'SessionStart',
+      'Stop',
+    ]);
     expect(calls.find((c) => c.args[0] === 'new-session')).toBeDefined();
   });
 

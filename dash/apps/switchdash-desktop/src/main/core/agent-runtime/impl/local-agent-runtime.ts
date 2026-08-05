@@ -133,11 +133,19 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     if (!spawnToken) return;
 
     try {
+      // The toggle lives on the agent, so read it from the agent: the value on
+      // the session is a copy taken at creation and never refreshed, which left
+      // an existing session launching without the flag no matter how often the
+      // user set it. It stays as the fallback for a session whose agent row is
+      // gone.
+      const agentRecord = await getAgentById(session.agentId);
+      const autoApprove = agentRecord?.autoApprove ?? session.autoApprove ?? false;
+
       await dirTrustService.maybeAutoTrustLocal({
         providerId: session.providerId,
         cwd: this.sessionPath,
         homedir: homedir(),
-        force: session.autoApprove === true,
+        force: autoApprove,
       });
       await ensureHooksInstalled({
         providerId: session.providerId,
@@ -174,12 +182,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
-      // Register the Switch MCP server for providers that cannot resolve it from
-      // a bundled config (Codex): writes a per-agent profile under `~/.codex` and
-      // returns `--profile <slug>`, folding in the agent's per-agent model /
-      // effort / instructions. A no-op for Claude, whose plugin expands its own
-      // `.mcp.json`.
-      const agentRecord = await getAgentById(session.agentId);
+      // Apply the provider's per-agent launch specialization: for Codex, a
+      // profile under `~/.codex` carrying model / effort / instructions, loaded
+      // with `--profile <slug>`. Both connector plugins register the Switch MCP
+      // server from their own bundled config, so it is not written here.
       const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
@@ -200,7 +206,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
             : []),
           ...switchMcpArgs,
         ],
-        autoApprove: session.autoApprove ?? false,
+        autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
         providerSessionId: session.providerSessionId ?? undefined,

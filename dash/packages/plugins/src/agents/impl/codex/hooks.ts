@@ -1,10 +1,15 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import type { CanonicalHookEvent, HookRegistration } from '@switchdash/core/agents/plugins';
 import {
+  baseName,
   buildNestedJsonHookConfig,
+  commandText,
   defaultHookEventParser,
+  formatToolActivityLine,
   makeNotificationHookCommand,
   makeStdinHookCommand,
+  toolInputOf,
+  toolNameOf,
 } from '@switchdash/core/agents/plugins/helpers';
 import * as toml from 'smol-toml';
 
@@ -76,6 +81,41 @@ async function removeLegacyCodexNotify(fs: PluginFs): Promise<void> {
 }
 
 /**
+ * The concrete thing a Codex tool acts on, for the " — <object>" suffix.
+ *
+ * Codex's built-in tool names are its own (`shell`, `unified_exec`,
+ * `write_stdin`, `apply_patch`, `web_search`), so Claude's mapping does not
+ * transfer. `shell` sends its command as an argv array rather than a string,
+ * which {@link commandText} normalises.
+ *
+ * Deliberately best-effort: the tool *name* is what the status line is for, and
+ * an unrecognised tool or an unexpected input shape drops the suffix rather
+ * than the line. MCP tools (the Switch ones included) take no suffix — the tool
+ * name already says what happened.
+ */
+function codexToolObject(body: Record<string, unknown>): string | undefined {
+  const toolName = toolNameOf(body);
+  const input = toolInputOf(body);
+  const path = typeof input.path === 'string' ? input.path : undefined;
+  const filePath = typeof input.file_path === 'string' ? input.file_path : undefined;
+
+  switch (toolName) {
+    case 'shell':
+    case 'unified_exec':
+    case 'write_stdin':
+      return commandText(input.command ?? input.input);
+    case 'apply_patch':
+      return filePath ?? path ? baseName((filePath ?? path) as string) : undefined;
+    case 'web_search':
+      return typeof input.query === 'string' ? input.query : undefined;
+    case 'view_image':
+      return filePath ?? path ? baseName((filePath ?? path) as string) : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Codex sends `{ type: 'agent-turn-complete' }` as its stop signal instead
  * of a plain 'stop' event type, and uses fixed `notification_type` values
  * in its hook payloads rather than piping JSON.
@@ -101,19 +141,33 @@ function parseCodexHookEvent(eventType: string, body: Record<string, unknown>): 
     }
   }
 
+  if (eventType === 'tool-use' || eventType === 'tool-done') {
+    const toolName = toolNameOf(body);
+    if (!toolName) return { kind: 'ignore' };
+    const verb = eventType === 'tool-use' ? 'Running tool' : 'Ran tool';
+    return { kind: 'activity', detail: formatToolActivityLine(toolName, verb, codexToolObject(body)) };
+  }
+
   return defaultHookEventParser(eventType, body);
 }
 
 export function buildCodexHookConfig() {
-  // No PostToolUse room-tracking hook: since the agent-bridge push transport
+  // The tool hooks drive the runtime status line: without them a Codex session
+  // reports only its opening "Working on it…" for the whole turn, because
+  // nothing else can produce an `activity` event. Codex's own hook payload
+  // carries `tool_name` / `tool_input`, the same shape Claude sends.
+  //
+  // No PostToolUse room-tracking matcher: since the agent-bridge push transport
   // (CHOO-1857), a session's room is driven by the connection switchdash opens
   // and hands it as SWITCH_CONNECTION_ID, so `connect_to_room` claims the room
-  // on that connection and the server reports it back. Only lifecycle events
-  // remain, none matcher-scoped.
+  // on that connection and the server reports it back. These two are unscoped
+  // — every tool, no matcher.
   const base = buildNestedJsonHookConfig(CODEX_HOOKS_PATH, [
     { hookKey: 'Stop', command: makeNotificationHookCommand('idle_prompt') },
     { hookKey: 'PermissionRequest', command: makeNotificationHookCommand('permission_prompt') },
     { hookKey: 'SessionStart', command: makeStdinHookCommand('session-start') },
+    { hookKey: 'PreToolUse', command: makeStdinHookCommand('tool-use') },
+    { hookKey: 'PostToolUse', command: makeStdinHookCommand('tool-done') },
   ]);
 
   return {

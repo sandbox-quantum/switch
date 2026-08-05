@@ -422,7 +422,13 @@ describe('SshAgentRuntime', () => {
     const config = JSON.parse(Buffer.from(written!.at(-1)!, 'base64').toString('utf8')) as {
       hooks: Record<string, unknown[]>;
     };
-    expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
+    expect(Object.keys(config.hooks).sort()).toEqual([
+      'PermissionRequest',
+      'PostToolUse',
+      'PreToolUse',
+      'SessionStart',
+      'Stop',
+    ]);
   });
 
   // Neither root fits a scope nobody has taught the remote path about, and the

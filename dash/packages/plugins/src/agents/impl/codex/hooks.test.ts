@@ -159,6 +159,51 @@ describe('buildCodexHookConfig.parseHookEvent', () => {
       type: 'notification',
     });
   });
+
+  it('turns tool events into activity, so the status is not stuck on the opener', () => {
+    // Without these the runtime status has nothing to report for a whole turn
+    // and renders "Working on it…" from first tool call to last.
+    expect(parseHookEvent('tool-use', { tool_name: 'shell' })).toEqual({
+      kind: 'activity',
+      detail: '_Running tool_ `shell`',
+    });
+    expect(parseHookEvent('tool-done', { tool_name: 'shell' })).toEqual({
+      kind: 'activity',
+      detail: '_Ran tool_ `shell`',
+    });
+  });
+
+  it("names the Switch MCP tool by its leaf, so a room action reads as what it did", () => {
+    expect(
+      parseHookEvent('tool-use', { tool_name: 'mcp__switch__post_message' })
+    ).toEqual({ kind: 'activity', detail: '_Running tool_ `post_message`' });
+  });
+
+  it("renders Codex's argv-array shell command as text", () => {
+    // Codex sends `command` as an argv array where Claude sends a string.
+    expect(
+      parseHookEvent('tool-use', {
+        tool_name: 'shell',
+        tool_input: { command: ['bash', '-lc', 'pytest  -q'] },
+      })
+    ).toEqual({ kind: 'activity', detail: '_Running tool_ `shell` — bash -lc pytest -q' });
+  });
+
+  it('drops the object suffix rather than the line when the input is unexpected', () => {
+    // The tool name is the point; an unrecognised tool or a shape we did not
+    // predict must not cost the status update entirely.
+    expect(parseHookEvent('tool-use', { tool_name: 'some_future_tool' })).toEqual({
+      kind: 'activity',
+      detail: '_Running tool_ `some_future_tool`',
+    });
+    expect(
+      parseHookEvent('tool-use', { tool_name: 'shell', tool_input: { command: 42 } })
+    ).toEqual({ kind: 'activity', detail: '_Running tool_ `shell`' });
+  });
+
+  it('ignores a tool event with no tool name', () => {
+    expect(parseHookEvent('tool-use', {})).toEqual({ kind: 'ignore' });
+  });
 });
 
 describe('buildCodexHookConfig install/read/delete', () => {
@@ -176,19 +221,27 @@ describe('buildCodexHookConfig install/read/delete', () => {
     }
   });
 
-  it('installs no PostToolUse room-tracking hook — the room is connection-driven', async () => {
-    // Since the agent-bridge push transport (CHOO-1857), a session's room is
-    // claimed on the connection switchdash opens and hands it as
-    // SWITCH_CONNECTION_ID, so the server reports the room back. The old
-    // PostToolUse `connect_to_room` scrape is gone; only lifecycle hooks remain.
+  it('installs tool hooks unscoped, with no room-tracking matcher', async () => {
+    // The tool hooks exist for the runtime status line and so cover every tool.
+    // Room tracking is not among their jobs: since the agent-bridge push
+    // transport (CHOO-1857), a session's room is claimed on the connection
+    // switchdash opens and hands it as SWITCH_CONNECTION_ID, so the server
+    // reports the room back and the old `connect_to_room` scrape is gone.
     const fs = createMemoryFs();
     await buildCodexHookConfig().writeHooks(fs, []);
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
-      hooks: Record<string, unknown>;
+      hooks: Record<string, { matcher?: string }[]>;
     };
 
-    expect(config.hooks.PostToolUse).toBeUndefined();
-    expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
+    expect(Object.keys(config.hooks).sort()).toEqual([
+      'PermissionRequest',
+      'PostToolUse',
+      'PreToolUse',
+      'SessionStart',
+      'Stop',
+    ]);
+    expect(config.hooks.PostToolUse[0].matcher).toBeUndefined();
+    expect(config.hooks.PreToolUse[0].matcher).toBeUndefined();
     expect(JSON.stringify(config.hooks)).not.toContain('switch_room_connect');
   });
 
@@ -199,6 +252,8 @@ describe('buildCodexHookConfig install/read/delete', () => {
       Stop: 'stop',
       PermissionRequest: 'notification',
       SessionStart: 'session',
+      PreToolUse: 'tool-use',
+      PostToolUse: 'tool-done',
     };
 
     const fs = createMemoryFs();
