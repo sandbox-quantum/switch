@@ -1,6 +1,6 @@
 {
   "name": "@switchdash/switchdash-desktop",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",
