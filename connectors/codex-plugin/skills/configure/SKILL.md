@@ -73,13 +73,41 @@ private package you are not authorised for returns **404**, not 403, because
 registries do not admit that private packages exist. "Package not found"
 almost always means "not logged in" here.
 
-First check whether it is already set up:
+> **Check it the way the MCP server will run it, not the way your shell
+> runs it.** Codex starts the server with a stripped environment, so any
+> `npm_config_*` variable in your shell is absent there. `npm config get` in
+> your shell can therefore report a correctly configured registry while the
+> server still gets a 404 — the check passes for a reason that does not apply
+> at runtime. This is not hypothetical: switchdash sets
+> `npm_config_userconfig`, so on a machine where it has ever launched a
+> session, an interactive shell resolves a config the MCP server cannot see.
+
+First check whether it is already set up, in a stripped environment:
 
 ```bash
-npm config get @sandbox-quantum:registry
+env -i HOME="$HOME" PATH="$PATH" npm config get @sandbox-quantum:registry
 ```
 
-If that prints `https://npm.pkg.github.com`, skip to Step 1.
+If that prints `https://npm.pkg.github.com`, skip to Step 1. If it prints
+`undefined`, the registry is **not** configured for the server's environment
+even if your shell says otherwise — continue below.
+
+Note which file npm would actually write to before changing anything:
+
+```bash
+npm config get userconfig
+```
+
+If that is **not** `~/.npmrc`, then a plain `npm config set` writes somewhere
+the MCP server will never read. Either force the target explicitly:
+
+```bash
+npm_config_userconfig="$HOME/.npmrc" npm config set @sandbox-quantum:registry https://npm.pkg.github.com
+```
+
+…or keep the existing file and point the server at it in Step 7 (see
+"If npm config lives outside `~/.npmrc`" there). Do **not** just run
+`npm config set` and assume it landed somewhere useful.
 
 Otherwise it needs the GitHub CLI, authenticated **and holding the
 `read:packages` scope**:
@@ -114,16 +142,21 @@ headless box, for instance), the alternative is a classic PAT with
 Then, with the user's agreement (this writes to their `~/.npmrc`):
 
 ```bash
+export npm_config_userconfig="$HOME/.npmrc"
 npm config set @sandbox-quantum:registry https://npm.pkg.github.com
 npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
 ```
 
-Verify it resolves before moving on, so a failure surfaces here rather than as
-a broken MCP server later:
+Verify it resolves before moving on — again in a **stripped** environment, so
+this proves what the MCP server will experience rather than what your shell
+does:
 
 ```bash
-npm view @sandbox-quantum/switch-agent-runtime version
+env -i HOME="$HOME" PATH="$PATH" npm view @sandbox-quantum/switch-agent-runtime version
 ```
+
+If that prints a version, the server will be able to fetch the runtime. If it
+404s, it cannot — regardless of what a plain `npm view` says.
 
 Two things to tell the user plainly rather than leave them to discover:
 
@@ -388,6 +421,34 @@ codex mcp add switch \
 variables from the curl output rather than pasting the token into the command
 text.
 
+### If npm config lives outside `~/.npmrc`
+
+Codex gives the server a fixed env allowlist, and `npm_config_*` is not in it.
+So if the user's scope registry is configured in a file npm only finds via
+`npm_config_userconfig` (switchdash writes one at
+`~/Library/Application Support/switchdash/npm/npmrc`), the server falls back to
+`~/.npmrc`, misses the scope, queries `registry.npmjs.org`, and dies with the
+misleading 404. Symptom: the tools simply never appear.
+
+If Step 0 showed a `userconfig` that is not `~/.npmrc` and you chose to keep
+that file rather than write `~/.npmrc`, pass it explicitly:
+
+```bash
+--env "npm_config_userconfig=$(npm config get userconfig)"
+```
+
+Check that file for `${VAR}` token interpolation before relying on it — npm
+expands those as it reads, so any variable it names must be passed on the same
+entry or authentication still fails:
+
+```bash
+grep -o '\${[A-Za-z_][A-Za-z0-9_]*}' "$(npm config get userconfig)" 2>/dev/null
+```
+
+For each name printed, add `--env "<NAME>=<value>"` too. (This is exactly what
+switchdash does: it names `npm_config_userconfig` and its token variable
+together on the server entry.)
+
 Two things **not** to add to that entry:
 
 - **`SWITCH_CONNECTION_ID`** — it names a connection a supervisor has already
@@ -396,6 +457,29 @@ Two things **not** to add to that entry:
   here would point the session at a connection that does not exist.
 - **`SWITCH_CHANNEL_DISABLE_POLL`** — switchdash sets this because it delivers
   events itself. Standalone, leaving it unset is what you want.
+
+### Raise the startup timeout
+
+`codex mcp add` does not write `startup_timeout_sec`, so the entry inherits
+Codex's default of 10 seconds. The first launch has to `npx`-fetch the runtime
+from the private registry, which can take longer than that on a cold cache —
+and when it does, the server is killed mid-fetch and the tools silently never
+appear. switchdash's profile sets 60 for exactly this reason; match it.
+
+There is no CLI flag for it, so append the single scalar to the entry that
+`codex mcp add` just wrote (safe: the entry already has its transport, so this
+cannot produce the "invalid transport" state):
+
+```bash
+python3 - "$CODEX_DIR/config.toml" <<'PY'
+import re, sys
+p = sys.argv[1]
+t = open(p).read()
+if 'startup_timeout_sec' not in t.split('[mcp_servers.switch]')[1].split('[')[0]:
+    t = t.replace('[mcp_servers.switch]\n', '[mcp_servers.switch]\nstartup_timeout_sec = 60\n', 1)
+    open(p, 'w').write(t)
+PY
+```
 
 Verify the entry landed as a stdio server:
 
