@@ -36,8 +36,10 @@ permissions:
 
 jobs:
   scan-all:
-    # Scheduled / manual full sweep -> standing VULNMGMT tickets.
-    if: ${{ github.event_name != 'pull_request' }}
+    # Scheduled full sweep -> standing VULNMGMT tickets, or a manual dispatch
+    # from main. A workflow_dispatch from an arbitrary branch is skipped so the
+    # Jira machine-user token can't be exercised from unreviewed branch code.
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

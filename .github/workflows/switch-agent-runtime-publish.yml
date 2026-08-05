@@ -39,6 +39,11 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Publish only from a matching tag or from main. A workflow_dispatch from an
+    # arbitrary branch would otherwise publish whatever that branch's
+    # package.json says into the real @sandbox-quantum namespace, bypassing the
+    # tag-vs-version guard below (which only runs on the tag path).
+    if: ${{ startsWith(github.ref, 'refs/tags/switch-agent-runtime-v') || github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
       packages: write

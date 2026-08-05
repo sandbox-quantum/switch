@@ -32,6 +32,10 @@ jobs:
   renovate:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Runs on the weekly schedule (always on the default branch) or a manual
+    # dispatch from main. A workflow_dispatch from an arbitrary branch is skipped
+    # so the PR-bot App credentials can't be exercised from unreviewed branch code.
+    if: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/main' }}
     env:
       # Gate the App-token step without referencing a missing secret in an `if:`.
       BOT_CLIENT_ID: ${{ secrets.AUTOFIX_PR_BOT_CLIENT_ID }}

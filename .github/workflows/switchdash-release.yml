@@ -74,9 +74,15 @@ jobs:
   build-macos:
     name: Build & release (macOS arm64)
     runs-on: macos-14
-    # Runs on dispatch too, where create-release is skipped rather than run.
+    # The Apple Developer ID signing secrets live in the `release` environment
+    # (required reviewers + branch policy), so a run must be approved and can
+    # only come from main or a tag — a workflow_dispatch from an arbitrary
+    # branch cannot reach the org signing identity.
+    environment: release
+    # Runs on dispatch too (from main), where create-release is skipped rather
+    # than run. Restricted to main / tags so a feature-branch dispatch is skipped.
     needs: create-release
-    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
     # Surface the cert/key secrets through env so step-level `if:` can gate on
     # them — the `secrets` context is not allowed in `if:` expressions.
     env:

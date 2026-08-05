@@ -14,6 +14,11 @@ permissions:
 jobs:
   socket-fix:
     runs-on: ubuntu-latest
+    # Runs on the monthly/weekly schedule (always on the default branch) or a
+    # manual dispatch from main. A workflow_dispatch from an arbitrary branch is
+    # skipped so the Socket key and PR-bot App credentials can't be exercised
+    # from unreviewed branch code.
+    if: ${{ github.event_name == 'schedule' || github.ref == 'refs/heads/main' }}
 
     steps:
       - name: Checkout repo
