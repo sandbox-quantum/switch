@@ -173,10 +173,11 @@ describe('buildCodexHookConfig.parseHookEvent', () => {
     });
   });
 
-  it("names the Switch MCP tool by its leaf, so a room action reads as what it did", () => {
-    expect(
-      parseHookEvent('tool-use', { tool_name: 'mcp__switch__post_message' })
-    ).toEqual({ kind: 'activity', detail: '_Running tool_ `post_message`' });
+  it('names the Switch MCP tool by its leaf, so a room action reads as what it did', () => {
+    expect(parseHookEvent('tool-use', { tool_name: 'mcp__switch__post_message' })).toEqual({
+      kind: 'activity',
+      detail: '_Running tool_ `post_message`',
+    });
   });
 
   it("renders Codex's argv-array shell command as text", () => {
@@ -196,9 +197,9 @@ describe('buildCodexHookConfig.parseHookEvent', () => {
       kind: 'activity',
       detail: '_Running tool_ `some_future_tool`',
     });
-    expect(
-      parseHookEvent('tool-use', { tool_name: 'shell', tool_input: { command: 42 } })
-    ).toEqual({ kind: 'activity', detail: '_Running tool_ `shell`' });
+    expect(parseHookEvent('tool-use', { tool_name: 'shell', tool_input: { command: 42 } })).toEqual(
+      { kind: 'activity', detail: '_Running tool_ `shell`' }
+    );
   });
 
   it('ignores a tool event with no tool name', () => {

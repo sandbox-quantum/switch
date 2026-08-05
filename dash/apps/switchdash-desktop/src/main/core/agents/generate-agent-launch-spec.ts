@@ -1,6 +1,6 @@
 import type { SwitchLaunchSpecialization } from '@switchdash/core/agents/plugins';
+import { resolveAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
-import { resolveSwitchLaunchProfile } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { getPlugin } from '@main/core/providers/plugin-registry';
@@ -75,15 +75,13 @@ export async function generateAgentLaunchSpec(params: {
     connectionId,
   });
 
-  // Auto-started sessions always run as the agent, so they have a Switch
-  // identity. A provider that registers the server itself (Codex) returns the
-  // profile file to bake into the spec and the `--profile <slug>` argv; the
-  // sidecar writes the file on the VM. Null for providers whose plugin resolves
-  // the server from a bundled config (Claude).
-  const switchProfile = resolveSwitchLaunchProfile(plugin, {
+  // A provider that takes its per-agent specialization from a file (Codex)
+  // returns the profile to bake into the spec and the `--profile <slug>` argv;
+  // the sidecar writes the file on the VM. Null for a provider that takes it on
+  // argv (Claude), and for an agent that specializes nothing.
+  const switchProfile = resolveAgentLaunchProfile(plugin, {
     slug: credsSlug,
     workingDir: remoteRepoDir,
-    hasSwitchIdentity: true,
     specialization,
   });
 

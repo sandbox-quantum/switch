@@ -2,9 +2,9 @@ import { homedir } from 'node:os';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { dirTrustService } from '@main/core/agent-hooks/dir-trust-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
+import { prepareAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
-import { prepareSwitchMcpLaunch } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -182,16 +182,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
-      // Register the Switch MCP server and apply the provider's per-agent launch
-      // specialization: for Codex, a profile under `~/.codex` carrying model /
-      // effort / instructions, loaded with `--profile <slug>`. The Codex
-      // connector plugin registers the same server from its own `.mcp.json`;
-      // this stays for installs still on a plugin that predates it.
-      const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
+      // Apply the provider's per-agent specialization: for Codex, a profile
+      // under `~/.codex` carrying model / effort / instructions, loaded with
+      // `--profile <slug>`. The Switch MCP server is not written here — the
+      // connector plugin registers it from its own bundled `.mcp.json`.
+      const launchProfileArgs = await prepareAgentLaunchProfile(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
         workingDir: this.sessionPath,
-        hasSwitchIdentity: !!identityVars.SWITCH_API_ENDPOINT,
         specialization: toSwitchSpecialization(agentRecord?.providerConfig),
       });
 
@@ -199,13 +197,12 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         cli: executableCli,
         extraArgs: parseExtraArgs(providerConfig?.extraArgs),
         // The provider owns how to run as the named agent (CHOO-1440), and how to
-        // receive a per-session Switch MCP server when it cannot read one from a
-        // config file.
+        // load its per-agent specialization when that needs a config file.
         agentArgs: [
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...switchMcpArgs,
+          ...launchProfileArgs,
         ],
         autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,

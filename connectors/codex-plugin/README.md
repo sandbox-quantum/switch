@@ -65,16 +65,40 @@ there is indistinguishable from a broken server.
 switchdash writes a per-agent Codex *profile*
 (`$CODEX_HOME/<agent-slug>.config.toml`, launched with `--profile <agent-slug>`)
 carrying what is genuinely per-agent: model, reasoning effort, and
-instructions. It also puts the credentials this config names into the session's
-environment, read from the agent's `.switch/agents/<slug>.json`.
+instructions. It registers **no** MCP server — this plugin does that — and an
+agent that specializes none of those three gets no profile at all.
 
-The profile **also still registers the Switch MCP server**, duplicating what
-this plugin now declares. That is deliberate and temporary: Codex upgrades a
-plugin only when a user clicks Update in switchdash's settings, and it caches
-each version in its own directory, so an install on an older plugin would
-otherwise be left with no Switch tools at all — and on a remote host switchdash
-cannot even detect that a connector upgrade is available. The duplicate goes
-when there is an automatic upgrade path.
+switchdash's remaining job for the server is to put the credentials this config
+names into the session's environment, read from the agent's
+`.switch/agents/<slug>.json`.
+
+Because a plugin is only upgraded when a user clicks Update in switchdash's
+settings, and Codex caches each version in its own directory, an install on a
+plugin older than this one has no Switch tools until it is upgraded.
+
+## Auto-approving the Switch tools
+
+`.mcp.json` sets `default_tools_approval_mode: "approve"`. An agent answering a
+room is unattended by definition, so a permission prompt on `post_message`
+stops the turn with nobody watching to release it, and the tools reach Switch
+over the session's own credentials without touching the host.
+
+Two things are worth knowing before changing it:
+
+- **`approval_policy` does not govern MCP tool calls at all.** Measured against
+  codex-cli 0.146.0, a write-annotated MCP tool is denied under `untrusted`,
+  `on-request` *and* `never` alike. `default_tools_approval_mode` is the only
+  lever that moves them, and `approve` is the only one of its four values
+  (`auto`, `prompt`, `writes`, `approve`) that admits a tool annotated as
+  writing.
+- **A value outside that enum fails silently.** Codex does not reject it — it
+  drops the entire server and reports no MCP servers at all, so the session
+  simply has no Switch tools.
+
+It lives here rather than in anything switchdash writes because no per-server
+setting can be layered onto a plugin-provided server: an `mcp_servers.switch.*`
+entry with no transport of its own, whether from the base config, a profile or
+`-c` on argv, makes Codex reject the whole config as "invalid transport".
 
 A profile does *not* replace a same-named server in the user's base
 `~/.codex/config.toml` — the two tables are merged. A base `switch` entry from

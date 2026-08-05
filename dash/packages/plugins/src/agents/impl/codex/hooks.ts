@@ -105,11 +105,11 @@ function codexToolObject(body: Record<string, unknown>): string | undefined {
     case 'write_stdin':
       return commandText(input.command ?? input.input);
     case 'apply_patch':
-      return filePath ?? path ? baseName((filePath ?? path) as string) : undefined;
+      return (filePath ?? path) ? baseName((filePath ?? path) as string) : undefined;
     case 'web_search':
       return typeof input.query === 'string' ? input.query : undefined;
     case 'view_image':
-      return filePath ?? path ? baseName((filePath ?? path) as string) : undefined;
+      return (filePath ?? path) ? baseName((filePath ?? path) as string) : undefined;
     default:
       return undefined;
   }
@@ -145,7 +145,10 @@ function parseCodexHookEvent(eventType: string, body: Record<string, unknown>): 
     const toolName = toolNameOf(body);
     if (!toolName) return { kind: 'ignore' };
     const verb = eventType === 'tool-use' ? 'Running tool' : 'Ran tool';
-    return { kind: 'activity', detail: formatToolActivityLine(toolName, verb, codexToolObject(body)) };
+    return {
+      kind: 'activity',
+      detail: formatToolActivityLine(toolName, verb, codexToolObject(body)),
+    };
   }
 
   return defaultHookEventParser(eventType, body);

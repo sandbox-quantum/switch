@@ -1,9 +1,9 @@
 import type { PluginFs, SwitchLaunchSpecialization } from '@switchdash/core/agents/plugins';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
+import { resolveAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
-import { resolveSwitchLaunchProfile } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -236,20 +236,18 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   /**
-   * Register the Switch MCP server for a provider that writes per-agent launch
-   * files under the VM's home (Codex: a profile). Returns the argv that loads
-   * the profile, or `[]` when there is nothing to write.
+   * Write the per-agent launch files of a provider that needs them under the
+   * VM's home (Codex: a profile carrying model / effort / instructions).
+   * Returns the argv that loads them, or `[]` when there is nothing to write.
    */
-  private async registerRemoteSwitchMcp(
+  private async writeRemoteLaunchProfile(
     plugin: ReturnType<typeof getPlugin>,
     slug: string,
-    hasSwitchIdentity: boolean,
     specialization: SwitchLaunchSpecialization | undefined
   ): Promise<string[]> {
-    const profile = resolveSwitchLaunchProfile(plugin, {
+    const profile = resolveAgentLaunchProfile(plugin, {
       slug,
       workingDir: this.sessionPath,
-      hasSwitchIdentity,
       specialization,
     });
     if (!profile) return [];
@@ -557,20 +555,17 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
           : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
-      // Register the Switch MCP server (Codex writes a profile under the VM's
-      // ~/.codex, also carrying model / effort / instructions). The connector
-      // plugin registers the same server from its own `.mcp.json`; this stays
-      // for installs still on a plugin that predates it — and a VM cannot even
-      // report a connector upgrade as available, so it would strand silently.
       const agentRecord = await getAgentById(session.agentId);
       // Read from the agent, not the session: the session's copy is frozen at
       // creation, so an existing session never picked up the toggle. See the
       // matching comment in local-agent-runtime.
       const autoApprove = agentRecord?.autoApprove ?? session.autoApprove ?? false;
-      const switchMcpArgs = await this.registerRemoteSwitchMcp(
+      // Codex writes a profile under the VM's ~/.codex for model / effort /
+      // instructions. The Switch MCP server comes from the connector plugin's
+      // own `.mcp.json`, on the VM as locally.
+      const launchProfileArgs = await this.writeRemoteLaunchProfile(
         plugin,
         agentCredsSlug(session),
-        !!identityVars.SWITCH_API_ENDPOINT,
         toSwitchSpecialization(agentRecord?.providerConfig)
       );
 
@@ -580,13 +575,13 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         // A remote agent runs as its own definition: the provider produces the
         // run-as-name args (Claude → `--agent <name> --settings <neutral creds>`),
         // resolved on the VM (sessionPath is remote). Distinct from user extra
-        // args (CHOO-1440). The provider also owns how it receives a per-session
-        // Switch MCP server when it cannot read one from a config file.
+        // args (CHOO-1440). The provider also owns how it loads its per-agent
+        // specialization when that needs a config file.
         agentArgs: [
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...switchMcpArgs,
+          ...launchProfileArgs,
         ],
         autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,

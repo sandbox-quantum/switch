@@ -4,28 +4,6 @@ import type { PluginFs } from '../../runtime/fs';
 
 export type McpTransport = 'stdio' | 'http';
 
-/**
- * The Switch MCP runtime as a stdio command, handed to {@link
- * IMcpBehavior.launchProfile}.
- *
- * Static and secret-free — but not self-sufficient. An agent host spawns an MCP
- * server with an environment of its own choosing, not a copy of its own: Codex
- * passes a fixed allowlist (`HOME`, `PATH`, `SHELL`, `USER`, `TMPDIR`, …) and
- * drops everything else. `envVars` names what the host must route through for
- * the runtime to authenticate and to resolve its package, carrying names only
- * so no credential is written anywhere.
- */
-export type SwitchMcpLaunchServer = {
-  command: string;
-  args: string[];
-  /**
-   * Environment variable names the host must forward from its own environment.
-   * Required rather than optional: a launch server that omits them produces a
-   * session whose Switch tools silently never start.
-   */
-  envVars: string[];
-};
-
 /** A single per-agent launch config file, path relative to the agent's home. */
 export type SwitchLaunchProfileFile = {
   relativePath: string;
@@ -63,23 +41,22 @@ export type IMcpBehavior = {
   writeServers(fs: PluginFs, servers: McpServerRegistration[]): Promise<void>;
   removeServer(fs: PluginFs, name: string): Promise<void>;
   /**
-   * Compute the launch config that registers the Switch MCP server for a
-   * session (and folds in any per-agent specialization), for agents whose
-   * connector plugin cannot resolve a per-session server from a bundled config.
-   * Pure: it returns the files to write and the argv to load them, leaving the
-   * write to the caller so the same result serves a direct write (local/SSH) and
-   * a baked launch spec the sidecar writes.
+   * Compute the launch config that applies a session's per-agent specialization
+   * — model, reasoning effort, instructions — for a provider that can only take
+   * them from a config file. Pure: it returns the files to write and the argv to
+   * load them, leaving the write to the caller so the same result serves a
+   * direct write (local/SSH) and a baked launch spec the sidecar writes.
    *
-   * Claude Code leaves this undefined: its plugin expands environment variables
-   * in a bundled `.mcp.json`, so the config is already per-session. Codex
-   * performs no such expansion and a stdio server cannot ride argv across the
-   * `resume` subcommand cleanly, so it returns a per-agent profile
-   * (`~/.codex/<name>.config.toml`) and `--profile <name>`. That profile must
-   * also name the environment it needs;
-   * see {@link SwitchMcpLaunchServer.envVars}.
+   * This does NOT register the Switch MCP server. Both connector plugins ship
+   * that in their own bundled `.mcp.json`, so it is already present for every
+   * session of that host, switchdash-launched or not.
    *
-   * Returns `null` when there is nothing to write (no Switch identity and no
-   * specialization).
+   * Claude Code leaves this undefined: it takes its specialization on argv.
+   * Codex returns a per-agent profile (`~/.codex/<name>.config.toml`) and
+   * `--profile <name>`, because free-form instructions cannot ride a command
+   * line that the SSH and tmux paths re-render as a shell string.
+   *
+   * Returns `null` when there is nothing to specialize.
    */
   launchProfile?(
     params: {
@@ -87,7 +64,6 @@ export type IMcpBehavior = {
       /** The agent's working directory, mixed into the profile name so two agents
        * that share a name in different directories get distinct profiles. */
       workingDir: string;
-      switchServer: SwitchMcpLaunchServer | null;
     } & SwitchLaunchSpecialization
   ): SwitchLaunchProfile | null;
   /**

@@ -1,7 +1,6 @@
 import { pluginRegistry } from '@switchdash/plugins/agents';
 import { parse as parseTOML } from 'smol-toml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { switchAgentRuntimeCommand } from '@shared/core/switch-rooms/switch-agent-runtime';
 
 const buildCommand = vi.fn(() => ({ command: 'claude', args: ['--x'], env: { E: '1' } }));
 const launchArgs = vi.fn((dir: string, name: string) => [
@@ -11,15 +10,15 @@ const launchArgs = vi.fn((dir: string, name: string) => [
   `${dir}/.switch/agents/${name}.json`,
 ]);
 
-const launchProfile = vi.fn((params: { slug: string; switchServer: unknown | null }) =>
-  params.switchServer
+const launchProfile = vi.fn((params: { slug: string; model?: string; instructions?: string }) =>
+  params.model || params.instructions
     ? {
         files: [{ relativePath: `.codex/${params.slug}.config.toml`, content: 'PROFILE' }],
         args: ['--profile', params.slug],
       }
     : null
 );
-/** Set per test: whether the mocked provider registers the Switch server itself. */
+/** Set per test: whether the mocked provider takes specialization from a file. */
 let mcpBehavior: { launchProfile?: typeof launchProfile } | undefined;
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
@@ -95,13 +94,17 @@ describe('generateAgentLaunchSpec', () => {
     expect(buildCommand).toHaveBeenCalledWith(expect.objectContaining({ agentArgs: [] }));
   });
 
-  it('bakes the profile args and launch file for a provider that registers the server itself', async () => {
-    // The endpoint and credentials reach the runtime through the env, so the spec
-    // carries the profile file the sidecar writes on the VM plus `--profile <slug>`
-    // to load it — no argv endpoint token any more.
+  it('bakes the profile args and launch file for a provider that specializes from a file', async () => {
+    // The endpoint and credentials reach the runtime through the env, and the
+    // Switch server through the connector plugin, so the spec carries only the
+    // per-agent profile the sidecar writes on the VM plus `--profile <slug>`.
     mcpBehavior = { launchProfile };
 
-    const spec = await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+    const spec = await generateAgentLaunchSpec({
+      ...baseParams,
+      autoApprove: false,
+      specialization: { model: 'gpt-5.6-terra' },
+    });
 
     expect(launchProfile).toHaveBeenCalledWith(expect.objectContaining({ slug: 'hoot' }));
     expect(buildCommand).toHaveBeenCalledWith(
@@ -112,19 +115,23 @@ describe('generateAgentLaunchSpec', () => {
     ]);
   });
 
-  it('bakes a profile that names the credentials and carries none of them', async () => {
+  it('bakes a profile that carries no credential and registers no server', async () => {
     // The sidecar writes this file verbatim on the VM, so whatever is baked here
     // is what a remote session runs with — and a value baked in would be a secret
-    // shipped to the box and re-read on every poll.
+    // shipped to the box and re-read on every poll. The Switch server is not
+    // baked either: the connector plugin declares it on the VM as it does locally.
     mcpBehavior = (pluginRegistry.get('codex')!.behavior as { mcp?: typeof mcpBehavior }).mcp;
 
-    const spec = await generateAgentLaunchSpec({ ...baseParams, autoApprove: false });
+    const spec = await generateAgentLaunchSpec({
+      ...baseParams,
+      autoApprove: false,
+      specialization: { model: 'gpt-5.6-terra' },
+    });
 
     const content = spec.launchFiles![0].content;
-    const server = (parseTOML(content) as { mcp_servers: Record<string, { env_vars?: string[] }> })
-      .mcp_servers.switch;
 
-    expect(server.env_vars).toEqual(switchAgentRuntimeCommand().envVars);
+    expect(content).toContain('model = "gpt-5.6-terra"');
+    expect(content).not.toContain('mcp_servers');
     expect(content).not.toMatch(/Bearer |tok-/);
   });
 

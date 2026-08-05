@@ -103,10 +103,9 @@ export const provider = registerPluginBehavior(plugin, {
   mcp: {
     ...codexMcpAdapter(),
     // The profile carries per-agent model / effort / instructions in CODEX_HOME,
-    // loaded with `--profile <slug>`, and still registers the Switch runtime.
-    // The connector plugin's own .mcp.json registers it as well; the profile
-    // stays until a plugin older than that .mcp.json can be upgraded
-    // automatically, since today only a manual Update in settings does it.
+    // loaded with `--profile <slug>`. It registers no MCP server: the connector
+    // plugin's own .mcp.json does that, for every Codex session rather than only
+    // switchdash's.
     launchProfile: codexLaunchProfile,
     launchProfilePaths: codexProfilePaths,
   },
