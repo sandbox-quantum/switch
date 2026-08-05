@@ -7,9 +7,14 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
 import { assignAgentServer } from './assignAgentServer';
+import {
+  attachConfiguredAgents,
+  type AttachConfiguredAgentsParams,
+} from './attach-configured-agents';
 import { createAgent } from './createAgent';
 import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
+import { discoverConfiguredAgents } from './discover-configured-agents';
 import { discoverLocationAgents } from './discover-location-agents';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
@@ -40,6 +45,9 @@ export const agentsController = createRPCController({
     dir: string;
     providerId: AgentProviderId;
   }) => discoverLocationAgents(params),
+  discoverConfiguredAgents: (params: { sshHost: string | null; dir: string }) =>
+    discoverConfiguredAgents(params),
+  attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
   getAgents: (locationId?: string) => getAgents(locationId),
   getAgentById: (agentId: string) => getAgentById(agentId),
   renameAgent: (params: RenameAgentParams) => renameAgent(params),
