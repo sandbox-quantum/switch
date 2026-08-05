@@ -48,10 +48,12 @@ export interface HookEventLogger {
  * instead: it carries a `SWITCH_CONNECTION_ID` and its `connect_to_room` claims
  * the room on that connection. The hook covers what that path misses — a Claude
  * session started outside switchdash and adopted afterwards, which joined a room
- * on a connection of its own. Codex has no equivalent case, so
- * `buildCodexHookConfig` registers no room hook: its Switch MCP server exists
- * only in the per-agent profile switchdash writes and launches it with, so a
- * Codex session switchdash did not start has no `connect_to_room` to call.
+ * on a connection of its own.
+ *
+ * `buildCodexHookConfig` registers no room hook. Note the case is no longer
+ * impossible: the Codex connector plugin now ships the Switch MCP server, so a
+ * Codex session started outside switchdash does have `connect_to_room`. An
+ * adopted Codex session is therefore untracked rather than inconceivable.
  */
 const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
 

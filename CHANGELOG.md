@@ -175,8 +175,7 @@ below:
   approval (validated — an unknown value fails rather than silently widening the
   sandbox); a Codex agent defaults to a `codex.<repo>.<user>` identity; and
   switchdash registers the Switch MCP runtime for Codex itself via a per-agent
-  Codex profile, since Codex can't expand `${VAR}` in a bundled `.mcp.json`
-  (CHOO-1436, #91, #79).
+  Codex profile (CHOO-1436, #91, #79).
 
 #### Fixed
 - Codex session correctness: per-agent Switch credentials are written to disk for

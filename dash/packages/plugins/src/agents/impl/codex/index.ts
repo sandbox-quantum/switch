@@ -102,9 +102,9 @@ export const provider = registerPluginBehavior(plugin, {
   hooks: buildCodexHookConfig(),
   mcp: {
     ...codexMcpAdapter(),
-    // Codex cannot expand ${VAR} in a bundled .mcp.json, so switchdash registers
-    // the local Switch runtime itself: a per-agent profile in CODEX_HOME loaded
-    // with `--profile <slug>`.
+    // The Switch runtime is registered by the connector plugin's own .mcp.json.
+    // The profile carries what is per-agent — model, effort, instructions — in
+    // CODEX_HOME, loaded with `--profile <slug>`.
     launchProfile: codexLaunchProfile,
     launchProfilePaths: codexProfilePaths,
   },

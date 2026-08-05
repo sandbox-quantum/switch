@@ -86,13 +86,19 @@ each ships its own copy of the Switch room-workflow skill at
   fetched with `npx` and built from `dash/packages/switch-agent-runtime/`.
   switchdash imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.
-- `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships
-  **only** the skill. Codex does not expand `${VAR}` in a plugin-bundled
-  `.mcp.json` and has no `${CLAUDE_PLUGIN_ROOT}` equivalent, so switchdash
-  registers the same local `switch-agent-runtime` MCP server itself when it
-  launches the session — through a per-agent Codex profile
-  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`), since a
-  stdio server cannot be expressed on argv the way an HTTP one can.
+- `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
+  skill plus its own MCP config, declared as `"mcpServers": "./.mcp.json"`, so a
+  Codex session gets the Switch tools from the plugin alone. Codex does not
+  expand `${VAR}` in a bundled config, so the server names its variables under
+  `env_vars` and Codex forwards them **by name** from its own environment — no
+  expansion, and no secret in the file. An unset name is simply not forwarded,
+  which is why the list can include the switchdash-only variables without
+  breaking a standalone session (the Claude connector cannot do this: `${VAR}`
+  expansion makes every declared variable mandatory).
+
+  switchdash still writes a per-agent Codex profile
+  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`), but only
+  for what is genuinely per-agent — model, reasoning effort, and instructions.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, or anything an agent-facing client needs to know:

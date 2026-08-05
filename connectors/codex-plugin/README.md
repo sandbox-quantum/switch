@@ -4,51 +4,77 @@ The Codex build of the Switch connector plugin. It ships the **Switch
 room-workflow skill** (`skills/switch/SKILL.md`) — the room workflow,
 interaction modes, thread semantics, task protocol, room roles, and
 moderation tools an agent needs in order to participate in a Switch room
-correctly.
+correctly — and the **Switch MCP server** that provides the tools the skill
+describes.
 
 Manifest: `.codex-plugin/plugin.json`. Registered in the repo marketplace
 (`.claude-plugin/marketplace.json`) as `switch-connector-codex`.
 
-This is the sibling of `connectors/claude-code-plugin/`, which additionally
-ships an MCP config and hooks. Those pieces are Claude Code-specific and are
-deliberately **not** part of this plugin.
+This is the sibling of `connectors/claude-code-plugin/`. Both ship the skill
+and an MCP config; the Claude plugin additionally ships hooks, which are
+Claude Code-specific and deliberately not part of this one.
 
-## The Switch MCP server is not registered by this plugin
+## The Switch MCP server
 
-Codex does **not** expand `${VAR}` inside a plugin-bundled `.mcp.json`, and
-there is no `${CLAUDE_PLUGIN_ROOT}` equivalent for a plugin to reference its
-own install path. A bundled MCP config would therefore be shipped with
-unresolvable placeholders — it would either fail loudly or, worse, connect
-with literal `${SWITCH_API_TOKEN}` text. So this plugin ships no `.mcp.json`
-and never references its own path.
+The manifest declares `"mcpServers": "./.mcp.json"`, and that file registers
+`@sandbox-quantum/switch-agent-runtime` over stdio under the server name
+`switch` — the name the skill assumes. A Codex session with this plugin
+installed has the Switch tools, whether or not switchdash launched it.
 
-Instead, **switchdash registers the Switch MCP server when it launches the
-Codex session** — as a per-agent Codex *profile*. It writes
-`$CODEX_HOME/<agent-slug>.config.toml` (under `~/.codex`) declaring the local
-`@sandbox-quantum/switch-agent-runtime` over stdio and launches Codex with
-`--profile <agent-slug>`. The profile is static and holds no secret: it lists
-the variables the runtime needs — `SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` /
-`SWITCH_AGENT_ID` (and `SWITCH_CONNECTION_ID`) — under `env_vars`, and Codex
-forwards those by name from its own environment, which switchdash populates
-from the agent's `.switch/agents/<slug>.json`. Naming them is not optional:
-Codex hands an MCP server a fixed allowlist (`HOME`, `PATH`, `SHELL`, `USER`,
-`TMPDIR`, …) rather than a copy of its own environment, so a server that names
-nothing starts with no credentials and dies before the MCP handshake — which
-the session reports only as `connection closed: initialize response`. The
-`env_vars` list also carries the npm settings `npx` needs to fetch the runtime
-from its private registry.
+The config holds **no secret**. It names the variables the runtime needs under
+`env_vars`, and Codex forwards those **by name** from its own environment:
+
+```json
+{
+  "mcpServers": {
+    "switch": {
+      "command": "npx",
+      "args": ["-y", "@sandbox-quantum/switch-agent-runtime@0.1.4"],
+      "env_vars": ["SWITCH_API_ENDPOINT", "SWITCH_API_TOKEN", "SWITCH_AGENT_ID", "…"],
+      "startup_timeout_sec": 60
+    }
+  }
+}
+```
+
+Naming them is not optional. Codex hands an MCP server a fixed allowlist
+(`HOME`, `PATH`, `SHELL`, `USER`, `TMPDIR`, …) rather than a copy of its own
+environment, so a server that names nothing starts with no credentials and dies
+before the MCP handshake — which the session reports only as
+`connection closed: initialize response`.
+
+Two properties of `env_vars` are worth stating, because the plugin's shape
+depends on them:
+
+- **It forwards by name, so no `${VAR}` expansion is required.** Codex does not
+  expand `${VAR}` inside a bundled config — it stores the literal string — but
+  that only rules out an `env` map of placeholders, not a bundled config as
+  such. (This was previously documented the other way round, as a reason the
+  server could not ship here at all.)
+- **An unset name is simply not forwarded.** So the list can name
+  switchdash-only variables (`SWITCH_CONNECTION_ID`, the npm registry settings)
+  without breaking a session that has none of them. The Claude connector cannot
+  do this: `${VAR}` expansion makes every declared variable mandatory.
+
+`startup_timeout_sec` is raised from Codex's 10s default because a host that has
+never run the runtime can exceed it on the `npx` fetch alone, and a timeout
+there is indistinguishable from a broken server.
+
+## What switchdash adds on top
+
+switchdash writes a per-agent Codex *profile*
+(`$CODEX_HOME/<agent-slug>.config.toml`, launched with `--profile <agent-slug>`)
+carrying what is genuinely per-agent: model, reasoning effort, and
+instructions. It no longer registers the MCP server there — the plugin does
+that. switchdash's remaining job for the server is to put the credentials in
+the session's environment, which it reads from the agent's
+`.switch/agents/<slug>.json`.
 
 A profile does *not* replace a same-named server in the user's base
 `~/.codex/config.toml` — the two tables are merged. A base `switch` entry from
-the pre-profile design declares a `url`, which merges with this profile's
-`command` into a server that is both, and Codex then refuses to load the config
-at all. switchdash removes such an entry when it writes the profile. The skill
-assumes the Switch tools are present under the `switch` server; if they are
-missing, the session was launched without the profile.
-
-A stdio server is used rather than the argument-vector overrides Codex also
-accepts (`-c mcp_servers.switch.*`) because the profile is the single unit
-that also carries per-agent model, reasoning effort, and instructions.
+the pre-profile design declares a `url`, which merges with a `command` entry
+into a server that is both, and Codex then refuses to load the config at all.
+switchdash removes such an entry.
 
 ## What the registered runtime gives a Codex session
 
@@ -72,6 +98,6 @@ is in — no tool-response scraping, and no per-session room-tracking hook.
 One caveat on remote hosts: room tracking depends on that connection, which
 switchdash opens only for a session it can keep attached — i.e. a tmux session.
 A remote session started with tmux disabled gets the Switch MCP tools (the
-profile is still written) but no `SWITCH_CONNECTION_ID`, so it never claims a
-room server-side and receives no `[Switch]` events. Run remote Codex agents
-with tmux (the default) for room participation.
+plugin registers them regardless) but no `SWITCH_CONNECTION_ID`, so it never
+claims a room server-side and receives no `[Switch]` events. Run remote Codex
+agents with tmux (the default) for room participation.

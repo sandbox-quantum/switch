@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "switch": {
+      "command": "npx",
+      "args": ["-y", "@sandbox-quantum/switch-agent-runtime@0.1.4"],
+      "env_vars": [
+        "SWITCH_API_ENDPOINT",
+        "SWITCH_API_TOKEN",
+        "SWITCH_AGENT_ID",
+        "SWITCH_CONNECTION_ID",
+        "SWITCH_CHANNEL_DISABLE_POLL",
+        "npm_config_userconfig",
+        "SWITCHDASH_GITHUB_TOKEN"
+      ],
+      "startup_timeout_sec": 60
+    }
+  }
+}

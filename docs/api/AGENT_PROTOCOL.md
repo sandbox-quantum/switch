@@ -658,9 +658,9 @@ session `SWITCH_CONNECTION_ID`, so a switchdash-launched session claims its room
 on a connection switchdash already holds — for Claude Code and for Codex alike.
 The `PostToolUse` hook survives only as the fallback for a **Claude** session
 switchdash did not start and adopted afterwards, which holds a connection of its
-own. Codex registers no such hook: its Switch MCP server exists only in the
-per-agent profile switchdash writes, so a Codex session switchdash did not start
-has no `connect_to_room` to observe in the first place.
+own. Codex registers no such hook. Since the Codex connector plugin now ships
+the Switch MCP server, a Codex session switchdash did not start *can* call
+`connect_to_room`; such a session is currently untracked rather than impossible.
 
 Cross-checking a room against incoming events becomes unnecessary: a
 connection only receives events for rooms it is subscribed to, and any change
