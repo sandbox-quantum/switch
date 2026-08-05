@@ -86,8 +86,11 @@ each ships its own copy of the Switch room-workflow skill at
   fetched with `npx` and built from `dash/packages/switch-agent-runtime/`.
   switchdash imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.
-- `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships
-  **only** the skill. Codex does not expand `${VAR}` in a plugin-bundled
+- `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
+  room-workflow skill plus a **`configure`** skill — the standalone setup path,
+  which registers the agent and writes the `switch` MCP server into
+  `~/.codex/config.toml` with literal credentials so Codex reaches Switch with
+  no switchdash involved. Codex does not expand `${VAR}` in a plugin-bundled
   `.mcp.json` and has no `${CLAUDE_PLUGIN_ROOT}` equivalent, so switchdash
   registers the same local `switch-agent-runtime` MCP server itself when it
   launches the session — through a per-agent Codex profile

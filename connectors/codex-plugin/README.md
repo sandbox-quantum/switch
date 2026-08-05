@@ -1,10 +1,14 @@
 # switch-connector (Codex)
 
-The Codex build of the Switch connector plugin. It ships the **Switch
-room-workflow skill** (`skills/switch/SKILL.md`) — the room workflow,
-interaction modes, thread semantics, task protocol, room roles, and
-moderation tools an agent needs in order to participate in a Switch room
-correctly.
+The Codex build of the Switch connector plugin. It ships two skills:
+
+- **`skills/switch/SKILL.md`** — the room workflow, interaction modes, thread
+  semantics, task protocol, room roles, and moderation tools an agent needs in
+  order to participate in a Switch room correctly.
+- **`skills/configure/SKILL.md`** — the **standalone setup path**: register
+  this Codex instance as a Switch agent and wire the `switch` MCP server into
+  `~/.codex/config.toml` with that agent's credentials, so `codex` connects to
+  Switch with no switchdash involved. See "Standalone setup" below.
 
 Manifest: `.codex-plugin/plugin.json`. Registered in the repo marketplace
 (`.claude-plugin/marketplace.json`) as `switch-connector-codex`.
@@ -49,6 +53,74 @@ missing, the session was launched without the profile.
 A stdio server is used rather than the argument-vector overrides Codex also
 accepts (`-c mcp_servers.switch.*`) because the profile is the single unit
 that also carries per-agent model, reasoning effort, and instructions.
+
+## Standalone setup (no switchdash)
+
+The `configure` skill covers the case switchdash does not: a user who installs
+this plugin and wants `codex` to reach Switch from a plain terminal. It
+registers the agent against the bridge (`POST /agents/register-known` with
+`agent_type: "codex"`) and then registers the MCP server with `codex mcp add`,
+storing the credentials as **literal values** in the user's base config.
+
+Literal values, rather than the `env_vars` name-forwarding the profile uses,
+because the two paths differ in who launches Codex. `env_vars` forwards names
+from the launching process's environment — which works precisely because
+switchdash *is* that process and populates it. Standalone there is no
+injector, so names would forward nothing and the runtime would die before the
+MCP handshake.
+
+Three properties of Codex config, all verified against codex-cli 0.146.0,
+constrain how this can be done:
+
+- **An `mcp_servers.<name>` table must declare its own transport.** An
+  `env`-only table — the obvious way to add credentials to a server the plugin
+  already registers — is rejected with `Error loading config.toml: invalid
+  transport`, and that failure takes down **every** Codex session on the
+  machine, not just the Switch tools. This is why the skill drives
+  `codex mcp add` (which always writes a complete entry) instead of editing
+  TOML.
+- **Codex has no project-scoped config.** There is no `./.codex/config.toml`
+  equivalent of a per-repo settings file; `mcp_servers` is read from
+  `$CODEX_HOME` only. So the standalone identity is per-machine, and the
+  Claude connector's per-project/global scope choice has no analogue here.
+- **The offline run command Switch posts never includes `--profile`** — it is
+  a bare `cd "<repo_dir>" && codex "connect to switch room <name>"`. Base
+  config is therefore the only placement where that paste-ready command works
+  as written, which is why the skill puts it there.
+
+### What standalone does and does not get
+
+Works: the full Switch tool surface (including `send_attachment` /
+`download_attachment` — neither is gated on which process owns the
+connection), room participation, tasks, roles, moderation, and the offline run
+command.
+
+Does not: **inbound events are not pushed into the session.** switchdash reads
+the session's event connection and injects `[Switch] …` lines into its pane;
+standalone, nothing does. The runtime opens its own connection (no
+`SWITCH_CONNECTION_ID` is set, which is correct — that variable names a
+connection a supervisor has already opened to share), but a standalone session
+is pull-based: it calls `read_context` to catch up rather than being notified.
+Also absent: `auto_session` spawning, per-agent model / reasoning-effort /
+instruction overrides, and more than one Codex identity per machine.
+
+### Base config and a profile on the same machine
+
+Codex **merges** a profile's `[mcp_servers.switch]` with the base one, per
+key, and the base entry's literal `env` **wins** over the profile's `env_vars`
+forwarding. A base entry written by the `configure` skill therefore overrides
+the per-agent credentials switchdash injects, and the switchdash session
+silently runs as the standalone agent — wrong identity, no error.
+
+The skill checks for `~/.codex/*.config.toml` and warns before writing, but
+the sharp edge is real: a user who relies on switchdash for their Codex agents
+does not need the `configure` skill and should not run it.
+
+> Note the claim above that switchdash "removes such an entry when it writes
+> the profile" is about a *different-transport* entry and is, as of this
+> writing, not implemented — `codexMcpAdapter.removeServer` has no call sites.
+> A same-transport base entry is not removed either, which is what makes the
+> credential override above reachable.
 
 ## What the registered runtime gives a Codex session
 

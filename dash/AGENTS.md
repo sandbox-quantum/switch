@@ -371,7 +371,7 @@ forgotten and someone will debug a build they think is newer than it is.
 |---|---|---|
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
-| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (it ships only the skill) — installs will not pick it up otherwise |
+| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills) — installs will not pick it up otherwise |
 | Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and two pins name the version sessions actually run — the Claude connector `.mcp.json`, and `SWITCH_AGENT_RUNTIME_VERSION` in `src/shared/core/switch-rooms/switch-agent-runtime.ts` (which the Codex profile uses) |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
