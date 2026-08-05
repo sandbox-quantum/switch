@@ -27,7 +27,6 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-statuses: write
-          permission-actions: write
 
       - name: CLA Assistant
         if: >-
