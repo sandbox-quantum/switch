@@ -36,6 +36,9 @@ MAX_DESCRIPTION = 100
 # would silently lose part of itself once reassembled into the args string.
 _TOKEN = re.compile(rf"^@?({NAME_CHAR}+)$")
 
+# What Discord accepts as an option name.
+_OPTION_NAME = re.compile(r"^[-_a-z0-9]{1,32}$")
+
 SlashInvoke = Callable[[discord.Interaction, Command, dict[str, Any]], Awaitable[None]]
 """(interaction, command, option_values) -> None.
 
@@ -113,6 +116,33 @@ def reassemble_args(spec: tuple[CommandArg, ...], values: dict[str, Any]) -> str
     return " ".join(parts)
 
 
+def validate_args_spec(command: Command) -> None:
+    """Reject an `args_spec` that cannot be declared or cannot round-trip.
+
+    Both failures below would otherwise surface as a `ValueError` from deep
+    inside `inspect.Signature` or discord.py's option machinery, naming neither
+    the command nor the argument at fault, and would take the whole bridge's
+    startup with them.
+    """
+    seen_optional: str | None = None
+    for arg in command.args_spec:
+        if not _OPTION_NAME.match(arg.name):
+            raise ValueError(
+                f"Command '{command.name}' declares argument '{arg.name}', which "
+                "Discord cannot accept as an option name (lowercase letters, "
+                "digits, `-` and `_` only, at most 32 characters)."
+            )
+        if arg.required and seen_optional is not None:
+            raise ValueError(
+                f"Command '{command.name}' declares required argument "
+                f"'{arg.name}' after optional '{seen_optional}'. Arguments are "
+                "reassembled positionally, so an optional one can only be "
+                "followed by other optional ones."
+            )
+        if not arg.required:
+            seen_optional = arg.name
+
+
 def _make_callback(command: Command, invoke: SlashInvoke) -> Any:
     """Build a callback whose signature declares `command`'s arguments.
 
@@ -174,6 +204,7 @@ def build_app_commands(
                 command.name,
             )
             continue
+        validate_args_spec(command)
         built.append(
             app_commands.Command(
                 name=command.name,

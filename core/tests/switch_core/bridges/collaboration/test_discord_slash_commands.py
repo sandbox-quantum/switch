@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME
+from switch_core.bridges.agent.commands import (
+    COMMANDS,
+    COMMANDS_BY_NAME,
+    Command,
+    CommandArg,
+)
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -16,6 +22,7 @@ from switch_core.bridges.collaboration.discord.slash import (
     build_app_commands,
     reassemble_args,
     truncate_description,
+    validate_args_spec,
 )
 from switch_core.bridges.collaboration.models import InboundCommand
 
@@ -153,6 +160,43 @@ def test_every_visible_registry_command_is_registered() -> None:
     # The registry is the single source of truth — a command added there must
     # appear as a slash command without anyone editing a second list.
     assert built == expected
+
+
+def test_registry_command_names_are_valid_discord_names() -> None:
+    # Discord command names share the option-name rules. A registry command
+    # that breaks them would only fail when a Discord bridge starts.
+    for command in COMMANDS:
+        if command.hidden:
+            continue
+        assert re.match(r"^[-_a-z0-9]{1,32}$", command.name), command.name
+
+
+def test_every_registry_args_spec_is_declarable() -> None:
+    # Guards the whole registry, not just the 7 commands that have arguments
+    # today: an 8th added with a bad name or a required-after-optional order
+    # fails here rather than inside discord.py at bridge startup.
+    for command in COMMANDS:
+        validate_args_spec(command)
+
+
+def test_bad_option_name_is_rejected_with_a_useful_message() -> None:
+    bad = Command("x", "d", args_spec=(CommandArg("Agent Name", "d", required=True),))
+    with pytest.raises(ValueError, match="Agent Name"):
+        validate_args_spec(bad)
+
+
+def test_required_after_optional_is_rejected() -> None:
+    # Reassembly is positional, so this ordering cannot round-trip.
+    bad = Command(
+        "x",
+        "d",
+        args_spec=(
+            CommandArg("first", "d", required=False),
+            CommandArg("second", "d", required=True),
+        ),
+    )
+    with pytest.raises(ValueError, match="second"):
+        validate_args_spec(bad)
 
 
 def test_hidden_command_is_not_registered() -> None:
