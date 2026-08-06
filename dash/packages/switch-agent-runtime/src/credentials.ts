@@ -192,7 +192,12 @@ export function readAgentStore(
   return { agents, unusable, projectDir: dir };
 }
 
+/** Compare endpoints without tripping over a trailing slash. */
+export function normalizeEndpoint(endpoint: string): string {
+  return endpoint.trim().replace(/\/+$/, '');
+}
+
 /** The distinct Switch endpoints a set of agents belongs to. */
 export function distinctEndpoints(agents: ResolvedAgent[]): string[] {
-  return [...new Set(agents.map((a) => a.endpoint.replace(/\/+$/, '')))].sort();
+  return [...new Set(agents.map((a) => normalizeEndpoint(a.endpoint)))].sort();
 }

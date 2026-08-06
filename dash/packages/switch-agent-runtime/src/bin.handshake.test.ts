@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,7 +36,12 @@ const INITIALIZE = {
   },
 };
 
-type Running = { child: ChildProcess; stdout: () => string; stderr: () => string };
+type Running = {
+  child: ChildProcess;
+  root: string;
+  stdout: () => string;
+  stderr: () => string;
+};
 
 const running: ChildProcess[] = [];
 const servers: http.Server[] = [];
@@ -92,8 +97,36 @@ function sandbox(): string {
   return dir;
 }
 
-function start(env: Record<string, string>): Running {
+/**
+ * Provision an agent in a sandbox: an entry naming it, and a secret keyed by its
+ * agent id. Both land in the same directory here only because a sandbox is its
+ * own HOME as well as its own working directory — that the two roots are read
+ * separately is what the `credentials` unit tests cover.
+ */
+function provision(
+  root: string,
+  agent: { slug: string; name?: string; agentId: string; endpoint: string; token?: string }
+): void {
+  const dir = join(root, '.switch', 'agents');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `${agent.slug}.json`),
+    JSON.stringify({
+      name: agent.name ?? agent.slug,
+      agent_id: agent.agentId,
+      endpoint: agent.endpoint,
+    })
+  );
+  if (agent.token !== undefined) {
+    writeFileSync(join(dir, `${agent.agentId}.json`), JSON.stringify({ token: agent.token }), {
+      mode: 0o600,
+    });
+  }
+}
+
+function start(env: Record<string, string>, setup?: (root: string) => void): Running {
   const root = sandbox();
+  setup?.(root);
   const child = spawn(process.execPath, [BIN], {
     cwd: root,
     // A fixed environment, as a host gives it: nothing leaks in from this runner.
@@ -110,7 +143,7 @@ function start(env: Record<string, string>): Running {
   child.stderr.on('data', (c: Buffer) => {
     err += c.toString();
   });
-  return { child, stdout: () => out, stderr: () => err };
+  return { child, root, stdout: () => out, stderr: () => err };
 }
 
 /** Resolve with the exit code, or reject if the process outlives the deadline. */
@@ -124,25 +157,56 @@ function exitWithin(child: ChildProcess, ms: number): Promise<number | null> {
   });
 }
 
-/** Resolve with the JSON-RPC response to `initialize`. */
-function responseWithin(run: Running, ms: number): Promise<Record<string, unknown>> {
+/** Resolve with the JSON-RPC response carrying `id`. */
+function responseWithin(run: Running, id: number, ms: number): Promise<Record<string, unknown>> {
+  const seek = (): Record<string, unknown> | null => {
+    for (const line of run.stdout().split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const message = JSON.parse(line) as { id?: number };
+        if (message.id === id) return message as Record<string, unknown>;
+      } catch {
+        // Partial line; wait for the rest.
+      }
+    }
+    return null;
+  };
+
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no initialize response within ${ms}ms`)), ms);
+    // The answer may already be buffered from an earlier read, in which case no
+    // further 'data' event is coming and waiting for one would hang.
+    const already = seek();
+    if (already) return resolve(already);
+
+    const timer = setTimeout(() => reject(new Error(`no response to ${id} within ${ms}ms`)), ms);
     run.child.stdout!.on('data', () => {
-      for (const line of run.stdout().split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const message = JSON.parse(line) as { id?: number };
-          if (message.id === 1) {
-            clearTimeout(timer);
-            resolve(message as Record<string, unknown>);
-          }
-        } catch {
-          // Partial line; wait for the rest.
-        }
+      const found = seek();
+      if (found) {
+        clearTimeout(timer);
+        resolve(found);
       }
     });
   });
+}
+
+/** Complete `initialize` and the follow-up notification, leaving the server live. */
+async function handshake(run: Running): Promise<void> {
+  run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
+  await responseWithin(run, 1, DEADLINE_MS);
+  run.child.stdin!.write(
+    `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`
+  );
+}
+
+/** Send one request and resolve with its response. */
+async function request(
+  run: Running,
+  id: number,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<Record<string, unknown>> {
+  run.child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+  return responseWithin(run, id, DEADLINE_MS);
 }
 
 describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () => {
@@ -155,7 +219,7 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     });
     run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
 
-    const response = (await responseWithin(run, DEADLINE_MS)) as {
+    const response = (await responseWithin(run, 1, DEADLINE_MS)) as {
       result?: { protocolVersion?: string; serverInfo?: { name?: string } };
     };
 
@@ -163,17 +227,151 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     expect(response.result?.serverInfo?.name).toBeTruthy();
   });
 
-  it('exits rather than hanging when the host forwarded it no credentials', async () => {
-    // The failure this whole change exists to fix: a host that forwards nothing
-    // leaves the runtime blind, and exiting is what makes that legible.
+  it('exits rather than hanging when nothing configures it at all', async () => {
+    // No environment and no store: there is no identity to be had, and exiting
+    // is what makes that legible to a host that only sees a closed pipe.
     const run = start({});
     run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
 
     expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
-    for (const name of ['SWITCH_API_ENDPOINT', 'SWITCH_API_TOKEN', 'SWITCH_AGENT_ID']) {
-      expect(run.stderr()).toContain(name);
-    }
+    expect(run.stderr()).toContain('.switch/agents');
+    expect(run.stderr()).toContain('configure');
     expect(run.stdout()).toBe('');
+  });
+
+  it('starts from the local store when the host forwarded nothing', async () => {
+    const endpoint = await opsServer();
+    const run = start({}, (root) =>
+      provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+    run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
+
+    const response = (await responseWithin(run, 1, DEADLINE_MS)) as {
+      result?: { protocolVersion?: string };
+    };
+
+    expect(response.result?.protocolVersion).toBeTruthy();
+    expect(run.stderr()).toContain('agent_id=uuid-solo');
+  });
+
+  it('treats an unexpanded ${SWITCH_*} as absent and falls through to the store', async () => {
+    // Claude spawns the server once before expanding its settings env block.
+    // Literals must not be mistaken for credentials, nor suppress the store.
+    const endpoint = await opsServer();
+    const run = start(
+      {
+        SWITCH_API_ENDPOINT: '${SWITCH_API_ENDPOINT}',
+        SWITCH_API_TOKEN: '${SWITCH_API_TOKEN}',
+        SWITCH_AGENT_ID: '${SWITCH_AGENT_ID}',
+      },
+      (root) => provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+    run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
+
+    const response = (await responseWithin(run, 1, DEADLINE_MS)) as {
+      result?: { protocolVersion?: string };
+    };
+
+    expect(response.result?.protocolVersion).toBeTruthy();
+    expect(run.stderr()).toContain('agent_id=uuid-solo');
+  });
+
+  it('refuses to guess which server it belongs to when the store spans two', async () => {
+    const run = start({}, (root) => {
+      provision(root, {
+        slug: 'dev',
+        agentId: 'uuid-dev',
+        endpoint: 'https://dev.example',
+        token: 't1',
+      });
+      provision(root, {
+        slug: 'prod',
+        agentId: 'uuid-prod',
+        endpoint: 'https://prod.example',
+        token: 't2',
+      });
+    });
+
+    expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
+    expect(run.stderr()).toContain('span 2 Switch servers');
+    expect(run.stderr()).toContain('SWITCH_API_ENDPOINT');
+    expect(run.stdout()).toBe('');
+  });
+
+  it('offers select_agent, and refuses everything else, until an identity is bound', async () => {
+    const endpoint = await opsServer();
+    const run = start({}, (root) => {
+      provision(root, { slug: 'alice', agentId: 'uuid-a', endpoint, token: 'tok-a' });
+      provision(root, { slug: 'bob', agentId: 'uuid-b', endpoint, token: 'tok-b' });
+    });
+
+    await handshake(run);
+
+    const listed = (await request(run, 2, 'tools/list')) as {
+      result?: { tools?: { name: string }[] };
+    };
+    const names = (listed.result?.tools ?? []).map((t) => t.name);
+    expect(names).toContain('select_agent');
+
+    const refused = (await request(run, 3, 'tools/call', {
+      name: 'download_attachment',
+      arguments: { mxc: 'mxc://example/1' },
+    })) as { result?: { isError?: boolean; content?: { text?: string }[] } };
+
+    expect(refused.result?.isError).toBe(true);
+    const text = refused.result?.content?.[0]?.text ?? '';
+    expect(text).toContain('select_agent');
+    expect(text).toContain('alice');
+    expect(text).toContain('bob');
+  });
+
+  it('binds the chosen agent when select_agent names one', async () => {
+    const endpoint = await opsServer();
+    const run = start({}, (root) => {
+      provision(root, { slug: 'alice', agentId: 'uuid-a', endpoint, token: 'tok-a' });
+      provision(root, { slug: 'bob', agentId: 'uuid-b', endpoint, token: 'tok-b' });
+    });
+
+    await handshake(run);
+
+    const bound = (await request(run, 2, 'tools/call', {
+      name: 'select_agent',
+      arguments: { name: 'bob' },
+    })) as { result?: { isError?: boolean; structuredContent?: { agent_id?: string } } };
+
+    expect(bound.result?.isError).toBeFalsy();
+    expect(bound.result?.structuredContent?.agent_id).toBe('uuid-b');
+    expect(run.stderr()).toContain('bound to bob');
+  });
+
+  it('names the agents it knows when select_agent names one it does not', async () => {
+    const endpoint = await opsServer();
+    const run = start({}, (root) => {
+      provision(root, { slug: 'alice', agentId: 'uuid-a', endpoint, token: 'tok-a' });
+      provision(root, { slug: 'bob', agentId: 'uuid-b', endpoint, token: 'tok-b' });
+    });
+
+    await handshake(run);
+
+    const answer = (await request(run, 2, 'tools/call', {
+      name: 'select_agent',
+      arguments: { name: 'carol' },
+    })) as { result?: { isError?: boolean; content?: { text?: string }[] } };
+
+    expect(answer.result?.isError).toBe(true);
+    expect(answer.result?.content?.[0]?.text).toContain('alice');
+  });
+
+  it('will not start on half an identity rather than silently using the store', async () => {
+    // Being the wrong agent is worse than not starting: a partial environment
+    // is a broken config, and falling through would hide it.
+    const endpoint = await opsServer();
+    const run = start({ SWITCH_AGENT_ID: 'uuid-env' }, (root) =>
+      provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+
+    expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
+    expect(run.stderr()).toContain('incomplete SWITCH_* environment');
   });
 
   it(
