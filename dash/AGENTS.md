@@ -323,6 +323,24 @@ pnpm run lint
     scrubbing it on write; that reinstates the problem this split exists to solve.
   - Anything contributed via `registerDiagnosticSection()` passes through the same
     export scrub. Never read the raw log file from outside `file-logger.ts`.
+- **An agent's Switch credentials are split across two files, and the split is the
+  point.** `<working dir>/.switch/agents/<slug>.json` holds the endpoint and agent
+  id; `$HOME/.switch/agents/<agent-id>.json`, mode `0600`, holds the API token —
+  on whichever host the agent runs on. Do not "simplify" the token back into the
+  working-tree file: a `.gitignore` there stops `git add`, and stops nothing else
+  — not an archive, a sync, a backup, or `git add -f`.
+  - Home files are keyed by **agent id**, never by name. `$HOME` is shared by every
+    project on the machine, so a name-keyed secret lets two agents called
+    `reviewer` overwrite each other's token.
+  - Write it through `switch-agent-secrets.ts`, not `PluginFs` — that interface has
+    five methods and cannot set a mode. Remote writes set `umask 077` *before* the
+    redirect so the file is never briefly world-readable.
+  - Three consumers read this layout: switchdash, the sidecar, and
+    `@sandbox-quantum/switch-agent-runtime`. Changing it means changing all three,
+    and the sidecar must keep reading both shapes rather than taking a major (see
+    the versioning trap below).
+  - `.claude/settings.local.json` still carries a token in the working tree. That
+    is a known gap, not the intended layout.
 - PTY environment passthrough must use the allowlist in `src/main/core/pty/pty-env.ts`.
 - Treat shell escaping and PTY spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
