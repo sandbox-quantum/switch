@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import * as http from 'node:http';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -39,10 +40,18 @@ type Running = { child: ChildProcess; stdout: () => string; stderr: () => string
 
 const running: ChildProcess[] = [];
 const servers: http.Server[] = [];
+const sandboxes: string[] = [];
 
 afterEach(() => {
   for (const child of running.splice(0)) child.kill('SIGKILL');
   for (const server of servers.splice(0)) server.close();
+  for (const dir of sandboxes.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // A just-killed child may still hold a file open; the OS reclaims tmp.
+    }
+  }
 });
 
 /** An endpoint serving the operation list the runtime loads before serving. */
@@ -68,10 +77,27 @@ async function blackHoleServer(): Promise<string> {
   return `http://127.0.0.1:${port}`;
 }
 
+/**
+ * A throwaway `HOME` and working directory for one spawn.
+ *
+ * Credential resolution reads `./.switch/agents/` and `~/.switch/agents/`, so
+ * the runner's own `HOME` would let whatever the developer happens to have
+ * configured decide whether these tests pass — and on a machine with a real
+ * agent provisioned, the no-credentials case would find one. Both roots are
+ * therefore empty and per-spawn.
+ */
+function sandbox(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'switch-runtime-test-'));
+  sandboxes.push(dir);
+  return dir;
+}
+
 function start(env: Record<string, string>): Running {
+  const root = sandbox();
   const child = spawn(process.execPath, [BIN], {
+    cwd: root,
     // A fixed environment, as a host gives it: nothing leaks in from this runner.
-    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env },
+    env: { PATH: process.env.PATH ?? '', HOME: root, ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   running.push(child);
