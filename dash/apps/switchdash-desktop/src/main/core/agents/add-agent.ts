@@ -99,7 +99,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
     // reader (launch path, auto-session watcher, notification poller) uses
     // (CHOO-1440). Providers with repo-agent definitions (Claude) layer their
     // on-disk definition on top; that's the only provider-specific extra.
-    await writeNeutralAgentSettingsFs(workspace.fs, {
+    await writeNeutralAgentSettingsFs(workspace.fs, workspace.secrets, {
       slug: params.name,
       apiEndpoint: server.apiUrl,
       apiToken: registered.apiKey,

@@ -7,6 +7,10 @@ import {
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import {
+  type AgentSecretStore,
+  createLocalAgentSecretStore,
+} from './switch-agent-secrets';
+import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
   SWITCH_SETTINGS_RELATIVE_PATH,
@@ -78,6 +82,34 @@ export function mergeSwitchSettings(
   };
 
   return `${JSON.stringify(merged, null, 2)}\n`;
+}
+
+/**
+ * The same merge for the provider-neutral per-agent file, minus the token
+ * (CHOO-1962). Endpoint, agent id and the connector's tool rules stay — none is
+ * a secret, and the file doubles as the settings file Claude Code is launched
+ * with, so its shape is a contract beyond switchdash. Only `SWITCH_API_TOKEN`
+ * leaves, for `$HOME` at `0600`.
+ *
+ * A token already in the file is actively removed rather than merged forward:
+ * this is what migrates a pre-split file, and leaving it would defeat the point
+ * of moving it.
+ *
+ * Pure, like its sibling, so the local and remote writers produce identical
+ * bytes.
+ */
+export function mergeNeutralAgentSettings(
+  existingRaw: string | null,
+  creds: { apiEndpoint: string; agentId: string }
+): string {
+  const merged = JSON.parse(
+    mergeSwitchSettings(existingRaw, { ...creds, apiToken: '' })
+  ) as Record<string, unknown>;
+
+  const env = { ...(merged.env as Record<string, unknown>) };
+  delete env.SWITCH_API_TOKEN;
+
+  return `${JSON.stringify({ ...merged, env }, null, 2)}\n`;
 }
 
 /**
@@ -262,9 +294,10 @@ export async function writeSwitchSettings(params: {
  * control.
  */
 export async function writeAgentNeutralSettings(
+  secrets: AgentSecretStore,
   params: { dir: string; slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
-  await writeNeutralAgentSettingsFs(createPluginFs(params.dir), params);
+  await writeNeutralAgentSettingsFs(createPluginFs(params.dir), secrets, params);
 }
 
 /**
@@ -280,12 +313,18 @@ export async function writeAgentNeutralSettings(
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
+  secrets: AgentSecretStore,
   params: { slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
+  // The token goes first. If the second write fails the agent has a secret it
+  // does not yet reference, which is inert; the other order would leave a file
+  // claiming an identity whose token never landed.
+  await secrets.write(params.agentId, params.apiToken);
+
   if (!(await workspaceFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
     await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
   const relPath = agentSettingsRelativePath(params.slug);
-  const merged = mergeSwitchSettings(await workspaceFs.read(relPath), params);
+  const merged = mergeNeutralAgentSettings(await workspaceFs.read(relPath), params);
   await workspaceFs.write(relPath, merged);
 }

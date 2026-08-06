@@ -63,6 +63,9 @@ vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
 
 vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
   readAgentSwitchEnvFromFs: vi.fn(async () => ({})),
+  // Pass-through: the home-side secret lookup has its own tests, and these
+  // assert on what the launch path does with whatever identity it resolved.
+  withAgentSecret: vi.fn(async (env: Record<string, string>) => env),
 }));
 
 // Loading the agent record to fold in per-agent Codex config would pull in the

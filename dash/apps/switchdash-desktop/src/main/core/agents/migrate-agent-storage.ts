@@ -128,7 +128,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
           foundSwitchAgentId: recovered.agentId,
         });
       } else if (recovered) {
-        await writeNeutralAgentSettingsFs(workspace.fs, {
+        await writeNeutralAgentSettingsFs(workspace.fs, workspace.secrets, {
           slug: name,
           apiEndpoint: recovered.apiEndpoint,
           apiToken: recovered.token,

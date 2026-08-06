@@ -23,7 +23,11 @@ import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-s
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
 import { npmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
-import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
+import { createLocalAgentSecretStore } from '@main/core/agents/switch-agent-secrets';
+import {
+  readAgentSwitchEnvFromFs,
+  withAgentSecret,
+} from '@main/core/switch-rooms/switch-credentials';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
@@ -177,10 +181,13 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // Resolved before the command is built because a provider that registers
       // the Switch server at launch keys it on this identity (see below).
       const workspaceFs = createPluginFs(this.sessionPath);
-      const identityVars =
+      const identityVars = await withAgentSecret(
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
-          : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
+          : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log),
+        createLocalAgentSecretStore(),
+        log
+      );
 
       // Apply the provider's per-agent specialization: for Codex, a profile
       // under `~/.codex` carrying model / effort / instructions, loaded with

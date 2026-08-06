@@ -95,9 +95,23 @@ describe('writeSwitchSettings', () => {
   });
 });
 
+/** An in-memory stand-in for the home-side secret store. */
+function fakeSecrets() {
+  const tokens = new Map<string, string>();
+  return {
+    tokens,
+    store: {
+      read: async (agentId: string) => tokens.get(agentId) ?? null,
+      write: async (agentId: string, token: string) => void tokens.set(agentId, token),
+      delete: async (agentId: string) => void tokens.delete(agentId),
+    },
+  };
+}
+
 describe('writeNeutralAgentSettingsFs', () => {
-  it('writes the provider-neutral per-agent creds keyed by slug, with a gitignore', async () => {
-    await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+  it('keeps the identity in the working tree and puts the token in the home store', async () => {
+    const secrets = fakeSecrets();
+    await writeNeutralAgentSettingsFs(createPluginFs(dir), secrets.store, {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'secret-token',
@@ -106,18 +120,20 @@ describe('writeNeutralAgentSettingsFs', () => {
 
     const raw = await fs.readFile(path.join(dir, agentSettingsRelativePath('agent-abc')), 'utf8');
     const settings = JSON.parse(raw) as Record<string, unknown>;
+    // Endpoint and id are not secrets and stay: the file doubles as the settings
+    // file Claude Code is launched with.
     expect(settings.env).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'secret-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
+    expect(raw).not.toContain('secret-token');
+    expect(secrets.tokens.get('switch-agent-1')).toBe('secret-token');
 
-    // The credentials directory is git-ignored so the token never enters VCS.
     const ignore = await fs.readFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), 'utf8');
     expect(ignore).toBe('*\n');
   });
 
-  it('merges into an existing per-agent file, preserving unrelated env keys and allow rules', async () => {
+  it('strips a token left in a file written before the split', async () => {
     const relPath = agentSettingsRelativePath('agent-abc');
     await fs.mkdir(path.dirname(path.join(dir, relPath)), { recursive: true });
     await fs.writeFile(
@@ -129,7 +145,8 @@ describe('writeNeutralAgentSettingsFs', () => {
       'utf8'
     );
 
-    await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+    const secrets = fakeSecrets();
+    await writeNeutralAgentSettingsFs(createPluginFs(dir), secrets.store, {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'new-token',
@@ -140,10 +157,10 @@ describe('writeNeutralAgentSettingsFs', () => {
       string,
       unknown
     >;
+    // A merge would carry `SWITCH_API_TOKEN: 'old'` forward and defeat the split.
     expect(settings.env).toEqual({
       EXISTING: 'keep',
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'new-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
     // The connector's MCP tools are auto-approved on top of whatever the agent
@@ -153,23 +170,35 @@ describe('writeNeutralAgentSettingsFs', () => {
     });
   });
 
-  it('writes the gitignore before the token file, so a crash never leaves a tracked token', async () => {
-    const writes: string[] = [];
+  it('writes the secret before the file that names it', async () => {
+    // The reverse order would leave a file claiming an identity whose token
+    // never landed; this way a failure leaves an unreferenced secret, which is
+    // inert.
+    const order: string[] = [];
     const recordingFs = createPluginFs(dir);
     const write = recordingFs.write.bind(recordingFs);
     recordingFs.write = async (p, c) => {
-      writes.push(p);
+      order.push(p);
       return write(p, c);
     };
+    const secrets = fakeSecrets();
+    const recordingSecrets = {
+      ...secrets.store,
+      write: async (agentId: string, token: string) => {
+        order.push('secret');
+        return secrets.store.write(agentId, token);
+      },
+    };
 
-    await writeNeutralAgentSettingsFs(recordingFs, {
+    await writeNeutralAgentSettingsFs(recordingFs, recordingSecrets, {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
       apiToken: 'secret-token',
       agentId: 'switch-agent-1',
     });
 
-    expect(writes).toEqual([
+    expect(order).toEqual([
+      'secret',
       SWITCH_AGENTS_GITIGNORE_RELATIVE,
       agentSettingsRelativePath('agent-abc'),
     ]);
@@ -178,7 +207,8 @@ describe('writeNeutralAgentSettingsFs', () => {
 
 describe('writeAgentNeutralSettings', () => {
   it('produces the same file as the PluginFs writer, for a plain directory path', async () => {
-    await writeAgentNeutralSettings({
+    const secrets = fakeSecrets();
+    await writeAgentNeutralSettings(secrets.store, {
       dir,
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
@@ -189,9 +219,9 @@ describe('writeAgentNeutralSettings', () => {
     const raw = await fs.readFile(path.join(dir, agentSettingsRelativePath('agent-abc')), 'utf8');
     expect((JSON.parse(raw) as { env: Record<string, string> }).env).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'secret-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
+    expect(secrets.tokens.get('switch-agent-1')).toBe('secret-token');
     expect(await fs.readFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), 'utf8')).toBe('*\n');
   });
 });

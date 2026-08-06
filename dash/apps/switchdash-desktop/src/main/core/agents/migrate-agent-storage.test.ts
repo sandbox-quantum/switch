@@ -63,6 +63,19 @@ const h = vi.hoisted(() => {
     writeDefinition,
     discoverLocal,
   };
+  const secretTokens = new Map<string, string>();
+  const secrets = {
+    tokens: secretTokens,
+    read: (agentId: string) => Promise.resolve(secretTokens.get(agentId) ?? null),
+    write: (agentId: string, token: string) => {
+      secretTokens.set(agentId, token);
+      return Promise.resolve();
+    },
+    delete: (agentId: string) => {
+      secretTokens.delete(agentId);
+      return Promise.resolve();
+    },
+  };
   const state: {
     agents: Array<Record<string, unknown>>;
     workspace: PluginFs | null;
@@ -74,6 +87,7 @@ const h = vi.hoisted(() => {
   };
   return {
     state,
+    secrets,
     defaultRepoAgents,
     readLaunchEnv,
     readDefinition,
@@ -95,6 +109,7 @@ vi.mock('./agent-workspace-fs', () => ({
   resolveWorkspaceFsFor: vi.fn(async () => ({
     fs: h.state.workspace,
     homeFs: h.state.workspace,
+    secrets: h.secrets,
     close: () => {},
   })),
 }));
@@ -125,6 +140,7 @@ const baseAgent = {
 describe('migrateAgentStorage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.secrets.tokens.clear();
     h.state.agents = [{ ...baseAgent }];
     h.state.repoAgents = h.defaultRepoAgents;
   });
@@ -140,7 +156,10 @@ describe('migrateAgentStorage', () => {
 
     expect(await ws.exists('.switch/agents/cc-hoot-main.json')).toBe(true);
     const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
-    expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
+    // The token is recovered and relocated, not copied: it lands in the home
+    // store and leaves the working tree behind it.
+    expect(written.env.SWITCH_API_TOKEN).toBeUndefined();
+    expect(h.secrets.tokens.get('sw-1')).toBe('tok-123');
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
     expect(await ws.exists('.switch/agents/agent-id-1.json')).toBe(false);
   });
@@ -157,10 +176,11 @@ describe('migrateAgentStorage', () => {
     await migrateAgentStorage();
 
     // Name-keyed file written via the unconditional neutral writer (not the
-    // behavior hook, which does not exist for Codex), token preserved.
+    // behavior hook, which does not exist for Codex), token relocated.
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
     const written = JSON.parse((await ws.read('.switch/agents/codex-hoot.json')) as string);
-    expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
+    expect(written.env.SWITCH_API_TOKEN).toBeUndefined();
+    expect(h.secrets.tokens.get('sw-1')).toBe('tok-123');
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
     // Stale id-keyed file removed; no definition written (no behavior).
     expect(await ws.exists('.switch/agents/agent-id-1.json')).toBe(false);
@@ -178,7 +198,8 @@ describe('migrateAgentStorage', () => {
 
     const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
     expect(written.env.SWITCH_AGENT_ID).toBe('sw-1');
-    expect(written.env.SWITCH_API_TOKEN).toBe('tok-123');
+    expect(written.env.SWITCH_API_TOKEN).toBeUndefined();
+    expect(h.secrets.tokens.get('sw-1')).toBe('tok-123');
     expect(written.env.SWITCH_API_ENDPOINT).toBe('http://switch.example');
     expect(log.warn).not.toHaveBeenCalled();
   });

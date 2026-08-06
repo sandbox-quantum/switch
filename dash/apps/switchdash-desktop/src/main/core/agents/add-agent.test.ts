@@ -1,5 +1,6 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentSecretStore } from './switch-agent-secrets';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 /** In-memory {@link PluginFs} keyed by the exact relative paths the writers use. */
@@ -20,16 +21,37 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
   };
 }
 
+/** In-memory stand-in for the home-side token store, keyed by agent id. */
+function fakeSecrets(): { read: AgentSecretStore['read'] } & AgentSecretStore & {
+    tokens: Map<string, string>;
+  } {
+  const tokens = new Map<string, string>();
+  return {
+    tokens,
+    read: (agentId) => Promise.resolve(tokens.get(agentId) ?? null),
+    write: (agentId, token) => {
+      tokens.set(agentId, token);
+      return Promise.resolve();
+    },
+    delete: (agentId) => {
+      tokens.delete(agentId);
+      return Promise.resolve();
+    },
+  };
+}
+
 // `repoAgents` is what `getPlugin` returns — set it to null in a test to
 // simulate a provider without repo-agent definitions (e.g. Codex).
 const h = vi.hoisted(() => {
   const writeDefinition = vi.fn(async () => {});
   const state: {
     workspace: PluginFs | null;
+    secrets: (AgentSecretStore & { tokens: Map<string, string> }) | null;
     repoAgents: object | null;
     nameTaken: boolean;
   } = {
     workspace: null,
+    secrets: null,
     repoAgents: { writeDefinition },
     nameTaken: false,
   };
@@ -54,6 +76,7 @@ vi.mock('./createAgent', () => ({ createAgent: h.createAgent }));
 vi.mock('./agent-workspace-fs', () => ({
   resolveWorkspaceFsFor: vi.fn(async () => ({
     fs: h.state.workspace as PluginFs,
+    secrets: h.state.secrets as AgentSecretStore,
     close: vi.fn(),
   })),
 }));
@@ -104,6 +127,7 @@ describe('addAgent', () => {
     h.state.nameTaken = false;
     h.state.repoAgents = { writeDefinition: h.writeDefinition };
     h.state.workspace = fakeFs();
+    h.state.secrets = fakeSecrets();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
   });
 
@@ -119,10 +143,20 @@ describe('addAgent', () => {
     expect(result.kind).toBe('created');
     expect(await credsOf(fs, 'codex-hoot')).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'tok-123',
       SWITCH_AGENT_ID: 'sw-1',
     });
+    expect(h.state.secrets?.tokens.get('sw-1')).toBe('tok-123');
     expect(h.writeDefinition).not.toHaveBeenCalled();
+  });
+
+  it('keeps the token out of the working tree entirely', async () => {
+    const fs = h.state.workspace as PluginFs;
+
+    await addAgent(params());
+
+    const raw = await fs.read(agentSettingsRelativePath('codex-hoot'));
+    expect(raw).not.toContain('tok-123');
+    expect(h.state.secrets?.tokens.get('sw-1')).toBe('tok-123');
   });
 
   it('writes both credentials and an on-disk definition for a repo-agents provider', async () => {
@@ -130,7 +164,8 @@ describe('addAgent', () => {
 
     await addAgent(params({ providerId: 'claude', name: 'cc-hoot' }));
 
-    expect((await credsOf(fs, 'cc-hoot')).SWITCH_API_TOKEN).toBe('tok-123');
+    expect((await credsOf(fs, 'cc-hoot')).SWITCH_AGENT_ID).toBe('sw-1');
+    expect(h.state.secrets?.tokens.get('sw-1')).toBe('tok-123');
     expect(h.writeDefinition).toHaveBeenCalledWith(
       fs,
       expect.objectContaining({ name: 'cc-hoot', description: 'Codex running in repo' })
