@@ -2,6 +2,7 @@ import { getLocationById } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import {
   parseSwitchAgentCredentials,
+  parseSwitchAgentIdentity,
   type SwitchAgentCredentials,
 } from '@main/core/switch-rooms/switch-credentials';
 import { log } from '@main/lib/logger';
@@ -76,10 +77,13 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   // definition step (2), are behavior-gated.
   const behavior = getPlugin(agent.providerId).behavior.repoAgents;
 
-  // Generation 2 only broadened step 1 to providers WITHOUT a behavior; for one
-  // that has it, every step is what generation 1 already ran. Skipping here is
-  // what keeps the generation bump from re-opening a workspace per Claude agent.
-  if (completedGeneration >= 1 && behavior) return false;
+  // Generation 2 only broadened step 1 to providers WITHOUT a behavior, so for
+  // one that had it there was nothing new to do and its workspace could stay
+  // shut. Generation 3 ends that: a token may still be sitting in ANY agent's
+  // name-keyed file, whatever its provider, and the token exists nowhere but on
+  // disk — so every workspace has to be opened once to look. The cost is a
+  // single pass, latched by the generation marker.
+  if (completedGeneration >= 3 && behavior) return false;
 
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
@@ -144,6 +148,36 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     if (name !== agent.id && (await workspace.fs.read(namedRelPath)) !== null) {
       if ((await workspace.fs.read(idKeyedRelPath)) !== null) {
         await workspace.fs.delete(idKeyedRelPath);
+        changed = true;
+      }
+    }
+
+    // 1b. Relocate a token still inside the name-keyed file to the home-side
+    //     store (CHOO-1962, generation 3). Every path above writes the file
+    //     without one, so this is only ever true of a file written before the
+    //     split — but that is every existing install, and leaving them alone
+    //     would mean the token only ever moves for agents created from now on.
+    //     `writeNeutralAgentSettingsFs` stores the secret and strips the key, so
+    //     re-writing what we just read is the whole migration.
+    const settled = parseSwitchAgentIdentity(await workspace.fs.read(namedRelPath), log);
+    if (settled?.token) {
+      if (agent.switchAgentId !== null && agent.switchAgentId !== settled.agentId) {
+        log.warn(
+          'migrateAgentStorage: not relocating a token that names a different Switch agent',
+          {
+            agentId: agent.id,
+            agentName: name,
+            expectedSwitchAgentId: agent.switchAgentId,
+            foundSwitchAgentId: settled.agentId,
+          }
+        );
+      } else {
+        await writeNeutralAgentSettingsFs(workspace.fs, workspace.secrets, {
+          slug: name,
+          apiEndpoint: settled.apiEndpoint,
+          apiToken: settled.token,
+          agentId: settled.agentId,
+        });
         changed = true;
       }
     }

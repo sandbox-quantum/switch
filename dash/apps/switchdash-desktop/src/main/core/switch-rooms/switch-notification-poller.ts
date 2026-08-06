@@ -16,6 +16,7 @@ import { RoomConnection } from './room-connection';
 import { sessionConnectionId } from './session-connection-id';
 import { resolveSessionControl } from './session-control';
 import {
+  readLocalAgentCredentials,
   readSwitchAgentCredentials,
   readSwitchAgentCredentialsFromSettings,
 } from './switch-credentials';
@@ -201,7 +202,7 @@ class SwitchNotificationPoller {
     // Fall back to the legacy subagent path, then the location's
     // `.claude/settings.local.json`, for un-migrated installs (CHOO-1440).
     const creds =
-      (await readSwitchAgentCredentialsFromSettings(agentSettingsPath(rootPath, slug), log)) ??
+      (await readLocalAgentCredentials(agentSettingsPath(rootPath, slug), log)) ??
       (await readSwitchAgentCredentialsFromSettings(subagentSettingsPath(rootPath, slug), log)) ??
       (await readSwitchAgentCredentials(rootPath, log));
     if (!creds) {

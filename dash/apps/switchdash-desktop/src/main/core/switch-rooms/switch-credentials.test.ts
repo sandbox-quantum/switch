@@ -1,7 +1,12 @@
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
-import { parseSwitchAgentCredentials, readAgentSwitchEnvFromFs } from './switch-credentials';
+import {
+  parseSwitchAgentCredentials,
+  parseSwitchAgentIdentity,
+  readAgentSwitchEnvFromFs,
+  withAgentSecret,
+} from './switch-credentials';
 
 const log = { warn: vi.fn() };
 
@@ -90,6 +95,74 @@ describe('readAgentSwitchEnvFromFs', () => {
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('no Switch identity'),
       expect.objectContaining({ slug: 'codex-hoot' })
+    );
+  });
+});
+
+describe('the split credential file', () => {
+  /** The neutral file as written since CHOO-1962: identity, no token. */
+  const splitJson = JSON.stringify({
+    env: { SWITCH_API_ENDPOINT: 'https://switch.example.com', SWITCH_AGENT_ID: 'sw-1' },
+  });
+
+  function fakeSecrets(seed: Record<string, string> = {}) {
+    const tokens = new Map(Object.entries(seed));
+    return {
+      read: async (agentId: string) => tokens.get(agentId) ?? null,
+      write: async (agentId: string, token: string) => void tokens.set(agentId, token),
+      delete: async (agentId: string) => void tokens.delete(agentId),
+    };
+  }
+
+  it('reads as a complete identity, not as an incomplete credential set', async () => {
+    // `parseSwitchAgentCredentials` demands a token and so reads this file as
+    // nothing at all — which is why the callers that only need an endpoint, like
+    // the remote preflight, had to move off it.
+    expect(parseSwitchAgentCredentials(splitJson, log)).toBeNull();
+    expect(parseSwitchAgentIdentity(splitJson, log)).toEqual({
+      agentId: 'sw-1',
+      apiEndpoint: 'https://switch.example.com',
+      token: null,
+    });
+  });
+
+  it('yields launch env without a token, which withAgentSecret then supplies', async () => {
+    const fs = memoryFs({ [agentSettingsRelativePath('codex-hoot')]: splitJson });
+
+    const env = await readAgentSwitchEnvFromFs(fs, 'codex-hoot', log);
+    expect(env).toEqual({
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_AGENT_ID: 'sw-1',
+    });
+    expect(log.warn).not.toHaveBeenCalled();
+
+    expect(await withAgentSecret(env, fakeSecrets({ 'sw-1': 'tok-abc' }), log)).toEqual({
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_AGENT_ID: 'sw-1',
+      SWITCH_API_TOKEN: 'tok-abc',
+    });
+  });
+
+  it('leaves a token already in the env alone, so a pre-migration file still works', async () => {
+    const env = {
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_AGENT_ID: 'sw-1',
+      SWITCH_API_TOKEN: 'tok-inline',
+    };
+
+    expect(await withAgentSecret(env, fakeSecrets({ 'sw-1': 'tok-stored' }), log)).toEqual(env);
+  });
+
+  it('warns rather than launching unidentified when no secret is stored', async () => {
+    const env = {
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_AGENT_ID: 'sw-1',
+    };
+
+    expect(await withAgentSecret(env, fakeSecrets(), log)).toEqual(env);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no stored secret'),
+      expect.objectContaining({ agentId: 'sw-1' })
     );
   });
 });

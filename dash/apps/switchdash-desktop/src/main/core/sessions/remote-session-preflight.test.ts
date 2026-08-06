@@ -128,7 +128,19 @@ describe('preflightRemoteSession', () => {
     await expect(preflightRemoteSession(deps)).resolves.toBeUndefined();
   });
 
-  it('fails loud when the creds file is incomplete', async () => {
+  it('accepts a creds file whose token has moved to the home store', async () => {
+    // Since CHOO-1962 the neutral file carries no token. The preflight only ever
+    // needed the endpoint, so demanding one would fail every migrated agent.
+    const deps = makeDeps({
+      endpointReachable: true,
+      credsFile: JSON.stringify({
+        env: { SWITCH_API_ENDPOINT: 'https://switch.example.com', SWITCH_AGENT_ID: 'agent-1' },
+      }),
+    });
+    await expect(preflightRemoteSession(deps)).resolves.toBeUndefined();
+  });
+
+  it('fails loud when the creds file names no endpoint', async () => {
     const deps = makeDeps({ credsFile: JSON.stringify({ env: { SWITCH_AGENT_ID: 'a' } }) });
     await expect(preflightRemoteSession(deps)).rejects.toThrow(/incomplete/);
   });

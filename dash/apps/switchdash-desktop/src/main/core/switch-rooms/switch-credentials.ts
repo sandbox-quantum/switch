@@ -1,7 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
-import type { AgentSecretStore } from '@main/core/agents/switch-agent-secrets';
+import {
+  type AgentSecretStore,
+  createLocalAgentSecretStore,
+} from '@main/core/agents/switch-agent-secrets';
 import {
   agentSettingsRelativePath,
   SWITCH_SETTINGS_RELATIVE_PATH,
@@ -74,6 +77,44 @@ export async function readSwitchAgentCredentialsFromSettings(
     return null;
   }
   return parseSwitchAgentCredentials(raw, log);
+}
+
+/**
+ * {@link readSwitchAgentCredentialsFromSettings} without requiring a token, for
+ * callers that pair the file with the home-side store themselves.
+ */
+export async function readSwitchAgentIdentityFromSettings(
+  settingsPath: string,
+  log: CredentialsLogger
+): Promise<SwitchAgentIdentity | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(settingsPath, 'utf8');
+  } catch {
+    return null;
+  }
+  return parseSwitchAgentIdentity(raw, log);
+}
+
+/**
+ * Full credentials for an agent whose files are on THIS machine: identity from
+ * the settings file, token from this host's `$HOME`.
+ *
+ * For the callers that authenticate to the bridge as the agent — the poller, the
+ * auto-session watcher, the remote sidecar running on its own VM — and are all
+ * reading local paths, so the local store is the right one.
+ */
+export async function readLocalAgentCredentials(
+  settingsPath: string,
+  log: CredentialsLogger
+): Promise<SwitchAgentCredentials | null> {
+  const identity = await readSwitchAgentIdentityFromSettings(settingsPath, log);
+  if (!identity) return null;
+
+  const token = identity.token ?? (await createLocalAgentSecretStore().read(identity.agentId));
+  if (!token) return null;
+
+  return { agentId: identity.agentId, apiEndpoint: identity.apiEndpoint, token };
 }
 
 /** The `SWITCH_*` env vars a launched session needs to act as the agent. */

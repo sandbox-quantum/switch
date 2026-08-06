@@ -24,7 +24,7 @@ const MARKER_KEY = 'agentStorageMigrationComplete';
  * it says. Then teach `migrateAgentStorage` which agents the new generation can
  * actually change, so the re-run does not re-open workspaces it cannot fix.
  */
-export const AGENT_STORAGE_MIGRATION_GENERATION = 2;
+export const AGENT_STORAGE_MIGRATION_GENERATION = 3;
 
 /** The generation last completed on this install; 0 when it has never run. */
 export async function completedAgentStorageMigrationGeneration(): Promise<number> {

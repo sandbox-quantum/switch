@@ -6,10 +6,7 @@ import {
 } from '@switchdash/core/agents/plugins';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
-import {
-  type AgentSecretStore,
-  createLocalAgentSecretStore,
-} from './switch-agent-secrets';
+import type { AgentSecretStore } from './switch-agent-secrets';
 import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -102,9 +99,10 @@ export function mergeNeutralAgentSettings(
   existingRaw: string | null,
   creds: { apiEndpoint: string; agentId: string }
 ): string {
-  const merged = JSON.parse(
-    mergeSwitchSettings(existingRaw, { ...creds, apiToken: '' })
-  ) as Record<string, unknown>;
+  const merged = JSON.parse(mergeSwitchSettings(existingRaw, { ...creds, apiToken: '' })) as Record<
+    string,
+    unknown
+  >;
 
   const env = { ...(merged.env as Record<string, unknown>) };
   delete env.SWITCH_API_TOKEN;

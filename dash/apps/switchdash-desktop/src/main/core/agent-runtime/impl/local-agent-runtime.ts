@@ -8,6 +8,7 @@ import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
+import { createLocalAgentSecretStore } from '@main/core/agents/switch-agent-secrets';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -23,7 +24,6 @@ import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-s
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
 import { npmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
-import { createLocalAgentSecretStore } from '@main/core/agents/switch-agent-secrets';
 import {
   readAgentSwitchEnvFromFs,
   withAgentSecret,

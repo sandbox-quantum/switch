@@ -1,7 +1,7 @@
 import { isTransportFailure } from '@switchdash/core/exec';
 import { isSshChannelOpenFailure } from '@main/core/ssh/lifecycle/ssh-channel-open-failure';
 import type { CredentialsLogger } from '@main/core/switch-rooms/switch-credentials';
-import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
+import { parseSwitchAgentIdentity } from '@main/core/switch-rooms/switch-credentials';
 
 /**
  * Verifies an agent's remote host is ready to run a session before switchdash
@@ -163,8 +163,11 @@ async function readRemoteEndpoint(deps: RemotePreflightDeps): Promise<string> {
     } catch {
       continue;
     }
-    const creds = parseSwitchAgentCredentials(content, deps.log);
-    if (creds) return creds.apiEndpoint;
+    // The identity, not the full credentials: this only needs the endpoint, and
+    // since CHOO-1962 the token is not in this file at all — demanding one would
+    // read a perfectly good agent as "incomplete" and fail the launch.
+    const identity = parseSwitchAgentIdentity(content, deps.log);
+    if (identity) return identity.apiEndpoint;
     if (incompletePath === null) incompletePath = relPath;
   }
   if (incompletePath !== null) {

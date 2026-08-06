@@ -5,10 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { HookEventLog, HookServer } from '@main/core/agent-hooks/hook-server';
+import { createLocalAgentSecretStore } from '@main/core/agents/switch-agent-secrets';
 import { agentSettingsPath } from '@main/core/agents/switch-settings-paths';
 import {
   readSwitchAgentCredentials,
-  readSwitchAgentCredentialsFromSettings,
+  readSwitchAgentIdentityFromSettings,
 } from '@main/core/switch-rooms/switch-credentials';
 import { createTmuxRun } from '@main/core/switch-rooms/tmux-injection-sink';
 import { type AgentLaunchSpec } from './agent-launch-spec';
@@ -102,11 +103,21 @@ async function main(): Promise<void> {
 
   // Prefer the agent's provider-neutral per-agent creds file; fall back to the
   // legacy shared settings.local.json for un-migrated installs (CHOO-1440).
+  //
+  // That file no longer carries the token (CHOO-1962): it lives in this host's
+  // own `$HOME` at 0600, keyed by agent id. Both shapes are read, so a sidecar
+  // deployed ahead of the migration and one deployed after it both work.
   const credsSlug = process.env.SWITCHDASH_SIDECAR_AGENT_SLUG?.trim();
+  const identity = credsSlug
+    ? await readSwitchAgentIdentityFromSettings(agentSettingsPath(repoDir, credsSlug), log)
+    : null;
+  const token = identity
+    ? (identity.token ?? (await createLocalAgentSecretStore().read(identity.agentId)))
+    : null;
   const creds =
-    (credsSlug
-      ? await readSwitchAgentCredentialsFromSettings(agentSettingsPath(repoDir, credsSlug), log)
-      : null) ?? (await readSwitchAgentCredentials(repoDir, log));
+    identity && token
+      ? { agentId: identity.agentId, apiEndpoint: identity.apiEndpoint, token }
+      : await readSwitchAgentCredentials(repoDir, log);
   if (!creds) {
     const where = credsSlug
       ? agentSettingsPath(repoDir, credsSlug)

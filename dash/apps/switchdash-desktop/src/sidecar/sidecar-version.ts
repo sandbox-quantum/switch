@@ -27,7 +27,7 @@
  * it, fail the operation with a message naming the upgrade rather than
  * continuing without whatever the endpoint was for.
  */
-export const SIDECAR_VERSION = '1.7';
+export const SIDECAR_VERSION = '1.8';
 
 /**
  * Oldest major this client can still speak to. Raise it only when support for an

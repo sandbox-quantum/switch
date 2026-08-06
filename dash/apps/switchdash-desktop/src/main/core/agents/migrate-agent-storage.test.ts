@@ -39,6 +39,16 @@ function credsJson(agentId: string): string {
   });
 }
 
+/** The same file after the token has moved to the home-side store. */
+function splitCredsJson(agentId: string): string {
+  return JSON.stringify({
+    env: {
+      SWITCH_API_ENDPOINT: 'http://switch.example',
+      SWITCH_AGENT_ID: agentId,
+    },
+  });
+}
+
 // Shared mock state + spies. Hoisted so the vi.mock factories (which are lifted
 // above imports) can reference them. `agents`/`workspace` are set per test.
 // `repoAgents` is the behavior `getPlugin` returns — set it to null in a test to
@@ -119,7 +129,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: v
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  AGENT_STORAGE_MIGRATION_GENERATION: 2,
+  AGENT_STORAGE_MIGRATION_GENERATION: 3,
   completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
@@ -281,12 +291,12 @@ describe('migrateAgentStorage', () => {
     );
   });
 
-  it('does nothing when the name-keyed file already exists and the definition is present', async () => {
+  it('does nothing when the name-keyed file is already split and the definition is present', async () => {
     // Observe the files themselves, not spies: the credential step goes through
     // the real `writeNeutralAgentSettingsFs`, so a spy on the behavior hook
     // cannot see it re-derive and rewrite the token on every boot.
     const seed = {
-      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
+      '.switch/agents/cc-hoot-main.json': splitCredsJson('sw-1'),
       '.claude/agents/cc-hoot-main.md': '# def',
     };
     const ws = fakeFs({ ...seed });
@@ -310,7 +320,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('skips the whole pass (no workspace opened) once the current generation is latched', async () => {
-    h.completedGeneration.mockResolvedValueOnce(2);
+    h.completedGeneration.mockResolvedValueOnce(3);
     const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
 
     await migrateAgentStorage();
@@ -319,16 +329,25 @@ describe('migrateAgentStorage', () => {
     expect(h.markComplete).not.toHaveBeenCalled();
   });
 
-  it('re-running for generation 2 opens no workspace for a provider generation 1 already did', async () => {
-    // Generation 2 only broadened the credential step to providers WITHOUT a
-    // behavior, so re-opening a Claude agent's workspace — an SSH connect and an
-    // SFTP channel for a remote one — could not change anything.
+  it("opens a behavior provider's workspace on generation 3, which earlier generations skipped", async () => {
+    // Generation 2 could skip a Claude agent, because it only broadened the
+    // credential step to providers WITHOUT a behavior. Generation 3 cannot: the
+    // token it relocates may be sitting in any agent's file, whatever its
+    // provider, and nothing but the file itself can say whether it is.
     h.completedGeneration.mockResolvedValueOnce(1);
+    const ws = fakeFs({
+      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
+      '.claude/agents/cc-hoot-main.md': '# def',
+    });
+    h.state.workspace = ws;
     const resolveWorkspaceFsFor = (await import('./agent-workspace-fs')).resolveWorkspaceFsFor;
 
     await migrateAgentStorage();
 
-    expect(resolveWorkspaceFsFor).not.toHaveBeenCalled();
+    expect(resolveWorkspaceFsFor).toHaveBeenCalled();
+    const written = JSON.parse((await ws.read('.switch/agents/cc-hoot-main.json')) as string);
+    expect(written.env.SWITCH_API_TOKEN).toBeUndefined();
+    expect(h.secrets.tokens.get('sw-1')).toBe('tok-123');
     expect(h.markComplete).toHaveBeenCalledTimes(1);
   });
 
