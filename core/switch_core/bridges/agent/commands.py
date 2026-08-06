@@ -178,10 +178,40 @@ async def _check_control_target(
 
 
 @dataclass(frozen=True)
+class CommandArg:
+    """One positional argument of a command, declared for bridges that need it.
+
+    The `!` path does not read this: it free-text parses `event.args` exactly as
+    it always has, and every handler still pulls its arguments out of that
+    string via `_mention_tokens`. The spec exists for platforms whose native
+    commands are *registered* with a declared signature — Discord application
+    commands — so the argument surface is described once, here, instead of
+    being restated per bridge and drifting from the handlers.
+
+    Every argument declared today is a mention-style token (`@agent`, `@role`,
+    `@alias`) matching `mentions.NAME_CHAR`, so a bridge can round-trip a
+    declared value back into the positional `args` string the handlers parse.
+    A command taking genuine free text is not representable here and would need
+    a kind/type field adding before it could be declared.
+
+    `name` is what the user sees as the field label on platforms that render
+    one, so it must be lowercase and match Discord's `^[-_a-z0-9]{1,32}$`.
+    """
+
+    name: str
+    description: str
+    required: bool
+
+
+@dataclass(frozen=True)
 class Command:
     name: str
     description: str
     handler: CommandHandler | None = None
+    # Declared positional arguments, in the order the handlers parse them out
+    # of `args`. Empty for the many commands that take none. Only consumed by
+    # bridges that register native commands (see CommandArg).
+    args_spec: tuple[CommandArg, ...] = ()
     # (client, args, room_id) -> bool. Whether this agent is addressed. Default:
     # name- or held-role match (or everyone when no `@`).
     addressed: CommandTargeting = field(default=_addressed_by_name_or_role)
@@ -983,6 +1013,9 @@ COMMANDS: list[Command] = [
         "Usage: `!reset @agent-name` or `!reset @role` (the role's holder). "
         "A target is required — use `!reset-all-agents` to reset everyone.",
         _cmd_reset,
+        args_spec=(
+            CommandArg("target", "Agent name, alias, or role to reset", required=True),
+        ),
         # The first @token names the agent to reset (by name or held role). A
         # bare `!reset` (no target) addresses NO ONE, so it can never
         # accidentally reset every agent — that is the explicit
@@ -1003,6 +1036,11 @@ COMMANDS: list[Command] = [
         "Usage: `!compact @agent-name` or `!compact @role` (the role's holder). "
         "A target is required — use `!compact-all-agents` for everyone.",
         _cmd_compact,
+        args_spec=(
+            CommandArg(
+                "target", "Agent name, alias, or role to compact", required=True
+            ),
+        ),
         # Require an explicit target — see `reset` — so a bare `!compact` never
         # fans out to the whole room by accident.
         addressed=_addressed_by_required_first_mention,
@@ -1021,6 +1059,11 @@ COMMANDS: list[Command] = [
         "Usage: `!interrupt @agent-name` or `!interrupt @role` (the role's holder). "
         "A target is required — use `!interrupt-all-agents` for everyone.",
         _cmd_interrupt,
+        args_spec=(
+            CommandArg(
+                "target", "Agent name, alias, or role to interrupt", required=True
+            ),
+        ),
         addressed=_addressed_by_required_first_mention,
         admin_check=_check_control_target,
     ),
@@ -1073,18 +1116,32 @@ COMMANDS: list[Command] = [
         "set-alias",
         "Give an agent a room alias. Usage: `!set-alias @agent-name @alias`.",
         _cmd_set_alias,
+        args_spec=(
+            CommandArg("agent", "The agent to give an alias to", required=True),
+            CommandArg("alias", "The alias to use for it in this room", required=True),
+        ),
         admin_owned=True,
     ),
     Command(
         "remove-alias",
         "Remove a room alias. Usage: `!remove-alias @alias` (or `@agent-name`).",
         _cmd_remove_alias,
+        args_spec=(
+            CommandArg(
+                "alias", "The alias to clear (or the agent's name)", required=True
+            ),
+        ),
         admin_owned=True,
     ),
     Command(
         "invite-agent",
         "Add an existing agent to this room. Usage: `!invite-agent @agent-name`.",
         _cmd_invite,
+        args_spec=(
+            CommandArg(
+                "agent", "The registered agent to add to this room", required=True
+            ),
+        ),
         admin_owned=True,
     ),
     Command(
@@ -1110,6 +1167,16 @@ COMMANDS: list[Command] = [
         "Usage: `!run-cmd @agent-name`, `!run-cmd @role` (the role's holder), "
         "or `!run-cmd @agent-name @role` to also assume that role on connect.",
         _cmd_run_cmd,
+        # `role` is second because the handler reads it from the second token,
+        # so it cannot be given without `agent` — see the positional-gap check
+        # in the Discord adapter, which rejects that combination loudly rather
+        # than silently shifting the role into the agent slot.
+        args_spec=(
+            CommandArg("agent", "Agent to show the start command for", required=False),
+            CommandArg(
+                "role", "Role for that agent to assume on connect", required=False
+            ),
+        ),
         # Only the first @token targets; a second @token is the role to assume,
         # not an address — so it doesn't pull in whoever else holds that role.
         addressed=_addressed_by_first_mention,

@@ -9,8 +9,15 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 import discord
+from discord import app_commands
 
+from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.discord.slash import (
+    SlashArgError,
+    build_app_commands,
+    reassemble_args,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -58,6 +65,7 @@ class DiscordAdapter(CollaborationAdapter):
         self._config = config
         self._guild_id = int(config.guild_id)
         self._client: discord.Client | None = None
+        self._tree: app_commands.CommandTree[Any] | None = None
         self._connect_task: asyncio.Task[None] | None = None
         self._bot_user_id: int = 0
         # channel id -> webhook the bridge posts through in that channel.
@@ -109,6 +117,13 @@ class DiscordAdapter(CollaborationAdapter):
 
         client = discord.Client(intents=intents)
         client.event(self._make_on_message())
+        self._tree = app_commands.CommandTree(client)
+        guild = discord.Object(id=self._guild_id)
+        for app_command in build_app_commands(self._handle_slash_command):
+            # Bound to the guild, not global — see _sync_slash_commands. Adding
+            # them globally here would leave the guild-scoped sync below with an
+            # empty payload, registering nothing at all.
+            self._tree.add_command(app_command, guild=guild)
         self._client = client
 
         await client.login(self._config.bot_token)
@@ -135,6 +150,42 @@ class DiscordAdapter(CollaborationAdapter):
         logger.info(
             "Discord adapter connected as %s (guild %s)",
             client.user,
+            self._config.guild_id,
+        )
+        await self._sync_slash_commands()
+
+    async def _sync_slash_commands(self) -> None:
+        """Publish the in-room command set as guild-scoped application commands.
+
+        Guild-scoped rather than global, because the adapter is single-guild by
+        construction (`DiscordConnectionConfig.guild_id` is required and every
+        lookup is scoped to it). Guild commands also apply immediately, where
+        global ones propagate for up to an hour, and global registration is
+        per-application — so on an instance running several Discord bridges it
+        would leak each bridge's commands into the others' guilds, where they
+        could only fail. Syncing is a bulk overwrite, so re-running it on every
+        start reconciles renames and removals rather than accumulating them.
+
+        Any sync failure is logged and left non-fatal — hence the broad catch:
+        the bridge still works over `!`-commands and messages, and dropping the
+        whole bridge over a missing `applications.commands` scope is a worse
+        outcome than running without the slash surface. The degradation is
+        visible in the logs rather than silent.
+        """
+        if self._tree is None:
+            return
+        try:
+            synced = await self._tree.sync(guild=discord.Object(id=self._guild_id))
+        except Exception:
+            logger.exception(
+                "Failed to sync Discord slash commands for guild %s — the bridge "
+                "will run without them (check the bot's applications.commands scope)",
+                self._config.guild_id,
+            )
+            return
+        logger.info(
+            "Synced %d Discord slash commands to guild %s",
+            len(synced),
             self._config.guild_id,
         )
 
@@ -166,6 +217,7 @@ class DiscordAdapter(CollaborationAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
         self._client = None
+        self._tree = None
         self._webhooks.clear()
         logger.info("Discord adapter stopped")
 
@@ -744,6 +796,135 @@ class DiscordAdapter(CollaborationAdapter):
                 self_mention_token=str(self._bot_user_id) if self_mention else None,
             )
         )
+
+    # ── Slash commands ───────────────────────────────────────────────────────
+
+    async def _handle_slash_command(
+        self,
+        interaction: discord.Interaction,
+        command: InRoomCommand,
+        values: dict[str, Any],
+    ) -> None:
+        """Translate a native Discord slash command into a Switch in-room command.
+
+        `/reset @agent` maps 1:1 onto `!reset @agent`: the slash name IS the
+        in-room command name, and the declared options are reassembled into the
+        same positional args string, so the invocation reaches the very same
+        dispatcher a typed `!`-command reaches.
+
+        Two Discord constraints set the order of what follows. An interaction
+        must be acknowledged within ~3 seconds; and a command's result never
+        comes back down this call — the admin client answers with a room message
+        that reaches the channel later, outbound. So there is nothing to defer
+        *for*: the ack goes out first, before any Switch work, and the message it
+        posts doubles as the thread root the result is filed under. That mirrors
+        the Slack slash path, which posts the same visible notice because a
+        slash invocation is otherwise invisible to the channel.
+        """
+        shown = self._format_invocation(command, values)
+
+        # Reassembly is pure and instant, so it runs before the ack: a bad
+        # argument is the invoker's typo, and it reads better as an ephemeral
+        # refusal than as a "Running…" notice the channel sees and then watches
+        # turn into an error.
+        try:
+            args = reassemble_args(command.args_spec, values)
+        except SlashArgError as e:
+            await self._reject_slash(interaction, shown, str(e))
+            return
+
+        try:
+            await interaction.response.send_message(
+                f"⚙️ Running `{shown}` — result will appear in this thread."
+            )
+        except discord.HTTPException:
+            logger.exception("Failed to acknowledge Discord slash command %s", shown)
+            return
+
+        try:
+            await self._dispatch_slash_command(interaction, command.name, args)
+        except Exception as e:
+            logger.exception("Failed to dispatch Discord slash command %s", shown)
+            await self._report_slash_failure(interaction, shown, e)
+
+    async def _dispatch_slash_command(
+        self, interaction: discord.Interaction, command_name: str, args: str
+    ) -> None:
+        if self._on_command is None:
+            raise RuntimeError("Discord adapter is not started")
+        channel = interaction.channel
+        if channel is None:
+            raise RuntimeError("Discord interaction carried no channel")
+
+        # A slash command run inside a thread bridges into the PARENT channel's
+        # room and threads under the thread's root, exactly as a typed command
+        # in that thread does.
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id is not None:
+            channel_id = str(parent_id)
+            root_id: str | None = f"{parent_id}:{channel.id}"
+            channel_name = getattr(getattr(channel, "parent", None), "name", None)
+        else:
+            channel_id = str(channel.id)
+            root_id = None
+            channel_name = getattr(channel, "name", None)
+
+        original = await interaction.original_response()
+        user = interaction.user
+        username = str(user.name)
+        self._user_names[user.id] = username
+        self._username_to_id[username] = user.id
+
+        await self._on_command(
+            InboundCommand(
+                channel_id=channel_id,
+                channel_type=self._channel_type_of(channel),
+                sender_id=str(user.id),
+                sender_name=username,
+                command=command_name,
+                args=args,
+                message_ref=f"{original.channel.id}:{original.id}",
+                root_id=root_id,
+                channel_name=channel_name,
+            )
+        )
+
+    @staticmethod
+    def _format_invocation(command: InRoomCommand, values: dict[str, Any]) -> str:
+        """Render the invocation for echoing back, in declared argument order."""
+        given = [
+            str(values[arg.name]).strip()
+            for arg in command.args_spec
+            if values.get(arg.name) is not None and str(values[arg.name]).strip()
+        ]
+        return f"/{command.name}" + (f" {' '.join(given)}" if given else "")
+
+    async def _reject_slash(
+        self, interaction: discord.Interaction, shown: str, reason: str
+    ) -> None:
+        """Refuse an invocation before dispatch, visibly to whoever ran it."""
+        try:
+            await interaction.response.send_message(
+                f"⚠️ Could not run `{shown}` — {reason}", ephemeral=True
+            )
+        except discord.HTTPException:
+            logger.exception("Failed to report bad arguments for %s", shown)
+
+    async def _report_slash_failure(
+        self, interaction: discord.Interaction, shown: str, error: Exception
+    ) -> None:
+        """Rewrite the posted "Running…" notice into a visible failure.
+
+        A slash command that appears to do nothing is worse than one that
+        errors; the ack has already gone out by this point, so there is always a
+        message sitting in the channel to turn into the error.
+        """
+        try:
+            await interaction.edit_original_response(
+                content=f"⚠️ Failed to run `{shown}`: {error}"
+            )
+        except discord.HTTPException:
+            logger.exception("Failed to report failure of %s back to Discord", shown)
 
     # ── Attachments ──────────────────────────────────────────────────────────
 

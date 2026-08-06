@@ -7,6 +7,7 @@ from unittest.mock import patch
 import discord
 import pytest
 
+from switch_core.bridges.agent.commands import COMMANDS
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
@@ -954,6 +955,29 @@ class _BotUser:
         return f"bot#{self.id}"
 
 
+class _FakeConnectionState:
+    """The two client-state attributes ``discord.app_commands.CommandTree``
+    reads: it parks itself on ``_command_tree`` and consults ``_translator``
+    when rendering a command payload."""
+
+    def __init__(self) -> None:
+        self._command_tree: Any = None
+        self._translator: Any = None
+
+
+class _FakeCommandHTTP:
+    """Captures the guild-scoped slash-command sync ``start()`` performs."""
+
+    def __init__(self) -> None:
+        self.bulk_upserts: list[tuple[int, int, list[Any]]] = []
+
+    async def bulk_upsert_guild_commands(
+        self, application_id: int, guild_id: int, payload: list[Any]
+    ) -> list[Any]:
+        self.bulk_upserts.append((application_id, guild_id, payload))
+        return []
+
+
 class _FakeGatewayClient:
     """Controllable stand-in for ``discord.Client`` used by ``start()``.
 
@@ -968,6 +992,11 @@ class _FakeGatewayClient:
         self.logged_in = False
         self.closed = False
         self.registered_events: list[Any] = []
+        # start() builds an app-command tree on the client and syncs it to the
+        # guild, so the stand-in has to carry what CommandTree reaches for.
+        self.application_id = 555
+        self.http = _FakeCommandHTTP()
+        self._connection = _FakeConnectionState()
         self.connect_behavior = "hang"
         self.connect_exc: BaseException = RuntimeError("gateway boom")
         self._ready_event = asyncio.Event()
@@ -1015,9 +1044,22 @@ def test_start_becomes_ready_then_stop_closes_client() -> None:
             assert fake.registered_events  # on_message handler registered
             assert adapter._bot_user_id == BOT_USER_ID
 
+            # Slash commands are published to the configured GUILD, never
+            # globally: the adapter is single-guild by construction, guild
+            # commands apply immediately, and a global registration is
+            # per-application so it would leak into other bridges' guilds.
+            assert len(fake.http.bulk_upserts) == 1
+            application_id, guild_id, payload = fake.http.bulk_upserts[0]
+            assert application_id == fake.application_id
+            assert guild_id == GUILD_ID
+            assert {c["name"] for c in payload} == {
+                c.name for c in COMMANDS if not c.hidden and c.description
+            }
+
             await adapter.stop()
             assert fake.closed
             assert adapter._client is None
+            assert adapter._tree is None
 
     _run(scenario())
 
