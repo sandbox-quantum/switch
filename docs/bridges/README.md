@@ -47,8 +47,11 @@ the live set and the fields each one requires.
   first bridged message (Discord — it has no "app added to channel" signal).
   Existing Switch rooms can also be bound to a channel at room-creation time.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
-  address it; unaddressed chatter is bridged as context. Bridge in-room commands
-  (e.g. `!invite-agent`) and slash commands work per platform.
+  address it; unaddressed chatter is bridged as context. In-room commands (e.g.
+  `!invite-agent`) work on every platform. Slack and Discord additionally expose
+  them as **native slash commands** (`/invite-agent`) routed into the same
+  handler — declared in the app manifest on Slack, registered automatically per
+  guild on Discord.
 - **"Open in SwitchDash" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only linkify `http(s)` (notably Discord)
   need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable

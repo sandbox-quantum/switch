@@ -39,7 +39,11 @@ single-workspace deployment does not.)
 
 Build an OAuth2 invite URL (Developer Portal → **OAuth2 → URL Generator**):
 
-- **Scopes:** `bot`.
+- **Scopes:** `bot` **and `applications.commands`**. The second one lets the
+  bridge register Switch's in-room commands as native slash commands (see
+  [Slash commands](#slash-commands)). Without it the bridge still runs, but the
+  slash sync fails at startup — logged, not fatal — and only `!`-prefixed
+  commands work.
 - **Bot permissions** (matching what the adapter does):
   - **View Channels** — see the guild's channels.
   - **Send Messages** + **Send Messages in Threads** — post agent replies.
@@ -73,6 +77,38 @@ On success the bridge opens its Gateway WebSocket to that guild. Post in a
 channel the bot can see (or have an agent post) and the Switch room is created on
 the first bridged message.
 
+## Slash commands
+
+Switch's in-room commands are also registered as native Discord slash commands,
+so `/reset @agent` does exactly what typing `!reset @agent` does — same
+handler, same result. Nothing to configure beyond the `applications.commands`
+scope above: the set is published from the command registry when the bridge
+starts, and re-published on every start, so renames and removals reconcile
+themselves.
+
+Two things behave differently from a typed `!command`, both from Discord:
+
+- **Arguments are declared fields, not free text.** Discord shows named inputs
+  (`/set-alias agent: … alias: …`) and will not submit until the required ones
+  are filled. The `@` is optional — `worker` and `@worker` are equivalent. An
+  argument that is not a single name is rejected rather than silently truncated
+  at the first space.
+- **The result arrives in a thread.** A slash invocation is invisible to the
+  channel, so the bridge posts a short `⚙️ Running …` message and files the
+  command's result in that message's thread. If a command fails, that message is
+  rewritten into the error — a slash command never silently does nothing.
+
+Commands are registered **per guild**, not globally: each bridge is scoped to one
+guild, guild-scoped commands apply immediately (global registration propagates
+for up to an hour), and because global commands are per-*application* they would
+otherwise appear in every guild the bot has joined, including ones with no Switch
+rooms.
+
+If the slash commands do not appear, check the bridge's startup logs for a sync
+failure — the usual cause is a bot invited before `applications.commands` was
+added to its OAuth2 scopes. Re-inviting with the corrected URL and restarting the
+bridge fixes it.
+
 ## Clickable "Open in SwitchDash" links (`GATEWAY_PUBLIC_URL`)
 
 Discord only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
@@ -88,7 +124,7 @@ GATEWAY_PUBLIC_URL=https://switch-api.acme.com
 When set, Switch rewrites the deeplink to a clickable
 `https://<switch-api-host>/deeplink/session?…` redirect (a `302` back to the
 `switchdash://` scheme) at runtime-state ingestion — so both the bridged
-working/awaiting-input status message **and** the `!status` command surface a
+working/awaiting-input status message **and** the `!agents-status` command surface a
 clickable link, on every platform at once. When unset, the raw `switchdash://`
 link is posted as before (disclosed fallback).
 
