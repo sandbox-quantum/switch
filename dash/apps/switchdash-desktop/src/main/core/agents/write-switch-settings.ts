@@ -20,13 +20,22 @@ export interface SwitchSettingsCredentials {
 }
 
 /**
- * Merge the `SWITCH_*` env block (and the connector tool-allow rules) into the
- * contents of a `.claude/settings.local.json`, returning the new file text.
+ * Merge the `SWITCH_*` env block (and the connector tool-allow rules) into a
+ * settings file, returning the new file text.
  *
- * The file is merged, not clobbered: any unrelated top-level keys and any other
- * `env` entries the user already has are preserved, and only the three
- * `SWITCH_*` keys are set/overwritten. The connector MCP tools are unioned into
- * `permissions.allow` so they are auto-approved ("don't ask").
+ * The file is merged, not clobbered: unrelated top-level keys and any other
+ * `env` entries the user already has are preserved. The connector MCP tools are
+ * unioned into `permissions.allow` so they are auto-approved ("don't ask").
+ *
+ * **No token is written, and one already present is removed** (CHOO-1962). Both
+ * files this produces — `.claude/settings.local.json` and the provider-neutral
+ * `.switch/agents/<slug>.json` — live in the working tree, and a `.gitignore`
+ * over one of them stops `git add` and nothing else. The token goes to `$HOME`
+ * at `0600` via {@link AgentSecretStore}; the endpoint and agent id stay here,
+ * since neither is a secret and Claude Code reads this file natively.
+ *
+ * Removing rather than merging forward is what relocates a pre-split file: a
+ * merge would carry the old token along and defeat the move.
  *
  * Pure: takes the existing file text (or null when absent/unreadable) and
  * returns the text to write. Shared by the local writer and the remote (SFTP)
@@ -34,7 +43,7 @@ export interface SwitchSettingsCredentials {
  */
 export function mergeSwitchSettings(
   existingRaw: string | null,
-  creds: SwitchSettingsCredentials
+  creds: { apiEndpoint: string; agentId: string }
 ): string {
   let existing: Record<string, unknown> = {};
   if (existingRaw !== null) {
@@ -64,59 +73,31 @@ export function mergeSwitchSettings(
     ? (currentPerms.allow as unknown[]).map(String)
     : [];
 
+  const env: Record<string, unknown> = {
+    ...currentEnv,
+    SWITCH_API_ENDPOINT: creds.apiEndpoint,
+    SWITCH_AGENT_ID: creds.agentId,
+  };
+  delete env.SWITCH_API_TOKEN;
+
   const merged = {
     ...existing,
     permissions: {
       ...currentPerms,
       allow: [...new Set([...currentAllow, ...SWITCH_CONNECTOR_TOOL_RULES])],
     },
-    env: {
-      ...currentEnv,
-      SWITCH_API_ENDPOINT: creds.apiEndpoint,
-      SWITCH_API_TOKEN: creds.apiToken,
-      SWITCH_AGENT_ID: creds.agentId,
-    },
+    env,
   };
 
   return `${JSON.stringify(merged, null, 2)}\n`;
 }
 
 /**
- * The same merge for the provider-neutral per-agent file, minus the token
- * (CHOO-1962). Endpoint, agent id and the connector's tool rules stay — none is
- * a secret, and the file doubles as the settings file Claude Code is launched
- * with, so its shape is a contract beyond switchdash. Only `SWITCH_API_TOKEN`
- * leaves, for `$HOME` at `0600`.
- *
- * A token already in the file is actively removed rather than merged forward:
- * this is what migrates a pre-split file, and leaving it would defeat the point
- * of moving it.
- *
- * Pure, like its sibling, so the local and remote writers produce identical
- * bytes.
- */
-export function mergeNeutralAgentSettings(
-  existingRaw: string | null,
-  creds: { apiEndpoint: string; agentId: string }
-): string {
-  const merged = JSON.parse(mergeSwitchSettings(existingRaw, { ...creds, apiToken: '' })) as Record<
-    string,
-    unknown
-  >;
-
-  const env = { ...(merged.env as Record<string, unknown>) };
-  delete env.SWITCH_API_TOKEN;
-
-  return `${JSON.stringify({ ...merged, env }, null, 2)}\n`;
-}
-
-/**
  * Update ONLY `SWITCH_API_ENDPOINT` in an already-provisioned settings file,
  * returning the new file text — or `null` when the file is not a provisioned
- * Switch agent (missing/unparseable, or its `env` lacks the full `SWITCH_*`
- * credential block). Used to cascade a server's API-URL edit to its agents
- * without ever reading or rewriting the agent's `SWITCH_API_TOKEN`: the token,
- * agent id, permissions, and every other key are left byte-for-byte untouched.
+ * Switch agent (missing/unparseable, or its `env` names no endpoint and agent
+ * id). Used to cascade a server's API-URL edit to its agents; the agent id,
+ * permissions, and every other key are left byte-for-byte untouched.
  *
  * Returning `null` (rather than writing) for an unprovisioned file is deliberate
  * — the caller skips it instead of creating a token-less config that would look
@@ -146,12 +127,13 @@ export function mergeSwitchApiEndpoint(
       ? (existing.env as Record<string, unknown>)
       : null;
 
-  // Only a fully provisioned agent (endpoint + token + id all present) is
-  // propagated to; anything else is "not a Switch agent here" -> skip.
+  // Only a provisioned agent (endpoint + id present) is propagated to; anything
+  // else is "not a Switch agent here" -> skip. A token is NOT required: since
+  // CHOO-1962 a provisioned agent's token lives under `$HOME`, so demanding one
+  // here would silently skip every agent the migration has already moved.
   if (
     !env ||
     typeof env.SWITCH_API_ENDPOINT !== 'string' ||
-    typeof env.SWITCH_API_TOKEN !== 'string' ||
     typeof env.SWITCH_AGENT_ID !== 'string'
   ) {
     return null;
@@ -251,13 +233,14 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
  * `.claude/settings.local.json`, the same file the switch-connector
  * `configure` skill writes.
  *
- * `apiToken` is the agent's secret API key — it is written here and nowhere
- * else, and must never be returned to the renderer or logged.
+ * No token: it goes to the home-side {@link AgentSecretStore} instead, written
+ * by whichever caller provisions this agent. Claude Code reads this file
+ * natively, so the endpoint and agent id being here is what lets a session
+ * started by hand know who it is.
  */
 export async function writeSwitchSettings(params: {
   dir: string;
   apiEndpoint: string;
-  apiToken: string;
   agentId: string;
 }): Promise<void> {
   const settingsPath = path.join(params.dir, SWITCH_SETTINGS_RELATIVE_PATH);
@@ -306,8 +289,8 @@ export async function writeAgentNeutralSettings(
  * provider and every transport; providers with repo-agent definitions (Claude)
  * layer their definition on top.
  *
- * The `.gitignore` is written first: it is what keeps `SWITCH_API_TOKEN` out of
- * version control, so it must already be in place before the token reaches disk.
+ * The `.gitignore` is still written: the file no longer carries a token, but the
+ * directory is switchdash-managed state that does not belong in a user's repo.
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
@@ -323,6 +306,6 @@ export async function writeNeutralAgentSettingsFs(
     await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
   const relPath = agentSettingsRelativePath(params.slug);
-  const merged = mergeNeutralAgentSettings(await workspaceFs.read(relPath), params);
+  const merged = mergeSwitchSettings(await workspaceFs.read(relPath), params);
   await workspaceFs.write(relPath, merged);
 }

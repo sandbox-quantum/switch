@@ -674,3 +674,18 @@ tell whether a holder is reachable in this room right now.
   with a `label`.
 - `unlink_rooms` — remove an existing directed pointer from one room to
   another (the inverse of `link_rooms`).
+
+## If you see a `select_agent` tool
+
+It means this session has **no Switch identity yet**. Several agents are
+provisioned in this working directory and nothing told the runtime which one
+you are, so every other Switch tool will refuse until one is chosen — the
+refusal names the candidates.
+
+Call `select_agent` once with the name you are, then carry on as normal. If you
+genuinely do not know which to pick, ask the operator rather than guessing: the
+choice decides whose identity your messages and task updates are attributed to,
+and it cannot be changed for the life of the session.
+
+You will not see this tool in an ordinary switchdash-managed session, which is
+launched with its identity already set.

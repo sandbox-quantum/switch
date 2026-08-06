@@ -13,13 +13,17 @@ local Switch runtime can connect.
 
 The plugin no longer uses Claude Code's `userConfig` block (which is global
 and can't be overridden per-project). Instead, both pieces of the plugin
-read three environment variables at startup:
+read three values at startup:
 
 - `SWITCH_API_ENDPOINT` — Switch server URL
-- `SWITCH_API_TOKEN` — the agent's API key (returned at registration)
 - `SWITCH_AGENT_ID` — the agent's ID (returned at registration)
+- `SWITCH_API_TOKEN` — the agent's API key (returned at registration)
 
-Claude Code populates these from the `env` block in a settings file. By
+The first two live in a settings file's `env` block, which Claude Code
+populates. **The token does not**: it lives in `~/.switch/agents/<id>.json`
+at `0600`, and the runtime reads it from there itself. A settings file sits
+in a working tree, and a `.gitignore` over a working tree stops `git add`
+and nothing else. By
 choosing project-local vs. user-global settings, the user decides whether
 this Switch identity is tied to one repo or shared across all of them.
 This skill walks through registration and writes that block.
@@ -109,8 +113,9 @@ configured:
   directory; do not create it yet)
 - User-global: `~/.claude/settings.json`
 
-If either contains `env.SWITCH_API_TOKEN` **and** `env.SWITCH_AGENT_ID`
-the plugin is already wired up. Report what's there (server URL, agent
+If either contains `env.SWITCH_AGENT_ID` **and** `env.SWITCH_API_ENDPOINT`
+the plugin is already wired up. (Do not look for `env.SWITCH_API_TOKEN` —
+a correctly configured agent has none there; its token is under `$HOME`.) Report what's there (server URL, agent
 id, which file) and use `AskUserQuestion` to offer three choices:
 
 - **Keep it** — stop the skill. Re-registering would mint a fresh agent
@@ -429,22 +434,29 @@ show the user the HTTP status and response body, then stop.
   retry with `overwrite:true` silently.
 - Any other non-2xx — show the status and body, then stop.
 
-## Step 10 — Write settings
+## Step 10 — Write settings, and the token separately
 
-Read the target settings file (create with `{}` if absent). Merge the new
-values into the top-level `env` object, preserving any other keys in the
-file (the user may have unrelated settings there — permissions,
-keybindings, plugin toggles):
+The credentials go to **two** places. This is deliberate, not tidiness:
+the settings file lives in the user's working tree, where a `.gitignore`
+stops `git add` and stops nothing else — not an archive, not a sync, not
+`git add -f`. So the identity goes in the tree and the secret does not.
+
+**10a — identity, in the settings file.** Read the target settings file
+(create with `{}` if absent). Merge into the top-level `env` object,
+preserving any other keys (the user may have unrelated settings there —
+permissions, keybindings, plugin toggles):
 
 ```json
 {
   "env": {
     "SWITCH_API_ENDPOINT": "<url from step 2>",
-    "SWITCH_API_TOKEN": "<api_key from step 7>",
     "SWITCH_AGENT_ID": "<id from step 7>"
   }
 }
 ```
+
+**Do not put `SWITCH_API_TOKEN` here.** If the file already has one from
+an older setup, remove it — leaving it behind defeats the split.
 
 If `env` does not exist, add it. If the keys already exist with
 different values, overwrite them — the user already confirmed in step 1.
@@ -454,20 +466,43 @@ full result back. Do not edit the file blindly with a regex — JSON
 formatting and adjacent keys matter, and a bad merge can break unrelated
 Claude Code config.
 
+**10b — the token, under `$HOME` at `0600`.** Write it to
+`~/.switch/agents/<id from step 7>.json`:
+
+```json
+{ "token": "<api_key from step 7>" }
+```
+
+Then tighten the permissions — create the directory and file so they are
+never briefly world-readable:
+
+```bash
+mkdir -p ~/.switch/agents && chmod 700 ~/.switch/agents
+# after writing the file:
+chmod 600 ~/.switch/agents/<id>.json
+```
+
+Keyed by **agent id**, not by name: `$HOME` is shared by every project on
+the machine, so a name-keyed file would let two agents called the same
+thing in different checkouts overwrite each other's token.
+
+The runtime reads both halves itself (`switch-agent-runtime` 0.2.0+), so
+no `env` block in any MCP config is needed to carry them.
+
 ## Step 11 — Confirm
 
 Report to the user:
 
 - The agent name and ID that were registered with Switch.
 - Which settings file was written.
-- That they need to **restart Claude Code** (or reload the session) for
-  the new `env` block to take effect — the `switch` MCP server and
-  Switch runtime only reads environment variables at startup,
-  so an active session won't see the new values.
+- Which settings file was written, and that the token went to
+  `~/.switch/agents/<id>.json` at `0600` rather than into the repo.
+- That they need to **restart Claude Code** (or reload the session) —
+  the runtime resolves its identity once at startup, so an active
+  session won't see the new credentials.
 
-Do **not** print the API token. It's now in the settings file; the user
-can find it there if they need it. Echoing secrets into the transcript
-is a common way they leak into logs or screenshots.
+Do **not** print the API token. Echoing secrets into the transcript is a
+common way they leak into logs or screenshots.
 
 ## Step 12 — Bring in existing Claude Code subagents (optional)
 
@@ -592,17 +627,16 @@ is exactly the path the offline-session command points `--settings` at:
 {
   "env": {
     "SWITCH_API_ENDPOINT": "<url from step 2>",
-    "SWITCH_API_TOKEN": "<api_key for this subagent>",
     "SWITCH_AGENT_ID": "<id for this subagent>"
   }
 }
 ```
 
-These files hold **per-subagent API tokens** — treat them exactly like
-the main settings file: write the token only here, never echo it. Ensure
-the directory is git-ignored: create `.claude/switch-subagents/.gitignore`
-containing `*` (or add the directory to the repo's `.gitignore`) so the
-tokens never get committed.
+As with the main agent, **no token goes in this file**. Each subagent's
+token goes to `~/.switch/agents/<id for this subagent>.json` at `0600`,
+keyed by its own agent id. Still create `.claude/switch-subagents/.gitignore`
+containing `*` — the directory is generated state that does not belong in
+the user's repo.
 
 ### 12f — Tell the user how to launch a subagent
 
@@ -618,11 +652,12 @@ cd <repo> && claude "connect to switch room <name>" \
 
 > ⚠️ **Both `--agent` and `--settings` are required — together.** `--agent`
 > adopts the subagent persona; `--settings` supplies *that subagent's own*
-> Switch credentials. Dropping `--settings` does **not** error — the session
-> launches and silently authenticates as the **parent** agent, so the
-> subagent's actions get attributed to the wrong identity. Always pass both.
-> (Likewise, the settings file alone without `--agent` just runs the parent
-> persona with the subagent's token.) Tell the user this explicitly.
+> Switch identity, which is what selects its token from `~/.switch/agents/`.
+> Dropping `--settings` does **not** error — the session launches and
+> silently authenticates as the **parent** agent, so the subagent's actions
+> get attributed to the wrong identity. Always pass both. (Likewise, the
+> settings file alone without `--agent` just runs the parent persona under
+> the subagent's identity.) Tell the user this explicitly.
 
 Switch also posts this exact command automatically whenever someone
 addresses the subagent in a room while it has no live session (it's

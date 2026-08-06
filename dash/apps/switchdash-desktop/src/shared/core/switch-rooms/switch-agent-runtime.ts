@@ -23,12 +23,18 @@ export const SWITCH_AGENT_RUNTIME_PACKAGE = '@sandbox-quantum/switch-agent-runti
 export const SWITCH_AGENT_RUNTIME_VERSION = '0.1.5';
 
 /**
- * Credentials the runtime refuses to start without: it reads all three at
- * `bin.ts` module scope and exits before answering `initialize` if any is
- * missing, which a host reports only as a closed connection.
+ * The credentials switchdash injects into a session it launches. The runtime
+ * takes all three together as its identity and asks no further questions —
+ * this is the first branch of its resolution chain, and the one the majority
+ * of sessions take.
  *
- * This tier is the contract with the Claude Code connector, whose `.mcp.json`
- * declares the same three for `${VAR}` expansion.
+ * Since CHOO-1962 they are no longer *required*: a session nobody configured
+ * this way falls back to the on-disk agent store rather than exiting. What
+ * follows from that is that the Claude connector's `.mcp.json` declares **no
+ * `env` block at all** — a `${VAR}` there is mandatory once declared, so
+ * declaring these would break exactly the standalone case the fallback exists
+ * for. Codex still lists them under `env_vars`, which forwards by name and
+ * skips whatever is unset.
  */
 export const SWITCH_RUNTIME_REQUIRED_ENV = [
   'SWITCH_API_ENDPOINT',
