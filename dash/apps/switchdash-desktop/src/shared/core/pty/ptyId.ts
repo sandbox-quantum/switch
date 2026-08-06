@@ -10,6 +10,25 @@ export function makePtyId(provider: AgentProviderId | 'shell', sessionId: string
   return `${provider}${SESSION_SEP}${sessionId}`;
 }
 
+/**
+ * Narrow a provider id that arrived as an opaque string — from a database row
+ * or a launch spec read off disk — to one `makePtyId` can use.
+ *
+ * Throws rather than passing the value through, because `parsePtyId` only
+ * recognises registered providers: a pty id built from an unknown one parses
+ * back as null, and every hook callback carrying it is then dropped with no
+ * indication of why.
+ */
+export function asPtyProviderId(value: string): AgentProviderId | 'shell' {
+  if (value === 'shell' || (AGENT_PROVIDER_IDS as readonly string[]).includes(value)) {
+    return value as AgentProviderId | 'shell';
+  }
+  throw new Error(
+    `unknown agent provider '${value}': pty ids built from it cannot be parsed back, ` +
+      'so the session would receive no hook events'
+  );
+}
+
 export function parsePtyId(id: string): {
   providerId: AgentProviderId | 'shell';
   sessionId: string;

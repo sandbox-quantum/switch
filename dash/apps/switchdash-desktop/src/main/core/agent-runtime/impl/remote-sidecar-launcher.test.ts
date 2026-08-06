@@ -182,7 +182,10 @@ describe('RemoteSidecarLauncher', () => {
     // it mid-transfer dies on a SyntaxError.
     expect(puts).toHaveLength(1);
     expect(puts[0]!.local).toBe('/local/dist-sidecar/sidecar.mjs');
-    expect(puts[0]!.remote).toMatch(/^\.switchdash\/sidecar\.mjs\.\d+\.tmp$/);
+    // A uuid, not a pid: the bundle is shared per directory while the deploy
+    // lock is per agent, so two clients on different machines can upload
+    // concurrently and a pid is not unique across them.
+    expect(puts[0]!.remote).toMatch(/^\.switchdash\/sidecar\.mjs\.[0-9a-f-]{36}\.tmp$/);
     const rename = calls.find((c) => c.command === 'sh' && isBundleRename(c.args[1] ?? ''));
     expect(rename!.args[1]).toContain(`mv '${puts[0]!.remote}' '.switchdash/sidecar.mjs'`);
     const specWrite = calls.find((c) => c.command === 'sh' && isLaunchSpecWrite(c.args[1] ?? ''));

@@ -118,7 +118,9 @@ describe('NotificationWatcher spawn decision', () => {
     const launch = vi.fn(async () => {
       throw new Error('boom');
     });
-    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    const fetchMock = vi.fn(
+      async (_url: string | URL, _init?: RequestInit) => new Response(null, { status: 200 })
+    );
     vi.stubGlobal('fetch', fetchMock);
     handle(makeWatcher(makeSpawner({ launch })), 'room-x');
 

@@ -59,9 +59,9 @@ function makeSpawner(over: Partial<InProcessSessionSpawnerDeps> = {}) {
   const runtime = { hasLiveRoom: vi.fn(() => false) };
   const spawner = new InProcessSessionSpawner({
     spec: SPEC,
-    locationId: 'proj-1',
     hookPort: 4321,
     hookToken: 'hooktok',
+    endpointFile: `${CWD}/.switchdash/sidecar-endpoint.json`,
     runtime,
     switchEnv: {
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
@@ -137,7 +137,13 @@ describe('InProcessSessionSpawner.launch', () => {
     const config = JSON.parse(await readFile(join(HOME, '.codex/hooks.json'), 'utf8')) as {
       hooks: Record<string, unknown[]>;
     };
-    expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
+    expect(Object.keys(config.hooks).sort()).toEqual([
+      'PermissionRequest',
+      'PostToolUse',
+      'PreToolUse',
+      'SessionStart',
+      'Stop',
+    ]);
     expect(calls.find((c) => c.args[0] === 'new-session')).toBeDefined();
   });
 

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
 import { defineConfig } from 'vitest/config';
 
@@ -96,6 +97,10 @@ export default defineConfig({
           entries: ['src/renderer/tests/browser/**/*.test.{ts,tsx}'],
           include: ['react/jsx-dev-runtime'],
         },
+        // Layout assertions need the real utility classes, not just the class
+        // strings. Only the renderer build carries this plugin, so a browser
+        // test importing index.css would otherwise get no Tailwind output.
+        plugins: [tailwindcss()],
         test: {
           name: 'browser',
           browser: {

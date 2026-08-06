@@ -8,9 +8,10 @@ import {
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
-import type {
-  DockerAvailability,
-  StartLocalServerResult,
+import {
+  type DockerAvailability,
+  type StartLocalServerResult,
+  switchVersionDowngradeMessage,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   type RemoteServerStatus,
@@ -18,6 +19,7 @@ import {
   remoteServerStatusChannel,
 } from '@shared/events/remoteSwitchServerEvents';
 import { isStackRunning } from './compose';
+import { readVersionStatus } from './deployed-version';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
 import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts } from './ports';
@@ -28,6 +30,8 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     phase: 'stopped',
     serverId: null,
     version: COMPATIBLE_SWITCH_VERSION,
+    deployedVersion: null,
+    drift: null,
     message: null,
     error: null,
   };
@@ -104,29 +108,36 @@ class RemoteServerService {
 
   /** Adopt an already-running remote stack: re-open its forward and mark it
    * running. Skipped while the host is blocked — the reachability manager will
-   * call back through {@link onHostReachable} when it recovers. */
+   * call back through {@link onHostReachable} when it recovers.
+   *
+   * Also records how the host's deployed switch-core compares to this build's
+   * pin, so an app update that moved the pin surfaces as drift rather than
+   * leaving the host on a stale core (CHOO-1736). That check runs even when the
+   * stack is down: its data volumes still hold the schema the last version
+   * migrated to, which is what makes a downgrade unsafe. */
   private async reconcileHost(sshHost: string, serverId: string): Promise<void> {
     if (hostReachabilityService.isBlocked(sshHost)) return;
     let host: RemoteServerHost | null = null;
+    let adopted = false;
     try {
       host = await createRemoteServerHost(sshHost);
-      if (!(await isStackRunning(host))) {
-        host.dispose();
-        return;
-      }
-      const ports = await readPersistedPorts(host);
-      if (!ports) {
+      if (await isStackRunning(host)) {
+        const ports = await readPersistedPorts(host);
+        if (ports) {
+          await host.establishNetworking(ports);
+          this.hosts.set(sshHost, host);
+          adopted = true;
+          this.setStatus(sshHost, { phase: 'running', serverId });
+        }
         // Running but we don't know its ports — leave it stopped; the user can
         // restart to re-derive them rather than forward to the wrong ports.
-        host.dispose();
-        return;
       }
-      await host.establishNetworking(ports);
-      this.hosts.set(sshHost, host);
-      this.setStatus(sshHost, { phase: 'running', serverId });
+      this.setStatus(sshHost, await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
     } catch (error) {
-      host?.dispose();
       log.warn(`remote-switch-server: boot reconcile failed for ${sshHost}`, { error });
+    } finally {
+      // The adopted host owns the live port-forward; anything else is throwaway.
+      if (!adopted) host?.dispose();
     }
   }
 
@@ -161,17 +172,30 @@ class RemoteServerService {
       if (result.kind === 'docker-unavailable') {
         this.setStatus(sshHost, { phase: 'error', error: result.detail });
         host.dispose();
+      } else if (result.kind === 'version-downgrade') {
+        this.setStatus(sshHost, {
+          phase: 'error',
+          message: null,
+          error: switchVersionDowngradeMessage(result.deployed, result.expected),
+          deployedVersion: result.deployed,
+          drift: { deployed: result.deployed, expected: result.expected, direction: 'downgrade' },
+        });
+        host.dispose();
       } else if (result.kind === 'error') {
         this.setStatus(sshHost, { phase: 'error', error: result.message });
         host.dispose();
       } else {
         // Keep the host alive — it owns the port-forward.
         this.hosts.set(sshHost, host);
+        // The pipeline just converged the containers onto this build's pin, so
+        // any drift the boot probe found is now resolved.
         this.setStatus(sshHost, {
           phase: 'running',
           serverId: result.serverId,
           message: null,
           error: null,
+          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+          drift: null,
         });
       }
       return result;

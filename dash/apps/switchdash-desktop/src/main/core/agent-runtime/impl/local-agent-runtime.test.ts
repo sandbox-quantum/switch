@@ -1,13 +1,14 @@
 import { pluginRegistry } from '@switchdash/plugins/agents';
-import { parse as parseTOML } from 'smol-toml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_FRESH_RECOVERY_GRACE_MS } from '@main/core/agent-runtime/agent-runtime-supervisor';
+import { getAgentById } from '@main/core/agents/getAgentById';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { ptyExitChannel } from '@shared/core/pty/ptyEvents';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
+import { SWITCH_RUNTIME_REQUIRED_ENV } from '@shared/core/switch-rooms/switch-agent-runtime';
 import { LocalAgentRuntime } from './local-agent-runtime';
 
 const spawnLocalPty = vi.hoisted(() => vi.fn());
@@ -303,6 +304,9 @@ describe('local agent runtime respawn state', () => {
   it('writes the Codex profile to the home dir and loads it on argv', async () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
+    vi.mocked(getAgentById).mockResolvedValueOnce({
+      providerConfig: { model: 'gpt-5.6-terra' },
+    } as unknown as Awaited<ReturnType<typeof getAgentById>>);
     vi.mocked(readAgentSwitchEnvFromFs).mockResolvedValueOnce({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_API_TOKEN: 'tok-123',
@@ -311,7 +315,10 @@ describe('local agent runtime respawn state', () => {
 
     await localProvider().start(session());
 
-    expect(writtenCodexProfile()).toContain('[mcp_servers.switch]');
+    expect(writtenCodexProfile()).toContain('model = "gpt-5.6-terra"');
+    // The Switch server comes from the connector plugin's own `.mcp.json`; the
+    // profile carries only what is per-agent.
+    expect(writtenCodexProfile()).not.toContain('mcp_servers');
     // Profile name is digest-suffixed on (dir, slug) so same-named agents in
     // different dirs don't collide.
     expect(buildCommandMock).toHaveBeenLastCalledWith(
@@ -321,10 +328,25 @@ describe('local agent runtime respawn state', () => {
     );
   });
 
-  it('puts every variable the profile forwards onto the session it spawns', async () => {
-    // Codex forwards these by name out of its own environment, so a name the
-    // profile lists but the session lacks reaches the runtime as nothing at
-    // all — and a missing credential kills the handshake, not just one tool.
+  it('writes no profile at all for a Codex agent that specializes nothing', async () => {
+    // The profile used to exist for the MCP registration, so every Codex agent
+    // got one. Now an agent on the defaults has nothing to put in it, and an
+    // empty file would still add a `--profile` pointing at nothing.
+    const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
+    spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
+
+    await localProvider().start(session());
+
+    expect(() => writtenCodexProfile()).toThrow(/no Codex profile/);
+    expect(buildCommandMock).toHaveBeenLastCalledWith(expect.objectContaining({ agentArgs: [] }));
+  });
+
+  it('puts the runtime credentials onto the session it spawns', async () => {
+    // Codex forwards these by name out of its own environment into the MCP
+    // server, so a name the connector's `.mcp.json` lists but the session lacks
+    // reaches the runtime as nothing at all — and a missing credential kills the
+    // handshake, not just one tool. Asserted against the runtime's own contract
+    // rather than the profile, which no longer declares the server.
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     vi.mocked(readAgentSwitchEnvFromFs).mockResolvedValueOnce({
@@ -335,18 +357,11 @@ describe('local agent runtime respawn state', () => {
 
     await localProvider().start(session());
 
-    const server = (
-      parseTOML(writtenCodexProfile()) as {
-        mcp_servers: Record<string, { env_vars?: string[] }>;
-      }
-    ).mcp_servers.switch;
     const spawned = (spawnLocalPty.mock.calls[0][0] as { env: Record<string, string> }).env;
 
-    expect(server.env_vars?.length).toBeGreaterThan(0);
-    for (const name of server.env_vars ?? []) {
-      // SWITCH_CONNECTION_ID and the npm settings come from services stubbed
-      // out here; the credentials are the ones this path is responsible for.
-      if (!name.startsWith('SWITCH_API') && name !== 'SWITCH_AGENT_ID') continue;
+    // SWITCH_CONNECTION_ID and the npm settings come from services stubbed out
+    // here; the credentials are the ones this path is responsible for.
+    for (const name of SWITCH_RUNTIME_REQUIRED_ENV) {
       expect(spawned).toHaveProperty(name);
     }
   });

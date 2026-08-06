@@ -21,6 +21,23 @@ below:
 
 ### [Unreleased]
 
+### [0.12.1] - 2026-08-05
+
+#### Security
+- Retire the unauthenticated `/collab` bridge-admin API (CHOO-1251, H5, #120).
+- Re-scan and bump dependency CVEs (CHOO-1251, M5, #123).
+- Local stacks are secure by default: published ports bind to `127.0.0.1`
+  (`SWITCH_BIND_ADDR=0.0.0.0` is now an explicit opt-in for network exposure),
+  `.env.example` ships every secret blank, and `just init-env` generates strong
+  random credentials — no more `admin/admin` reachable on `0.0.0.0` (CHOO-1251,
+  M1, #122).
+
+#### Fixed
+- Enforce one session of an agent per room: `connect_to_room` now refuses with
+  HTTP 409 when another session of the same agent already holds the room, and a
+  takeover evicts and reports the displaced session — instead of silently
+  stranding a session in a room whose events go elsewhere (CHOO-1419, #109).
+
 ### [0.12.0] - 2026-08-04
 
 #### Added
@@ -165,6 +182,61 @@ below:
 
 ### [Unreleased]
 
+### [0.18.3] - 2026-08-06
+
+#### Added
+- The Codex connector plugin now ships the Switch MCP server itself
+  (`mcpServers` + `env_vars` name-forwarding), so Codex can be used with Switch
+  **outside switchdash** — previously the server was registered only by a
+  switchdash-written profile, and a hand-run Codex session had the room-workflow
+  skill but none of the tools it describes. The plugin also auto-approves the
+  Switch tools, which no `approval_policy` setting could do: measured against
+  codex-cli 0.146.0, that setting does not govern MCP tool calls at all
+  (CHOO-1935).
+
+  ⚠️ Codex upgrades a plugin only when a user clicks Update in Settings and
+  caches each version separately, so an install still on an older connector has
+  no Switch tools until it is upgraded.
+
+#### Fixed
+- Bypass permissions is applied to sessions again: the toggle is stored on the
+  agent but every launch read a copy frozen into the session at creation, so
+  changing it never affected an existing session — on restart or resume — while
+  the settings copy promised the opposite (CHOO-1935).
+- Codex runtime status reports tool calls ("Running tool …") instead of sitting
+  on "Working on it…" for a whole turn; no tool hook was registered for Codex,
+  so nothing could ever produce an activity update (CHOO-1935).
+- In-app release links resolve again: the sidebar update indicator and the
+  Settings Update card pointed at `.../releases/tag/v<version>`, which is not a
+  real tag (the app is tagged `switchdash-v<version>`), so the user hit a 404;
+  the release-notes fetch had the same broken tag and now also authenticates
+  with the gh CLI token so it can read the private release feed instead of
+  silently returning nothing (#134).
+
+#### Changed
+- The per-agent Codex profile carries only model, reasoning effort and
+  instructions. An agent that sets none of them no longer gets a profile at all
+  (CHOO-1935).
+
+### [0.18.2] - 2026-08-05
+
+#### Fixed
+- Client side of one-session-per-room enforcement: a session whose room the
+  server takes away (or refuses with HTTP 409 because another session of the
+  agent holds it) is now reported as roomless and is not reconnected under a
+  room it no longer attends — the remote-session reconciler and sidecar no
+  longer strand two sessions in one room (CHOO-1419, #109).
+
+### [0.18.1] - 2026-08-05
+
+#### Changed
+- Bundled Switch agent runtime bumped to 0.1.5 (#127).
+
+#### Fixed
+- A session's Switch connection id is now derived deterministically, so a
+  supervisor/sidecar restart no longer strands a remote session with a stale
+  connection id (CHOO-1931, #125).
+
 ### [0.18.0] - 2026-08-04
 
 #### Added
@@ -175,8 +247,7 @@ below:
   approval (validated — an unknown value fails rather than silently widening the
   sandbox); a Codex agent defaults to a `codex.<repo>.<user>` identity; and
   switchdash registers the Switch MCP runtime for Codex itself via a per-agent
-  Codex profile, since Codex can't expand `${VAR}` in a bundled `.mcp.json`
-  (CHOO-1436, #91, #79).
+  Codex profile (CHOO-1436, #91, #79).
 
 #### Fixed
 - Codex session correctness: per-agent Switch credentials are written to disk for

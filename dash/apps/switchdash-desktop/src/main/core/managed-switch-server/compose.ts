@@ -84,3 +84,43 @@ export async function runningServices(host: ServerHost): Promise<string[]> {
 export async function isStackRunning(host: ServerHost): Promise<boolean> {
   return (await runningServices(host)).includes('switch');
 }
+
+/**
+ * Image reference of each running container, keyed by compose service name —
+ * the ground truth for what the stack is actually running, as opposed to what
+ * the `.env` last asked for.
+ *
+ * Unlike {@link runningServices} this does NOT swallow failures: a caller
+ * deciding whether an upgrade or downgrade is in play must be able to tell
+ * "nothing is running" from "could not ask".
+ */
+export async function runningImages(host: ServerHost): Promise<Map<string, string>> {
+  const stdout = await runCompose(
+    host,
+    [...baseArgs(host), 'ps', '--status', 'running', '--format', 'json'],
+    60_000
+  );
+  const images = new Map<string, string>();
+  for (const entry of parseComposePs(stdout)) {
+    if (entry.Service && entry.Image) images.set(entry.Service, entry.Image);
+  }
+  return images;
+}
+
+type ComposePsEntry = { Service?: string; Image?: string };
+
+/** Compose emits `ps --format json` as a JSON array on some versions and as
+ * one JSON object per line on others; accept both. */
+function parseComposePs(stdout: string): ComposePsEntry[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('[')) {
+    const parsed: unknown = JSON.parse(trimmed);
+    return Array.isArray(parsed) ? (parsed as ComposePsEntry[]) : [];
+  }
+  return trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as ComposePsEntry);
+}

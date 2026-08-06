@@ -15,6 +15,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { localServerStore } from './local-server-store';
+import { VersionDriftNotice } from './VersionDriftNotice';
 
 const card = 'rounded-lg border border-border bg-card p-4';
 
@@ -32,6 +33,13 @@ export const LocalServerControls = observer(function LocalServerControls() {
 
   const transitioning = store.isTransitioning;
   const dockerUnavailable = store.docker && !store.docker.available ? store.docker : null;
+  const drift = store.drift;
+  // Report the version the stack is actually on, not the one this build wants —
+  // they diverge exactly when the drift notice below has something to say.
+  const runningVersion = store.status?.deployedVersion ?? store.status?.version ?? '';
+  // A stack ahead of this build must not be started at all: doing so would point
+  // it at a core older than its database has migrated to (CHOO-1736).
+  const downgradeBlocked = drift?.direction === 'downgrade';
 
   return (
     <div className={`${card} space-y-4`}>
@@ -39,12 +47,17 @@ export const LocalServerControls = observer(function LocalServerControls() {
         <div className="space-y-1">
           <h3 className="text-sm font-medium text-foreground">Managed server</h3>
           <p className="text-xs text-foreground-muted">
-            Runs the full Switch stack on this computer with Docker (switch-core{' '}
-            {store.status?.version ?? ''}).
+            Runs the full Switch stack on this computer with Docker (switch-core {runningVersion}).
           </p>
         </div>
         <PhaseBadge />
       </div>
+
+      <VersionDriftNotice
+        drift={drift}
+        disabled={transitioning}
+        onRestart={() => void store.start()}
+      />
 
       {store.message && transitioning && (
         <div className="flex items-center gap-2 text-sm text-foreground-muted">
@@ -84,9 +97,13 @@ export const LocalServerControls = observer(function LocalServerControls() {
             Stop
           </Button>
         ) : (
-          <Button size="sm" disabled={transitioning} onClick={() => void store.start()}>
+          <Button
+            size="sm"
+            disabled={transitioning || downgradeBlocked}
+            onClick={() => void store.start()}
+          >
             <Play className="size-4" />
-            {store.phase === 'error' ? 'Retry' : 'Start'}
+            {store.phase === 'error' && !downgradeBlocked ? 'Retry' : 'Start'}
           </Button>
         )}
       </div>

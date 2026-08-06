@@ -9,31 +9,41 @@ import {
   SWITCH_RUNTIME_ENV_VARS,
   SWITCH_RUNTIME_OPTIONAL_ENV,
   SWITCH_RUNTIME_REQUIRED_ENV,
-  switchAgentRuntimeCommand,
 } from './switch-agent-runtime';
 
-const MCP_JSON_RELATIVE = 'connectors/claude-code-plugin/.mcp.json';
+const CLAUDE_MCP_JSON = 'connectors/claude-code-plugin/.mcp.json';
+const CODEX_MCP_JSON = 'connectors/codex-plugin/.mcp.json';
 
-/** Walk up from this file until the connector plugin's .mcp.json is found. */
-function findClaudeMcpJson(): string {
+type SwitchServerEntry = {
+  args?: string[];
+  env?: Record<string, string>;
+  env_vars?: string[];
+  default_tools_approval_mode?: string;
+};
+
+/** Walk up from this file until the given repo-relative path is found. */
+function findRepoFile(relative: string): string {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 12; i++) {
-    const candidate = join(dir, MCP_JSON_RELATIVE);
+    const candidate = join(dir, relative);
     if (existsSync(candidate)) return candidate;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error(`could not locate ${MCP_JSON_RELATIVE} above ${fileURLToPath(import.meta.url)}`);
+  throw new Error(`could not locate ${relative} above ${fileURLToPath(import.meta.url)}`);
 }
 
-/** The `switch` server entry from the Claude connector's bundled .mcp.json. */
-function claudeSwitchServer(): { args?: string[]; env?: Record<string, string> } {
-  const mcp = JSON.parse(readFileSync(findClaudeMcpJson(), 'utf8')) as {
-    mcpServers: Record<string, { args?: string[]; env?: Record<string, string> }>;
+/** The `switch` server entry from a connector plugin's bundled .mcp.json. */
+function switchServerIn(relative: string): SwitchServerEntry {
+  const mcp = JSON.parse(readFileSync(findRepoFile(relative), 'utf8')) as {
+    mcpServers: Record<string, SwitchServerEntry>;
   };
   return mcp.mcpServers.switch ?? {};
 }
+
+const claudeSwitchServer = (): SwitchServerEntry => switchServerIn(CLAUDE_MCP_JSON);
+const codexSwitchServer = (): SwitchServerEntry => switchServerIn(CODEX_MCP_JSON);
 
 /** The runtime package's own version, the third pin nothing else checks. */
 function runtimePackageVersion(): string {
@@ -50,26 +60,23 @@ function runtimePackageVersion(): string {
   throw new Error('could not locate packages/switch-agent-runtime/package.json');
 }
 
-describe('switchAgentRuntimeCommand', () => {
-  it('resolves npx against the pinned package version', () => {
-    const { command, args } = switchAgentRuntimeCommand();
-    expect(command).toBe('npx');
-    expect(args).toEqual(['-y', `${SWITCH_AGENT_RUNTIME_PACKAGE}@${SWITCH_AGENT_RUNTIME_VERSION}`]);
-  });
-
+describe('the pinned runtime version', () => {
   it('forwards what npx itself needs to reach the private registry', () => {
     // Without these the child cannot fetch the package at all on a cold cache,
     // and the failure reads as a 404 for something that does not exist.
-    expect(switchAgentRuntimeCommand().envVars).toEqual(
+    expect(SWITCH_RUNTIME_ENV_VARS).toEqual(
       expect.arrayContaining(['npm_config_userconfig', NPM_TOKEN_VAR])
     );
   });
 
-  it('stays pinned to the same runtime version the Claude connector .mcp.json registers', () => {
-    // Codex registers this runtime via a profile and Claude via its bundled
-    // .mcp.json. Both must run the same published version; this guards the two
-    // pins from drifting when only one is bumped.
-    const args = claudeSwitchServer().args ?? [];
+  it.each([
+    ['Claude', CLAUDE_MCP_JSON],
+    ['Codex', CODEX_MCP_JSON],
+  ])('is the version the %s connector .mcp.json registers', (_host, relative) => {
+    // Both connectors register this runtime from their own bundled .mcp.json,
+    // and both must run the same published version; this guards the pins from
+    // drifting when only one is bumped.
+    const args = switchServerIn(relative).args ?? [];
     expect(args).toContain(`${SWITCH_AGENT_RUNTIME_PACKAGE}@${SWITCH_AGENT_RUNTIME_VERSION}`);
   });
 
@@ -116,7 +123,40 @@ describe('the credentials the runtime needs', () => {
     }
   });
 
-  it('are all routed by the Codex launch command', () => {
-    expect(switchAgentRuntimeCommand().envVars).toEqual([...SWITCH_RUNTIME_ENV_VARS]);
+  it('are all named by the Codex connector, which forwards by name', () => {
+    // Codex passes an MCP child a fixed allowlist and nothing else, so a name
+    // missing here reaches the runtime as nothing at all — and a missing
+    // credential kills the handshake rather than one tool. Safe to list the
+    // optional tier too: an unset name is simply not forwarded.
+    expect(codexSwitchServer().env_vars).toEqual([...SWITCH_RUNTIME_ENV_VARS]);
+  });
+
+  it('are named by the Codex connector without any value channel', () => {
+    const server = codexSwitchServer();
+    expect(server.env).toBeUndefined();
+    for (const name of server.env_vars ?? []) {
+      expect(name).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+    }
+  });
+});
+
+describe('the Codex connector tool approval', () => {
+  it('auto-approves the Switch tools, which no approval_policy would have done', () => {
+    // An agent answering a room is unattended: a prompt on `post_message` stops
+    // the turn with nobody to release it. Measured against codex-cli 0.146.0,
+    // `approval_policy` does not govern MCP tool calls at all — a write-annotated
+    // tool is denied under `never` just as under `untrusted` — so the bypass
+    // toggle cannot cover this and only this field can.
+    expect(codexSwitchServer().default_tools_approval_mode).toBe('approve');
+  });
+
+  it('stays inside the enum Codex accepts, which it does not police', () => {
+    // An unrecognised value does not fail loudly: Codex drops the whole server
+    // and reports no MCP servers at all, so the session simply has no Switch
+    // tools. `approve` is also the only one of the four that admits a tool
+    // annotated as writing, which most Switch tools are.
+    expect(['auto', 'prompt', 'writes', 'approve']).toContain(
+      codexSwitchServer().default_tools_approval_mode
+    );
   });
 });

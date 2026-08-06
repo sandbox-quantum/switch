@@ -1,5 +1,4 @@
 import { pluginRegistry } from '@switchdash/plugins/agents';
-import { parse as parseTOML } from 'smol-toml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
@@ -8,6 +7,7 @@ import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
+import { SWITCH_RUNTIME_REQUIRED_ENV } from '@shared/core/switch-rooms/switch-agent-runtime';
 import { SidecarHttpStatusError } from './sidecar-http';
 import { SshAgentRuntime } from './ssh-agent-runtime';
 
@@ -311,10 +311,11 @@ describe('SshAgentRuntime', () => {
     );
   });
 
-  it('registers the Switch MCP server via a profile written to the VM home', async () => {
-    // The endpoint and token reach the session as env vars, but Codex only learns
-    // the server exists from a profile loaded with `--profile`. Without this a
-    // remote Codex session comes up authenticated and with no `switch` tools.
+  it('writes the per-agent Codex profile to the VM home and loads it on argv', async () => {
+    // The profile carries model / effort / instructions. The Switch server is no
+    // longer among them — the connector plugin registers it — but the
+    // credentials it names must still reach the remote session, or the runtime
+    // starts blind and never answers the handshake.
     const ctx = makeCtx();
     vi.mocked(getPlugin).mockImplementation(
       (id: string) =>
@@ -332,6 +333,7 @@ describe('SshAgentRuntime', () => {
     vi.mocked(getAgentById).mockResolvedValueOnce({
       autoApprove: false,
       name: 'codex-hoot',
+      providerConfig: { model: 'gpt-5.6-terra' },
     } as never);
     mockSpawn([]);
 
@@ -364,8 +366,6 @@ describe('SshAgentRuntime', () => {
       ])
     );
 
-    // Every credential the profile tells Codex to forward must be on the remote
-    // session, or the runtime starts blind and never answers the handshake.
     const written = (vi.mocked(ctx.exec).mock.calls as unknown[][])
       .flatMap((call) => (call[1] as string[]) ?? [])
       .map((arg) => {
@@ -375,17 +375,16 @@ describe('SshAgentRuntime', () => {
           return '';
         }
       })
-      .find((decoded) => decoded.includes('[mcp_servers.switch]'));
-    const server = (parseTOML(written!) as { mcp_servers: Record<string, { env_vars?: string[] }> })
-      .mcp_servers.switch;
-    const env = (resolveSshCommand.mock.calls[0] as unknown[])[2] as Record<string, string>;
+      .find((decoded) => decoded.includes('model = "gpt-5.6-terra"'));
+    expect(written).toBeDefined();
+    // The connector plugin declares the server on the VM as it does locally.
+    expect(written).not.toContain('mcp_servers');
 
-    expect(server.env_vars?.length).toBeGreaterThan(0);
-    for (const name of server.env_vars ?? []) {
-      // Only the identity tier here: this session runs without tmux, so it has
-      // no sidecar and therefore no connection id or registry config. The tmux
-      // path below covers the rest of what the profile forwards.
-      if (!name.startsWith('SWITCH_API') && name !== 'SWITCH_AGENT_ID') continue;
+    // Every credential the runtime needs must be on the remote session. Only the
+    // identity tier here: this session runs without tmux, so it has no sidecar
+    // and therefore no connection id or registry config.
+    const env = (resolveSshCommand.mock.calls[0] as unknown[])[2] as Record<string, string>;
+    for (const name of SWITCH_RUNTIME_REQUIRED_ENV) {
       expect(env).toHaveProperty(name);
     }
   });
@@ -422,7 +421,13 @@ describe('SshAgentRuntime', () => {
     const config = JSON.parse(Buffer.from(written!.at(-1)!, 'base64').toString('utf8')) as {
       hooks: Record<string, unknown[]>;
     };
-    expect(Object.keys(config.hooks).sort()).toEqual(['PermissionRequest', 'SessionStart', 'Stop']);
+    expect(Object.keys(config.hooks).sort()).toEqual([
+      'PermissionRequest',
+      'PostToolUse',
+      'PreToolUse',
+      'SessionStart',
+      'Stop',
+    ]);
   });
 
   // Neither root fits a scope nobody has taught the remote path about, and the

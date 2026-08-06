@@ -4,6 +4,7 @@ import { events, rpc } from '@renderer/lib/ipc';
 import type {
   DockerAvailability,
   LocalServerStatus,
+  SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   localServerLogChannel,
@@ -46,6 +47,11 @@ export class LocalServerStore {
 
   get isRunning(): boolean {
     return this.phase === 'running';
+  }
+
+  /** Set when the stack's switch-core differs from the version this build pins. */
+  get drift(): SwitchVersionDrift | null {
+    return this.status?.drift ?? null;
   }
 
   get isTransitioning(): boolean {
@@ -111,6 +117,10 @@ export class LocalServerStore {
           this.docker = { available: false, reason: result.reason, detail: result.detail };
           this.error = result.detail;
         });
+      } else if (result.kind === 'version-downgrade') {
+        // The refusal is already on the pushed status as `drift`, which the
+        // drift notice explains in full — a second copy in the generic error
+        // alert would just say the same thing twice.
       } else if (result.kind === 'error') {
         runInAction(() => {
           this.error = result.message;

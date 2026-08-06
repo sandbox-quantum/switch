@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveCommandPath } from '@switchdash/core/deps/runtime';
-import semver from 'semver';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { log } from '@main/lib/logger';
+import { isNewerVersion } from '@main/lib/semver';
 import { READ_PACKAGES_SCOPE } from '@shared/core/npm-registry';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import { probeLocalGhAuth } from './local-gh-auth';
@@ -96,14 +96,6 @@ function unsupported(agentId: string): SwitchSetupStatus {
     updateAvailable: false,
     refreshError: null,
   };
-}
-
-/** Whether `latest` is a newer semver than `installed`; false when either is unparseable. */
-export function isNewerVersion(installed: string, latest: string): boolean {
-  const a = semver.coerce(installed);
-  const b = semver.coerce(latest);
-  if (a === null || b === null) return false;
-  return semver.gt(b, a);
 }
 
 /**

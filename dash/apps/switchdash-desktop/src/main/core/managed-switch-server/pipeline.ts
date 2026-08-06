@@ -13,6 +13,7 @@ import {
   GHCR_REGISTRY,
   LOCAL_SERVER_ADMIN_EMAIL,
 } from './constants';
+import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
 import { buildEnvFile } from './env-file';
 import { apiUrlFor, gatewayUrlFor } from './free-port';
 import { waitForHealth } from './health';
@@ -42,10 +43,50 @@ export type StartStackOptions = {
 };
 
 /**
- * Full start pipeline: detect Docker → GHCR login → materialise compose + `.env`
- * → `compose up` → establish networking → health-gate → register + activate →
- * silent admin sign-in → reconcile agent servers. Returns without registering
- * anything if Docker is unavailable or the stack never turns healthy.
+ * Refuse to point an existing stack at an OLDER switch-core than it already
+ * runs. switch-core migrates its database forward at startup and Alembic has no
+ * downgrade path, so rolling switchdash back would hand an old core a schema it
+ * cannot read — silent, and only discovered once the data is already stuck.
+ *
+ * Runs before anything is written: the `.env` still names the version the stack
+ * was last started with, so a refused start leaves the host exactly as it was
+ * and re-installing the newer switchdash is enough to recover.
+ *
+ * A host whose deployed version cannot be read is allowed through with a
+ * warning rather than blocked — a transient daemon or SSH failure must not make
+ * the app unstartable — so this is a guard against the known-bad case, not a
+ * proof of safety.
+ */
+async function refuseDowngrade(
+  host: ServerHost
+): Promise<{ kind: 'version-downgrade'; deployed: string; expected: string } | null> {
+  const deployed = await readDeployedVersion(host);
+  if (deployed.kind === 'absent') return null;
+  if (deployed.kind === 'unreadable') {
+    log.warn(`managed-switch-server: starting ${host.label} without a deployed-version check`, {
+      reason: deployed.reason,
+    });
+    return null;
+  }
+  const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
+  if (drift?.direction !== 'downgrade') return null;
+  log.error(
+    `managed-switch-server: refusing to downgrade ${host.label} from switch-core ${drift.deployed} to ${drift.expected}`
+  );
+  return { kind: 'version-downgrade', deployed: drift.deployed, expected: drift.expected };
+}
+
+/**
+ * Full start pipeline: detect Docker → refuse a downgrade → GHCR login →
+ * materialise compose + `.env` → `compose up` → establish networking →
+ * health-gate → register + activate → silent admin sign-in → reconcile agent
+ * servers. Returns without registering anything if Docker is unavailable, the
+ * stack is newer than this build, or it never turns healthy.
+ *
+ * Doubles as the update path: the `.env` and compose file are re-materialised
+ * from this build every time, so `compose up -d` on an already-running stack
+ * re-pulls the newly pinned tags and recreates only the changed containers,
+ * leaving the data volumes in place for switch-core to migrate forward.
  */
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
   const { host, ref, serverName, onMessage, onLog, signal } = opts;
@@ -54,6 +95,10 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   if (!docker.available) {
     return { kind: 'docker-unavailable', reason: docker.reason, detail: docker.detail };
   }
+
+  onMessage('Checking the deployed version…');
+  const downgrade = await refuseDowngrade(host);
+  if (downgrade) return downgrade;
 
   onMessage('Authenticating to image registry…');
   await host.ensureGhcrLogin();

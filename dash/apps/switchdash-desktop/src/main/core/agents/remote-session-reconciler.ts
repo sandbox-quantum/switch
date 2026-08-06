@@ -334,10 +334,17 @@ class RemoteSessionReconciler {
       // this is what recovers a session's room after a restart/wake (the row is
       // re-adopted but the room association is otherwise dropped) and reflects a
       // later reconnect/room switch, for both freshly-adopted and already-known
-      // sessions. Only sets a room the sidecar actually reports; clearing is left
-      // to the prune/terminate path so a transient null poll cannot flicker the
-      // badge off a still-live session.
+      // sessions.
+      //
+      // A null room is reported, not ignored. The snapshot is only trusted at
+      // all once `snapshot.ok` has passed, and for a session the sidecar owns
+      // "no room" is a fact it holds rather than a gap in the poll: the session
+      // has not connected yet, or it was evicted from the room it had. Dropping
+      // it left an evicted session sitting under a room it no longer attends,
+      // beside the session that took it — two sessions in one room, which is
+      // the illusion CHOO-1419 is about.
       if (vm.roomId) this.mirrorSessionRoom(agent, vm.sessionId, vm.roomId);
+      else switchRoomService.clearSession(vm.sessionId);
     }
 
     await this.pruneVanished(agentId, vmIds);

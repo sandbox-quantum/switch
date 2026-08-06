@@ -3,7 +3,7 @@ import * as React from 'react';
 import { cn } from '@renderer/utils/utils';
 
 const alertVariants = cva(
-  "group/alert relative grid w-full gap-0.5 rounded-lg border px-3 py-2 text-left text-sm has-data-[slot=alert-action]:relative has-data-[slot=alert-action]:pr-18 has-[>svg]:grid-cols-[auto_1fr] has-[>svg]:gap-x-2.5 *:[svg]:row-span-2 *:[svg]:translate-y-0.5 *:[svg]:text-current *:[svg:not([class*='size-'])]:size-4",
+  "group/alert relative grid w-full gap-0.5 rounded-lg border px-3 py-2 text-left text-sm has-[>svg]:grid-cols-[auto_1fr] has-[>svg]:gap-x-2.5 has-data-[slot=alert-action]:grid-cols-[1fr_auto] has-data-[slot=alert-action]:gap-x-2.5 has-[>svg]:has-data-[slot=alert-action]:grid-cols-[auto_1fr_auto] *:[svg]:row-span-2 *:[svg]:translate-y-0.5 *:[svg]:text-current *:[svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -61,11 +61,20 @@ function AlertDescription({ className, ...props }: React.ComponentProps<'div'>) 
   );
 }
 
+/**
+ * Occupies the alert's trailing grid column rather than floating over the text.
+ * Absolute positioning paired with a fixed reserved gutter only holds while the
+ * action is narrower than the gutter; anything wider silently overlaps the
+ * description.
+ */
 function AlertAction({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="alert-action"
-      className={cn('absolute top-2.5 right-3', className)}
+      className={cn(
+        'col-start-2 row-span-2 row-start-1 self-center justify-self-end group-has-[>svg]/alert:col-start-3',
+        className
+      )}
       {...props}
     />
   );

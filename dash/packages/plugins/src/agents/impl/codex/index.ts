@@ -28,7 +28,7 @@ export const plugin = definePlugin(
     hooks: {
       kind: 'config',
       scope: 'global',
-      supportedEvents: ['notification', 'stop', 'session'],
+      supportedEvents: ['notification', 'stop', 'session', 'tool-use', 'tool-done'],
     },
     hostDependency: npmDependency({
       id: 'codex',
@@ -102,9 +102,10 @@ export const provider = registerPluginBehavior(plugin, {
   hooks: buildCodexHookConfig(),
   mcp: {
     ...codexMcpAdapter(),
-    // Codex cannot expand ${VAR} in a bundled .mcp.json, so switchdash registers
-    // the local Switch runtime itself: a per-agent profile in CODEX_HOME loaded
-    // with `--profile <slug>`.
+    // The profile carries per-agent model / effort / instructions in CODEX_HOME,
+    // loaded with `--profile <slug>`. It registers no MCP server: the connector
+    // plugin's own .mcp.json does that, for every Codex session rather than only
+    // switchdash's.
     launchProfile: codexLaunchProfile,
     launchProfilePaths: codexProfilePaths,
   },

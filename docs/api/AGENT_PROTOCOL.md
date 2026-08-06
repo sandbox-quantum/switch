@@ -129,6 +129,18 @@ naming the incumbent. The common cause is an accident (a stale process, a
 double launch) and rejecting surfaces it. An explicit takeover flag forces the
 claim, evicting the incumbent, which is told why.
 
+**`connect_to_room` takes over rather than rejecting** (CHOO-1419). A tool call
+is not a client negotiating for a slot: it is a session that has already been
+started to work in this room and has nowhere else to go, so refusing it strands
+a live session instead of resolving the duplicate. It claims with takeover and
+returns a `warning` naming the room and the evicted connection; the incumbent
+learns it lost the room from `subscription_changed` on its own stream. Reporting
+is the load-bearing half — an unannounced takeover is indistinguishable from the
+duplicate-session bug it resolves, because in both a session stops receiving a
+room and nothing says why. A **dead** incumbent is not an eviction and is not
+reported: `claimant_of` filters on liveness, so a restart meeting its own stale
+connection displaces nobody.
+
 ### 2.5 Sessions are not a server concept
 
 Switch models connections, not sessions. Whether a client runs one PTY or ten
@@ -658,9 +670,9 @@ session `SWITCH_CONNECTION_ID`, so a switchdash-launched session claims its room
 on a connection switchdash already holds — for Claude Code and for Codex alike.
 The `PostToolUse` hook survives only as the fallback for a **Claude** session
 switchdash did not start and adopted afterwards, which holds a connection of its
-own. Codex registers no such hook: its Switch MCP server exists only in the
-per-agent profile switchdash writes, so a Codex session switchdash did not start
-has no `connect_to_room` to observe in the first place.
+own. Codex registers no such hook. Since the Codex connector plugin now ships
+the Switch MCP server, a Codex session switchdash did not start *can* call
+`connect_to_room`; such a session is currently untracked rather than impossible.
 
 Cross-checking a room against incoming events becomes unnecessary: a
 connection only receives events for rooms it is subscribed to, and any change
@@ -724,8 +736,8 @@ Fail loud, never fake. Concretely:
 | heartbeat with no stream attached | reject: reopen the stream |
 | call with unknown/dead `connection_id` | reject: reconnect and resume |
 | `connection_id` belonging to another agent | reject |
-| room slot already claimed | reject, naming the incumbent |
-| slot taken over | incumbent receives `evicted` and stops |
+| room slot already claimed | reject, naming the incumbent — except `connect_to_room`, which takes over and reports what it evicted |
+| slot taken over | incumbent's rooms change; it receives `subscription_changed` and goes dark on that room |
 | server restart | cursors invalidated; clients told to re-read |
 | incompatible protocol version | refuse at open with an upgrade message |
 | per-agent connection cap exceeded | reject loudly |

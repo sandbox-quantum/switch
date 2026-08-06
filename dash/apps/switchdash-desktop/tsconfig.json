@@ -21,6 +21,7 @@
     "src/renderer/**/*",
     "src/preload/**/*",
     "src/shared/**/*",
+    "src/sidecar/**/*",
     "src/types/**/*",
     "src/test/**/*",
     "tooling/**/*"

@@ -12,4 +12,4 @@ export const RELEASE_REPO_OWNER = 'sandbox-quantum';
 export const RELEASE_REPO_NAME = 'switch';
 
 // Keep in sync with COMPATIBLE_SWITCH_VERSION in ./app-identity.ts.
-export const COMPATIBLE_SWITCH_VERSION = '0.11.0';
+export const COMPATIBLE_SWITCH_VERSION = '0.12.1';

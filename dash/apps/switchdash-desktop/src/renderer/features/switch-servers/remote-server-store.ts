@@ -2,7 +2,10 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { events, rpc } from '@renderer/lib/ipc';
-import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
+import type {
+  DockerAvailability,
+  SwitchVersionDrift,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   type RemoteServerStatus,
   remoteServerLogChannel,
@@ -13,7 +16,16 @@ import { switchServersStore } from './switch-servers-store';
 const MAX_LOG_LINES = 400;
 
 function defaultStatus(sshHost: string): RemoteServerStatus {
-  return { sshHost, phase: 'stopped', serverId: null, version: '', message: null, error: null };
+  return {
+    sshHost,
+    phase: 'stopped',
+    serverId: null,
+    version: '',
+    deployedVersion: null,
+    drift: null,
+    message: null,
+    error: null,
+  };
 }
 
 /**
@@ -61,6 +73,11 @@ export class RemoteServerStore {
   isTransitioning(sshHost: string): boolean {
     const phase = this.phaseFor(sshHost);
     return this.busyHosts.has(sshHost) || phase === 'starting' || phase === 'stopping';
+  }
+
+  /** Set when the host's switch-core differs from the version this build pins. */
+  driftFor(sshHost: string): SwitchVersionDrift | null {
+    return this.statusFor(sshHost).drift;
   }
 
   logsFor(sshHost: string): string[] {
@@ -134,6 +151,10 @@ export class RemoteServerStore {
           });
           this.error = result.detail;
         });
+      } else if (result.kind === 'version-downgrade') {
+        // The refusal is already on the pushed status as `drift`, which the
+        // drift notice explains in full — a second copy in the generic error
+        // alert would just say the same thing twice.
       } else if (result.kind === 'error') {
         runInAction(() => {
           this.error = result.message;

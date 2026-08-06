@@ -20,12 +20,22 @@ function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
+/**
+ * Draggable regions are geometric rectangles Chromium computes from layout, not
+ * something a DOM subtree inherits. Dialogs portal to `document.body`, so a view
+ * that declares `-webkit-app-region: drag` (the home panel, `page-header`,
+ * `page-layout`, `Titlebar`, `sidebar-space`) keeps its rect live *underneath* an
+ * open dialog: without an explicit opt-out, pointer-down over the dialog is taken
+ * by the window-drag handler, so text cannot be selected and clicks land as drags.
+ * The backdrop opts the whole viewport out for as long as a dialog is open, which
+ * also keeps outside-click dismissal working over those views.
+ */
 function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) {
   return (
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        'fixed inset-0 isolate z-50 bg-black/30 duration-100  data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0',
+        'fixed inset-0 isolate z-50 bg-black/30 duration-100 [-webkit-app-region:no-drag] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0',
         className
       )}
       {...props}
@@ -50,7 +60,10 @@ function DialogContent({
           }
         }}
         className={cn(
-          'fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-background text-sm ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 sm:max-w-lg',
+          // `no-drag` is repeated here rather than left to the backdrop so the
+          // popup carries the opt-out itself, even if it is ever rendered
+          // without one. See the DialogOverlay docblock.
+          'fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-background text-sm ring-1 ring-foreground/10 duration-100 outline-none [-webkit-app-region:no-drag] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 sm:max-w-lg',
           className
         )}
         {...props}

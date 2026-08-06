@@ -213,6 +213,22 @@ export class SidecarStateStore {
     this.scheduleFlush();
   }
 
+  /**
+   * Drop a session's room, keeping the session itself.
+   *
+   * The counterpart `record` cannot express: there a null room means "no room
+   * information" and the known room is kept, which is right for a bare hook but
+   * wrong for a session that genuinely left. Without this the last known room
+   * outlives the connection that held it, and `/sessions` keeps reporting a
+   * session under a room somebody else now holds.
+   */
+  clearRoom(sessionId: string): void {
+    const prev = this.sessions.get(sessionId);
+    if (!prev || prev.roomId === null) return;
+    this.sessions.set(sessionId, { ...prev, roomId: null });
+    this.scheduleFlush();
+  }
+
   forget(sessionId: string): void {
     if (this.sessions.delete(sessionId)) this.scheduleFlush();
   }

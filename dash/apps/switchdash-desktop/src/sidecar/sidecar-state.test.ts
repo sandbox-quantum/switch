@@ -130,6 +130,32 @@ describe('SidecarStateStore', () => {
     await store.close();
   });
 
+  it('clears a room on request, which a bare hook must not do (CHOO-1419)', async () => {
+    const store = await open();
+    store.record(entry());
+
+    store.clearRoom('session-a');
+
+    expect(store.roomIdFor('session-a')).toBeNull();
+    expect(store.has('session-a')).toBe(true);
+    await store.close();
+  });
+
+  it('does not resurrect a cleared room across a restart', async () => {
+    // The restored entry is what /sessions reports for a pane with no live
+    // connection, and what a restarted session reconnects to. A room that
+    // outlived its connection would be re-claimed from whoever holds it now.
+    const first = await open();
+    first.record(entry());
+    first.clearRoom('session-a');
+    await first.close();
+
+    const second = await open();
+
+    expect(second.roomIdFor('session-a')).toBeNull();
+    await second.close();
+  });
+
   it('forgets a deleted session so it is not restored', async () => {
     const first = await open();
     first.record(entry());

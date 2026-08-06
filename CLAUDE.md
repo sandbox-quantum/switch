@@ -87,15 +87,35 @@ each ships its own copy of the Switch room-workflow skill at
   switchdash imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.
 - `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
-  room-workflow skill plus a **`configure`** skill — the standalone setup path,
-  which registers the agent and writes the `switch` MCP server into
-  `~/.codex/config.toml` with literal credentials so Codex reaches Switch with
-  no switchdash involved. Codex does not expand `${VAR}` in a plugin-bundled
-  `.mcp.json` and has no `${CLAUDE_PLUGIN_ROOT}` equivalent, so switchdash
-  registers the same local `switch-agent-runtime` MCP server itself when it
-  launches the session — through a per-agent Codex profile
-  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`), since a
-  stdio server cannot be expressed on argv the way an HTTP one can.
+  room-workflow skill, a **`configure`** skill (the standalone setup path — it
+  registers the agent and supplies the bundled server's credentials so Codex
+  reaches Switch with no switchdash involved), and its own MCP config,
+  declared as `"mcpServers": "./.mcp.json"`, so a
+  Codex session gets the Switch tools from the plugin alone. Codex does not
+  expand `${VAR}` in a bundled config, so the server names its variables under
+  `env_vars` and Codex forwards them **by name** from its own environment — no
+  expansion, and no secret in the file. An unset name is simply not forwarded,
+  which is why the list can include the switchdash-only variables without
+  breaking a standalone session (the Claude connector cannot do this: `${VAR}`
+  expansion makes every declared variable mandatory).
+
+  The plugin's `.mcp.json` also carries `default_tools_approval_mode =
+  "approve"`, so the Switch tools never prompt. It has to live there rather than
+  in anything switchdash writes: **no per-server setting can be layered onto a
+  plugin-provided MCP server.** An `mcp_servers.switch.*` entry with no
+  transport of its own — from the base config, a profile, or `-c` on argv —
+  makes Codex reject the whole config as "invalid transport" and the session
+  dies with it.
+
+  switchdash writes a per-agent Codex profile
+  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`) carrying
+  **only** model, reasoning effort and instructions. It registers no MCP server.
+  An agent that specializes none of those gets no profile and no `--profile`
+  argv at all.
+
+  Note a connector plugin is only upgraded when a user clicks Update in
+  settings, and Codex caches an install per version, so an install on an older
+  plugin has no Switch tools until it is upgraded.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, or anything an agent-facing client needs to know:

@@ -3,10 +3,11 @@ import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
+import { isNewerVersion } from '@main/lib/semver';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
 import type { SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
-import { isNewerVersion, marketplaceMatchesSource } from './switch-setup-service';
+import { marketplaceMatchesSource } from './switch-setup-service';
 
 const EXEC_TIMEOUT_MS = 120_000;
 

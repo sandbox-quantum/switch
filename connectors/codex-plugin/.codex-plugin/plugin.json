@@ -2,5 +2,6 @@
   "name": "switch-connector-codex",
   "version": "0.2.0",
   "description": "Connect Codex to a Switch platform instance as a participating agent",
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
 }

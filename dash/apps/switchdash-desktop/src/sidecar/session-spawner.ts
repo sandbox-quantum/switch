@@ -8,7 +8,7 @@ import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
-import { makePtyId } from '@shared/core/pty/ptyId';
+import { asPtyProviderId, makePtyId } from '@shared/core/pty/ptyId';
 import { type AgentLaunchSpec, materializeAgentCommand } from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
 import type { SessionSpawner, WatcherLogger } from './notification-watcher';
@@ -170,7 +170,9 @@ export class InProcessSessionSpawner implements SessionSpawner {
       ...this.deps.switchEnv,
       ...buildAgentHookEnv({
         port: hookPort,
-        ptyId: makePtyId(spec.providerId, sessionId),
+        // The spec is JSON off the host's disk, so its provider id is only a
+        // string until something checks it.
+        ptyId: makePtyId(asPtyProviderId(spec.providerId), sessionId),
         token: hookToken,
         endpointFile,
       }),

@@ -12,6 +12,11 @@ name: switchdash release
 # `switchdash-v` MUST match apps/switchdash-desktop/package.json `version`).
 # `workflow_dispatch` builds the artifacts for testing without creating a Release.
 #
+# The Release stays a **draft** until every platform job has uploaded, and is
+# published by the final `publish-release` job. A draft is invisible to
+# electron-updater (`/releases/latest` skips drafts, and the prerelease listing
+# filters them), so a half-uploaded Release can never become the update feed.
+#
 # Builds are signed + notarized with the org's Developer ID when the Apple secrets
 # (APPLE_CSC_LINK / APPLE_CSC_KEY_PASSWORD / APPLE_API_KEY_P8 / APPLE_API_KEY_ID /
 # APPLE_API_ISSUER) are present; without them they fall back to an unsigned ad-hoc
@@ -34,7 +39,10 @@ defaults:
 jobs:
   # Creates the (assetless) Release up front so the platform jobs can run
   # concurrently and each upload into it, rather than chaining Linux behind macOS
-  # purely to wait for the Release to exist.
+  # purely to wait for the Release to exist. It is created as a draft: an
+  # assetless or half-uploaded published Release breaks every installed app on
+  # the platform whose manifest is still missing (ERR_UPDATER_CHANNEL_FILE_NOT_FOUND),
+  # and the macOS job can sit for hours waiting on `release`-environment approval.
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
@@ -68,7 +76,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "switchdash $version" \
-            --latest=false \
+            --draft \
             --notes "$notes"
 
   build-macos:
@@ -252,3 +260,45 @@ jobs:
             dash/apps/switchdash-desktop/release/*.deb
             dash/apps/switchdash-desktop/release/*.rpm
           if-no-files-found: error
+
+  # Flips the draft to a published Release, once — and only once — every platform
+  # job has uploaded. `needs` with no `if: !cancelled()` is the gate: if either
+  # build fails, is cancelled or is never approved, this job is skipped and the
+  # Release stays a draft, visible to maintainers and to nobody's updater.
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [create-release, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    # This job never checks out, so the workflow-level `dash` working directory
+    # does not exist for it.
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Verify every channel manifest is present
+        # The manifests are what auto-update reads. Publishing without one is the
+        # exact failure this job exists to prevent, so check rather than trust
+        # that the upload steps ran.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          echo "$assets"
+          missing=""
+          for required in latest-mac.yml latest-linux.yml; do
+            printf '%s\n' "$assets" | grep -qx "$required" || missing="$missing $required"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Refusing to publish $GITHUB_REF_NAME — missing channel manifest(s):$missing. The Release stays a draft; re-run the failed platform job."
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest

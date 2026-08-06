@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { exactTmuxTarget } from '@main/core/pty/tmux-session-name';
 import { quoteShellArg } from '@main/utils/shellEscape';
@@ -15,8 +15,10 @@ import {
   sidecarWatchEnabledRelPath,
 } from '../../../../sidecar/sidecar-paths';
 import {
+  compareSidecarVersions,
   MIN_SUPPORTED_SIDECAR_MAJOR,
   SIDECAR_CLIENT_MAJOR,
+  SIDECAR_VERSION,
   sidecarMajor,
 } from '../../../../sidecar/sidecar-version';
 
@@ -366,14 +368,33 @@ export class RemoteSidecarLauncher {
    * to load is observably half-written. A concurrent start would fail on a
    * SyntaxError. Renaming is atomic, so a reader sees the old bundle or the new
    * one.
+   *
+   * The temp name must be unique across *machines*, not just within one: the
+   * deploy lock is per-agent while the bundle is shared per directory, so two
+   * clients deploying for different agents in one directory hold different locks
+   * and upload concurrently. A pid alone collides across hosts, and two streams
+   * into one temp file rename a torn bundle into place (CHOO-1937).
    */
   private async uploadBundle(): Promise<void> {
-    const tmpRel = `${SIDECAR_BUNDLE_REL_PATH}.${process.pid}.tmp`;
-    await this.host.putFile(this.bundlePath, tmpRel);
-    await this.host.exec('sh', [
-      '-c',
-      `mv ${quoteShellArg(tmpRel)} ${quoteShellArg(SIDECAR_BUNDLE_REL_PATH)}`,
-    ]);
+    const tmpRel = `${SIDECAR_BUNDLE_REL_PATH}.${randomUUID()}.tmp`;
+    try {
+      await this.host.putFile(this.bundlePath, tmpRel);
+      await this.host.exec('sh', [
+        '-c',
+        `mv ${quoteShellArg(tmpRel)} ${quoteShellArg(SIDECAR_BUNDLE_REL_PATH)}`,
+      ]);
+    } catch (error) {
+      // A unique name is never reused, so a failed attempt can no longer be
+      // cleaned up by the next one overwriting it. Remove it here instead of
+      // accumulating fragments in a directory other clients deploy into too.
+      await this.host.exec('sh', ['-c', `rm -f ${quoteShellArg(tmpRel)}`]).catch((cause: unknown) =>
+        this.log.debug('RemoteSidecarLauncher: could not remove a failed bundle upload', {
+          tmpRel,
+          error: String(cause),
+        })
+      );
+      throw error;
+    }
   }
 
   /** Epoch of the sidecar currently running, or null if none/unreadable. */
@@ -545,6 +566,8 @@ export class RemoteSidecarLauncher {
    * reserved for the cases that need it:
    *  - incompatible protocol → must replace; we cannot talk to it at all.
    *  - same build → reattach; there is nothing to gain.
+   *  - newer version → reattach; a newer switchdash deployed it, and replacing
+   *    it would be a downgrade.
    *  - different build, no live sessions → upgrade, since nothing is disturbed.
    *  - different build, live sessions → reattach and record that an upgrade is
    *    pending, rather than interrupting work in flight for a build difference.
@@ -563,6 +586,21 @@ export class RemoteSidecarLauncher {
       return null;
     }
     if (ready.hash === localHash) return this.toEndpoint(ready);
+
+    // A hash difference alone does not say which build is newer. On a host two
+    // switchdash installs share, replacing on difference alone means each sees
+    // the other's sidecar as an upgrade and they trade it back and forth
+    // indefinitely. Ordering by version breaks the symmetry: only the newer
+    // client replaces, and the older one settles for what is already there
+    // (CHOO-1937).
+    if (compareSidecarVersions(ready.version, SIDECAR_VERSION) > 0) {
+      this.log.debug('RemoteSidecarLauncher: host runs a newer sidecar — leaving it in place', {
+        sidecarTmuxName: this.sidecarTmuxName,
+        runningVersion: ready.version,
+        clientVersion: SIDECAR_VERSION,
+      });
+      return this.toEndpoint(ready);
+    }
 
     const liveSessions = await this.runningSessionCount();
     if (liveSessions > 0) {

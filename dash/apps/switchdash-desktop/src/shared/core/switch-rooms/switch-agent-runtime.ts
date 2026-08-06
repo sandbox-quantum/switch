@@ -1,9 +1,9 @@
 /**
  * The published Switch agent-runtime package that serves the Switch MCP tools
  * over local stdio (transport to switch-core is HTTP+SSE, held inside the
- * runtime). The Claude Code connector plugin registers it from its bundled
- * `.mcp.json`; providers whose plugin cannot expand variables in a bundled
- * config — Codex — have switchdash register the same package itself at launch.
+ * runtime). Both connector plugins register it from a bundled `.mcp.json`: the
+ * Claude Code one expands `${VAR}`, the Codex one forwards the same names via
+ * `env_vars`. switchdash routes the values into the session's environment.
  *
  * Lives in `shared` so both halves of the remote path can reach it: the main
  * process bakes the launch recipe, and the on-VM sidecar (bundled free of
@@ -20,7 +20,7 @@ export const SWITCH_AGENT_RUNTIME_PACKAGE = '@sandbox-quantum/switch-agent-runti
  * `connectors/claude-code-plugin/.mcp.json`; `switch-agent-runtime.test.ts`
  * fails if the two drift. Bump both together when the runtime is republished.
  */
-export const SWITCH_AGENT_RUNTIME_VERSION = '0.1.4';
+export const SWITCH_AGENT_RUNTIME_VERSION = '0.1.5';
 
 /**
  * Credentials the runtime refuses to start without: it reads all three at
@@ -42,10 +42,12 @@ export const SWITCH_RUNTIME_REQUIRED_ENV = [
  * `npx` needs to resolve the package from the private registry.
  *
  * Kept apart from the required tier because the two hosts cannot treat them
- * alike. Codex forwards names, so an unset one is simply not passed. Claude
+ * alike. Codex forwards names, so an unset one is simply not passed, and the
+ * Codex connector's `.mcp.json` lists this tier under `env_vars`. Claude
  * expands `${VAR}`, which makes a declared variable mandatory — declaring
  * `SWITCH_CONNECTION_ID` there once cost every standalone session its tools.
- * These must therefore never be added to the connector's `.mcp.json`.
+ * This tier must therefore never be added to the *Claude* connector's
+ * `.mcp.json`.
  */
 export const SWITCH_RUNTIME_OPTIONAL_ENV = [
   'SWITCH_CONNECTION_ID',
@@ -60,29 +62,12 @@ export const SWITCH_RUNTIME_ENV_VARS: readonly string[] = [
   ...SWITCH_RUNTIME_OPTIONAL_ENV,
 ];
 
-/** stdio command that launches the runtime with `npx`, resolving the pinned version. */
-export type SwitchAgentRuntimeCommand = {
-  command: string;
-  args: string[];
-  /** Names the host must route into the server's process. See {@link SWITCH_RUNTIME_ENV_VARS}. */
-  envVars: string[];
-};
-
 /**
- * The stdio command that runs the pinned Switch MCP runtime, and the names of
- * the variables it needs.
- *
- * A host does not hand its own environment to an MCP server it spawns. Codex
- * gives the child a fixed allowlist — `HOME`, `PATH`, `SHELL`, `USER`, `TMPDIR`
- * and a few more — and forwards nothing else unless the server's config names
- * it; Claude Code declares its own `env` block. So the command stays static and
- * secret-free, while `envVars` says what has to travel with it: without them
- * `npx` cannot reach the private registry and the runtime cannot authenticate.
+ * The stdio command that runs the pinned runtime is no longer built here: both
+ * connector plugins declare it in their own bundled `.mcp.json`. What switchdash
+ * still owns is putting the values behind {@link SWITCH_RUNTIME_ENV_VARS} into
+ * the session's environment — a host does not hand an MCP server a copy of its
+ * own environment, so Codex forwards only the names its config lists and Claude
+ * only what its `env` block expands. `switch-agent-runtime.test.ts` holds both
+ * plugin files to the constants above so a rename cannot land on one side only.
  */
-export function switchAgentRuntimeCommand(): SwitchAgentRuntimeCommand {
-  return {
-    command: 'npx',
-    args: ['-y', `${SWITCH_AGENT_RUNTIME_PACKAGE}@${SWITCH_AGENT_RUNTIME_VERSION}`],
-    envVars: [...SWITCH_RUNTIME_ENV_VARS],
-  };
-}

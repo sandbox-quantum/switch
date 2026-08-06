@@ -1,40 +1,21 @@
 import type { CanonicalHookEvent, NotificationType } from '@switchdash/core/agents/plugins';
 import {
+  baseName,
   buildNestedJsonHookConfig,
+  commandText,
   defaultHookEventParser,
+  formatToolActivityLine,
   makeStdinHookCommand,
+  toolInputOf,
+  toolLabel,
+  toolNameOf,
 } from '@switchdash/core/agents/plugins/helpers';
 
 export const CLAUDE_SETTINGS_PATH = '.claude/settings.local.json';
 
-/** The base name of a file path, for compact activity lines. */
-function baseName(path: string): string {
-  const parts = path.split(/[/\\]/).filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : path;
-}
-
-/** Read a tool name off a hook body (PreToolUse / PostToolUse / failure). */
-function toolNameOf(body: Record<string, unknown>): string {
-  return typeof body.tool_name === 'string' ? body.tool_name : '';
-}
-
-/** A tool's bare leaf label — MCP tools arrive as mcp__<server>__<tool>. */
-function toolLabel(toolName: string): string {
-  return toolName.startsWith('mcp__')
-    ? (toolName.split('__').filter(Boolean).pop() ?? toolName)
-    : toolName;
-}
-
 /** The Bash command off a tool body, whitespace-collapsed and truncated. */
 function shortCommand(body: Record<string, unknown>): string | undefined {
-  const input =
-    body.tool_input && typeof body.tool_input === 'object'
-      ? (body.tool_input as Record<string, unknown>)
-      : {};
-  const command = typeof input.command === 'string' ? input.command : undefined;
-  if (!command) return undefined;
-  const oneLine = command.replace(/\s+/g, ' ').trim();
-  return oneLine.length > 60 ? `${oneLine.slice(0, 57)}…` : oneLine;
+  return commandText(toolInputOf(body).command);
 }
 
 /**
@@ -44,10 +25,7 @@ function shortCommand(body: Record<string, unknown>): string | undefined {
  */
 function toolObject(body: Record<string, unknown>): string | undefined {
   const toolName = toolNameOf(body);
-  const input =
-    body.tool_input && typeof body.tool_input === 'object'
-      ? (body.tool_input as Record<string, unknown>)
-      : {};
+  const input = toolInputOf(body);
   const filePath = typeof input.file_path === 'string' ? input.file_path : undefined;
   const pattern = typeof input.pattern === 'string' ? input.pattern : undefined;
   const query = typeof input.query === 'string' ? input.query : undefined;
@@ -85,8 +63,7 @@ function toolObject(body: Record<string, unknown>): string | undefined {
 function toolActivityLine(body: Record<string, unknown>, verb: string): string | undefined {
   const toolName = toolNameOf(body);
   if (!toolName || toolName === 'Task') return undefined;
-  const object = toolObject(body);
-  return `_${verb}_ \`${toolLabel(toolName)}\`` + (object ? ` — ${object}` : '');
+  return formatToolActivityLine(toolName, verb, toolObject(body));
 }
 
 /**

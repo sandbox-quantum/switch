@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -33,6 +33,15 @@ export class LocalServerHost implements ServerHost {
     await writeFile(path, content, mode !== undefined ? { encoding: 'utf8', mode } : 'utf8');
     // writeFile only applies `mode` when creating; enforce it on rewrite too.
     if (mode !== undefined) await chmod(path, mode);
+  }
+
+  async readFile(relPath: string): Promise<string | null> {
+    try {
+      return await readFile(join(this.workingDir, relPath), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   }
 
   streamCommand(

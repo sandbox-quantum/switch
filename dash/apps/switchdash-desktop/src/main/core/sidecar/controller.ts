@@ -65,7 +65,7 @@ async function readAndBroadcast(agentId: string): Promise<AgentSidecarStatus> {
   const full: AgentSidecarStatus = {
     agentId,
     running: status.running,
-    verdict: verdictFor(status, clientHash),
+    verdict: verdictFor(status, clientHash, SIDECAR_VERSION),
     clientHash,
     clientVersion: SIDECAR_VERSION,
     deployedHash: status.hash,

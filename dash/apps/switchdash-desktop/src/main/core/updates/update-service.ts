@@ -24,6 +24,7 @@ import {
   updateNotAvailableEvent,
   updateProgressEvent,
 } from '@shared/events/updateEvents';
+import { switchdashReleaseApiUrl } from '@shared/urls';
 import {
   FAKE_UPDATE_VERSION_ENV_VAR,
   FakeUpdateDriver,
@@ -436,18 +437,28 @@ class UpdateService implements IInitializable, IDisposable {
       const version = this.updateState.availableVersion;
       if (!version) return null;
 
-      const response = await fetch(
-        `https://api.github.com/repos/sandbox-quantum/switch/releases/tags/v${version}`
-      );
+      // The release feed is a private repo: an unauthenticated read 404s on
+      // every release, so reuse the token the update check already relies on.
+      const token = await getGithubTokenFromGhCli();
+      const response = await fetch(switchdashReleaseApiUrl(version), {
+        headers: token ? { authorization: `token ${token}` } : {},
+      });
 
-      if (response.ok) {
-        const data = (await response.json()) as { body?: string };
-        const notes = data.body || 'No release notes available';
-        this.updateState.releaseNotes = notes;
-        return notes;
+      if (!response.ok) {
+        log.warn('Could not fetch release notes', {
+          event: 'update.release_notes',
+          stage: 'fetch',
+          errorCode: `http_${response.status}`,
+          version,
+          authenticated: token !== null,
+        });
+        return null;
       }
 
-      return null;
+      const data = (await response.json()) as { body?: string };
+      const notes = data.body || 'No release notes available';
+      this.updateState.releaseNotes = notes;
+      return notes;
     } catch (error) {
       log.error('Failed to fetch release notes:', error);
       return null;

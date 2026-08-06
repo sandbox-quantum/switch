@@ -4,6 +4,7 @@ import {
 } from '@main/core/execution-context/ssh-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
+import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
@@ -70,6 +71,18 @@ export class RemoteServerHost implements ServerHost {
     if (mode !== undefined) {
       // ctx is rooted at workingDir, so the relative path resolves there.
       await this.ctx.exec('chmod', [mode.toString(8).padStart(3, '0'), relPath]);
+    }
+  }
+
+  async readFile(relPath: string): Promise<string | null> {
+    try {
+      const { content } = await this.fs.read(relPath);
+      return content;
+    } catch (error) {
+      if (error instanceof FileSystemError && error.code === FileSystemErrorCodes.NOT_FOUND) {
+        return null;
+      }
+      throw error;
     }
   }
 

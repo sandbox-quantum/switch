@@ -15,6 +15,7 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { remoteServerStore } from './remote-server-store';
+import { VersionDriftNotice } from './VersionDriftNotice';
 
 const card = 'rounded-lg border border-border bg-card p-4';
 
@@ -48,6 +49,13 @@ export const RemoteServerControls = observer(function RemoteServerControls({
   const running = store.isRunning(sshHost);
   const docker = store.dockerFor(sshHost);
   const dockerUnavailable = docker && !docker.available ? docker : null;
+  const drift = store.driftFor(sshHost);
+  // Report the version the host is actually on, not the one this build wants —
+  // they diverge exactly when the drift notice below has something to say.
+  const runningVersion = status.deployedVersion ?? status.version;
+  // A stack ahead of this build must not be started at all: doing so would point
+  // it at a core older than its database has migrated to (CHOO-1736).
+  const downgradeBlocked = drift?.direction === 'downgrade';
 
   return (
     <div className={`${card} space-y-4`}>
@@ -55,11 +63,18 @@ export const RemoteServerControls = observer(function RemoteServerControls({
         <div className="space-y-1">
           <h3 className="text-sm font-medium text-foreground">Managed server</h3>
           <p className="text-xs text-foreground-muted">
-            Runs the full Switch stack in Docker on {sshHost}, bridged to this computer over SSH.
+            Runs the full Switch stack in Docker on {sshHost}, bridged to this computer over SSH
+            {runningVersion ? ` (switch-core ${runningVersion})` : ''}.
           </p>
         </div>
         <PhaseBadge sshHost={sshHost} />
       </div>
+
+      <VersionDriftNotice
+        drift={drift}
+        disabled={transitioning}
+        onRestart={() => void store.start(sshHost, name)}
+      />
 
       {status.message && transitioning && (
         <div className="flex items-center gap-2 text-sm text-foreground-muted">
@@ -101,11 +116,11 @@ export const RemoteServerControls = observer(function RemoteServerControls({
         ) : (
           <Button
             size="sm"
-            disabled={transitioning}
+            disabled={transitioning || downgradeBlocked}
             onClick={() => void store.start(sshHost, name)}
           >
             <Play className="size-4" />
-            {status.phase === 'error' ? 'Retry' : 'Start'}
+            {status.phase === 'error' && !downgradeBlocked ? 'Retry' : 'Start'}
           </Button>
         )}
       </div>

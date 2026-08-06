@@ -9,19 +9,12 @@ import {
   type HostDependencyManager,
 } from '@switchdash/core/deps/runtime';
 import type { Logger } from '@switchdash/core/lib';
-import semver from 'semver';
 import { events } from '@main/lib/events';
+import { isNewerVersion } from '@main/lib/semver';
 import { agentInstallationStatusUpdatedChannel } from '@shared/events/appEvents';
 import { toAgentInstallationStatus } from '../providers/agent-payload-builder';
 import { LatestVersionService } from './latest-version-service';
 import { getDependencyDescriptor } from './registry';
-
-function isNewerVersion(installed: string, latest: string): boolean {
-  const a = semver.coerce(installed);
-  const b = semver.coerce(latest);
-  if (a === null || b === null) return false;
-  return semver.gt(b, a);
-}
 
 type UpdateInfo = {
   latestVersion: string | null;

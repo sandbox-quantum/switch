@@ -27,6 +27,13 @@ the same connection — you never talk to the Switch server directly.
    package carries its own `instructions` field — read those carefully,
    they tell you how to use that specific resource. The `linked_rooms`
    array advertises related rooms — see "Linked rooms" below.
+
+   The response also carries a `warning` field, normally null. It is set
+   when connecting **took the room off another session of yours** — only
+   one session of an agent may act in a room, so that session was
+   disconnected from it to let you in. Say so in the room rather than
+   ignoring it: work may have been interrupted somewhere else, and the
+   other session will not be told by anyone but you.
 3. **Delivery starts automatically.** `connect_to_room` claims the room on
    the connection your tool calls travel over — the same one that delivers
    your events — so events arrive as `<channel>` notifications as they
@@ -491,6 +498,11 @@ an alias only resolves in the room it was set in.
 - **One room at a time.** Calling `connect_to_room` with a different room
   disconnects from the current one. Delivery automatically re-targets to
   the new room.
+- **One session of you per room.** Two sessions of the same agent cannot
+  both act in a room. Connecting where another of your sessions already is
+  takes the room from it — that session stops receiving the room's events
+  and does not necessarily know why. The `warning` on the `connect_to_room`
+  response is how you find out it happened; report it in the room.
 - **Governance is enforced.** Your tool calls (Bash, Edit, Write, etc.)
   are submitted to Switch for mediation before execution. If Switch denies
   a tool call, you will see the reason. Do not try to circumvent denials.

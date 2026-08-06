@@ -2,9 +2,9 @@ import { homedir } from 'node:os';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { dirTrustService } from '@main/core/agent-hooks/dir-trust-service';
 import { ensureHooksInstalled } from '@main/core/agent-hooks/hook-config-service';
+import { prepareAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
-import { prepareSwitchMcpLaunch } from '@main/core/agent-runtime/switch-mcp-launch-args';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
@@ -133,11 +133,19 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
     if (!spawnToken) return;
 
     try {
+      // The toggle lives on the agent, so read it from the agent: the value on
+      // the session is a copy taken at creation and never refreshed, which left
+      // an existing session launching without the flag no matter how often the
+      // user set it. It stays as the fallback for a session whose agent row is
+      // gone.
+      const agentRecord = await getAgentById(session.agentId);
+      const autoApprove = agentRecord?.autoApprove ?? session.autoApprove ?? false;
+
       await dirTrustService.maybeAutoTrustLocal({
         providerId: session.providerId,
         cwd: this.sessionPath,
         homedir: homedir(),
-        force: session.autoApprove === true,
+        force: autoApprove,
       });
       await ensureHooksInstalled({
         providerId: session.providerId,
@@ -174,17 +182,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
           : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
-      // Register the Switch MCP server for providers that cannot resolve it from
-      // a bundled config (Codex): writes a per-agent profile under `~/.codex` and
-      // returns `--profile <slug>`, folding in the agent's per-agent model /
-      // effort / instructions. A no-op for Claude, whose plugin expands its own
-      // `.mcp.json`.
-      const agentRecord = await getAgentById(session.agentId);
-      const switchMcpArgs = await prepareSwitchMcpLaunch(plugin, {
+      // Apply the provider's per-agent specialization: for Codex, a profile
+      // under `~/.codex` carrying model / effort / instructions, loaded with
+      // `--profile <slug>`. The Switch MCP server is not written here — the
+      // connector plugin registers it from its own bundled `.mcp.json`.
+      const launchProfileArgs = await prepareAgentLaunchProfile(plugin, {
         homeFs: createPluginFs(homedir()),
         slug: agentCredsSlug(session),
         workingDir: this.sessionPath,
-        hasSwitchIdentity: !!identityVars.SWITCH_API_ENDPOINT,
         specialization: toSwitchSpecialization(agentRecord?.providerConfig),
       });
 
@@ -192,15 +197,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         cli: executableCli,
         extraArgs: parseExtraArgs(providerConfig?.extraArgs),
         // The provider owns how to run as the named agent (CHOO-1440), and how to
-        // receive a per-session Switch MCP server when it cannot read one from a
-        // config file.
+        // load its per-agent specialization when that needs a config file.
         agentArgs: [
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...switchMcpArgs,
+          ...launchProfileArgs,
         ],
-        autoApprove: session.autoApprove ?? false,
+        autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
         sessionId: agentSession.sessionId,
         providerSessionId: session.providerSessionId ?? undefined,

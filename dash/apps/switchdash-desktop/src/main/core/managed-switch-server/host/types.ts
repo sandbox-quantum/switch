@@ -57,6 +57,11 @@ export interface ServerHost {
    * when provided. */
   writeFile(relPath: string, content: string, mode?: number): Promise<void>;
 
+  /** Read `relPath` under {@link workingDir} as UTF-8, or null when the file
+   * does not exist. Any other failure (permissions, transport) throws — an
+   * unreadable file is not the same as an absent one. */
+  readFile(relPath: string): Promise<string | null>;
+
   /**
    * Run a command on the host streaming merged stdout+stderr line-by-line to
    * `onLine`, rooted at {@link workingDir}. Used for the slow `compose up`
