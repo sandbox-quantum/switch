@@ -526,6 +526,67 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     assert ref == f"{CHANNEL_ID}:901"
 
 
+def test_long_message_is_split_across_posts_not_dropped() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+    body = "\n".join(f"line {i}" for i in range(1000))
+
+    ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
+
+    # Discord rejects anything over 2,000 characters outright, so before this
+    # the whole message was logged and thrown away.
+    assert len(webhook.sent) > 1
+    assert all(len(c["content"]) <= 2000 for c in webhook.sent)
+    assert "\n".join(c["content"] for c in webhook.sent) == body
+    # Every part keeps the agent's identity.
+    assert {c["username"] for c in webhook.sent} == {"my-agent"}
+    # The ref is the FIRST part: replies thread under where the message starts.
+    assert ref == f"{CHANNEL_ID}:901"
+
+
+def test_long_admin_message_is_split_across_posts() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    body = "\n".join(f"- `!cmd-{i}` — does a thing" for i in range(200))
+
+    ref = _run(adapter.admin_message(str(CHANNEL_ID), body))
+
+    assert len(channel.sent) > 1
+    assert all(len(c["content"]) <= 2000 for c in channel.sent)
+    assert "\n".join(c["content"] for c in channel.sent) == body
+    assert ref == f"{CHANNEL_ID}:501"
+
+
+def test_failed_part_leaves_a_visible_truncation_notice() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+    body = "\n".join(f"line {i}" for i in range(1000))
+
+    sends = {"n": 0}
+    original = webhook.send
+
+    async def flaky(**kwargs: Any) -> Any:
+        sends["n"] += 1
+        if sends["n"] == 2:
+            raise discord.HTTPException(_FakeResponse(), "too long")
+        return await original(**kwargs)
+
+    webhook.send = flaky  # type: ignore[method-assign]
+    ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
+
+    # Part 1 landed, part 2 failed: the reader is told rather than left with a
+    # message that just stops.
+    assert "Only 1 of" in webhook.sent[-1]["content"]
+    assert ref == f"{CHANNEL_ID}:901"
+
+
 def test_send_message_with_thread_root_posts_into_thread() -> None:
     adapter = _adapter()
     channel = _FakeChannel()

@@ -13,6 +13,7 @@ from discord import app_commands
 
 from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.discord.chunking import chunk_message
 from switch_core.bridges.collaboration.discord.slash import (
     SlashArgError,
     build_app_commands,
@@ -251,14 +252,11 @@ class DiscordAdapter(CollaborationAdapter):
         if self._channel_type_of(target) == "lobby":
             # DM channels have no webhooks, so no per-message identity — fall
             # back to a bot post with the agent name inlined.
-            try:
-                msg = await target.send(
-                    f"**{sender_name}**: {content}", suppress_embeds=True
-                )
-                return f"{msg.channel.id}:{msg.id}"
-            except discord.HTTPException:
-                logger.exception("Failed to send Discord DM in %s", channel_id)
-                return None
+            return await self._send_chunked(
+                f"**{sender_name}**: {content}",
+                lambda part: target.send(part, suppress_embeds=True),
+                where=f"DM {channel_id}",
+            )
 
         thread: Any = None
         if thread_root_id:
@@ -272,23 +270,78 @@ class DiscordAdapter(CollaborationAdapter):
 
         try:
             webhook = await self._get_webhook(int(channel_id))
-            kwargs: dict[str, Any] = {}
-            if thread is not None:
-                kwargs["thread"] = thread
-            sent: Any = await webhook.send(
-                content=content,
+        except discord.HTTPException as e:
+            logger.error(
+                "Failed to resolve webhook for Discord channel %s: %s", channel_id, e
+            )
+            return None
+
+        kwargs: dict[str, Any] = {}
+        if thread is not None:
+            kwargs["thread"] = thread
+        return await self._send_chunked(
+            content,
+            lambda part: webhook.send(
+                content=part,
                 username=sender_name,
                 avatar_url=self._get_agent_icon(sender_name),
                 suppress_embeds=True,
                 wait=True,
                 **kwargs,
+            ),
+            where=f"channel {channel_id}",
+        )
+
+    async def _send_chunked(
+        self,
+        content: str,
+        send: Callable[[str], Awaitable[Any]],
+        *,
+        where: str,
+    ) -> str | None:
+        """Post `content` as however many messages Discord's 2,000-char cap needs.
+
+        Returns the ref of the FIRST message. That is the one the bridge maps
+        the Matrix event to, so a reply threads under the start of what was
+        said rather than its tail, and a thread created from it opens where the
+        message begins.
+
+        A part failing mid-sequence leaves the message *visibly* truncated
+        rather than silently so: what was posted stays, and a short notice says
+        the rest did not make it.
+        """
+        chunks = chunk_message(content)
+        first_ref: str | None = None
+
+        for index, chunk in enumerate(chunks):
+            try:
+                sent = await send(chunk)
+            except discord.HTTPException as e:
+                logger.error(
+                    "Failed to send part %d of %d to Discord %s: %s",
+                    index + 1,
+                    len(chunks),
+                    where,
+                    e,
+                )
+                await self._note_truncation(send, index, len(chunks))
+                return first_ref
+            if first_ref is None:
+                first_ref = f"{sent.channel.id}:{sent.id}"
+
+        return first_ref
+
+    @staticmethod
+    async def _note_truncation(
+        send: Callable[[str], Awaitable[Any]], delivered: int, total: int
+    ) -> None:
+        try:
+            await send(
+                f"⚠️ Only {delivered} of {total} parts of this message could be "
+                "delivered — the rest was rejected by Discord."
             )
-            return f"{sent.channel.id}:{sent.id}"
-        except discord.HTTPException as e:
-            logger.error(
-                "Failed to send message to Discord channel %s: %s", channel_id, e
-            )
-            return None
+        except discord.HTTPException:
+            logger.exception("Failed to post Discord truncation notice")
 
     async def send_attachment(
         self,
@@ -408,8 +461,6 @@ class DiscordAdapter(CollaborationAdapter):
                     logger.exception(
                         "Failed to resolve Discord thread for admin message — posting at channel root"
                     )
-            msg = await target.send(content, suppress_embeds=True)
-            return f"{msg.channel.id}:{msg.id}"
         except (discord.HTTPException, RuntimeError) as e:
             logger.error(
                 "Failed to post admin message to Discord channel %s: %s",
@@ -417,6 +468,12 @@ class DiscordAdapter(CollaborationAdapter):
                 e,
             )
             return None
+
+        return await self._send_chunked(
+            content,
+            lambda part: target.send(part, suppress_embeds=True),
+            where=f"channel {channel_id}",
+        )
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
