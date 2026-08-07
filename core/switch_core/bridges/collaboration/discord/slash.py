@@ -73,6 +73,25 @@ def truncate_description(text: str, limit: int = MAX_DESCRIPTION) -> str:
     return cut.rstrip(" .,;:—-") + "…"
 
 
+def summarise_description(text: str) -> str:
+    """The part of a registry description worth showing in Discord's picker.
+
+    Registry descriptions are written for `!help`, so they end in a `Usage:`
+    clause spelling out the `!`-prefixed form and its arguments. Registering
+    that verbatim is worse than redundant: it tells someone who has just typed
+    `/reset` to type `!reset` instead, and Discord already renders the
+    arguments itself as named fields marked required or optional. What the
+    clause adds beyond that ("a target is required", "use `!reset-all-agents`
+    for everyone") is likewise already in the UI — as a required field, and as
+    the sibling `/reset-all-agents` in the same picker.
+
+    So only the leading summary is registered. The full text, `!` forms and
+    all, still shows in `!help`, which is where it is accurate.
+    """
+    summary = text.split("Usage:", 1)[0].strip()
+    return truncate_description(summary or text)
+
+
 def reassemble_args(spec: tuple[CommandArg, ...], values: dict[str, Any]) -> str:
     """Turn declared, named option values back into a positional args string.
 
@@ -208,7 +227,7 @@ def build_app_commands(
         built.append(
             app_commands.Command(
                 name=command.name,
-                description=truncate_description(command.description),
+                description=summarise_description(command.description),
                 callback=_make_callback(command, invoke),
             )
         )

@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.discord.slash import (
     SlashArgError,
     build_app_commands,
     reassemble_args,
+    summarise_description,
     truncate_description,
     validate_args_spec,
 )
@@ -236,6 +237,27 @@ def test_long_description_truncated_on_word_boundary() -> None:
 
 def test_short_description_left_alone() -> None:
     assert truncate_description("Short one.") == "Short one."
+
+
+def test_registered_descriptions_never_teach_the_bang_form() -> None:
+    # These render in Discord's command picker. Registry descriptions are
+    # written for `!help` and end in a `Usage:` clause naming the `!` form —
+    # telling someone who just typed `/reset` to type `!reset` instead.
+    for command in build_app_commands(_noop):
+        assert "!" not in command.description, command.name
+        assert "Usage:" not in command.description, command.name
+
+
+def test_usage_clause_dropped_from_registered_description() -> None:
+    full = COMMANDS_BY_NAME["set-alias"].description
+    assert "Usage:" in full  # the registry still carries it for `!help`
+    assert summarise_description(full) == "Give an agent a room alias."
+
+
+def test_summarise_falls_back_rather_than_registering_nothing() -> None:
+    # Discord rejects an empty description, so a pathological all-usage entry
+    # keeps its text instead of being silently registered blank.
+    assert summarise_description("Usage: `!x`") == "Usage: `!x`"
 
 
 # ── Argument reassembly ──────────────────────────────────────────────────────
