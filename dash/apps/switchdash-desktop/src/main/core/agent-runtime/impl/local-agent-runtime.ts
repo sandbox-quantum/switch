@@ -8,7 +8,6 @@ import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
-import { createLocalAgentSecretStore } from '@main/core/agents/switch-agent-secrets';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
@@ -24,10 +23,7 @@ import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-s
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
 import { npmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
-import {
-  readAgentSwitchEnvFromFs,
-  withAgentSecret,
-} from '@main/core/switch-rooms/switch-credentials';
+import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
@@ -181,13 +177,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // Resolved before the command is built because a provider that registers
       // the Switch server at launch keys it on this identity (see below).
       const workspaceFs = createPluginFs(this.sessionPath);
-      const identityVars = await withAgentSecret(
+      const identityVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(workspaceFs, session.agentName)
-          : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log),
-        createLocalAgentSecretStore(),
-        log
-      );
+          : await readAgentSwitchEnvFromFs(workspaceFs, agentCredsSlug(session), log);
 
       // Apply the provider's per-agent specialization: for Codex, a profile
       // under `~/.codex` carrying model / effort / instructions, loaded with

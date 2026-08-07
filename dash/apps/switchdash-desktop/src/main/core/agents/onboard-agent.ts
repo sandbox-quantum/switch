@@ -19,7 +19,6 @@ import { createAgent } from './createAgent';
 import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
-import { createLocalAgentSecretStore } from './switch-agent-secrets';
 import { writeAgentNeutralSettings } from './write-switch-settings';
 
 /**
@@ -151,7 +150,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   if (sshHost === null) {
     const creds = await readSwitchAgentCredentials(params.dir, log);
     if (creds) {
-      await writeAgentNeutralSettings(createLocalAgentSecretStore(), {
+      await writeAgentNeutralSettings({
         dir: params.dir,
         slug: agent.name,
         apiEndpoint: creds.apiEndpoint,

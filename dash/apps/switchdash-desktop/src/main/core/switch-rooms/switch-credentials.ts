@@ -2,10 +2,6 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import {
-  type AgentSecretStore,
-  createLocalAgentSecretStore,
-} from '@main/core/agents/switch-agent-secrets';
-import {
   agentSettingsRelativePath,
   SWITCH_SETTINGS_RELATIVE_PATH,
 } from '@main/core/agents/switch-settings-paths';
@@ -14,13 +10,6 @@ export interface SwitchAgentCredentials {
   agentId: string;
   apiEndpoint: string;
   token: string;
-}
-
-/** {@link SwitchAgentCredentials} before the home-side token has been paired in. */
-export interface SwitchAgentIdentity {
-  agentId: string;
-  apiEndpoint: string;
-  token: string | null;
 }
 
 /**
@@ -79,44 +68,6 @@ export async function readSwitchAgentCredentialsFromSettings(
   return parseSwitchAgentCredentials(raw, log);
 }
 
-/**
- * {@link readSwitchAgentCredentialsFromSettings} without requiring a token, for
- * callers that pair the file with the home-side store themselves.
- */
-export async function readSwitchAgentIdentityFromSettings(
-  settingsPath: string,
-  log: CredentialsLogger
-): Promise<SwitchAgentIdentity | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(settingsPath, 'utf8');
-  } catch {
-    return null;
-  }
-  return parseSwitchAgentIdentity(raw, log);
-}
-
-/**
- * Full credentials for an agent whose files are on THIS machine: identity from
- * the settings file, token from this host's `$HOME`.
- *
- * For the callers that authenticate to the bridge as the agent — the poller, the
- * auto-session watcher, the remote sidecar running on its own VM — and are all
- * reading local paths, so the local store is the right one.
- */
-export async function readLocalAgentCredentials(
-  settingsPath: string,
-  log: CredentialsLogger
-): Promise<SwitchAgentCredentials | null> {
-  const identity = await readSwitchAgentIdentityFromSettings(settingsPath, log);
-  if (!identity) return null;
-
-  const token = identity.token ?? (await createLocalAgentSecretStore().read(identity.agentId));
-  if (!token) return null;
-
-  return { agentId: identity.agentId, apiEndpoint: identity.apiEndpoint, token };
-}
-
 /** The `SWITCH_*` env vars a launched session needs to act as the agent. */
 function credentialsAsEnv(creds: SwitchAgentCredentials | null): Record<string, string> {
   if (!creds) return {};
@@ -156,48 +107,14 @@ export async function readAgentSwitchEnvFromFs(
   log: CredentialsLogger
 ): Promise<Record<string, string>> {
   const relPath = agentSettingsRelativePath(slug);
-  const identity = parseSwitchAgentIdentity(await workspaceFs.read(relPath), log);
-  if (!identity) {
+  const env = credentialsAsEnv(parseSwitchAgentCredentials(await workspaceFs.read(relPath), log));
+  if (Object.keys(env).length === 0) {
     log.warn(
       'readAgentSwitchEnvFromFs: no Switch identity for agent; session will not authenticate as it',
       { slug, path: relPath }
     );
-    return {};
   }
-  return {
-    SWITCH_API_ENDPOINT: identity.apiEndpoint,
-    SWITCH_AGENT_ID: identity.agentId,
-    ...(identity.token ? { SWITCH_API_TOKEN: identity.token } : {}),
-  };
-}
-
-/**
- * Pair a launch env with the token from the home-side store, when the file it
- * came from no longer carries one.
- *
- * Applied at the launch sites rather than inside each reader because the two
- * paths that produce this env — the neutral file and a Claude subagent's
- * definition credentials — live in different packages, and only one of them can
- * see the secret store. Doing it once at the join keeps them from drifting.
- *
- * An env that already has a token is returned untouched, so a session launched
- * before the migration reaches that agent still works.
- */
-export async function withAgentSecret(
-  env: Record<string, string>,
-  secrets: AgentSecretStore,
-  log: CredentialsLogger
-): Promise<Record<string, string>> {
-  if (env.SWITCH_API_TOKEN || !env.SWITCH_AGENT_ID) return env;
-
-  const token = await secrets.read(env.SWITCH_AGENT_ID);
-  if (!token) {
-    log.warn('withAgentSecret: no stored secret for agent; session cannot authenticate as it', {
-      agentId: env.SWITCH_AGENT_ID,
-    });
-    return env;
-  }
-  return { ...env, SWITCH_API_TOKEN: token };
+  return env;
 }
 
 /**
@@ -212,29 +129,6 @@ export function parseSwitchAgentCredentials(
   raw: string | null,
   log: CredentialsLogger
 ): SwitchAgentCredentials | null {
-  const identity = parseSwitchAgentIdentity(raw, log);
-  if (!identity || !identity.token) return null;
-  return { agentId: identity.agentId, apiEndpoint: identity.apiEndpoint, token: identity.token };
-}
-
-/**
- * Who a settings file says the agent is, with the token only if it happens to be
- * there.
- *
- * The provider-neutral `.switch/agents/<slug>.json` no longer carries a token —
- * it moved to `$HOME` at `0600` (CHOO-1962) — so a reader that demands one, as
- * {@link parseSwitchAgentCredentials} does, reads a perfectly good file as
- * unconfigured. Callers that can reach the home store use this and pair it with
- * a lookup; callers reading `.claude/settings.local.json`, which still holds its
- * own token, keep using the stricter one.
- *
- * A token that IS present is returned, so a file written before the split still
- * resolves without waiting for the migration to reach it.
- */
-export function parseSwitchAgentIdentity(
-  raw: string | null,
-  log: CredentialsLogger
-): SwitchAgentIdentity | null {
   if (raw === null) return null;
 
   let env: ClaudeSettingsEnv | undefined;
@@ -251,33 +145,8 @@ export function parseSwitchAgentIdentity(
 
   const agentId = asNonEmptyString(env.SWITCH_AGENT_ID);
   const apiEndpoint = asNonEmptyString(env.SWITCH_API_ENDPOINT);
-  if (!agentId || !apiEndpoint) return null;
+  const token = asNonEmptyString(env.SWITCH_API_TOKEN);
+  if (!agentId || !apiEndpoint || !token) return null;
 
-  return { agentId, apiEndpoint, token: asNonEmptyString(env.SWITCH_API_TOKEN) };
-}
-
-/**
- * Resolve one agent's full credentials from the two halves: the identity in its
- * working tree, the token under `$HOME`.
- *
- * Returns null when either half is missing — an agent whose secret has been
- * revoked or never written cannot authenticate, and saying so here keeps every
- * caller from having to spot a half-populated result.
- */
-export async function resolveAgentCredentials(
-  workspaceFs: PluginFs,
-  secrets: AgentSecretStore,
-  slug: string,
-  log: CredentialsLogger
-): Promise<SwitchAgentCredentials | null> {
-  const identity = parseSwitchAgentIdentity(
-    await workspaceFs.read(agentSettingsRelativePath(slug)),
-    log
-  );
-  if (!identity) return null;
-
-  const token = identity.token ?? (await secrets.read(identity.agentId));
-  if (!token) return null;
-
-  return { agentId: identity.agentId, apiEndpoint: identity.apiEndpoint, token };
+  return { agentId, apiEndpoint, token };
 }

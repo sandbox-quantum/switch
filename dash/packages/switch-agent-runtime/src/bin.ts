@@ -203,9 +203,7 @@ function resolveIdentity(): void {
     );
   }
 
-  const store = readAgentStore(process.cwd(), os.homedir(), (message) =>
-    process.stderr.write(`switch: ${message}\n`)
-  );
+  const store = readAgentStore(process.cwd());
 
   if (store.agents.length === 0) {
     const unusable = store.unusable.length

@@ -1,16 +1,10 @@
 import { homedir } from 'node:os';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
-import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { createRemotePluginFs } from '@main/core/providers/remote-plugin-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import {
-  type AgentSecretStore,
-  createLocalAgentSecretStore,
-  createRemoteAgentSecretStore,
-} from './switch-agent-secrets';
 
 /**
  * A {@link PluginFs} rooted at an agent's working directory (local disk or a
@@ -23,14 +17,6 @@ export type WorkspaceFs = {
   fs: PluginFs;
   /** FS for user-scoped (`~/.claude`) definitions; empty for remote agents. */
   homeFs: PluginFs;
-  /**
-   * The agent tokens under `$HOME` on whichever host this workspace is on.
-   *
-   * Separate from `homeFs` because that one is a plain {@link PluginFs} and
-   * cannot set a file mode, while these files must be `0600` — and because for
-   * a remote agent `homeFs` resolves nothing at all.
-   */
-  secrets: AgentSecretStore;
   close: () => void;
 };
 
@@ -58,21 +44,9 @@ export async function resolveWorkspaceFsFor(
   dir: string
 ): Promise<WorkspaceFs> {
   if (sshHost === null) {
-    return {
-      fs: createPluginFs(dir),
-      homeFs: createPluginFs(homedir()),
-      secrets: createLocalAgentSecretStore(),
-      close: () => {},
-    };
+    return { fs: createPluginFs(dir), homeFs: createPluginFs(homedir()), close: () => {} };
   }
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const sshFs = new SshFileSystem(proxy, dir);
-  return {
-    fs: createRemotePluginFs(sshFs),
-    homeFs: EMPTY_PLUGIN_FS,
-    // Unlike `homeFs`, this one works for a remote agent: it runs shell commands
-    // so the far side expands `$HOME`, rather than going through repo-rooted SFTP.
-    secrets: createRemoteAgentSecretStore(new SshExecutionContext(proxy, { root: dir })),
-    close: () => sshFs.close(),
-  };
+  return { fs: createRemotePluginFs(sshFs), homeFs: EMPTY_PLUGIN_FS, close: () => sshFs.close() };
 }

@@ -96,19 +96,6 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
-    // The token itself lives outside the working tree, under `$HOME` keyed by
-    // Switch agent id — deleting the file above only removes the pointer to it.
-    // Skipped for a row that never got an identity, since there is no key to
-    // delete under and a blank one would name someone else's file.
-    if (agent.switchAgentId) {
-      await ctx.secrets.delete(agent.switchAgentId).catch((error) => {
-        log.warn('deleteAgent: failed to remove the stored Switch API token', {
-          agentId: agent.id,
-          switchAgentId: agent.switchAgentId,
-          error: String(error),
-        });
-      });
-    }
     await removeSwitchCredentials(agent.providerId, ctx.fs);
     // A provider that registers the Switch server itself (Codex) leaves a
     // per-agent launch profile under the user's home — a different scope than

@@ -17,31 +17,20 @@ const h = vi.hoisted(() => {
   const removeLocal = vi.fn(async (fs: PluginFs, name: string) => {
     await fs.delete(`.claude/agents/${name}.md`);
   });
-  const secretTokens = new Map<string, string>();
-  const secrets = {
-    tokens: secretTokens,
-    read: async (agentId: string) => secretTokens.get(agentId) ?? null,
-    write: async (agentId: string, token: string) => void secretTokens.set(agentId, token),
-    delete: async (agentId: string) => void secretTokens.delete(agentId),
-  };
   const state: { fs: PluginFs; repoAgents: object | null; agent: Record<string, unknown> | null } =
     {
       fs: fakeFs(),
       repoAgents: { removeLocal },
       agent: null,
     };
-  return { state, secrets, removeLocal, removeSwitchCredentials: vi.fn(async () => {}) };
+  return { state, removeLocal, removeSwitchCredentials: vi.fn(async () => {}) };
 });
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => ({ behavior: { repoAgents: h.state.repoAgents } }),
 }));
 vi.mock('./agent-workspace-fs', () => ({
-  resolveWorkspaceFsFor: vi.fn(async () => ({
-    fs: h.state.fs,
-    secrets: h.secrets,
-    close: vi.fn(),
-  })),
+  resolveWorkspaceFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./agent-location', () => ({
   getAgentLocation: vi.fn(async () => ({ sshHost: null, dir: '/repo' })),
@@ -89,7 +78,6 @@ const CREDS = JSON.stringify({
 describe('deleteAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.secrets.tokens.clear();
     h.state.repoAgents = { removeLocal: h.removeLocal };
     h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
   });
@@ -119,41 +107,6 @@ describe('deleteAgent', () => {
 
     expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(false);
     expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(false);
-  });
-
-  it('removes the stored API token, not just the file that points at it', async () => {
-    // The token lives under $HOME now, so deleting the working-tree file alone
-    // would leave a live credential on disk with no UI left to revoke it.
-    h.state.agent = {
-      id: 'agent-1',
-      name: 'cc-hoot',
-      providerId: 'claude',
-      locationId: 'loc',
-      switchAgentId: 'sw-1',
-    };
-    h.secrets.tokens.set('sw-1', 'tok-123');
-    h.state.fs = fakeFs({ [agentSettingsRelativePath('cc-hoot')]: CREDS });
-
-    await deleteAgent('agent-1', { deleteInSwitch: false });
-
-    expect(h.secrets.tokens.has('sw-1')).toBe(false);
-  });
-
-  it("leaves another agent's stored token alone", async () => {
-    h.state.agent = {
-      id: 'agent-1',
-      name: 'cc-hoot',
-      providerId: 'claude',
-      locationId: 'loc',
-      switchAgentId: 'sw-1',
-    };
-    h.secrets.tokens.set('sw-1', 'tok-mine');
-    h.secrets.tokens.set('sw-2', 'tok-theirs');
-    h.state.fs = fakeFs({ [agentSettingsRelativePath('cc-hoot')]: CREDS });
-
-    await deleteAgent('agent-1', { deleteInSwitch: false });
-
-    expect(h.secrets.tokens.get('sw-2')).toBe('tok-theirs');
   });
 
   it('leaves a sibling agent sharing the directory untouched', async () => {

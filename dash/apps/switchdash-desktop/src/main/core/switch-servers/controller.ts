@@ -318,12 +318,11 @@ export const switchServersController = createRPCController({
       agentId: registered.id,
     });
 
-    // The settings file above carries no token (CHOO-1962), so the neutral
-    // store is what actually provisions this agent: the secret under `$HOME`,
-    // and the file naming it in the working tree.
+    // The settings file above carries no token (CHOO-1962), so the per-agent
+    // credentials file is what actually provisions this agent.
     const workspace = await resolveWorkspaceFsFor(null, params.dir);
     try {
-      await writeNeutralAgentSettingsFs(workspace.fs, workspace.secrets, {
+      await writeNeutralAgentSettingsFs(workspace.fs, {
         slug: params.name,
         apiEndpoint: server.apiUrl,
         apiToken: registered.apiKey,
@@ -368,11 +367,12 @@ export const switchServersController = createRPCController({
       fs.close();
     }
 
-    // As locally: the settings file names the agent, the store holds its token —
-    // here on the VM's own `$HOME`, which is where its sessions will look.
+    // As locally: the settings file names the agent, the per-agent credentials
+    // file carries its token — here in the VM's own working directory, which is
+    // where its sessions will look.
     const workspace = await resolveWorkspaceFsFor(params.sshHost, params.remoteRepoDir);
     try {
-      await writeNeutralAgentSettingsFs(workspace.fs, workspace.secrets, {
+      await writeNeutralAgentSettingsFs(workspace.fs, {
         slug: params.name,
         apiEndpoint: server.apiUrl,
         apiToken: registered.apiKey,

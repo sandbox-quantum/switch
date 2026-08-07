@@ -17,7 +17,6 @@ import {
   setAutoSessionSubagent,
 } from './auto-session-store';
 import {
-  readLocalAgentCredentials,
   readSwitchAgentCredentials,
   readSwitchAgentCredentialsFromSettings,
   type SwitchAgentCredentials,
@@ -205,7 +204,7 @@ class AutoSessionWatcher {
     // `.claude/settings.local.json` for un-migrated installs (CHOO-1440).
     const slug = agent?.name ?? localAgentId;
     const creds =
-      (await readLocalAgentCredentials(agentSettingsPath(rootPath, slug), log)) ??
+      (await readSwitchAgentCredentialsFromSettings(agentSettingsPath(rootPath, slug), log)) ??
       (await readSwitchAgentCredentials(rootPath, log));
     if (!creds) {
       log.warn('AutoSessionWatcher: missing Switch credentials; cannot watch', {
@@ -241,7 +240,7 @@ class AutoSessionWatcher {
     // (CHOO-1440).
     const legacyPath = path.join(rootPath, SWITCH_SUBAGENTS_DIR_RELATIVE, `${name}.settings.json`);
     const creds =
-      (await readLocalAgentCredentials(agentSettingsPath(rootPath, name), log)) ??
+      (await readSwitchAgentCredentialsFromSettings(agentSettingsPath(rootPath, name), log)) ??
       (await readSwitchAgentCredentialsFromSettings(legacyPath, log));
     if (!creds) {
       log.warn('AutoSessionWatcher: missing subagent credentials; cannot watch', {

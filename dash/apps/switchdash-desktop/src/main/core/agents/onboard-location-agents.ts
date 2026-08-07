@@ -125,7 +125,7 @@ async function resolveIdentity(
     };
   }
 
-  await writeNeutralAgentSettingsFs(ctx.workspace.fs, ctx.workspace.secrets, {
+  await writeNeutralAgentSettingsFs(ctx.workspace.fs, {
     slug: name,
     apiEndpoint: ctx.server.apiUrl,
     apiToken: registered.apiKey,

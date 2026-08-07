@@ -8,7 +8,6 @@ import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { reapStaleSidecarsForAgent } from '@main/core/agents/reap-stale-sidecars';
-import { createRemoteAgentSecretStore } from '@main/core/agents/switch-agent-secrets';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { FileSystemProvider } from '@main/core/fs/types';
@@ -25,10 +24,7 @@ import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-co
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import type { SshConnectionManagerEvent } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { remoteNpmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
-import {
-  readAgentSwitchEnvFromFs,
-  withAgentSecret,
-} from '@main/core/switch-rooms/switch-credentials';
+import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
 import { log } from '@main/lib/logger';
@@ -554,13 +550,10 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       // Resolved before the command is built because a provider that registers the
       // Switch server at launch keys it on this identity (see below).
       const remoteFs = createRemotePluginFs(this.fs);
-      const identityVars = await withAgentSecret(
+      const identityVars =
         session.agentName && repoAgents
           ? await repoAgents.readLaunchEnv(remoteFs, session.agentName)
-          : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log),
-        createRemoteAgentSecretStore(this.ctx),
-        log
-      );
+          : await readAgentSwitchEnvFromFs(remoteFs, agentCredsSlug(session), log);
 
       const agentRecord = await getAgentById(session.agentId);
       // Read from the agent, not the session: the session's copy is frozen at

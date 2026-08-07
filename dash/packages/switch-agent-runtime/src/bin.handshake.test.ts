@@ -83,13 +83,11 @@ async function blackHoleServer(): Promise<string> {
 }
 
 /**
- * A throwaway `HOME` and working directory for one spawn.
+ * A throwaway working directory and `HOME` for one spawn.
  *
- * Credential resolution reads `./.switch/agents/` and `~/.switch/agents/`, so
- * the runner's own `HOME` would let whatever the developer happens to have
- * configured decide whether these tests pass — and on a machine with a real
- * agent provisioned, the no-credentials case would find one. Both roots are
- * therefore empty and per-spawn.
+ * Credential resolution reads `./.switch/agents/`, and the runtime keeps its
+ * session state under `$HOME` — so a shared root would let whatever the
+ * developer happens to have configured decide whether these tests pass.
  */
 function sandbox(): string {
   const dir = mkdtempSync(join(tmpdir(), 'switch-runtime-test-'));
@@ -97,12 +95,7 @@ function sandbox(): string {
   return dir;
 }
 
-/**
- * Provision an agent in a sandbox: an entry naming it, and a secret keyed by its
- * agent id. Both land in the same directory here only because a sandbox is its
- * own HOME as well as its own working directory — that the two roots are read
- * separately is what the `credentials` unit tests cover.
- */
+/** Provision an agent in a sandbox, in the shape switchdash writes. */
 function provision(
   root: string,
   agent: { slug: string; name?: string; agentId: string; endpoint: string; token?: string }
@@ -113,15 +106,13 @@ function provision(
     join(dir, `${agent.slug}.json`),
     JSON.stringify({
       name: agent.name ?? agent.slug,
-      agent_id: agent.agentId,
-      endpoint: agent.endpoint,
+      env: {
+        SWITCH_API_ENDPOINT: agent.endpoint,
+        SWITCH_AGENT_ID: agent.agentId,
+        ...(agent.token === undefined ? {} : { SWITCH_API_TOKEN: agent.token }),
+      },
     })
   );
-  if (agent.token !== undefined) {
-    writeFileSync(join(dir, `${agent.agentId}.json`), JSON.stringify({ token: agent.token }), {
-      mode: 0o600,
-    });
-  }
 }
 
 function start(env: Record<string, string>, setup?: (root: string) => void): Running {

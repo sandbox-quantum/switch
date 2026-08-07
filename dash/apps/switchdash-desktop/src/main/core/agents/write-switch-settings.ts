@@ -6,7 +6,6 @@ import {
 } from '@switchdash/core/agents/plugins';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
-import type { AgentSecretStore } from './switch-agent-secrets';
 import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -27,15 +26,14 @@ export interface SwitchSettingsCredentials {
  * `env` entries the user already has are preserved. The connector MCP tools are
  * unioned into `permissions.allow` so they are auto-approved ("don't ask").
  *
- * **No token is written, and one already present is removed** (CHOO-1962). Both
- * files this produces — `.claude/settings.local.json` and the provider-neutral
- * `.switch/agents/<slug>.json` — live in the working tree, and a `.gitignore`
- * over one of them stops `git add` and nothing else. The token goes to `$HOME`
- * at `0600` via {@link AgentSecretStore}; the endpoint and agent id stay here,
- * since neither is a secret and Claude Code reads this file natively.
+ * **No token is written, and one already present is removed** (CHOO-1962). This
+ * produces `.claude/settings.local.json`, which Claude Code reads natively and
+ * which every session in the directory sees — it only needs to say who the agent
+ * is. The credential lives in exactly one file, the per-agent
+ * `.switch/agents/<slug>.json` that {@link mergeAgentCredentials} writes.
  *
- * Removing rather than merging forward is what relocates a pre-split file: a
- * merge would carry the old token along and defeat the move.
+ * Removing rather than merging forward matters: a merge would carry a token
+ * written by an older switchdash forward into a file that no longer needs one.
  *
  * Pure: takes the existing file text (or null when absent/unreadable) and
  * returns the text to write. Shared by the local writer and the remote (SFTP)
@@ -90,6 +88,25 @@ export function mergeSwitchSettings(
   };
 
   return `${JSON.stringify(merged, null, 2)}\n`;
+}
+
+/**
+ * The same merge for the provider-neutral per-agent file, which DOES carry the
+ * token.
+ *
+ * The two files are not interchangeable. `.claude/settings.local.json` is
+ * Claude Code's own, read by any session in the directory, and it only needs to
+ * say who the agent is — the runtime resolves the rest. `.switch/agents/<slug>.json`
+ * is the per-agent credential switchdash injects at launch and the runtime falls
+ * back to, so the token lives here, in exactly one place.
+ */
+export function mergeAgentCredentials(
+  existingRaw: string | null,
+  creds: SwitchSettingsCredentials
+): string {
+  const merged = JSON.parse(mergeSwitchSettings(existingRaw, creds)) as Record<string, unknown>;
+  const env = { ...(merged.env as Record<string, unknown>), SWITCH_API_TOKEN: creds.apiToken };
+  return `${JSON.stringify({ ...merged, env }, null, 2)}\n`;
 }
 
 /**
@@ -233,10 +250,9 @@ export function removeSwitchSettings(existingRaw: string | null): RemoveSwitchSe
  * `.claude/settings.local.json`, the same file the switch-connector
  * `configure` skill writes.
  *
- * No token: it goes to the home-side {@link AgentSecretStore} instead, written
- * by whichever caller provisions this agent. Claude Code reads this file
- * natively, so the endpoint and agent id being here is what lets a session
- * started by hand know who it is.
+ * No token: it lives in the per-agent `.switch/agents/<slug>.json` alone. Claude
+ * Code reads this file natively, so the endpoint and agent id being here is what
+ * lets a session started by hand know which agent it is.
  */
 export async function writeSwitchSettings(params: {
   dir: string;
@@ -275,10 +291,9 @@ export async function writeSwitchSettings(params: {
  * control.
  */
 export async function writeAgentNeutralSettings(
-  secrets: AgentSecretStore,
   params: { dir: string; slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
-  await writeNeutralAgentSettingsFs(createPluginFs(params.dir), secrets, params);
+  await writeNeutralAgentSettingsFs(createPluginFs(params.dir), params);
 }
 
 /**
@@ -289,23 +304,17 @@ export async function writeAgentNeutralSettings(
  * provider and every transport; providers with repo-agent definitions (Claude)
  * layer their definition on top.
  *
- * The `.gitignore` is still written: the file no longer carries a token, but the
- * directory is switchdash-managed state that does not belong in a user's repo.
+ * The `.gitignore` is written first: it is what keeps `SWITCH_API_TOKEN` out of
+ * version control, so it must already be in place before the token reaches disk.
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
-  secrets: AgentSecretStore,
   params: { slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
-  // The token goes first. If the second write fails the agent has a secret it
-  // does not yet reference, which is inert; the other order would leave a file
-  // claiming an identity whose token never landed.
-  await secrets.write(params.agentId, params.apiToken);
-
   if (!(await workspaceFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
     await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
   const relPath = agentSettingsRelativePath(params.slug);
-  const merged = mergeSwitchSettings(await workspaceFs.read(relPath), params);
+  const merged = mergeAgentCredentials(await workspaceFs.read(relPath), params);
   await workspaceFs.write(relPath, merged);
 }

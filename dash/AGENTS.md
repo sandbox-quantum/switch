@@ -323,24 +323,20 @@ pnpm run lint
     scrubbing it on write; that reinstates the problem this split exists to solve.
   - Anything contributed via `registerDiagnosticSection()` passes through the same
     export scrub. Never read the raw log file from outside `file-logger.ts`.
-- **An agent's Switch credentials are split across two files, and the split is the
-  point.** `<working dir>/.switch/agents/<slug>.json` holds the endpoint and agent
-  id; `$HOME/.switch/agents/<agent-id>.json`, mode `0600`, holds the API token —
-  on whichever host the agent runs on. Do not "simplify" the token back into the
-  working-tree file: a `.gitignore` there stops `git add`, and stops nothing else
-  — not an archive, a sync, a backup, or `git add -f`.
-  - Home files are keyed by **agent id**, never by name. `$HOME` is shared by every
-    project on the machine, so a name-keyed secret lets two agents called
-    `reviewer` overwrite each other's token.
-  - Write it through `switch-agent-secrets.ts`, not `PluginFs` — that interface has
-    five methods and cannot set a mode. Remote writes set `umask 077` *before* the
-    redirect so the file is never briefly world-readable.
+- **An agent's Switch API token lives in exactly one file:**
+  `<working dir>/.switch/agents/<slug>.json`, beside a generated `.gitignore`
+  containing `*`. `.claude/settings.local.json` carries the endpoint and agent
+  id only — it is Claude Code's own file, read by every session in the
+  directory, and does not need the credential. Do not add a token back to it:
+  two copies is how one goes stale and authenticates as the wrong agent.
   - Three consumers read this layout: switchdash, the sidecar, and
-    `@sandbox-quantum/switch-agent-runtime`. Changing it means changing all three,
-    and the sidecar must keep reading both shapes rather than taking a major (see
-    the versioning trap below).
-  - `.claude/settings.local.json` still carries a token in the working tree. That
-    is a known gap, not the intended layout.
+    `@sandbox-quantum/switch-agent-runtime` (which reads it directly when
+    nothing sets `SWITCH_*` in the environment). Changing the shape means
+    changing all three.
+  - The token being in a working tree at all is a known exposure — a
+    `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
+    Moving it out is tracked separately; it is deliberately not solved by
+    writing it to a second location as well.
 - PTY environment passthrough must use the allowlist in `src/main/core/pty/pty-env.ts`.
 - Treat shell escaping and PTY spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
