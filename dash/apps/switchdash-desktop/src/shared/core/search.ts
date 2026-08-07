@@ -1,7 +1,7 @@
 /**
  * Two populations, one item shape.
  *
- * `'session' | 'command' | 'file' | 'agent'` come from the SQLite FTS index —
+ * `'session' | 'command' | 'agent'` come from the SQLite FTS index —
  * high-cardinality local content worth indexing.
  *
  * `'room' | 'server' | 'host'` are matched in the renderer against sets it has
@@ -11,7 +11,7 @@
  * whose only job is to stop the index going stale. Matching a handful of rows
  * in the renderer is always fresh and has nothing to invalidate.
  */
-export type SearchItemKind = 'session' | 'command' | 'file' | 'agent' | 'room' | 'server' | 'host';
+export type SearchItemKind = 'session' | 'command' | 'agent' | 'room' | 'server' | 'host';
 
 export interface SearchItem {
   kind: SearchItemKind;

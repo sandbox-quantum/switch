@@ -20,12 +20,6 @@ vi.mock('@main/db/client', () => ({
   },
 }));
 
-// The file index is a separate FTS table with its own indexing lifecycle; these
-// tests are about the item index, so it contributes nothing.
-vi.mock('./location-file-index-service', () => ({
-  locationFileIndexService: { search: () => [] },
-}));
-
 const { searchService } = await import('./search-service');
 const { agentEvents } = await import('../agents/agent-events');
 
@@ -79,6 +73,38 @@ describe('searchService', () => {
     fixture.close();
     mocks.db = undefined;
     mocks.sqlite = undefined;
+  });
+
+  // Search covers sessions, agents and commands. Filesystem hits were appended
+  // to any search carrying a full session context — after the ranking cut, so
+  // they bypassed both the tiers and the result cap.
+  describe('result kinds', () => {
+    it('returns no filesystem results when a full session context is supplied', () => {
+      searchService.initialize();
+
+      const result = searchService.search({
+        query: 'reviewer',
+        context: { locationId: 'loc-1', sessionId: 'session-1' },
+      });
+
+      expect(result.status).toBe('ok');
+      expect(result.items.length).toBeGreaterThan(0);
+      for (const item of result.items) {
+        expect(['session', 'agent', 'command']).toContain(item.kind);
+      }
+    });
+
+    it('returns the same results with a session context as without one', () => {
+      searchService.initialize();
+
+      const withoutContext = searchService.search({ query: 'reviewer' });
+      const withContext = searchService.search({
+        query: 'reviewer',
+        context: { locationId: 'loc-1', sessionId: 'session-1' },
+      });
+
+      expect(titles(withContext.items)).toEqual(titles(withoutContext.items));
+    });
   });
 
   describe('indexing agents', () => {

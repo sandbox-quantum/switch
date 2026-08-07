@@ -171,13 +171,14 @@ function ensureSearchIndex(connection: BetterSqlite3.Database): void {
 }
 
 /**
- * Creates the FTS5 virtual table and companion meta table used for location
- * file indexing. Managed outside Drizzle (same reason as ensureSearchIndex).
- * Version-gated via `kv` so the tables can be dropped and recreated on schema
- * changes without a full Drizzle migration.
+ * Drops the location file index. It existed to back file results in the
+ * command palette; those are gone, and nothing else ever read it. An existing
+ * database still carries the tables and their rows, so they are removed here
+ * rather than left behind as a write-only index. Version-gated via `kv` like
+ * the tables were, so this runs once per database.
  */
-function ensureFileIndex(connection: BetterSqlite3.Database): void {
-  const FILE_INDEX_VERSION = '2';
+function dropFileIndex(connection: BetterSqlite3.Database): void {
+  const FILE_INDEX_VERSION = 'dropped';
 
   const row = connection.prepare(`SELECT value FROM kv WHERE key = 'file_index_version'`).get() as
     | { value: string }
@@ -188,20 +189,6 @@ function ensureFileIndex(connection: BetterSqlite3.Database): void {
   connection.exec(`DROP TABLE IF EXISTS location_file_index`);
   connection.exec(`DROP TABLE IF EXISTS workspace_file_index_meta`);
   connection.exec(`DROP TABLE IF EXISTS location_file_index_meta`);
-  connection.exec(`
-    CREATE VIRTUAL TABLE location_file_index USING fts5(
-      location_id UNINDEXED,
-      path,
-      filename,
-      tokenize = 'trigram case_sensitive 0'
-    )
-  `);
-  connection.exec(`
-    CREATE TABLE location_file_index_meta (
-      location_id TEXT PRIMARY KEY,
-      indexed_at  INTEGER NOT NULL
-    )
-  `);
   connection
     .prepare(
       `INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('file_index_version', ?, unixepoch())`
@@ -228,6 +215,6 @@ export async function initializeDatabase(
   const conn = connection ?? (await import('./client')).sqlite;
   runBundledMigrations(conn);
   ensureSearchIndex(conn);
-  ensureFileIndex(conn);
+  dropFileIndex(conn);
   return conn;
 }

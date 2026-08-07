@@ -15,7 +15,6 @@ import type { Session } from '@shared/core/sessions/sessions';
 import { agentEvents } from '../agents/agent-events';
 import { sessionHooks } from '../sessions/session-hooks';
 import { sessionService } from '../sessions/session-service';
-import { locationFileIndexService } from './location-file-index-service';
 
 type FtsRow = {
   item_type: string;
@@ -177,24 +176,6 @@ class SearchService {
       })
       .sort((a, b) => a.score - b.score)
       .slice(0, RESULT_LIMIT);
-
-    // Only offered when a session is in context: opening a file navigates to a
-    // session, so without one there is nothing to open and the hit would render
-    // as a row that silently does nothing when clicked.
-    if (context?.locationId && context.sessionId) {
-      const fileHits = locationFileIndexService.search(context.locationId, query);
-      for (const h of fileHits) {
-        results.push({
-          kind: 'file',
-          id: h.path,
-          locationId: context.locationId,
-          sessionId: context.sessionId,
-          title: h.filename,
-          subtitle: h.path,
-          score: 0,
-        });
-      }
-    }
 
     return { items: results, status: 'ok' };
   }

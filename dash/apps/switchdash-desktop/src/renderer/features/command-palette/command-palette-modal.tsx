@@ -4,7 +4,6 @@ import {
   Activity,
   Bot,
   DoorOpen,
-  File,
   Globe,
   HardDrive,
   type LucideIcon,
@@ -160,26 +159,6 @@ function PaletteItem({
           />
         </>
       )}
-    </Command.Item>
-  );
-}
-
-function PaletteFileItem({
-  value,
-  item,
-  onSelect,
-}: {
-  value: string;
-  item: SearchItem;
-  onSelect: () => void;
-}) {
-  return (
-    <Command.Item value={value} onSelect={onSelect} className={PALETTE_ITEM_CLASS}>
-      <File className="size-3.5 shrink-0 text-foreground/60" aria-hidden="true" />
-      <span className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
-        <span className="shrink-0">{item.title}</span>
-        <span className="truncate text-xs text-foreground/40">{item.subtitle}</span>
-      </span>
     </Command.Item>
   );
 }
@@ -345,12 +324,6 @@ export function CommandPaletteModal({
     );
   };
 
-  const handleOpenFile = (item: SearchItem) => {
-    if (!item.locationId || !item.sessionId) return;
-    handleClose();
-    navigate('session', { locationId: item.locationId, sessionId: item.sessionId });
-  };
-
   /**
    * Opens the agent, matching `sidebar/agent-item.tsx` exactly.
    *
@@ -388,7 +361,6 @@ export function CommandPaletteModal({
 
   const handleSelect = (item: SearchItem) => {
     if (item.kind === 'session') return handleNavigateToSession(item);
-    if (item.kind === 'file') return handleOpenFile(item);
     if (item.kind === 'agent') return handleNavigateToAgent(item);
     if (item.kind === 'room') return handleNavigateToRoom(item);
     if (item.kind === 'server') return handleNavigateToServer(item);
@@ -454,7 +426,7 @@ export function CommandPaletteModal({
             )}
             {searchResult.status === 'query-too-short' && (
               <div className="px-3 py-6 text-center text-sm text-foreground/40">
-                Type at least 3 characters to search agents, sessions, files and commands.
+                Type at least 3 characters to search agents, sessions and commands.
                 {rendererMatchCount > 0 &&
                   ' Rooms, servers and hosts are matched from the first character.'}
               </div>
@@ -531,16 +503,6 @@ export function CommandPaletteModal({
                       />
                     );
                   }
-                }
-                if (item.kind === 'file') {
-                  return (
-                    <PaletteFileItem
-                      key={`file:${item.id}`}
-                      value={`file:${item.id}`}
-                      item={item}
-                      onSelect={() => handleOpenFile(item)}
-                    />
-                  );
                 }
                 return (
                   <PaletteItem
