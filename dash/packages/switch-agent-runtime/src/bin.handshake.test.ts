@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -146,17 +146,6 @@ function start(env: Record<string, string>, setup?: (root: string) => void): Run
   return { child, root, stdout: () => out, stderr: () => err };
 }
 
-/** Resolve with the exit code, or reject if the process outlives the deadline. */
-function exitWithin(child: ChildProcess, ms: number): Promise<number | null> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`process still running after ${ms}ms`)), ms);
-    child.on('exit', (code) => {
-      clearTimeout(timer);
-      resolve(code);
-    });
-  });
-}
-
 /** Resolve with the JSON-RPC response carrying `id`. */
 function responseWithin(run: Running, id: number, ms: number): Promise<Record<string, unknown>> {
   const seek = (): Record<string, unknown> | null => {
@@ -209,6 +198,28 @@ async function request(
   return responseWithin(run, id, DEADLINE_MS);
 }
 
+/**
+ * Complete the handshake and return the single degraded tool plus what it says.
+ *
+ * Asserting on stderr alone would prove nothing here: the point of degraded mode
+ * is that the reason reaches the SESSION, over the protocol, rather than to a
+ * log nobody opens.
+ */
+async function degradedAnswer(run: Running): Promise<{ tools: string[]; text: string }> {
+  await handshake(run);
+  const listed = (await request(run, 2, 'tools/list')) as {
+    result?: { tools?: { name: string }[] };
+  };
+  const called = (await request(run, 3, 'tools/call', {
+    name: 'switch_unavailable',
+    arguments: {},
+  })) as { result?: { content?: { text?: string }[] } };
+  return {
+    tools: (listed.result?.tools ?? []).map((t) => t.name),
+    text: called.result?.content?.[0]?.text ?? '',
+  };
+}
+
 describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () => {
   it('answers initialize when its credentials are present', async () => {
     const endpoint = await opsServer();
@@ -227,16 +238,35 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     expect(response.result?.serverInfo?.name).toBeTruthy();
   });
 
-  it('exits rather than hanging when nothing configures it at all', async () => {
-    // No environment and no store: there is no identity to be had, and exiting
-    // is what makes that legible to a host that only sees a closed pipe.
-    const run = start({});
-    run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
+  it('serves the reason, rather than exiting, when nothing configures it at all', async () => {
+    // Exiting made this the quietest failure available: the host shows a closed
+    // connection and the session is told nothing. Starting anyway with one tool
+    // is what puts the reason where someone will read it.
+    const { tools, text } = await degradedAnswer(start({}));
 
-    expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
-    expect(run.stderr()).toContain('.switch/agents');
-    expect(run.stderr()).toContain('configure');
-    expect(run.stdout()).toBe('');
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('.switch/agents');
+    expect(text).toContain('configure');
+  });
+
+  it('publishes no port while degraded, so a pre-expansion spawn cannot race', async () => {
+    // The `${SWITCH_*}` spawn used to exit on sight for exactly this reason.
+    // Now nothing exits, so the guard is that degraded mode writes no port file
+    // — it starts no hook listener to advertise.
+    const run = start({});
+    await degradedAnswer(run);
+
+    const sessions = join(run.root, '.switch', 'sessions');
+    const ports = existsSync(sessions)
+      ? readdirSync(sessions).filter((d) => existsSync(join(sessions, d, 'port')))
+      : [];
+    expect(ports).toEqual([]);
+
+    // The directory itself is expected: the diagnostic is also written to
+    // `startup-error.log` there, for an operator who does go looking.
+    expect(
+      readdirSync(sessions).some((d) => existsSync(join(sessions, d, 'startup-error.log')))
+    ).toBe(true);
   });
 
   it('starts from the local store when the host forwarded nothing', async () => {
@@ -292,10 +322,15 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
       });
     });
 
-    expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
-    expect(run.stderr()).toContain('span 2 Switch servers');
-    expect(run.stderr()).toContain('SWITCH_API_ENDPOINT');
-    expect(run.stdout()).toBe('');
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('span 2 Switch servers');
+    // The fix has to travel with the diagnosis, or the agent can only relay
+    // that something is broken.
+    expect(text).toContain('SWITCH_API_ENDPOINT');
+    expect(text).toContain('dev.example');
+    expect(text).toContain('prod.example');
   });
 
   it('offers select_agent, and refuses everything else, until an identity is bound', async () => {
@@ -362,34 +397,39 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     expect(answer.result?.content?.[0]?.text).toContain('alice');
   });
 
-  it('will not start on half an identity rather than silently using the store', async () => {
-    // Being the wrong agent is worse than not starting: a partial environment
-    // is a broken config, and falling through would hide it.
+  it('does not fall back to the store on half an identity, and says so', async () => {
+    // Being the wrong agent is worse than being no agent: a partial environment
+    // is a broken config, and quietly using the store instead would hide it.
     const endpoint = await opsServer();
     const run = start({ SWITCH_AGENT_ID: 'uuid-env' }, (root) =>
       provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
     );
 
-    expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
-    expect(run.stderr()).toContain('incomplete SWITCH_* environment');
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('incomplete SWITCH_* environment');
   });
 
   it(
-    'exits rather than hanging when Switch never answers',
+    'answers, rather than hanging, when Switch never replies',
     async () => {
+      // Credentials were fine; the server was not. Indistinguishable from "no
+      // credentials" if the process just dies, which is why this degrades too.
       const endpoint = await blackHoleServer();
       const run = start({
         SWITCH_API_ENDPOINT: endpoint,
         SWITCH_API_TOKEN: 'tok-123',
         SWITCH_AGENT_ID: 'agent-1',
       });
-      run.child.stdin!.write(`${JSON.stringify(INITIALIZE)}\n`);
 
-      expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
-      expect(run.stderr()).toContain(endpoint);
+      const { tools, text } = await degradedAnswer(run);
+
+      expect(tools).toEqual(['switch_unavailable']);
+      expect(text).toContain(endpoint);
     },
     // Must outlast the runtime's own fetch bound, which is the thing under test.
-    DEADLINE_MS + 5_000
+    DEADLINE_MS + 15_000
   );
 
   it('names the endpoint it could not reach, not just that it failed', async () => {
@@ -399,7 +439,23 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
       SWITCH_AGENT_ID: 'agent-1',
     });
 
-    expect(await exitWithin(run.child, DEADLINE_MS)).not.toBe(0);
-    expect(run.stderr()).toMatch(/cannot reach Switch at http:\/\/127\.0\.0\.1:1/);
+    const { text } = await degradedAnswer(run);
+
+    expect(text).toMatch(/cannot reach Switch at http:\/\/127\.0\.0\.1:1/);
+  });
+
+  it('answers any tool name while degraded, not just its own', async () => {
+    // A host that cached a fuller list from an earlier session will call one of
+    // those; "Unknown tool" would tell the session nothing.
+    const run = start({});
+    await handshake(run);
+
+    const called = (await request(run, 2, 'tools/call', {
+      name: 'list_rooms',
+      arguments: {},
+    })) as { result?: { isError?: boolean; content?: { text?: string }[] } };
+
+    expect(called.result?.isError).toBe(true);
+    expect(called.result?.content?.[0]?.text).toContain('Switch is unavailable');
   });
 });

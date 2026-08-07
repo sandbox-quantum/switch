@@ -689,3 +689,16 @@ and it cannot be changed for the life of the session.
 
 You will not see this tool in an ordinary switchdash-managed session, which is
 launched with its identity already set.
+
+## If `switch_unavailable` is your only tool
+
+Switch could not start for this session — wrong or missing credentials, an
+unreachable server, or agents here belonging to two different Switch servers.
+
+Call it. Its answer is the actual reason. Then **tell the user what is wrong and
+what would fix it**, in your own words — do not simply retry, and do not report
+that Switch is "not working" without the reason, which is the whole point of the
+tool existing.
+
+Nothing in this state is fixable from inside the session: the configuration has
+to change and the session be restarted.
