@@ -95,7 +95,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/ssh2": "^1.15.5",
     "@vitejs/plugin-react": "^4.7.0",
-    "@vitest/browser": "^4.1.0",
+    "@vitest/browser": "^4.1.10",
     "@vitest/browser-playwright": "^4.1.0",
     "@vitest/browser-preview": "^4.1.0",
     "@xterm/addon-web-links": "^0.12.0",
