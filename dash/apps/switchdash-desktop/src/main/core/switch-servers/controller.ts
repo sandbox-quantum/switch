@@ -1,20 +1,13 @@
 import type { Result } from '@switchdash/shared';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
-import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
-import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
-import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch-settings';
-import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
 import { appService } from '@main/core/app/service';
-import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import {
   isManagedServerRunning,
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { HostUnreachableError } from '@main/core/remote-hosts/host-reachability-service';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type {
   AddressingPolicy,
@@ -26,9 +19,6 @@ import type {
   CreateRoomParams,
   CreateRoomResult,
   PasswordLoginParams,
-  ProvisionAgentParams,
-  ProvisionAgentResult,
-  ProvisionRemoteAgentParams,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -313,73 +303,4 @@ export const switchServersController = createRPCController({
     dir: string;
     providerId: AgentProviderId;
   }): Promise<AgentDefaults> => suggestAgentDefaults(params.dir, params.providerId),
-
-  /**
-   * Register a new agent on the chosen server (owned by the signed-in user) and
-   * write its credentials into the directory's `.claude/settings.local.json`.
-   * This is the desktop equivalent of running the switch-connector `configure`
-   * skill. Recoverable gateway failures are mapped to a typed result; the minted
-   * token is written to disk and never returned.
-   */
-  provisionAgent: async (params: ProvisionAgentParams): Promise<ProvisionAgentResult> => {
-    const server = await requireServer(params.serverId);
-
-    const registered = await registerAgentIdentity(server, {
-      name: params.name,
-      description: params.description,
-      repoDir: params.dir,
-      autoSession: params.autoSession,
-      // Provisioning writes `.claude/settings.local.json` — this is the Claude
-      // Code path by construction, not a fallback.
-      agentType: knownAgentTypeForProvider('claude'),
-    });
-    if (registered.kind !== 'created') return registered;
-
-    // The connector's SWITCH_API_ENDPOINT must point at the Switch core (agent
-    // bridge), which is a distinct endpoint from the gateway.
-    await writeSwitchSettings({
-      dir: params.dir,
-      apiEndpoint: server.apiUrl,
-      apiToken: registered.apiKey,
-      agentId: registered.id,
-    });
-
-    return { kind: 'created', agentId: registered.id };
-  },
-
-  /**
-   * Register a new Claude Code agent and write its credentials into a REMOTE
-   * working directory over SSH — the remote-host equivalent of `provisionAgent`.
-   * The agent has no local directory: its `.claude/settings.local.json` is
-   * written on the host, where the runtime sidecar reads it (CHOO-1059).
-   */
-  provisionRemoteAgent: async (
-    params: ProvisionRemoteAgentParams
-  ): Promise<ProvisionAgentResult> => {
-    const server = await requireServer(params.serverId);
-
-    const registered = await registerAgentIdentity(server, {
-      name: params.name,
-      description: params.description,
-      repoDir: params.remoteRepoDir,
-      autoSession: params.autoSession,
-      // Remote provisioning likewise writes `.claude/settings.local.json`.
-      agentType: knownAgentTypeForProvider('claude'),
-    });
-    if (registered.kind !== 'created') return registered;
-
-    const proxy = await ensureSshConnected(sshConnectionIdForHost(params.sshHost), params.sshHost);
-    const fs = new SshFileSystem(proxy, params.remoteRepoDir);
-    try {
-      await writeRemoteSwitchSettings(fs, {
-        apiEndpoint: server.apiUrl,
-        apiToken: registered.apiKey,
-        agentId: registered.id,
-      });
-    } finally {
-      fs.close();
-    }
-
-    return { kind: 'created', agentId: registered.id };
-  },
 });

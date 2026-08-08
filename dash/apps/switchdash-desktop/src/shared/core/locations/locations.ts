@@ -1,5 +1,3 @@
-import type { SwitchAgentConfig } from '@shared/switch-agents';
-
 /**
  * A Location: where agents' sessions run — a working directory on a host.
  * Local locations live on this machine (`sshHost` null); remote ones on an
@@ -34,12 +32,6 @@ export type InspectLocationPathParams = {
 
 export type LocationPathInspection = LocationPathStatus & {
   existingLocation?: Location;
-  /**
-   * The Switch agent configured in this directory, if any (read from the dir's
-   * `.claude/settings.local.json`). switchdash only allows onboarding
-   * directories that resolve a Switch agent.
-   */
-  switchAgent?: SwitchAgentConfig | null;
 };
 
 export type OpenLocationError =

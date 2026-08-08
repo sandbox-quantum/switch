@@ -130,8 +130,8 @@ export const switchServers = sqliteTable(
  * A Switch agent: an agent identity bound to a single provider, living at a
  * location. Many agents may share a location (e.g. a Claude Code and a Codex
  * agent in the same repo). `switchAgentId` / `apiEndpoint` are populated when
- * the location dir is configured as a Switch agent (detected from
- * `.claude/settings.local.json`); they are null for a plain local agent.
+ * the agent has a Switch identity on disk (`.switch/agents/<name>.json`);
+ * they are null for a plain local agent.
  *
  * `serverId` binds the agent to the one registered Switch server it belongs to.
  * It is resolved by matching the detected `apiEndpoint` against the registered

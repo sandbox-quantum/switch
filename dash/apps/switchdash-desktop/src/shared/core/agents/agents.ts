@@ -5,7 +5,7 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  * A Switch agent: an agent identity bound to a single provider, living at a
  * location (a working directory on this machine or an SSH host). Many agents
  * may share a location. `switchAgentId` / `apiEndpoint` carry the Switch
- * identity detected from the location dir's `.claude/settings.local.json`.
+ * identity from the agent's own `.switch/agents/<name>.json`.
  * `serverId` is the registered Switch server the agent belongs to (resolved
  * from `apiEndpoint`); null means unlinked — the server it points at is not
  * registered in this app.

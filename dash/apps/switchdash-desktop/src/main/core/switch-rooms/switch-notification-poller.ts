@@ -15,10 +15,7 @@ import { PluginPromptInjector } from './plugin-prompt-injector';
 import { RoomConnection } from './room-connection';
 import { sessionConnectionId } from './session-connection-id';
 import { resolveSessionControl } from './session-control';
-import {
-  readSwitchAgentCredentials,
-  readSwitchAgentCredentialsFromSettings,
-} from './switch-credentials';
+import { readSwitchAgentCredentialsFromSettings } from './switch-credentials';
 import { switchRoomService, type SessionRoomContext } from './switch-room-service';
 
 /**
@@ -198,12 +195,10 @@ class SwitchNotificationPoller {
     // with the agent row.
     const slug = loaded.name;
 
-    // Fall back to the legacy subagent path, then the location's
-    // `.claude/settings.local.json`, for un-migrated installs (CHOO-1440).
+    // Fall back to the legacy subagent path for un-migrated installs (CHOO-1440).
     const creds =
       (await readSwitchAgentCredentialsFromSettings(agentSettingsPath(rootPath, slug), log)) ??
-      (await readSwitchAgentCredentialsFromSettings(subagentSettingsPath(rootPath, slug), log)) ??
-      (await readSwitchAgentCredentials(rootPath, log));
+      (await readSwitchAgentCredentialsFromSettings(subagentSettingsPath(rootPath, slug), log));
     if (!creds) {
       log.warn(
         'SwitchNotificationPoller: missing Switch credentials (SWITCH_API_TOKEN/ENDPOINT/AGENT_ID) — cannot poll room',

@@ -22,7 +22,6 @@ import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
 import { stopRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
-import { removeSwitchCredentials } from './remove-switch-settings';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 export type DeleteAgentOptions = {
@@ -96,7 +95,6 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
         error: String(error),
       });
     });
-    await removeSwitchCredentials(agent.providerId, ctx.fs);
     // A provider that registers the Switch server itself (Codex) leaves a
     // per-agent launch profile under the user's home — a different scope than
     // ctx.fs, reached through its own home filesystem (local or remote).

@@ -6,10 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { HookEventLog, HookServer } from '@main/core/agent-hooks/hook-server';
 import { agentSettingsPath } from '@main/core/agents/switch-settings-paths';
-import {
-  readSwitchAgentCredentials,
-  readSwitchAgentCredentialsFromSettings,
-} from '@main/core/switch-rooms/switch-credentials';
+import { readSwitchAgentCredentialsFromSettings } from '@main/core/switch-rooms/switch-credentials';
 import { createTmuxRun } from '@main/core/switch-rooms/tmux-injection-sink';
 import { type AgentLaunchSpec } from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
@@ -47,10 +44,9 @@ import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
  *
  * Pure Node (no Electron, no database). The agent's Switch credentials come from
  * its provider-neutral per-agent file `.switch/agents/<slug>.json` (the slug is
- * passed in `SWITCHDASH_SIDECAR_AGENT_SLUG`), falling back to the legacy shared
- * `.claude/settings.local.json` for un-migrated installs (CHOO-1440); the
- * provider-specific launch recipe for auto-started sessions comes from the launch
- * spec switchdash writes to the VM.
+ * passed in `SWITCHDASH_SIDECAR_AGENT_SLUG`); the provider-specific launch recipe
+ * for auto-started sessions comes from the launch spec switchdash writes to the
+ * VM.
  * On startup it prints one JSON line to stdout — `{event:"ready",port,token}` —
  * so the launcher can point switchdash's remote sessions at this hook server.
  */
@@ -100,18 +96,13 @@ async function main(): Promise<void> {
   const repoDir = requireEnv('SWITCHDASH_SIDECAR_REPO_DIR');
   const deeplinkScheme = process.env.SWITCHDASH_SIDECAR_DEEPLINK_SCHEME?.trim() || 'switchdash';
 
-  // Prefer the agent's provider-neutral per-agent creds file; fall back to the
-  // legacy shared settings.local.json for un-migrated installs (CHOO-1440).
-  const credsSlug = process.env.SWITCHDASH_SIDECAR_AGENT_SLUG?.trim();
-  const creds =
-    (credsSlug
-      ? await readSwitchAgentCredentialsFromSettings(agentSettingsPath(repoDir, credsSlug), log)
-      : null) ?? (await readSwitchAgentCredentials(repoDir, log));
+  // The agent's provider-neutral per-agent creds file, named by the slug the
+  // launcher passes (CHOO-1440).
+  const credsSlug = requireEnv('SWITCHDASH_SIDECAR_AGENT_SLUG');
+  const credsPath = agentSettingsPath(repoDir, credsSlug);
+  const creds = await readSwitchAgentCredentialsFromSettings(credsPath, log);
   if (!creds) {
-    const where = credsSlug
-      ? agentSettingsPath(repoDir, credsSlug)
-      : `${repoDir}/.claude/settings.local.json`;
-    throw new Error(`sidecar: no Switch credentials at ${where} — run remote setup first`);
+    throw new Error(`sidecar: no Switch credentials at ${credsPath} — run remote setup first`);
   }
 
   // Per-agent state paths, so multiple agents in one repo dir each drive their

@@ -59,8 +59,8 @@ async function moveSidecarToNewName(previous: Agent, renamed: Agent): Promise<vo
  * repo-agent definitions, the definition the CLI is launched against
  * (`--agent <name>`). A rename that only updates the row leaves both behind
  * under the old key, and the credentials are unrecoverable: the token is minted
- * once and lives nowhere else, so the agent would silently fall back to the
- * shared `.claude/settings.local.json` identity — possibly another agent's.
+ * once and lives nowhere else, so the agent would be left with no identity at
+ * all under its new name.
  *
  * The new files are written before the old ones are removed, so an interruption
  * leaves a recoverable duplicate rather than nothing.

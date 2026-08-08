@@ -1,6 +1,5 @@
 import type { RepoAgentAttributes } from '@switchdash/core/agents/plugins';
 import type { CreateAgentParams, RenameAgentParams } from '@shared/core/agents/agents';
-import type { OnboardAgentParams } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -18,7 +17,6 @@ import { discoverConfiguredAgents } from './discover-configured-agents';
 import { discoverLocationAgents } from './discover-location-agents';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
-import { onboardAgent } from './onboard-agent';
 import { onboardLocationAgents, type OnboardLocationParams } from './onboard-location-agents';
 import { renameAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
@@ -38,7 +36,6 @@ export const agentsController = createRPCController({
   readAgentDefinition: (params: { agentId: string }) => readAgentDefinition(params.agentId),
   updateAgentDefinition: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentDefinition(params),
-  onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   onboardLocationAgents: (params: OnboardLocationParams) => onboardLocationAgents(params),
   discoverLocationAgents: (params: {
     sshHost: string | null;

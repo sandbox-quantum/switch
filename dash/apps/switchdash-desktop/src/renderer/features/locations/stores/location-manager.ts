@@ -1,4 +1,3 @@
-import { err, ok } from '@switchdash/shared';
 import { makeObservable, observable, runInAction } from 'mobx';
 import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -6,17 +5,10 @@ import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
 import { type Location } from '@shared/core/locations/locations';
 import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/reachability';
 import type { LocationViewSnapshot } from '@shared/view-state';
-import type {
-  AgentOnboardingCompletion,
-  AgentOnboardingError,
-  ModeData,
-  StartAgentOnboardingOptions,
-  StartAgentOnboardingResult,
-} from './agent-onboarding-types';
+import type { AgentOnboardingError } from './agent-onboarding-types';
 import { agentsStore } from './agents-store';
 import {
   createUnmountedLocation,
-  createUnregisteredLocation,
   isUnmountedLocation,
   isUnregisteredLocation,
   type LocationStore,
@@ -87,14 +79,6 @@ export class LocationManagerStore {
     await Promise.allSettled(toMount.map((id) => this.mountLocation(id)));
   }
 
-  async createAgent(data: ModeData, id?: string): Promise<string | undefined> {
-    const result = await this.startAgentOnboarding(data, { id });
-    if (result.kind === 'existing') return result.locationId;
-
-    const completion = await result.completion;
-    return completion.success ? result.locationId : undefined;
-  }
-
   /**
    * Add a brand-new agent to a location (local or remote): mint its identity,
    * write its definition + credentials, and create the row — all server-side via
@@ -115,82 +99,6 @@ export class LocationManagerStore {
       }
       this._setAndOpenLocation(location.id, location);
     }
-    return result;
-  }
-
-  async startAgentOnboarding(
-    data: ModeData,
-    options: StartAgentOnboardingOptions = {}
-  ): Promise<StartAgentOnboardingResult> {
-    const placeholderId = options.id ?? crypto.randomUUID();
-    const dir = data.remote ? data.remote.dir : data.path;
-    // Local onboarding can dedup against an existing location for the same dir.
-    if (!data.remote && dir !== undefined) {
-      const inspection = await rpc.locations.inspectLocationPath({ path: dir });
-      if (inspection.existingLocation) {
-        return { kind: 'existing', locationId: inspection.existingLocation.id };
-      }
-    }
-
-    runInAction(() => {
-      this.pendingCreationIds.add(placeholderId);
-      this.locations.set(
-        placeholderId,
-        createUnregisteredLocation(placeholderId, data.name, 'registering', 'pick')
-      );
-    });
-
-    const completion = this._doOnboardAgent(data, placeholderId).finally(() => {
-      runInAction(() => this.pendingCreationIds.delete(placeholderId));
-    });
-
-    return { kind: 'creating', locationId: placeholderId, completion };
-  }
-
-  private async _doOnboardAgent(
-    data: ModeData,
-    placeholderId: string
-  ): Promise<AgentOnboardingCompletion> {
-    const dir = data.remote ? data.remote.dir : data.path;
-    if (dir === undefined) {
-      const error: AgentOnboardingError = {
-        type: 'invalid-directory',
-        dir: '',
-        message: 'A directory is required',
-      };
-      this._markCreationError(placeholderId, error);
-      return err(error);
-    }
-
-    let result: AgentOnboardingCompletion;
-    try {
-      const onboarded = await rpc.agents.onboardAgent({
-        name: data.name,
-        serverId: data.serverId,
-        providerId: data.providerId,
-        dir,
-        sshHost: data.remote?.sshHost,
-        autoApprove: data.autoApprove,
-      });
-      if (!onboarded.success) {
-        result = err(onboarded.error);
-      } else {
-        const location = (await rpc.locations.getLocations()).find(
-          (l) => l.id === onboarded.data.locationId
-        );
-        if (!location)
-          throw new Error(`Onboarded agent's location ${onboarded.data.locationId} not found`);
-        // Drop the optimistic placeholder; key the store by the real location id.
-        runInAction(() => this.locations.delete(placeholderId));
-        this._setAndOpenLocation(location.id, location);
-        result = ok();
-      }
-    } catch (error) {
-      this._markUnexpectedCreationError(placeholderId, error);
-      throw error;
-    }
-
-    if (!result.success) this._markCreationError(placeholderId, result.error);
     return result;
   }
 

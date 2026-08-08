@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
 import { agents, locations, switchServers } from '@main/db/schema';
 import { propagateServerApiUrl } from './propagate-server-api-url';
-import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
+import { agentSettingsRelativePath } from './switch-settings-paths';
 
 const mocks = vi.hoisted(() => ({
   db: undefined as AppDb | undefined,
@@ -35,14 +35,19 @@ vi.mock('@main/core/locations/location-transport', () => ({
   sshConnectionIdForHost: (host: string) => host,
 }));
 
-async function writeSettings(dir: string, contents: Record<string, unknown>): Promise<void> {
-  const file = path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH);
+/** Write the per-agent credentials file every agent has had since CHOO-1440. */
+async function writeNeutral(
+  dir: string,
+  slug: string,
+  contents: Record<string, unknown>
+): Promise<void> {
+  const file = path.join(dir, agentSettingsRelativePath(slug));
   await nodeFs.mkdir(path.dirname(file), { recursive: true });
   await nodeFs.writeFile(file, JSON.stringify(contents, null, 2), 'utf8');
 }
 
-async function readEnv(dir: string): Promise<Record<string, unknown>> {
-  const raw = await nodeFs.readFile(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), 'utf8');
+async function readNeutralEnv(dir: string, slug: string): Promise<Record<string, unknown>> {
+  const raw = await nodeFs.readFile(path.join(dir, agentSettingsRelativePath(slug)), 'utf8');
   return (JSON.parse(raw) as { env: Record<string, unknown> }).env;
 }
 
@@ -79,7 +84,7 @@ describe('propagateServerApiUrl', () => {
 
   it('rewrites the endpoint for provisioned member agents, preserves the token, and updates the DB mirror', async () => {
     const dir = path.join(tmpRoot, 'provisioned');
-    await writeSettings(dir, {
+    await writeNeutral(dir, 'provisioned-agent', {
       permissions: { allow: ['Bash'] },
       env: {
         EXISTING_KEY: 'keep-me',
@@ -110,7 +115,7 @@ describe('propagateServerApiUrl', () => {
     ]);
 
     // On disk: only the endpoint changed; token, id, other keys preserved.
-    expect(await readEnv(dir)).toEqual({
+    expect(await readNeutralEnv(dir, 'provisioned-agent')).toEqual({
       EXISTING_KEY: 'keep-me',
       SWITCH_API_ENDPOINT: 'https://new-api.example.com',
       SWITCH_API_TOKEN: 'secret-token',
@@ -148,13 +153,15 @@ describe('propagateServerApiUrl', () => {
         outcome: 'not-provisioned',
       },
     ]);
-    // No settings file was created.
-    await expect(nodeFs.access(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH))).rejects.toThrow();
+    // No credentials file was created.
+    await expect(
+      nodeFs.access(path.join(dir, agentSettingsRelativePath('bare-agent')))
+    ).rejects.toThrow();
   });
 
   it('only touches agents linked to the edited server', async () => {
     const dir = path.join(tmpRoot, 'other-server');
-    await writeSettings(dir, {
+    await writeNeutral(dir, 'other-agent', {
       env: {
         SWITCH_API_ENDPOINT: 'https://other-api.example.com',
         SWITCH_API_TOKEN: 'other-token',
@@ -175,6 +182,8 @@ describe('propagateServerApiUrl', () => {
 
     // 'pilot' has no agents -> empty result, and the 'other' agent's file is untouched.
     expect(results).toEqual([]);
-    expect((await readEnv(dir)).SWITCH_API_ENDPOINT).toBe('https://other-api.example.com');
+    expect((await readNeutralEnv(dir, 'other-agent')).SWITCH_API_ENDPOINT).toBe(
+      'https://other-api.example.com'
+    );
   });
 });

@@ -3,7 +3,6 @@ import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_DIR_RELATIVE,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
-  SWITCH_SETTINGS_RELATIVE_PATH,
   SWITCH_SUBAGENTS_DIR_RELATIVE,
 } from './switch-settings-paths';
 
@@ -12,7 +11,6 @@ import {
 // would, when switchdash itself runs on Windows.
 describe('relative Switch settings paths', () => {
   const relatives = {
-    SWITCH_SETTINGS_RELATIVE_PATH,
     SWITCH_SUBAGENTS_DIR_RELATIVE,
     SWITCH_AGENTS_DIR_RELATIVE,
     SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -26,7 +24,6 @@ describe('relative Switch settings paths', () => {
   }
 
   it('resolves to the documented POSIX layout', () => {
-    expect(SWITCH_SETTINGS_RELATIVE_PATH).toBe('.claude/settings.local.json');
     expect(SWITCH_SUBAGENTS_DIR_RELATIVE).toBe('.claude/switch-subagents');
     expect(SWITCH_AGENTS_DIR_RELATIVE).toBe('.switch/agents');
     expect(SWITCH_AGENTS_GITIGNORE_RELATIVE).toBe('.switch/agents/.gitignore');

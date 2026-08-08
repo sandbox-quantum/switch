@@ -6,7 +6,7 @@ import type {
   DependencyUninstallResult,
   DependencyUpdateResult,
 } from '@switchdash/core/deps/runtime';
-import { detectSwitchAgentRemote } from '@main/core/agents/detect-remote';
+import { inspectRemoteDir } from '@main/core/agents/remote-dir';
 import {
   evictRemoteDependencyManager,
   getRemoteDependencyManager,
@@ -19,9 +19,9 @@ import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { buildRemoteShellCommand } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
+import type { RemoteDirInspection } from '@shared/core/remote-hosts/remote-dir';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import type { SwitchAgentConfig } from '@shared/switch-agents';
 import { probeGhAuthStatus, type GhAuthStatus } from './gh-auth';
 import { listSshConfigHosts } from './list-ssh-config-hosts';
 import { hostReachabilityService } from './production-host-reachability';
@@ -234,15 +234,12 @@ export const remoteHostsController = createRPCController({
     skipSetupStep(params.sshHost, params.stepId),
 
   /**
-   * Detect the Switch agent configured in a remote working directory (reads its
-   * `.claude/settings.local.json` over SSH). Used by the add-agent modal to
-   * detect + server-verify a remote agent without any local directory.
+   * Inspect a prospective remote working directory before it is committed to,
+   * so a path that cannot hold an agent is reported while the field is still on
+   * screen rather than as a write failure later (CHOO-1416).
    */
-  detectRemoteAgent: (params: {
-    sshHost: string;
-    remoteRepoDir: string;
-  }): Promise<SwitchAgentConfig | null> =>
-    detectSwitchAgentRemote(params.sshHost, params.remoteRepoDir),
+  inspectRemoteDir: (params: { sshHost: string; dir: string }): Promise<RemoteDirInspection> =>
+    inspectRemoteDir(params.sshHost, params.dir),
 
   probeDeps: (sshHost: string): Promise<RemoteDependencyView[]> => probeDeps(sshHost),
 

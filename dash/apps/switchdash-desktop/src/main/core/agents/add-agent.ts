@@ -9,6 +9,7 @@ import { log } from '@main/lib/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { isUsableRemoteDir, type RemoteDirInspection } from '@shared/core/remote-hosts/remote-dir';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
@@ -16,6 +17,7 @@ import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { knownAgentTypeForProvider } from './known-agent-type';
 import { registerAgentIdentity } from './register-agent-identity';
+import { inspectRemoteDir } from './remote-dir';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
@@ -51,6 +53,11 @@ export type AddAgentResult =
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
   | { kind: 'invalid-name'; message: string }
+  /** The remote working directory is unusable: it is a file, or neither it nor
+   * its parent exists so the credentials write cannot create it. Reported
+   * before anything is minted, so no Switch-side agent is left behind
+   * (CHOO-1416). */
+  | { kind: 'directory-missing'; sshHost: string; inspection: RemoteDirInspection }
   | { kind: 'error'; message: string };
 
 /**
@@ -65,10 +72,27 @@ export type AddAgentResult =
  * written to disk and never returned. A recoverable gateway failure is mapped to
  * a typed result the modal can act on; a filesystem failure after registration
  * throws (leaving the gateway agent, as the pre-existing provision path did).
+ *
+ * Both run locations therefore check the working directory *before* minting the
+ * identity — locally with `checkIsValidDirectory`, remotely with
+ * `inspectRemoteDir`. The remote check refuses only what the write genuinely
+ * cannot handle: a file, or a directory whose parent is missing too. A missing
+ * directory under an existing parent still goes through and is created by the
+ * write, as it always was. The refused case used to surface as a raw
+ * `FileSystemError` from the first credentials write, by which point the agent
+ * existed on the gateway but nowhere else (CHOO-1416). Ordering the check first
+ * removes that orphan for this failure; creation as a whole is still not atomic
+ * (CHOO-1415).
  */
 export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> {
   if (params.sshHost === null && !checkIsValidDirectory(params.dir)) {
     return { kind: 'error', message: `Invalid directory: ${params.dir}` };
+  }
+  if (params.sshHost !== null) {
+    const inspection = await inspectRemoteDir(params.sshHost, params.dir);
+    if (!isUsableRemoteDir(inspection)) {
+      return { kind: 'directory-missing', sshHost: params.sshHost, inspection };
+    }
   }
 
   const server = await getServer(params.serverId);

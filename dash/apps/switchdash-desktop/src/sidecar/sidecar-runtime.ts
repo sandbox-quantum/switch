@@ -90,7 +90,7 @@ interface SessionConnection {
  * per session.
  *
  * Runs entirely on the VM with no database or Electron — the agent's Switch
- * credentials come from its `.claude/settings.local.json`.
+ * credentials come from its `.switch/agents/<slug>.json`.
  */
 export class SidecarRuntime {
   /** sessionId → its live room connection. */

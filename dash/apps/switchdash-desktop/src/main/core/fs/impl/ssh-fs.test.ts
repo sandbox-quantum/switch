@@ -5,6 +5,13 @@ import { SshFileSystem } from './ssh-fs';
 
 type SftpMkdirError = Error & { code?: number };
 
+/** SSH_FX_NO_SUCH_FILE, as ssh2 reports a missing path. */
+const SFTP_NO_SUCH_FILE = 2;
+
+function noSuchFile(): SftpMkdirError {
+  return Object.assign(new Error('No such file'), { code: SFTP_NO_SUCH_FILE });
+}
+
 function listResult(entries: FileEntry[]): FileListResult {
   return { entries, total: entries.length };
 }
@@ -19,7 +26,7 @@ function fileEntry(path: string, mtimeMs: number, size = 1): FileEntry {
   };
 }
 
-function makeMkdirFs(errors: Array<SftpMkdirError | undefined>) {
+function makeMkdirFs(errors: Array<SftpMkdirError | undefined>, base = '/repo') {
   const mkdirCalls: string[] = [];
   const sftp = {
     on: vi.fn(),
@@ -35,7 +42,7 @@ function makeMkdirFs(errors: Array<SftpMkdirError | undefined>) {
   };
 
   return {
-    fs: new SshFileSystem(proxy as never, '/repo'),
+    fs: new SshFileSystem(proxy as never, base),
     mkdirCalls,
   };
 }
@@ -105,6 +112,37 @@ describe('SshFileSystem.mkdir', () => {
 
     await expect(fs.mkdir('parent/child', { recursive: true })).resolves.toBeUndefined();
     expect(mkdirCalls).toEqual(['/repo/parent/child', '/repo/parent', '/repo/parent/child']);
+  });
+
+  // Recursive mkdir stops at its own base: an FS rooted at an agent's working
+  // directory must not be able to create that directory's ancestors. This is
+  // the containment behaviour that made a missing parent surface as a bare
+  // "File or directory not found" during remote agent creation (CHOO-1416).
+  // The fix reports the missing directory before anything is written, via a
+  // probe rooted at `/` in `remote-dir.ts`, rather than widening this guard.
+  it('refuses to create parents above its base', async () => {
+    const repoDir = '/home/ubuntu/switch-agents/internal-deployments';
+    const { fs, mkdirCalls } = makeMkdirFs([noSuchFile(), noSuchFile(), noSuchFile()], repoDir);
+
+    await expect(fs.mkdir('.switch/agents', { recursive: true })).rejects.toThrow(
+      `File or directory not found: ${repoDir}`
+    );
+    // Walked up as far as the base and stopped there: creating the base's own
+    // parent (`/home/ubuntu/switch-agents`) would escape the sandbox.
+    expect(mkdirCalls).toEqual([`${repoDir}/.switch/agents`, `${repoDir}/.switch`, repoDir]);
+  });
+
+  it('creates ancestors freely when rooted at the filesystem root', async () => {
+    const { fs, mkdirCalls } = makeMkdirFs([noSuchFile(), undefined, undefined], '/');
+
+    await expect(
+      fs.mkdir('/home/ubuntu/switch-agents/internal-deployments', { recursive: true })
+    ).resolves.toBeUndefined();
+    expect(mkdirCalls).toEqual([
+      '/home/ubuntu/switch-agents/internal-deployments',
+      '/home/ubuntu/switch-agents',
+      '/home/ubuntu/switch-agents/internal-deployments',
+    ]);
   });
 });
 

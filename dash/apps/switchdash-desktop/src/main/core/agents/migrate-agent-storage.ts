@@ -13,7 +13,7 @@ import {
 } from './agent-storage-migration-marker';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { getAgents } from './getAgents';
-import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
+import { agentSettingsRelativePath } from './switch-settings-paths';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
 /**
@@ -21,8 +21,7 @@ import { writeNeutralAgentSettingsFs } from './write-switch-settings';
  * layout (CHOO-1440): every agent is a repository-defined agent with a per-agent
  * credentials file at `.switch/agents/<name>.json` and an on-disk definition,
  * both keyed by the agent's single `name`. Pre-CHOO-1440 installs kept
- * credentials in the legacy `.claude/switch-subagents/<name>.settings.json` (or
- * the shared `.claude/settings.local.json`).
+ * credentials in the legacy `.claude/switch-subagents/<name>.settings.json`.
  *
  * Runs once at boot, best-effort: each agent is migrated in isolation so one bad
  * directory or unreachable host never aborts the rest, and every step is
@@ -101,12 +100,8 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     //         earlier layout keyed the neutral file by agent id, not name (this
     //         includes Codex agents added on the pre-rework id-keyed scheme);
     //      b. the legacy per-agent file (via readLaunchEnv: name-keyed neutral
-    //         then `.claude/switch-subagents/<name>.settings.json`);
-    //      c. the shared `.claude/settings.local.json` (legacy "main" agent).
-    //    (b) and (c) are Claude-only sources, hence behavior-gated: the shared
-    //    settings file is written solely by `provisionAgent`/`provisionRemoteAgent`,
-    //    always as the Claude "main" agent, so for any other provider it holds a
-    //    *different* agent's identity and token.
+    //         then `.claude/switch-subagents/<name>.settings.json`), a
+    //         Claude-only source and hence behavior-gated.
     //    The token is minted once and lives only on disk, so this is the only way
     //    to recover it — nothing can reconstruct it from the gateway.
     const idKeyedRelPath = agentSettingsRelativePath(agent.id);
@@ -115,10 +110,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     if (neutral === null) {
       const recovered =
         parseSwitchAgentCredentials(await workspace.fs.read(idKeyedRelPath), log) ??
-        (behavior ? toCreds(await behavior.readLaunchEnv(workspace.fs, name)) : null) ??
-        (behavior
-          ? parseSwitchAgentCredentials(await workspace.fs.read(SWITCH_SETTINGS_RELATIVE_PATH), log)
-          : null);
+        (behavior ? toCreds(await behavior.readLaunchEnv(workspace.fs, name)) : null);
       if (recovered && !belongsToAgent(agent, recovered)) {
         log.warn('migrateAgentStorage: recovered credentials name a different Switch agent', {
           agentId: agent.id,

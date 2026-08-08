@@ -307,59 +307,8 @@ export type AgentDefaults = {
 };
 
 /**
- * Whether this Claude Code install can drive the development-channels flag.
- * `anthropic` (Anthropic login / API key) → `channels_enabled = true` →
- * session_addressable. `third-party` (Vertex AI / Bedrock / other) →
- * `channels_enabled = false` → session_passive. There is no safe default; the
- * user must choose, since the wrong value corrupts the agent's room behaviour.
- */
-export type AgentProviderKind = 'anthropic' | 'third-party';
-
-/**
- * Parameters to register a brand-new Claude Code agent on a server and write
- * its credentials into the directory's `.claude/settings.local.json` — the
- * desktop equivalent of running the switch-connector `configure` skill.
- */
-export type ProvisionAgentParams = {
-  serverId: string;
-  /** The agent's working directory; the settings file is written here and used
-   * as `repo_dir` so an offline-session command can `cd` into it. */
-  dir: string;
-  name: string;
-  description: string;
-  providerKind: AgentProviderKind;
-  /** Bridge handle to @-mention in offline-session notices; omit to skip. */
-  notifyUser?: string;
-  /** Register with the `auto_session` connection model: switchdash watches the
-   * agent's rooms and auto-spawns a session on notification. Defaults to off. */
-  autoSession?: boolean;
-};
-
-/**
- * Parameters to register a brand-new Claude Code agent on a server and write its
- * credentials into a REMOTE working directory's `.claude/settings.local.json`
- * over SSH — the remote-host equivalent of {@link ProvisionAgentParams}. There
- * is no local directory: the agent's config lives entirely on the host.
- */
-export type ProvisionRemoteAgentParams = {
-  serverId: string;
-  /** SSH alias of the onboarded host the agent runs on. */
-  sshHost: string;
-  /** The agent's working directory on the host; the settings file is written
-   * here and used as `repo_dir`. */
-  remoteRepoDir: string;
-  name: string;
-  description: string;
-  providerKind: AgentProviderKind;
-  /** Bridge handle to @-mention in offline-session notices; omit to skip. */
-  notifyUser?: string;
-  /** Register with the `auto_session` connection model. Defaults to off. */
-  autoSession?: boolean;
-};
-
-/**
- * Outcome of provisioning a new agent. `created` carries the new Switch agent
- * id; the other variants map a recoverable gateway failure to a specific
+ * Outcome of registering a new agent identity. `created` carries the new Switch
+ * agent id; the other variants map a recoverable gateway failure to a specific
  * message the modal can act on (re-login, rename) rather than a raw throw. The
  * minted API token is written to disk by the main process and never returned.
  */

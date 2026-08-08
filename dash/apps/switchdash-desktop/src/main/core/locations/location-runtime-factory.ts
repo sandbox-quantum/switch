@@ -220,7 +220,7 @@ type AgentRuntimeOpts = {
   sessionEnvVars: Record<string, string>;
   /** Candidate creds files (relative to the working dir) the remote preflight
    * checks, in priority order — the agent's neutral `.switch/agents/<name>.json`
-   * first, then the legacy `.claude/settings.local.json` (CHOO-1440). */
+   * first, then the earlier id-keyed variant of it (CHOO-1440). */
   credsRelPaths: string[];
 };
 

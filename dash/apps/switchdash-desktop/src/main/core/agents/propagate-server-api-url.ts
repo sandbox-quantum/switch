@@ -1,78 +1,57 @@
-import { promises as nodeFs } from 'node:fs';
-import path from 'node:path';
+import type { PluginFs } from '@switchdash/core/agents/plugins';
 import { eq } from 'drizzle-orm';
-import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
-import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentApiUrlPropagation } from '@shared/core/switch-servers/switch-servers';
 import { getAgentLocation } from './agent-location';
-import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
+import { resolveWorkspaceFsFor } from './agent-workspace-fs';
+import { agentSettingsRelativePath } from './switch-settings-paths';
 import { updateAgent } from './updateAgent';
 import { mapAgentRowToAgent } from './utils';
 import { mergeSwitchApiEndpoint } from './write-switch-settings';
 
 /**
- * Rewrite one local agent's `SWITCH_API_ENDPOINT`, preserving its token and
- * every other key. Returns whether the file was updated (false = not a
- * provisioned Switch agent, so nothing to do).
+ * The files that may hold this agent's `SWITCH_API_ENDPOINT`: its per-agent
+ * credentials keyed by name, and the earlier id-keyed variant of the same file.
+ *
+ * Both are rewritten rather than the first found — an agent mid-migration can
+ * have both, and one left naming the old server is one the session preflight
+ * may still pick up.
  */
-async function propagateLocal(dir: string, apiEndpoint: string): Promise<boolean> {
-  const settingsPath = path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH);
-
-  let existingRaw: string | null = null;
-  try {
-    existingRaw = await nodeFs.readFile(settingsPath, 'utf8');
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // Absent file/dir -> unprovisioned agent. Any other read failure must
-    // propagate rather than be mistaken for "no config".
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-  }
-
-  const merged = mergeSwitchApiEndpoint(existingRaw, apiEndpoint);
-  if (merged === null) return false;
-  await nodeFs.writeFile(settingsPath, merged, 'utf8');
-  return true;
+function credentialPathsFor(agent: Agent): string[] {
+  return [
+    ...new Set([
+      agentSettingsRelativePath(agent.name ?? agent.id),
+      agentSettingsRelativePath(agent.id),
+    ]),
+  ];
 }
 
 /**
- * Rewrite one remote agent's `SWITCH_API_ENDPOINT` over SFTP, preserving its
- * token and every other key. Returns whether the file was updated.
+ * Rewrite `SWITCH_API_ENDPOINT` in each of the agent's credentials files that
+ * exists, preserving its token and every other key. Returns whether anything
+ * was updated (false = no provisioned credentials anywhere, so nothing to do).
+ *
+ * Local and remote share this path: `resolveWorkspaceFsFor` hands back a
+ * filesystem rooted at the working directory either way, and both map an absent
+ * file to null while letting a real read failure propagate — so a dead SSH
+ * connection is never mistaken for an unprovisioned agent.
  */
-async function propagateRemote(
-  sshHost: string,
-  remoteRepoDir: string,
+async function propagateToWorkspace(
+  fs: PluginFs,
+  agent: Agent,
   apiEndpoint: string
 ): Promise<boolean> {
-  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
-  const fs = new SshFileSystem(proxy, remoteRepoDir);
-  try {
-    let existingRaw: string | null = null;
-    try {
-      ({ content: existingRaw } = await fs.read(SWITCH_SETTINGS_RELATIVE_PATH));
-    } catch (error) {
-      // Absent file -> unprovisioned agent. A transport failure (dead SSH
-      // connection) must propagate rather than look like "no config".
-      if (!(error instanceof FileSystemError && error.code === FileSystemErrorCodes.NOT_FOUND)) {
-        throw error;
-      }
-    }
-
-    const merged = mergeSwitchApiEndpoint(existingRaw, apiEndpoint);
-    if (merged === null) return false;
-    const result = await fs.write(SWITCH_SETTINGS_RELATIVE_PATH, merged);
-    if (!result.success) {
-      throw new Error(`failed to write remote Switch settings: ${result.error ?? 'unknown error'}`);
-    }
-    return true;
-  } finally {
-    fs.close();
+  let updated = false;
+  for (const relPath of credentialPathsFor(agent)) {
+    const merged = mergeSwitchApiEndpoint(await fs.read(relPath), apiEndpoint);
+    if (merged === null) continue;
+    await fs.write(relPath, merged);
+    updated = true;
   }
+  return updated;
 }
 
 /** Cascade a server API-URL edit to a single member agent, mapping any failure
@@ -83,11 +62,14 @@ async function propagateToAgent(
 ): Promise<AgentApiUrlPropagation> {
   try {
     const location = await getAgentLocation(agent);
-    const sshHost = location.sshHost;
-    const isRemote = sshHost !== null;
-    const updated = isRemote
-      ? await propagateRemote(sshHost, location.dir, apiEndpoint)
-      : await propagateLocal(location.dir, apiEndpoint);
+    const isRemote = location.sshHost !== null;
+    const workspace = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+    let updated: boolean;
+    try {
+      updated = await propagateToWorkspace(workspace.fs, agent, apiEndpoint);
+    } finally {
+      workspace.close();
+    }
 
     if (updated) {
       // Keep the DB mirror in step with what is now on disk.
@@ -123,6 +105,10 @@ async function propagateToAgent(
  * clobbered. Returns a per-agent summary — failures are reported, never
  * swallowed — so the caller can surface which agents changed and which need a
  * running session restarted to pick up the new endpoint.
+ *
+ * This used to write only the legacy shared `.claude/settings.local.json`,
+ * which no agent created since CHOO-1440 has: every one of them was reported
+ * `not-provisioned` and silently kept the old endpoint.
  */
 export async function propagateServerApiUrl(
   serverId: string,

@@ -1,10 +1,6 @@
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import type { PluginFs } from '@switchdash/core/agents/plugins';
-import {
-  agentSettingsRelativePath,
-  SWITCH_SETTINGS_RELATIVE_PATH,
-} from '@main/core/agents/switch-settings-paths';
+import { agentSettingsRelativePath } from '@main/core/agents/switch-settings-paths';
 
 export interface SwitchAgentCredentials {
   agentId: string;
@@ -34,26 +30,9 @@ function asNonEmptyString(value: unknown): string | null {
 }
 
 /**
- * Read the full Switch agent credentials (including the API token) from an
- * agent directory's `.claude/settings.local.json` env block.
- *
- * Unlike {@link detectSwitchAgent}, this reads `SWITCH_API_TOKEN` — it is used
- * only by the notification poller, which must authenticate to the agent bridge
- * on the agent's behalf. Returns null when the file is missing/unparseable or
- * any of the three values is absent.
- */
-export async function readSwitchAgentCredentials(
-  dir: string,
-  log: CredentialsLogger
-): Promise<SwitchAgentCredentials | null> {
-  return readSwitchAgentCredentialsFromSettings(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), log);
-}
-
-/**
- * Read Switch agent credentials from a specific settings file. Used to poll as a
- * subagent (its `.claude/switch-subagents/<name>.settings.json`) rather than the
- * parent's `.claude/settings.local.json`, so the session receives the events
- * addressed to the subagent — not the parent.
+ * Read Switch agent credentials from a specific credentials file, so a session
+ * polls as the agent that owns that file — one of possibly several sharing a
+ * working directory — and receives the events addressed to it.
  */
 export async function readSwitchAgentCredentialsFromSettings(
   settingsPath: string,

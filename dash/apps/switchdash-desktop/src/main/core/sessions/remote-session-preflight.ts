@@ -20,8 +20,8 @@ import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-cred
  *     only stabilised in Node 18;
  *  2. the agent's Switch creds exist on the remote host — checked at the agent's
  *     provider-neutral per-agent path (`.switch/agents/<name>.json`) first, then
- *     the legacy `.claude/settings.local.json` for un-migrated installs
- *     (CHOO-1440) — read in parallel with (1);
+ *     the earlier id-keyed variant of it for un-migrated installs (CHOO-1440) —
+ *     read in parallel with (1);
  *  3. the host can actually reach the Switch API endpoint — the sidecar polls
  *     from the VM, so no egress means a dead agent.
  *
@@ -66,7 +66,7 @@ export interface RemotePreflightDeps {
   workDir: string;
   /** Candidate creds files (relative to the working dir) to check, in priority
    * order — the agent's neutral `.switch/agents/<name>.json` first, then the
-   * legacy `.claude/settings.local.json`. The first that parses is used. */
+   * earlier id-keyed variant of it. The first that parses is used. */
   credsRelPaths: string[];
 }
 
@@ -153,8 +153,8 @@ async function readRemoteEndpoint(deps: RemotePreflightDeps): Promise<string> {
   const primary = deps.credsRelPaths[0] ?? '.switch/agents';
   // Track the FIRST file that was present but unparseable/incomplete, so the
   // error names the actual offending file rather than always the primary path —
-  // a stale fallback (an old id-keyed `.switch/agents/<id>.json` or the legacy
-  // `.claude/settings.local.json`) is a common cause and must be pinpointed.
+  // a stale fallback (an old id-keyed `.switch/agents/<id>.json`) is a common
+  // cause and must be pinpointed.
   let incompletePath: string | null = null;
   for (const relPath of deps.credsRelPaths) {
     let content: string;

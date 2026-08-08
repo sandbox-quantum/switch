@@ -11,14 +11,7 @@ const fetchAuthConfig = vi.hoisted(() => vi.fn());
 vi.mock('@main/core/agents/agent-defaults', () => ({ suggestAgentDefaults: vi.fn() }));
 vi.mock('@main/core/agents/propagate-server-api-url', () => ({ propagateServerApiUrl: vi.fn() }));
 vi.mock('@main/core/agents/resolve-servers', () => ({ resolveAgentServers: vi.fn() }));
-vi.mock('@main/core/agents/write-remote-switch-settings', () => ({
-  writeRemoteSwitchSettings: vi.fn(),
-}));
-vi.mock('@main/core/agents/write-switch-settings', () => ({ writeSwitchSettings: vi.fn() }));
 vi.mock('@main/core/app/service', () => ({ appService: { openExternal: vi.fn() } }));
-vi.mock('@main/core/fs/impl/ssh-fs', () => ({ SshFileSystem: vi.fn() }));
-vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHost: vi.fn() }));
-vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
   managedServerHostBlocked,

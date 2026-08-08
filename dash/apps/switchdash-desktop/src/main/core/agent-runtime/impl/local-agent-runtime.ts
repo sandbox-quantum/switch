@@ -167,13 +167,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         cachedStatePath,
       });
 
-      // A session talks to Switch as its own agent, not whatever identity happens
-      // to sit in `.claude/settings.local.json`. Real env vars outrank every
+      // A session talks to Switch as its own agent. Real env vars outrank every
       // settings file and reach the spawned MCP server, so inject the agent's
       // identity last (highest precedence): a subagent from its definition creds,
-      // and a plain agent from its provider-neutral `.switch/agents/<slug>.json`
-      // (empty when absent — the session then falls back to settings.local.json,
-      // which Claude reads natively).
+      // and a plain agent from its provider-neutral `.switch/agents/<slug>.json`.
       // Resolved before the command is built because a provider that registers
       // the Switch server at launch keys it on this identity (see below).
       const workspaceFs = createPluginFs(this.sessionPath);
