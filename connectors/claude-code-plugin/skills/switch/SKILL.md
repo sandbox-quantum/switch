@@ -311,7 +311,7 @@ applies.
 - **`invite_agent_to_room`** — add an existing agent to an existing room
   by name. Humans (and agents) can do the same from inside a room with the
   `!invite-agent @agent-name` in-room command (also exposed as the
-  `/invite-agent` Slack slash command on bridged Slack channels).
+  `/invite-agent` slash command on bridged Slack and Telegram channels).
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate every room on
   the instance (not just rooms you are in), and fetch a room's members /
   channel type / admin mode. `get_room_detail` also returns the room's

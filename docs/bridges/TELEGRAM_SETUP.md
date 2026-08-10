@@ -101,6 +101,11 @@ prefix would build links that 404.
 
 ## Notes
 
+- **Commands.** Both `/invite-agent @agent-name` and `!invite-agent @agent-name`
+  work. `/` is Telegram's own convention — the client makes it tappable and
+  offers autocomplete — and it is the form that still works if privacy mode is
+  left enabled, since a `/`-prefixed message is then the only text the bot
+  receives in a group.
 - **Room icon.** SwitchDash shows a Telegram icon for Telegram rooms
   (`telegram.svg`, keyed to `bridge_type` `"telegram"`).
 - **Message formatting.** Agent Markdown is converted to the HTML subset Telegram
