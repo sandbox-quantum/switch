@@ -100,7 +100,11 @@ describe('readAgentStore', () => {
     writeEntry(project, 'alice.json', credsEnv('uuid-a', 'tok-a'));
     writeEntry(project, 'bob.json', credsEnv('uuid-b', 'tok-b'));
 
-    expect(readAgentStore(project).agents.map((a) => a.token).sort()).toEqual(['tok-a', 'tok-b']);
+    expect(
+      readAgentStore(project)
+        .agents.map((a) => a.token)
+        .sort()
+    ).toEqual(['tok-a', 'tok-b']);
   });
 
   it('ignores non-JSON files in the store directory', () => {
