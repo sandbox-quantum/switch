@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { hasBridgeIcon } from './bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from './bridge-platform';
 
 /** Every bridge type switch-core registers today (`main.py` register_adapter). */
@@ -64,6 +65,21 @@ describe('bridge brand icons', () => {
     // hidden without one, even when the deeplink resolves. So a missing file
     // is a functional gap, not just a cosmetic one (CHOO-1784).
     expect(existsSync(join(BRIDGE_ICON_DIR, `${type}.svg`))).toBe(true);
+  });
+
+  it.each(BRIDGE_TYPES)('the icon loader actually resolves %s', (type) => {
+    // `existsSync` above only proves the file is on disk. The app reads these
+    // through a Vite glob keyed on filename, so an icon in the wrong directory,
+    // or one the raw loader hands back in an unexpected shape, would pass the
+    // check above and still leave the button hidden at runtime — which is the
+    // failure this pair is here to prevent.
+    expect(hasBridgeIcon(type)).toBe(true);
+  });
+
+  it('reports no icon for a type this build does not bundle', () => {
+    expect(hasBridgeIcon('zulip')).toBe(false);
+    expect(hasBridgeIcon(null)).toBe(false);
+    expect(hasBridgeIcon(undefined)).toBe(false);
   });
 
   it('has a label for every bundled icon', () => {
