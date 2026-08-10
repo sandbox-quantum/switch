@@ -115,89 +115,71 @@ switchdash removes such an entry.
 The `configure` skill covers the case switchdash does not: a user who installs
 this plugin and wants `codex` to reach Switch from a plain terminal. It
 registers the agent against the bridge (`POST /agents/register-known` with
-`agent_type: "codex"`) and then registers the MCP server with `codex mcp add`,
-storing the credentials as **literal values** in the user's base config.
+`agent_type: "codex"`) and writes the credentials to
+`.switch/agents/<name>.json` in the working directory.
 
-Literal values, rather than the `env_vars` name-forwarding the profile uses,
-because the two paths differ in who launches Codex. `env_vars` forwards names
-from the launching process's environment — which works precisely because
-switchdash *is* that process and populates it. Standalone there is no
-injector, so names would forward nothing and the runtime would die before the
-MCP handshake.
+**It writes no MCP config at all.** The plugin's `.mcp.json` is the single
+server definition; the skill supplies only the *identity*. Since
+`switch-agent-runtime` 0.2.0 the runtime resolves that itself — environment
+first (switchdash's path, untouched), otherwise the local agent store read from
+the session's working directory.
 
-Three properties of Codex config, all verified against codex-cli 0.146.0,
-constrain how this can be done:
-
-- **An `mcp_servers.<name>` table must declare its own transport.** An
-  `env`-only table — the obvious way to add credentials to a server the plugin
-  already registers — is rejected with `Error loading config.toml: invalid
-  transport`, and that failure takes down **every** Codex session on the
-  machine, not just the Switch tools. This is why the skill drives
-  `codex mcp add` (which always writes a complete entry) instead of editing
-  TOML.
-- **Codex has no project-scoped config.** There is no `./.codex/config.toml`
-  equivalent of a per-repo settings file; `mcp_servers` is read from
-  `$CODEX_HOME` only. So the standalone identity is per-machine, and the
-  Claude connector's per-project/global scope choice has no analogue here.
-- **The offline run command Switch posts never includes `--profile`** — it is
-  a bare `cd "<repo_dir>" && codex "connect to switch room <name>"`. Base
-  config is therefore the only placement where that paste-ready command works
-  as written, which is why the skill puts it there.
+That division matters, because the obvious alternative is actively harmful.
+Supplying credentials through a second `mcp_servers.switch` entry does not work:
+measured against codex-cli 0.146.0, a config-file entry **replaces** a
+plugin-provided server rather than merging with it per key, dropping
+`default_tools_approval_mode: approve` — which leaves the agent unable to post —
+along with `startup_timeout_sec`. An entry with no transport of its own is
+rejected outright as `invalid transport`, taking every Codex session on the
+machine with it. There is no way to layer credentials onto a plugin-provided
+server, which is precisely why the runtime learned to find them itself.
 
 ### The npm environment is part of the contract
 
 Codex hands the MCP server a fixed env allowlist, and `npm_config_*` is not in
-it. The runtime is fetched with `npx` from a **private** registry, so the
-server must be able to resolve the `@sandbox-quantum` scope from *its own*
-environment — `~/.npmrc`, or an npmrc named explicitly on the server entry.
+it. The runtime is fetched with `npx` from a **private** registry, so the server
+must resolve the `@sandbox-quantum` scope from *its own* environment.
 
-This is worth stating because the failure is silent and the obvious check
-lies: `npm config get` in an interactive shell can report a correctly
-configured registry that the server never sees, since switchdash exports
-`npm_config_userconfig` pointing at its own npmrc. The server then queries
-`registry.npmjs.org`, gets a 404 (private packages are not admitted to exist),
-and dies before the MCP handshake — with no symptom beyond the tools being
-absent. The `configure` skill therefore verifies with a stripped environment
-and, when the effective npmrc is not `~/.npmrc`, passes `npm_config_userconfig`
-and any variable that file interpolates on the server entry.
-
-The entry also sets `startup_timeout_sec = 60`, matching the profile:
-`codex mcp add` writes no timeout, and Codex's 10s default can be exceeded by
-the `npx` fetch alone.
+This is worth stating because the failure is silent and the obvious check lies:
+`npm config get` in an interactive shell can report a correctly configured
+registry the server never sees, since switchdash exports `npm_config_userconfig`
+pointing at its own npmrc. The server then queries `registry.npmjs.org`, gets a
+404 (private packages are not admitted to exist), and dies before the handshake
+— with no symptom beyond the tools being absent. The `configure` skill therefore
+verifies with a stripped environment (`env -i HOME=... PATH=...`) rather than
+trusting the shell's answer.
 
 ### What standalone does and does not get
 
 Works: the full Switch tool surface (including `send_attachment` /
-`download_attachment` — neither is gated on which process owns the
-connection), room participation, tasks, roles, moderation, and the offline run
-command.
+`download_attachment` — neither is gated on which process owns the connection),
+room participation, tasks, roles, moderation, and the offline run command.
 
 Does not: **inbound events are not pushed into the session.** switchdash reads
 the session's event connection and injects `[Switch] …` lines into its pane;
 standalone, nothing does. The runtime opens its own connection (no
-`SWITCH_CONNECTION_ID` is set, which is correct — that variable names a
-connection a supervisor has already opened to share), but a standalone session
-is pull-based: it calls `read_context` to catch up rather than being notified.
-Also absent: `auto_session` spawning, per-agent model / reasoning-effort /
-instruction overrides, and more than one Codex identity per machine.
+`SWITCH_CONNECTION_ID` is set, which is correct — that names a connection a
+supervisor has already opened to share), but the session is pull-based: it calls
+`read_context` to catch up rather than being notified. Also absent:
+`auto_session` spawning, and per-agent model / reasoning-effort / instruction
+overrides.
 
-### Base config and a profile on the same machine
+### Identity is per working directory
 
-Codex **merges** a profile's `[mcp_servers.switch]` with the base one, per
-key, and the base entry's literal `env` **wins** over the profile's `env_vars`
-forwarding. A base entry written by the `configure` skill therefore overrides
-the per-agent credentials switchdash injects, and the switchdash session
-silently runs as the standalone agent — wrong identity, no error.
+The store is read from the session's working directory, so a different directory
+with its own `.switch/agents/` is a different agent. Two consequences worth
+knowing:
 
-The skill checks for `~/.codex/*.config.toml` and warns before writing, but
-the sharp edge is real: a user who relies on switchdash for their Codex agents
-does not need the `configure` skill and should not run it.
-
-> Note the claim above that switchdash "removes such an entry when it writes
-> the profile" is about a *different-transport* entry and is, as of this
-> writing, not implemented — `codexMcpAdapter.removeServer` has no call sites.
-> A same-transport base entry is not removed either, which is what makes the
-> credential override above reachable.
+- `repo_dir` should be the directory the credentials were written into. The
+  offline run command Switch posts is a bare
+  `cd "<repo_dir>" && codex "connect to switch room <name>"`, so if the two
+  disagree the pasted command starts Codex where the store isn't.
+- Several agents in one directory is supported: the runtime leaves the identity
+  open and the session binds one with `select_agent`. Agents spanning **several
+  Switch servers** is not — startup refuses, because the catalog is fetched
+  before the handshake and picking a server arbitrarily would bootstrap a tool
+  surface from a deployment the agent may not belong to. `SWITCH_API_ENDPOINT`
+  disambiguates.
 
 ## What the registered runtime gives a Codex session
 
