@@ -8,6 +8,11 @@ This directory is the system of record for agent-facing repo guidance. Keep topi
 2. `architecture/overview.md`
 3. the task-specific page for the area you are changing
 
+If the change touches remote hosts or Switch rooms, read
+`architecture/remote-execution.md` and `architecture/switch-rooms.md` too — switchdash
+runs agents on SSH hosts as well as locally, and the remote path is a separate
+implementation.
+
 ## Directory Layout
 
 - `architecture/`

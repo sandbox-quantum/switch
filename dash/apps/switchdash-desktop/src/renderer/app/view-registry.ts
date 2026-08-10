@@ -1,6 +1,8 @@
 import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
 import { locationView } from '@renderer/features/locations/view';
+import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
+import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
@@ -18,6 +20,8 @@ export const views = {
   room: roomView,
   settings: settingsView,
   server: serverView,
+  remoteHosts: remoteHostsView,
+  remoteHost: remoteHostView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

@@ -3,6 +3,7 @@ import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { resolveAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
+import type { AttachableRuntime } from '@main/core/agent-runtime/attachment/types';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
@@ -20,9 +21,7 @@ import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
-import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import type { SshConnectionManagerEvent } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { remoteNpmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { events } from '@main/lib/events';
@@ -39,7 +38,6 @@ import { SIDECAR_VERSION } from '../../../../sidecar/sidecar-version';
 import { ensureAgentSidecar, probeAgentSidecar } from './ensure-agent-sidecar';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { createRemoteHomePluginFs } from './remote-home-plugin-fs';
-import { RemoteHookEventRelay } from './remote-hook-event-relay';
 import { createRemotePluginFs } from './remote-plugin-fs';
 import type { SidecarEndpoint, SidecarHost } from './remote-sidecar-launcher';
 import { resolveAgentExecutable } from './resolve-agent-executable';
@@ -48,6 +46,7 @@ import {
   httpPostJsonOverChannel,
   SidecarHttpStatusError,
 } from './sidecar-http';
+import { sidecarRelayKey, sidecarRelayRegistry } from './sidecar-relay-registry';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -61,17 +60,53 @@ function parseExtraArgs(value: string | undefined): string[] {
   return value.trim().split(/\s+/);
 }
 
-export class SshAgentRuntime implements AgentRuntimeProvider {
+/**
+ * Coalesce concurrent calls that do the same per-workspace work.
+ *
+ * Sidecar ensure and hook install are keyed by repo dir, not by session, so
+ * every session in a dir would otherwise repeat them — on one real host that
+ * meant 51 identical SFTP writes and tmux probes racing at startup. Only
+ * in-flight calls are shared; once settled the next caller does the work again,
+ * so this coalesces a burst without caching a result that can go stale.
+ */
+function dedupeInFlight<T>(
+  registry: Map<string, Promise<T>>,
+  key: string,
+  work: () => Promise<T>
+): Promise<T> {
+  const inFlight = registry.get(key);
+  if (inFlight) return inFlight;
+  const promise = work().finally(() => {
+    if (registry.get(key) === promise) registry.delete(key);
+  });
+  registry.set(key, promise);
+  return promise;
+}
+
+/** Keyed by sidecar (`connectionId::repoDir::credsSlug`). */
+const sidecarEnsuresInFlight = new Map<string, Promise<SidecarEndpoint>>();
+/** Keyed by `connectionId::repoDir::providerId`. The written paths are unused. */
+const remoteHookInstallsInFlight = new Map<string, Promise<unknown>>();
+
+export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime {
   private pty: Pty | null = null;
   private known = false;
   /** The session this runtime last started — kept for reconnect rehydration. */
   private session: Session | null = null;
-  private relay: RemoteHookEventRelay | null = null;
+  /** Key of the shared sidecar relay this session subscribes to, when joined. */
+  private relayKey: string | null = null;
+  /** True once the sidecar is up and the relay joined — the `ensureAttachable` guard. */
+  private sidecarReady = false;
+  /** True once this runtime has opened the tmux pane, so a later attach lands on
+   * an existing agent rather than creating one. Survives eviction (the pane
+   * outlives the PTY); cleared only when the session is torn down. */
+  private launched = false;
+  /** Hook env pointing the agent at its sidecar; resolved by `ensureAttachable`. */
+  private hookEnv: Record<string, string> = {};
   /** Last resolved sidecar endpoint (agent-scoped, shared by all sessions on the
    * VM), captured at launch so a delete can POST /disconnect without re-ensuring. */
   private sidecarEndpoint: SidecarEndpoint | null = null;
   private supervisor = new AgentRuntimeSupervisor();
-  private readonly handleConnectionEvent: (evt: SshConnectionManagerEvent) => void;
   private readonly locationId: string;
   private readonly sessionPath: string;
   private readonly sessionId: string;
@@ -116,17 +151,59 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     this.fs = fs;
     this.proxy = proxy;
     this.connectionId = connectionId;
-    this.handleConnectionEvent = (evt: SshConnectionManagerEvent) => {
-      if (evt.type === 'reconnected' && evt.connectionId === this.connectionId) {
-        this.rehydrate().catch((e: unknown) => {
-          log.error('SshAgentRuntime: rehydrate after reconnect failed', {
-            connectionId: this.connectionId,
-            error: String(e),
-          });
-        });
-      }
-    };
-    sshConnectionManager.on('connection-event', this.handleConnectionEvent);
+    // Deliberately no per-runtime `connection-event` listener: every session on
+    // a host would re-attach in the same tick on reconnect, which is what
+    // saturated the shared transport and re-tripped the wedge watchdog.
+    // `RemoteAttachmentPool` owns one listener per connection and replays a
+    // bounded, staggered set instead.
+  }
+
+  // ─── AttachableRuntime ───────────────────────────────────────────────────
+
+  get attachHostKey(): string {
+    return this.connectionId;
+  }
+
+  get attachSessionId(): string {
+    return this.sessionId;
+  }
+
+  isAttached(): boolean {
+    return this.pty !== null;
+  }
+
+  /**
+   * Bring up everything except the PTY: the on-VM sidecar and the shared
+   * hook-event relay, plus the hook env the agent is launched with.
+   *
+   * Called at provision time so a session that is never opened still reports
+   * status, room membership and notifications — all of which arrive over the
+   * relay, not the terminal. Idempotent.
+   */
+  async ensureAttachable(session: Session): Promise<void> {
+    this.known = true;
+    this.session = session;
+    if (!this.tmux) return;
+    if (this.sidecarReady) return;
+
+    // Install the agent's hooks into the remote workspace before launch so the
+    // hook env actually has commands to run — without this the remote agent
+    // posts nothing to the sidecar (local sessions get this via
+    // ensureHooksInstalled).
+    await this.installRemoteHooks(session.providerId);
+    const endpoint = await this.launchSidecar(session);
+    this.hookEnv = buildAgentHookEnv({
+      port: endpoint.port,
+      ptyId: makePtyId(session.providerId, this.sessionId),
+      token: endpoint.token,
+      endpointFile: endpoint.endpointFile,
+    });
+    this.sidecarReady = true;
+  }
+
+  /** Close the local PTY but leave the agent running in tmux and the relay joined. */
+  async detachForEviction(): Promise<void> {
+    await this.dehydrate();
   }
 
   /** The registry key of this session's agent PTY. */
@@ -135,35 +212,40 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   /**
-   * Re-attach the remote session if it was live before an SSH drop but its
-   * interactive PTY died with the connection. On tmux hosts the agent process
-   * survives inside its pane and the on-VM sidecar keeps running, so this only
-   * re-opens the local PTY onto the existing pane — the sidecar and its
-   * self-healing event relay are reused rather than relaunched.
+   * Open the local PTY onto the remote tmux pane. The agent process lives in
+   * that pane and the on-VM sidecar keeps running regardless, so this only
+   * re-opens the view — the sidecar and its shared event relay are reused
+   * rather than relaunched.
+   *
+   * Deliberately does NOT gate on `supervisor.isDesired()`: `detachPty` clears
+   * `desired`, so an evicted session could otherwise never be re-attached.
+   * `beginStart` still short-circuits when a PTY is live or a spawn is already
+   * in flight, so repeated calls remain safe.
    */
-  private async rehydrate(): Promise<void> {
-    if (!this.known || this.pty) return;
-    if (!this.supervisor.isDesired()) return;
+  async attach(): Promise<void> {
+    if (this.pty) return;
+    // Loud, because the pool has no way to see the difference: a runtime that
+    // silently declines looks exactly like one that attached, and the terminal
+    // stays blank with nothing in the log to explain it. A runtime reaches the
+    // pool at provision time but only learns its session from `ensureAttachable`,
+    // so this fires when provisioning skipped that step.
+    if (!this.known || !this.session) {
+      throw new Error(
+        `SshAgentRuntime: cannot attach session ${this.sessionId} — the runtime was never made attachable (known=${this.known}, session=${this.session !== null})`
+      );
+    }
     const session = this.session;
-    if (!session) return;
-    return this.withLogScope(() => this.rehydrateInternal(session));
+    return this.withLogScope(() => this.attachInternal(session));
   }
 
-  private async rehydrateInternal(session: Session): Promise<void> {
+  private async attachInternal(session: Session): Promise<void> {
     const size = ptySessionRegistry.getLastSize(this.ptySessionId) ?? {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
     };
-    log.info('SshAgentRuntime: re-attaching session after reconnect', {
-      sessionId: this.sessionId,
-    });
-    await this.startInternal(session, size, true, undefined, true, {
+    log.info('SshAgentRuntime: attaching session', { sessionId: this.sessionId });
+    await this.startInternal(session, size, true, undefined, false, {
       shellRefreshRetried: false,
-    }).catch((e: unknown) => {
-      log.error('SshAgentRuntime: re-attach failed', {
-        sessionId: this.sessionId,
-        error: String(e),
-      });
     });
   }
 
@@ -207,6 +289,9 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
    * captured (every resume silently starts a new conversation) and the room's
    * "working on it" never clears. Writing is best-effort: a failure is logged,
    * not fatal.
+   *
+   * The config file is per workspace (or per host), not per session, so
+   * concurrent installs from every session in a dir are coalesced onto one write.
    */
   private async installRemoteHooks(providerId: string): Promise<void> {
     const plugin = getPlugin(providerId);
@@ -219,9 +304,17 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       });
       return;
     }
+    const writeHooks = plugin.behavior.hooks.writeHooks;
     const fs = this.remoteHookFs(hooks.scope);
+    // A global-scope write targets the VM's home, so it is shared by every dir
+    // on the host; keying it on the dir would let one write per dir through.
+    const scopeKey = hooks.scope === 'global' ? '~' : this.sessionPath;
     try {
-      await plugin.behavior.hooks.writeHooks(fs, []);
+      await dedupeInFlight(
+        remoteHookInstallsInFlight,
+        `${this.connectionId}::${scopeKey}::${providerId}`,
+        () => writeHooks(fs, [])
+      );
       log.info('SshAgentRuntime: installed remote agent hooks', {
         providerId,
         scope: hooks.scope,
@@ -267,23 +360,31 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     // the agent's bypass-permissions setting (not this UI session's).
     const agent = await getAgentById(session.agentId);
     const host = this.createSidecarHost();
-    const endpoint = await ensureAgentSidecar({
-      providerId: session.providerId,
-      repoDir: this.sessionPath,
-      deeplinkScheme: DEEPLINK_SCHEME,
-      autoApprove: agent?.autoApprove ?? false,
-      credsSlug: agentCredsSlug(session),
-      agentName: agent?.name ?? session.agentName ?? null,
-      specialization: toSwitchSpecialization(agent?.providerConfig),
-      ctx: this.ctx,
-      connectionId: this.connectionId,
-      host,
-    });
+    const credsSlug = agentCredsSlug(session);
+    // Every session in this dir would otherwise re-run the same deploy+launch on
+    // startup; coalesce so one host sees one ensure, not one per session.
+    const endpoint = await dedupeInFlight(
+      sidecarEnsuresInFlight,
+      sidecarRelayKey({ connectionId: this.connectionId, repoDir: this.sessionPath, credsSlug }),
+      () =>
+        ensureAgentSidecar({
+          providerId: session.providerId,
+          repoDir: this.sessionPath,
+          deeplinkScheme: DEEPLINK_SCHEME,
+          autoApprove: agent?.autoApprove ?? false,
+          credsSlug,
+          agentName: agent?.name ?? session.agentName ?? null,
+          specialization: toSwitchSpecialization(agent?.providerConfig),
+          ctx: this.ctx,
+          connectionId: this.connectionId,
+          host,
+        })
+    );
     // Drop any sidecar left in this directory by an earlier generation of the
     // agent's name — it is still polling Switch and no other path can see it.
     if (agent) await reapStaleSidecarsForAgent(agent, host, this.sessionPath);
     this.sidecarEndpoint = endpoint;
-    this.startRelay(endpoint);
+    this.joinRelay(endpoint, session, credsSlug);
     return endpoint;
   }
 
@@ -388,31 +489,47 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   /**
-   * Mirror the sidecar's hook events back into switchdash so its UI reflects the
-   * remote session's room and status. Replays through the same hook path as
-   * local sessions, but with `startLocalPoller: false` — the sidecar already
-   * polls and injects on the VM.
+   * Join the shared relay that mirrors the sidecar's hook events back into
+   * switchdash, so the UI reflects this remote session's room and status.
+   * Replays through the same hook path as local sessions, but with
+   * `startLocalPoller: false` — the sidecar already polls and injects on the VM.
+   *
+   * One relay serves every session on the sidecar: its `/events` ring carries
+   * all of them and `handleRawHook` routes each event by the `ptyId` the event
+   * itself carries, so a per-session relay would only duplicate the poll and the
+   * work. `session-terminated` is the exception and is fanned out to every
+   * subscriber by the registry.
    */
-  private startRelay(endpoint: SidecarEndpoint): void {
-    this.relay?.stop();
-    const proxy = this.proxy;
-    const relay = new RemoteHookEventRelay({
-      opener: { openChannel: (port) => proxy.forwardOut(port) },
+  private joinRelay(endpoint: SidecarEndpoint, session: Session, credsSlug: string): void {
+    this.relayKey = sidecarRelayKey({
+      connectionId: this.connectionId,
+      repoDir: this.sessionPath,
+      credsSlug,
+    });
+    sidecarRelayRegistry.acquire({
+      key: this.relayKey,
+      credsSlug,
+      subscriber: {
+        sessionId: this.sessionId,
+        onSessionTerminated: (body) => this.onRemoteTerminated(body),
+      },
+      opener: { openChannel: (port) => this.proxy.forwardOut(port) },
       port: endpoint.port,
       token: endpoint.token,
       // Follow the sidecar if it restarts on a different port with a new token,
       // instead of polling the dead one for the rest of the app's life. Probe,
       // never launch: a relay must not resurrect a sidecar the user stopped.
+      // Resolved from the session captured here rather than `this.session`,
+      // which is cleared on teardown while the shared relay lives on for the
+      // other sessions.
       resolveEndpoint: async () => {
-        const session = this.session;
-        if (!session) return null;
         const agent = await getAgentById(session.agentId);
         const next = await probeAgentSidecar({
           providerId: session.providerId,
           repoDir: this.sessionPath,
           deeplinkScheme: DEEPLINK_SCHEME,
           autoApprove: agent?.autoApprove ?? false,
-          credsSlug: agentCredsSlug(session),
+          credsSlug,
           agentName: agent?.name ?? session.agentName ?? null,
           specialization: toSwitchSpecialization(agent?.providerConfig),
           ctx: this.ctx,
@@ -424,39 +541,30 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         return next;
       },
       sink: async (raw) => {
-        if (raw.type === 'session-terminated') {
-          this.onRemoteTerminated(raw.body);
-          return;
-        }
         await agentHookService.handleRawHook(raw, { startLocalPoller: false });
       },
-      // Bound explicitly rather than inherited: the relay polls on its own timer
-      // for the lifetime of the session, and a scope captured from whatever call
-      // happened to start it would drift out of date.
-      log: log.child({
-        component: 'hook-relay',
-        sessionId: this.sessionId,
-        agentId: this.session?.agentId,
-        agentName: this.session?.agentName ?? undefined,
-      }),
     });
-    this.relay = relay;
-    relay.start();
   }
 
-  private stopRelay(): void {
-    const relay = this.relay;
-    if (!relay) return;
-    this.relay = null;
-    relay.stop();
+  /**
+   * Leave the shared relay. Teardown only: evicting this session's PTY must not
+   * call this, or the session would stop reporting status while its agent keeps
+   * working in its tmux pane.
+   */
+  private leaveRelay(): void {
+    const key = this.relayKey;
+    if (!key) return;
+    this.relayKey = null;
+    this.sidecarReady = false;
+    sidecarRelayRegistry.release(key, this.sessionId);
   }
 
   private stopSidecar(): void {
-    // Only detach this session's relay. The sidecar is agent-scoped and shared
-    // (other sessions + its notification watcher rely on it), so ending one
-    // session must not kill it — it is torn down when auto_session is disabled
-    // or the agent is removed (see stopRemoteWatcher).
-    this.stopRelay();
+    // Only leave this session's shared relay. The sidecar is agent-scoped and
+    // shared (other sessions + its notification watcher rely on it), so ending
+    // one session must not kill it — it is torn down when auto_session is
+    // disabled or the agent is removed (see stopRemoteWatcher).
+    this.leaveRelay();
   }
 
   /**
@@ -612,38 +720,42 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
       // switchdash is closed; it injects room messages into the agent's tmux pane.
       // It therefore requires tmux, must be up before the agent so the agent's
       // hook env can point at it, and shares the tmux session as its inject target.
-      // Decided before the branch below, not inside it: `launchSidecar()`
-      // assigns `this.relay`, so once it has run a fresh launch is
-      // indistinguishable from a re-attach.
-      const reattaching = Boolean(tmuxSessionName && this.relay);
+      //
+      // `ensureAttachable` is idempotent, so this is a no-op when the session was
+      // already made attachable at provision time. Passing the hook env on every
+      // attach is safe: `buildTmuxShellLine` supplies it via `tmux new-session -e`,
+      // which tmux applies only when it creates the session — an existing pane is
+      // reused untouched.
+      //
+      // `reattaching` cannot be read off the sidecar being up: with on-demand
+      // attachment the sidecar is running long before the first PTY. It tracks
+      // whether this runtime has already opened the pane, which is what governs
+      // the two steps that must happen once per pane rather than once per
+      // attach — opening this session's sidecar connection, and resolving the
+      // npm auth env.
+      const reattaching = Boolean(tmuxSessionName && this.launched);
 
       let hookEnv: Record<string, string> = {};
-      if (reattaching) {
-        // Re-attach path (e.g. after an SSH reconnect): the agent is still
-        // running in its tmux pane and the sidecar + its self-healing relay are
-        // already live, so re-open the PTY onto the existing pane and skip the
-        // hook install + sidecar launch. The running agent keeps its original
-        // hook env, so we need not re-supply it.
-        log.info('SshAgentRuntime: re-attaching to running tmux session + sidecar', {
-          sessionId: this.sessionId,
-        });
-      } else if (tmuxSessionName) {
-        const ptyId = makePtyId(session.providerId, this.sessionId);
-        // Install the agent's hooks into the remote workspace before launch so
-        // the hook env below actually has commands to run — without this the
-        // remote agent posts nothing to the sidecar (local sessions get this via
-        // ensureHooksInstalled).
-        await this.installRemoteHooks(session.providerId);
-        const endpoint = await this.launchSidecar(session);
-        hookEnv = buildAgentHookEnv({
-          port: endpoint.port,
-          ptyId,
-          token: endpoint.token,
-          endpointFile: endpoint.endpointFile,
-        });
-        switchEnv = {
-          SWITCH_CONNECTION_ID: await this.openSidecarConnection(endpoint, session.providerId),
-        };
+      if (tmuxSessionName) {
+        await this.ensureAttachable(session);
+        hookEnv = this.hookEnv;
+        if (reattaching) {
+          // The agent is still running in its tmux pane and its sidecar
+          // connection is still open, so re-opening the PTY is all that is left.
+          log.info('SshAgentRuntime: re-attaching to running tmux session + sidecar', {
+            sessionId: this.sessionId,
+          });
+        } else {
+          const endpoint = this.sidecarEndpoint;
+          if (!endpoint) {
+            throw new Error(
+              'SshAgentRuntime: sidecar reported ready with no endpoint — refusing to launch an agent that cannot reach Switch'
+            );
+          }
+          switchEnv = {
+            SWITCH_CONNECTION_ID: await this.openSidecarConnection(endpoint, session.providerId),
+          };
+        }
       } else {
         log.warn(
           'SshAgentRuntime: tmux disabled — remote agent will not stay connected to Switch while detached',
@@ -745,6 +857,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
         },
       });
       this.pty = pty;
+      this.launched = true;
       scheduleInitialPromptInjection({
         pty,
         session,
@@ -768,7 +881,10 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   private detachPty(): void {
     const pty = this.supervisor.stop() ?? this.pty;
     this.pty = null;
-    ptySessionRegistry.unregister(this.ptySessionId);
+    // On tmux the pane outlives the PTY and a later attach lands back on it, so
+    // keep the size — otherwise the re-attach spawns at 80x24 and tmux repaints
+    // the pane that small inside a full-width terminal.
+    ptySessionRegistry.unregister(this.ptySessionId, { preserveSize: this.tmux });
     if (pty) {
       try {
         pty.kill();
@@ -807,6 +923,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
     killTmux: boolean;
   }): Promise<void> {
     this.known = false;
+    this.launched = false;
     this.session = null;
     if (this.tmux && opts.disconnectSidecar) {
       await this.disconnectSidecarSession(this.sessionId, true);
@@ -857,7 +974,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider {
   }
 
   async destroy(): Promise<void> {
-    sshConnectionManager.off('connection-event', this.handleConnectionEvent);
     const wasKnown = this.known;
     await this.detach();
     if (this.tmux && wasKnown) {

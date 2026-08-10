@@ -226,6 +226,41 @@ export const remoteHostReachability = sqliteTable('remote_host_reachability', {
     .default(sql`CURRENT_TIMESTAMP`),
 });
 
+/**
+ * A remote host's setup run (CHOO-1809). Onboarding is a sequence — check and
+ * install each prerequisite in turn — and a sequence that cannot be resumed is
+ * a sequence that strands the host the first time step 3 fails. Persisting the
+ * plan is what makes "continue where you left off" possible across an app
+ * restart, and what lets the host list say *why* a host is not ready without
+ * re-probing it.
+ *
+ * `steps` is the JSON-serialised HostSetupStep[]. It is stored as one document
+ * rather than a child table because it is only ever read and written whole, and
+ * its shape is owned by the shared setup model rather than by SQL. It is
+ * validated on read — a row we cannot parse raises instead of silently
+ * degrading to "no plan", which would read as "nothing left to do".
+ */
+export const remoteHostSetupPlans = sqliteTable('remote_host_setup_plans', {
+  /** The `~/.ssh/config` Host alias. One plan per host. */
+  sshHost: text('ssh_host').primaryKey(),
+  /**
+   * One of HostSetupPlanStatus — 'idle' | 'complete'. Rows written before the
+   * automated run was removed may still say 'running' or 'halted'; the plan
+   * store maps those on read.
+   */
+  status: text('status').notNull().default('idle'),
+  /** JSON-encoded HostSetupStep[]. */
+  steps: text('steps').notNull(),
+  /** The step in flight, or the one that halted the run. */
+  currentStepId: text('current_step_id'),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text('updated_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const sessions = sqliteTable(
   'sessions',
   {
@@ -350,3 +385,5 @@ export type RemoteHostRow = typeof remoteHosts.$inferSelect;
 export type RemoteHostInsert = typeof remoteHosts.$inferInsert;
 export type RemoteHostReachabilityRow = typeof remoteHostReachability.$inferSelect;
 export type RemoteHostReachabilityInsert = typeof remoteHostReachability.$inferInsert;
+export type RemoteHostSetupPlanRow = typeof remoteHostSetupPlans.$inferSelect;
+export type RemoteHostSetupPlanInsert = typeof remoteHostSetupPlans.$inferInsert;

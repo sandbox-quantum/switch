@@ -1,8 +1,8 @@
 # Project Overview
 
 Switchdash is a cross-platform, local-first Electron app for orchestrating multiple AI
-coding agents in parallel. Each agent runs in its own session at the project root (there
-are no Git worktrees). An agent runs either locally or — when configured remote — on an
+coding agents in parallel. Each agent runs in its own session in its location's directory
+(there are no Git worktrees). An agent runs either locally or — when configured remote — on an
 SSH host, where it runs inside tmux next to a switchdash-deployed sidecar so it keeps
 working and listening to its Switch rooms while switchdash is closed (CHOO-1059). It
 combines provider-agnostic CLI agent execution, session management,
@@ -34,10 +34,14 @@ Repo root:
 - `.claude/` - Local Claude agent settings for this checkout.
 - `agents/` - Agent-facing architecture, workflow, convention, integration, and risk docs.
 - `apps/switchdash-desktop/` - The Electron desktop app (everything below).
-- `packages/` - Shared workspace packages: core runtime, shared primitives, and plugins.
+- `packages/` - Shared workspace packages.
   - `packages/core/` - Transport-agnostic core runtime primitives.
-  - `packages/shared/` - Shared workspace primitives.
-  - `packages/plugins/` - Plugin interfaces and helpers.
+  - `packages/shared/` - Shared workspace primitives, including the `Result<T, E>` type
+    (`@switchdash/shared`).
+  - `packages/plugins/` - Plugin interfaces and helpers, and the agent provider plugins
+    under `src/agents/impl/<id>/`.
+  - `packages/switch-agent-runtime/` - The published agent runtime; sessions run a pinned
+    version of it (see "Versioned Artifacts").
 - Root config files - `pnpm-workspace.yaml`, root `package.json` with aggregate scripts,
   `.nvmrc`, `.oxfmtrc.json`, `.oxlintrc.json`.
 
@@ -45,7 +49,9 @@ Inside `apps/switchdash-desktop/`:
 
 - `build/` - Electron packaging assets; avoid edits unless working on packaging or signing.
 - `drizzle/` - Generated Drizzle SQL migrations and metadata.
-- `scripts/` - Release, verification, and build support scripts.
+- `scripts/` - Build and verification support scripts (sidecar bundle, postinstall,
+  deeplink reset, compose sync). Releasing is a GitHub Actions workflow at the repo
+  root, not a script here.
 - `src/main/` - Electron main process, RPC controllers, services, database, PTY.
 - `src/preload/` - Typed Electron preload bridge exposed to the renderer.
 - `src/renderer/` - React app organized around `app/`, `features/`, `lib/`, and tests.
@@ -183,7 +189,7 @@ pnpm run reset
   imported operation or service functions.
 - Renderer RPC calls go through `rpc` from `src/renderer/lib/ipc.ts`.
 - Feature UI lives under `src/renderer/features/<feature>/`; shared renderer
-  primitives, stores, hooks, modal infrastructure, PTY, Monaco, and UI live under
+  primitives, stores, hooks, modal infrastructure, PTY, hotkeys, and UI live under
   `src/renderer/lib/`.
 - New modals must be registered in `src/renderer/app/modal-registry.ts`.
 - New views must be registered in `src/renderer/app/view-registry.ts`.
@@ -225,12 +231,16 @@ views, modals, command providers, project state, terminals, and session workflow
 Shared IPC primitives, provider metadata, events, MCP types, skills types, and
 domain types live under `src/shared/`.
 
-agent runtime, dependencies, execution context, fs, locations (an agent's working
-dir on a host — formerly the project/workspace split), prompt library, PTY,
-resource monitor, search, secrets, sessions, settings, switch agents, terminal
-shell, terminals, updates, and view state. Stateful main-process concerns use
-singleton services; expected failures should use the `Result<T, E>` pattern from
-`src/main/lib/result.ts`.
+Main-process work is split into domain modules under `src/main/core/`: agent hooks,
+agent runtime, agents (Switch agents), app, dependencies, execution context, fs,
+locations (an agent's working dir on a host — formerly the project/workspace split),
+managed Switch server, prompt library, providers (the CLI-provider registry), PTY,
+remote hosts, resource monitor, search, secrets, sessions, settings, sidecar, SSH,
+switch rooms, switch servers, switch setup, terminal shell, terminals, updates, and
+view state. `agents` and `providers` are different things — see
+`agents/architecture/main-process.md`. Stateful main-process concerns use singleton
+services; expected failures should use the `Result<T, E>` pattern from the
+`@switchdash/shared` workspace package.
 
 ### Logging
 
@@ -304,7 +314,7 @@ pnpm run lint
 
 ## Security & Compliance
 
-- The project is licensed under Apache-2.0; see `LICENSE.md`.
+- The project is licensed under Apache-2.0; see `LICENSE` at the repo root.
 - Do not commit secrets, tokens, private keys, app databases, logs, build artifacts,
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
@@ -323,6 +333,20 @@ pnpm run lint
     scrubbing it on write; that reinstates the problem this split exists to solve.
   - Anything contributed via `registerDiagnosticSection()` passes through the same
     export scrub. Never read the raw log file from outside `file-logger.ts`.
+- **An agent's Switch API token lives in exactly one file:**
+  `<working dir>/.switch/agents/<slug>.json`, beside a generated `.gitignore`
+  containing `*`. `.claude/settings.local.json` carries the endpoint and agent
+  id only — it is Claude Code's own file, read by every session in the
+  directory, and does not need the credential. Do not add a token back to it:
+  two copies is how one goes stale and authenticates as the wrong agent.
+  - Three consumers read this layout: switchdash, the sidecar, and
+    `@sandbox-quantum/switch-agent-runtime` (which reads it directly when
+    nothing sets `SWITCH_*` in the environment). Changing the shape means
+    changing all three.
+  - The token being in a working tree at all is a known exposure — a
+    `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
+    Moving it out is tracked separately; it is deliberately not solved by
+    writing it to a second location as well.
 - PTY environment passthrough must use the allowlist in `src/main/core/pty/pty-env.ts`.
 - Treat shell escaping and PTY spawning as security-sensitive.
 - Do not bypass path-safety, shell escaping, or validation helpers.
@@ -451,7 +475,8 @@ pnpm run test
   display metadata, and a mirror of each provider's argv shape. The mirror is
   descriptive: nothing reads it at spawn time, so change the plugin first and update the
   mirror to match. `provider-argv-parity.test.ts` pins Codex's.
-- Provider detection lives in `src/main/core/dependencies/dependency-manager.ts`.
+- Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
+  `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
 - Provider PTY behavior and env passthrough live under `src/main/core/pty/`.
 - Provider event hooks and plugins live under `src/main/core/agent-hooks/`.
 - Modal definitions are centralized in `src/renderer/app/modal-registry.ts`.
@@ -502,7 +527,7 @@ pnpm run test
 - Path aliases are defined in `tsconfig.json` and mirrored in `electron.vite.config.ts`:
   `@/*`, `@renderer/*`, `@main/*`, `@shared/*`, and `@root/*`.
 - Versioned JSON column schemas are defined in `src/shared/` using
-  `defineVersionedSchema()` from `src/shared/lib/versioned-schema.ts` and wired to
+  `defineVersionedSchema()` from `src/shared/lib/versioned-schema/versioned-schema.ts` and wired to
   Drizzle via `versionedJsonColumn()` from `src/main/db/versioned-column.ts`.
   See `agents/conventions/versioned-schemas.md` for the full guide.
 
@@ -514,6 +539,8 @@ pnpm run test
 - [Main process architecture](agents/architecture/main-process.md)
 - [Renderer architecture](agents/architecture/renderer.md)
 - [Shared modules](agents/architecture/shared.md)
+- [Remote execution: hosts, reachability, sidecar](agents/architecture/remote-execution.md)
+- [Switch rooms and sessions](agents/architecture/switch-rooms.md)
 - [Data model (switchdash vs. its upstream origin)](agents/architecture/data-model.md)
 - [Testing workflow](agents/workflows/testing.md)
 - [Provider integration](agents/integrations/providers.md)
@@ -527,5 +554,5 @@ pnpm run test
 - [Database risk notes](agents/risky-areas/database.md)
 - [PTY risk notes](agents/risky-areas/pty.md)
 - [Updater risk notes](agents/risky-areas/updater.md)
-- [Contributing guide](CONTRIBUTING.md)
+- [Contributing guide](../CONTRIBUTING.md) (repo root)
 - [Project README](README.md)

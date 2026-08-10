@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildEnvFile } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
@@ -12,6 +15,13 @@ const secrets: LocalServerSecrets = {
   mattermostAdminPassword: 'mm-admin',
   mattermostUserPassword: 'mm-user',
 };
+
+/** The compose file switchdash writes beside the `.env`, and whose `${VAR}`
+ *  interpolations the `.env` has to satisfy. */
+const composeYaml = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'resources/standalone-docker-compose.pinned.yml'),
+  'utf8'
+);
 
 describe('buildEnvFile', () => {
   const env = buildEnvFile({
@@ -59,37 +69,32 @@ describe('buildEnvFile', () => {
     expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
   });
 
-  it('defines every var the compose contract interpolates', () => {
-    const required = [
-      'SWITCH_BIND_ADDR',
-      'GATEWAY_HOST_PORT',
-      'API_HOST_PORT',
-      'MATTERMOST_HOST_PORT',
-      'POSTGRES_HOST_PORT',
-      'DB_HOST',
-      'DB_PORT',
-      'DB_USER',
-      'DB_PASSWORD',
-      'DB_NAME',
-      'MATRIX_SERVER',
-      'MATRIX_SERVER_NAME',
-      'MATRIX_ADMIN_USER',
-      'MATRIX_ADMIN_PASSWORD',
-      'MATRIX_REGISTRATION_SHARED_SECRET',
-      'AGENT_REGISTRATION_TOKEN',
-      'JWT_SECRET_KEY',
-      'GATEWAY_ADMIN_EMAIL',
-      'GATEWAY_ADMIN_PASSWORD',
-      'FRONTEND_BASE_URL',
-      'MATTERMOST_ADMIN_USER',
-      'MATTERMOST_ADMIN_PASSWORD',
-      'MATTERMOST_TEAM_NAME',
-      'MATTERMOST_USER',
-      'MATTERMOST_USER_PASSWORD',
-    ];
-    for (const key of required) {
-      expect(vars[key], `missing ${key}`).toBeDefined();
-      expect(vars[key], `empty ${key}`).not.toBe('');
-    }
+  it('defines every var the bundled compose file interpolates', () => {
+    // Derived from the compose file rather than a hand-kept list. The previous
+    // list had drifted both ways — it omitted GATEWAY_PUBLIC_URL (so the
+    // "Open in SwitchDash" redirect was silently disabled on every managed
+    // stack) while asserting vars compose never interpolates. A list cannot
+    // notice a variable being added to the contract; this can.
+    const interpolated = new Set(
+      [...composeYaml.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1])
+    );
+    // Nothing is exempt today. An entry here must say why the stack is correct
+    // without it — leaving a var unset is a decision, not a default.
+    const intentionallyUnset = new Set<string>();
+
+    const missing = [...interpolated]
+      .filter((key) => !intentionallyUnset.has(key))
+      .filter((key) => !vars[key])
+      .sort();
+
+    expect(missing, 'compose interpolates these but the .env does not set them').toEqual([]);
+  });
+
+  it('points the deeplink redirect at the API, not the operator UI', () => {
+    // switch-core only rewrites `switchdash://` links into clickable http ones
+    // when this is set, and serves the redirect on the agent-bridge app — so
+    // the gateway's own URL here would produce links that 404.
+    expect(vars.GATEWAY_PUBLIC_URL).toBe('http://localhost:51001');
+    expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
   });
 });

@@ -9,6 +9,7 @@ import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
 import { SWITCH_RUNTIME_REQUIRED_ENV } from '@shared/core/switch-rooms/switch-agent-runtime';
 import { SidecarHttpStatusError } from './sidecar-http';
+import { sidecarRelayRegistry } from './sidecar-relay-registry';
 import { SshAgentRuntime } from './ssh-agent-runtime';
 
 const openSsh2Pty = vi.hoisted(() => vi.fn());
@@ -259,6 +260,10 @@ describe('SshAgentRuntime', () => {
     httpPostForJsonOverChannel.mockResolvedValue({ connectionId: 'conn-remote-1' });
     vi.mocked(events.emit).mockClear();
     connectionListeners.length = 0;
+    // The relay registry is a module singleton keyed by host+dir+agent, so a
+    // relay acquired by one test would otherwise be reused by the next and its
+    // fresh proxy never polled.
+    sidecarRelayRegistry.stopAll();
     ptySessionRegistry.unregister('location-1:session-1');
   });
 
@@ -570,6 +575,42 @@ describe('SshAgentRuntime', () => {
     expect(env.SWITCH_CONNECTION_ID).toBe('conn-remote-1');
   });
 
+  // `ensureAttachable` brings the sidecar up at provision time, so by the first
+  // attach the sidecar is long since ready. Deciding "is this a re-attach?" from
+  // the sidecar would therefore skip the connection hand-off on the very launch
+  // that needs it, and the agent would come up addressable by nobody.
+  it('still hands over a connection id when the sidecar was readied before the first attach', async () => {
+    mockSpawn([]);
+    const provider = sshProvider({ tmux: true });
+    const item = session();
+
+    await provider.ensureAttachable(item);
+    expect(resolveSshCommand).not.toHaveBeenCalled();
+
+    await provider.start(item);
+
+    const env = (resolveSshCommand.mock.calls[0] as unknown[])[2] as Record<string, string>;
+    expect(env.SWITCH_CONNECTION_ID).toBe('conn-remote-1');
+  });
+
+  // The hand-off opens a connection the sidecar renews, so repeating it per
+  // attach would leak one per eviction cycle and leave the agent showing `live`
+  // in rooms with no session behind it (CHOO-1106).
+  it('opens the sidecar connection once per pane, not once per attach', async () => {
+    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
+    mockSpawn(exitHandlers);
+    const provider = sshProvider({ tmux: true });
+
+    await provider.start(session());
+    expect(httpPostForJsonOverChannel).toHaveBeenCalledTimes(1);
+
+    await provider.detachForEviction();
+    await provider.attach();
+
+    expect(openSsh2Pty).toHaveBeenCalledTimes(2);
+    expect(httpPostForJsonOverChannel).toHaveBeenCalledTimes(1);
+  });
+
   // A sidecar predating the endpoint 404s. Starting anyway would put the session
   // back in exactly the silence the hand-off exists to prevent, so the start has
   // to fail and say which upgrade fixes it.
@@ -638,19 +679,21 @@ describe('SshAgentRuntime', () => {
     expect(env.SWITCHDASH_GITHUB_TOKEN).toBe('remote-tok');
   });
 
-  // Re-attach must be decided before the launch branch runs, because
-  // `launchSidecar()` assigns `this.relay`. Read afterwards, every fresh launch
-  // looks like a re-attach and silently loses its registry config.
+  // Re-attach is decided from whether this runtime has already opened the pane,
+  // not from the sidecar being up: with on-demand attachment the sidecar is
+  // running long before the first PTY, so reading it would make every first
+  // attach look like a re-attach and silently lose its registry config.
   it('does not recompute registry access when re-attaching', async () => {
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
+    const provider = sshProvider({ tmux: true });
 
-    await sshProvider({ tmux: true }).start(session());
+    await provider.start(session());
     expect(remoteNpmRegistryAuthEnv).toHaveBeenCalledTimes(1);
 
     for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 1 });
-    emitReconnected('ssh-1');
-    await vi.waitFor(() => expect(openSsh2Pty).toHaveBeenCalledTimes(2));
+    await provider.attach();
+    expect(openSsh2Pty).toHaveBeenCalledTimes(2);
 
     // The pane still has the environment it was created with; tmux applies
     // `-e` only at creation, so recomputing would cost round trips for nothing.
@@ -714,23 +757,117 @@ describe('SshAgentRuntime', () => {
     expect(httpPostJsonOverChannel).not.toHaveBeenCalled();
   });
 
-  it('re-attaches a remote tmux session on reconnect without relaunching the sidecar', async () => {
+  it('re-attaches a remote tmux session without relaunching the sidecar', async () => {
+    // Re-attach is driven by RemoteAttachmentPool rather than a per-runtime
+    // reconnect listener: 51 sessions each listening meant 51 simultaneous
+    // attaches on a transport that had only just come back.
     const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
     mockSpawn(exitHandlers);
     const item = session();
+    const provider = sshProvider({ tmux: true });
 
-    await sshProvider({ tmux: true }).start(item);
+    await provider.start(item);
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
     expect(deployAndLaunch).toHaveBeenCalledTimes(1);
 
     // The interactive PTY dies with the dropped connection; for tmux the
-    // provider tears down the local session but leaves it desired.
+    // provider tears down the local session but keeps it re-attachable.
     for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 1 });
 
-    emitReconnected('ssh-1');
-    await vi.waitFor(() => expect(openSsh2Pty).toHaveBeenCalledTimes(2));
+    await provider.attach();
+
+    expect(openSsh2Pty).toHaveBeenCalledTimes(2);
     // Re-attach reuses the still-running sidecar + relay rather than relaunching.
     expect(deployAndLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-attaches after an eviction, which clears the supervisor desired flag', async () => {
+    // dehydrate() -> detachPty() -> supervisor.stop() clears `desired`. attach()
+    // must not gate on it, or an evicted session could never come back.
+    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
+    mockSpawn(exitHandlers);
+    const provider = sshProvider({ tmux: true });
+
+    await provider.start(session());
+    expect(openSsh2Pty).toHaveBeenCalledTimes(1);
+
+    await provider.detachForEviction();
+    expect(provider.isAttached()).toBe(false);
+
+    await provider.attach();
+    expect(openSsh2Pty).toHaveBeenCalledTimes(2);
+  });
+
+  // A runtime joins the attachment pool at provision time but learns its session
+  // only from `ensureAttachable`. Returning quietly here is indistinguishable to
+  // the pool from a successful attach: it logs `remote_attach`, reports the
+  // session attached, and the user stares at an empty pane with nothing in the
+  // log. Observed on a real host — every click logged an attach and
+  // `attachedCount` never left 0.
+  it('fails loudly when asked to attach before it knows its session', async () => {
+    mockSpawn([]);
+    const provider = sshProvider({ tmux: true });
+
+    await expect(provider.attach()).rejects.toThrow(/never made attachable/);
+    expect(openSsh2Pty).not.toHaveBeenCalled();
+  });
+
+  it('attaches once ensureAttachable has told it which session it serves', async () => {
+    mockSpawn([]);
+    const provider = sshProvider({ tmux: true });
+
+    await provider.ensureAttachable(session());
+    await provider.attach();
+
+    expect(openSsh2Pty).toHaveBeenCalledTimes(1);
+    expect(provider.isAttached()).toBe(true);
+  });
+
+  it('does not report the agent as exited when a session is evicted', async () => {
+    // The sidebar derives status from hook events; a deliberate detach must not
+    // look like the agent stopping, or every eviction would flip it to idle.
+    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
+    mockSpawn(exitHandlers);
+    const provider = sshProvider({ tmux: true });
+
+    await provider.start(session());
+    vi.mocked(events.emit).mockClear();
+
+    await provider.detachForEviction();
+
+    expect(vi.mocked(events.emit)).not.toHaveBeenCalledWith(
+      agentSessionExitedChannel,
+      expect.anything()
+    );
+  });
+
+  it('makes a session attachable without opening a PTY', async () => {
+    // Provisioned-but-not-viewed sessions still need the sidecar and its relay:
+    // status, room membership and notifications all arrive over the relay.
+    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
+    mockSpawn(exitHandlers);
+    const provider = sshProvider({ tmux: true });
+
+    await provider.ensureAttachable(session());
+
+    expect(deployAndLaunch).toHaveBeenCalledTimes(1);
+    expect(openSsh2Pty).not.toHaveBeenCalled();
+    expect(provider.isAttached()).toBe(false);
+  });
+
+  it('does not re-launch the sidecar when ensureAttachable is called again', async () => {
+    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
+    mockSpawn(exitHandlers);
+    const provider = sshProvider({ tmux: true });
+    const item = session();
+
+    await provider.ensureAttachable(item);
+    await provider.ensureAttachable(item);
+    // The subsequent attach reuses it too.
+    await provider.attach();
+
+    expect(deployAndLaunch).toHaveBeenCalledTimes(1);
+    expect(openSsh2Pty).toHaveBeenCalledTimes(1);
   });
 
   it('ignores reconnect events for other connections', async () => {

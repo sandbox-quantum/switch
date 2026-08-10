@@ -15,6 +15,17 @@ vi.mock('electron', () => ({
   },
 }));
 
+/**
+ * A Discord-bot-token-shaped fixture, assembled at runtime.
+ *
+ * Written as a literal it trips GitHub's push protection, which classifies the
+ * shape as a Discord Bot Token regardless of the bytes being invented — fair
+ * evidence that the rule under test is aimed at the right thing, but not a
+ * reason to make the repo unpushable.
+ */
+const DISCORD_TOKEN_TAIL = 'abcdefghijklmnopqrstuvwxyz1';
+const DISCORD_TOKEN_SHAPE = ['MTA5NjE4NzQ5NDI4Nzk0MjA5', 'GhIjKl', DISCORD_TOKEN_TAIL].join('.');
+
 describe('redactDiagnosticLog', () => {
   it('redacts common secrets in free-form text', () => {
     const redacted = redactDiagnosticLog(
@@ -82,6 +93,55 @@ describe('redactDiagnosticLog', () => {
     expect(redacted).toContain('[REDACTED_SLACK_TOKEN]');
     expect(redacted).toContain('[REDACTED_JWT]');
     expect(redacted).toContain('[REDACTED_NPM_TOKEN]');
+  });
+
+  it('redacts credentials under qualified key names, not just bare ones', () => {
+    // Real config keys are qualified. A bare word boundary before `token` does
+    // not match `bot_token`, so these are exactly the spellings that used to
+    // slip through — and exactly the ones a bridge config uses (CHOO-1784).
+    const redacted = redactDiagnosticLog(
+      [
+        `bot_token=${DISCORD_TOKEN_SHAPE}`,
+        '{"app_token":"xapp-1-A0123-456-secretvalue"}',
+        'admin_password: hunter2',
+        '{"encryption_private_key":"MIIEpAIBAAKCAQEA"}',
+        'client-secret = shhhhhhhh',
+      ].join('\n')
+    );
+
+    expect(redacted).not.toContain('hunter2');
+    expect(redacted).not.toContain('shhhhhhhh');
+    expect(redacted).not.toContain('MIIEpAIBAAKCAQEA');
+    expect(redacted).not.toContain('secretvalue');
+    expect(redacted).not.toContain(DISCORD_TOKEN_TAIL);
+  });
+
+  it('redacts a Slack app token and a Discord bot token', () => {
+    const redacted = redactDiagnosticLog(
+      ['xapp-1-A012BCDEFGH-1234567890123-abcdef', DISCORD_TOKEN_SHAPE].join('\n')
+    );
+
+    expect(redacted).toContain('[REDACTED_SLACK_TOKEN]');
+    expect(redacted).toContain('[REDACTED_DISCORD_TOKEN]');
+  });
+
+  it('redacts the token after a Bot auth scheme, not just Bearer', () => {
+    // `Authorization: Bot <token>` is Discord's canonical header. Redacting the
+    // scheme word and leaving the token behind is worse than useless.
+    const redacted = redactDiagnosticLog('Authorization: Bot abcdefghijklmnop');
+
+    expect(redacted).not.toContain('abcdefghijklmnop');
+  });
+
+  it('leaves non-secret keys alone', () => {
+    // The qualifier prefix must not turn every underscored key into a secret.
+    const redacted = redactDiagnosticLog(
+      ['workspace_id=T0123456', 'room_name: design-review', 'agent_id=agent-7'].join('\n')
+    );
+
+    expect(redacted).toContain('T0123456');
+    expect(redacted).toContain('design-review');
+    expect(redacted).toContain('agent-7');
   });
 
   it('redacts PEM private-key blocks', () => {

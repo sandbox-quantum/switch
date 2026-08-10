@@ -2,5 +2,15 @@ apiVersion: v2
 name: switch
 description: Switch AI agent orchestration platform
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+# Placeholder, and deliberately one that announces itself as such (CHOO-1865).
+#
+# The real version is stamped at package time by the switch-release workflow
+# (`helm package --version --app-version`) with the switch-core release version,
+# so the chart ships under the same version as the images and a single tag pins
+# the whole stack. The value in this file is never published.
+#
+# It used to read `0.2.1`, which was simply untrue: nothing kept it in step, so
+# anyone reading the repo saw a version the chart had not been at for months.
+# `0.0.0-dev` cannot be mistaken for a release.
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"

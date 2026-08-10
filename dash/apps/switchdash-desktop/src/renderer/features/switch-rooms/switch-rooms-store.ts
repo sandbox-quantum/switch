@@ -8,10 +8,13 @@ import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomE
  * `sessionRoomChangedChannel` event. Connections are runtime-only — a session
  * disappears here when it switches rooms or its session exits.
  */
-class SwitchRoomsStore {
+export class SwitchRoomsStore {
   /** sessionId → connected room id. */
   private roomBySession = new Map<string, string>();
   private loaded = false;
+  /** Why the initial connection seed failed, when it did. Non-null means the
+   * session→room mapping is incomplete and must not be read as authoritative. */
+  seedError: string | null = null;
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
@@ -24,17 +27,33 @@ class SwitchRoomsStore {
     });
   }
 
-  /** Load the current connection set once (idempotent). */
+  /**
+   * Load the current connection set once (idempotent).
+   *
+   * A failure re-arms the load rather than leaving the flag set: the seed is
+   * what every "which room is this session in" answer starts from, so wedging
+   * it would report every session as connected to nothing, indefinitely and
+   * without a word.
+   */
   ensureLoaded(): void {
     if (this.loaded) return;
     this.loaded = true;
-    void rpc.switchRooms.getConnections().then((connections) => {
-      runInAction(() => {
-        for (const { sessionId, roomId } of connections) {
-          this.roomBySession.set(sessionId, roomId);
-        }
+    void rpc.switchRooms
+      .getConnections()
+      .then((connections) => {
+        runInAction(() => {
+          this.seedError = null;
+          for (const { sessionId, roomId } of connections) {
+            this.roomBySession.set(sessionId, roomId);
+          }
+        });
+      })
+      .catch((cause: unknown) => {
+        runInAction(() => {
+          this.loaded = false;
+          this.seedError = cause instanceof Error ? cause.message : String(cause);
+        });
       });
-    });
   }
 
   /** The room a session is currently connected to, or null. */

@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useRemoteAgentName } from '@renderer/features/switch-servers/use-remote-agent-name';
 import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldTitle } from '@renderer/lib/ui/field';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -53,11 +52,7 @@ export function AutoSessionSettingsSection({
               key={agent.id}
               className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5"
             >
-              <AgentLabel
-                serverId={agent.serverId as string}
-                switchAgentId={agent.switchAgentId as string}
-                fallback={agent.name}
-              />
+              <AgentLabel name={agent.name} />
               <AutoSessionSwitch agentId={agent.id} />
             </div>
           ))}
@@ -67,17 +62,9 @@ export function AutoSessionSettingsSection({
   );
 }
 
-/** Renders an agent's registered Switch name (not the directory basename). */
-function AgentLabel({
-  serverId,
-  switchAgentId,
-  fallback,
-}: {
-  serverId: string;
-  switchAgentId: string;
-  fallback: string;
-}) {
-  const name = useRemoteAgentName(serverId, switchAgentId, fallback);
+/** Renders an agent's Switch name — the stored one, which is what was
+ * registered on the server. */
+function AgentLabel({ name }: { name: string }) {
   return <span className="truncate text-sm">{name}</span>;
 }
 

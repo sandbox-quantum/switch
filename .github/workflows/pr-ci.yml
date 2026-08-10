@@ -46,6 +46,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       dash: ${{ steps.filter.outputs.dash }}
       gateway: ${{ steps.filter.outputs.gateway }}
+      artifacts: ${{ steps.filter.outputs.artifacts }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -66,9 +67,28 @@ jobs:
             dash:
               - *shared
               - 'dash/**'
+              # switchdash bundles a generated copy of this file, and the job
+              # below verifies the copy is current — so a change here has to
+              # run the dash job even though it lives outside dash/.
+              - 'deploy/local/standalone-docker-compose.yml'
             gateway:
               - *shared
               - 'gateway/**'
+            # Spans every tree, so it gets its own filter rather than riding
+            # any one of them. Includes the files whose versions the registry is
+            # checked against, so a release bump cannot land without the check.
+            artifacts:
+              - *shared
+              - 'artifacts.yaml'
+              - 'scripts/gen_artifacts.py'
+              - 'core/switch_core/artifacts.py'
+              - 'core/pyproject.toml'
+              - 'dash/packages/shared/src/artifacts.ts'
+              - 'dash/packages/switch-agent-runtime/src/artifacts.ts'
+              - 'dash/apps/switchdash-desktop/package.json'
+              - 'dash/apps/switchdash-desktop/src/shared/app-identity*.ts'
+              - 'dash/packages/switch-agent-runtime/package.json'
+              - 'connectors/**/plugin.json'
 
   backend:
     name: Backend (core)
@@ -119,7 +139,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 10.28.2
+          version: 11.5.3
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -136,6 +156,13 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 
+      # The bundled compose is a generated copy of deploy/local's, and until now
+      # nothing verified the sync had run — the two could drift with only a
+      # comment asking nicely, which is how it silently stopped running once
+      # already (CHOO-1865).
+      - name: Bundled standalone compose is current
+        run: pnpm --filter switchdash-desktop run sync:compose:check
+
       - name: Build workspace packages
         run: pnpm -r --filter './packages/**' run build
 
@@ -150,6 +177,33 @@ jobs:
 
       - name: Test (vitest)
         run: pnpm -r run test
+
+  artifacts:
+    name: Artifact registry
+    # Every artifact carries a compiled-in copy of artifacts.yaml, so the copies
+    # can drift two ways: editing the source without regenerating, and
+    # hand-editing a generated module. The same check compares the registry
+    # against the version files packaging ecosystems own. It needs no formatter
+    # or Node toolchain, which is why this is its own small job rather than a
+    # step inside the backend or dash trees.
+    needs: changes
+    if: ${{ needs.changes.outputs.artifacts == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project core
+
+      - name: Registry, generated modules and declared versions agree
+        run: uv run --project core python scripts/gen_artifacts.py --check
 
   gateway:
     name: Gateway UI

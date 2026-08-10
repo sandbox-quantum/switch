@@ -15,7 +15,7 @@ vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
   hostReachabilityService: { isBlocked: isHostBlockedMock, get: getReachability },
 }));
 
-const { isManagedServerRunning, managedServerHostBlocked } =
+const { isManagedServerRunning, managedServerHostBlocked, managedServerStoppedPhase } =
   await import('./managed-server-status');
 
 function reachability(overrides: Record<string, unknown>) {
@@ -155,5 +155,51 @@ describe('managedServerHostBlocked', () => {
     expect(managedServerHostBlocked(server({ managementKind: 'local' }))).toBeNull();
     expect(managedServerHostBlocked(server({ managed: false }))).toBeNull();
     expect(getReachability).not.toHaveBeenCalled();
+  });
+});
+
+describe('managedServerStoppedPhase', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isHostBlockedMock.mockReturnValue(false);
+  });
+
+  it('reports a stopped local stack', () => {
+    getLocalStatus.mockReturnValue({ phase: 'stopped' });
+    expect(managedServerStoppedPhase(server({ managementKind: 'local' }))).toBe('stopped');
+  });
+
+  it('reports a stack that failed to start', () => {
+    getLocalStatus.mockReturnValue({ phase: 'error' });
+    expect(managedServerStoppedPhase(server({ managementKind: 'local' }))).toBe('error');
+  });
+
+  it('lets the transitions through, so the boot sequence can reach the stack it is starting', () => {
+    for (const phase of ['starting', 'running', 'stopping']) {
+      getLocalStatus.mockReturnValue({ phase });
+      expect(managedServerStoppedPhase(server({ managementKind: 'local' }))).toBeNull();
+    }
+  });
+
+  it('returns null for an external server without probing any service', () => {
+    expect(managedServerStoppedPhase(server({ managed: false }))).toBeNull();
+    expect(getLocalStatus).not.toHaveBeenCalled();
+    expect(getRemoteStatus).not.toHaveBeenCalled();
+  });
+
+  it('reads the per-host status for a remote-managed server', () => {
+    getRemoteStatus.mockReturnValue({ phase: 'stopped' });
+    expect(managedServerStoppedPhase(server({ managementKind: 'remote', sshHost: 'host-a' }))).toBe(
+      'stopped'
+    );
+    expect(getRemoteStatus).toHaveBeenCalledWith('host-a');
+  });
+
+  it('defers to the host state when the host is blocked, rather than reading a stale phase', () => {
+    isHostBlockedMock.mockReturnValue(true);
+    expect(
+      managedServerStoppedPhase(server({ managementKind: 'remote', sshHost: 'host-a' }))
+    ).toBeNull();
+    expect(getRemoteStatus).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,7 @@
 import { Search } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useParams, useWorkspaceSlots } from '@renderer/lib/layout/navigation-provider';
+import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { SidebarMenuButton } from './sidebar-primitives';

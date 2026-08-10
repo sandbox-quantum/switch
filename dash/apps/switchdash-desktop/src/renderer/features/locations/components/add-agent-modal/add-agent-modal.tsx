@@ -11,6 +11,10 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import {
+  HostReadinessNotice,
+  useRemoteHostReadiness,
+} from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import type { ServerVerifyState } from '@renderer/features/switch-servers/agent-server-picker';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -158,12 +162,21 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     }
   }, [allowedHosts, runHost]);
 
-  // Reset the remote working dir when the run host changes so a committed dir
-  // from a previous host does not leak into discovery for the new one.
+  // Everything chosen below the run location belongs to the machine it was
+  // chosen on, so changing machines clears it.
+  //
+  // The working directory is the obvious case — a path from one host means
+  // nothing on another. The agent type is the one that bit: availability is
+  // per-machine, so picking Codex locally and then switching to a host without
+  // Codex left Codex selected, and the form went on looking valid for a choice
+  // the new machine cannot honour. Clearing it sends the picker back through
+  // its own availability check for the host now selected.
+  const { setProviderId } = pickState;
   useEffect(() => {
     setRemoteRepoDir('');
     setRemoteRepoDirDraft('');
-  }, [runHost]);
+    setProviderId(null);
+  }, [runHost, setProviderId]);
 
   // Advanced definition attributes (model, effort, tools, system prompt, …) the
   // user set in the collapsed Advanced section. Held in a ref (not state) so the
@@ -348,6 +361,25 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // into the failing state this ticket exists to surface (CHOO-1676).
   const runHostReachable = !isRemoteRun || !hostReachabilityStore.isBlocked(runHost);
 
+  // A reachable host that is missing git (or node, or the connector) will
+  // produce an agent that cannot start. Refuse, rather than letting the failure
+  // surface later as a mystery (CHOO-1809). An unchecked host is probed first
+  // and only then judged — `checking` withholds the verdict, it is not one.
+  const hostReadiness = useRemoteHostReadiness(
+    isRemoteRun ? runHost : null,
+    pickState.providerId ?? null
+  );
+  const runHostReady = !isRemoteRun || (!hostReadiness.blocked && !hostReadiness.checking);
+
+  // Where the block stops the flow. A host missing its own prerequisites cannot
+  // run anything, so nothing below the location picker is worth filling in —
+  // the same rule reachability already follows. A host that is fine but lacks
+  // one agent CLI blocks only the parts that commit to that type, so the type
+  // picker stays live and you can pick one the host already has.
+  const hostLevelBlocked = isRemoteRun && hostReadiness.blocked && hostReadiness.scope === 'host';
+  const canChooseAgentType = runHostReachable && !hostLevelBlocked;
+  const canConfigureAgent = canChooseAgentType && runHostReady;
+
   const canSubmitDetected = isRemoteRun
     ? !!pickState.providerId &&
       trimmedRemoteDir.length > 0 &&
@@ -355,6 +387,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       !!switchAgent &&
       verifyState === 'found' &&
       runHostReachable &&
+      runHostReady &&
       submitState === 'idle'
     : pickState.isValid &&
       !isChecking &&
@@ -370,6 +403,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     !!pickState.providerId &&
     remoteRunValid &&
     runHostReachable &&
+    runHostReady &&
     submitState === 'idle';
 
   // Remote configure gate: no agent in the remote dir yet — a valid remote
@@ -385,6 +419,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     !!pickState.providerId &&
     trimmedRemoteDir.length > 0 &&
     runHostReachable &&
+    runHostReady &&
     submitState === 'idle';
 
   const reportCreationError = (error: AgentOnboardingError) => {
@@ -570,7 +605,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
    * identity already on disk and writes nothing to the directory (CHOO-1937).
    */
   const handleOnboard = async () => {
-    if (!pickState.serverId || selectedNames.size === 0) return;
+    // `canOnboard` already requires a server; repeated so the calls below narrow.
+    if (!canOnboard || !pickState.serverId) return;
     const attachSelected = [...selectedNames].flatMap((name) => {
       const providerId = attachByName.get(name);
       return providerId ? [{ name, providerId }] : [];
@@ -635,11 +671,16 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // A definition still needs the picked agent type to run under; an attach row
   // carries its own (inferred from disk, or the picked one as a fallback).
   const selectionNeedsProviderPick = [...selectedNames].some((name) => !attachByName.has(name));
+  // Adopting agents that already exist in the directory still puts them on this
+  // host, so it answers to the same gates as creating one. Omitting them here
+  // let you onboard onto a host that was unreachable or missing prerequisites.
   const canOnboard =
     hasOnboardable &&
     selectedNames.size > 0 &&
     !!pickState.serverId &&
     (!selectionNeedsProviderPick || !!pickState.providerId) &&
+    runHostReachable &&
+    runHostReady &&
     submitState === 'idle';
   const submitLabel = submitState === 'creating' ? 'Adding...' : 'Add Agent';
 
@@ -721,6 +762,16 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           )}
           {isRemoteRun && <HostReachabilityNotice sshHost={runHost} />}
           {isRemoteRun && runHostReachable && (
+            <HostReadinessNotice
+              sshHost={runHost}
+              readiness={hostReadiness}
+              onNavigateAway={onClose}
+            />
+          )}
+          {/* Not while we are still finding out what the host has: asking for a
+              working directory under a "checking…" spinner invites the user to
+              fill in a form we may be about to refuse. */}
+          {isRemoteRun && canChooseAgentType && !hostReadiness.checking && (
             <div className="flex items-center gap-2">
               <Input
                 value={remoteRepoDirDraft}
@@ -744,23 +795,26 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             </div>
           )}
         </Field>
-        {/* The host is the first gate: with it unreachable we cannot know which
-            agent types it has, so offering a type picker (or a directory to scan)
-            would be guessing. Everything below waits for a usable host. */}
-        {runHostReachable && (
+        {/* The host is the first gate: with it unreachable, or missing its own
+            prerequisites, we cannot know which agent types it has, so offering a
+            type picker (or a directory to scan) would be guessing. Everything
+            below waits for a usable host — and everything past the picker waits
+            for a type that host can actually run, rather than letting you fill
+            in a name and a config only to be refused at the last button. */}
+        {canChooseAgentType && (
           <AgentTypePicker
             value={pickState.providerId}
             onChange={pickState.setProviderId}
             sshHost={isRemoteRun ? runHost : undefined}
           />
         )}
-        {runHostReachable && !isRemoteRun && (
+        {canConfigureAgent && !isRemoteRun && (
           <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />
         )}
         {isChecking && (
           <p className="text-sm text-foreground-muted">Scanning directory for agents…</p>
         )}
-        {hasOnboardable && !createMode && (
+        {canConfigureAgent && hasOnboardable && !createMode && (
           <>
             <OnboardExistingPanel
               agents={onboardableAgents}
@@ -788,7 +842,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             ← Back to existing agents
           </Button>
         )}
-        {isMissingRemoteAgent && showCreate && (
+        {canConfigureAgent && isMissingRemoteAgent && showCreate && (
           <>
             <ConfigureAgentPanel
               form={remoteConfigureForm}
@@ -832,7 +886,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             )}
           </>
         )}
-        {isMissingSwitchAgent && showCreate && (
+        {canConfigureAgent && isMissingSwitchAgent && showCreate && (
           <>
             <ConfigureAgentPanel
               form={configureForm}

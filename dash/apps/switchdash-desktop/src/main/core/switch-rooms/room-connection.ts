@@ -107,6 +107,12 @@ interface QueuedInjection {
    * room root.
    */
   threadId: string | null;
+  /**
+   * The message's own id. Reported to the bridge once this injection actually
+   * reaches the session, so the runtime indicator only moves below a message
+   * the agent has really been handed.
+   */
+  messageId: string | null;
 }
 
 /** Provider-specific keystroke payload builder, injected to keep the core free
@@ -233,6 +239,13 @@ export class RoomConnection {
   private roomTurnActive = false;
   /** Thread of the current room turn (see QueuedInjection.threadId). */
   private currentThreadId: string | null = null;
+  /**
+   * The last message actually delivered into the session. Reported with runtime
+   * state so the bridge can position the indicator below what the agent has
+   * genuinely received — a message that merely arrived in the room must not
+   * make the indicator claim the agent has seen it.
+   */
+  private currentAnchorId: string | null = null;
   /** Last activity line (without the elapsed suffix), to skip redundant refreshes. */
   private lastActivityDetail: string | null = null;
   /** Monotonic timestamp the current working turn began, for the elapsed suffix. */
@@ -398,6 +411,7 @@ export class RoomConnection {
       this.runtimeState = 'idle';
       this.roomTurnActive = false;
       this.currentThreadId = null;
+      this.currentAnchorId = null;
       void this.postRuntimeState('idle', null, { detached: true }).catch(() => {});
     }
     this.abort.abort();
@@ -483,6 +497,10 @@ export class RoomConnection {
           room_id: this.roomId,
           state,
           thread_id: threadId,
+          // Reported on every push, including the periodic activity refresh.
+          // The bridge repositions only when the value CHANGES, so a refresh
+          // that repeats the current anchor deliberately moves nothing.
+          anchor_event_id: this.currentAnchorId,
           deeplink_url: this.sessionDeeplink(),
           detail: detail ?? null,
           control_capabilities: this.control.capabilities,
@@ -513,6 +531,8 @@ export class RoomConnection {
     const addressed = event.type === 'message' && (event.payload as MessagePayload).addressed;
     const threadId =
       event.type === 'message' ? ((event.payload as MessagePayload).thread_id ?? null) : null;
+    const messageId =
+      event.type === 'message' ? (event.payload as MessagePayload).message_id : null;
     if (event.type === 'message' && !addressed) {
       this.missed += 1;
     }
@@ -550,7 +570,7 @@ export class RoomConnection {
       body = `${body}\n(Some earlier room events were dropped and cannot be replayed: ${this.pendingGapReason} — call read_context before responding.)`;
       this.pendingGapReason = null;
     }
-    this.enqueue({ text: body, addressed, threadId });
+    this.enqueue({ text: body, addressed, threadId, messageId });
   }
 
   /**
@@ -668,6 +688,7 @@ export class RoomConnection {
       if (next === 'idle') {
         this.roomTurnActive = false;
         this.currentThreadId = null;
+        this.currentAnchorId = null;
       }
     }
     this.busy = isBlockingStatus(status, notificationType);
@@ -860,6 +881,7 @@ export class RoomConnection {
     if (item.addressed) {
       this.roomTurnActive = true;
       this.currentThreadId = item.threadId;
+      this.currentAnchorId = item.messageId;
       this.setRuntimeState('working');
     }
 

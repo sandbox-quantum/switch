@@ -1,9 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
 import {
   Bot,
   ChevronRight,
   ExternalLink,
-  PlugZap,
   Plus,
   RotateCcw,
   Server,
@@ -17,16 +15,14 @@ import {
   locationViewKind,
 } from '@renderer/features/locations/stores/location-selectors';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
 import { hasSessionError } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import {
-  useNavigate,
-  useParams,
-  useWorkspaceSlots,
-} from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import {
@@ -40,12 +36,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
 import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
-import { depthIndent } from './sidebar-store';
-
-/** Expand-state key for an agent row (default open; its sessions live below it). */
-export function agentExpandKey(agentId: string): string {
-  return `ag:${agentId}`;
-}
+import { agentExpandKey, depthIndent } from './sidebar-store';
 
 /**
  * A single agent in the flat sidebar list. switchdash has no main/subagent
@@ -72,18 +63,10 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   const agentName = agent.name;
   const location = getLocationStore(agent.locationId);
 
-  // The row is labelled by the agent's registered Switch name; fall back to the
-  // stored name until (or unless) the lookup resolves.
-  const remoteAgentQuery = useQuery({
-    queryKey: ['remoteAgentName', agent.serverId, agent.switchAgentId],
-    queryFn: () =>
-      rpc.switchServers.getRemoteAgent({
-        serverId: agent.serverId!,
-        agentId: agent.switchAgentId!,
-      }),
-    enabled: !!agent.serverId && !!agent.switchAgentId,
-  });
-  const label = remoteAgentQuery.data?.name?.trim() || agent.name || agentName || 'Unnamed agent';
+  // The agent's name IS its Switch identity: switchdash chose it, registered it
+  // under that name, and keys its credentials and definition by it. Reading the
+  // stored one is reading the same value the server holds.
+  const label = agent.name || agentName || 'Unnamed agent';
 
   const expanded = sidebarStore.isGroupExpanded(agentExpandKey(agent.id));
   const toggle = () => sidebarStore.toggleGroupExpanded(agentExpandKey(agent.id));
@@ -103,7 +86,6 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
   if (!location) return null;
 
   const sshHost = location.data?.sshHost ?? null;
-  const hostReachability = sshHost ? hostReachabilityStore.get(sshHost) : null;
   const hostUnreachable = hostReachabilityStore.isBlocked(sshHost);
 
   const iconClass =
@@ -170,22 +152,10 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                {/* The host being down is why this agent is idle, so say so on
-                    the row itself — previously you had to select the agent to
-                    discover its host was failing to connect (CHOO-1682). */}
-                {hostUnreachable && hostReachability && (
-                  <Tooltip>
-                    <TooltipTrigger>
-                      <PlugZap className="h-3.5 w-3.5 shrink-0 text-foreground-warning" />
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {hostReachability.status === 'suspended'
-                        ? `SSH authentication to ${hostReachability.sshHost} failed — work is paused until you retry`
-                        : `Host ${hostReachability.sshHost} is unreachable — work is paused`}
-                      {hostReachability.lastError ? ` · ${hostReachability.lastError}` : ''}
-                    </TooltipContent>
-                  </Tooltip>
-                )}
+                {/* Unreachable host, or one missing something this agent needs.
+                    Shared with the room-grouped rows so the two trees cannot
+                    disagree about the same agent (CHOO-1682/1809). */}
+                <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
                 {locationViewKind(location) === 'ready' && hasSessionError(agent.locationId) && (
                   <Tooltip>
                     <TooltipTrigger>

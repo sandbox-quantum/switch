@@ -34,18 +34,18 @@ async function readSettings(): Promise<Record<string, unknown>> {
 }
 
 describe('writeSwitchSettings', () => {
-  it('creates .claude/settings.local.json with the SWITCH_* env block', async () => {
+  it('creates .claude/settings.local.json naming the agent, with no token in it', async () => {
     await writeSwitchSettings({
       dir,
       apiEndpoint: 'https://switch.example.com',
-      apiToken: 'secret-token',
       agentId: 'agent-123',
     });
 
     const settings = await readSettings();
+    // Claude Code reads this file natively, so the identity belongs here — but
+    // it is in the working tree, so the token does not (CHOO-1962).
     expect(settings.env).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'secret-token',
       SWITCH_AGENT_ID: 'agent-123',
     });
     // The Switch connector tools are auto-approved ("don't ask").
@@ -77,7 +77,6 @@ describe('writeSwitchSettings', () => {
     await writeSwitchSettings({
       dir,
       apiEndpoint: 'https://switch.example.com',
-      apiToken: 'new-token',
       agentId: 'agent-999',
     });
 
@@ -89,14 +88,13 @@ describe('writeSwitchSettings', () => {
     expect(settings.env).toEqual({
       EXISTING_KEY: 'keep-me',
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
-      SWITCH_API_TOKEN: 'new-token',
       SWITCH_AGENT_ID: 'agent-999',
     });
   });
 });
 
 describe('writeNeutralAgentSettingsFs', () => {
-  it('writes the provider-neutral per-agent creds keyed by slug, with a gitignore', async () => {
+  it('writes the per-agent credentials, token included, with a gitignore', async () => {
     await writeNeutralAgentSettingsFs(createPluginFs(dir), {
       slug: 'agent-abc',
       apiEndpoint: 'https://switch.example.com',
@@ -105,14 +103,14 @@ describe('writeNeutralAgentSettingsFs', () => {
     });
 
     const raw = await fs.readFile(path.join(dir, agentSettingsRelativePath('agent-abc')), 'utf8');
-    const settings = JSON.parse(raw) as Record<string, unknown>;
-    expect(settings.env).toEqual({
+    // This is the one file that carries the token: `settings.local.json` names
+    // the agent, this authenticates it.
+    expect((JSON.parse(raw) as { env: Record<string, string> }).env).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_API_TOKEN: 'secret-token',
       SWITCH_AGENT_ID: 'switch-agent-1',
     });
 
-    // The credentials directory is git-ignored so the token never enters VCS.
     const ignore = await fs.readFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), 'utf8');
     expect(ignore).toBe('*\n');
   });
@@ -231,13 +229,29 @@ describe('mergeSwitchApiEndpoint', () => {
     expect(mergeSwitchApiEndpoint('{not json', 'https://new.example.com')).toBeNull();
     // No env block.
     expect(mergeSwitchApiEndpoint('{}', 'https://new.example.com')).toBeNull();
-    // Partial creds (no token) -> not provisioned, skip rather than half-write.
+    // An endpoint with no agent id names nobody -> skip rather than half-write.
     expect(
       mergeSwitchApiEndpoint(
-        JSON.stringify({ env: { SWITCH_API_ENDPOINT: 'https://old', SWITCH_AGENT_ID: 'a' } }),
+        JSON.stringify({ env: { SWITCH_API_ENDPOINT: 'https://old' } }),
         'https://new.example.com'
       )
     ).toBeNull();
+  });
+
+  it('cascades to an agent whose token has moved to the home store', () => {
+    // Requiring a token here would silently skip every agent the CHOO-1962
+    // migration has already moved — their endpoint would then never be updated
+    // when the server URL changes, and they would quietly point at the old one.
+    const merged = mergeSwitchApiEndpoint(
+      JSON.stringify({ env: { SWITCH_API_ENDPOINT: 'https://old', SWITCH_AGENT_ID: 'a' } }),
+      'https://new.example.com'
+    );
+
+    expect(merged).not.toBeNull();
+    expect(JSON.parse(merged as string).env).toEqual({
+      SWITCH_API_ENDPOINT: 'https://new.example.com',
+      SWITCH_AGENT_ID: 'a',
+    });
   });
 });
 
@@ -247,7 +261,6 @@ describe('removeSwitchSettings', () => {
     // alone, so tearing it down should leave nothing behind.
     const provisioned = mergeSwitchSettings(null, {
       apiEndpoint: 'https://switch.example.com',
-      apiToken: 'secret-token',
       agentId: 'agent-123',
     });
 
@@ -323,7 +336,6 @@ describe('removeSwitchSettings', () => {
     await writeSwitchSettings({
       dir,
       apiEndpoint: 'https://switch.example.com',
-      apiToken: 'secret-token',
       agentId: 'agent-123',
     });
     const raw = await fs.readFile(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), 'utf8');

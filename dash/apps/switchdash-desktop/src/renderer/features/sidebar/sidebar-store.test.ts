@@ -4,6 +4,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import type { Agent } from '@shared/core/agents/agents';
 import {
+  agentExpandKey,
   agentRoomGroupKey,
   applyManualOrder,
   roomAgentGroupKey,
@@ -81,37 +82,35 @@ describe('SidebarStore location ordering', () => {
     expect(store.orderedLocations.map((location) => location.id)).toEqual(['new', 'old']);
   });
 
-  it('places locations missing from a saved manual order first', () => {
+  it('orders locations by recency alone — manual order lives on agents, not locations', () => {
     const store = new SidebarStore(
       locationManager([
         { id: 'old', createdAt: '2026-01-01T00:00:00.000Z' },
-        { id: 'manual', createdAt: '2026-01-02T00:00:00.000Z' },
+        { id: 'middle', createdAt: '2026-01-02T00:00:00.000Z' },
         { id: 'new', createdAt: '2026-01-03T00:00:00.000Z' },
       ])
     );
 
-    store.setLocationOrder(['manual', 'old']);
-
-    expect(store.orderedLocations.map((location) => location.id)).toEqual(['new', 'manual', 'old']);
+    expect(store.orderedLocations.map((location) => location.id)).toEqual(['new', 'middle', 'old']);
   });
 
   it('returns visible session entries in rendered location-tree order', () => {
     const store = new SidebarStore(
       locationManagerWithSessions([
         {
+          // Newest, so it renders first and its sessions lead the list.
           id: 'location-1',
-          createdAt: '2026-01-01T00:00:00.000Z',
+          createdAt: '2026-01-02T00:00:00.000Z',
           sessionIds: ['session-1a', 'session-1b'],
         },
         {
           id: 'location-2',
-          createdAt: '2026-01-02T00:00:00.000Z',
+          createdAt: '2026-01-01T00:00:00.000Z',
           sessionIds: ['session-2a'],
         },
       ])
     );
 
-    store.setLocationOrder(['location-1', 'location-2']);
     store.ensureLocationExpanded('location-1');
     store.ensureLocationExpanded('location-2');
     store.setSessionOrder('location-1', ['session-1a', 'session-1b']);
@@ -147,18 +146,58 @@ describe('SidebarStore grouping', () => {
     expect(restored.expandedRoomKeys.has('room-2')).toBe(true);
   });
 
-  it('reveals a session in its room across both layouts', () => {
+  it('opens the agent and room group a selected session sits in', () => {
     const store = new SidebarStore(locationManager([]));
-    // Simulate the user having collapsed the room group in each layout.
-    store.toggleGroupExpanded(agentRoomGroupKey('location-1', 'room-1'));
+    // Simulate the user having collapsed both groups above the session.
+    store.toggleGroupExpanded(agentExpandKey('agent-1'));
+    store.toggleGroupExpanded(agentRoomGroupKey('agent-1', 'room-1'));
+
+    store.revealSelection({ kind: 'session', agentId: 'agent-1', roomKey: 'room-1' });
+
+    expect(store.isGroupExpanded(agentExpandKey('agent-1'))).toBe(true);
+    expect(store.isGroupExpanded(agentRoomGroupKey('agent-1', 'room-1'))).toBe(true);
+  });
+
+  it('leaves the grouping the user cannot see untouched', () => {
+    const store = new SidebarStore(locationManager([]));
     store.toggleGroupExpanded(roomViewGroupKey('room-1'));
-    expect(store.isGroupExpanded(agentRoomGroupKey('location-1', 'room-1'))).toBe(false);
+    store.toggleGroupExpanded(roomAgentGroupKey('room-1', 'agent-1'));
+
+    // Agent-focused is on screen, so the room-focused groups stay as they were.
+    store.revealSelection({ kind: 'session', agentId: 'agent-1', roomKey: 'room-1' });
+
     expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(false);
+    expect(store.isGroupExpanded(roomAgentGroupKey('room-1', 'agent-1'))).toBe(false);
 
-    store.revealSessionInRoom('location-1', 'room-1');
+    store.setGrouping('room');
+    store.revealSelection({ kind: 'session', agentId: 'agent-1', roomKey: 'room-1' });
 
-    expect(store.expandedLocationIds.has('location-1')).toBe(true);
-    expect(store.isGroupExpanded(agentRoomGroupKey('location-1', 'room-1'))).toBe(true);
+    expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(true);
+    expect(store.isGroupExpanded(roomAgentGroupKey('room-1', 'agent-1'))).toBe(true);
+  });
+
+  it('opens every agent a selected room is listed under', () => {
+    const store = new SidebarStore(locationManager([]));
+    store.toggleGroupExpanded(agentExpandKey('agent-1'));
+    store.toggleGroupExpanded(agentExpandKey('agent-2'));
+
+    store.revealSelection({
+      kind: 'room',
+      roomKey: 'room-1',
+      agentIds: ['agent-1', 'agent-2'],
+    });
+
+    expect(store.isGroupExpanded(agentExpandKey('agent-1'))).toBe(true);
+    expect(store.isGroupExpanded(agentExpandKey('agent-2'))).toBe(true);
+  });
+
+  it('opens the room an agent was selected from, in the room-focused tree', () => {
+    const store = new SidebarStore(locationManager([]));
+    store.setGrouping('room');
+    store.toggleGroupExpanded(roomViewGroupKey('room-1'));
+
+    store.revealSelection({ kind: 'agent', roomKey: 'room-1' });
+
     expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(true);
   });
 
@@ -170,17 +209,6 @@ describe('SidebarStore grouping', () => {
 
     expect(store.isGroupExpanded(roomAgentGroupKey('room-1', 'agent-1'))).toBe(false);
     expect(store.isGroupExpanded(roomAgentGroupKey('room-2', 'agent-1'))).toBe(true);
-  });
-
-  it('tracks and clears a pending scroll-to-session request', () => {
-    const store = new SidebarStore(locationManager([]));
-    expect(store.pendingScrollSessionId).toBeNull();
-
-    store.requestScrollToSession('session-1');
-    expect(store.pendingScrollSessionId).toBe('session-1');
-
-    store.clearPendingScroll();
-    expect(store.pendingScrollSessionId).toBeNull();
   });
 
   it("returns a location's visible sessions for grouped views", () => {
@@ -479,41 +507,54 @@ describe('applyManualOrder', () => {
   });
 });
 
-describe('SidebarStore grouped-view ordering', () => {
-  it('orders top-level room keys by the saved manual room order', () => {
+describe('SidebarStore drag-to-reorder ordering', () => {
+  it('orders top-level rooms by the saved manual room order', () => {
     const store = new SidebarStore(locationManager([]));
     store.setRoomOrder(['room-c', 'room-a']);
+    const rooms = [{ roomKey: 'room-a' }, { roomKey: 'room-b' }, { roomKey: 'room-c' }];
     // Saved rooms come first in saved order; unknown rooms append.
-    expect(store.orderRoomKeys(['room-a', 'room-b', 'room-c'])).toEqual([
-      'room-c',
-      'room-a',
-      'room-b',
+    expect(store.orderRooms(rooms, (room) => room.roomKey)).toEqual([
+      { roomKey: 'room-c' },
+      { roomKey: 'room-a' },
+      { roomKey: 'room-b' },
     ]);
   });
 
-  it('orders a sub-group by its saved order, surfacing new sessions first', () => {
+  it('orders top-level agents by the saved manual agent order', () => {
     const store = new SidebarStore(locationManager([]));
-    const sessions = [{ id: 's1' }, { id: 's2' }, { id: 's3' }];
-    store.setGroupOrder('as:p1|room-1', ['s2', 's1']);
-    expect(store.orderGroupItems('as:p1|room-1', sessions, (s) => s.id, true)).toEqual([
-      { id: 's3' },
-      { id: 's2' },
-      { id: 's1' },
+    store.setAgentOrder(['agent-c', 'agent-a']);
+    const agents = [{ id: 'agent-a' }, { id: 'agent-b' }, { id: 'agent-c' }];
+    expect(store.orderAgents(agents, (agent) => agent.id)).toEqual([
+      { id: 'agent-c' },
+      { id: 'agent-a' },
+      { id: 'agent-b' },
     ]);
   });
 
-  it('round-trips room and group order through the snapshot', () => {
+  it('keeps a dragged agent in place when a new agent arrives', () => {
+    const store = new SidebarStore(locationManager([]));
+    store.setAgentOrder(['agent-b', 'agent-a']);
+    // A newly-added agent must not displace an order the user set deliberately.
+    const agents = [{ id: 'agent-a' }, { id: 'agent-b' }, { id: 'fresh' }];
+    expect(store.orderAgents(agents, (agent) => agent.id).map((agent) => agent.id)).toEqual([
+      'agent-b',
+      'agent-a',
+      'fresh',
+    ]);
+  });
+
+  it('round-trips agent and room order through the snapshot', () => {
     const store = new SidebarStore(locationManager([]));
     store.setRoomOrder(['room-2', 'room-1']);
-    store.setGroupOrder('as:p1|room-1', ['s2', 's1']);
+    store.setAgentOrder(['agent-2', 'agent-1']);
 
     const snapshot = store.snapshot;
     expect(snapshot.roomOrder).toEqual(['room-2', 'room-1']);
-    expect(snapshot.groupOrder).toEqual({ 'as:p1|room-1': ['s2', 's1'] });
+    expect(snapshot.agentOrder).toEqual(['agent-2', 'agent-1']);
 
     const restored = new SidebarStore(locationManager([]));
     restored.restoreSnapshot(snapshot);
     expect(restored.roomOrder).toEqual(['room-2', 'room-1']);
-    expect(restored.groupOrder).toEqual({ 'as:p1|room-1': ['s2', 's1'] });
+    expect(restored.agentOrder).toEqual(['agent-2', 'agent-1']);
   });
 });

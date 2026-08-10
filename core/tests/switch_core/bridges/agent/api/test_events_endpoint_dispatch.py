@@ -16,7 +16,9 @@ from starlette.responses import StreamingResponse
 
 from switch_core.bridges.agent.api.handlers import _resolve_start_cursor, poll_events
 from switch_core.bridges.agent.protocol.connections import (
+    PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    ClientDeclaration,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -29,6 +31,12 @@ class _Protocol:
         self.event_buffer = EventBuffer()
         self.connections = ConnectionRegistry()
         self.polled = False
+        self.recorded: list[tuple[str, str, ClientDeclaration]] = []
+
+    async def record_client_declaration(
+        self, agent_id: str, connection_id: str, declaration: ClientDeclaration
+    ) -> None:
+        self.recorded.append((agent_id, connection_id, declaration))
 
     async def poll_events(self, agent_id: str, timeout: float) -> list[Any]:
         self.polled = True
@@ -55,6 +63,9 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "start_from": "head",
         "spawn_capable": False,
         "protocol_version": PROTOCOL_VERSION,
+        "protocol_accepts": None,
+        "client": None,
+        "client_version": None,
         "rooms": None,
         "last_event_id": None,
     }
@@ -121,7 +132,120 @@ async def test_an_incompatible_protocol_version_is_refused() -> None:
         )
 
     assert excinfo.value.status_code == 409
-    assert "update the Switch agent runtime" in excinfo.value.detail
+    # A client ahead of the server means the server is what is behind. The
+    # original wording always blamed the runtime, which would have sent the
+    # user to downgrade the side that was already right.
+    assert excinfo.value.detail["remedy"] == "update switch-core"
+
+
+async def test_the_refusal_body_carries_both_ranges() -> None:
+    """The refused client never gets a connection_state frame.
+
+    So the 409 is the only place it can learn what the server speaks, and it
+    is structured rather than a sentence to parse (CHOO-1865).
+    """
+    protocol = _Protocol()
+    with pytest.raises(HTTPException) as excinfo:
+        await _call(
+            protocol,
+            accept="text/event-stream",
+            connection_id="c1",
+            protocol_version=PROTOCOL_VERSION + 1,
+        )
+
+    detail = excinfo.value.detail
+    assert detail["contract"] == "agent-protocol"
+    assert detail["server"]["speaks"] == PROTOCOL_VERSION
+    assert detail["server"]["accepts"] == PROTOCOL_ACCEPTS
+    assert detail["client"] == {
+        "speaks": PROTOCOL_VERSION + 1,
+        "accepts": PROTOCOL_VERSION + 1,
+    }
+    assert detail["message"]
+
+
+async def test_a_client_that_declares_nothing_connects_and_records_unknown() -> None:
+    """Part 1 refuses nobody on silence.
+
+    The parameter used to default to the server's own value, so a silent
+    client read as having agreed — and since no shipped client sent it, the
+    check had never fired at all. Absent must mean unknown, and unknown must
+    still connect.
+    """
+    protocol = _Protocol()
+    await _call(
+        protocol,
+        accept="text/event-stream",
+        connection_id="c1",
+        protocol_version=None,
+    )
+
+    conn = protocol.connections.get("c1")
+    assert conn is not None
+    assert conn.declaration == ClientDeclaration()
+    assert conn.declaration.declares_protocol is False
+
+
+async def test_a_declared_client_is_recorded_in_full() -> None:
+    protocol = _Protocol()
+    await _call(
+        protocol,
+        accept="text/event-stream",
+        connection_id="c1",
+        protocol_version=PROTOCOL_VERSION,
+        protocol_accepts=PROTOCOL_ACCEPTS,
+        client="agent-runtime",
+        client_version="0.1.5",
+    )
+
+    declared = ClientDeclaration(
+        speaks=PROTOCOL_VERSION,
+        accepts=PROTOCOL_ACCEPTS,
+        artifact="agent-runtime",
+        version="0.1.5",
+    )
+    conn = protocol.connections.get("c1")
+    assert conn is not None
+    assert conn.declaration == declared
+    # Also persisted, since connections die with the process and an accepts
+    # floor is raised offline against what is actually deployed.
+    assert protocol.recorded == [(AGENT_ID, "c1", declared)]
+
+
+async def test_a_refused_client_is_not_recorded() -> None:
+    """Recording happens after the connection opens.
+
+    A bookkeeping failure must never be why an agent could not connect, and a
+    client we refused is not one we are running.
+    """
+    protocol = _Protocol()
+    with pytest.raises(HTTPException):
+        await _call(
+            protocol,
+            accept="text/event-stream",
+            connection_id="c1",
+            protocol_version=PROTOCOL_VERSION + 1,
+        )
+
+    assert protocol.recorded == []
+
+
+async def test_an_older_client_inside_the_server_range_is_accepted() -> None:
+    """Overlap, not equality, is the test.
+
+    The two numbers are equal today, so this pins the behaviour before a
+    future bump makes it observable.
+    """
+    protocol = _Protocol()
+    await _call(
+        protocol,
+        accept="text/event-stream",
+        connection_id="c1",
+        protocol_version=PROTOCOL_VERSION,
+        protocol_accepts=max(PROTOCOL_ACCEPTS - 1, 1),
+    )
+
+    assert protocol.connections.get("c1") is not None
 
 
 # ── Start cursor ────────────────────────────────────────────────────────────
@@ -188,7 +312,7 @@ class TestDeclaringARoomAtOpenTakesOver:
             delivery_filter="all",
             spawn_capable=False,
             cursor=0,
-            protocol_version=PROTOCOL_VERSION,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         )
         protocol.connections.claim_room(incumbent, "room-1")
 

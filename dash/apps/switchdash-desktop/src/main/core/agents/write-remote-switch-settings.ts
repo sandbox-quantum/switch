@@ -4,7 +4,7 @@ import {
   type FileSystemProvider,
 } from '@main/core/fs/types';
 import { SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
-import { mergeSwitchSettings, type SwitchSettingsCredentials } from './write-switch-settings';
+import { mergeSwitchSettings } from './write-switch-settings';
 
 const REMOTE_SETTINGS_DIR = '.claude';
 
@@ -18,11 +18,12 @@ const REMOTE_SETTINGS_DIR = '.claude';
  * `fs` is the session's remote FileSystemProvider, rooted at the agent's remote
  * repo dir. The merge is byte-identical to the local writer's.
  *
- * `apiToken` is the agent's secret — written here and never returned/logged.
+ * No token: it goes to the home-side secret store on the VM, written by the
+ * caller that provisions the agent.
  */
 export async function writeRemoteSwitchSettings(
   fs: FileSystemProvider,
-  creds: SwitchSettingsCredentials
+  creds: { apiEndpoint: string; agentId: string }
 ): Promise<void> {
   let existingRaw: string | null = null;
   try {

@@ -22,6 +22,7 @@ import type {
 import { archiveSession } from './operations/archiveSession';
 import { createSession } from './operations/createSession';
 import { deleteSession } from './operations/deleteSession';
+import { ensureSessionAttachable } from './operations/ensureSessionAttachable';
 import { getSessions } from './operations/getSessions';
 import { renameSession } from './operations/renameSession';
 import { restoreSession } from './operations/restoreSession';
@@ -77,6 +78,27 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
    * already live. Fires the `session:runtime-ready` hook and
    * emits the `session:provisioned` IPC event on success.
    */
+  /**
+   * Bring a remote session's sidecar and relay up as part of provisioning.
+   *
+   * A remote runtime joins the attachment pool the moment it is registered, but
+   * it learns which session it serves only from `ensureAttachable`. Without this
+   * the pool holds a runtime that refuses every attach, so opening the session
+   * shows an empty terminal for good. Local sessions have no sidecar and return
+   * false. Best-effort: an unreachable host must not fail provisioning, and the
+   * next attach reports the real error.
+   */
+  private async _makeAttachable(sessionId: string): Promise<void> {
+    try {
+      await ensureSessionAttachable(sessionId);
+    } catch (error) {
+      log.warn('SessionService: could not make session attachable', {
+        sessionId,
+        error: String(error),
+      });
+    }
+  }
+
   async provisionSession(
     sessionId: string
   ): Promise<Result<ProvisionResult, TeardownSessionError>> {
@@ -90,6 +112,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
         path: location.dir,
         locationId: sessionRuntimeManager.getLocationId(sessionId) ?? location.locationId,
       };
+      await this._makeAttachable(sessionId);
       this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);
       events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
       return ok(provisionResult);
@@ -97,6 +120,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
     const built = await provisionSessionRuntime(session.session, location);
     await this._registerAndPersist(sessionId, built);
+    await this._makeAttachable(sessionId);
 
     const provisionResult: ProvisionResult = { path: built.path, locationId: built.locationId };
     this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);

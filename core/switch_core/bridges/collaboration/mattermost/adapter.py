@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -17,7 +18,10 @@ import requests as sync_requests
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import NoAccessTokenProvided
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import (
+    CollaborationAdapter,
+    LiveRuntimeIndicator,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -76,16 +80,13 @@ class MattermostAdapter(CollaborationAdapter):
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
 
-        # (channel_id, agent_name) -> post id of the agent's live "working on
-        # it…" runtime-state message. Mattermost's delete leaves a "(message
-        # deleted)" tombstone, so the message is never deleted — it is edited in
-        # place to a terminal marker when the turn ends (idle) or repurposed
-        # into the operator ping (awaiting-input).
-        self._working_msg: dict[tuple[str, str], str] = {}
-        # (channel_id, agent_name) -> post ids of the live "needs your input"
-        # pings, kept so they can be removed when the turn ends. The working
-        # indicator stays up alongside these — the agent is mid-turn, paused.
-        self._input_pings: dict[tuple[str, str], list[str]] = {}
+        # Mattermost's ordinary delete leaves a "(message deleted)" tombstone,
+        # so the runtime indicator (base class `_working_msg`) is never soft
+        # deleted — it is hard deleted where the server permits it, and
+        # otherwise edited in place to a terminal marker when the turn ends.
+        # Channels where the hard delete has been found unavailable, so the
+        # operator is warned once rather than on every message.
+        self._no_hard_delete_warned: set[str] = set()
 
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -439,7 +440,7 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Runtime state ──────────────────────────────────────────────────────────
 
-    async def apply_runtime_state(
+    async def _apply_runtime_state(
         self,
         channel_id: str,
         agent_name: str,
@@ -472,11 +473,14 @@ class MattermostAdapter(CollaborationAdapter):
             existing = self._working_msg.get(key)
             if existing is not None:
                 # Refresh the live message in place with the latest activity.
-                await self._patch_post_as(agent_name, existing, body)
+                await self._patch_post_as(agent_name, existing.message_ref, body)
+                self._working_msg[key] = replace(existing, body=body)
                 return
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
-                self._working_msg[key] = ref
+                self._working_msg[key] = LiveRuntimeIndicator(
+                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                )
         elif state == "awaiting-input":
             ref = await self._ping_operator(
                 channel_id, agent_name, notify_user, thread_root_id, deeplink_url
@@ -499,6 +503,54 @@ class MattermostAdapter(CollaborationAdapter):
                 agent_name, post_id, self.translate_outbound("✓ input received")
             )
 
+    async def _reposition_runtime_state(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Move the indicator only when Mattermost will truly delete the old one.
+
+        This inverts the base class's post-then-delete order. Mattermost can only
+        remove a post without leaving a "(message deleted)" tombstone when the
+        server permits a hard delete (v10.2+, ``EnableAPIPostDeletion``, and a
+        system-admin account). Reposting first and discovering the delete is
+        unavailable would strand a dead marker in the channel on *every*
+        message, so the delete is attempted first and the move is abandoned —
+        loudly — when it fails.
+        """
+        key = (channel_id, agent_name)
+        live = self._working_msg.get(key)
+        if live is None:
+            return
+
+        if not await self._permanent_delete(live.message_ref):
+            if channel_id not in self._no_hard_delete_warned:
+                self._no_hard_delete_warned.add(channel_id)
+                logger.warning(
+                    "Cannot move the runtime indicator in Mattermost channel %s: "
+                    "hard delete is unavailable, so the indicator would leave a "
+                    "marker behind each time it moved. It will stay where it was "
+                    "first posted. Requires Mattermost v10.2+ with "
+                    "ServiceSettings.EnableAPIPostDeletion and a system-admin "
+                    "account.",
+                    channel_id,
+                )
+            return
+
+        ref = await self.send_message(channel_id, agent_name, live.body, thread_root_id)
+        if ref is None:
+            # The old post is already gone, so there is nothing to fall back to.
+            self._working_msg.pop(key, None)
+            logger.error(
+                "Removed the runtime indicator for %s in %s but could not repost "
+                "it; the channel now shows no indicator for this turn",
+                agent_name,
+                channel_id,
+            )
+            return
+
+        self._working_msg[key] = replace(
+            live, message_ref=ref, thread_root_id=thread_root_id
+        )
+
     async def _dispose_working(self, channel_id: str, agent_name: str) -> None:
         """Remove the live "working on it…" message when the turn ends.
 
@@ -507,13 +559,13 @@ class MattermostAdapter(CollaborationAdapter):
         ``ServiceSettings.EnableAPIPostDeletion`` enabled and a system-admin
         account, so when it is unavailable we fall back to editing the message
         in place — never a soft delete, which would leave a tombstone."""
-        post_id = self._working_msg.pop((channel_id, agent_name), None)
-        if post_id is None:
+        live = self._working_msg.pop((channel_id, agent_name), None)
+        if live is None:
             return
-        if await self._permanent_delete(post_id):
+        if await self._permanent_delete(live.message_ref):
             return
         await self._patch_post_as(
-            agent_name, post_id, self.translate_outbound("✓ done")
+            agent_name, live.message_ref, self.translate_outbound("✓ done")
         )
 
     async def _permanent_delete(self, post_id: str) -> bool:
@@ -672,6 +724,21 @@ class MattermostAdapter(CollaborationAdapter):
         base_url = self._config.public_url or self._config.url
         host = re.sub(r"^https?://", "", base_url).rstrip("/")
         return f"mattermost://{host}/{self._config.team_name}/channels/{name}"
+
+    async def home_deeplink(self) -> str | None:
+        """`mattermost://<host>/<team>` — the team's home in the desktop app.
+
+        Uses `public_url` when set, for the same reason `channel_deeplink`
+        does: `url` may be an address only Switch can reach. For the bundled
+        deployment neither is reachable from a user's machine (`url` is the
+        in-compose `http://mattermost:8065` and `public_url` is unset), so a
+        client that knows where it published Mattermost should prefer its own
+        origin over this."""
+        base_url = self._config.public_url or self._config.url
+        if not base_url or not self._config.team_name:
+            return None
+        host = re.sub(r"^https?://", "", base_url).rstrip("/")
+        return f"mattermost://{host}/{self._config.team_name}"
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]

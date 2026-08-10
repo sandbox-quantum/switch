@@ -1,6 +1,7 @@
 import { Loader2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
+import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { useIsActiveSession } from '@renderer/features/sessions/hooks/use-is-active-session';
 import {
   useSessionAgent,
@@ -12,6 +13,7 @@ import { PaneSizingProvider } from '@renderer/lib/pty/pane-sizing-context';
 import { PtyPane } from '@renderer/lib/pty/pty-pane';
 import { TerminalSearchOverlay } from '@renderer/lib/pty/terminal-search-overlay';
 import { useTerminalSearch } from '@renderer/lib/pty/use-terminal-search';
+import { SessionAttachmentState } from './session-attachment-state';
 
 /**
  * The entire session view: one `claude` terminal. A switchdash session has
@@ -30,6 +32,9 @@ export const SessionTerminal = observer(function SessionTerminal() {
   const agent = agentStore.agent;
   const session = agentStore.pty;
   const ptySessionId = session?.sessionId ?? null;
+
+  const sshHost = getLocationManagerStore().locations.get(locationId)?.data?.sshHost ?? null;
+  const isRemote = sshHost !== null;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
@@ -107,6 +112,14 @@ export const SessionTerminal = observer(function SessionTerminal() {
               locationId={locationId}
             />
           </div>
+        ) : isRemote ? (
+          // A remote session without a terminal is a normal resting state, not a
+          // loading one — an indefinite spinner here reads as a hung session.
+          <SessionAttachmentState
+            state={agentStore.attachment === 'attached' ? 'attaching' : agentStore.attachment}
+            sessionId={sessionId}
+            host={sshHost}
+          />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
             <Loader2 className="h-5 w-5 animate-spin text-foreground-muted" />

@@ -21,7 +21,7 @@ All modals use a registry-based system. Only one modal can be active at a time.
 
 ```tsx
 const { showModal } = useModalContext();
-showModal('myModal', { projectId: '123', onSuccess: (result) => {...} });
+showModal('myModal', { locationId: '123', onSuccess: (result) => {...} });
 ```
 
 **Rules:**
@@ -60,7 +60,7 @@ Views use a registry + parameterized navigation pattern.
 
 **Rules:**
 - Historical output comes from the main-process ring buffer; do not add renderer-side buffering
-- `sessionId` format: `makePtySessionId(projectId, scopeId, leafId)` from
+- `sessionId` format: `makePtySessionId(locationId, scopeId, leafId)` from
   `src/shared/core/pty/ptySessionId.ts` — deterministic
 - Panel drag pauses resizing to avoid jank (`src/renderer/lib/layout/panel-drag-store.ts`)
 
@@ -93,6 +93,6 @@ For state that must survive React unmounts or be shared across unrelated compone
 
 - **`useSyncExternalStore`-compatible stores** — e.g., `panelDragStore` in `src/renderer/lib/layout/`
 - **Cross-feature stores** — `src/renderer/lib/stores/` (navigation, dependencies, resource monitor, ...)
-- **MobX session and project stores** — `src/renderer/features/sessions/stores/` and
-  `src/renderer/features/projects/stores/`; access them through selectors
-  (`session-selectors.ts`, `project-selectors.ts`) and session view hooks, never directly
+- **MobX session and location stores** — `src/renderer/features/sessions/stores/` and
+  `src/renderer/features/locations/stores/`; access them through selectors
+  (`session-selectors.ts`, `location-selectors.ts`) and session view hooks, never directly

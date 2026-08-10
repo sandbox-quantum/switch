@@ -2,10 +2,12 @@ import { observer } from 'mobx-react-lite';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { agentExpandKey, SidebarAgentItem } from './agent-item';
+import { SidebarAgentItem } from './agent-item';
 import { SidebarSessionItem } from './session-item';
+import { AGENTS_CONTAINER, makeDndId, SortableBranch, SortableList } from './sidebar-dnd';
 import {
   groupByRoom,
+  isRoomNameKnown,
   isRoomViewActive,
   openRoomInGateway,
   openRoomInMessagingApp,
@@ -13,7 +15,7 @@ import {
   RoomRow,
   roomLabel,
 } from './sidebar-room-grouping';
-import { agentRoomGroupKey, UNASSIGNED_ROOM_KEY } from './sidebar-store';
+import { agentExpandKey, agentRoomGroupKey, UNASSIGNED_ROOM_KEY } from './sidebar-store';
 import { agentSessions, scopedAgents } from './sidebar-tree-data';
 
 /**
@@ -58,6 +60,8 @@ const AgentSessions = observer(function AgentSessions({
           <div key={roomKey}>
             <RoomRow
               label={roomLabel(roomKey)}
+              nameKnown={isRoomNameKnown(roomKey)}
+              nameBlockedBySignIn={switchRoomsStore.roomNameBlockedBySignIn(roomKey)}
               count={roomSessions.length}
               expanded={roomExpanded}
               depth={depth}
@@ -89,13 +93,21 @@ const AgentSessions = observer(function AgentSessions({
 });
 
 export const AgentTree = observer(function AgentTree() {
+  const entries = scopedAgents();
   return (
-    <>
-      {scopedAgents().map((entry) => {
+    <SortableList
+      containerId={AGENTS_CONTAINER}
+      itemIds={entries.map((entry) => entry.agent.id)}
+      onReorder={(orderedIds) => sidebarStore.setAgentOrder(orderedIds)}
+    >
+      {entries.map((entry) => {
         const expanded = sidebarStore.isGroupExpanded(agentExpandKey(entry.agent.id));
         return (
-          <div key={entry.agent.id}>
-            <SidebarAgentItem agent={entry.agent} depth={0} />
+          <SortableBranch
+            key={entry.agent.id}
+            id={makeDndId(AGENTS_CONTAINER, entry.agent.id)}
+            header={<SidebarAgentItem agent={entry.agent} depth={0} />}
+          >
             {expanded && (
               <AgentSessions
                 agentId={entry.agent.id}
@@ -104,9 +116,9 @@ export const AgentTree = observer(function AgentTree() {
                 depth={1}
               />
             )}
-          </div>
+          </SortableBranch>
         );
       })}
-    </>
+    </SortableList>
   );
 });

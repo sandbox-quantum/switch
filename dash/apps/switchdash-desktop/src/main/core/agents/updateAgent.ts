@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import type { Agent } from '@shared/core/agents/agents';
+import { agentEvents } from './agent-events';
 import { mapAgentRowToAgent } from './utils';
 
 export type UpdateAgentParams = {
@@ -25,5 +26,7 @@ export async function updateAgent(params: UpdateAgentParams): Promise<Agent | un
 
   const [row] = await db.update(agents).set(set).where(eq(agents.id, params.agentId)).returning();
   if (!row) return undefined;
-  return mapAgentRowToAgent(row);
+  const agent = mapAgentRowToAgent(row);
+  agentEvents._emit('agent:updated', agent);
+  return agent;
 }

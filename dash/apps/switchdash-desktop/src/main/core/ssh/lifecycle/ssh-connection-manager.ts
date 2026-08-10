@@ -310,6 +310,16 @@ export class SshConnectionManager extends EventEmitter {
       this.emitHealthChanged(connectionId, record.health);
     }
 
+    // Record what actually failed. Only the wedge itself used to be logged,
+    // which left "3 failures" with no way to tell an exhausted MaxSessions from
+    // a saturated tunnel from a genuinely dead transport.
+    this.deps.log.warn('SshConnectionManager: channel open failed', {
+      connectionId,
+      failures: record.channelFailureStreak,
+      state: record.state,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
     if (
       record.channelFailureStreak >= WEDGE_FAILURE_THRESHOLD &&
       record.state === 'connected' &&
@@ -317,7 +327,12 @@ export class SshConnectionManager extends EventEmitter {
     ) {
       this.deps.log.error(
         'SshConnectionManager: connection wedged (consecutive channel failures) — forcing rebuild',
-        { connectionId, failures: record.channelFailureStreak }
+        {
+          event: 'ssh_wedge_rebuild',
+          connectionId,
+          failures: record.channelFailureStreak,
+          lastError: error instanceof Error ? error.message : String(error),
+        }
       );
       record.channelFailureStreak = 0;
       // Destroying the client fires its close handler, which invalidates the

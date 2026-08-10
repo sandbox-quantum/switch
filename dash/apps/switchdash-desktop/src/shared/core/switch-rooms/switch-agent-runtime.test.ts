@@ -98,27 +98,19 @@ describe('the pinned runtime version', () => {
 });
 
 describe('the credentials the runtime needs', () => {
-  it('are declared identically by the Claude connector and this module', () => {
-    // Both hosts must route the same required credentials; neither side may add
-    // one without the other, or that host's sessions start without it.
-    const declared = Object.keys(claudeSwitchServer().env ?? {}).sort();
-    expect(declared).toEqual([...SWITCH_RUNTIME_REQUIRED_ENV].sort());
+  it('are declared by the Claude connector not at all, so a standalone session can start', () => {
+    // Claude expands ${VAR} and fails the WHOLE server when one resolves to
+    // nothing. Declaring a credential there therefore makes it mandatory — and
+    // since CHOO-1962 the runtime can resolve its own from the on-disk store,
+    // so declaring them would break precisely the case the store exists for.
+    // switchdash's own sessions are unaffected: it sets real env vars, which
+    // reach the MCP child whether or not the config mentions them.
+    expect(claudeSwitchServer().env).toBeUndefined();
   });
 
-  it('are expanded by the Claude connector under their own names', () => {
-    // Catches a transposed pair — ${SWITCH_API_TOKEN} filed under
-    // SWITCH_API_ENDPOINT — which no other assertion here would see.
-    for (const [name, value] of Object.entries(claudeSwitchServer().env ?? {})) {
-      expect(value).toBe(`\${${name}}`);
-    }
-  });
-
-  it('keep the optional ones out of the Claude connector, where declaring is requiring', () => {
-    // Claude expands ${VAR} and fails the whole server when one resolves to
-    // nothing, so an optional variable declared there costs every standalone
-    // session its tools. Codex forwards names, so an unset one is just skipped.
+  it('keep every optional one out of the Claude connector too, for the same reason', () => {
     const declared = Object.keys(claudeSwitchServer().env ?? {});
-    for (const name of SWITCH_RUNTIME_OPTIONAL_ENV) {
+    for (const name of [...SWITCH_RUNTIME_OPTIONAL_ENV, ...SWITCH_RUNTIME_REQUIRED_ENV]) {
       expect(declared).not.toContain(name);
     }
   });

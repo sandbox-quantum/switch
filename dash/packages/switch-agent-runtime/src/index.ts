@@ -17,6 +17,15 @@
  */
 
 export {
+  ARTIFACT_VERSIONS,
+  artifactVersion,
+  CONTRACTS,
+  contractRange,
+  type ArtifactName,
+  type ContractName,
+  type ContractRange,
+} from './artifacts';
+export {
   BEAT_INTERVAL_MS,
   SwitchEventStream,
   type DeliveryFilter,

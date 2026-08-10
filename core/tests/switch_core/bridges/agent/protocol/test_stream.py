@@ -8,10 +8,13 @@ from typing import Any
 
 import pytest
 
+from switch_core import version as version_module
 from switch_core.bridges.agent.protocol import stream as stream_module
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
+    PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    ClientDeclaration,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -75,7 +78,7 @@ def _open(registry: ConnectionRegistry, **kw: Any):
         "delivery_filter": "all",
         "spawn_capable": False,
         "cursor": 0,
-        "protocol_version": PROTOCOL_VERSION,
+        "declaration": ClientDeclaration(speaks=PROTOCOL_VERSION),
     }
     params.update(kw)
     return registry.open(**params)
@@ -95,6 +98,91 @@ async def test_first_frame_is_the_connection_state() -> None:
     assert data["scope"] == "single"
     assert data["rooms"] == [ROOM_A]
     assert data["protocol"] == PROTOCOL_VERSION
+
+
+async def test_the_first_frame_declares_the_server(monkeypatch) -> None:
+    """Version disclosure rides this frame, not an endpoint of its own.
+
+    The stream is already authenticated, and nothing about the server's
+    version is reachable without authenticating (CHOO-1865).
+    """
+    monkeypatch.setattr(version_module, "switch_core_version", lambda: "9.9.9")
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry)
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    ((_, data),) = await _take(stream, 1)
+
+    assert data["server"] == {
+        "version": "9.9.9",
+        "contracts": {
+            "agent-protocol": {
+                "speaks": PROTOCOL_VERSION,
+                "accepts": PROTOCOL_ACCEPTS,
+            }
+        },
+    }
+
+
+async def test_an_unreadable_server_version_is_null_not_a_placeholder(
+    monkeypatch,
+) -> None:
+    """Null means unknown. A placeholder would read as a version we chose."""
+    monkeypatch.setattr(version_module, "switch_core_version", lambda: None)
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry)
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    ((_, data),) = await _take(stream, 1)
+
+    assert data["server"]["version"] is None
+
+
+async def test_the_first_frame_echoes_what_the_client_declared() -> None:
+    """So a declaration that failed to parse cannot pass unnoticed.
+
+    Both sides otherwise believe it landed, which is worse than never having
+    sent it.
+    """
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(
+        registry,
+        declaration=ClientDeclaration(
+            speaks=PROTOCOL_VERSION,
+            accepts=PROTOCOL_ACCEPTS,
+            artifact="agent-runtime",
+            version="0.1.5",
+        ),
+    )
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    ((_, data),) = await _take(stream, 1)
+
+    assert data["client"] == {
+        "speaks": PROTOCOL_VERSION,
+        "accepts": PROTOCOL_ACCEPTS,
+        "artifact": "agent-runtime",
+        "version": "0.1.5",
+    }
+
+
+async def test_an_undeclared_client_is_echoed_as_all_null() -> None:
+    registry = ConnectionRegistry()
+    buffer = EventBuffer()
+    conn = _open(registry, declaration=ClientDeclaration())
+
+    stream = event_stream(conn=conn, registry=registry, buffer=buffer)
+    ((_, data),) = await _take(stream, 1)
+
+    assert data["client"] == {
+        "speaks": None,
+        "accepts": None,
+        "artifact": None,
+        "version": None,
+    }
 
 
 async def test_catch_up_then_live_delivery() -> None:
@@ -272,7 +360,7 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
         delivery_filter="all",
         spawn_capable=False,
         cursor=0,
-        protocol_version=PROTOCOL_VERSION,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
     )
     registry.claim_room(session, ROOM_A)
 
@@ -283,7 +371,7 @@ async def test_two_connections_receive_the_same_event(scope: str) -> None:
         delivery_filter="all",
         spawn_capable=False,
         cursor=0,
-        protocol_version=PROTOCOL_VERSION,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
     )
     registry.claim_room(other_agent, ROOM_A)
 

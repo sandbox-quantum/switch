@@ -28,6 +28,7 @@ from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
 )
+from switch_core.version import server_declaration
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,16 @@ def _frame(event: str, data: dict[str, Any], *, seq: int | None = None) -> bytes
 
 
 def _connection_state(conn: Connection) -> dict[str, Any]:
+    """The first frame of every stream, and where the server declares itself.
+
+    Version disclosure rides this frame rather than an endpoint of its own
+    (CHOO-1865): the stream is already authenticated, and nothing about the
+    server's version is reachable without authenticating. `protocol` stays as
+    it was — clients read it today — and equals the server's `speaks`.
+
+    `server.version` is null when switch-core cannot read its own version.
+    Null means unknown and must be rendered as such, never as current.
+    """
     return {
         "connection_id": conn.id,
         "agent_id": conn.agent_id,
@@ -61,6 +72,11 @@ def _connection_state(conn: Connection) -> dict[str, Any]:
         "cursor": conn.cursor,
         "protocol": PROTOCOL_VERSION,
         "heartbeat_interval_seconds": 2.0,
+        "server": server_declaration("agent-protocol"),
+        # Echoed back so a client can see what the server understood it to
+        # have said — a declaration that silently failed to parse is worse
+        # than one never sent, because both sides think it landed.
+        "client": conn.declaration.as_dict(),
     }
 
 

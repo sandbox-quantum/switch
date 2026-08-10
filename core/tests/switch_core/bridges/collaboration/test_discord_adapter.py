@@ -163,7 +163,9 @@ class _FakeWebhook:
         self.token = token
         self.sent: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
+        self.deletes: list[dict[str, Any]] = []
         self.edit_raises_not_found = False
+        self.delete_raises_not_found = False
 
     async def send(self, **kwargs: Any) -> Any:
         self.sent.append(kwargs)
@@ -175,6 +177,11 @@ class _FakeWebhook:
         if self.edit_raises_not_found:
             raise discord.NotFound(_FakeResponse(), "unknown message")
         self.edits.append({"message_id": message_id, **kwargs})
+
+    async def delete_message(self, message_id: int, **kwargs: Any) -> None:
+        if self.delete_raises_not_found:
+            raise discord.NotFound(_FakeResponse(), "unknown message")
+        self.deletes.append({"message_id": message_id, **kwargs})
 
 
 class _FakeClient:
@@ -739,9 +746,44 @@ def test_update_message_falls_back_to_bot_message_edit() -> None:
     assert bot_msg.edited == "edited"
 
 
-def test_delete_message_uses_partial_message_in_location_channel() -> None:
+def test_delete_message_goes_through_the_webhook_that_sent_it() -> None:
+    # Agent posts are authored by the webhook, not the bot. Deleting them as the
+    # bot needs Manage Messages and silently fails without it, which left every
+    # runtime indicator stranded in the channel.
     adapter = _adapter()
     channel = _FakeChannel()
+    webhook = _FakeWebhook()
+    channel.existing_webhooks = [webhook]
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+
+    _run(adapter.delete_message(str(CHANNEL_ID), f"{CHANNEL_ID}:901"))
+
+    assert [d["message_id"] for d in webhook.deletes] == [901]
+    assert channel.deleted_ids == []
+
+
+def test_delete_message_in_a_thread_passes_the_thread_through() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    webhook = _FakeWebhook()
+    channel.existing_webhooks = [webhook]
+    thread = _FakeThread(parent=channel, thread_id=4000)
+    adapter._client = _FakeClient({CHANNEL_ID: channel, 4000: thread})
+
+    _run(adapter.delete_message(str(CHANNEL_ID), "4000:901"))
+
+    assert webhook.deletes[0]["message_id"] == 901
+    assert webhook.deletes[0]["thread"].id == 4000
+
+
+def test_delete_message_falls_back_to_the_bot_for_its_own_posts() -> None:
+    # Admin notices and DM fallbacks are posted by the bot, so the webhook does
+    # not own them and reports NotFound.
+    adapter = _adapter()
+    channel = _FakeChannel()
+    webhook = _FakeWebhook()
+    webhook.delete_raises_not_found = True
+    channel.existing_webhooks = [webhook]
     thread = _FakeThread(parent=channel, thread_id=4000)
     thread.deleted_ids = []  # type: ignore[attr-defined]
     thread.get_partial_message = lambda mid: _FakePartialMessage(thread, mid)  # type: ignore[attr-defined]
@@ -749,6 +791,7 @@ def test_delete_message_uses_partial_message_in_location_channel() -> None:
 
     _run(adapter.delete_message(str(CHANNEL_ID), "4000:901"))
 
+    assert webhook.deletes == []
     assert thread.deleted_ids == [901]  # type: ignore[attr-defined]
 
 
@@ -791,7 +834,10 @@ def test_runtime_state_working_posts_persistent_indicator() -> None:
     assert len(webhook.sent) == 1
     assert webhook.sent[0]["content"] == "⚙️ _Working on it…_"
     assert webhook.sent[0]["username"] == "my-agent"
-    assert adapter._working_msg[(str(CHANNEL_ID), "my-agent")] == f"{CHANNEL_ID}:901"
+    assert (
+        adapter._working_msg[(str(CHANNEL_ID), "my-agent")].message_ref
+        == f"{CHANNEL_ID}:901"
+    )
 
 
 def test_runtime_state_detail_edits_message_in_place() -> None:
@@ -821,11 +867,14 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
     assert len(webhook.edits) == 1
     assert webhook.edits[0]["message_id"] == 901
     assert webhook.edits[0]["content"] == "⚙️ Editing adapter.py"
-    assert adapter._working_msg[(str(CHANNEL_ID), "my-agent")] == f"{CHANNEL_ID}:901"
+    assert (
+        adapter._working_msg[(str(CHANNEL_ID), "my-agent")].message_ref
+        == f"{CHANNEL_ID}:901"
+    )
 
 
 def test_runtime_state_idle_clears_working_message() -> None:
-    adapter, channel, _ = _runtime_setup()
+    adapter, channel, webhook = _runtime_setup()
 
     _run(
         adapter.apply_runtime_state(
@@ -842,7 +891,8 @@ def test_runtime_state_idle_clears_working_message() -> None:
         )
     )
 
-    assert channel.deleted_ids == [901]
+    assert [d["message_id"] for d in webhook.deletes] == [901]
+    assert channel.deleted_ids == []
     assert (str(CHANNEL_ID), "my-agent") not in adapter._working_msg
 
 
@@ -885,7 +935,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
             thread_root_id=None,
         )
     )
-    assert channel.deleted_ids == [902]
+    assert [d["message_id"] for d in webhook.deletes] == [902]
     assert (str(CHANNEL_ID), "my-agent") not in adapter._input_pings
 
 

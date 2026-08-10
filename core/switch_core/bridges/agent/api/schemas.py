@@ -145,6 +145,12 @@ class RuntimeStateRequest(BaseModel):
     # turn, when it was in a thread, so the bridge surfaces the state in that
     # thread. Omit / null when the agent was addressed at the conversation root.
     thread_id: str | None = None
+    # Message id of the latest message the connector has actually delivered to
+    # the agent's session. The bridge repositions the runtime indicator when
+    # this changes, so it only ever moves on evidence the agent has the
+    # message — not merely because one arrived. Report the same value on a
+    # periodic refresh; only a genuine change moves the indicator.
+    anchor_event_id: str | None = None
     # A `switchdash://session?…` deeplink switchdash builds so the bridged
     # working / awaiting-input message can link back to its session. Relayed
     # verbatim to the channel; null for connectors that don't manage a UI.

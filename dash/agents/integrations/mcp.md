@@ -9,7 +9,7 @@ small set of shared types and a static catalog.
 - `src/shared/core/mcp/types.ts` — canonical MCP server entry types (e.g. `RawServerEntry`)
 - `src/shared/core/mcp/catalog.ts` — static catalog of known MCP servers and their
   credential keys (`catalogData`)
-- `src/main/core/agents/agent-payload-builder.ts` — includes MCP capability data in the
+- `src/main/core/providers/agent-payload-builder.ts` — includes MCP capability data in the
   payload handed to an agent based on provider capabilities
 
 ## Current Behavior

@@ -1,5 +1,10 @@
+import { contractRange } from './artifacts';
 import { readSse, type SseFrame } from './sse';
 import type { AgentBridgeEvent, SwitchCredentials } from './types';
+import { RUNTIME_ARTIFACT, RUNTIME_VERSION } from './version';
+
+/** This artifact's own range for the contract it speaks to Switch over. */
+const AGENT_PROTOCOL = contractRange('agent-protocol', RUNTIME_ARTIFACT);
 
 /**
  * The agent bridge's push transport (CHOO-1857), client side.
@@ -170,9 +175,22 @@ export class SwitchEventStream {
     });
   }
 
+  /**
+   * Reopen the stream until it comes back, reporting on a curve.
+   *
+   * The reconnect itself is unconditional — an endpoint that is down now may be
+   * up in a moment, and this loop is the only thing that would notice. What is
+   * rationed is the reporting: an endpoint that is simply gone (a managed
+   * stack the user stopped, one session per room, each retrying forever) writes
+   * the same line every thirty seconds until the app is quit, which is how a
+   * real failure elsewhere gets lost. The first failure is reported, then
+   * powers of two, and recovery is stated so the outage has an end in the log
+   * as well as a beginning — the same discipline the heartbeat already applies.
+   */
   private async streamLoop(): Promise<void> {
     const { creds, connectionId, scope, filter, log, signal } = this.deps;
     let backoff = INITIAL_BACKOFF_MS;
+    let failures = 0;
 
     while (!signal.aborted) {
       const socketAbort = new AbortController();
@@ -183,6 +201,14 @@ export class SwitchEventStream {
           scope,
           filter,
           start_from: this.cursor > 0 ? String(this.cursor) : 'head',
+          // What we are and what we speak, declared on the connect we already
+          // make (CHOO-1865). A client that says nothing records as unknown
+          // server-side, and a declaration cannot be backfilled after the fact
+          // — every release that ships silent is a permanent blind spot.
+          protocol: String(AGENT_PROTOCOL.speaks),
+          protocol_accepts: String(AGENT_PROTOCOL.accepts),
+          client: RUNTIME_ARTIFACT,
+          client_version: RUNTIME_VERSION,
         });
         if (this.deps.spawnCapable) params.set('spawn_capable', 'true');
         if (this.rooms.length) params.set('rooms', this.rooms.join(','));
@@ -201,6 +227,13 @@ export class SwitchEventStream {
         }
 
         backoff = INITIAL_BACKOFF_MS;
+        if (failures > 0) {
+          log.warn('SwitchEventStream: stream recovered', {
+            event: 'switch_stream_recovered',
+            afterFailures: failures,
+          });
+          failures = 0;
+        }
         log.debug('SwitchEventStream: stream open', {
           event: 'switch_stream_open',
           connectionId,
@@ -216,11 +249,16 @@ export class SwitchEventStream {
         if (signal.aborted) return;
         // A deliberate reopen (repoint) aborts the socket; that is not an error.
         if (!socketAbort.signal.aborted) {
-          log.warn('SwitchEventStream: stream error', {
-            event: 'switch_stream_error',
-            error: String(error),
-            backoffMs: backoff,
-          });
+          failures += 1;
+          if ((failures & (failures - 1)) === 0) {
+            log.warn('SwitchEventStream: stream error', {
+              event: 'switch_stream_error',
+              endpoint: creds.apiEndpoint,
+              failures,
+              error: String(error),
+              backoffMs: backoff,
+            });
+          }
           await new Promise((r) => setTimeout(r, backoff));
           backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
         }
@@ -235,6 +273,10 @@ export class SwitchEventStream {
         log.debug('SwitchEventStream: connection established', {
           event: 'switch_stream_connected',
           rooms: frame.data.rooms,
+          // What the server says it is (CHOO-1865). Recorded, not acted on —
+          // logging it is what makes "which versions are actually talking to
+          // each other" answerable from a bug report rather than a guess.
+          server: frame.data.server ?? null,
         });
         this.reportRooms(frame.data.rooms);
         return;
