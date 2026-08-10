@@ -5,6 +5,7 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
@@ -106,7 +107,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                     variant="ghost"
                     size="sm"
                     aria-label={`Open ${bridgePlatformLabel(bridge.type)}`}
-                    onClick={() => void rpc.app.openExternal(bridge.homeUrl as string)}
+                    onClick={() =>
+                      void openExternalUrl(
+                        bridge.homeUrl as string,
+                        `Could not open ${bridgePlatformLabel(bridge.type)}`
+                      )
+                    }
                   >
                     <ExternalLink className="size-3.5" />
                     Open

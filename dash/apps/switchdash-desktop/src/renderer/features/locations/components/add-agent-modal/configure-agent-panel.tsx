@@ -142,7 +142,7 @@ export const ConfigureAgentPanel = observer(function ConfigureAgentPanel({
           <span className="flex flex-col gap-0.5">
             <span className="text-sm">Auto-create a session on notify</span>
             <span className="text-xs text-foreground-muted">
-              switchdash watches this agent&apos;s rooms and starts a session automatically when
+              Switch Console watches this agent&apos;s rooms and starts a session automatically when
               it&apos;s addressed with none running.
             </span>
           </span>

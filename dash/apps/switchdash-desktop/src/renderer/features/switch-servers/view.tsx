@@ -1,4 +1,4 @@
-import { ExternalLink, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { ExternalLink, MoreVertical, Pencil, PlugZap, RefreshCw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
@@ -83,11 +83,17 @@ const ServerMainPanel = observer(function ServerMainPanel() {
     void hostReachabilityStore.hydrate();
   }, []);
 
+  // A blocked host answers nothing and this page renders the host-unreachable
+  // panel instead, so neither read below has a consumer while it is down.
+  // Reading it here also makes the host un-blocking a recovery signal: the
+  // effect re-runs and finally fetches what it skipped (CHOO-2042).
+  const hostBlocked = store.isHostBlocked(serverId);
+
   useEffect(() => {
-    if (!detailsVisible) return;
+    if (!detailsVisible || hostBlocked) return;
     void store.refreshStatus(serverId);
     void store.ensureAuthConfig(serverId);
-  }, [serverId, store, detailsVisible]);
+  }, [serverId, store, detailsVisible, hostBlocked]);
 
   if (!server) {
     return (
@@ -196,7 +202,11 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             <LocalServerControls />
           ))}
 
-        {detailsVisible && (
+        {detailsVisible && store.isUnreachable(serverId) && (
+          <ServerUnreachableCard serverId={serverId} />
+        )}
+
+        {detailsVisible && !store.isUnreachable(serverId) && (
           <>
             <div className={`${card} flex items-center justify-between gap-3`}>
               <div className="flex items-center gap-2 text-sm">
@@ -216,7 +226,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                   variant="outline"
                   size="sm"
                   disabled={refreshing}
-                  onClick={() => void store.refreshStatus(serverId)}
+                  onClick={() => void store.refreshServer(serverId)}
                 >
                   <RefreshCw className="size-4" />
                   Refresh
@@ -258,11 +268,62 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   );
 });
 
+/** How often the page re-probes a server it could not reach, while the user is
+ * looking at it. Short enough to feel like it is trying, long enough not to
+ * hammer a gateway that is down. */
+const UNREACHABLE_RETRY_MS = 10_000;
+
+/**
+ * The whole page when a server's gateway cannot be reached. There is nothing to
+ * sign into and no status worth reading, so this replaces both rather than
+ * stacking a red banner on top of a sign-in form that can never work. The raw
+ * gateway error stays in the console: naming our own IPC method at the user
+ * gives them nothing to act on (CHOO-2042).
+ */
+const ServerUnreachableCard = observer(function ServerUnreachableCard({
+  serverId,
+}: {
+  serverId: string;
+}) {
+  const store = switchServersStore;
+  const retrying = store.refreshing.has(serverId);
+
+  // Keep probing while this is on screen. Waiting for the user to press
+  // something would leave a server that recovered looking down.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) void store.refreshServer(serverId);
+    }, UNREACHABLE_RETRY_MS);
+    return () => clearInterval(timer);
+  }, [serverId, store]);
+
+  return (
+    <div className={`${card} flex items-center justify-between gap-3`}>
+      <div className="flex items-center gap-2 text-sm">
+        <PlugZap className="size-4 text-amber-500" />
+        <span className="text-foreground">Cannot reach the server</span>
+        <span className="text-foreground-muted">
+          {retrying ? 'Reconnecting…' : 'Check your connection.'}
+        </span>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={retrying}
+        onClick={() => void store.refreshServer(serverId)}
+      >
+        <RefreshCw className={retrying ? 'size-4 animate-spin' : 'size-4'} />
+        Retry
+      </Button>
+    </div>
+  );
+});
+
 function StatusDot({ connected }: { connected: boolean }) {
   return (
     <span
       aria-hidden
-      className={`inline-block size-2 rounded-full ${connected ? 'bg-green-500' : 'bg-amber-500'}`}
+      className={`inline-block size-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}
     />
   );
 }

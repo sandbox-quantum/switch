@@ -76,8 +76,8 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
         {data && <VerdictBadge verdict={data.verdict} />}
       </div>
       <FieldDescription className="text-foreground-muted">
-        The on-host process that keeps this agent connected to its Switch rooms while switchdash is
-        closed. Updated automatically when switchdash connects; you can also manage it here.
+        The on-host process that keeps this agent connected to its Switch rooms while Switch Console
+        is closed. Updated automatically when Switch Console connects; you can also manage it here.
       </FieldDescription>
 
       {isLoading && (

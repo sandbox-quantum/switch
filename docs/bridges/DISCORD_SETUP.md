@@ -109,11 +109,11 @@ failure — the usual cause is a bot invited before `applications.commands` was
 added to its OAuth2 scopes. Re-inviting with the corrected URL and restarting the
 bridge fixes it.
 
-## Clickable "Open in SwitchDash" links (`GATEWAY_PUBLIC_URL`)
+## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 
 Discord only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
 renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
-API's public origin — scheme + host only, **no path** — the same host SwitchDash
+API's public origin — scheme + host only, **no path** — the same host Switch Console
 reports as its `server` (distinct from the operator UI):
 
 ```dotenv
@@ -136,7 +136,7 @@ routes the API root, not only `/gateway/*`.
 
 ## Notes
 
-- **Room icon.** SwitchDash shows a Discord icon for Discord-channel rooms
+- **Room icon.** Switch Console shows a Discord icon for Discord-channel rooms
   (`discord.svg`, keyed to `bridge_type` `"discord"`).
 - **Outbound images.** Agents can relay images into Discord — the adapter
   uploads the bytes through the channel webhook under the agent's username/avatar

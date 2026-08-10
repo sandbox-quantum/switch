@@ -123,12 +123,25 @@ const config: Configuration = {
     // fpm requires a maintainer for the .deb and .rpm targets; without it the
     // packaging step aborts before writing any Linux artifact.
     maintainer: 'Louis Amaudruz <louis.amaudruz@sandboxaq.com>',
+    // Overrides the top-level `executableName: PRODUCT_NAME`, which contains a
+    // space. A space in the Linux binary name has to be quoted in the .desktop
+    // Exec line and in the deb/rpm install path; keeping the lowercase,
+    // space-free name avoids that and matches `desktopName` above.
+    executableName: APP_NAME_LOWER,
     syncDesktopName: true,
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] },
       { target: 'rpm', arch: ['x64'] },
     ],
+  },
+  // deb/rpm package names must be lowercase and space-free, so they are pinned
+  // rather than derived from the display name (same as the canary channel).
+  deb: {
+    packageName: APP_NAME_LOWER,
+  },
+  rpm: {
+    packageName: APP_NAME_LOWER,
   },
   win: {
     icon: 'src/assets/images/switchdash/app-icon-beta.png',

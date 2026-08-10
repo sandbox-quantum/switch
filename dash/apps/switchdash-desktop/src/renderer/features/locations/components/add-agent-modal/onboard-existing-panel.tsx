@@ -25,6 +25,10 @@ export type OnboardableAgent = {
    * names one and the modal has no provider picked to fall back on, in which
    * case the row cannot be selected. */
   providerLabel: string | null;
+  /** Why this row cannot be brought in, or null when it can. Listed-and-disabled
+   * rather than hidden: a missing row says nothing, and the reason is usually
+   * something the user can act on. */
+  blockedReason: string | null;
 };
 
 const BADGE: Record<AdoptKind, string> = {
@@ -52,12 +56,12 @@ export function OnboardExistingPanel({
     <div className="flex flex-col gap-2 rounded-md border border-border bg-background-1 px-3 py-2.5 text-sm">
       <span className="text-foreground-muted">
         {agents.length} agent{agents.length === 1 ? '' : 's'} in this directory{' '}
-        {agents.length === 1 ? "isn't" : "aren't"} in switchdash yet — pick which to bring in, or
-        create a new one below.
+        {agents.length === 1 ? "isn't" : "aren't"} in Switch Console yet — pick which to bring in,
+        or create a new one below.
       </span>
       <div className="flex flex-col gap-0.5">
         {agents.map((a) => {
-          const blocked = a.kind === 'attach' && a.providerLabel === null;
+          const blocked = a.blockedReason !== null;
           return (
             <label
               key={a.name}
@@ -83,11 +87,8 @@ export function OnboardExistingPanel({
                     </span>
                   )}
                 </div>
-                {blocked ? (
-                  <span className="text-xs text-foreground-muted">
-                    Pick an agent type above to attach this one — the directory does not say which
-                    runs it.
-                  </span>
+                {a.blockedReason !== null ? (
+                  <span className="text-xs text-foreground-muted">{a.blockedReason}</span>
                 ) : (
                   a.description && (
                     <span className="truncate text-xs text-foreground-muted">{a.description}</span>

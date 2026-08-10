@@ -38,7 +38,7 @@ export const switchSetupController = createRPCController({
         return {
           agentId: status.agentId,
           available: false,
-          blockedReason: `switchdash cannot manage this agent type on ${sshHost}.`,
+          blockedReason: `Switch Console cannot manage this agent type on ${sshHost}.`,
         };
       }
       return status.installed

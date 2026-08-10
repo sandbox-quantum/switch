@@ -72,7 +72,7 @@ describe('buildEnvFile', () => {
   it('defines every var the bundled compose file interpolates', () => {
     // Derived from the compose file rather than a hand-kept list. The previous
     // list had drifted both ways — it omitted GATEWAY_PUBLIC_URL (so the
-    // "Open in SwitchDash" redirect was silently disabled on every managed
+    // "Open in Switch Console" redirect was silently disabled on every managed
     // stack) while asserting vars compose never interpolates. A list cannot
     // notice a variable being added to the contract; this can.
     const interpolated = new Set(

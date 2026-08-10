@@ -24,8 +24,8 @@ export function ResetAgentModal({ agentLabel, onSuccess, onClose }: Props) {
       </DialogHeader>
       <DialogContentArea className="flex flex-col gap-4 pt-0">
         <p className="text-sm text-foreground-muted">
-          <span className="font-medium text-foreground">{agentLabel}</span> will be reset.
-          switchdash kills all of its remote sessions — the watcher and every running session — then
+          <span className="font-medium text-foreground">{agentLabel}</span> will be reset. Switch
+          Console kills all of its remote sessions — the watcher and every running session — then
           restarts it fresh.
         </p>
 

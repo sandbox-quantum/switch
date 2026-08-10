@@ -156,8 +156,8 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
             )}
             {nothingToAdd && (
               <p className="mt-1 text-xs text-foreground-muted">
-                Every agent on this switchdash is already in the room. Agents registered elsewhere
-                can only be added from the gateway.
+                Every agent on this copy of Switch Console is already in the room. Agents registered
+                elsewhere can only be added from the gateway.
               </p>
             )}
           </Field>

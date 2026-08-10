@@ -1,6 +1,6 @@
-# Switchdash
+# Switch Console
 
-Switchdash is a local-first desktop app (Electron) for managing the local AI
+Switch Console is a local-first desktop app (Electron) for managing the local AI
 coding-agent sessions that participate in [Agent Switch](../README.md) — which
 rooms an agent belongs to, its configuration (working directory, identity),
 and the scheduling that starts and drives its sessions.

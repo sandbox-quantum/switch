@@ -88,8 +88,8 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
           <Field>
             <FieldLabel>SSH host</FieldLabel>
             <p className="text-xs text-foreground-muted">
-              A Host alias from your <code>~/.ssh/config</code>. Auth uses your SSH agent —
-              switchdash stores no credentials.
+              A Host alias from your <code>~/.ssh/config</code>. Auth uses your SSH agent — Switch
+              Console stores no credentials.
             </p>
             {/*
               Wait for the alias list before choosing which control to show.

@@ -331,7 +331,7 @@ export class RoomConnection {
     this.stream.start();
 
     // Seed this room's deeplink right away (an idle report carries it) so the
-    // session's `(Open in SwitchDash)` link is available in the new room's
+    // session's `(Open in Switch Console)` link is available in the new room's
     // !status immediately on connect/switch — not only once the agent next
     // works. idle surfaces nothing on the bridge, so this posts no message.
     if (this.roomId) void this.postRuntimeState('idle', null).catch(() => {});

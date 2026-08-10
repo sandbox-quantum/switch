@@ -4,8 +4,16 @@ const env = (import.meta as ImportMetaWithEnv).env;
 const isDev = env?.DEV === true;
 const isCanary = env?.VITE_BUILD === 'canary';
 
+// The product's DISPLAY name and its STORAGE identity are deliberately separate.
+//
+// PRODUCT_NAME is the only name a user reads. Everything below it — the app id,
+// the userData directory, the artifact prefix, the `switchdash://` scheme — is
+// storage/OS identity, and renaming any of it strands an existing install:
+// userData holds the database, and APP_ID/ARTIFACT_PREFIX carry auto-update and
+// macOS registration continuity. They stay on `switchdash` on purpose. Do not
+// "fix" the inconsistency (CHOO-2008).
 export const APP_ID = isCanary ? 'com.switchdash.canary' : 'com.switchdash.stable';
-export const PRODUCT_NAME = isCanary ? 'Switchdash Canary' : 'Switchdash';
+export const PRODUCT_NAME = isCanary ? 'Switch Console Canary' : 'Switch Console';
 export const APP_NAME_LOWER = isCanary ? 'switchdash-canary' : 'switchdash';
 export const USER_DATA_DIR_NAME = isDev
   ? 'switchdash-dev'

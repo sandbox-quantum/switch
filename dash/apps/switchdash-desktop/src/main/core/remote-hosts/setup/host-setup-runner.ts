@@ -446,8 +446,8 @@ function describeUnactionable(step: HostSetupStep): string {
     case 'unknown':
       return step.error ?? `Could not determine whether ${step.name} is available.`;
     case 'wrong-version':
-      return `${step.name} is installed but too old, and switchdash has no upgrade command for this host.`;
+      return `${step.name} is installed but too old, and Switch Console has no upgrade command for this host.`;
     default:
-      return `${step.name} is not installed, and switchdash has no install command for this host.`;
+      return `${step.name} is not installed, and Switch Console has no install command for this host.`;
   }
 }

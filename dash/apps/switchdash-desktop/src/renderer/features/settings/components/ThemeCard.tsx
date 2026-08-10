@@ -20,7 +20,7 @@ const ThemeCard: React.FC = () => {
     <div className="grid gap-3 text-sm">
       <div>
         <div className="font-medium text-foreground">Color mode</div>
-        <div className="text-foreground-muted">Choose how Switchdash looks.</div>
+        <div className="text-foreground-muted">Choose how Switch Console looks.</div>
       </div>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(6.5rem,1fr))] gap-2">
         <button
@@ -38,20 +38,20 @@ const ThemeCard: React.FC = () => {
           onClick={() => handleSetTheme('emlight')}
           className={`${buttonBase} ${theme === 'emlight' ? activeClass : inactiveClass}`}
           aria-pressed={theme === 'emlight'}
-          aria-label="Set theme to Switchdash Light"
+          aria-label="Set theme to Switch Console Light"
         >
           <Sun className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="text-center">Switchdash Light</span>
+          <span className="text-center">Switch Console Light</span>
         </button>
         <button
           type="button"
           onClick={() => handleSetTheme('emdark')}
           className={`${buttonBase} ${theme === 'emdark' ? activeClass : inactiveClass}`}
           aria-pressed={theme === 'emdark'}
-          aria-label="Set theme to Switchdash Dark"
+          aria-label="Set theme to Switch Console Dark"
         >
           <Moon className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="text-center">Switchdash Dark</span>
+          <span className="text-center">Switch Console Dark</span>
         </button>
       </div>
     </div>

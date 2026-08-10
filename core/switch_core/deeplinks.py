@@ -20,7 +20,7 @@ def switchdash_to_gateway(deeplink_url: str, gateway_public_url: str) -> str | N
     Platforms like Discord only linkify http(s), so the raw custom-scheme
     deeplink renders as plain text. The gateway serves an HTTP endpoint
     (`DEEPLINK_REDIRECT_PATH`) that 302-redirects to the deeplink; posting that
-    https URL makes the "Open in SwitchDash" link clickable everywhere.
+    https URL makes the "Open in Switch Console" link clickable everywhere.
 
     The query string is carried across verbatim (server/agent/room/session and
     any future params). Returns None when `deeplink_url` is not a switchdash

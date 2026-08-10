@@ -45,7 +45,7 @@ export function ExternalLinkChoiceDialog({
           onClick={() => onSuccess('switchdash-browser')}
         >
           <Globe className="size-4" />
-          Open in Switchdash
+          Open in Switch Console
         </Button>
         <Button className="w-full" variant="default" onClick={() => onSuccess('external-browser')}>
           <ExternalLink className="size-4" />

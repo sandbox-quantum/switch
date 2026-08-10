@@ -115,7 +115,7 @@ export function describeInstallFailure(
   // to sudo on someone's host.
   const eaccesPath = NPM_GLOBAL_EACCES.exec(output ?? '')?.[1];
   if (eaccesPath) {
-    return `Could not install ${name}: the SSH user cannot write to \`${eaccesPath}\`, which is where this host's npm installs global packages. switchdash does not run installs as root on its own. Either make npm's global prefix writable by this user (\`npm config set prefix\` pointing somewhere it owns, with that bin directory on PATH), or install this agent on the host manually with sudo and re-check. Nothing was changed on the host.`;
+    return `Could not install ${name}: the SSH user cannot write to \`${eaccesPath}\`, which is where this host's npm installs global packages. Switch Console does not run installs as root on its own. Either make npm's global prefix writable by this user (\`npm config set prefix\` pointing somewhere it owns, with that bin directory on PATH), or install this agent on the host manually with sudo and re-check. Nothing was changed on the host.`;
   }
 
   // The install never started: the tool that runs it is not there. Left raw,

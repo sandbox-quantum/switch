@@ -227,18 +227,23 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   }
 
   /**
-   * Whether a location belongs to the active server. The whole sidebar tree is
-   * scoped to one server at a time: a location shows only when its agents are
-   * linked to {@link switchServersStore.activeServerId}. Unregistered locations
-   * (mid-onboarding, no agent row yet) always show so the user sees progress.
-   * When no server is active, nothing is hidden.
+   * Whether a location has anything to show under the active server. The whole
+   * sidebar tree is scoped to one server at a time: a location shows when it holds
+   * at least one agent linked to {@link switchServersStore.activeServerId}.
+   * Unregistered locations (mid-onboarding, no agent row yet) always show so the
+   * user sees progress. When no server is active, nothing is hidden.
+   *
+   * A directory can hold agents for several servers, so this is "has any here",
+   * not "belongs to". Which of its agents are then drawn is
+   * {@link scopedAgents}' business — a location being in scope does not put every
+   * agent in it on this server's tree (CHOO-2044).
    */
   isLocationInActiveScope(locationId: string): boolean {
     const activeServerId = switchServersStore.activeServerId;
     if (!activeServerId) return true;
     const location = this.locationManager.locations.get(locationId);
     if (location && location.state === 'unregistered') return true;
-    return agentsStore.serverIdForLocation(locationId) === activeServerId;
+    return agentsStore.locationHasAgentsOnServer(locationId, activeServerId);
   }
 
   /**
@@ -255,9 +260,15 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   }
 
   /** The representative agent of a location (the agent shown on its sidebar row):
-   * the first real (non-definition) agent, not a former subagent's row. */
+   * the first real (non-definition) agent, not a former subagent's row. Restricted
+   * to the active server, so a directory shared with another server does not
+   * describe itself by an agent this tree is not showing. */
   private parentAgent(locationId: string) {
-    return (agentsStore.byLocation.get(locationId) ?? [])[0];
+    const activeServerId = switchServersStore.activeServerId;
+    const agents = activeServerId
+      ? agentsStore.agentsOnServerAtLocation(locationId, activeServerId)
+      : (agentsStore.byLocation.get(locationId) ?? []);
+    return agents[0] ?? (agentsStore.byLocation.get(locationId) ?? [])[0];
   }
 
   /** Where a location runs — `remote` when it has an SSH host, else `local`. */

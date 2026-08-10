@@ -46,38 +46,51 @@ describe('withResolvedHomeUrls', () => {
     expect(resolved.homeUrl).toBe('http://127.0.0.1:8065/switch');
   });
 
-  it('leaves other platforms on the server-built link', async () => {
-    // Slack, Discord and Teams are public platforms — the gateway's URL is
-    // correct everywhere, and switchdash has nothing better to offer.
-    const resolved = await withResolvedHomeUrls(MANAGED, [
+  it('puts a Slack workspace link in web form', async () => {
+    // `slack://` reaches nobody on a machine without the desktop app, which is
+    // the same defect the per-room channel action had.
+    const [resolved] = await withResolvedHomeUrls(MANAGED, [
       bridge({ id: 'b2', type: 'slack', homeUrl: 'slack://open?team=T1' }),
-      bridge({ id: 'b3', type: 'discord', homeUrl: null }),
     ]);
 
-    expect(resolved[0].homeUrl).toBe('slack://open?team=T1');
+    expect(resolved.homeUrl).toBe('https://app.slack.com/client/T1');
+  });
+
+  it('leaves a platform that already hands out a web link alone', async () => {
+    // Discord and Teams use https URLs their apps claim, so there is nothing to
+    // translate and they must not become a special case.
+    const resolved = await withResolvedHomeUrls(MANAGED, [
+      bridge({ id: 'b3', type: 'discord', homeUrl: 'https://discord.com/channels/123' }),
+      bridge({ id: 'b4', type: 'teams', homeUrl: null }),
+    ]);
+
+    expect(resolved[0].homeUrl).toBe('https://discord.com/channels/123');
     expect(resolved[1].homeUrl).toBeNull();
   });
 
-  it('leaves a non-managed server untouched', async () => {
-    // Somebody else's Mattermost: we neither run it nor know where it is
-    // published, so the server's own answer is the only one available.
+  it('reaches a non-managed Mattermost on the host its link names', async () => {
+    // Somebody else's Mattermost: we do not run it and cannot substitute an
+    // origin, but its deeplink names the public host the web app serves.
     const [resolved] = await withResolvedHomeUrls(EXTERNAL, [
       bridge({ homeUrl: 'mattermost://chat.example.com/switch' }),
     ]);
 
-    expect(resolved.homeUrl).toBe('mattermost://chat.example.com/switch');
+    expect(resolved.homeUrl).toBe('https://chat.example.com/switch');
     expect(mattermostOriginFor).not.toHaveBeenCalled();
   });
 
-  it('keeps the server link when the stack is not running', async () => {
-    // No persisted ports (stack never started) means no origin to substitute.
+  it('still hands back a web link when the stack is not running', async () => {
+    // No persisted ports (stack never started) means no origin to substitute,
+    // so the in-compose host is all there is and the link cannot work either
+    // way. Web form at least fails in the browser where the user can see it,
+    // rather than reaching no handler at all.
     mattermostOriginFor.mockResolvedValue(null);
 
     const [resolved] = await withResolvedHomeUrls(MANAGED, [
       bridge({ homeUrl: 'mattermost://mattermost:8065/switch' }),
     ]);
 
-    expect(resolved.homeUrl).toBe('mattermost://mattermost:8065/switch');
+    expect(resolved.homeUrl).toBe('https://mattermost:8065/switch');
   });
 
   it('does not probe the stack when no Mattermost bridge is attached', async () => {

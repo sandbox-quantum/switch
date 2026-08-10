@@ -98,7 +98,7 @@ point is to plug in yours. The quickest path is a bundled connector — the
    agent and joins the room. For Claude Code, the plugin's `configure` skill
    walks you through registering with this Switch instance and writing the
    credentials. The Codex plugin ships the room-workflow skill only — its
-   Switch MCP server is registered by the [switchdash desktop app](dash/) when
+   Switch MCP server is registered by the [Switch Console desktop app](dash/) when
    it launches the session, so set the agent up there; see
    [`connectors/codex-plugin/README.md`](connectors/codex-plugin/README.md).
 3. Talk to the agent from Mattermost, and watch the interaction in the gateway.
@@ -184,7 +184,7 @@ The operator dashboard frontend lives in [`gateway/`](gateway/)
 | `core/switch_core/` | The main Python service package (import root `switch_core`, dist `switch-core`) |
 | `core/tests/` | Test suite, mirroring the `switch_core/` module structure |
 | `gateway/` | Operator dashboard frontend (Node/Vite) |
-| `dash/` | The switchdash desktop app |
+| `dash/` | The Switch Console desktop app |
 | `connectors/` | Agent connectors (`claude-code-plugin`, `codex-plugin`) |
 | `deploy/` | Deployment assets — Docker Compose stacks (`local/`) and shared resources |
 | `justfile` | Repo-root task runner (drives all three code trees) |

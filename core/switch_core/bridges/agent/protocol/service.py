@@ -1094,7 +1094,7 @@ class ProtocolService:
         anything.
 
         The `switchdash://` deeplink is rewritten to a gateway HTTP redirect when
-        `GATEWAY_PUBLIC_URL` is configured, so the "Open in SwitchDash" link is
+        `GATEWAY_PUBLIC_URL` is configured, so the "Open in Switch Console" link is
         clickable on platforms that only linkify http(s) (Discord). The rewritten
         link is what gets persisted and emitted, so both the bridged status
         message and the `!status` command surface a clickable link. When unset,

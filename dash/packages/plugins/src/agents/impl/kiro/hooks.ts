@@ -17,7 +17,7 @@ export function buildKiroHookConfig() {
     ],
     {
       name: 'switchdash',
-      description: 'Switchdash-managed Kiro agent configuration for lifecycle hooks.',
+      description: 'Switch Console-managed Kiro agent configuration for lifecycle hooks.',
     }
   );
 }

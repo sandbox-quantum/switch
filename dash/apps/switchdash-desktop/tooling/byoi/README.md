@@ -1,14 +1,14 @@
-# Switchdash BYOI Testing Kit
+# Switch Console BYOI Testing Kit
 
-A copy-pasteable setup for testing switchdash's BYOI (Bring Your Own Infrastructure) feature.
+A copy-pasteable setup for testing Switch Console's BYOI (Bring Your Own Infrastructure) feature.
 Each task gets its own Docker container running a full Linux dev environment with Node.js, git, tmux, and Claude Code pre-installed.
 
 ## How it works
 
-1. When you create a task, switchdash runs `provision.sh`
+1. When you create a task, Switch Console runs `provision.sh`
 2. The script builds a Docker image (first run only), starts a new container, clones your repo into it, and prints a JSON object to stdout
-3. Switchdash SSH-connects to the container using password auth and opens the workspace at `/home/devuser/workspace`
-4. When you terminate the task, switchdash runs `terminate.sh` which stops and removes the container
+3. Switch Console SSH-connects to the container using password auth and opens the workspace at `/home/devuser/workspace`
+4. When you terminate the task, Switch Console runs `terminate.sh` which stops and removes the container
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ Make the scripts executable:
 chmod +x scripts/provision.sh scripts/terminate.sh
 ```
 
-Add the project in switchdash, then create a task. That's it.
+Add the project in Switch Console, then create a task. That's it.
 
 ## First provision
 
@@ -49,7 +49,7 @@ This sample prints:
 | Field          | Value                          | Notes                                                            |
 | -------------- | ------------------------------ | ---------------------------------------------------------------- |
 | `id`           | Docker container name          | Passed to `terminate.sh` as `REMOTE_WORKSPACE_ID`                |
-| `host`         | `localhost`                    | Host Switchdash connects to                                          |
+| `host`         | `localhost`                    | Host Switch Console connects to                                   |
 | `port`         | Random Docker host port for 22 | Must be a JSON number                                            |
 | `username`     | `devuser`                      | SSH username                                                     |
 | `password`     | `devpass`                      | SSH password                                                     |
@@ -58,7 +58,7 @@ This sample prints:
 
 ## Forwarding API keys
 
-The provision script forwards API keys from your host environment into the container automatically. Just make sure the relevant variables are set in your shell before switchdash runs the provision script:
+The provision script forwards API keys from your host environment into the container automatically. Just make sure the relevant variables are set in your shell before Switch Console runs the provision script:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...

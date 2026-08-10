@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
-import { rpc } from '@renderer/lib/ipc';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import HiddenToolsSettingsCard from './HiddenToolsSettingsCard';
 import InterfaceSettingsCard from './InterfaceSettingsCard';
@@ -93,7 +93,10 @@ export function SettingsPage({
   onTabChange: (tab: SettingsPageTab) => void;
 }) {
   const handleDocsClick = useCallback(() => {
-    void rpc.app.openExternal('https://github.com/sandbox-quantum/switch');
+    void openExternalUrl(
+      'https://github.com/sandbox-quantum/switch',
+      'Could not open the documentation'
+    );
   }, []);
 
   const tabs: Array<{

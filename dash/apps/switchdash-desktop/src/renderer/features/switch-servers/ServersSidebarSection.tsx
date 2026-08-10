@@ -43,7 +43,7 @@ export const ServersSidebarSection = observer(function ServersSidebarSection() {
     void store.init();
     void localServerStore.init();
     void remoteServerStore.init();
-    const onFocus = () => void store.refreshAllStatuses();
+    const onFocus = () => void store.recoverStale();
     window.addEventListener('focus', onFocus);
     return () => {
       window.removeEventListener('focus', onFocus);
@@ -260,7 +260,10 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
                 aria-hidden
                 className={cn(
                   'size-1.5 shrink-0 rounded-full',
-                  dormant ? 'bg-foreground-muted' : connected ? 'bg-green-500' : 'bg-amber-500'
+                  // Amber reads as "warming up". Neither signed-out nor
+                  // unreachable is transitional: both mean this server's data
+                  // is unavailable right now, so both are red.
+                  dormant ? 'bg-foreground-muted' : connected ? 'bg-green-500' : 'bg-red-500'
                 )}
               />
               {drift && <ServerDriftIndicator drift={drift} />}

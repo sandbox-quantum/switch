@@ -160,7 +160,7 @@ export async function resolveChannelEmbed(params: {
     }
     return {
       kind: 'unavailable',
-      reason: `This room is bridged to ${bridgeType}, which cannot be shown inside switchdash.`,
+      reason: `This room is bridged to ${bridgeType}, which cannot be shown inside Switch Console.`,
     };
   }
 

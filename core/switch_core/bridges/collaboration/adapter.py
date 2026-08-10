@@ -349,14 +349,14 @@ class CollaborationAdapter(ABC):
 
     @staticmethod
     def _deeplink_suffix(deeplink_url: str | None) -> str:
-        """A trailing ``(Open in SwitchDash)`` link to the session, or empty.
+        """A trailing ``(Open in Switch Console)`` link to the session, or empty.
 
         Appended inline in parentheses after the status text. Rendered through
         ``translate_outbound`` along with the rest of the body, so it converts
         to each platform's link format."""
         if not deeplink_url:
             return ""
-        return f" ([Open in SwitchDash]({deeplink_url}))"
+        return f" ([Open in Switch Console]({deeplink_url}))"
 
     def _working_body(self, detail: str | None, deeplink_url: str | None) -> str:
         """The "working on it…" status text, rendered for this platform.

@@ -9,7 +9,7 @@ import {
 import type { AgentLaunchSpec } from '../../../sidecar/agent-launch-spec';
 import { sidecarLaunchSpecRelPath } from '../../../sidecar/sidecar-paths';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
-import { getAgents } from './getAgents';
+import { getLocationAgentsOnServer } from './getAgents';
 import { SWITCH_AGENTS_DIR_RELATIVE } from './switch-settings-paths';
 
 /** How an agent's provider was inferred, so the UI can say whether to trust it. */
@@ -29,7 +29,8 @@ export type DiscoveredConfiguredAgent = {
   /** Best-effort: null when nothing on disk names a provider. */
   providerId: AgentProviderId | null;
   providerSource: ProviderSource;
-  /** Whether this switchdash already has a row for the name at this location. */
+  /** Whether this switchdash already has a row for the name at this location, on
+   * the server being onboarded to. */
   alreadyAgent: boolean;
 };
 
@@ -141,10 +142,14 @@ async function definitionOwners(workspaceFs: PluginFs): Promise<Map<string, Agen
 export async function discoverConfiguredAgents(params: {
   sshHost: string | null;
   dir: string;
+  /** The Switch server being onboarded to — what `alreadyAgent` is judged against.
+   * A directory can hold agents for several servers, so the same name can be
+   * attached here already and still be attachable to another (CHOO-2044). */
+  serverId: string;
 }): Promise<DiscoveredConfiguredAgent[]> {
   const location = await getLocationByHostDir(params.sshHost, params.dir);
   const existing = location
-    ? new Set((await getAgents(location.id)).map((a) => a.name))
+    ? new Set((await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name))
     : new Set<string>();
 
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);

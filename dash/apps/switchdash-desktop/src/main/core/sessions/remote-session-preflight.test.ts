@@ -98,7 +98,7 @@ describe('preflightRemoteSession', () => {
   it('fails loud when node is present but too old', async () => {
     const deps = makeDeps({ nodeVersion: 'v12.22.9', credsFile: CREDS_FILE });
     await expect(preflightRemoteSession(deps)).rejects.toThrow(
-      /has Node v12.22.9, but the switchdash sidecar needs Node 18 or newer/
+      /has Node v12.22.9, but the Switch Console sidecar needs Node 18 or newer/
     );
   });
 

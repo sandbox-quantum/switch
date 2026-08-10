@@ -216,7 +216,7 @@ const NotificationSettingsCard: React.FC = () => {
 
         <SettingRow
           title="OS notifications"
-          description="Show system banners when agents need attention or finish (while Switchdash is unfocused)."
+          description="Show system banners when agents need attention or finish (while Switch Console is unfocused)."
           control={
             <>
               <ResetToDefaultButton

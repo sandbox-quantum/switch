@@ -7,6 +7,8 @@ const serversStore = vi.hoisted(() => ({
   servers: [] as { id: string; name?: string; managed?: boolean }[],
   activeServerId: null as string | null,
   isConnected: (_serverId: string): boolean => true,
+  // These servers answer; they are simply not signed in to.
+  isUnreachable: (_serverId: string): boolean => false,
   statusFor: (serverId: string) => ({ user: { id: `user-of-${serverId}` } }),
 }));
 

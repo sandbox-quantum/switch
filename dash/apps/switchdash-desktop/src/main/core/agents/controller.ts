@@ -44,8 +44,9 @@ export const agentsController = createRPCController({
     sshHost: string | null;
     dir: string;
     providerId: AgentProviderId;
+    serverId: string;
   }) => discoverLocationAgents(params),
-  discoverConfiguredAgents: (params: { sshHost: string | null; dir: string }) =>
+  discoverConfiguredAgents: (params: { sshHost: string | null; dir: string; serverId: string }) =>
     discoverConfiguredAgents(params),
   attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
   getAgents: (locationId?: string) => getAgents(locationId),

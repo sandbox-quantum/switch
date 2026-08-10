@@ -8,6 +8,7 @@ import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
+import { openRoomChannel } from './room-links';
 import { currentMattermostTheme } from './theme-tokens';
 import { WEBVIEW_ALLOW_POPUPS } from './webview-attrs';
 
@@ -202,15 +203,12 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         <RoomNotice
           icon={<MessagesSquare className="size-6" />}
           title={`This room lives in ${capitalise(active.embed.platform)}`}
-          detail="Conversations on external platforms open in their own app."
+          detail="Conversations on external platforms open in their own app, or in your browser when it is not installed."
           action={
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
-                const embed = active.embed;
-                if (embed.kind === 'external') void rpc.app.openExternal(embed.url);
-              }}
+              onClick={() => activeRoomId && openRoomChannel(activeRoomId)}
             >
               <ExternalLink className="size-3" />
               Open in {capitalise(active.embed.platform)}

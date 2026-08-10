@@ -126,8 +126,8 @@ export const RemoteServerControls = observer(function RemoteServerControls({
       </div>
 
       <p className="text-xs text-foreground-tertiary-passive">
-        The stack keeps running on {sshHost} when you close switchdash. Remote-host agents stay
-        connected; agents on this computer can reach it while switchdash is open.
+        The stack keeps running on {sshHost} when you close Switch Console. Remote-host agents stay
+        connected; agents on this computer can reach it while Switch Console is open.
       </p>
 
       <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-4">

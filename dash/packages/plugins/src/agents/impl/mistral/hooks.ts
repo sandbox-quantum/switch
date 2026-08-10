@@ -17,7 +17,7 @@ const MISTRAL_HOOK_ENTRIES = [
     command: makeStdinHookCommand('stop'),
     timeout: 10,
     strict: false,
-    description: 'Notify Switchdash when Mistral Vibe finishes an agent turn.',
+    description: 'Notify Switch Console when Mistral Vibe finishes an agent turn.',
   },
   {
     name: 'switchdash-ask-user-question',
@@ -26,7 +26,7 @@ const MISTRAL_HOOK_ENTRIES = [
     command: makeNotificationHookCommand('permission_prompt'),
     timeout: 10,
     strict: false,
-    description: 'Notify Switchdash when Mistral Vibe asks for user input.',
+    description: 'Notify Switch Console when Mistral Vibe asks for user input.',
   },
 ];
 

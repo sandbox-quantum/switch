@@ -50,7 +50,7 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
   {
     id: 'app.addServer',
     label: 'Add Switch Server',
-    description: 'Connect switchdash to a Switch server, or run a managed one',
+    description: 'Connect Switch Console to a Switch server, or run a managed one',
     scope: 'app',
     group: 'App',
     iconKey: 'server',
@@ -67,7 +67,7 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
   {
     id: 'app.giveFeedback',
     label: 'Give Feedback',
-    description: 'Send feedback to the switchdash team',
+    description: 'Send feedback to the Switch Console team',
     scope: 'app',
     group: 'App',
     iconKey: 'message-square-share',

@@ -273,7 +273,7 @@ export function RoomRow({
           />
           <TooltipContent>
             {undrawableCount} more {undrawableCount === 1 ? 'member is' : 'members are'} in this
-            room but not on this switchdash, so they cannot be shown here
+            room but not on this copy of Switch Console, so they cannot be shown here
           </TooltipContent>
         </Tooltip>
       )}

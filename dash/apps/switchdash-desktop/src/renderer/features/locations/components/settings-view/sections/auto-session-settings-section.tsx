@@ -41,7 +41,7 @@ export function AutoSessionSettingsSection({
         {single && <AutoSessionSwitch agentId={single.id} />}
       </div>
       <FieldDescription className="text-foreground-muted">
-        When on, switchdash watches this agent&apos;s Switch rooms and automatically starts a
+        When on, Switch Console watches this agent&apos;s Switch rooms and automatically starts a
         session — connected to the room and ready to reply — whenever it&apos;s addressed with no
         session running.
       </FieldDescription>

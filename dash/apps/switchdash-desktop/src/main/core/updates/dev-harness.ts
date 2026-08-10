@@ -178,7 +178,7 @@ export class FakeUpdateDriver {
       path: '',
       sha512: '',
       releaseDate: new Date().toISOString(),
-      releaseName: `Switchdash ${this.nextVersion}`,
+      releaseName: `Switch Console ${this.nextVersion}`,
     } as UpdateInfo;
   }
 

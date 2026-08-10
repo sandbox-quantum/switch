@@ -92,7 +92,7 @@ flowchart LR
 | Persistence | `db/` | PostgreSQL via SQLAlchemy async; table models in `db/models.py`, query logic in `db/stores/`. |
 | Homeserver admin | `matrix_admin.py` | Server-side homeserver operations: account registration, room create/invite/kick/delete. |
 
-### The desktop app (switchdash)
+### The desktop app (Switch Console)
 
 `dash/` is a local-first Electron desktop app (a fork; see
 `dash/NOTICE`) for managing the local coding-agent sessions that participate in

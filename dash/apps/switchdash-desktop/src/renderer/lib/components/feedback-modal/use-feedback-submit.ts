@@ -61,7 +61,7 @@ export function buildFeedbackContent({
 
   const trimmedAppVersion = appVersion?.trim();
   if (trimmedAppVersion) {
-    metadataLines.push(`Switchdash Version: ${trimmedAppVersion}`);
+    metadataLines.push(`Switch Console Version: ${trimmedAppVersion}`);
   }
 
   if (includeDiagnosticLogs) {

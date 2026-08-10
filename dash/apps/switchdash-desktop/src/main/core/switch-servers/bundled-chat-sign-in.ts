@@ -26,13 +26,16 @@ export async function bundledChatSignInFor(
   server: SwitchServer | null
 ): Promise<BundledChatSignIn> {
   if (!server) {
-    return { kind: 'unavailable', reason: 'This server is no longer registered in switchdash.' };
+    return {
+      kind: 'unavailable',
+      reason: 'This server is no longer registered in Switch Console.',
+    };
   }
   if (!server.managed) {
     return {
       kind: 'unavailable',
       reason:
-        'switchdash does not run this server, so its chat is someone else’s deployment and switchdash holds no sign-in for it.',
+        'Switch Console does not run this server, so its chat is someone else’s deployment and Switch Console holds no sign-in for it.',
     };
   }
 
@@ -41,7 +44,7 @@ export async function bundledChatSignInFor(
     return {
       kind: 'unavailable',
       reason:
-        'switchdash has not started this deployment yet, so it has not chosen the port its chat is published on.',
+        'Switch Console has not started this deployment yet, so it has not chosen the port its chat is published on.',
     };
   }
 
@@ -50,7 +53,7 @@ export async function bundledChatSignInFor(
     return {
       kind: 'unavailable',
       reason:
-        'switchdash has no stored credentials for this deployment. They are generated the first time it starts.',
+        'Switch Console has no stored credentials for this deployment. They are generated the first time it starts.',
     };
   }
 

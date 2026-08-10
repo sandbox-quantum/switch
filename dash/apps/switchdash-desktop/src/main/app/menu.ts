@@ -17,7 +17,7 @@ import { getMainWindow } from './window';
 
 function copyVersionInfo(): void {
   const lines = [
-    `Switchdash ${app.getVersion()}`,
+    `${app.getName()} ${app.getVersion()}`,
     `Platform: ${process.platform} ${process.arch}`,
     `Electron: ${process.versions.electron}`,
   ];

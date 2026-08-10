@@ -67,7 +67,7 @@ export type SwitchVersionDrift =
 export function switchVersionDowngradeMessage(deployed: string, expected: string): string {
   return (
     `Runs switch-core ${deployed}; this app pins ${expected}. Its database has already migrated ` +
-    `forward and switch-core can't roll back — update switchdash to a build with switch-core ` +
+    `forward and switch-core can't roll back — update Switch Console to a build with switch-core ` +
     `${deployed} or newer, or reset the stack (deletes its data).`
   );
 }

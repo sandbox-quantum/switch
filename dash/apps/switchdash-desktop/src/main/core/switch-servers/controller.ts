@@ -1,11 +1,15 @@
 import type { Result } from '@switchdash/shared';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
+import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
 import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
 import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
 import { registerAgentIdentity } from '@main/core/agents/register-agent-identity';
 import { resolveAgentServers } from '@main/core/agents/resolve-servers';
 import { writeRemoteSwitchSettings } from '@main/core/agents/write-remote-switch-settings';
-import { writeSwitchSettings } from '@main/core/agents/write-switch-settings';
+import {
+  writeNeutralAgentSettingsFs,
+  writeSwitchSettings,
+} from '@main/core/agents/write-switch-settings';
 import { appService } from '@main/core/app/service';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
@@ -352,9 +356,22 @@ export const switchServersController = createRPCController({
     await writeSwitchSettings({
       dir: params.dir,
       apiEndpoint: server.apiUrl,
-      apiToken: registered.apiKey,
       agentId: registered.id,
     });
+
+    // The settings file above carries no token (CHOO-1962), so the per-agent
+    // credentials file is what actually provisions this agent.
+    const workspace = await resolveWorkspaceFsFor(null, params.dir);
+    try {
+      await writeNeutralAgentSettingsFs(workspace.fs, {
+        slug: params.name,
+        apiEndpoint: server.apiUrl,
+        apiToken: registered.apiKey,
+        agentId: registered.id,
+      });
+    } finally {
+      workspace.close();
+    }
 
     return { kind: 'created', agentId: registered.id };
   },
@@ -385,11 +402,25 @@ export const switchServersController = createRPCController({
     try {
       await writeRemoteSwitchSettings(fs, {
         apiEndpoint: server.apiUrl,
-        apiToken: registered.apiKey,
         agentId: registered.id,
       });
     } finally {
       fs.close();
+    }
+
+    // As locally: the settings file names the agent, the per-agent credentials
+    // file carries its token — here in the VM's own working directory, which is
+    // where its sessions will look.
+    const workspace = await resolveWorkspaceFsFor(params.sshHost, params.remoteRepoDir);
+    try {
+      await writeNeutralAgentSettingsFs(workspace.fs, {
+        slug: params.name,
+        apiEndpoint: server.apiUrl,
+        apiToken: registered.apiKey,
+        agentId: registered.id,
+      });
+    } finally {
+      workspace.close();
     }
 
     return { kind: 'created', agentId: registered.id };

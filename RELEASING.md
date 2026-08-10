@@ -2,7 +2,7 @@
 
 This describes how to cut a release of the **Switch core stack** — the
 `switch-core`, `gateway`, and `setup` container images, the Helm chart, and the
-standalone Docker Compose file. The switchdash desktop app releases separately
+standalone Docker Compose file. The Switch Console desktop app releases separately
 (see `.github/workflows/switchdash-release.yml` and `dash/docs/INSTALL.md`).
 
 ## Versioning
@@ -83,7 +83,7 @@ peer still on it, and it can never be raised past what is running in the field.
 You can also trigger `workflow_dispatch` manually from the Actions tab to test a
 build without creating a release.
 
-## switchdash desktop app release (separate)
+## Switch Console desktop app release (separate)
 
 The desktop app (`dash/`) releases on its own tag, `switchdash-v<version>`, via
 `.github/workflows/switchdash-release.yml`. The tag MUST match
@@ -138,7 +138,7 @@ SWITCH_VERSION=<version> docker compose -f standalone-docker-compose.yml up -d
 artifact (`standalone-compose:<version>`, plus `latest`) on every release,
 stamped with the same version as the images. It is a **versioned contract**:
 its service names, compose profiles, and env vars are an interface that
-consumers — chiefly switchdash's local-server mode — pin against. Treat changes
+consumers — chiefly Switch Console's local-server mode — pin against. Treat changes
 to that interface as you would any public API change.
 
 - **Images, not builds.** Services reference published GHCR images via
@@ -173,6 +173,6 @@ change. The full list:
 - **Plugin marketplace source** — `SWITCH_MARKETPLACE_SOURCE` in
   `dash/packages/plugins/src/distribution.ts` (used by the Claude
   connector plugin descriptor).
-- **switchdash auto-update target** — `RELEASE_REPO_OWNER` / `RELEASE_REPO_NAME`
+- **Switch Console auto-update target** — `RELEASE_REPO_OWNER` / `RELEASE_REPO_NAME`
   in `dash/apps/switchdash-desktop/src/shared/app-identity.ts` (mirrored
   in `app-identity.canary.ts`), consumed by both electron-builder configs.

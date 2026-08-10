@@ -106,7 +106,7 @@ async function assertHostReady(
         detail,
       });
       throw new Error(
-        `the SSH connection to host '${host}' could not open another channel (${detail}). Every remote session on a host shares one SSH connection — either the server's sshd MaxSessions is exhausted (close some sessions on '${host}' or raise it), or the shared connection is unhealthy; switchdash rebuilds an unhealthy connection automatically, so retry in a few seconds.`
+        `the SSH connection to host '${host}' could not open another channel (${detail}). Every remote session on a host shares one SSH connection — either the server's sshd MaxSessions is exhausted (close some sessions on '${host}' or raise it), or the shared connection is unhealthy; Switch Console rebuilds an unhealthy connection automatically, so retry in a few seconds.`
       );
     }
     if (isTransportFailure(error)) {
@@ -116,7 +116,7 @@ async function assertHostReady(
         detail,
       });
       throw new Error(
-        `the SSH connection to host '${host}' is not usable right now (${detail}). switchdash reconnects automatically — retry in a few seconds.`
+        `the SSH connection to host '${host}' is not usable right now (${detail}). Switch Console reconnects automatically — retry in a few seconds.`
       );
     }
     log.warn('preflightRemoteSession: host-ready probe failed', { workDir, host, detail });
@@ -144,7 +144,7 @@ async function assertHostReady(
   const major = Number.parseInt(nodeVersion.replace(/^v/, ''), 10);
   if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
     throw new Error(
-      `remote host '${host}' has Node ${nodeVersion || '(unknown)'}, but the switchdash sidecar needs Node ${MIN_NODE_MAJOR} or newer. Install a current Node on the host (e.g. via NodeSource or nvm) so it is the default \`node\` on PATH, then retry.`
+      `remote host '${host}' has Node ${nodeVersion || '(unknown)'}, but the Switch Console sidecar needs Node ${MIN_NODE_MAJOR} or newer. Install a current Node on the host (e.g. via NodeSource or nvm) so it is the default \`node\` on PATH, then retry.`
     );
   }
 }

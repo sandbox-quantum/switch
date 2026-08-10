@@ -23,7 +23,18 @@ export class EncryptedAppSecretsStore {
     }
 
     this.assertSecureStorageAvailable();
-    return this.safeStorageApi.decryptString(Buffer.from(secret, 'base64'));
+    try {
+      return this.safeStorageApi.decryptString(Buffer.from(secret, 'base64'));
+    } catch (cause) {
+      throw new Error(
+        `Stored secret '${key}' exists but could not be decrypted. On macOS and Linux the ` +
+          `encryption key lives in an OS keychain entry named after the application, so a build ` +
+          `whose product name changed is handed a different key and cannot read secrets written ` +
+          `by the previous one. Whatever owns this secret has to write it again; for a managed ` +
+          `Switch server that means resetting the stack, which deletes its data.`,
+        { cause }
+      );
+    }
   }
 
   async setSecret(key: string, secret: string): Promise<void> {

@@ -82,7 +82,7 @@ artifacts:
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.1.6
+    version: 0.2.0
     declared_in: dash/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -127,12 +127,12 @@ artifacts:
 
   switch-connector:
     description: The Claude Code connector plugin.
-    version: 0.7.9
+    version: 0.8.0
     declared_in: connectors/claude-code-plugin/.claude-plugin/plugin.json
 
   switch-connector-codex:
     description: The Codex connector plugin.
-    version: 0.2.1
+    version: 0.2.2
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
 
 contracts:

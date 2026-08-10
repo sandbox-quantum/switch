@@ -120,8 +120,8 @@ export function SwitchSetupCard({ agentId }: { agentId: string }) {
         )}
         {currencyUnknown && !status.refreshError && (
           <p className="text-xs text-foreground-warning">
-            This agent type doesn't report plugin versions here, so switchdash can't tell whether an
-            update exists. Reinstall to be sure you are on the latest.
+            This agent type doesn't report plugin versions here, so Switch Console can't tell
+            whether an update exists. Reinstall to be sure you are on the latest.
           </p>
         )}
         {!status.installed && !ghReady && (

@@ -18,13 +18,13 @@ is an MCP tool that writes a row keyed on the MCP transport session id, while
 events are fetched over an unrelated HTTP request that never mentions it. The
 thing that joined the room and the thing receiving that room's events are two
 independent connections sharing only an agent id. Neither notices when the
-other dies. Clients then keep their own copies — switchdash persists a
+other dies. Clients then keep their own copies — Switch Console persists a
 session→room map to SQLite, the remote reconciler mirrors it, the sidecar keeps
 a third — so the same fact is stored four times and reconciled nowhere.
 
 **Events are held in memory and destroyed on read.** The event queue is a
 per-agent, per-room `asyncio.Queue`. A poll *removes* what it returns, so only
-one consumer can exist (hence `SWITCH_CHANNEL_DISABLE_POLL`, which switchdash
+one consumer can exist (hence `SWITCH_CHANNEL_DISABLE_POLL`, which Switch Console
 sets to stop the connector stealing its events). Nothing survives a restart,
 and there is no way to ask "what did I miss?" because no record is kept.
 
@@ -120,7 +120,7 @@ Exactly one recipient per room at all times: no duplicate delivery, no
 coordination needed for handoff in either direction.
 
 This rule already exists — implemented client-side in
-`auto-session-watcher.ts`, which skips a room when switchdash's own map says a
+`auto-session-watcher.ts`, which skips a room when Switch Console's own map says a
 session covers it. Moving it into the protocol is the split-brain fix.
 
 **Collision.** If a `single` connection tries to claim a room already claimed
@@ -685,7 +685,7 @@ Planned second mode off the same code: *daemon* (long-lived, `scope: all`,
 - **Claude Code** — plugin `.mcp.json` at the plugin root, `${CLAUDE_PLUGIN_ROOT}`
   for the path, `${VAR}` expansion for endpoint and token.
 - **Codex** — Codex expands neither, and a stdio server cannot be expressed on
-  argv the way an HTTP one can, so switchdash writes a per-agent Codex profile
+  argv the way an HTTP one can, so Switch Console writes a per-agent Codex profile
   (`$CODEX_HOME/<slug>.config.toml`) registering the server and launches with
   `--profile <slug>`. It controls the launch, so it can also inject per-session
   credentials.
@@ -711,8 +711,8 @@ fallback tier and costs minting, expiry, rotation and injection.
 
 It asks; it does not observe.
 
-switchdash used to learn a session's room by watching: a `PostToolUse` hook
-fired after `connect_to_room` succeeded and switchdash recorded the room in its
+Switch Console used to learn a session's room by watching: a `PostToolUse` hook
+fired after `connect_to_room` succeeded and Switch Console recorded the room in its
 own map, persisted to SQLite. The hook was accurate — the flaw was the *copy*. A
 copy drifts when the session dies, when the connection fails after the tool
 returned, when the server restarts, or when the room is deleted.
@@ -722,13 +722,13 @@ that is authoritative. A client reads it from the local runtime it spawned
 (same process as the connection) or from Switch. **The hook, the persisted
 session→room blob, and the remote mirror all go away.**
 
-*State of the migration.* switchdash now opens the stream itself and hands the
-session `SWITCH_CONNECTION_ID`, so a switchdash-launched session claims its room
-on a connection switchdash already holds — for Claude Code and for Codex alike.
+*State of the migration.* Switch Console now opens the stream itself and hands the
+session `SWITCH_CONNECTION_ID`, so a Switch Console-launched session claims its room
+on a connection Switch Console already holds — for Claude Code and for Codex alike.
 The `PostToolUse` hook survives only as the fallback for a **Claude** session
-switchdash did not start and adopted afterwards, which holds a connection of its
+Switch Console did not start and adopted afterwards, which holds a connection of its
 own. Codex registers no such hook. Since the Codex connector plugin now ships
-the Switch MCP server, a Codex session switchdash did not start *can* call
+the Switch MCP server, a Codex session Switch Console did not start *can* call
 `connect_to_room`; such a session is currently untracked rather than impossible.
 
 Cross-checking a room against incoming events becomes unnecessary: a
@@ -867,7 +867,7 @@ three renews is unaffected and unaware.
    `AdminClient` and the bridge app — the Matrix clients are wired before the
    bridge, so the bridge could no longer own it.
 
-5. switchdash (`RoomConnection` → session-grained connection that repoints
+5. Switch Console (`RoomConnection` → session-grained connection that repoints
    rooms; daemon mode) and the sidecar, which reuses the same class verbatim —
    `sidecar-runtime.ts` constructs `RoomConnection` directly, so the two migrate
    together rather than separately. The `auto_session` watcher's

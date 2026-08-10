@@ -2,6 +2,7 @@ import { action, computed, makeObservable, observable, runInAction } from 'mobx'
 import { toast } from 'sonner';
 import { createUpdateToastActionLabel } from '@renderer/lib/components/update-toast-action-label';
 import { events, rpc } from '@renderer/lib/ipc';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { menuCheckForUpdatesChannel } from '@shared/events/appEvents';
 import {
@@ -334,12 +335,7 @@ export class UpdateStore {
 
   /** Open this update's GitHub release page in the user's browser. */
   async openReleasePage(): Promise<void> {
-    const url = this.releaseUrl;
-    try {
-      await rpc.app.openExternal(url);
-    } catch {
-      toast.error('Could not open the release page', { description: url });
-    }
+    await openExternalUrl(this.releaseUrl, 'Could not open the release page');
   }
 
   /**

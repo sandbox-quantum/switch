@@ -73,7 +73,7 @@ export function SessionDeeplinkListener(): null {
           });
           toast.error('No agent session found for this link', {
             description:
-              'This switchdash has no local session for the linked room. Open it on the client running that agent.',
+              'This copy of Switch Console has no local session for the linked room. Open it on the client running that agent.',
           });
           return;
         }

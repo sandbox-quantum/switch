@@ -33,7 +33,7 @@ export function DeleteAgentModal({ agentLabel, onSuccess, onClose }: Props) {
       <DialogContentArea className="flex flex-col gap-4 pt-0">
         <p className="text-sm text-foreground-muted">
           <span className="font-medium text-foreground">{agentLabel}</span> will be removed from
-          switchdash and the Switch credentials it stored on this machine will be cleared. The
+          Switch Console and the Switch credentials it stored on this machine will be cleared. The
           folder stays on the filesystem.
         </p>
 

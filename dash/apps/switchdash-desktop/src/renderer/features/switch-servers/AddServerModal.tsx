@@ -132,19 +132,19 @@ function ChooseStep({
           <ChoiceCard
             icon={<HardDrive className="size-5" />}
             title="Run a server on this computer"
-            description="switchdash sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
+            description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
             onClick={onLocal}
           />
           <ChoiceCard
             icon={<Server className="size-5" />}
             title="Run a server on a remote host"
-            description="switchdash sets it up over SSH on a host you've onboarded. Stays running when switchdash is closed."
+            description="Switch Console sets it up over SSH on a host you've onboarded. Stays running when Switch Console is closed."
             onClick={onRemoteHost}
           />
           <ChoiceCard
             icon={<Globe className="size-5" />}
             title="Connect to an existing server"
-            description="Point switchdash at a Switch gateway someone else runs, by URL."
+            description="Point Switch Console at a Switch gateway someone else runs, by URL."
             onClick={onExternal}
           />
         </div>
@@ -521,7 +521,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
                 <CircleCheck className="size-4" />
                 <AlertTitle>Server is running on {sshHost}</AlertTitle>
                 <AlertDescription>
-                  It's in your servers list, reachable from this computer while switchdash is open.
+                  It's in your servers list, reachable from this computer while Switch Console is
+                  open.
                 </AlertDescription>
               </Alert>
             )}

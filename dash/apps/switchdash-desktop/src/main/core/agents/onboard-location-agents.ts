@@ -7,7 +7,7 @@ import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
-import { getServer } from '@main/core/switch-servers/servers-store';
+import { findServerByEndpoint, getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
@@ -17,7 +17,7 @@ import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { resolveWorkspaceFsFor, type WorkspaceFs } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
-import { getAgents } from './getAgents';
+import { getLocationAgentsOnServer } from './getAgents';
 import { registerAgentIdentity } from './register-agent-identity';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
@@ -70,6 +70,13 @@ function registrationError(
  * Resolve the Switch identity to onboard a definition under: reuse existing
  * credentials when their identity still exists on the server, otherwise register
  * a fresh identity and write the credentials (adopting a plain subagent).
+ *
+ * A definition that already carries credentials naming an identity this server
+ * does not have belongs to a *different* Switch server, and is refused. Minting a
+ * fresh identity for it would be the natural-looking fallback and is exactly the
+ * wrong move: the credentials are written back under the same name, so the other
+ * server's agent is overwritten on disk and stops working, silently (CHOO-2044).
+ * Adoption is for definitions with no Switch identity at all.
  */
 async function resolveIdentity(
   name: string,
@@ -104,6 +111,14 @@ async function resolveIdentity(
       }
       throw cause;
     }
+    const owner = await findServerByEndpoint(creds.apiEndpoint);
+    return {
+      ok: false,
+      error: {
+        type: 'error',
+        message: `"${name}" is already registered with ${owner ? owner.name : 'another Switch server'} and cannot be imported into ${ctx.server.name}. Onboard it from that server, or create a new agent here under a different name.`,
+      },
+    };
   }
 
   // No usable credentials — adopt: mint a fresh identity and write its creds,
@@ -175,7 +190,9 @@ export async function onboardLocationAgents(
     name: params.locationName ?? basenameFromAnyPath(params.dir) ?? params.providerId,
   });
 
-  const existing = new Set((await getAgents(location.id)).map((a) => a.name));
+  const existing = new Set(
+    (await getLocationAgentsOnServer(location.id, params.serverId)).map((a) => a.name)
+  );
 
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
   const created: Agent[] = [];
@@ -190,7 +207,7 @@ export async function onboardLocationAgents(
       return err({
         type: 'invalid-directory',
         dir: params.dir,
-        message: 'No Claude agents available to onboard in this directory.',
+        message: `No Claude agents available to onboard in this directory onto ${server.name}.`,
       });
     }
 
@@ -245,7 +262,7 @@ export async function onboardLocationAgents(
     return err({
       type: 'invalid-directory',
       dir: params.dir,
-      message: 'Every agent in this directory is already onboarded here.',
+      message: `Every agent in this directory is already onboarded onto ${server.name}.`,
     });
   }
 

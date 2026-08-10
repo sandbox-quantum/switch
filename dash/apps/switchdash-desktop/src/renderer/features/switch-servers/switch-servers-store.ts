@@ -25,6 +25,16 @@ export class SwitchServersStore {
   readonly statuses = new Map<string, ServerConnectionStatus>();
   /** Auth config per server id, fetched lazily when a login panel needs it. */
   readonly authConfigs = new Map<string, SwitchAuthConfig>();
+  /** Server ids a login panel has asked about. A failed or host-blocked fetch
+   * caches nothing, so this is what the recovery paths re-drive. */
+  private readonly authConfigWanted = new Set<string>();
+  /** Server ids with an auth-config fetch in flight, so several recovery
+   * signals arriving at once collapse into a single request. */
+  private readonly authConfigInFlight = new Set<string>();
+  /** Server ids whose last gateway read failed. The page shows a single
+   * "cannot reach" state for these: with the gateway down there is nothing to
+   * sign into, so a sign-in form would be a dead end dressed up as a choice. */
+  readonly unreachable = new Set<string>();
 
   loadingServers = false;
   /** Server ids with an in-flight status refresh. */
@@ -65,6 +75,11 @@ export class SwitchServersStore {
     return this.statuses.get(serverId)?.connected ?? false;
   }
 
+  /** Whether the last read of this server's gateway failed to reach it. */
+  isUnreachable(serverId: string): boolean {
+    return this.unreachable.has(serverId);
+  }
+
   async init(): Promise<void> {
     runInAction(() => {
       this.loadingServers = true;
@@ -98,6 +113,32 @@ export class SwitchServersStore {
     await Promise.all(this.servers.map((s) => this.refreshStatus(s.id)));
   }
 
+  /**
+   * Re-drive everything that recovers when connectivity does: the connection
+   * status of every server, plus any auth config a login panel is still waiting
+   * on. Auth config only recovers if something asks again, so it has to ride
+   * the same signals as status rather than being a once-per-mount read.
+   *
+   * Only servers a login panel actually asked about are re-fetched, so this
+   * stays as cheap as the status sweep it accompanies.
+   */
+  async recoverStale(): Promise<void> {
+    const pending = [...this.authConfigWanted].filter((id) => !this.authConfigs.has(id));
+    await Promise.all([
+      this.refreshAllStatuses(),
+      ...pending.map((id) => this.ensureAuthConfig(id)),
+    ]);
+  }
+
+  /**
+   * The server page's manual re-check. Covers both what the status card reads
+   * and what the sign-in panel needs — refreshing only the status leaves a page
+   * that never got its auth config stuck on "Checking sign-in options…".
+   */
+  async refreshServer(serverId: string): Promise<void> {
+    await Promise.all([this.refreshStatus(serverId), this.ensureAuthConfig(serverId)]);
+  }
+
   async refreshStatus(serverId: string): Promise<void> {
     runInAction(() => {
       this.refreshing.add(serverId);
@@ -106,15 +147,18 @@ export class SwitchServersStore {
       const status = await rpc.switchServers.getConnectionStatus(serverId);
       runInAction(() => {
         this.statuses.set(serverId, status);
+        this.unreachable.delete(serverId);
       });
-    } catch {
+    } catch (cause) {
       // An unreachable server is a real, displayable state — record it as
-      // disconnected (the per-server status dot shows it). A background poll
-      // failure must NOT raise the page-level `error` banner: that field is
-      // global, so one unreachable server would paint an error over every
-      // server's view.
+      // disconnected (the per-server status dot shows it) and flag the server
+      // so its page can say so in one line. A background poll failure must NOT
+      // raise the page-level `error` banner: that field is global, so one
+      // unreachable server would paint an error over every server's view.
+      console.warn(`[switch-servers] could not read status for ${serverId}`, cause);
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
+        this.unreachable.add(serverId);
       });
     } finally {
       runInAction(() => {
@@ -123,19 +167,47 @@ export class SwitchServersStore {
     }
   }
 
+  /**
+   * Fetch which login methods a server offers, unless that is already known.
+   *
+   * Safe to call from every recovery path: a cached config short-circuits, and
+   * concurrent callers collapse into the one in-flight request. A failure
+   * caches nothing, so the next caller retries — which is the point, since the
+   * usual failure is a connectivity blip that later heals (CHOO-2042).
+   */
   async ensureAuthConfig(serverId: string): Promise<void> {
+    runInAction(() => {
+      this.authConfigWanted.add(serverId);
+    });
     if (this.authConfigs.has(serverId)) return;
+    if (this.authConfigInFlight.has(serverId)) return;
     // The gateway of a server on an unreachable host cannot answer, and the
     // host-unreachable surface already states why — don't paint the global
-    // error banner with a doomed fetch (CHOO-1780).
+    // error banner with a doomed fetch (CHOO-1780). The host un-blocking is
+    // itself a recovery signal, so this is a skip, not a giving up.
     if (this.isHostBlocked(serverId)) return;
+    runInAction(() => {
+      this.authConfigInFlight.add(serverId);
+    });
     try {
       const config = await rpc.switchServers.getAuthConfig(serverId);
       runInAction(() => {
         this.authConfigs.set(serverId, config);
+        this.unreachable.delete(serverId);
       });
     } catch (cause) {
-      this.setError(cause);
+      // Not the error banner: the raw text is our own IPC method name wrapped
+      // around a fetch failure, which tells the user nothing they can act on.
+      // The page states the one thing that matters, that the server cannot be
+      // reached, and the detail stays in the console for us.
+      console.warn(`[switch-servers] could not read auth config for ${serverId}`, cause);
+      runInAction(() => {
+        this.unreachable.add(serverId);
+      });
+    } finally {
+      runInAction(() => {
+        this.authConfigInFlight.delete(serverId);
+      });
     }
   }
 
@@ -236,6 +308,8 @@ export class SwitchServersStore {
         this.activeServerId = activeServerId;
         this.statuses.delete(serverId);
         this.authConfigs.delete(serverId);
+        this.authConfigWanted.delete(serverId);
+        this.unreachable.delete(serverId);
       });
       // Keep a server scoped when any remain (the sidebar scopes to it).
       if (!this.activeServerId && servers.length > 0) {

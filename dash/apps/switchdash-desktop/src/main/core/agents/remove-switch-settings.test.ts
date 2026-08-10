@@ -31,7 +31,6 @@ describe('removeSwitchCredentials (default .claude teardown)', () => {
     const fs = fakeFs({
       [SETTINGS_PATH]: mergeSwitchSettings(null, {
         apiEndpoint: 'https://switch.example.com',
-        apiToken: 'secret-token',
         agentId: 'agent-123',
       }),
     });

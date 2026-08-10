@@ -102,12 +102,12 @@ export const DeleteServerModal = observer(function DeleteServerModal({
               ? `on ${server.sshHost}`
               : 'on this computer'}{' '}
             — its containers, <strong className="text-foreground">all data and secrets</strong> —
-            and removes it from switchdash. This can’t be undone.
+            and removes it from Switch Console. This can’t be undone.
           </p>
         ) : (
           <p className="text-sm text-foreground-muted">
-            This removes the server from switchdash. The server itself isn’t touched — you can add
-            it again later.
+            This removes the server from Switch Console. The server itself isn’t touched — you can
+            add it again later.
           </p>
         )}
         <p className="text-sm text-foreground-muted">{agentsNote}</p>

@@ -3,14 +3,15 @@ import { rpc } from '@renderer/lib/ipc';
 import type { Agent } from '@shared/core/agents/agents';
 
 /**
- * Renderer cache of every agent across all locations, used to resolve which
- * Switch server a location belongs to. The sidebar scopes its tree to the active
- * server (see {@link switchServersStore.activeServerId}), so it needs a reactive
- * location→serverId lookup that does not depend on each row's own react-query.
+ * Renderer cache of every agent across all locations. The sidebar scopes its tree
+ * to the active server (see {@link switchServersStore.activeServerId}), so it needs
+ * a reactive lookup that does not depend on each row's own react-query.
  *
- * A location holds one parent agent plus any subagents, which all share the same
- * server; {@link serverIdForLocation} returns the first non-null serverId among a
- * location's agents.
+ * **A server belongs to an agent, not to a directory.** A directory is a place on
+ * disk and can hold agents registered against several servers at once, so there is
+ * no such thing as "the location's server" to scope on — asking for one drags every
+ * agent in the directory under whichever answer came back first (CHOO-2044). Scope
+ * on {@link agentsOnServerAtLocation}; a location is in scope when it has any.
  */
 export class AgentsStore {
   /** All agents grouped by their location id. */
@@ -18,8 +19,8 @@ export class AgentsStore {
   /**
    * Server id a just-created location's agent will belong to, recorded by the
    * add-agent modal before {@link load} has re-fetched the new agent. Used as a
-   * fallback in {@link serverIdForLocation} so a freshly-created location does not
-   * flicker out of the sidebar's server-scoped view during the gap between the
+   * fallback in {@link locationHasAgentsOnServer} so a freshly-created location does
+   * not flicker out of the sidebar's server-scoped view during the gap between the
    * location mounting and the agent list refreshing.
    */
   readonly optimisticServerByLocation = new Map<string, string>();
@@ -81,11 +82,37 @@ export class AgentsStore {
     return matching.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** The Switch server a location's agents belong to, or null if unlinked. */
-  serverIdForLocation(locationId: string): string | null {
+  /** A location's agents that belong to one server — what the sidebar renders
+   *  under that server. Agents in the same directory registered elsewhere are not
+   *  this server's to show. */
+  agentsOnServerAtLocation(locationId: string, serverId: string): Agent[] {
+    return (this.byLocation.get(locationId) ?? []).filter((a) => a.serverId === serverId);
+  }
+
+  /** Whether a location has anything to show under `serverId`. */
+  locationHasAgentsOnServer(locationId: string, serverId: string): boolean {
+    return this.serverIdsForLocation(locationId).includes(serverId);
+  }
+
+  /**
+   * The servers a location's agents belong to. A directory can span several, so
+   * this is a list rather than the one answer callers used to ask for.
+   *
+   * The optimistic note stands in only while the location has no agent rows at
+   * all — that is the gap it exists to cover. Letting it also speak for a location
+   * that already has agents would have it claim a server the location is not on.
+   */
+  serverIdsForLocation(locationId: string): string[] {
     const agents = this.byLocation.get(locationId);
-    const resolved = agents?.find((a) => a.serverId !== null)?.serverId ?? null;
-    return resolved ?? this.optimisticServerByLocation.get(locationId) ?? null;
+    if (!agents || agents.length === 0) {
+      const optimistic = this.optimisticServerByLocation.get(locationId);
+      return optimistic ? [optimistic] : [];
+    }
+    const ids = new Set<string>();
+    for (const agent of agents) {
+      if (agent.serverId !== null) ids.add(agent.serverId);
+    }
+    return [...ids];
   }
 }
 

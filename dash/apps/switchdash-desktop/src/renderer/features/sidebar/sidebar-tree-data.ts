@@ -1,6 +1,7 @@
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import type { LocationStore } from '@renderer/features/locations/stores/location';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import type { Agent } from '@shared/core/agents/agents';
 
@@ -14,6 +15,21 @@ import type { Agent } from '@shared/core/agents/agents';
 export type AgentEntry = { agent: Agent; location: LocationStore };
 
 /**
+ * A location's agents that the active server's tree should draw.
+ *
+ * A location is in scope when *some* of its agents are on the active server, but a
+ * directory can hold agents for several servers at once — so scope has to be
+ * re-applied per agent here. Taking the location's whole list instead drew agents
+ * belonging to another server under this one, which read as "onboarding brought
+ * them across" when nothing had been onboarded at all (CHOO-2044).
+ */
+function agentsAtLocationInScope(location: LocationStore): Agent[] {
+  const activeServerId = switchServersStore.activeServerId;
+  if (!activeServerId) return agentsStore.byLocation.get(location.id) ?? [];
+  return agentsStore.agentsOnServerAtLocation(location.id, activeServerId);
+}
+
+/**
  * The flat list of agents in the active-server scope. switchdash shows agents
  * as a flat list — not grouped by directory (CHOO-1440).
  *
@@ -24,7 +40,7 @@ export type AgentEntry = { agent: Agent; location: LocationStore };
 export function scopedAgents(): AgentEntry[] {
   const entries: AgentEntry[] = [];
   for (const location of sidebarStore.filteredLocations) {
-    for (const agent of agentsStore.byLocation.get(location.id) ?? []) {
+    for (const agent of agentsAtLocationInScope(location)) {
       entries.push({ agent, location });
     }
   }
@@ -46,7 +62,7 @@ export function scopedAgents(): AgentEntry[] {
 export function agentsInActiveScope(): AgentEntry[] {
   const entries: AgentEntry[] = [];
   for (const location of sidebarStore.orderedLocations) {
-    for (const agent of agentsStore.byLocation.get(location.id) ?? []) {
+    for (const agent of agentsAtLocationInScope(location)) {
       entries.push({ agent, location });
     }
   }

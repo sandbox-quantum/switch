@@ -341,7 +341,7 @@ async def _dispatch_control_command(
 
     # Mirror the runtime "working" surface: link back to the session in
     # switchdash when we know its deeplink.
-    body = f"{ack} ([Open in SwitchDash]({deeplink}))" if deeplink else ack
+    body = f"{ack} ([Open in Switch Console]({deeplink}))" if deeplink else ack
     await _reply(client, room, event, body)
     client._event_buffer.enqueue(
         client.agent.id,
@@ -704,7 +704,7 @@ def _format_status_lines(
             parts.append("+".join(caps))
         deeplink = deeplinks.get(agent.id)
         if deeplink and status == AgentStatus.LIVE:
-            parts.append(f"[Open in SwitchDash]({deeplink})")
+            parts.append(f"[Open in Switch Console]({deeplink})")
         lines.append("- " + " · ".join(parts))
     return "\n".join(lines)
 

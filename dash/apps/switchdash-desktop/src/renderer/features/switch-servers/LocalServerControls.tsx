@@ -109,7 +109,7 @@ export const LocalServerControls = observer(function LocalServerControls() {
       </div>
 
       <p className="text-xs text-foreground-tertiary-passive">
-        The stack keeps running when you close switchdash.
+        The stack keeps running when you close Switch Console.
       </p>
 
       <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-4">

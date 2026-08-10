@@ -8,12 +8,12 @@ Switch is an AI agent orchestration and governance platform. It onboards, orches
 
 The target architecture is documented in `docs/`.
 
-## Switchdash
+## Switch Console
 
 `dash/` is a local-first desktop app (Electron; a fork, upstream
 attribution in `dash/NOTICE`) for managing the local AI coding-agent sessions that
 participate in Switch. The upstream app is built around coding workflows
-(projects → sessions → conversations); switchdash is being reworked
+(projects → sessions → conversations); Switch Console is being reworked
 around **Switch agents and their sessions** — which rooms an agent belongs to and
 is connected to, its config (working dir, identity), and scheduling: e.g.
 auto-starting a Claude Code session when a Slack user addresses an agent that has
@@ -84,7 +84,7 @@ each ships its own copy of the Switch room-workflow skill at
   Ships the skill plus an MCP config (`.mcp.json`) and hooks. It contains **no
   runtime code**: the MCP server is `@sandbox-quantum/switch-agent-runtime`,
   fetched with `npx` and built from `dash/packages/switch-agent-runtime/`.
-  switchdash imports the same package for its protocol client, so there is one
+  Switch Console imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.
 - `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
   skill plus its own MCP config, declared as `"mcpServers": "./.mcp.json"`, so a
@@ -92,19 +92,19 @@ each ships its own copy of the Switch room-workflow skill at
   expand `${VAR}` in a bundled config, so the server names its variables under
   `env_vars` and Codex forwards them **by name** from its own environment — no
   expansion, and no secret in the file. An unset name is simply not forwarded,
-  which is why the list can include the switchdash-only variables without
+  which is why the list can include the Switch Console-only variables without
   breaking a standalone session (the Claude connector cannot do this: `${VAR}`
   expansion makes every declared variable mandatory).
 
   The plugin's `.mcp.json` also carries `default_tools_approval_mode =
   "approve"`, so the Switch tools never prompt. It has to live there rather than
-  in anything switchdash writes: **no per-server setting can be layered onto a
+  in anything Switch Console writes: **no per-server setting can be layered onto a
   plugin-provided MCP server.** An `mcp_servers.switch.*` entry with no
   transport of its own — from the base config, a profile, or `-c` on argv —
   makes Codex reject the whole config as "invalid transport" and the session
   dies with it.
 
-  switchdash writes a per-agent Codex profile
+  Switch Console writes a per-agent Codex profile
   (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`) carrying
   **only** model, reasoning effort and instructions. It registers no MCP server.
   An agent that specializes none of those gets no profile and no `--profile`

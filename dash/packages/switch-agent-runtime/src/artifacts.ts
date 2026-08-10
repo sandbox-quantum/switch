@@ -22,14 +22,14 @@ export interface ContractRange {
 export const ARTIFACT_VERSIONS = {
   'switch-core': '0.12.4',
   switchdash: '0.19.3',
-  'agent-runtime': '0.1.6',
+  'agent-runtime': '0.2.0',
   sidecar: '1.8.0',
   gateway: '0.12.4',
   setup: '0.12.4',
   'helm-chart': '0.12.4',
   compose: '0.12.4',
-  'switch-connector': '0.7.9',
-  'switch-connector-codex': '0.2.1',
+  'switch-connector': '0.8.0',
+  'switch-connector-codex': '0.2.2',
 } as const satisfies Record<string, string>;
 
 export type ArtifactName = keyof typeof ARTIFACT_VERSIONS;

@@ -280,6 +280,41 @@ describe('SidebarStore active-server scoping', () => {
     expect(store.orderedLocations).toEqual([]);
     expect(store.isEmpty).toBe(true);
   });
+
+  it('shows a directory shared between servers under both (CHOO-2044)', () => {
+    // A directory is a place on disk, not one server's territory. Resolving it to
+    // a single server filed it under whichever agent came back first, and the
+    // other server's agents vanished from the tree.
+    const store = new SidebarStore(
+      locationManager([{ id: 'shared', createdAt: '2026-01-01T00:00:00.000Z' }])
+    );
+    agentsStore.byLocation.set('shared', [
+      { locationId: 'shared', serverId: 'server-1' } as Agent,
+      { locationId: 'shared', serverId: 'server-2' } as Agent,
+    ]);
+
+    switchServersStore.activeServerId = 'server-1';
+    expect(store.orderedLocations.map((p) => p.id)).toEqual(['shared']);
+
+    switchServersStore.activeServerId = 'server-2';
+    expect(store.orderedLocations.map((p) => p.id)).toEqual(['shared']);
+
+    switchServersStore.activeServerId = 'server-3';
+    expect(store.orderedLocations).toEqual([]);
+  });
+
+  it('describes a shared directory by an agent on the active server (CHOO-2044)', () => {
+    const store = new SidebarStore(
+      locationManager([{ id: 'shared', createdAt: '2026-01-01T00:00:00.000Z' }])
+    );
+    agentsStore.byLocation.set('shared', [
+      { locationId: 'shared', serverId: 'server-1', providerId: 'claude' } as Agent,
+      { locationId: 'shared', serverId: 'server-2', providerId: 'codex' } as Agent,
+    ]);
+
+    switchServersStore.activeServerId = 'server-2';
+    expect(store.locationProviderId('shared')).toBe('codex');
+  });
 });
 
 describe('SidebarStore filters', () => {

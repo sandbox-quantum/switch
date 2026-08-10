@@ -46,9 +46,9 @@ export function AutoApproveSettingsSection({
         )}
       </div>
       <FieldDescription className="text-foreground-muted">
-        When on, switchdash starts this agent&apos;s sessions with permission prompts bypassed (the
-        provider&apos;s auto-approve flag). Off by default; turn it on only for agents you trust to
-        run unattended.
+        When on, Switch Console starts this agent&apos;s sessions with permission prompts bypassed
+        (the provider&apos;s auto-approve flag). Off by default; turn it on only for agents you
+        trust to run unattended.
       </FieldDescription>
       {!single && (
         <div className="flex flex-col gap-2">

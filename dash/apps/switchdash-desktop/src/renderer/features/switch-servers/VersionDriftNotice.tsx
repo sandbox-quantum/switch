@@ -50,7 +50,7 @@ export function VersionDriftNotice({
     return (
       <Alert variant="destructive">
         <TriangleAlert className="size-4" />
-        <AlertTitle>This server is newer than switchdash</AlertTitle>
+        <AlertTitle>This server is newer than Switch Console</AlertTitle>
         <AlertDescription>
           {switchVersionDowngradeMessage(drift.deployed, drift.expected)}
         </AlertDescription>

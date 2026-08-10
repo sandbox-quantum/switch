@@ -25,6 +25,6 @@ export function isMissingGitExecutableError(error: unknown): boolean {
 
 export function missingGitExecutableError(): Error {
   return new Error(
-    'Git is not installed or Switchdash cannot find it. Install Git, then restart Switchdash.'
+    'Git is not installed or Switch Console cannot find it. Install Git, then restart Switch Console.'
   );
 }

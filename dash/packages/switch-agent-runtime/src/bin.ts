@@ -21,9 +21,17 @@
  * from its own getppid(), so each session's hook reaches its own runtime
  * without any cross-session coordination.
  *
- * Config comes from `SWITCH_*` env vars: the Claude connector sets them in its
- * `.mcp.json` env block, the Codex profile in `env_vars`, and switchdash puts
- * them in the session's environment when it launches one itself.
+ * Identity is resolved in two steps, environment first. switchdash puts the
+ * `SWITCH_*` vars in the session's environment when it launches one itself, and
+ * that path is taken whole whenever all three are present. Otherwise the local
+ * agent store decides — the working tree says which agents are provisioned
+ * here, `$HOME` holds their secrets — and where it names more than one, the
+ * session picks with `select_agent` before anything else will answer.
+ *
+ * Endpoints are the one ambiguity that cannot be deferred: the tool surface is
+ * fetched before the handshake, so the server has to be known by then. A store
+ * spanning two Switch deployments is therefore refused at startup rather than
+ * resolved by guessing.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -34,11 +42,27 @@ import * as path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  AGENTS_DIR_RELATIVE,
+  distinctEndpoints,
+  normalizeEndpoint,
+  readAgentStore,
+  type ResolvedAgent,
+} from './credentials';
 import { readSse, type SseFrame } from './sse';
 
-const API_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
-const API_TOKEN = process.env.SWITCH_API_TOKEN ?? '';
-const AGENT_ID = process.env.SWITCH_AGENT_ID ?? '';
+const ENV_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
+const ENV_TOKEN = process.env.SWITCH_API_TOKEN ?? '';
+const ENV_AGENT_ID = process.env.SWITCH_AGENT_ID ?? '';
+
+// The identity every request below is made as. Mutable because it is not always
+// known at startup: a standalone session with several agents provisioned in the
+// same working tree binds one through `select_agent`, and each request builder
+// reads these at call time rather than capturing them.
+let API_ENDPOINT = '';
+let API_TOKEN = '';
+let AGENT_ID = '';
+let AGENT_NAME = '';
 
 // When this session is managed by switchdash, switchdash reads the agent
 // bridge itself and injects addressed messages into the PTY. Reads are no
@@ -72,6 +96,11 @@ let serving = false;
  * looks identical from the outside. The file is what makes them tell apart.
  */
 function failStartup(reason: string): never {
+  recordStartupFailure(reason);
+  process.exit(1);
+}
+
+function recordStartupFailure(reason: string): void {
   process.stderr.write(`switch: ${reason}\n`);
   try {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -79,26 +108,162 @@ function failStartup(reason: string): never {
   } catch {
     // Best effort: stderr already carries the reason.
   }
-  process.exit(1);
 }
 
-if (
-  !API_ENDPOINT ||
-  !API_TOKEN ||
-  !AGENT_ID ||
-  looksUnresolved(API_ENDPOINT) ||
-  looksUnresolved(API_TOKEN) ||
-  looksUnresolved(AGENT_ID)
-) {
-  failStartup(
-    `missing or unresolved config — need SWITCH_API_ENDPOINT, SWITCH_API_TOKEN, and SWITCH_AGENT_ID\n` +
-      `  endpoint=${API_ENDPOINT || 'MISSING'}\n` +
-      `  token=${API_TOKEN ? 'set' : 'MISSING'}\n` +
-      `  agent_id=${AGENT_ID || 'MISSING'}\n` +
-      `If these look like \`\${SWITCH_*}\`, the env block in \`.claude/settings.local.json\` has not been expanded — run the \`configure\` skill.\n` +
-      `If they are simply absent, the host did not pass them through: Codex forwards only the names listed in \`env_vars\` on its \`mcp_servers\` entry.`
-  );
+/**
+ * Why this process has no Switch identity, when it has none.
+ *
+ * Null in the ordinary case. When set, the server still starts and answers the
+ * handshake — it just has one tool, which reports this.
+ */
+let degradedReason: string | null = null;
+
+function isDegraded(): boolean {
+  return degradedReason !== null;
 }
+
+/**
+ * Come up with no identity, able to say why, instead of exiting.
+ *
+ * Exiting looks like nothing at all from where the user sits: the host reports a
+ * server that dies before the handshake as a closed connection and does not show
+ * its stderr, so "no credentials", "two servers, pick one" and "the binary is
+ * broken" are one symptom — Switch tools silently missing. The runtime is the
+ * only thing that knows which it was, and the agent is the only channel back to
+ * the user, so it has to survive long enough to be asked.
+ *
+ * The stderr line and `startup-error.log` are still written, for whoever does go
+ * looking.
+ */
+function degrade(reason: string): void {
+  recordStartupFailure(reason);
+  degradedReason = reason;
+}
+
+/** An env var a host left as a literal `${VAR}` is not a value; treat it as absent. */
+function envValue(raw: string): string {
+  return looksUnresolved(raw) ? '' : raw.trim();
+}
+
+const ENV = {
+  endpoint: envValue(ENV_ENDPOINT),
+  token: envValue(ENV_TOKEN),
+  agentId: envValue(ENV_AGENT_ID),
+};
+
+/**
+ * Agents provisioned here when startup could not pick between them.
+ *
+ * Non-empty only while the choice is open: `select_agent` binds one and clears
+ * it. Until then every other tool call is refused with the list.
+ */
+let unboundCandidates: ResolvedAgent[] = [];
+
+function isBound(): boolean {
+  return AGENT_ID !== '';
+}
+
+function bindIdentity(agent: { endpoint: string; token: string; agentId: string; name: string }) {
+  API_ENDPOINT = normalizeEndpoint(agent.endpoint);
+  API_TOKEN = agent.token;
+  AGENT_ID = agent.agentId;
+  AGENT_NAME = agent.name;
+  unboundCandidates = [];
+}
+
+/**
+ * Work out who this process is.
+ *
+ * Environment first, unconditionally: switchdash launches the majority of
+ * sessions and injects the identity it has already chosen for each one, and
+ * that path predates the store. Only a session nobody configured that way falls
+ * through to disk.
+ */
+function resolveIdentity(): void {
+  if (ENV.endpoint && ENV.token && ENV.agentId) {
+    bindIdentity({ ...ENV, name: '' });
+    return;
+  }
+
+  // Half an identity is a broken config, not a reason to go looking on disk:
+  // silently authenticating as some other agent is worse than not starting.
+  if (ENV.token || ENV.agentId) {
+    return degrade(
+      `incomplete SWITCH_* environment — got ${[
+        ENV.endpoint ? 'endpoint' : null,
+        ENV.token ? 'token' : null,
+        ENV.agentId ? 'agent_id' : null,
+      ]
+        .filter(Boolean)
+        .join(' + ')}, need all three\n` +
+        `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
+        `  token=${ENV.token ? 'set' : 'MISSING'}\n` +
+        `  agent_id=${ENV.agentId || 'MISSING'}\n` +
+        `Set the missing ones, or unset all three to use the local agent store instead.`
+    );
+  }
+
+  const store = readAgentStore(process.cwd());
+
+  if (store.agents.length === 0) {
+    const unusable = store.unusable.length
+      ? `\nEntries found but unusable:\n${store.unusable.map((u) => `  ${u.slug}: ${u.reason}`).join('\n')}`
+      : '';
+    return degrade(
+      `no Switch identity: no SWITCH_* environment, and no usable agent in ${store.projectDir}\n` +
+        `Run the connector's \`configure\` skill here to register an agent, or start the session from a directory that has ${AGENTS_DIR_RELATIVE}/.${unusable}\n` +
+        `If you expected the host to pass credentials: Claude expands \`\${SWITCH_*}\` from its settings env block, and Codex forwards only the names listed in \`env_vars\`.`
+    );
+  }
+
+  // An endpoint on its own is not an identity, but it is a way to say which
+  // server you meant when the store spans more than one.
+  let candidates = store.agents;
+  if (ENV.endpoint) {
+    const want = normalizeEndpoint(ENV.endpoint);
+    candidates = candidates.filter((a) => normalizeEndpoint(a.endpoint) === want);
+    if (candidates.length === 0) {
+      return degrade(
+        `SWITCH_API_ENDPOINT is ${want}, but no agent in ${store.projectDir} belongs to it\n` +
+          `Known: ${distinctEndpoints(store.agents).join(', ')}`
+      );
+    }
+  }
+
+  const endpoints = distinctEndpoints(candidates);
+
+  // The operation catalog is fetched from the server before this process can
+  // serve anything, and which server that is has to be settled first. Picking
+  // one arbitrarily would bootstrap a tool surface from a deployment the agent
+  // may not even belong to, so refuse instead and say how to disambiguate.
+  if (endpoints.length > 1) {
+    return degrade(
+      `agents in ${store.projectDir} span ${endpoints.length} Switch servers, so this session cannot tell which one it belongs to:\n` +
+        candidates.map((a) => `  ${a.name} → ${normalizeEndpoint(a.endpoint)}`).join('\n') +
+        `\nSet SWITCH_API_ENDPOINT to the one you meant, or leave only that server's agents in ${AGENTS_DIR_RELATIVE}/.`
+    );
+  }
+
+  if (candidates.length === 1) {
+    bindIdentity(candidates[0]);
+    return;
+  }
+
+  // Several agents, one server: the catalog is knowable, the identity is not.
+  API_ENDPOINT = endpoints[0];
+  unboundCandidates = candidates;
+}
+
+// Before resolution, not after: `unpublishPort` clears the whole session
+// directory, and resolution may write `startup-error.log` into it. While a
+// failure exited immediately the order was invisible; now that it survives, a
+// later wipe would delete the one artefact the operator is meant to find.
+unpublishPort();
+
+resolveIdentity();
+
+/** Whether `select_agent` is offered, fixed at startup so the catalog is static. */
+const OFFERS_SELECT_AGENT = !isBound();
 
 process.stderr.write(`switch: ppid=${SESSION_PPID} session_dir=${SESSION_DIR}\n`);
 
@@ -328,6 +493,119 @@ const mcp = new Server(
   }
 );
 
+/**
+ * The whole tool surface when startup could not produce an identity.
+ *
+ * Named and described for the reader that matters — the agent, which will be
+ * asked "why can't you reach Switch?" and needs to know that calling this is how
+ * it finds out. The answer is the diagnostic verbatim, for it to translate.
+ */
+const UNAVAILABLE_TOOL = {
+  name: 'switch_unavailable',
+  description:
+    'Switch is NOT available in this session — this is the only Switch tool ' +
+    'you have. Call it to get the reason, then explain that reason to the user ' +
+    'in plain language. Call it whenever the user asks about Switch, about a ' +
+    'room, or about why the Switch tools are missing. It takes no arguments and ' +
+    'is safe to call more than once.',
+  inputSchema: { type: 'object', properties: {} },
+};
+
+function handleUnavailable() {
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text:
+          `Switch is unavailable in this session.\n\n${degradedReason}\n\n` +
+          `Nothing here is retryable from inside the session — the configuration ` +
+          `has to change and the session be restarted. Tell the user what is wrong ` +
+          `and what would fix it.`,
+      },
+    ],
+  };
+}
+
+// Offered only when startup found several agents provisioned here and could not
+// choose between them. Served locally: the server will not hand out a catalog,
+// or anything else, without an agent credential — which is the very thing this
+// tool exists to establish.
+const SELECT_AGENT_TOOL = {
+  name: 'select_agent',
+  description:
+    'Choose which Switch agent this session acts as. Several are provisioned ' +
+    'in this working directory and no identity was supplied, so every other ' +
+    'Switch tool is unavailable until one is selected. Call this once with the ' +
+    'name of the agent you are.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'The agent to act as, as named in the refusal message.',
+      },
+    },
+    required: ['name'],
+  },
+};
+
+/** The sentence every other tool answers with while the identity is open. */
+function unboundRefusal(): string {
+  return (
+    `No Switch identity selected. This session has ${unboundCandidates.length} agents ` +
+    `provisioned in ${path.join(process.cwd(), AGENTS_DIR_RELATIVE)}:\n` +
+    unboundCandidates.map((a) => `  ${a.name}`).join('\n') +
+    `\nCall select_agent with one of those names first.`
+  );
+}
+
+function handleSelectAgent(rawArgs: Record<string, unknown>) {
+  if (isBound()) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `Already acting as ${AGENT_NAME || AGENT_ID}; an identity cannot be changed mid-session.`,
+        },
+      ],
+    };
+  }
+
+  const wanted = typeof rawArgs.name === 'string' ? rawArgs.name.trim() : '';
+  const chosen = unboundCandidates.find((a) => a.name === wanted || a.slug === wanted);
+  if (!chosen) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `No agent named ${wanted || '(nothing)'} is provisioned here. Available:\n${unboundCandidates
+            .map((a) => `  ${a.name}`)
+            .join('\n')}`,
+        },
+      ],
+    };
+  }
+
+  bindIdentity(chosen);
+  // Deferred at startup because there was no identity to open a connection as.
+  startStream();
+  startHeartbeat();
+  process.stderr.write(`switch: bound to ${chosen.name} (agent_id=${AGENT_ID})\n`);
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `Now acting as ${chosen.name} on ${API_ENDPOINT}. The Switch tools are live — call list_rooms to see where you belong.`,
+      },
+    ],
+    structuredContent: { name: chosen.name, agent_id: chosen.agentId, endpoint: API_ENDPOINT },
+  };
+}
+
 // Addressed images are auto-downloaded and surfaced as image_path on the
 // notification. This tool lets the agent fetch ANY attachment on demand — e.g.
 // an image seen in read_context history that arrived unaddressed (no
@@ -438,9 +716,18 @@ let operations: SwitchOperation[] = [];
  */
 const OPERATIONS_FETCH_TIMEOUT_MS = 15_000;
 
-async function loadOperations(): Promise<void> {
-  const resp = await fetch(`${API_ENDPOINT}/agents/${AGENT_ID}/ops`, {
-    headers: { Authorization: `Bearer ${API_TOKEN}` },
+/**
+ * Fetch the operation list.
+ *
+ * Credentials are passed rather than read from the module state because the
+ * catalog has to exist before an identity necessarily does. The server scopes
+ * this route to an agent for authentication only — it answers from the same
+ * static registry whichever agent asks — so any credential valid for `endpoint`
+ * yields the catalog every agent on that server would get.
+ */
+async function loadOperations(endpoint: string, agentId: string, token: string): Promise<void> {
+  const resp = await fetch(`${endpoint}/agents/${agentId}/ops`, {
+    headers: { Authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(OPERATIONS_FETCH_TIMEOUT_MS),
   });
   if (!resp.ok) {
@@ -570,20 +857,43 @@ async function callOperation(
   }
 }
 
+// Fixed for the life of the process. `select_agent` stays listed after it has
+// bound an identity — the alternative is a catalog that changes underneath a
+// host mid-session, which costs a `tools/list_changed` round trip to announce
+// and is not honoured everywhere. A second call answers that it is spoken for.
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    ...operations.map((op) => ({
-      name: op.name,
-      description: op.description,
-      inputSchema: op.input_schema,
-    })),
-    DOWNLOAD_ATTACHMENT_TOOL,
-    SEND_ATTACHMENT_TOOL,
-  ],
+  // Degraded, the catalog was never fetched — there were no credentials to
+  // fetch it with. One tool that explains itself beats fifty that are silently
+  // absent.
+  tools: isDegraded()
+    ? [UNAVAILABLE_TOOL]
+    : [
+        ...operations.map((op) => ({
+          name: op.name,
+          description: op.description,
+          inputSchema: op.input_schema,
+        })),
+        ...(OFFERS_SELECT_AGENT ? [SELECT_AGENT_TOOL] : []),
+        DOWNLOAD_ATTACHMENT_TOOL,
+        SEND_ATTACHMENT_TOOL,
+      ],
 }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name;
+  // Any name, not just the tool's own: a host that cached a fuller list from a
+  // previous session would otherwise get "Unknown tool", which says nothing.
+  if (isDegraded()) {
+    return handleUnavailable();
+  }
+  if (name === 'select_agent') {
+    return handleSelectAgent(req.params.arguments ?? {});
+  }
+  // Every route below stamps the agent id into a URL, so none of them mean
+  // anything yet. One guard here covers the whole surface.
+  if (!isBound()) {
+    return { isError: true, content: [{ type: 'text', text: unboundRefusal() }] };
+  }
   if (name === 'download_attachment') {
     return handleDownloadAttachment(req.params.arguments ?? {});
   }
@@ -1454,30 +1764,67 @@ transport.onclose = () => {
   process.exit(0);
 };
 
-// Wipe any stale port file left by a crashed previous process for the same ppid.
-// Safe: the previous process for this ppid is gone (we are it now); a live
-// sibling would be a different ppid.
-unpublishPort();
-
-// Load the operation list before serving: a tool surface that is empty
-// because a fetch failed is worse than a process that refuses to start.
-try {
-  await loadOperations();
-} catch (err) {
-  failStartup(
-    `cannot reach Switch at ${API_ENDPOINT} to load its operations: ${err instanceof Error ? err.message : err}`
-  );
+// Load the operation list before serving, so the tool surface is whole the
+// first time a host asks for it.
+//
+// Unbound, any candidate's credentials will do — they all target the one
+// server this store resolved to. They are tried in turn so a single revoked
+// token does not present itself as an unreachable Switch.
+//
+// An unreachable server degrades rather than exiting, for the same reason a
+// missing identity does: "Switch is down" and "you have no credentials" are the
+// same closed pipe from the host's side, and only this process can tell them
+// apart.
+if (!isDegraded()) {
+  try {
+    if (isBound()) {
+      await loadOperations(API_ENDPOINT, AGENT_ID, API_TOKEN);
+    } else {
+      let lastError: unknown;
+      for (const candidate of unboundCandidates) {
+        try {
+          await loadOperations(API_ENDPOINT, candidate.agentId, candidate.token);
+          lastError = undefined;
+          break;
+        } catch (err) {
+          lastError = err;
+          process.stderr.write(
+            `switch: could not load operations as ${candidate.name}: ${err instanceof Error ? err.message : err}\n`
+          );
+        }
+      }
+      if (lastError !== undefined) throw lastError;
+    }
+  } catch (err) {
+    degrade(
+      `cannot reach Switch at ${API_ENDPOINT} to load its operations: ${err instanceof Error ? err.message : err}`
+    );
+  }
 }
 
 await mcp.connect(transport);
 serving = true;
 
-startHookListener();
+// Degraded, none of the machinery below has anything to act on: no identity to
+// open a connection as, no room to route a hook to. Publishing no port also
+// keeps a pre-expansion spawn — which used to exit on sight — from racing the
+// real one for the port file, since there is now nothing for it to write.
+if (isDegraded()) {
+  process.stderr.write(`switch: running degraded — serving only ${UNAVAILABLE_TOOL.name}\n`);
+} else {
+  startHookListener();
 
-// The connection exists for the life of this process, not just while a room is
-// attached: it is what correlates every tool call, and what the server uses to
-// know this agent is reachable at all.
-startStream();
-startHeartbeat();
-
-process.stderr.write(`switch: running (agent_id=${AGENT_ID})\n`);
+  // The connection exists for the life of this process, not just while a room is
+  // attached: it is what correlates every tool call, and what the server uses to
+  // know this agent is reachable at all. With no identity yet there is nothing to
+  // open it as — `select_agent` starts both once it binds one.
+  if (isBound()) {
+    startStream();
+    startHeartbeat();
+    process.stderr.write(`switch: running (agent_id=${AGENT_ID})\n`);
+  } else {
+    process.stderr.write(
+      `switch: running unbound — ${unboundCandidates.length} agents provisioned here, awaiting select_agent\n`
+    );
+  }
+}

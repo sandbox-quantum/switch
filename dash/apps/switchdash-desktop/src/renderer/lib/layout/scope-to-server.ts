@@ -20,10 +20,20 @@ async function activateServer(serverId: string | null): Promise<void> {
   await switchServersStore.setActive(serverId);
 }
 
-/** Scope to the server owning `locationId` — for agents and sessions. */
+/**
+ * Scope to a server that shows `locationId` — for agents and sessions.
+ *
+ * A directory can hold agents for several servers, so there may be more than one
+ * right answer. If the active server is already one of them there is nothing to do;
+ * switching away would hide the row the caller is navigating to (CHOO-2044).
+ */
 export async function scopeToLocationServer(locationId: string): Promise<void> {
   if (!agentsStore.loaded) await agentsStore.load();
-  await activateServer(agentsStore.serverIdForLocation(locationId));
+  const serverIds = agentsStore.serverIdsForLocation(locationId);
+  if (serverIds.length === 0) return;
+  const active = switchServersStore.activeServerId;
+  if (active && serverIds.includes(active)) return;
+  await activateServer(serverIds[0]);
 }
 
 /** Scope to the server owning `roomId`. */

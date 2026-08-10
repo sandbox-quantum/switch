@@ -3,12 +3,13 @@ import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import { db } from '@main/db/client';
 import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema';
-import type {
-  AddServerParams,
-  ManagedServerRef,
-  RenameServerParams,
-  SwitchServer,
-  UpdateServerParams,
+import {
+  urlOrigin,
+  type AddServerParams,
+  type ManagedServerRef,
+  type RenameServerParams,
+  type SwitchServer,
+  type UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
 
 const ACTIVE_SERVER_KV_KEY = 'activeSwitchServerId';
@@ -41,20 +42,6 @@ function mapRow(row: SwitchServerRow): SwitchServer {
 /** Strip a trailing slash so `${url}/gateway` never doubles up. */
 function normaliseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
-}
-
-/**
- * Origin (protocol + host + port, lowercased) of a URL, or null if unparseable.
- * Agents are matched to servers by origin rather than full URL: an agent's
- * `SWITCH_API_ENDPOINT` and a server's API URL share a host but may differ in
- * path, so comparing origins is the robust match.
- */
-export function urlOrigin(url: string): string | null {
-  try {
-    return new URL(url.trim()).origin.toLowerCase();
-  } catch {
-    return null;
-  }
 }
 
 /**

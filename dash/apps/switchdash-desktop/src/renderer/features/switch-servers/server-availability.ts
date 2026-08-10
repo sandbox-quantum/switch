@@ -8,10 +8,13 @@ import { switchServersStore } from './switch-servers-store';
  * - `available` — signed in; its rooms and agents can be read.
  * - `signed-out` — reachable but not signed in. Nothing can be read until the
  *   user signs in, so retrying is pointless; the fix is an action they take.
+ * - `unreachable` — the gateway did not answer. A fault rather than a prompt:
+ *   signing in is impossible while it is down, so offering it would be an
+ *   action that cannot work.
  * - `dormant` — a managed stack that is not running. There is no gateway to
  *   sign in to yet, so this is not a sign-in prompt either.
  */
-export type ServerAvailability = 'available' | 'signed-out' | 'dormant';
+export type ServerAvailability = 'available' | 'signed-out' | 'unreachable' | 'dormant';
 
 /**
  * A managed server that is not running has no gateway to reach, so it cannot be
@@ -29,5 +32,6 @@ export function serverAvailability(serverId: string): ServerAvailability {
       ? remoteServerStore.isRunning(server.sshHost)
       : localServerStore.isRunning;
   if (server.managed && !managedRunning) return 'dormant';
-  return switchServersStore.isConnected(serverId) ? 'available' : 'signed-out';
+  if (switchServersStore.isConnected(serverId)) return 'available';
+  return switchServersStore.isUnreachable(serverId) ? 'unreachable' : 'signed-out';
 }

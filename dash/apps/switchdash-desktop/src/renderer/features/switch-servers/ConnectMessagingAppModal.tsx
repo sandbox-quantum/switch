@@ -6,6 +6,7 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -188,7 +189,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                   }}
                 />
                 <p className="mt-1 text-xs text-foreground-muted">
-                  How this connection is labelled in switchdash when you pick it for a room.
+                  How this connection is labelled in Switch Console when you pick it for a room.
                 </p>
               </Field>
 
@@ -198,7 +199,12 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
               <button
                 type="button"
                 className="-mt-2 flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-                onClick={() => void rpc.app.openExternal(bridgeSetupDocsUrl(selectedType.key))}
+                onClick={() =>
+                  void openExternalUrl(
+                    bridgeSetupDocsUrl(selectedType.key),
+                    'Could not open the setup guide'
+                  )
+                }
               >
                 How to set up {bridgePlatformLabel(selectedType.key)}
                 <ExternalLink className="size-3" />

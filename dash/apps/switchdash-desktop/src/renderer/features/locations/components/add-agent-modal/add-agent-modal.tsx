@@ -47,7 +47,10 @@ import {
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
-import type { ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
+import {
+  sameApiEndpoint,
+  type ProvisionAgentResult,
+} from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
@@ -223,25 +226,39 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       discoverSshHost ?? 'local',
       discoverDir,
       pickState.providerId,
+      pickState.serverId,
     ],
     queryFn: () =>
       rpc.agents.discoverLocationAgents({
         sshHost: discoverSshHost,
         dir: discoverDir,
         providerId: pickState.providerId!,
+        serverId: pickState.serverId!,
       }),
-    enabled: !!pickState.providerId && discoverDir.trim().length > 0,
+    enabled: !!pickState.providerId && !!pickState.serverId && discoverDir.trim().length > 0,
   });
   // Agents already configured in the directory, found by their provider-neutral
   // Switch credentials rather than by any provider's definition format. This is
   // what an agent someone else set up on a shared host looks like, and the only
   // way a provider with no definition concept (Codex) is visible at all
-  // (CHOO-1937). Provider-agnostic, so it does not wait on the type picker.
+  // (CHOO-1937). The scan itself is provider-agnostic; it still waits on the type
+  // picker because nothing below the directory is shown until a type is chosen, so
+  // scanning earlier would be work (an SSH round trip, for a remote dir) whose
+  // result cannot be displayed.
   const configuredQuery = useQuery({
-    queryKey: ['discoverConfiguredAgents', discoverSshHost ?? 'local', discoverDir],
+    queryKey: [
+      'discoverConfiguredAgents',
+      discoverSshHost ?? 'local',
+      discoverDir,
+      pickState.serverId,
+    ],
     queryFn: () =>
-      rpc.agents.discoverConfiguredAgents({ sshHost: discoverSshHost, dir: discoverDir }),
-    enabled: discoverDir.trim().length > 0,
+      rpc.agents.discoverConfiguredAgents({
+        sshHost: discoverSshHost,
+        dir: discoverDir,
+        serverId: pickState.serverId!,
+      }),
+    enabled: !!pickState.providerId && !!pickState.serverId && discoverDir.trim().length > 0,
   });
 
   // Definitions that can join Switch and switchdash hasn't already onboarded — the
@@ -256,24 +273,54 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const attachableAgents = (configuredQuery.data ?? []).filter(
     (a) => !a.alreadyAgent && !definitionNames.has(a.name)
   );
+  // An identity belongs to the server that issued it, so importing one into a
+  // different server is not a thing that can happen: the onboard path would find
+  // the id absent here, mint a replacement, and write it over the credentials the
+  // other server's agent runs on. Say who it belongs to and leave it alone — the
+  // way in is to create a new agent (CHOO-2044).
+  const foreignCredentialReason = (endpoint: string | null): string | null => {
+    if (endpoint === null || !targetServer) return null;
+    if (sameApiEndpoint(endpoint, targetServer.apiUrl)) return null;
+    // Name the server when this switchdash has it registered. The raw endpoint is
+    // an implementation detail to the person reading the row, and for a server
+    // they have registered it is one they already know by name.
+    const owner = switchServersStore.servers.find((s) => sameApiEndpoint(s.apiUrl, endpoint));
+    return `Already registered with ${owner ? owner.name : 'another Switch server'}, so it cannot be imported into ${targetServer.name}. Create a new agent instead.`;
+  };
+
   const onboardableAgents: OnboardableAgent[] = [
     ...definitionAgents.map((a) => ({
       name: a.name,
       description: a.description,
       kind: (a.registered ? 'import' : 'adopt') as AdoptKind,
       providerLabel: null,
+      blockedReason: foreignCredentialReason(a.credentialEndpoint),
     })),
     ...attachableAgents.map((a) => {
       const providerId = a.providerId ?? pickState.providerId ?? null;
+      const providerLabel = providerId ? (getProvider(providerId)?.name ?? providerId) : null;
       return {
         name: a.name,
         description: null,
         kind: 'attach' as AdoptKind,
-        providerLabel: providerId ? (getProvider(providerId)?.name ?? providerId) : null,
+        providerLabel,
+        blockedReason:
+          providerLabel === null
+            ? 'Pick an agent type above to attach this one — the directory does not say which runs it.'
+            : null,
       };
     }),
   ];
-  const hasOnboardable = onboardableAgents.length > 0;
+  // Onboarding needs both halves of the question answered: which directory, and
+  // which agent type the agents brought in will run under. With no type picked
+  // there is nothing to offer — every row would be unactionable — so the list and
+  // its button stay away and the modal asks for the type instead. Derived in one
+  // place so the footer button and the list it submits cannot disagree.
+  const hasOnboardable = !!pickState.providerId && onboardableAgents.length > 0;
+  /** Rows that cannot be brought in — listed with their reason, never selectable. */
+  const blockedNames = new Set(
+    onboardableAgents.filter((a) => a.blockedReason !== null).map((a) => a.name)
+  );
   /** Attachable rows keyed by name, with the provider resolved for submission. */
   const attachByName = new Map(
     attachableAgents.flatMap((a) => {
@@ -288,12 +335,12 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // are the checked definitions to onboard (default: all).
   const [createMode, setCreateMode] = useState(false);
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
-  // Default-select only what can actually be submitted: an attach row whose
-  // provider is unknown is disabled until a type is picked, and pre-checking it
-  // would just block the button with no visible cause. Picking a type unblocks
-  // the row, which changes this key and folds it into the selection.
+  // Default-select only what can actually be submitted: a blocked row (unknown
+  // provider, or an identity belonging to another server) is disabled, and
+  // pre-checking it would just block the button with no visible cause. Resolving
+  // the block changes this key and folds the row into the selection.
   const onboardableKey = onboardableAgents
-    .filter((a) => !(a.kind === 'attach' && a.providerLabel === null))
+    .filter((a) => a.blockedReason === null)
     .map((a) => a.name)
     .join('|');
   useEffect(() => {
@@ -316,9 +363,10 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   // existing vs create new" only once BOTH have settled — otherwise the create
   // form flashes up first and then flips to the onboard list when discovery lands
   // (CHOO-1440).
+  const scanTargetChosen = !!pickState.serverId && discoverDir.trim().length > 0;
   const isDiscovering =
-    (!!pickState.providerId && discoverDir.trim().length > 0 && discoverQuery.isPending) ||
-    (discoverDir.trim().length > 0 && configuredQuery.isPending);
+    (!!pickState.providerId && scanTargetChosen && discoverQuery.isPending) ||
+    (scanTargetChosen && configuredQuery.isPending);
   const isChecking =
     (isRemoteRun
       ? shouldDetectRemote && remoteAgentQuery.isPending
@@ -379,6 +427,12 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const hostLevelBlocked = isRemoteRun && hostReadiness.blocked && hostReadiness.scope === 'host';
   const canChooseAgentType = runHostReachable && !hostLevelBlocked;
   const canConfigureAgent = canChooseAgentType && runHostReady;
+  // The agent type is the next gate after the host, and it gates everything below
+  // the directory: which agents in the directory can be brought in, and how a new
+  // one is created, both depend on it. Filling in a name, a description and a
+  // config for an agent that has no type yet is answering questions out of order —
+  // the form cannot be submitted from there anyway (CHOO-2044).
+  const canDetailAgent = canConfigureAgent && !!pickState.providerId;
 
   const canSubmitDetected = isRemoteRun
     ? !!pickState.providerId &&
@@ -607,11 +661,15 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
   const handleOnboard = async () => {
     // `canOnboard` already requires a server; repeated so the calls below narrow.
     if (!canOnboard || !pickState.serverId) return;
-    const attachSelected = [...selectedNames].flatMap((name) => {
+    // Blocked rows are disabled in the list, so a selected one means the list went
+    // stale under the user. Dropping them here keeps a stale tick from reaching a
+    // path that would refuse it — or worse, act on it.
+    const submittable = [...selectedNames].filter((name) => !blockedNames.has(name));
+    const attachSelected = submittable.flatMap((name) => {
       const providerId = attachByName.get(name);
       return providerId ? [{ name, providerId }] : [];
     });
-    const onboardSelected = [...selectedNames].filter((name) => !attachByName.has(name));
+    const onboardSelected = submittable.filter((name) => !attachByName.has(name));
     if (onboardSelected.length > 0 && !pickState.providerId) return;
     setSubmitState('creating');
     setCloseGuard(true);
@@ -668,15 +726,16 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     }
   };
 
+  const submittableNames = [...selectedNames].filter((name) => !blockedNames.has(name));
   // A definition still needs the picked agent type to run under; an attach row
   // carries its own (inferred from disk, or the picked one as a fallback).
-  const selectionNeedsProviderPick = [...selectedNames].some((name) => !attachByName.has(name));
+  const selectionNeedsProviderPick = submittableNames.some((name) => !attachByName.has(name));
   // Adopting agents that already exist in the directory still puts them on this
   // host, so it answers to the same gates as creating one. Omitting them here
   // let you onboard onto a host that was unreachable or missing prerequisites.
   const canOnboard =
     hasOnboardable &&
-    selectedNames.size > 0 &&
+    submittableNames.length > 0 &&
     !!pickState.serverId &&
     (!selectionNeedsProviderPick || !!pickState.providerId) &&
     runHostReachable &&
@@ -693,21 +752,29 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       }
       footer={
         <DialogFooter>
-          {switchAgent ? (
+          {/* The onboard list comes first, and deliberately outranks a detected
+              legacy agent. The body renders the list whenever there is something
+              to onboard, so a footer that branched on detection first put the
+              wrong button under it: a directory carrying another server's
+              `.claude/settings.local.json` showed the detected-agent button, which
+              then verified that foreign agent against this server, failed, and
+              stayed disabled forever — with the onboardable list visible above it
+              and no way to submit it (CHOO-2044). */}
+          {hasOnboardable && !createMode ? (
+            <ConfirmButton
+              type="button"
+              onClick={() => void handleOnboard()}
+              disabled={!canOnboard}
+            >
+              {submitState === 'creating' ? 'Adding...' : `Add ${submittableNames.length} selected`}
+            </ConfirmButton>
+          ) : switchAgent ? (
             <ConfirmButton
               type="button"
               onClick={() => void handleSubmit()}
               disabled={!canSubmitDetected}
             >
               {submitLabel}
-            </ConfirmButton>
-          ) : hasOnboardable && !createMode ? (
-            <ConfirmButton
-              type="button"
-              onClick={() => void handleOnboard()}
-              disabled={!canOnboard}
-            >
-              {submitState === 'creating' ? 'Adding...' : `Add ${selectedNames.size} selected`}
             </ConfirmButton>
           ) : isMissingRemoteAgent ? (
             <ConfirmButton
@@ -809,12 +876,20 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           />
         )}
         {canConfigureAgent && !isRemoteRun && (
-          <PickExistingPanel state={pickState} showName={!isMissingSwitchAgent} />
+          <PickExistingPanel state={pickState} showName={canDetailAgent && !isMissingSwitchAgent} />
         )}
-        {isChecking && (
+        {canDetailAgent && isChecking && (
           <p className="text-sm text-foreground-muted">Scanning directory for agents…</p>
         )}
-        {canConfigureAgent && hasOnboardable && !createMode && (
+        {/* A directory chosen with no agent type is a half-answered question, and
+            nothing below can be acted on from there: the agents that could be
+            brought in need a type to run under, and so does a new one. Ask for the
+            type rather than showing a form and a list that cannot be submitted
+            (CHOO-2044). */}
+        {canConfigureAgent && !pickState.providerId && discoverDir.trim().length > 0 && (
+          <p className="text-sm text-foreground-muted">Pick an agent type above to continue.</p>
+        )}
+        {canDetailAgent && hasOnboardable && !createMode && (
           <>
             <OnboardExistingPanel
               agents={onboardableAgents}
@@ -842,7 +917,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             ← Back to existing agents
           </Button>
         )}
-        {canConfigureAgent && isMissingRemoteAgent && showCreate && (
+        {canDetailAgent && isMissingRemoteAgent && showCreate && (
           <>
             <ConfigureAgentPanel
               form={remoteConfigureForm}
@@ -855,7 +930,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             )}
           </>
         )}
-        {switchAgent && (
+        {canDetailAgent && switchAgent && (
           <>
             <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
               <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-green-500" />
@@ -866,6 +941,31 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
                 </span>
               </span>
             </div>
+            {/* The detected agent belongs to whichever server its on-disk config
+                was written for, which need not be the one being added to. Saying
+                so is the difference between an explained dead end and a button
+                that is simply disabled for no stated reason (CHOO-2044). */}
+            {verifyState === 'not-found' && (
+              <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
+                <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+                <span>
+                  The agent configured in this directory is not registered on
+                  {targetServer ? ` ${targetServer.name}` : ' the active server'} — it belongs to a
+                  different Switch server. Onboard one of this directory&apos;s agents instead, or
+                  switch to the server it belongs to.
+                </span>
+              </div>
+            )}
+            {verifyState === 'unauthenticated' && (
+              <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
+                <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+                <span>
+                  You are not signed in to
+                  {targetServer ? ` ${targetServer.name}` : ' the active server'}, so this agent
+                  cannot be verified.
+                </span>
+              </div>
+            )}
             {switchServersStore.servers.length === 0 && (
               <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
                 <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
@@ -886,7 +986,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             )}
           </>
         )}
-        {canConfigureAgent && isMissingSwitchAgent && showCreate && (
+        {canDetailAgent && isMissingSwitchAgent && showCreate && (
           <>
             <ConfigureAgentPanel
               form={configureForm}

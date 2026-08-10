@@ -10,6 +10,7 @@ import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { createAgent } from './createAgent';
@@ -31,11 +32,6 @@ export type AttachConfiguredAgentsParams = {
 };
 
 export type AttachConfiguredAgentsResult = Result<Agent[], OnboardAgentError>;
-
-/** Compare endpoints ignoring a trailing slash, which is not a difference. */
-function sameEndpoint(a: string, b: string): boolean {
-  return a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
-}
 
 /**
  * Adopt agents already configured in a working directory into this switchdash,
@@ -76,10 +72,13 @@ export async function attachConfiguredAgents(
   if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
 
   const discovered = new Map(
-    (await discoverConfiguredAgents({ sshHost: params.sshHost, dir: params.dir })).map((d) => [
-      d.name,
-      d,
-    ])
+    (
+      await discoverConfiguredAgents({
+        sshHost: params.sshHost,
+        dir: params.dir,
+        serverId: params.serverId,
+      })
+    ).map((d) => [d.name, d])
   );
 
   const selected: Array<{ name: string; providerId: AgentProviderId }> = [];
@@ -100,7 +99,7 @@ export async function attachConfiguredAgents(
     return err({
       type: 'invalid-directory',
       dir: params.dir,
-      message: 'Every selected agent is already attached here.',
+      message: `Every selected agent is already attached to ${server.name} here.`,
     });
   }
 
@@ -142,7 +141,7 @@ export async function attachConfiguredAgents(
     // are read from the same on-disk file. A difference is legitimate (one Switch
     // server reachable at two URLs) so it is surfaced, not corrected — correcting
     // it would mean writing to another install's credentials.
-    if (!sameEndpoint(found.apiEndpoint, server.apiUrl)) {
+    if (!sameApiEndpoint(found.apiEndpoint, server.apiUrl)) {
       log.warn('attachConfiguredAgents: directory endpoint differs from the chosen server', {
         name,
         dirEndpoint: found.apiEndpoint,

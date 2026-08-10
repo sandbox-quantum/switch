@@ -144,7 +144,7 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
         <PageHeader
           sticky
           title={host?.name ?? sshHost}
-          description={`Remote host · ${sshHost}. Auth uses your SSH agent — switchdash stores no credentials.`}
+          description={`Remote host · ${sshHost}. Auth uses your SSH agent — Switch Console stores no credentials.`}
           back={
             <Button
               size="sm"
