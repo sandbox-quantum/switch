@@ -844,6 +844,27 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.2.0] - 2026-08-10
+
+#### Added
+- Resolves its own Switch identity and credentials from the local agent store
+  (`./.switch/agents/`), not only from the environment — so a connector-plugin
+  session that is handed the server but no identity can start standalone instead
+  of exiting before the handshake (CHOO-1962).
+- `select_agent` tool: when the store names several agents on one server,
+  identity is left open and `select_agent` binds it; the event stream and
+  heartbeat start on bind rather than at boot (CHOO-1962).
+- Degraded startup: on a resolution failure — no credentials, an ambiguous
+  multi-server store, or an unreachable Switch — the runtime starts anyway and
+  serves a single `switch_unavailable` tool whose result is the diagnostic,
+  instead of vanishing so Switch tools read as silently missing (CHOO-1962).
+
+#### Changed
+- An unexpanded `${SWITCH_*}` placeholder now counts as absent rather than as a
+  value, so a Claude connector session falls through to the store instead of
+  dying on its own placeholder. Half a set of vars still refuses to start
+  (CHOO-1962).
+
 ### [0.1.6] - 2026-08-09
 
 #### Added
