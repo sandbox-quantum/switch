@@ -113,10 +113,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         return;
       }
 
-      // Refresh the room caches so the sidebar shows the room straight away
+      // Re-read the room state so the sidebar shows the room straight away
       // rather than at the next window focus.
-      await switchRoomsStore.loadRoomNames();
-      void switchRoomsStore.refreshAll();
+      await switchRoomsStore.refreshRoomState();
       onSuccess({ roomId: result.room.id });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

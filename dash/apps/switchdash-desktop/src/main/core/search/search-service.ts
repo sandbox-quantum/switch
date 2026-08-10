@@ -1,15 +1,20 @@
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '@main/db/client';
-import { agents, locations, sessions } from '@main/db/schema';
+import { agents, sessions } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS } from '@shared/commands';
-import type { Location } from '@shared/core/locations/locations';
-import type { CommandPaletteQuery, SearchItem, SearchItemKind } from '@shared/core/search';
+import type { Agent } from '@shared/core/agents/agents';
+import {
+  type CommandPaletteQuery,
+  matchQuality,
+  type SearchItem,
+  type SearchItemKind,
+  type SearchResult,
+} from '@shared/core/search';
 import type { Session } from '@shared/core/sessions/sessions';
-import { locationEvents } from '../locations/location-events';
+import { agentEvents } from '../agents/agent-events';
 import { sessionHooks } from '../sessions/session-hooks';
 import { sessionService } from '../sessions/session-service';
-import { locationFileIndexService } from './location-file-index-service';
 
 type FtsRow = {
   item_type: string;
@@ -17,8 +22,77 @@ type FtsRow = {
   location_id: string | null;
   session_id: string | null;
   title: string;
+  keywords: string;
   rank: number;
 };
+
+/**
+ * Rows pulled from the index before filtering, and rows returned after it. The
+ * index answers more loosely than the filter does, so asking for more
+ * candidates than the caller wants keeps a precise query from coming back thin
+ * because loose matches sorted above the real ones.
+ */
+const FTS_CANDIDATE_LIMIT = 120;
+const RESULT_LIMIT = 30;
+
+/** The shortest term the trigram tokenizer can index. */
+const MIN_INDEXABLE_TERM = 3;
+
+/** Ranking tiers, best first: the title starts with the term, a word in the
+ *  title does, the title contains it somewhere, or only a keyword does. */
+const TIER_TITLE_PREFIX = 0;
+const TIER_TITLE_WORD = 1;
+const TIER_TITLE_SUBSTRING = 2;
+const TIER_KEYWORD = 3;
+/** Wider than any BM25 magnitude, so the tier decides before the score does. */
+const TIER_STRIDE = 1_000_000;
+
+/**
+ * Split a query into the terms every result must contain.
+ *
+ * **Whitespace only.** Splitting on `-` and `_` as well is what made
+ * `test-tt` return `co-test`: it became the terms `test` and `tt`, `tt` was
+ * dropped for being too short to index, and the search silently degraded to
+ * `test` — which every one of those names contains. A hyphen is part of a name
+ * here (`reviewer-bot`, `test-tt`), not a separator between two things the user
+ * wants ANDed.
+ */
+function queryTerms(query: string): string[] {
+  return query.trim().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * The worst tier across all terms, or null when any term is absent from both
+ * the title and the keywords.
+ *
+ * This is the real filter. The index is trigram-tokenised and answers a phrase
+ * more loosely than it looks — and a term too short to index is not sent to it
+ * at all — so a row coming back is not evidence that it contains what was
+ * typed. Checking the text directly is.
+ *
+ * Judged on the worst term so a query only ranks as a title match when *every*
+ * word of it is one: "reviewer bot" matching an item whose title holds one word
+ * and whose description holds the other is a keyword-grade hit, not a name hit.
+ */
+function matchTier(row: FtsRow, terms: string[]): number | null {
+  let worst = TIER_TITLE_PREFIX;
+  for (const term of terms) {
+    const inTitle = matchQuality(row.title, term);
+    const tier =
+      inTitle === 'prefix'
+        ? TIER_TITLE_PREFIX
+        : inTitle === 'word'
+          ? TIER_TITLE_WORD
+          : inTitle === 'substring'
+            ? TIER_TITLE_SUBSTRING
+            : matchQuality(row.keywords, term)
+              ? TIER_KEYWORD
+              : null;
+    if (tier === null) return null;
+    worst = Math.max(worst, tier);
+  }
+  return worst;
+}
 
 type RecentSessionRow = {
   id: string;
@@ -36,72 +110,74 @@ class SearchService {
     // reconciler pruning a VM session) must also leave the index.
     sessionHooks.on('session:deleted', (sessionId) => this.removeByType('session', sessionId));
 
-    locationEvents.on('location:created', (location) => this.upsertLocation(location));
-    locationEvents.on('location:deleted', (locationId) =>
-      this.removeByType('location', locationId)
-    );
+    agentEvents.on('agent:created', (agent) => this.upsertAgent(agent));
+    agentEvents.on('agent:updated', (agent) => this.upsertAgent(agent));
+    agentEvents.on('agent:deleted', (agentId) => this.removeByType('agent', agentId));
 
     this.backfill();
     this.seedCommands();
   }
 
-  search({ query, context }: CommandPaletteQuery): SearchItem[] {
-    if (!query.trim()) return this.recents(context);
+  search({ query, context }: CommandPaletteQuery): SearchResult {
+    if (!query.trim()) return { items: this.recents(context), status: 'recents' };
 
-    // Trigram tokenizer requires each term to be at least 3 characters.
-    // Terms shorter than 3 chars are dropped; if nothing survives, fall back
-    // to recents rather than sending an invalid query to SQLite.
-    const terms = query
-      .trim()
-      .split(/[\s\-_]+/)
-      .filter((t) => t.length >= 3);
+    const terms = queryTerms(query);
 
-    if (terms.length === 0) return this.recents(context);
+    // The tokenizer cannot index anything shorter than a trigram, so a query of
+    // only short terms has nothing to ask the index. Recents are returned, but
+    // reported as recents so the palette can say so rather than presenting them
+    // as matches.
+    const indexable = terms.filter((t) => t.length >= MIN_INDEXABLE_TERM);
+    if (indexable.length === 0) {
+      return { items: this.recents(context), status: 'query-too-short' };
+    }
 
-    const ftsQuery = terms.map((t) => `"${t}"`).join(' AND ');
+    // Only the indexable terms narrow the candidate set; `matchTier` then holds
+    // every row to *all* the terms, short ones included. Dropping a short term
+    // outright is what silently widened `test-tt` into `test`.
+    const ftsQuery = indexable.map((t) => `"${t.replace(/"/g, '""')}"`).join(' AND ');
 
     let rows: FtsRow[];
     try {
       rows = sqlite
         .prepare(
-          `SELECT item_type, item_id, location_id, session_id, title, bm25(search_index) AS rank
+          `SELECT item_type, item_id, location_id, session_id, title, keywords,
+                  bm25(search_index) AS rank
            FROM search_index
            WHERE search_index MATCH ?
            ORDER BY rank
-           LIMIT 30`
+           LIMIT ?`
         )
-        .all(ftsQuery) as FtsRow[];
+        .all(ftsQuery, FTS_CANDIDATE_LIMIT) as FtsRow[];
     } catch (e) {
-      log.warn('SearchService: FTS query failed', { query, error: String(e) });
-      return [];
+      log.error('SearchService: FTS query failed', { query, error: String(e) });
+      return { items: [], status: 'failed' };
     }
 
-    const results: SearchItem[] = rows.map((r) => ({
-      kind: r.item_type as SearchItemKind,
-      id: r.item_id,
-      locationId: r.location_id,
-      sessionId: r.session_id,
-      title: r.title,
-      subtitle: '',
-      score: r.rank,
-    }));
+    const results: SearchItem[] = rows
+      .flatMap((r) => {
+        const tier = matchTier(r, terms);
+        return tier === null
+          ? []
+          : [
+              {
+                kind: r.item_type as SearchItemKind,
+                id: r.item_id,
+                locationId: r.location_id,
+                sessionId: r.session_id,
+                title: r.title,
+                subtitle: '',
+                // Tier dominates BM25 so a name match always outranks a hit
+                // buried in a command's description, whatever the text lengths
+                // do to the relevance score.
+                score: tier * TIER_STRIDE + r.rank,
+              },
+            ];
+      })
+      .sort((a, b) => a.score - b.score)
+      .slice(0, RESULT_LIMIT);
 
-    if (context?.locationId) {
-      const fileHits = locationFileIndexService.search(context.locationId, query);
-      for (const h of fileHits) {
-        results.push({
-          kind: 'file',
-          id: h.path,
-          locationId: context.locationId ?? null,
-          sessionId: context.sessionId ?? null,
-          title: h.filename,
-          subtitle: h.path,
-          score: 0,
-        });
-      }
-    }
-
-    return results;
+    return { items: results, status: 'ok' };
   }
 
   private recents(context?: CommandPaletteQuery['context']): SearchItem[] {
@@ -144,6 +220,34 @@ class SearchService {
     }));
   }
 
+  /**
+   * Replace one item's row.
+   *
+   * Delete-then-insert rather than `INSERT OR REPLACE`: an FTS5 virtual table
+   * has no unique constraint for the conflict clause to fire on, so `OR REPLACE`
+   * degrades to a plain insert and every update appends a duplicate row instead
+   * of superseding the old one.
+   */
+  private replaceItem(
+    itemType: SearchItemKind,
+    itemId: string,
+    locationId: string | null,
+    title: string,
+    keywords: string
+  ): void {
+    sqlite.transaction(() => {
+      sqlite
+        .prepare(`DELETE FROM search_index WHERE item_id = ? AND item_type = ?`)
+        .run(itemId, itemType);
+      sqlite
+        .prepare(
+          `INSERT INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
+           VALUES (?, ?, ?, NULL, ?, ?)`
+        )
+        .run(itemType, itemId, locationId, title, keywords);
+    })();
+  }
+
   private upsertSession(session: Session): void {
     try {
       const [agent] = db
@@ -152,30 +256,17 @@ class SearchService {
         .where(eq(agents.id, session.agentId))
         .all();
       if (!agent) return;
-      sqlite
-        .prepare(
-          `INSERT OR REPLACE INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
-           VALUES ('session', ?, ?, NULL, ?, '')`
-        )
-        .run(session.id, agent.locationId, session.title);
+      this.replaceItem('session', session.id, agent.locationId, session.title, '');
     } catch (e) {
       log.warn('SearchService: upsertSession failed', { sessionId: session.id, error: String(e) });
     }
   }
 
-  private upsertLocation(location: Location): void {
+  private upsertAgent(agent: Agent): void {
     try {
-      sqlite
-        .prepare(
-          `INSERT OR REPLACE INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
-           VALUES ('location', ?, NULL, NULL, ?, ?)`
-        )
-        .run(location.id, location.name, location.dir);
+      this.replaceItem('agent', agent.id, agent.locationId, agent.name, agent.providerId);
     } catch (e) {
-      log.warn('SearchService: upsertLocation failed', {
-        locationId: location.id,
-        error: String(e),
-      });
+      log.warn('SearchService: upsertAgent failed', { agentId: agent.id, error: String(e) });
     }
   }
 
@@ -225,7 +316,15 @@ class SearchService {
         .from(sessions)
         .innerJoin(agents, eq(sessions.agentId, agents.id))
         .all();
-      const allLocations = db.select().from(locations).all();
+      const allAgents = db
+        .select({
+          id: agents.id,
+          locationId: agents.locationId,
+          name: agents.name,
+          providerId: agents.providerId,
+        })
+        .from(agents)
+        .all();
 
       const upsertStmt = sqlite.prepare(
         `INSERT OR REPLACE INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
@@ -237,14 +336,14 @@ class SearchService {
           if (t.archivedAt) continue;
           upsertStmt.run('session', t.id, t.locationId, null, t.title, '');
         }
-        for (const l of allLocations) {
-          upsertStmt.run('location', l.id, null, null, l.name, l.dir);
+        for (const a of allAgents) {
+          upsertStmt.run('agent', a.id, a.locationId, null, a.name, a.providerId);
         }
       })();
 
       log.info('SearchService: backfilled search index', {
         sessions: allSessions.filter((t) => !t.archivedAt).length,
-        locations: allLocations.length,
+        agents: allAgents.length,
       });
     } catch (e) {
       log.warn('SearchService: backfill failed', { error: String(e) });

@@ -6,11 +6,15 @@ import re
 import secrets
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from nio import (
     DownloadError,
+    RoomContextError,
     RoomGetEventError,
+    RoomMemberEvent,
     RoomMessageMedia,
     RoomMessagesError,
 )
@@ -25,7 +29,10 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
     reparent_agent,
 )
-from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
+from switch_core.bridges.agent.protocol.connections import (
+    ClientDeclaration,
+    ConnectionRegistry,
+)
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -101,6 +108,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+# History pagination. The homeserver caps a /messages page regardless of what
+# we ask for, and state events consume it without ever reaching the caller, so
+# one page is never a reliable window. The page cap bounds a single read_context
+# call; hitting it is reported as `truncated` rather than passed off as the
+# whole story.
+HISTORY_PAGE_SIZE = 100
+HISTORY_MAX_PAGES = 20
+# Pages spent walking back to a `before` window, budgeted separately from the
+# pages spent reading inside it. Only used when the homeserver cannot answer
+# timestamp_to_event; a scan is the slow path, so it gets room to succeed.
+HISTORY_MAX_SEEK_PAGES = 100
 
 
 class AgentExistsError(Exception):
@@ -450,6 +469,55 @@ class ProtocolService:
                     agent_name,
                     exc_info=True,
                 )
+
+    async def record_client_declaration(
+        self, agent_id: str, connection_id: str, declaration: ClientDeclaration
+    ) -> None:
+        """Persist what a client last said about itself (CHOO-1865).
+
+        Connections live in memory, so what is running right now dies with the
+        process. This is the durable half, and the reason it belongs in Part 1
+        at all: raising an `accepts` floor is a decision made offline, and it
+        can only be made safely against a record of what is actually deployed.
+        Without it the question "what would this break?" has no answer but a
+        guess.
+
+        One record per agent, last write wins, stamped with the connection it
+        came from. The connection id is what makes it interpretable: an agent
+        may hold many connections at once, so without it a second connection
+        declaring less looks like the first client having forgotten what it is,
+        rather than a different client answering.
+
+        A failure here is logged and swallowed: this is bookkeeping about a
+        connection, and losing a version record must never stop an agent
+        connecting. It is logged at warning because a persistently silent
+        recorder would leave the same blind spot as a client that never
+        declared, and that must not pass unnoticed.
+        """
+        if not declaration.declares_protocol and declaration.version is None:
+            return
+
+        record = declaration.as_dict()
+        record["connection_id"] = connection_id
+        record["recorded_at"] = datetime.now(UTC).isoformat()
+        try:
+            async with self.session_factory() as session:
+                agent = await self.agent_store.get(session, agent_id)
+                if agent is None:
+                    return
+                metadata = (
+                    dict(agent.metadata_) if isinstance(agent.metadata_, dict) else {}
+                )
+                metadata["client_declaration"] = record
+                await self.agent_store.update(session, agent_id, metadata_=metadata)
+                await session.commit()
+        except Exception:
+            logger.warning(
+                "Could not record the client declaration for agent %s; it will "
+                "read as unknown until the next connect",
+                agent_id,
+                exc_info=True,
+            )
 
     async def update_agent(
         self,
@@ -1001,6 +1069,7 @@ class ProtocolService:
         deeplink_url: str | None = None,
         detail: str | None = None,
         control_capabilities: dict[str, bool] | None = None,
+        anchor_event_id: str | None = None,
     ) -> None:
         """Record and broadcast an agent's runtime state in a room.
 
@@ -1016,6 +1085,13 @@ class ProtocolService:
         `detail` is a short activity line for the running turn (e.g. "Editing
         foo.py"); like `thread_id` it is transient and rides the event only —
         the bridge surfaces it in place on the live working message.
+
+        `anchor_event_id` is the latest message the reporting connector has
+        actually handed to the agent's session. The bridge repositions the
+        indicator when it changes, so position follows what the agent has
+        genuinely been given rather than what merely arrived in the room. Also
+        transient routing — reported on every refresh, and only a change moves
+        anything.
 
         The `switchdash://` deeplink is rewritten to a gateway HTTP redirect when
         `GATEWAY_PUBLIC_URL` is configured, so the "Open in SwitchDash" link is
@@ -1055,6 +1131,7 @@ class ProtocolService:
             thread_id=thread_id,
             deeplink_url=deeplink_url,
             detail=detail,
+            anchor_event_id=anchor_event_id,
         )
 
     async def _emit_runtime_state(
@@ -1069,6 +1146,7 @@ class ProtocolService:
         thread_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        anchor_event_id: str | None = None,
     ) -> None:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None or client.nio_client is None:
@@ -1088,6 +1166,7 @@ class ProtocolService:
                 "thread_id": thread_id,
                 "deeplink_url": deeplink_url,
                 "detail": detail,
+                "anchor_event_id": anchor_event_id,
             },
         )
 
@@ -1178,12 +1257,47 @@ class ProtocolService:
 
         return {
             "id": event.event_id,
+            "kind": "message",
             "sender": event.sender,
             "sender_name": sender_name,
             "body": body,
             "timestamp": getattr(event, "server_timestamp", None),
             "attachments": attachments,
         }
+
+    @staticmethod
+    def _join_dict(event: RoomMemberEvent) -> dict[str, Any] | None:
+        """Build a timeline entry for someone joining the room.
+
+        Only a transition *into* join counts: a display-name change or avatar
+        update is also an m.room.member event with membership "join", and
+        replaying those as arrivals would be a lie.
+        """
+        if event.membership != "join" or event.prev_membership == "join":
+            return None
+        content = event.content or {}
+        name = content.get("displayname") or event.state_key
+        return {
+            "id": event.event_id,
+            "kind": "room_join",
+            "sender": event.state_key,
+            "sender_name": name,
+            "body": f"{name} joined the room",
+            "timestamp": getattr(event, "server_timestamp", None),
+            "attachments": [],
+        }
+
+    def _timeline_entry(self, event: Any) -> dict[str, Any] | None:
+        """Map a nio timeline event to an agent-facing entry, or None to skip.
+
+        Messages and joins are the timeline; every other state event (leaves,
+        topic changes, power levels) is noise an agent cannot act on.
+        """
+        if isinstance(event, RoomMemberEvent):
+            return self._join_dict(event)
+        if getattr(event, "body", None):
+            return self._message_dict(event)
+        return None
 
     @staticmethod
     def _thread_root_id(event: Any) -> str:
@@ -1207,20 +1321,31 @@ class ProtocolService:
         limit: int = 50,
         since_ms: int | None = None,
         before_ms: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Fetch room history grouped into threads.
 
-        Returns thread groups ordered by latest activity (most-recently-active
-        last, so the tail is the freshest), each shaped as::
+        Returns::
 
-            {"root": <message>, "replies": [<message>, ...]}
+            {"threads": [...], "truncated": bool, "oldest_timestamp": int|None}
 
-        where <message> is {"id", "sender", "sender_name", "body", "timestamp"}.
-        Top-level messages are roots with an empty replies list; replies are
-        ordered oldest-first within a thread. A root that falls outside the
-        fetched window but has a reply inside it is fetched on demand; if it
-        cannot be fetched it is returned as an elided stub so the reply is not
-        lost.
+        where each thread group is ordered by latest activity (most-recently-
+        active last, so the tail is the freshest) and shaped as::
+
+            {"root": <entry>, "replies": [<entry>, ...]}
+
+        An <entry> is {"id", "kind", "sender", "sender_name", "body",
+        "timestamp", "attachments"}. `kind` is "message" for something someone
+        said and "room_join" for an arrival. Top-level entries are roots with
+        an empty replies list; replies are ordered oldest-first within a
+        thread. A root that falls outside the fetched window but has a reply
+        inside it is fetched on demand; if it cannot be fetched it is returned
+        as an elided stub so the reply is not lost.
+
+        `truncated` is True when older history exists that this call did not
+        reach — the caller asked for more than it got. It is deliberately
+        conservative: a window that ends exactly on `limit` reports truncated
+        even if nothing older happens to exist. A short history must never be
+        mistaken for a complete one.
         """
         room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
@@ -1229,42 +1354,99 @@ class ProtocolService:
         if client.nio_client is None:
             raise ValueError("Agent client not connected to Matrix")
 
-        resp = await client.nio_client.room_messages(
-            room.matrix_room_id, start="", limit=limit * 5
-        )
-
-        if isinstance(resp, RoomMessagesError):
-            raise ValueError(f"Failed to fetch room history: {resp.message}")
-
-        # resp.chunk is newest-first. Collect up to `limit` messages within the
-        # window, then group them by thread root.
+        # Walk backwards page by page until the window is satisfied. A single
+        # page is not enough: the homeserver caps its size, and state events
+        # that never reach the caller still consume it.
+        #
+        # Reaching a `before` window and reading inside it are budgeted
+        # separately. Matrix has no timestamp cursor, so a `before` deep in a
+        # busy room can only be reached by paging over everything newer — and
+        # if those pages came out of the read budget, a far-enough-back window
+        # would return empty no matter how small a `limit` the caller asked
+        # for. Seeking is the cost of getting there, not part of the answer.
         groups: dict[str, dict[str, Any]] = {}
-        seen = 0
-        for event in resp.chunk:
-            body = getattr(event, "body", None)
-            if not body:
-                continue
-            ts = getattr(event, "server_timestamp", None)
-            if since_ms is not None and ts is not None and ts < since_ms:
-                continue
-            if before_ms is not None and ts is not None and ts >= before_ms:
-                continue
+        collected = 0
+        oldest_ts: int | None = None
+        read_pages = 0
+        seek_pages = 0
+        exhausted = False
 
-            root_id = self._thread_root_id(event)
-            msg = self._message_dict(event)
-            group = groups.setdefault(
-                root_id, {"root": None, "replies": [], "latest": 0}
+        start: str | None = None
+        if before_ms is not None:
+            start = await self._seek_before_token(
+                client, room.matrix_room_id, before_ms
             )
-            if msg["id"] == root_id:
-                group["root"] = msg
-            else:
-                group["replies"].append(msg)
-            if ts is not None and ts > group["latest"]:
-                group["latest"] = ts
 
-            seen += 1
-            if seen >= limit:
+        while collected < limit and read_pages < HISTORY_MAX_PAGES:
+            if seek_pages >= HISTORY_MAX_SEEK_PAGES:
+                logger.warning(
+                    "read_context gave up seeking back to %s in %s after "
+                    "%d pages; the window was never reached",
+                    before_ms,
+                    room.matrix_room_id,
+                    seek_pages,
+                )
                 break
+            resp = await client.nio_client.room_messages(
+                room.matrix_room_id, start=start, limit=HISTORY_PAGE_SIZE
+            )
+            if isinstance(resp, RoomMessagesError):
+                raise ValueError(f"Failed to fetch room history: {resp.message}")
+
+            chunk = list(resp.chunk)
+            end = getattr(resp, "end", None)
+            # A page that contributes nothing because everything on it is
+            # newer than `before` is a seek, not a read.
+            reached_window = before_ms is None or any(
+                getattr(e, "server_timestamp", None) is not None
+                and getattr(e, "server_timestamp") < before_ms
+                for e in chunk
+            )
+            if reached_window:
+                read_pages += 1
+            else:
+                seek_pages += 1
+
+            for event in chunk:
+                ts = getattr(event, "server_timestamp", None)
+                # Newer than the window: keep walking back towards it.
+                if before_ms is not None and ts is not None and ts >= before_ms:
+                    continue
+                # Older than the window: pagination runs newest-first, so
+                # everything beyond this point is older too.
+                if since_ms is not None and ts is not None and ts < since_ms:
+                    exhausted = True
+                    break
+
+                entry = self._timeline_entry(event)
+                if entry is None:
+                    continue
+
+                root_id = self._thread_root_id(event)
+                group = groups.setdefault(
+                    root_id, {"root": None, "replies": [], "latest": 0}
+                )
+                if entry["id"] == root_id:
+                    group["root"] = entry
+                else:
+                    group["replies"].append(entry)
+                if ts is not None and ts > group["latest"]:
+                    group["latest"] = ts
+                if ts is not None and (oldest_ts is None or ts < oldest_ts):
+                    oldest_ts = ts
+
+                collected += 1
+                if collected >= limit:
+                    break
+
+            if exhausted:
+                break
+            # No continuation token, or the server stopped moving: this is the
+            # start of the room.
+            if not end or end == start:
+                exhausted = True
+                break
+            start = end
 
         # Resolve roots that fall outside the fetched window (orphan replies).
         for root_id, group in groups.items():
@@ -1274,11 +1456,82 @@ class ProtocolService:
                 )
 
         ordered = sorted(groups.values(), key=lambda g: g["latest"])
-        result: list[dict[str, Any]] = []
+        threads: list[dict[str, Any]] = []
         for group in ordered:
             group["replies"].reverse()  # chunk was newest-first → oldest-first
-            result.append({"root": group["root"], "replies": group["replies"]})
-        return result
+            threads.append({"root": group["root"], "replies": group["replies"]})
+
+        if not exhausted:
+            logger.warning(
+                "read_context truncated in %s: %d entries over %d read pages "
+                "(%d spent seeking), older history not reached",
+                room.matrix_room_id,
+                collected,
+                read_pages,
+                seek_pages,
+            )
+
+        return {
+            "threads": threads,
+            "truncated": not exhausted,
+            "oldest_timestamp": oldest_ts,
+        }
+
+    async def _seek_before_token(
+        self, client: ClientBase[Any], matrix_room_id: str, before_ms: int
+    ) -> str | None:
+        """Get a pagination token positioned at `before_ms`, if the server can.
+
+        `/messages` takes a token, not a timestamp, so reaching a `before` deep
+        in a busy room otherwise means paging over everything newer just to
+        arrive. `timestamp_to_event` (Matrix 1.6) jumps straight there.
+
+        Returns None when the homeserver cannot answer — the caller then walks
+        back the slow way. A failure here costs speed, not correctness, so it
+        is logged and swallowed rather than raised.
+        """
+        nio_client = client.nio_client
+        if nio_client is None:
+            return None
+        path = (
+            f"/_matrix/client/v1/rooms/{quote(matrix_room_id, safe='')}"
+            f"/timestamp_to_event?ts={before_ms}&dir=b"
+        )
+        try:
+            resp = await nio_client.send(
+                "GET",
+                path,
+                headers={"Authorization": f"Bearer {nio_client.access_token}"},
+            )
+            if resp.status != 200:
+                logger.info(
+                    "timestamp_to_event unavailable in %s (HTTP %d); "
+                    "falling back to scanning back to the window",
+                    matrix_room_id,
+                    resp.status,
+                )
+                return None
+            event_id = (await resp.json()).get("event_id")
+        except Exception:
+            logger.warning(
+                "timestamp_to_event failed in %s; falling back to scanning",
+                matrix_room_id,
+                exc_info=True,
+            )
+            return None
+        if not event_id:
+            return None
+
+        context = await nio_client.room_context(matrix_room_id, event_id, limit=1)
+        if isinstance(context, RoomContextError):
+            logger.info(
+                "Could not anchor pagination at %s in %s; scanning instead",
+                event_id,
+                matrix_room_id,
+            )
+            return None
+        start_token = context.start
+        return str(start_token) if start_token else None
 
     async def _fetch_root(
         self, client: ClientBase[Any], matrix_room_id: str, root_id: str
@@ -1299,6 +1552,7 @@ class ProtocolService:
             )
             return {
                 "id": root_id,
+                "kind": "message",
                 "sender": None,
                 "sender_name": None,
                 "body": None,
@@ -2028,12 +2282,20 @@ class ProtocolService:
             """Return (present_here, session_room_name) for a lease."""
             if lease.transport_session_id is None:
                 return False, None
-            conn = await self.agent_session_store.get_connected_room(
-                session, lease.transport_session_id
-            )
-            if conn is None:
-                return False, None
-            conn_room_id = conn[1]
+            # A live connection knows its own rooms and has no binding row; the
+            # row is only there for callers that predate connections.
+            connection = self.connections.get(lease.transport_session_id)
+            if connection is not None:
+                if len(connection.rooms) != 1:
+                    return False, None
+                conn_room_id = next(iter(connection.rooms))
+            else:
+                conn = await self.agent_session_store.get_connected_room(
+                    session, lease.transport_session_id
+                )
+                if conn is None:
+                    return False, None
+                conn_room_id = conn[1]
             if conn_room_id == room_id:
                 return True, None
             if conn_room_id not in room_name_cache:

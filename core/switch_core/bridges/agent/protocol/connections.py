@@ -29,6 +29,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
+from switch_core.artifacts import contract_range
+
 logger = logging.getLogger(__name__)
 
 Scope = Literal["single", "all"]
@@ -40,10 +42,17 @@ DeliveryFilter = Literal["all", "addressed"]
 HEARTBEAT_INTERVAL_SECONDS = 2.0
 HEARTBEAT_TTL_SECONDS = 6.0
 
-# Refuse a client that speaks a different protocol rather than degrading in
-# ways neither side can see. The runtime lives on the user's machine and Switch
-# moves independently.
-PROTOCOL_VERSION = 1
+# Refuse a client that cannot meet this server's protocol rather than degrading
+# in ways neither side can see. The runtime lives on the user's machine and
+# Switch moves independently.
+#
+# Both numbers come from artifacts.yaml, the one place a human declares them
+# (CHOO-1865). PROTOCOL_VERSION is the newest revision this server implements;
+# PROTOCOL_ACCEPTS is the oldest it still handles. They are equal today, and
+# the range is what compatibility is judged on so that they need not stay so.
+_SERVER_AGENT_PROTOCOL = contract_range("agent-protocol", "switch-core")
+PROTOCOL_VERSION = _SERVER_AGENT_PROTOCOL.speaks
+PROTOCOL_ACCEPTS = _SERVER_AGENT_PROTOCOL.accepts
 
 # Upper bound on simultaneous connections per agent. Runaway growth becomes a
 # visible error instead of quiet resource creep.
@@ -99,13 +108,76 @@ def evicted_session_warning(room_id: str, evicted_connection_id: str) -> str:
     )
 
 
+@dataclass(frozen=True)
+class ClientDeclaration:
+    """What a client said about itself when it opened a connection (CHOO-1865).
+
+    Every field is optional, because a client built before this existed says
+    nothing at all. That has to record as *unknown* rather than as a default:
+    a default is indistinguishable from an answer, and the whole point is to
+    know which clients we cannot account for.
+
+    `speaks` and `accepts` are the client's `agent-protocol` range. `artifact`
+    and `version` say which released thing is connecting and where it is —
+    they are reported, never judged, since a semver says nothing about
+    compatibility.
+    """
+
+    speaks: int | None = None
+    accepts: int | None = None
+    artifact: str | None = None
+    version: str | None = None
+
+    @property
+    def declares_protocol(self) -> bool:
+        return self.speaks is not None
+
+    @property
+    def protocol_floor(self) -> int | None:
+        """The oldest revision the client handles.
+
+        A client that sends only `speaks` is declaring a single revision, so
+        its floor is that same number — which is exactly how the original
+        exact-match check behaved.
+        """
+        if self.speaks is None:
+            return None
+        return self.accepts if self.accepts is not None else self.speaks
+
+    def as_dict(self) -> dict[str, object]:
+        """The declaration as recorded and reported. Absent stays null."""
+        return {
+            "speaks": self.speaks,
+            "accepts": self.protocol_floor,
+            "artifact": self.artifact,
+            "version": self.version,
+        }
+
+
 class ProtocolVersionError(ConnectionError_):
-    def __init__(self, requested: int) -> None:
-        super().__init__(
-            f"protocol version {requested} is not supported (server speaks "
-            f"{PROTOCOL_VERSION}); update the Switch agent runtime"
+    """A client's declared agent-protocol range cannot meet this server's.
+
+    Carries both ranges, and names which side is behind. A refusal that only
+    says "no" leaves the user guessing which thing to update, and guessing
+    wrong means downgrading the peer that was already right.
+    """
+
+    def __init__(self, *, client_speaks: int, client_accepts: int) -> None:
+        remedy = (
+            "update the Switch agent runtime"
+            if client_speaks < PROTOCOL_ACCEPTS
+            else "update switch-core"
         )
-        self.requested = requested
+        super().__init__(
+            f"this client speaks agent-protocol {client_accepts}-{client_speaks} "
+            f"and the server speaks {PROTOCOL_ACCEPTS}-{PROTOCOL_VERSION}; the "
+            f"ranges do not overlap, so {remedy}"
+        )
+        self.client_speaks = client_speaks
+        self.client_accepts = client_accepts
+        self.server_speaks = PROTOCOL_VERSION
+        self.server_accepts = PROTOCOL_ACCEPTS
+        self.remedy = remedy
 
 
 class TooManyConnectionsError(ConnectionError_):
@@ -140,6 +212,9 @@ class Connection:
     # has been replaced and stop writing.
     stream_generation: int = 0
     closed_reason: str | None = None
+    # What the client said about itself on connect (CHOO-1865). Defaults to an
+    # empty declaration, which means unknown — never "current".
+    declaration: ClientDeclaration = field(default_factory=lambda: ClientDeclaration())
     wake: asyncio.Event = field(default_factory=asyncio.Event)
 
     def is_alive(self, now: float) -> bool:
@@ -169,7 +244,7 @@ class ConnectionRegistry:
         delivery_filter: DeliveryFilter,
         spawn_capable: bool,
         cursor: int,
-        protocol_version: int,
+        declaration: ClientDeclaration,
     ) -> Connection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -178,9 +253,21 @@ class ConnectionRegistry:
         live id takes it over — "the same client returning" and "the same
         client duplicated" are indistinguishable, and takeover is right for
         both.
+
+        A client that declares an `agent-protocol` range with no overlap is
+        refused. A client that declares nothing is recorded as unknown and
+        connects: unknown is not incompatible, and refusing on silence would
+        lock out every client built before it could speak up.
         """
-        if protocol_version != PROTOCOL_VERSION:
-            raise ProtocolVersionError(protocol_version)
+        floor = declaration.protocol_floor
+        if declaration.speaks is not None and floor is not None:
+            overlaps = (
+                floor <= PROTOCOL_VERSION and PROTOCOL_ACCEPTS <= declaration.speaks
+            )
+            if not overlaps:
+                raise ProtocolVersionError(
+                    client_speaks=declaration.speaks, client_accepts=floor
+                )
 
         existing = self._by_id.get(connection_id)
         if existing is not None:
@@ -195,6 +282,10 @@ class ConnectionRegistry:
             existing.closed_reason = None
             existing.stream_attached = True
             existing.stream_generation += 1
+            # A reattach can come from an upgraded client, so the declaration
+            # is replaced rather than kept. The connection outlives the socket;
+            # what is on the other end of it need not.
+            existing.declaration = declaration
             logger.info(
                 "[CONN] reattached agent=%s connection=%s scope=%s generation=%s",
                 agent_id,
@@ -219,16 +310,23 @@ class ConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
+            declaration=declaration,
         )
         self._by_id[connection_id] = conn
         owned.add(connection_id)
         logger.info(
-            "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s",
+            "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
+            "client=%s version=%s protocol=%s",
             agent_id,
             connection_id,
             scope,
             delivery_filter,
             spawn_capable,
+            declaration.artifact or "unknown",
+            declaration.version or "unknown",
+            f"{floor}-{declaration.speaks}"
+            if declaration.declares_protocol
+            else "unknown",
         )
         return conn
 

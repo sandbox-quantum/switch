@@ -32,8 +32,11 @@ on:
   push:
     tags:
       - 'switch-agent-runtime-v*'
-  # Lets you publish from a branch without tagging:
-  #   gh workflow run switch-agent-runtime-publish.yml --ref <branch>
+  # Lets you re-run a publish for an already-tagged commit (e.g. main) without
+  # pushing the tag again:
+  #   gh workflow run switch-agent-runtime-publish.yml --ref main
+  # The version guard still applies: the commit must carry a matching
+  # switch-agent-runtime-v<version> tag, or the run refuses to publish.
   workflow_dispatch:
 
 jobs:
@@ -53,6 +56,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        # Full history + tags so the version guard can resolve the tag pointing
+        # at HEAD on a workflow_dispatch (where github.ref is a branch, not the tag).
+        with:
+          fetch-depth: 0
 
       # Pinned rather than read from packageManager: that field lives in
       # dash/package.json, and the action looks at the repo root.
@@ -84,18 +91,35 @@ jobs:
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
 
-          # A tag naming one version while package.json says another publishes
-          # something whose name disagrees with its contents. Refuse.
+          # The published version must be backed by a matching tag on this
+          # commit. On a tag push that's the trigger ref; on a workflow_dispatch
+          # (branch ref, e.g. main) we resolve the tag pointing at HEAD. This
+          # guard runs on BOTH paths — previously it lived inside the tag-only
+          # case, so a main dispatch skipped it and could publish an unchecked
+          # version.
           case "$TAG_REF" in
             refs/tags/switch-agent-runtime-v*)
               tagged="${TAG_REF#refs/tags/switch-agent-runtime-v}"
-              if [ "$tagged" != "$version" ]; then
-                echo "Tag says $tagged, package.json says $version." >&2
-                echo "Bump the version and re-tag." >&2
-                exit 1
-              fi
+              ;;
+            *)
+              tag="$(git tag --points-at HEAD --list 'switch-agent-runtime-v*' | head -n1)"
+              tagged="${tag#switch-agent-runtime-v}"
               ;;
           esac
+
+          if [ -z "$tagged" ]; then
+            echo "Refusing to publish: this commit has no switch-agent-runtime-v* tag." >&2
+            echo "Publishing the runtime is a tag — push switch-agent-runtime-v$version first." >&2
+            exit 1
+          fi
+
+          # A tag naming one version while package.json says another publishes
+          # something whose name disagrees with its contents. Refuse.
+          if [ "$tagged" != "$version" ]; then
+            echo "Tag says $tagged, package.json says $version." >&2
+            echo "Bump the version and re-tag." >&2
+            exit 1
+          fi
 
           if npm view "$name@$version" version >/dev/null 2>&1; then
             echo "$name@$version is already published — nothing to do."

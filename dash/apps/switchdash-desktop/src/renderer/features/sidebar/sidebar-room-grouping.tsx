@@ -4,6 +4,7 @@ import { openRoomChannel, openRoomGatewayPage } from '@renderer/features/switch-
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
@@ -18,6 +19,20 @@ export function sessionRoomId(session: SessionStore): string | null {
 export function roomLabel(roomKey: string): string {
   if (roomKey === UNASSIGNED_ROOM_KEY) return 'Unassigned';
   return switchRoomsStore.roomNameById(roomKey) ?? `Room ${roomKey.slice(0, 8)}`;
+}
+
+/**
+ * Whether a room's label is its real name or a stand-in.
+ *
+ * A room's id reaches the sidebar by live push while its name needs the
+ * server's room list, so the two can be out of step — most often when the
+ * server is not connected, or its list failed to load. The short-id fallback
+ * that results looks exactly like a name, which is what makes it a lie; rows
+ * use this to mark it as not-yet-known instead.
+ */
+export function isRoomNameKnown(roomKey: string): boolean {
+  if (roomKey === UNASSIGNED_ROOM_KEY) return true;
+  return switchRoomsStore.roomNameById(roomKey) !== null;
 }
 
 /** Open a room's detail page in the gateway web app (no-op for Unassigned). */
@@ -103,9 +118,23 @@ export function RoomRow({
   isActive = false,
   depth = 0,
   bridgeType = null,
+  undrawableCount = null,
+  nameKnown = true,
+  nameBlockedBySignIn = false,
 }: {
   label: string;
   count: number;
+  /** False when `label` is a stand-in because the room's name has not loaded.
+   * Rendered as visibly provisional rather than as the room's name. */
+  nameKnown?: boolean;
+  /** True when the name is missing because the room's server is signed out —
+   * something to act on, not to wait for. */
+  nameBlockedBySignIn?: boolean;
+  /** Members the server counts that this install cannot draw — agents
+   * registered on another switchdash, plus any whose membership failed to load.
+   * Disclosed next to the count so a member that exists but cannot be shown is
+   * not read as a member that is not there. Null when unknown. */
+  undrawableCount?: number | null;
   expanded: boolean;
   onToggle: () => void;
   onOpenGateway: () => void;
@@ -158,14 +187,31 @@ export function RoomRow({
           )}
         />
       </SidebarItemMiniButton>
-      <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
+      {nameKnown ? (
+        <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
+      ) : (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground-muted italic">
+                {label}
+              </span>
+            }
+          />
+          <TooltipContent>
+            {nameBlockedBySignIn
+              ? 'Sign in to this room’s server to see its name. Shown by id until then.'
+              : 'This room’s name hasn’t loaded yet — shown by id until it does.'}
+          </TooltipContent>
+        </Tooltip>
+      )}
       {channelLinkable && (
         <Tooltip>
           <TooltipTrigger
             render={
               <SidebarItemMiniButton
                 type="button"
-                aria-label={`Open ${label} in ${bridgeType}`}
+                aria-label={`Open ${label} in ${bridgePlatformLabel(bridgeType)}`}
                 className="opacity-0 transition-opacity duration-150 group-hover/room:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -176,7 +222,7 @@ export function RoomRow({
               </SidebarItemMiniButton>
             }
           />
-          <TooltipContent>Open in {bridgeType}</TooltipContent>
+          <TooltipContent>Open in {bridgePlatformLabel(bridgeType)}</TooltipContent>
         </Tooltip>
       )}
       {onAddAgent && (
@@ -218,6 +264,19 @@ export function RoomRow({
         <TooltipContent>Open in gateway</TooltipContent>
       </Tooltip>
       <span className="shrink-0 text-xs text-foreground-tertiary-passive">{count}</span>
+      {undrawableCount !== null && undrawableCount > 0 && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span className="shrink-0 text-xs text-foreground-muted">+{undrawableCount}</span>
+            }
+          />
+          <TooltipContent>
+            {undrawableCount} more {undrawableCount === 1 ? 'member is' : 'members are'} in this
+            room but not on this switchdash, so they cannot be shown here
+          </TooltipContent>
+        </Tooltip>
+      )}
     </SidebarMenuRow>
   );
 }

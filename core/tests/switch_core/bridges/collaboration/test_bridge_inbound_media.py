@@ -75,7 +75,7 @@ def _fake_bridge() -> SimpleNamespace:
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
 
-    return SimpleNamespace(
+    ns = SimpleNamespace(
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
         _is_registered_agent=_is_registered_agent,
@@ -84,6 +84,7 @@ def _fake_bridge() -> SimpleNamespace:
         puppet=puppet,
         recorded=recorded,
     )
+    return ns
 
 
 def _msg(

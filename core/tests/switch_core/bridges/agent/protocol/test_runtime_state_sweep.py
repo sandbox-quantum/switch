@@ -23,6 +23,7 @@ from typing import Any
 
 from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_VERSION,
+    ClientDeclaration,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -102,7 +103,7 @@ def _connected(room: str | None) -> ConnectionRegistry:
         delivery_filter="all",
         spawn_capable=False,
         cursor=0,
-        protocol_version=PROTOCOL_VERSION,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
     )
     if room:
         registry.claim_room(conn, room)

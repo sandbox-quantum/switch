@@ -25,6 +25,28 @@ describe('compareSidecarVersions', () => {
     expect(same('1.7', '1.7')).toBe(true);
   });
 
+  it('orders by patch within a minor', () => {
+    expect(older('1.7.0', '1.7.1')).toBe(true);
+    expect(newer('1.7.10', '1.7.9')).toBe(true);
+  });
+
+  it('reads a two-part version as patch 0, so 1.7 and 1.7.0 are the same', () => {
+    // The property the three-part migration rests on (CHOO-1865). Sidecars
+    // deployed before it report `1.7`, and switchdash installs in the field
+    // parse only two parts. Both sides must read the pair as equal, or each
+    // sees the other as an upgrade and they replace one another forever
+    // (CHOO-1937).
+    expect(same('1.7', '1.7.0')).toBe(true);
+    expect(same('1.7.0', '1.7')).toBe(true);
+  });
+
+  it('keeps this release on major 1, so installs in the field still accept it', () => {
+    // Every switchdash already out there judges compatibility on the major.
+    // Going to 2.0.0 would make all of them treat this sidecar as incompatible
+    // and replace it on sight.
+    expect(sidecarMajor(SIDECAR_VERSION)).toBe(1);
+  });
+
   it('treats a missing or unparseable version as the oldest', () => {
     // A sidecar predating the version field reports none, and must never look
     // newer than the client — that would make it un-upgradeable forever.

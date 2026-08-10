@@ -112,7 +112,6 @@ const config: Configuration = {
   },
   dmg: {
     icon: 'src/assets/images/switchdash/switchdash-beta.icns',
-    background: 'build/dmg-background.tiff',
     window: { width: 530, height: 319 },
     contents: [
       { x: 132, y: 150, type: 'file' },

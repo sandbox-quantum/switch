@@ -31,6 +31,21 @@ export function VersionDriftNotice({
 }) {
   if (!drift) return null;
 
+  // We could not read what is deployed. No action offered: restarting on the
+  // strength of a failed probe could just as easily be a downgrade, and there
+  // is nothing here to prove otherwise (CHOO-1865).
+  if (drift.direction === 'unreadable') {
+    return (
+      <Alert variant="warning">
+        <TriangleAlert className="size-4" />
+        <AlertTitle>Can't tell which switch-core this is running</AlertTitle>
+        <AlertDescription>
+          {`This app expects ${drift.expected}, but the deployed version could not be read (${drift.reason}). Nothing is known about whether it matches.`}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
   if (drift.direction === 'downgrade') {
     return (
       <Alert variant="destructive">

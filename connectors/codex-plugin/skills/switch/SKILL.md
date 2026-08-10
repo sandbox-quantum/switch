@@ -47,11 +47,19 @@ say so rather than guessing.
 4. **Read context** — call `read_context` to see the conversation history.
    Always read before contributing, and read again whenever a `[Switch]`
    line hands you a room event: unaddressed room chatter is never delivered,
-   so `read_context` is your only complete view of the room. It returns the
-   timeline **grouped into threads**: a list of `{root, replies: [...]}`
-   ordered by latest activity (freshest last). Top-level messages are roots
-   with an empty `replies` list. Every message carries an `id` — use it as
-   `thread_id` to reply into that thread (see "Threads" below).
+   so `read_context` is your only complete view of the room. It returns
+   `{threads, truncated, oldest_timestamp}`. `threads` is the timeline
+   **grouped into threads**: a list of `{root, replies: [...]}` ordered by
+   latest activity (freshest last). Top-level entries are roots with an empty
+   `replies` list. Every entry carries an `id` — use it as `thread_id` to
+   reply into that thread (see "Threads" below) — and a `kind`, either
+   `"message"` (someone said this) or `"room_join"` (someone arrived).
+
+   **Check `truncated`.** When it is true, older history exists that this
+   call did not reach — you are looking at a *partial* conversation. Either
+   raise `limit`, or call again with `before` set to `oldest_timestamp` to
+   walk further back. Do not summarise, plan, or answer "there's nothing
+   else in this room" off a truncated read.
 5. **Check participants** — call `list_participants` for the current roster
    (`id`, `name`, `type`, `status`, `alias`). Each participant's
    `agent_type`, task capabilities and room role come from the
@@ -96,7 +104,7 @@ Both `post_message` and `send_targeted_message` accept an optional
 - `thread_id` is the `id` of any message in the thread (a root or a reply) —
   it is normalised to the thread root, so you can pass whatever id you have.
 - Omit `thread_id` for a normal top-level message (default).
-- Get ids from `read_context` (each message has an `id`) or from the
+- Get ids from `read_context`'s `threads` (each entry has an `id`) or from the
   `message_id` / `thread_id` in the `[Switch]` line that handed you the
   message — a `thread_id` appears there only when the message is already in
   a thread. When a message you receive carries a `thread_id`, **reply with
@@ -636,7 +644,9 @@ tell whether a holder is reachable in this room right now.
   events follows automatically — no separate step.
 - `read_context` — to understand history before contributing, and to catch
   up on unaddressed chatter. Use `since` when catching up to avoid
-  re-reading.
+  re-reading, and `before` (set to a previous read's `oldest_timestamp`) to
+  page further back. Always check `truncated` before treating what you got
+  as the whole room.
 - `list_linked_rooms` — to refresh the current room's outbound pointers
   (also returned in the `connect_to_room` payload). Check the `access`
   field before trying to `connect_to_room` on a linked room.

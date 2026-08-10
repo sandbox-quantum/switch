@@ -5,6 +5,7 @@ import type {
   RemoteRoomSummary,
 } from '@shared/core/switch-servers/switch-servers';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
+import { serverAvailability } from './server-availability';
 import { switchServersStore } from './switch-servers-store';
 
 /** Cache key for an agent's room membership: server + Switch agent id. */
@@ -45,6 +46,16 @@ export class SwitchRoomsStore {
   readonly loading = new Set<string>();
   /** Last error per key, if the most recent fetch failed. */
   readonly errors = new Map<string, string>();
+  /** Server id → why its room list could not be read, if the last try failed. */
+  private readonly roomListErrors = new Map<string, string>();
+  /** Servers that were not connected when the room list was last refreshed, so
+   * their rooms were never asked for at all. */
+  private unreachableServerIds: string[] = [];
+  /** The agents whose membership this store is responsible for keeping current.
+   * Recorded on {@link ensureMembershipsFor} so a refresh re-reads the current
+   * set rather than only the keys that happen to be cached — an agent created
+   * after the sidebar mounted is otherwise never fetched. */
+  private trackedIdentities: { serverId: string; switchAgentId: string }[] = [];
 
   constructor() {
     makeAutoObservable(this);
@@ -135,6 +146,30 @@ export class SwitchRoomsStore {
   }
 
   /**
+   * The same listed rooms as {@link listedRoomsInActiveScope}, but across every
+   * server rather than the active one.
+   *
+   * Search is deliberately not scoped to the active server: you search precisely
+   * because you do not know where a thing is, and a result set silently limited
+   * to the server you happen to be looking at cannot answer that. Navigating to
+   * one of these switches the active server (see `scopeToRoomServer`), so the
+   * sidebar follows you there rather than filtering the room back out.
+   */
+  get listedRoomsOnAllServers(): RemoteRoomSummary[] {
+    const serverIds = [
+      ...new Set([...this.allRoomsByServer.keys(), ...this.ownedRoomsByServer.keys()]),
+    ];
+    const listed = serverIds.flatMap((serverId) => {
+      const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
+      return (
+        (managed ? this.allRoomsByServer.get(serverId) : this.ownedRoomsByServer.get(serverId)) ??
+        []
+      );
+    });
+    return listed.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
    * The messaging-app values worth offering as a room filter on the active
    * server: the bridge types actually in use, plus the unbridged sentinel when
    * some room has no messaging app. Offering a platform with no rooms behind it
@@ -161,14 +196,55 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * Refresh the room id → name map from every connected server's room list.
-   * Best-effort: a server that fails to respond is skipped (its rooms keep
-   * their last-known names, or fall back to a short id in the UI).
+   * The servers whose state is on screen: the active one, or all of them when
+   * none is active (the same scope rule the room and location lists follow).
+   *
+   * Each server is its own world — its own rooms, its own agents, its own
+   * connection. Reading or reporting on one you are not looking at is both
+   * wasted work and, worse, someone else's problem presented as yours.
+   */
+  private get serverIdsInScope(): string[] {
+    const activeServerId = switchServersStore.activeServerId;
+    if (activeServerId) return [activeServerId];
+    return switchServersStore.servers.map((s) => s.id);
+  }
+
+  /**
+   * Refresh the room catalogue for the servers on screen.
+   *
+   * A server that cannot be read keeps its last-known rooms rather than losing
+   * them, but the failure is recorded in {@link roomListErrors} instead of being
+   * swallowed: last-known data rendered as if it were current is the one outcome
+   * worse than showing nothing.
    */
   async loadRoomNames(): Promise<void> {
-    const connected = switchServersStore.servers.filter((s) =>
-      switchServersStore.isConnected(s.id)
-    );
+    await this.loadRoomsFrom(this.serverIdsInScope);
+  }
+
+  /**
+   * Refresh the room catalogue for **every** server.
+   *
+   * Only for cross-server search, which is deliberately not scoped — you search
+   * because you do not know where a thing is. Everything else loads the servers
+   * it is actually showing.
+   */
+  async loadRoomsOnAllServers(): Promise<void> {
+    await this.loadRoomsFrom(switchServersStore.servers.map((s) => s.id));
+  }
+
+  private async loadRoomsFrom(serverIds: string[]): Promise<void> {
+    const servers = switchServersStore.servers.filter((s) => serverIds.includes(s.id));
+    const connected = servers.filter((s) => switchServersStore.isConnected(s.id));
+    runInAction(() => {
+      // Not being connected is not a failure — there is simply nothing to ask
+      // right now — but the rooms on that server are equally unknown, and the
+      // sidebar has to be able to say so.
+      const asked = new Set(serverIds);
+      this.unreachableServerIds = [
+        ...this.unreachableServerIds.filter((id) => !asked.has(id)),
+        ...servers.filter((s) => !switchServersStore.isConnected(s.id)).map((s) => s.id),
+      ];
+    });
     await Promise.all(
       connected.map(async (server) => {
         try {
@@ -177,6 +253,7 @@ export class SwitchRoomsStore {
           // each gateway, so match against that server's signed-in identity.
           const signedInUserId = switchServersStore.statusFor(server.id)?.user?.id ?? null;
           runInAction(() => {
+            this.roomListErrors.delete(server.id);
             for (const room of rooms) {
               this.roomNames.set(room.id, room.name);
               this.roomServerById.set(room.id, server.id);
@@ -193,16 +270,145 @@ export class SwitchRoomsStore {
               signedInUserId ? active.filter((r) => r.ownerId === signedInUserId) : []
             );
           });
-        } catch {
-          // skip this server; names stay best-effort
+        } catch (cause) {
+          runInAction(() => {
+            this.roomListErrors.set(
+              server.id,
+              cause instanceof Error ? cause.message : String(cause)
+            );
+          });
         }
       })
     );
   }
 
+  /**
+   * Whether a room's name is missing because switchdash is not signed in to its
+   * server, rather than because the load has not finished.
+   *
+   * The room itself is known — an agent's membership put it there — so the row
+   * has to say something. Which of the two it is decides whether the user is
+   * being asked to wait or to act.
+   */
+  roomNameBlockedBySignIn(roomId: string): boolean {
+    const serverId = this.roomServerById.get(roomId) ?? switchServersStore.activeServerId;
+    if (!serverId) return false;
+    return serverAvailability(serverId) === 'signed-out';
+  }
+
+  /**
+   * Servers on screen whose room list was asked for and failed.
+   *
+   * Distinct from {@link serversNotSignedIn}: this is a fault, it may be
+   * transient, and retrying is a sensible thing to offer.
+   */
+  get serversThatFailedToLoad(): { id: string; name: string }[] {
+    return this.namedServersInScope([...this.roomListErrors.keys()]);
+  }
+
+  /**
+   * Servers on screen that were never asked because switchdash is not signed in
+   * to them.
+   *
+   * Not a fault and not retryable — the user has to sign in. Reporting it as a
+   * failure with a retry button offers an action that cannot work.
+   */
+  get serversNotSignedIn(): { id: string; name: string }[] {
+    return this.namedServersInScope(
+      this.unreachableServerIds.filter((id) => serverAvailability(id) === 'signed-out')
+    );
+  }
+
+  private namedServersInScope(serverIds: string[]): { id: string; name: string }[] {
+    const inScope = new Set(this.serverIdsInScope);
+    return [...new Set(serverIds)]
+      .filter((id) => inScope.has(id))
+      .map((id) => ({
+        id,
+        name: switchServersStore.servers.find((s) => s.id === id)?.name ?? id,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Agents whose room membership is not known: the fetch failed, or has not run.
+   *
+   * Their rooms cannot list them, so a room can look emptier than it is. That is
+   * indistinguishable from a genuinely empty room unless it is said out loud.
+   */
+  get agentsWithUnknownMembership(): number {
+    return this.trackedIdentities.filter(
+      ({ serverId, switchAgentId }) =>
+        this.roomsByAgent.get(key(serverId, switchAgentId)) === undefined &&
+        !this.isLoading(serverId, switchAgentId)
+    ).length;
+  }
+
   /** Cached membership, or undefined if never fetched. */
   roomsFor(serverId: string, switchAgentId: string): RemoteAgentRoom[] | undefined {
     return this.roomsByAgent.get(key(serverId, switchAgentId));
+  }
+
+  /**
+   * Room id → the Switch agent ids of this install's agents that belong to it.
+   *
+   * The gateway answers membership per agent, so the room-keyed view has to be
+   * derived. Deriving it **here, once** rather than in each tree at render time
+   * is what makes a room's member list and its member count the same read: any
+   * view that wants either reads this, so the two cannot disagree.
+   *
+   * Scope is deliberate. This install can only act on its own agents, so those
+   * are the only members the sidebar draws (see {@link undrawableMemberCount}
+   * for how the rest are disclosed).
+   */
+  get localMemberIdsByRoom(): Map<string, string[]> {
+    const byRoom = new Map<string, string[]>();
+    for (const [cacheKey, memberships] of this.roomsByAgent) {
+      const switchAgentId = cacheKey.slice(cacheKey.indexOf(':') + 1);
+      for (const membership of memberships) {
+        if (membership.archived) continue;
+        const members = byRoom.get(membership.roomId);
+        if (members) members.push(switchAgentId);
+        else byRoom.set(membership.roomId, [switchAgentId]);
+      }
+    }
+    return byRoom;
+  }
+
+  /** The Switch agent ids of this install's agents in a room. */
+  localMemberIds(roomId: string): string[] {
+    return this.localMemberIdsByRoom.get(roomId) ?? [];
+  }
+
+  /**
+   * Members the server counts for a room that this install cannot draw — agents
+   * registered elsewhere, plus any whose membership failed to load. Null when
+   * the room's server list has not loaded, so the difference is unknown rather
+   * than zero.
+   *
+   * This is never rendered as the member count. The count is the length of what
+   * is drawn; this only discloses the gap, so a member that exists but cannot be
+   * shown is not mistaken for a member that is not there.
+   */
+  undrawableMemberCount(roomId: string): number | null {
+    const total = this.roomSummaryById(roomId)?.agentCount ?? null;
+    if (total === null) return null;
+    return Math.max(0, total - this.localMemberIds(roomId).length);
+  }
+
+  /**
+   * Re-read every fact the sidebar's room state is built from: the room lists
+   * and the membership of every tracked agent.
+   *
+   * The single door for "something changed, the view must catch up". Mutations
+   * call this instead of picking their own subset of refreshes, which is how a
+   * write ends up landing in one cache and missing another.
+   */
+  async refreshRoomState(): Promise<void> {
+    await Promise.all([
+      this.loadRoomNames(),
+      this.ensureMembershipsFor(this.trackedIdentities, { force: true }),
+    ]);
   }
 
   /**
@@ -215,6 +421,9 @@ export class SwitchRoomsStore {
     agents: { serverId: string; switchAgentId: string }[],
     options: { force?: boolean } = {}
   ): Promise<void> {
+    runInAction(() => {
+      this.trackedIdentities = agents;
+    });
     await Promise.all(
       agents.map((a) => this.fetchAgentRooms(a.serverId, a.switchAgentId, options))
     );
@@ -261,17 +470,6 @@ export class SwitchRoomsStore {
         this.loading.delete(k);
       });
     }
-  }
-
-  /** Re-fetch every cached entry (e.g. on window focus). */
-  async refreshAll(): Promise<void> {
-    const keys = Array.from(this.roomsByAgent.keys());
-    await Promise.all(
-      keys.map((k) => {
-        const [serverId, switchAgentId] = k.split(':');
-        return this.fetchAgentRooms(serverId, switchAgentId, { force: true });
-      })
-    );
   }
 }
 

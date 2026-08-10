@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
 import { Bot, ChevronRight, DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
+import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -49,18 +49,9 @@ export const RoomAgentRow = observer(function RoomAgentRow({
 
   const location = getLocationStore(agent.locationId);
 
-  // Labelled by the agent's registered Switch name — this is a Switch room's
-  // member list, so the Switch identity is the one that matters here.
-  const remoteAgentQuery = useQuery({
-    queryKey: ['remoteAgentName', agent.serverId, agent.switchAgentId],
-    queryFn: () =>
-      rpc.switchServers.getRemoteAgent({
-        serverId: agent.serverId!,
-        agentId: agent.switchAgentId!,
-      }),
-    enabled: !!agent.serverId && !!agent.switchAgentId,
-  });
-  const label = remoteAgentQuery.data?.name?.trim() || agent.name || 'Unnamed agent';
+  // This is a Switch room's member list, so the Switch identity is what matters
+  // — and that is the stored name: it is what was registered on the server.
+  const label = agent.name || 'Unnamed agent';
 
   const expandKey = roomAgentGroupKey(roomId, agent.id);
   const expanded = sidebarStore.isGroupExpanded(expandKey);
@@ -89,7 +80,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
     void toastPromise(
       rpc.switchServers
         .removeRoomAgent({ serverId, roomId, agentId: agent.switchAgentId })
-        .then(() => switchRoomsStore.refreshAll()),
+        .then(() => switchRoomsStore.refreshRoomState()),
       {
         loading: `Removing ${label} from ${roomLabel}…`,
         success: `${label} was removed from ${roomLabel}`,
@@ -136,7 +127,16 @@ export const RoomAgentRow = observer(function RoomAgentRow({
               />
             </SidebarItemMiniButton>
             <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
-              <span className="truncate">{label}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate">{label}</span>
+                {/* Same agent, same host problem — this row used to show
+                    nothing, so whether you saw it depended on which grouping
+                    the sidebar happened to be in. */}
+                <HostTroubleIndicator
+                  sshHost={location.data?.sshHost ?? null}
+                  agentId={agent.providerId ?? null}
+                />
+              </span>
             </SidebarMenuAction>
           </div>
           <Tooltip>

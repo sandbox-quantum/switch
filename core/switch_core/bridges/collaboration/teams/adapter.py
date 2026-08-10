@@ -6,6 +6,7 @@ import logging
 import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -14,7 +15,10 @@ import httpx
 from aiohttp import web
 from pydantic.json_schema import SkipJsonSchema
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import (
+    CollaborationAdapter,
+    LiveRuntimeIndicator,
+)
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     ChannelType,
@@ -188,11 +192,6 @@ class TeamsAdapter(CollaborationAdapter):
         self._team_of_channel: dict[str, str] = {}
         self._sub_lock = asyncio.Lock()
         self._renewal_task: asyncio.Task[None] | None = None
-
-        # (channel_id, agent_name) -> live "working on it…" message ref.
-        self._working_msg: dict[tuple[str, str], str] = {}
-        # (channel_id, agent_name) -> live "needs your input" ping refs.
-        self._input_pings: dict[tuple[str, str], list[str]] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -532,7 +531,7 @@ class TeamsAdapter(CollaborationAdapter):
 
     # ── Runtime state ──────────────────────────────────────────────────────────
 
-    async def apply_runtime_state(
+    async def _apply_runtime_state(
         self,
         channel_id: str,
         agent_name: str,
@@ -558,11 +557,16 @@ class TeamsAdapter(CollaborationAdapter):
             body = self._working_body(detail, deeplink_url)
             existing = self._working_msg.get(key)
             if existing is not None:
-                await self._refresh_card(channel_id, existing, agent_name, body)
+                await self._refresh_card(
+                    channel_id, existing.message_ref, agent_name, body
+                )
+                self._working_msg[key] = replace(existing, body=body)
                 return
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
-                self._working_msg[key] = ref
+                self._working_msg[key] = LiveRuntimeIndicator(
+                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                )
         elif state == "awaiting-input":
             ref = await self._ping_operator(
                 channel_id, agent_name, notify_user, thread_root_id, deeplink_url
@@ -587,9 +591,29 @@ class TeamsAdapter(CollaborationAdapter):
         )
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
-        ref = self._working_msg.pop((channel_id, agent_name), None)
-        if ref is not None:
-            await self.delete_message(channel_id, ref)
+        live = self._working_msg.pop((channel_id, agent_name), None)
+        if live is not None:
+            await self.delete_message(channel_id, live.message_ref)
+
+    async def _remove_runtime_indicator(
+        self, channel_id: str, message_ref: str
+    ) -> None:
+        """Drop a superseded indicator without letting a delete failure escape.
+
+        Unlike the other adapters, Teams' delete raises — on a missing connector
+        and on any non-2xx from the Bot Connector. When the indicator has
+        already been reposted elsewhere, a failure here means a stale duplicate
+        is left visible, which is preferable to aborting the turn."""
+        try:
+            await self.delete_message(channel_id, message_ref)
+        except (RuntimeError, httpx.HTTPError) as e:
+            logger.warning(
+                "Could not remove the superseded runtime indicator %s in %s (%s); "
+                "a stale copy may remain visible",
+                message_ref,
+                channel_id,
+                e,
+            )
 
     async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
         refs = self._input_pings.pop((channel_id, agent_name), [])
@@ -664,6 +688,18 @@ class TeamsAdapter(CollaborationAdapter):
             f"https://teams.microsoft.com/l/channel/{encoded}/channel"
             f"?groupId={team_id}&tenantId={self._config.tenant_id}"
         )
+
+    async def home_deeplink(self) -> str | None:
+        """`https://teams.microsoft.com/?tenantId=<tenant>` — opens Teams on the
+        right tenant.
+
+        Deliberately the tenant root rather than a team link: the
+        `/l/team/{id}/conversations` form keys off the General channel's thread
+        id, not the team id, and this adapter does not hold that. A link that
+        reliably lands in the correct tenant beats one that may 404."""
+        if not self._config.tenant_id:
+            return None
+        return f"https://teams.microsoft.com/?tenantId={self._config.tenant_id}"
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]

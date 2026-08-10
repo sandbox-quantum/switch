@@ -1,11 +1,8 @@
 import { useObserver } from 'mobx-react-lite';
-import { Fragment, useCallback, type ComponentType, type ReactNode } from 'react';
-import {
-  views,
-  type ViewDefinition,
-  type ViewId,
-  type WrapParams,
-} from '@renderer/app/view-registry';
+import { useCallback, type ComponentType, type ReactNode } from 'react';
+// Type-only, and it must stay that way: importing the registry's value here
+// would close a cycle back through every view module. See workspace-slots.ts.
+import type { ViewId, WrapParams } from '@renderer/app/view-registry';
 import { appState } from '@renderer/lib/stores/app-state';
 
 export type NonSettingsViewId = Exclude<ViewId, 'settings'>;
@@ -52,23 +49,15 @@ export function useNavigate(): { navigate: NavigateFnTyped } {
   return { navigate };
 }
 
-export function useWorkspaceSlots(): SlotsContextValue {
-  return useObserver(() => {
-    const viewId = appState.navigation.currentViewId;
-    const registry = views as unknown as Record<string, ViewDefinition<Record<string, unknown>>>;
-    const viewDef = registry[viewId];
-    const def = viewDef ?? registry.home;
-    const resolvedViewId = viewDef ? viewId : 'home';
-    return {
-      WrapView: (def.WrapView ?? Fragment) as ComponentType<
-        { children: ReactNode } & Record<string, unknown>
-      >,
-      TitlebarSlot: def.TitlebarSlot ?? (() => null),
-      MainPanel: def.MainPanel,
-      currentView: resolvedViewId,
-      lastNonSettingsView: appState.navigation.lastNonSettingsView,
-    };
-  });
+/**
+ * The active view id, without consulting the view registry.
+ *
+ * `useWorkspaceSlots` also reports this, but resolving it there means loading
+ * the registry — which view modules cannot do without closing an import cycle.
+ * Callers that only need to know *which* view is active should use this.
+ */
+export function useCurrentViewId(): ViewId {
+  return useObserver(() => appState.navigation.currentViewId);
 }
 
 export function useWorkspaceWrapParams(): WrapParamsContextValue {

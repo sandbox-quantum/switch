@@ -123,6 +123,20 @@ export const browserSettingsSchema = z
 
 export const resourceMonitorSettingsSchema = z.object({ enabled: z.boolean() });
 
+/**
+ * How many sessions on one remote host keep a live terminal at once.
+ *
+ * Every session on a host shares a single SSH transport, and an attached
+ * terminal holds a channel on it for as long as it is attached. Past a handful,
+ * a slow tunnel (an IAP or SSM ProxyCommand) stops answering channel opens and
+ * the transport is torn down and rebuilt in a loop. Detaching costs nothing
+ * real: the agent keeps running in its tmux pane on the VM and keeps reporting
+ * status, so this bounds a display concern, not the work.
+ */
+export const remoteSettingsSchema = z.object({
+  maxAttachedSessionsPerHost: z.number().int().min(1).max(64),
+});
+
 export const openInSettingsSchema = z.object({
   default: openInAppIdSchema,
   hidden: z.array(openInAppIdSchema),
@@ -143,6 +157,7 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   browser: browserSettingsSchema,
   resourceMonitor: resourceMonitorSettingsSchema,
   changesViewMode: changesViewModeSchema,
+  remote: remoteSettingsSchema,
 } as const;
 
 export const appSettingsSchema = z.object({
@@ -160,4 +175,5 @@ export const appSettingsSchema = z.object({
   browser: browserSettingsSchema,
   resourceMonitor: resourceMonitorSettingsSchema,
   changesViewMode: changesViewModeSchema,
+  remote: remoteSettingsSchema,
 });

@@ -48,6 +48,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long to wait for a freshly-invited external-user puppet to actually join a
+# room before giving up on relaying its message.
+PUPPET_JOIN_TIMEOUT = 30.0
+
 # How long to hold an incomplete outbound attachment group before relaying the
 # parts that arrived, flagged as incomplete (see _schedule_outbound_group_flush).
 OUTBOUND_GROUP_TIMEOUT_SECONDS = 5.0
@@ -62,6 +66,11 @@ class _PendingOutboundGroup:
     caption: str | None = None
     first_event_id: str | None = None
 
+
+# How long a queued runtime-indicator move waits before it runs, so a burst of
+# messages to the same agent costs one move rather than one per message. Short
+# enough that the indicator still reads as following the conversation.
+_INDICATOR_MOVE_DELAY_SECONDS = 1.0
 
 _LOBBY_DEPRECATION_NOTICE = (
     "👋 This isn't where you talk to agents — direct messages to the Switch "
@@ -136,6 +145,14 @@ class BridgeCore:
         # never completes cannot leak.
         self._outbound_groups: dict[str, _PendingOutboundGroup] = {}
         self._outbound_group_timers: dict[str, asyncio.TimerHandle] = {}
+        # (channel_id, agent_name) whose runtime indicator is due to be moved
+        # below newly-arrived traffic, and the thread each should land in.
+        # See _schedule_indicator_move.
+        self._indicator_move_timers: dict[tuple[str, str], asyncio.TimerHandle] = {}
+        self._indicator_move_targets: dict[tuple[str, str], str | None] = {}
+        # (channel_id, agent_name) -> the last message the agent reported having
+        # been handed. Cleared when its turn ends. See _follow_reported_anchor.
+        self._reported_anchors: dict[tuple[str, str], str] = {}
 
     @property
     def adapter(self) -> CollaborationAdapter:
@@ -177,6 +194,10 @@ class BridgeCore:
                 user.client_id: await self._client_store.get(session, user.client_id)
                 for user in users
             }
+
+        self._adapter.prime_mention_targets(
+            {user.external_username: user.external_user_id for user in users}
+        )
 
         for user in users:
             self._user_puppets[user.external_user_id] = user.client_id
@@ -377,6 +398,7 @@ class BridgeCore:
             external_user_id=msg.sender_id,
             external_username=msg.sender_name,
             room_id=room_id,
+            matrix_room_id=matrix_room_id,
         )
         if puppet is None:
             return
@@ -423,13 +445,20 @@ class BridgeCore:
                 format="markdown",
                 thread_root_id=thread_root_id,
             )
-            # Record the correlation so a later reply (either direction) threads.
-            if event_id is not None:
-                await self._record_message_map(
-                    external_channel_id=msg.channel_id,
-                    matrix_event_id=event_id,
-                    external_post_id=msg.message_ref,
+            if event_id is None:
+                logger.error(
+                    "[BRIDGE-IN] failed to relay message from %s into room %s — "
+                    "it will not reach the room",
+                    msg.sender_name,
+                    matrix_room_id,
                 )
+                return
+            # Record the correlation so a later reply (either direction) threads.
+            await self._record_message_map(
+                external_channel_id=msg.channel_id,
+                matrix_event_id=event_id,
+                external_post_id=msg.message_ref,
+            )
             return
 
         # Caption convention: the text rides as the caption on the first
@@ -465,6 +494,13 @@ class BridgeCore:
                     else None
                 ),
             )
+            if event_id is None:
+                logger.error(
+                    "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
+                    attachment.filename,
+                    msg.sender_name,
+                    matrix_room_id,
+                )
             if index == 0:
                 first_event_id = event_id
 
@@ -486,6 +522,7 @@ class BridgeCore:
             external_user_id=cmd.sender_id,
             external_username=cmd.sender_name,
             room_id=room_id,
+            matrix_room_id=matrix_room_id,
         )
         if puppet is None:
             return
@@ -774,6 +811,7 @@ class BridgeCore:
                 external_user_id=ext_user.external_user_id,
                 external_username=ext_user.external_username,
                 room_id=room_id,
+                matrix_room_id=matrix_room_id,
             )
 
     async def _ensure_user_in_matrix_room(
@@ -782,10 +820,11 @@ class BridgeCore:
         external_user_id: str,
         external_username: str,
         room_id: str,
+        matrix_room_id: str,
     ) -> ClientBase[ClientConfig] | None:
-        """Get-or-create the puppet for this external user and ensure it is a
-        member of the room (invited; it auto-joins). Returns the running
-        puppet, or None if it couldn't be brought up. Idempotent."""
+        """Get-or-create the puppet for this external user and ensure it has
+        actually joined the room. Returns the running puppet, or None if it
+        couldn't be brought up or didn't join in time. Idempotent."""
         client_id = self._user_puppets.get(external_user_id)
         if client_id is None:
             client_id = await self._create_puppet(external_user_id, external_username)
@@ -798,14 +837,28 @@ class BridgeCore:
             )
             return None
         await puppet.wait_ready()
-        # Tolerant of failure so one puppet that can't join does not break
-        # bridged delivery for the rest of the room.
         try:
             await self._room_service.ensure_client_in_room(room_id, client_id)
         except Exception:
             logger.exception(
                 "Failed to add puppet client %s to room %s", client_id, room_id
             )
+            return None
+
+        # ensure_client_in_room only *invites*; the puppet joins asynchronously
+        # from its own sync loop. Sending before that join lands gets rejected by
+        # the homeserver, so the message that triggered the provisioning would be
+        # lost. Block until the join is observed.
+        if not await puppet.wait_joined(matrix_room_id, PUPPET_JOIN_TIMEOUT):
+            logger.error(
+                "Puppet %s (external user %s) did not join room %s within %ss — "
+                "cannot relay its message",
+                puppet.matrix_user_id,
+                external_user_id,
+                matrix_room_id,
+                PUPPET_JOIN_TIMEOUT,
+            )
+            return None
         return puppet
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
@@ -847,6 +900,7 @@ class BridgeCore:
             external_user_id=join.external_user_id,
             external_username=join.external_username,
             room_id=room_id,
+            matrix_room_id=matrix_room_id,
         )
 
     # ── Puppet lifecycle ─────────────────────────────────────────────────────
@@ -900,6 +954,7 @@ class BridgeCore:
 
             self._user_puppets[external_user_id] = client.client_id
             self._puppet_matrix_ids.add(client.matrix_user_id)
+            self._adapter.prime_mention_targets({external_username: external_user_id})
 
             logger.info(
                 "Created puppet %s for external user %s on bridge %s",
@@ -986,6 +1041,11 @@ class BridgeCore:
                 external_channel_id=channel_id,
                 matrix_event_id=event.event_id,
                 external_post_id=message_ref,
+            )
+
+        if sender_name is not None:
+            await self._move_indicator_for_sender(
+                channel_id, sender_name, thread_root_ref
             )
 
     async def _outbound_thread_root_ref(
@@ -1136,6 +1196,8 @@ class BridgeCore:
                 external_post_id=message_ref,
             )
 
+        await self._move_indicator_for_sender(channel_id, sender_name, thread_root_ref)
+
     def _schedule_outbound_group_flush(
         self,
         group_id: str,
@@ -1218,6 +1280,8 @@ class BridgeCore:
                 external_post_id=message_ref,
             )
 
+        await self._move_indicator_for_sender(channel_id, sender_name, thread_root_ref)
+
     async def _download_matrix_media(
         self, client: ClientBase[Any], mxc: str | None, filename: str
     ) -> bytes | None:
@@ -1290,6 +1354,48 @@ class BridgeCore:
             deeplink_url=event.deeplink_url,
             detail=event.detail,
         )
+        await self._follow_reported_anchor(
+            channel_id,
+            event.agent_name,
+            event.state,
+            event.anchor_event_id,
+            thread_root_ref,
+        )
+
+    async def _follow_reported_anchor(
+        self,
+        channel_id: str,
+        agent_name: str,
+        state: str,
+        anchor_event_id: str | None,
+        thread_root_ref: str | None,
+    ) -> None:
+        """Move the indicator when the agent reports it has been handed a
+        newer message than the one it was last positioned against.
+
+        Position follows what the agent has actually received, not what merely
+        arrived in the room — a message the agent has not been given yet must
+        not make the indicator look like the agent has seen it. The periodic
+        activity refresh repeats the current anchor, so it never moves anything.
+        """
+        key = (channel_id, agent_name)
+        if state != "working":
+            self._reported_anchors.pop(key, None)
+            return
+        if anchor_event_id is None:
+            return
+
+        if self._reported_anchors.get(key) == anchor_event_id:
+            return
+        previous = self._reported_anchors.get(key)
+        self._reported_anchors[key] = anchor_event_id
+        if previous is None:
+            # First anchor of the turn — the indicator was only just posted
+            # against it, so there is nothing to move.
+            return
+
+        self._indicator_move_targets[key] = thread_root_ref
+        await self._run_indicator_move(key)
 
     # ── Protection sync ──────────────────────────────────────────────────────
 
@@ -1317,6 +1423,63 @@ class BridgeCore:
         else:
             translated = self._adapter.translate_outbound(new_content)
             await self._adapter.update_message(channel_id, message_ref, translated)
+
+    # ── Runtime-indicator positioning ─────────────────────────────────────────
+
+    async def _move_indicator_for_sender(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Follow a message the agent itself just posted."""
+        if agent_name in self._adapter.agents_with_live_runtime_state(channel_id):
+            self._schedule_indicator_move(channel_id, agent_name, thread_root_id)
+
+    def _schedule_indicator_move(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Queue a move of this agent's runtime indicator, coalescing bursts.
+
+        Messages arriving while a move is already queued are absorbed into it,
+        so a rapid exchange costs one delete-and-repost rather than one per
+        message. The delay is deliberately not extended by later messages —
+        a sustained conversation would otherwise starve the move indefinitely.
+
+        ``thread_root_id`` is the thread the triggering message belongs to, and
+        the one the indicator will land in. A coalesced burst keeps the most
+        recent one, so the indicator follows the conversation's latest thread
+        rather than the one that opened the window.
+        """
+        key = (channel_id, agent_name)
+        self._indicator_move_targets[key] = thread_root_id
+        if key in self._indicator_move_timers:
+            return
+
+        loop = asyncio.get_running_loop()
+        self._indicator_move_timers[key] = loop.call_later(
+            _INDICATOR_MOVE_DELAY_SECONDS,
+            lambda: asyncio.ensure_future(self._run_indicator_move(key)),
+        )
+
+    async def _run_indicator_move(self, key: tuple[str, str]) -> None:
+        # An anchor-driven move runs immediately rather than through the timer,
+        # so a coalescing window opened by outbound traffic may still be
+        # pending; it would otherwise fire a second, redundant move.
+        timer = self._indicator_move_timers.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+        thread_root_id = self._indicator_move_targets.pop(key, None)
+        channel_id, agent_name = key
+        try:
+            await self._adapter.reposition_runtime_state(
+                channel_id, agent_name, thread_root_id
+            )
+        except Exception:
+            # The indicator is cosmetic; a platform failure here must not take
+            # down the bridge callback that happened to trigger it.
+            logger.exception(
+                "[BRIDGE-OUT] failed to move the runtime indicator for %s in %s",
+                agent_name,
+                channel_id,
+            )
 
     # ── Message-map helpers ───────────────────────────────────────────────────
 

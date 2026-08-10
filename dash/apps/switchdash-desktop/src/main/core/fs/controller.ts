@@ -1,5 +1,4 @@
 import { err, ok } from '@switchdash/shared';
-import { fsEvents } from '@main/core/fs/fs-events';
 import { resolveLocationRuntime } from '@main/core/locations/utils';
 import { events } from '@main/lib/events';
 import { fsWatchEventChannel } from '@shared/core/fs/fsEvents';
@@ -35,9 +34,7 @@ export const filesController = createRPCController({
       existing.update(union);
     } else {
       const watcher = env.fs.watch((evts) => {
-        const event = { locationId, events: evts };
-        events.emit(fsWatchEventChannel, event);
-        fsEvents.emitWatchEvent(event);
+        events.emit(fsWatchEventChannel, { locationId, events: evts });
       });
       watcher.update(union);
       watcherRegistry.set(locationId, watcher);

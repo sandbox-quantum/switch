@@ -27,4 +27,16 @@ export const RELEASE_REPO_NAME = 'switch';
 // artifact. Bump it in lockstep with the bundled compose
 // (src/main/core/managed-switch-server/resources/standalone-docker-compose.pinned.yml)
 // so a switchdash release pins a known-good switch-core stack.
-export const COMPATIBLE_SWITCH_VERSION = '0.12.1';
+//
+// Declared in artifacts.yaml under `switchdash.pins.switch-core`, and CHECKED
+// against it by `just artifacts` (CHOO-1865). A literal rather than an import
+// because electron-builder loads this module under bare Node, where
+// extensionless ESM specifiers do not resolve — so it cannot import anything.
+// The check is what makes the literal safe; it is also mirrored in
+// app-identity.canary.ts, which is checked the same way.
+//
+// Deliberately NOT switch-core's own version from that file: bumping
+// core/pyproject.toml is the first step of cutting a switch-core release, and a
+// derived pin would immediately point local-server mode at images that are not
+// on the registry yet.
+export const COMPATIBLE_SWITCH_VERSION = '0.12.3';

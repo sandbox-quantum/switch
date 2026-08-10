@@ -9,6 +9,7 @@ import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import type { Agent, RenameAgentParams } from '@shared/core/agents/agents';
+import { agentEvents } from './agent-events';
 import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -139,5 +140,6 @@ export async function renameAgent(
     await moveProvisionedFiles(previous, renamed);
     await moveSidecarToNewName(previous, renamed);
   }
+  agentEvents._emit('agent:updated', renamed);
   return ok(renamed);
 }

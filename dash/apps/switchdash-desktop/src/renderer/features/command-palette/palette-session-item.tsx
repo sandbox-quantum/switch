@@ -1,5 +1,5 @@
 import { Command } from 'cmdk';
-import { GitBranch } from 'lucide-react';
+import { MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { AgentStatusIndicator } from '@renderer/features/sessions/components/agent-status-indicator';
 import { sessionAgentStatus } from '@renderer/features/sessions/stores/session-selectors';
@@ -19,7 +19,8 @@ export const PaletteSessionItem = observer(function PaletteSessionItem({
 
   return (
     <Command.Item value={value} onSelect={onSelect} className={PALETTE_ITEM_CLASS}>
-      <GitBranch size={14} className="shrink-0 text-foreground/40" />
+      {/* Matches the sidebar's session row (`sidebar/session-item.tsx`). */}
+      <MessageSquare size={14} className="shrink-0 text-foreground/40" />
       <span className="flex-1 truncate">{sessionStore.data.title}</span>
       <AgentStatusIndicator status={status} disableTooltip />
     </Command.Item>

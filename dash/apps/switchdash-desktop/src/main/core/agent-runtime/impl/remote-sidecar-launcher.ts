@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import type { ContractRange } from '@switchdash/shared';
 import { exactTmuxTarget } from '@main/core/pty/tmux-session-name';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import type { AgentLaunchSpec } from '../../../../sidecar/agent-launch-spec';
@@ -84,9 +85,14 @@ interface ReadyLine {
   /** Monotonic per-start counter from the sidecar's durable state. Absent from
    * a pre-CHOO-1425 sidecar. */
   epoch: number | null;
-  /** Human-readable `x.y` version; the major governs compatibility. Absent from
-   * a sidecar predating versioning, which is treated as major 0. */
+  /** Release version, `MAJOR.MINOR.PATCH`. Says which release is running and
+   * nothing about compatibility — that is `contract`. Absent from a sidecar
+   * predating versioning, which is treated as major 0. */
   version: string | null;
+  /** What the running sidecar says it speaks on `sidecar-control` (CHOO-1865).
+   * Null for a sidecar deployed before it declared anything, which means
+   * *unknown* — never agreement. Recorded, not yet acted on. */
+  contract: ContractRange | null;
   /** OS process id of the running sidecar, for display. Absent from an older one. */
   pid: number | null;
 }
@@ -102,8 +108,11 @@ export interface SidecarRunStatus {
   compatible: boolean;
   /** Build fingerprint the running sidecar reports for itself. */
   hash: string | null;
-  /** Human-readable `x.y` version the running sidecar reports. */
+  /** Release version the running sidecar reports, `MAJOR.MINOR.PATCH`. */
   version: string | null;
+  /** The `sidecar-control` range it declared, or null for unknown (CHOO-1865).
+   * Null must render as unknown, never as compatible. */
+  contract: ContractRange | null;
   epoch: number | null;
   pid: number | null;
   /** Sessions the running sidecar currently owns, from its durable state. */
@@ -158,9 +167,35 @@ function parseReady(raw: string): ReadyLine | null {
     const version =
       'version' in parsed && typeof parsed.version === 'string' ? parsed.version : null;
     const pid = 'pid' in parsed && typeof parsed.pid === 'number' ? parsed.pid : null;
-    return { port: parsed.port, token: parsed.token, hash, epoch, version, pid };
+    return {
+      port: parsed.port,
+      token: parsed.token,
+      hash,
+      epoch,
+      version,
+      contract: parseContract(parsed),
+      pid,
+    };
   }
   return null;
+}
+
+/**
+ * The `sidecar-control` range a sidecar declared, or null for unknown.
+ *
+ * A partial or malformed declaration reads as unknown rather than as the half
+ * that parsed: half a range is not a range, and guessing the other half would
+ * invent a number nobody declared.
+ */
+function parseContract(parsed: object): ContractRange | null {
+  if (!('contract' in parsed)) return null;
+  const contract = parsed.contract;
+  if (typeof contract !== 'object' || contract === null) return null;
+  if (!('speaks' in contract) || !('accepts' in contract)) return null;
+  const { speaks, accepts } = contract as { speaks: unknown; accepts: unknown };
+  if (typeof speaks !== 'number' || typeof accepts !== 'number') return null;
+  if (!Number.isInteger(speaks) || !Number.isInteger(accepts)) return null;
+  return { speaks, accepts };
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -523,6 +558,7 @@ export class RemoteSidecarLauncher {
         compatible: false,
         hash: null,
         version: null,
+        contract: null,
         epoch: null,
         pid: null,
         liveSessions: 0,
@@ -533,6 +569,7 @@ export class RemoteSidecarLauncher {
       compatible: this.isCompatible(ready),
       hash: ready.hash,
       version: ready.version,
+      contract: ready.contract,
       epoch: ready.epoch,
       pid: ready.pid,
       liveSessions: await this.runningSessionCount(),

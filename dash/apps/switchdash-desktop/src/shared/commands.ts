@@ -48,6 +48,14 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'plus',
   },
   {
+    id: 'app.addServer',
+    label: 'Add Switch Server',
+    description: 'Connect switchdash to a Switch server, or run a managed one',
+    scope: 'app',
+    group: 'App',
+    iconKey: 'server',
+  },
+  {
     id: 'app.newSession',
     label: 'New Session',
     description: 'Spawn a new session for this agent',

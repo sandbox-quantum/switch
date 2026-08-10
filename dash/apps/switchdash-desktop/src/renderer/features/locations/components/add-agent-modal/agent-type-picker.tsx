@@ -3,7 +3,7 @@ import { useEffect, useMemo } from 'react';
 import { useLocalGhAuth } from '@renderer/features/settings/agents-page/LocalGhAuthRow';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useAgents } from '@renderer/lib/stores/use-agents';
-import { useOnboardableAgentTypes } from '@renderer/lib/stores/use-switch-setup';
+import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import {
   Select,
@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import { Spinner } from '@renderer/lib/ui/spinner';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -32,81 +33,117 @@ export function AgentTypePicker({
   onChange: (providerId: AgentProviderId) => void;
   sshHost?: string;
 }) {
-  const { data: onboardable, isPending } = useOnboardableAgentTypes(sshHost);
+  const { data: availability, isPending } = useAgentTypeAvailability(sshHost);
   const { data: agents } = useAgents();
   const { data: ghAuth } = useLocalGhAuth();
   const githubBlocked =
     !!ghAuth && !(ghAuth.ghInstalled && ghAuth.authenticated && ghAuth.canReadPackages);
 
+  // Every known type, each with the agent registry's name and icon plus the
+  // verdict from the machine being targeted. Types the registry does not know
+  // are dropped — there is nothing to render them with.
   const options = useMemo(() => {
     const byId = new Map((agents ?? []).map((a) => [a.id, a]));
-    return (onboardable ?? [])
-      .map((o) => byId.get(o.agentId))
-      .filter((a): a is NonNullable<typeof a> => !!a);
-  }, [onboardable, agents]);
+    return (availability ?? []).flatMap((entry) => {
+      const agent = byId.get(entry.agentId);
+      return agent ? [{ agent, ...entry }] : [];
+    });
+  }, [availability, agents]);
+  const selectable = useMemo(() => options.filter((o) => o.available), [options]);
 
   useEffect(() => {
     if (value) return;
-    if (options.length === 1) onChange(options[0].id as AgentProviderId);
-  }, [value, options, onChange]);
+    // Only ever auto-select something that can actually be used. Picking a
+    // greyed-out type on the user's behalf would put them straight into the
+    // refusal the greying exists to prevent.
+    if (selectable.length === 1) onChange(selectable[0].agent.id as AgentProviderId);
+  }, [value, selectable, onChange]);
 
-  if (!isPending && options.length === 0) {
-    return (
-      <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
-        <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-        {/* Name the host: "no agent type is set up" reads as a global problem,
+  // Nothing usable is a real dead end and still needs saying — but the list
+  // below now shows *which* types exist and what each is missing, so this is
+  // the pointer to where they get fixed rather than the only signal.
+  const nothingUsable = !isPending && selectable.length === 0;
+  const emptyNotice = nothingUsable ? (
+    <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
+      <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+      {/* Name the host: "no agent type is set up" reads as a global problem,
             but availability is per-host — the connector may well be installed
             locally and simply missing on the machine being targeted. */}
-        <span>
-          {/* The plugin may be installed and the agent still unusable, so the
+      <span>
+        {/* The plugin may be installed and the agent still unusable, so the
               GitHub reason has to be given ahead of the install advice —
               otherwise it sends the user to install something they already
               have. */}
-          {!sshHost && githubBlocked ? (
-            <>
-              This computer cannot reach the private GitHub packages the Switch connector needs
-              {ghAuth?.detail ? ` — ${ghAuth.detail}` : '.'} Authenticate under Settings &rarr;
-              Agents &rarr; Switch setup, then try again.
-            </>
-          ) : sshHost ? (
-            <>
-              No agent type is set up for Switch on <span className="font-medium">{sshHost}</span>.
-              Install an agent&apos;s Switch connector on that host in Settings &rarr; Remote hosts
-              before onboarding it there.
-            </>
-          ) : (
-            <>
-              No agent type is set up for Switch on this computer. Install an agent&apos;s Switch
-              connector in Settings &rarr; Agents before onboarding it.
-            </>
-          )}
-        </span>
-      </div>
+        {!sshHost && githubBlocked ? (
+          <>
+            This computer cannot reach the private GitHub packages the Switch connector needs
+            {ghAuth?.detail ? ` — ${ghAuth.detail}` : '.'} Authenticate under Settings &rarr; Agents
+            &rarr; Switch setup, then try again.
+          </>
+        ) : sshHost ? (
+          <>
+            No agent type is set up for Switch on <span className="font-medium">{sshHost}</span>.
+            Install an agent&apos;s Switch connector on that host in Settings &rarr; Remote hosts
+            before onboarding it there.
+          </>
+        ) : (
+          <>
+            No agent type is set up for Switch on this computer. Install an agent&apos;s Switch
+            connector in Settings &rarr; Agents before onboarding it.
+          </>
+        )}
+      </span>
+    </div>
+  ) : null;
+
+  // Asking the host what it has costs SSH round trips, and an empty dropdown
+  // during that reads as "this host offers nothing" rather than "still asking".
+  if (isPending) {
+    return (
+      <Field>
+        <FieldLabel>Agent type</FieldLabel>
+        <div className="flex items-center gap-2 text-xs text-foreground-muted">
+          <Spinner />
+          {sshHost ? `Checking what ${sshHost} has installed…` : 'Checking what is installed…'}
+        </div>
+      </Field>
     );
   }
 
-  const selected = options.find((a) => a.id === value);
+  const selected = options.find((o) => o.agent.id === value);
 
   return (
     <Field>
+      {emptyNotice}
       <FieldLabel>Agent type</FieldLabel>
       <Select value={value ?? undefined} onValueChange={(v) => v && onChange(v as AgentProviderId)}>
         <SelectTrigger>
           <SelectValue placeholder="Select an agent type">
             {selected ? (
               <span className="flex items-center gap-2">
-                <AgentIcon id={selected.id} size={16} />
-                {selected.name}
+                <AgentIcon id={selected.agent.id} size={16} />
+                {selected.agent.name}
               </span>
             ) : undefined}
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {options.map((agent) => (
-            <SelectItem key={agent.id} value={agent.id}>
+          {/*
+            Types that cannot be used here are listed and disabled rather than
+            omitted. A missing row says nothing; a greyed one with its reason
+            says what to go and fix. Availability is per-machine, so a type the
+            user has locally can legitimately be absent on the host they picked.
+          */}
+          {options.map(({ agent, available, blockedReason }) => (
+            <SelectItem key={agent.id} value={agent.id} disabled={!available}>
               <span className="flex items-center gap-2">
                 <AgentIcon id={agent.id} size={16} />
                 {agent.name}
+                {!available && (
+                  <span className="text-xs text-foreground-muted">
+                    — {blockedReason ?? 'Not available here.'}
+                  </span>
+                )}
               </span>
             </SelectItem>
           ))}

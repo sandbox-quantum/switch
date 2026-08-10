@@ -26,7 +26,6 @@ import {
   reconcileResourceSampler,
   stopResourceSampler,
 } from './core/resource-monitor/resource-sampler';
-import { locationFileIndexService } from './core/search/location-file-index-service';
 import { searchService } from './core/search/search-service';
 import { appSettingsService } from './core/settings/settings-service';
 import { registerSidecarDiagnostics } from './core/sidecar/sidecar-diagnostics';
@@ -104,7 +103,6 @@ void app.whenReady().then(async () => {
   try {
     await initializeDatabase();
     searchService.initialize();
-    locationFileIndexService.initialize();
     try {
       viewStateService.pruneOrphans();
     } catch (e: unknown) {

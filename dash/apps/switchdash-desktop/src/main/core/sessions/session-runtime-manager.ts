@@ -1,4 +1,6 @@
 import { ok, type Result } from '@switchdash/shared';
+import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
+import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import {
@@ -53,6 +55,7 @@ class SessionRuntimeManager {
   >({
     postTeardown: (sessionId, stored) => {
       this._sessionsByLocation.get(stored.locationId)?.delete(sessionId);
+      remoteAttachmentPool.unregister(sessionId);
     },
   });
   private readonly _sessionsByLocation = new Map<string, Set<string>>();
@@ -78,6 +81,10 @@ class SessionRuntimeManager {
     const byLocation = this._sessionsByLocation.get(result.locationId) ?? new Set<string>();
     byLocation.add(sessionId);
     this._sessionsByLocation.set(result.locationId, byLocation);
+
+    // Remote runtimes are attachment-capped per host; local ones have no shared
+    // transport to protect and are never pooled.
+    if (isAttachableRuntime(result.agent)) remoteAttachmentPool.register(result.agent);
   }
 
   async teardownSession(

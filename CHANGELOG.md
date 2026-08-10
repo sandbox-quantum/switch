@@ -5,21 +5,135 @@ All notable changes to Switch are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Switch ships two independently-versioned artifacts, tracked in the two sections
-below:
+Switch ships several independently-versioned artifacts, each with its own
+section below. Every artifact carries three-part semver (`MAJOR.MINOR.PATCH`)
+and a changelog, without exception (CHOO-1865).
 
-- **switch-core** — the backend service (`core/`) and the operator dashboard
-  (`gateway/`). Released by tagging `switch-v<version>`; the version lives in
-  `core/pyproject.toml`. See [RELEASING.md](RELEASING.md).
+A version says **where an artifact is** — which release you are running. It says
+nothing about what that release can talk to. Compatibility is carried separately
+by the contract revisions in [`artifacts.yaml`](artifacts.yaml), which move
+independently: a release that changes nothing on the wire bumps its version and
+leaves its contracts alone.
+
+- **switch-core** — the backend service (`core/`). Released by tagging
+  `switch-v<version>`; the version lives in `core/pyproject.toml`. See
+  [RELEASING.md](RELEASING.md).
 - **switchdash** — the desktop app (`dash/`). Released by tagging
   `switchdash-v<version>`; the version lives in
   `dash/apps/switchdash-desktop/package.json`.
+- **agent-runtime** — the Switch protocol client and MCP runtime
+  (`dash/packages/switch-agent-runtime/`), published to a package registry.
+- **sidecar** — the remote runtime switchdash deploys to an agent host
+  (`dash/apps/switchdash-desktop/src/sidecar/`). Versioned in
+  `sidecar-version.ts` and deployed by switchdash, not published separately.
+- **switch-connector** / **switch-connector-codex** — the two connector plugins
+  (`connectors/`), versioned in their respective plugin manifests.
+
+Three things are **not** separately versioned, and ship under the switch-core
+release so a single tag pins the whole stack: the **operator dashboard**
+(`gateway/`), the **Helm chart**, and the **standalone compose artifact**. Their
+versions are stamped at package time from the switch-core version; do not add a
+version of their own to them without also giving them a release of their own.
 
 ---
 
 ## switch-core
 
 ### [Unreleased]
+
+#### Fixed
+- `read_context` seeks to a `before` window via the homeserver's
+  `timestamp_to_event` rather than paging over everything newer to reach it,
+  and falls back to a scan with its own page budget when the server cannot
+  answer (CHOO-2034). Previously the walk shared the read budget, so a window
+  deep in a busy room returned empty however small a `limit` was asked for.
+- `read_context` now pages the homeserver instead of reading a single
+  `/messages` page, so agents see the whole room rather than the last slice of
+  it (CHOO-2034). `before` pages backwards into older history rather than
+  filtering one page, and the response reports `truncated` and
+  `oldest_timestamp` so a shortened read can never pass as a complete one. Room
+  joins now appear in the timeline as `kind: "room_join"` entries. The
+  `GET /agents/{id}/rooms/{id}/history` endpoint, which read the result as a
+  flat message list when it has always been thread groups and so returned no
+  events at all, is fixed with it.
+
+#### Changed
+- **Breaking (agent-facing):** `read_context` returns
+  `{threads, truncated, oldest_timestamp}` rather than a bare list of thread
+  groups, and every entry carries a `kind` (CHOO-2034). Both connector skills
+  are updated.
+
+### [0.12.4] - 2026-08-09
+
+#### Added
+- Cross-artifact version compatibility, part 1 — every artifact declares what it
+  is and what it speaks (CHOO-1865). `artifacts.yaml` is the one authored
+  registry of contract revisions; per-language modules are generated from it and
+  CI fails if they are stale or hand-edited. switch-core reads its own release
+  version, discloses it and its ranges on authenticated surfaces only (the
+  `connection_state` frame, the 409 refusal body, the gateway session response,
+  and an authenticated credential-scoped `GET /version`), and records what each
+  client declared. **Nothing acts on the declarations yet** — a client that
+  declares nothing connects exactly as before.
+- The authentication surface is now **frozen**: never versioned, permanently
+  backward-compatible, and excluded from `gateway-api`, so a client can always
+  authenticate far enough to be told what is wrong (CHOO-1865).
+
+#### Fixed
+- The agent-protocol check no longer defaults a silent client to the server's own
+  version. It defaulted to agreement, and since no shipped client ever sent
+  `?protocol=`, the check had never once fired. Absent now records as unknown —
+  and still connects (CHOO-1865).
+- A protocol refusal names which side is behind. It always said "update the
+  Switch agent runtime", which for a client ahead of the server sent the user to
+  downgrade the side that was already right (CHOO-1865).
+- The compatibility check is a range overlap rather than exact equality. The two
+  numbers are equal today, so nothing changes yet (CHOO-1865).
+- `SWITCH_VERSION` is required by the standalone compose instead of defaulting to
+  `latest`, which silently floated the whole stack to whatever had most recently
+  been published (CHOO-1865).
+- The Helm chart no longer claims a version it has not been at for months. The
+  real one is stamped at package time; the file now says `0.0.0-dev` (CHOO-1865).
+- Refreshed the stale switch-core version in `uv.lock`, which the release
+  procedure never re-locked (CHOO-1865).
+
+#### Security
+- Bump core Python dependencies (cryptography, aiohttp, starlette, mcp,
+  pydantic-settings, joserfc, python-multipart) to current releases.
+
+### [0.12.3] - 2026-08-07
+
+#### Added
+- Collaboration bridges expose a workspace/home deeplink so a client can open
+  the messaging app's workspace from the gateway (CHOO-1784).
+
+#### Security
+- Admin-gate every collaboration-bridge write: updating and deleting a bridge
+  were ungated, so any authenticated user could toggle agent greetings or delete
+  a bridge (which cascades into deleting every room on it) — now admin-only
+  (CHOO-1784).
+
+### [0.12.2] - 2026-08-07
+
+#### Changed
+- The collaboration-bridge runtime indicator now follows the agent: it moves to
+  the foot of the conversation and into the thread the triggering message belongs
+  to (instead of staying where the turn opened), and the agent — not the bridge
+  watching traffic — decides when it moves (new `anchor_event_id` on the
+  runtime-state protocol), so it no longer jumps below a human's message before
+  the agent has been handed it (CHOO-1104).
+
+#### Fixed
+- Runtime-indicator robustness: serialise refresh vs repositioning, and don't
+  strand the indicator when a turn ends mid-move (CHOO-1104).
+- Discord: delete an agent's messages through the same webhook that posted them
+  (CHOO-1104).
+- Agent bridge: clamp a resumed cursor to the in-memory buffer head on heartbeat,
+  so a connection no longer silently skips events up to a stale cursor after a
+  switch-core restart.
+- Agent bridge: write the legacy room-binding row only for connectionless
+  (MCP-transport) callers, so a connection-backed `connect_to_room` no longer
+  leaves an unread, never-cleaned binding row behind.
 
 ### [0.12.1] - 2026-08-05
 
@@ -181,6 +295,121 @@ below:
 ## switchdash
 
 ### [Unreleased]
+
+#### Changed
+- Bump the Codex session runtime pin (`SWITCH_AGENT_RUNTIME_VERSION`) to `0.1.6`
+  so switchdash-launched Codex sessions run the published runtime. Ships in the
+  next switchdash release.
+
+### [0.19.3] - 2026-08-09
+
+#### Added
+- Declares its `sidecar-control` range in the sidecar's ready file, and reads
+  back whatever a running sidecar declares. A sidecar that declares nothing
+  records as unknown, never as agreement (CHOO-1865).
+
+#### Fixed
+- A gateway call to a managed server whose stack is **stopped** now fails with
+  the lifecycle state, naming the server, instead of timing out and reporting
+  `Could not reach http://localhost:<port>` — a local address that was never
+  the problem. It is logged as the modeled state it is rather than as an RPC
+  error, and the proactive session renewal no longer warns about the same
+  absence a second time (CHOO-1780).
+- A managed server whose deployed switch-core version **cannot be read** is now
+  surfaced as such, in the banner and the sidebar. It previously reported "no
+  drift" — the identical result a healthy, in-step stack gives — so a failed
+  probe rendered as a green server and the user was told nothing (CHOO-1865).
+- Starting a stack whose version cannot be compared to this build's pin now says
+  so loudly. It passed in complete silence, in the same branch as a clean match,
+  while carrying the same risk as a downgrade (CHOO-1865).
+- CI verifies the bundled standalone compose is in step with the repo's copy.
+  Nothing checked before — the two could drift with only a comment asking
+  nicely, which is how the sync script once silently stopped running
+  (CHOO-1865).
+- The host-unreachable panel now also shows on a location that mounted while its
+  host was up, not only one that never mounted. Such a location stayed `ready`
+  and kept every control live over a dead SSH transport — the sidebar showed the
+  trouble icon, the main pane did not; it restores itself when the host returns
+  (CHOO-1682).
+
+#### Security
+- Bump bundled dependencies for two advisories — DOMPurify `SAFE_FOR_TEMPLATES`
+  bypass in `RETURN_DOM` mode (GHSA-crv5-9vww-q3g8), and brace-expansion
+  denial-of-service via exponential expansion (GHSA-3jxr-9vmj-r5cp).
+
+### [0.19.2] - 2026-08-07
+
+#### Added
+- Connect a messaging app (Slack/Mattermost/Discord/Teams) to a server from
+  within switchdash — per-platform setup-guide links and a Teams icon; open a
+  messaging app's workspace from the server page (CHOO-1784).
+
+#### Changed
+- New macOS app icon (max.tam's mark); a dark mark for non-release (canary/dev)
+  channels; dropped the leftover emdash DMG art/wordmark (CHOO-2004).
+- Bump the bundled switch-core for local managed servers to `0.12.3`
+  (`COMPATIBLE_SWITCH_VERSION`).
+
+#### Fixed
+- Restore sidebar drag-to-reorder for agents and rooms (CHOO-2007).
+- Set `GATEWAY_PUBLIC_URL` so "Open in SwitchDash" links work; redact the
+  credential key names configs actually use; vendor the real Teams logo
+  (CHOO-1784).
+
+### [0.19.1] - 2026-08-07
+
+#### Changed
+- switchdash sessions report their latest-message anchor so the
+  collaboration-bridge runtime indicator can follow the agent to the foot of the
+  conversation (CHOO-1104).
+- Bump the bundled switch-core for local managed servers to `0.12.2`
+  (`COMPATIBLE_SWITCH_VERSION`), so a fresh local stack pulls the latest
+  switch-core and existing stacks flag the drift for a one-click update.
+
+#### Fixed
+- Fix an import cycle that could leave the view registry half-built — a renderer
+  crash ("Cannot access 'remoteHostsView' before initialization"), deterministic
+  in CI and load-order-dependent locally (CHOO-1104).
+
+### [0.19.0] - 2026-08-07
+
+#### Added
+- Remote-host onboarding rewritten as per-host pages with a staged,
+  one-click-per-prerequisite setup: install each prerequisite individually with
+  live progress, inline GitHub CLI sign-in, and agent creation gated on host
+  readiness (CHOO-1809).
+- Surface and act on available updates on a remote host — detect Codex/CLI
+  updates remotely, re-check one dependency at a time, and show which version an
+  update brings, flagged in the sidebar (CHOO-1809).
+- Discover and onboard already-configured agents on a shared remote host
+  (CHOO-1937, #130).
+- Detect switch-core drift on a managed stack and update it; flag drift on the
+  sidebar server rows (CHOO-1736).
+- Command palette now searches across your agents and rooms — not just
+  navigation — labelling what each result is, jumping into another server's
+  scope, and adding an "Add Switch Server" command (CHOO-1423, #140).
+
+#### Changed
+- Split an agent type into separate CLI and connector rows; drop the
+  servers-sidebar text actions (CHOO-1809, CHOO-1953).
+- Pin switch-core `0.12.1` for the managed stack (CHOO-1736).
+
+#### Fixed
+- Remote-host setup hardening: a host without the GitHub CLI no longer reports
+  itself Ready; the readiness probe no longer races itself; host vs agent-type
+  readiness are judged separately; stale plans rebuild; a failed update is no
+  longer treated as a broken dependency; only CLI updates switchdash can
+  actually perform are offered; agent creation refuses an unchecked type; the
+  agent type clears when the run location changes; remote-host pages scroll; and
+  a remote install no longer hangs on an unanswerable prompt (CHOO-1809).
+- Dialogs opt out of the window drag region; the alert action no longer overlaps
+  its text (CHOO-1953, CHOO-1736).
+- Migration safety: register migration 0046 in the drizzle journal, fail loud
+  when a migration isn't registered, and assert the migration runner's timestamp
+  precondition (CHOO-1809).
+- Command-palette matching: a hyphenated query is no longer split into separate
+  terms, matches no longer land mid-word, results rank like the sidebar, and the
+  search index no longer treats `item_type` as content (CHOO-1423, #140).
 
 ### [0.18.3] - 2026-08-06
 
@@ -549,3 +778,117 @@ migrations 0031–0036, including a locations backfill).
 
 Desktop-app releases predating this changelog live in the git log and in the
 per-release notes on their GitHub Releases (`switchdash-v*` tags).
+
+---
+
+## agent-runtime
+
+The Switch protocol client and MCP runtime
+(`dash/packages/switch-agent-runtime/`). Version lives in its `package.json`.
+
+### [Unreleased]
+
+### [0.1.6] - 2026-08-09
+
+#### Added
+- Declares its `agent-protocol` range, artifact name and release version on the
+  event stream it already opens, so switch-core can record what is connecting
+  (CHOO-1865).
+- Logs the server's declaration from the `connection_state` frame, so which
+  versions were actually talking to each other is answerable from a bug report
+  rather than a guess (CHOO-1865).
+
+#### Changed
+- Reports a failing event stream on a curve — first failure, then powers of
+  two, plus a line when it recovers — instead of once per reconnect. The
+  reconnect itself is unchanged; only the reporting is rationed, so a stack
+  that is simply stopped costs a handful of log lines rather than one per
+  session per 30s, forever (CHOO-1780).
+
+### [0.1.5]
+
+Releases before this changelog existed are in the git log. They are not
+reconstructed here: an invented history reads exactly like a real one.
+
+---
+
+## sidecar
+
+The remote runtime switchdash deploys to an agent host. Versioned in
+`dash/apps/switchdash-desktop/src/sidecar/sidecar-version.ts` and deployed by
+switchdash rather than published on its own.
+
+### [1.8.0]
+
+#### Added
+- Declares its `sidecar-control` range in the ready file switchdash already
+  reads (CHOO-1865).
+
+#### Changed
+- Three-part semver: `1.7` becomes `1.8.0`. **The major stays at 1** — every
+  switchdash already in the field judges compatibility on the major and parses
+  two parts, so `1.7` and `1.8.0` order correctly and neither side
+  replaces the other. `2.0.0` would have every existing install treat this
+  sidecar as incompatible and replace it while a newer install replaces it back
+  (CHOO-1937, CHOO-1865).
+- The version no longer carries compatibility. It says which release is running;
+  what the sidecar can speak is the `sidecar-control` range it now declares in
+  its ready file (CHOO-1865).
+- The version is declared in `artifacts.yaml` and generated into the code.
+  Nothing else declares it — the sidecar is deployed by switchdash rather than
+  published, so it has no packaging file of its own.
+
+### [1.7]
+
+Earlier versions used a two-part `x.y` scheme in which the major *was* the
+compatibility signal. History for those is in the git log.
+
+---
+
+## switch-connector (Claude Code)
+
+`connectors/claude-code-plugin/`. Version lives in
+`.claude-plugin/plugin.json`.
+
+### [Unreleased]
+
+#### Changed
+- Document `read_context`'s new response shape — `truncated` /
+  `oldest_timestamp` and the per-entry `kind` — and tell the agent not to
+  conclude anything from a truncated read (CHOO-2034).
+
+### [0.7.9] - 2026-08-09
+
+#### Changed
+- Bump the pinned `@sandbox-quantum/switch-agent-runtime` to `0.1.6`, so sessions
+  pick up its rationed stream-failure reporting and version declaration
+  (CHOO-1780, CHOO-1865). The plugin version bumps with the pin so installs
+  re-download it.
+
+### [0.7.8]
+
+Releases before this changelog existed are in the git log and in the plugin
+manifest history.
+
+---
+
+## switch-connector-codex
+
+`connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
+
+### [Unreleased]
+
+#### Changed
+- Skill updated for `read_context`'s new response shape — `truncated` /
+  `oldest_timestamp` and the per-entry `kind` (CHOO-2034).
+
+### [0.2.1] - 2026-08-09
+
+#### Changed
+- Bump the pinned `@sandbox-quantum/switch-agent-runtime` to `0.1.6` (CHOO-1780,
+  CHOO-1865). The plugin version bumps with the pin so installs re-download it.
+
+### [0.2.0]
+
+Releases before this changelog existed are in the git log and in the plugin
+manifest history.

@@ -14,8 +14,12 @@ import type { Agent } from '@shared/core/agents/agents';
 export type AgentEntry = { agent: Agent; location: LocationStore };
 
 /**
- * The flat list of agents in the active-server scope, newest first. switchdash
- * shows agents as a flat list — not grouped by directory (CHOO-1440).
+ * The flat list of agents in the active-server scope. switchdash shows agents
+ * as a flat list — not grouped by directory (CHOO-1440).
+ *
+ * Newest first, then overlaid with the user's manual drag order: an agent they
+ * have positioned stays where they put it, and one they have not sorts after
+ * those by recency.
  */
 export function scopedAgents(): AgentEntry[] {
   const entries: AgentEntry[] = [];
@@ -24,10 +28,29 @@ export function scopedAgents(): AgentEntry[] {
       entries.push({ agent, location });
     }
   }
-  return entries.sort(
+  entries.sort(
     (a, b) =>
       b.agent.createdAt.localeCompare(a.agent.createdAt) || a.agent.name.localeCompare(b.agent.name)
   );
+  return sidebarStore.orderAgents(entries, (entry) => entry.agent.id);
+}
+
+/**
+ * Every agent on the active server, ignoring the agent filters.
+ *
+ * Room membership is a fact about a room, so the agents a room lists — and the
+ * agents whose membership is fetched at all — must not depend on which filters
+ * the agent view happens to have set. {@link scopedAgents} is the filtered list
+ * and stays the right one for rendering the agent tree itself.
+ */
+export function agentsInActiveScope(): AgentEntry[] {
+  const entries: AgentEntry[] = [];
+  for (const location of sidebarStore.orderedLocations) {
+    for (const agent of agentsStore.byLocation.get(location.id) ?? []) {
+      entries.push({ agent, location });
+    }
+  }
+  return entries;
 }
 
 /**
@@ -44,10 +67,12 @@ export function agentSessions(entry: AgentEntry): SessionStore[] {
   );
 }
 
-/** Every scoped agent that has a Switch identity, as membership-lookup keys. */
+/** Every agent on the active server that has a Switch identity, as
+ * membership-lookup keys. Unfiltered on purpose — see
+ * {@link agentsInActiveScope}. */
 export function switchIdentities(): { serverId: string; switchAgentId: string }[] {
   const identities: { serverId: string; switchAgentId: string }[] = [];
-  for (const { agent } of scopedAgents()) {
+  for (const { agent } of agentsInActiveScope()) {
     if (agent.serverId && agent.switchAgentId) {
       identities.push({ serverId: agent.serverId, switchAgentId: agent.switchAgentId });
     }

@@ -21,6 +21,7 @@ function createAppCommandProvider(): CommandProvider {
       // when navigation changes.
       const settingsDef = appDef('app.settings');
       const newLocationDef = appDef('app.newLocation');
+      const addServerDef = appDef('app.addServer');
       const giveFeedbackDef = appDef('app.giveFeedback');
       const toggleThemeDef = appDef('app.toggleTheme');
       const navigateBackDef = appDef('app.navigateBack');
@@ -49,6 +50,16 @@ function createAppCommandProvider(): CommandProvider {
           group: newLocationDef.group,
           execute() {
             showModal('addAgentModal', {});
+          },
+        },
+        {
+          id: addServerDef.id,
+          label: addServerDef.label,
+          description: addServerDef.description,
+          shortcutKey: addServerDef.shortcutKey,
+          group: addServerDef.group,
+          execute() {
+            showModal('addServerModal', {});
           },
         },
       ];

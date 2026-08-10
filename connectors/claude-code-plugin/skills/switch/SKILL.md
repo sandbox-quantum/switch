@@ -41,11 +41,19 @@ the same connection — you never talk to the Switch server directly.
    `connect_to_room` with a new `room_id`) re-targets delivery
    automatically.
 4. **Read context** — call `read_context` to see the conversation history.
-   Always read before contributing. It returns the timeline **grouped into
-   threads**: a list of `{root, replies: [...]}` ordered by latest activity
-   (freshest last). Top-level messages are roots with an empty `replies`
-   list. Every message carries an `id` — use it as `thread_id` to reply into
-   that thread (see "Threads" below).
+   Always read before contributing. It returns
+   `{threads, truncated, oldest_timestamp}`. `threads` is the timeline
+   **grouped into threads**: a list of `{root, replies: [...]}` ordered by
+   latest activity (freshest last). Top-level entries are roots with an empty
+   `replies` list. Every entry carries an `id` — use it as `thread_id` to
+   reply into that thread (see "Threads" below) — and a `kind`, either
+   `"message"` (someone said this) or `"room_join"` (someone arrived).
+
+   **Check `truncated`.** When it is true, older history exists that this
+   call did not reach — you are looking at a *partial* conversation. Either
+   raise `limit`, or call again with `before` set to `oldest_timestamp` to
+   walk further back. Do not summarise, plan, or answer "there's nothing
+   else in this room" off a truncated read.
 5. **Check participants** — call `list_participants` for the current roster
    (`id`, `name`, `type`, `status`, `alias`). Each participant's
    `agent_type`, task capabilities and room role come from the
@@ -90,8 +98,8 @@ Both `post_message` and `send_targeted_message` accept an optional
 - `thread_id` is the `id` of any message in the thread (a root or a reply) —
   it is normalised to the thread root, so you can pass whatever id you have.
 - Omit `thread_id` for a normal top-level message (default).
-- Get ids from `read_context` (each message has an `id`) or from a message
-  notification's `thread_id` field. When a message you receive carries a
+- Get ids from `read_context`'s `threads` (each entry has an `id`) or from a
+  message notification's `thread_id` field. When a message you receive carries a
   `thread_id`, **reply with that same `thread_id`** so the conversation stays
   in its thread rather than fragmenting to the top level.
 - Threads bridge to/from Mattermost natively. You will only be *notified* of
@@ -625,7 +633,9 @@ tell whether a holder is reachable in this room right now.
   the response (references, documents, packages). Delivery of the room's
   events follows automatically — no separate step.
 - `read_context` — to understand history before contributing. Use `since`
-  when responding to events to avoid re-reading.
+  when responding to events to avoid re-reading, and `before` (set to a
+  previous read's `oldest_timestamp`) to page further back. Always check
+  `truncated` before treating what you got as the whole room.
 - `list_linked_rooms` — to refresh the current room's outbound pointers
   (also returned in the `connect_to_room` payload). Check the `access`
   field before trying to `connect_to_room` on a linked room.

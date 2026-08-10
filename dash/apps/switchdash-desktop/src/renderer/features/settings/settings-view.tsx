@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, type ReactNode } from 'react';
+import type { GuardResult } from '@renderer/app/view-registry';
 import {
   SettingsPage,
   type SettingsPageTab,
@@ -64,4 +65,15 @@ export function SettingsMainPanel() {
 export const settingsView = {
   WrapView: SettingsViewWrapper,
   MainPanel: SettingsMainPanel,
+  /**
+   * Remote hosts moved out of Settings to their own view (CHOO-1809). A
+   * persisted snapshot from an older build can still name that tab, which would
+   * otherwise render Settings with nothing selected — send it to the new view.
+   */
+  canActivate: (params: unknown): GuardResult => {
+    const tab =
+      typeof params === 'object' && params !== null ? (params as { tab?: unknown }).tab : undefined;
+    if (tab === 'remote-hosts') return { ok: false, redirect: 'remoteHosts' };
+    return { ok: true };
+  },
 };

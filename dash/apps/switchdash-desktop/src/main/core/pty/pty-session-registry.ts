@@ -103,7 +103,17 @@ export class PtySessionRegistry {
     events.emit(ptyStartedChannel, { id: sessionId });
   }
 
-  unregister(sessionId: string, options: { pty?: Pty; exitInfo?: PtyExitInfo } = {}): void {
+  /**
+   * `preserveSize` keeps the last known terminal dimensions after the pty is
+   * gone. Set it when the session is expected to come back — a detached remote
+   * session re-attaches onto the same tmux pane, and without the remembered
+   * size it respawns at the 80x24 default and tmux repaints the pane at that
+   * size inside a much larger terminal.
+   */
+  unregister(
+    sessionId: string,
+    options: { pty?: Pty; exitInfo?: PtyExitInfo; preserveSize?: boolean } = {}
+  ): void {
     if (options.pty !== undefined && this.ptyMap.get(sessionId) !== options.pty) return;
     this.pendingFlushes.get(sessionId)?.();
     if (options.exitInfo !== undefined) {
@@ -116,7 +126,7 @@ export class PtySessionRegistry {
     this.ringBuffers.delete(sessionId);
     this.activeConsumers.delete(sessionId);
     this.metadata.delete(sessionId);
-    this.lastSizes.delete(sessionId);
+    if (!options.preserveSize) this.lastSizes.delete(sessionId);
   }
 
   get(sessionId: string): Pty | undefined {

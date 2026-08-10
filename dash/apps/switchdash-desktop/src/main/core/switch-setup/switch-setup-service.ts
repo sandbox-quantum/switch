@@ -5,6 +5,7 @@ import { LocalExecutionContext } from '@main/core/execution-context/local-execut
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
 import { READ_PACKAGES_SCOPE } from '@shared/core/npm-registry';
+import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import { probeLocalGhAuth } from './local-gh-auth';
 import {
@@ -273,7 +274,11 @@ class SwitchSetupService {
    * withheld until the credential can actually fetch it, matching how a remote
    * host reports readiness.
    */
-  async listOnboardable(): Promise<{ agentId: string }[]> {
+  async listAgentTypeAvailability(): Promise<AgentTypeAvailability[]> {
+    const types = listPlugins()
+      .filter((plugin) => plugin.capabilities.switchSetup.kind === 'cli')
+      .map((plugin) => plugin.metadata.id);
+
     const gh = await probeLocalGhAuth();
     if (!gh.ghInstalled || !gh.authenticated || !gh.canReadPackages) {
       log.warn('switch-setup: no agent type is onboardable — GitHub access is not usable', {
@@ -283,16 +288,30 @@ class SwitchSetupService {
         canReadPackages: gh.canReadPackages,
         envShadowed: gh.envShadowed,
       });
-      return [];
+      // Blocked for every type at once, and not for a reason any per-type
+      // install would fix, so say so on each rather than probing them.
+      return types.map((agentId) => ({
+        agentId,
+        available: false,
+        blockedReason:
+          'This computer cannot reach the private GitHub packages the Switch connector needs.',
+      }));
     }
 
-    const onboardable: { agentId: string }[] = [];
-    for (const plugin of listPlugins()) {
-      if (plugin.capabilities.switchSetup.kind !== 'cli') continue;
-      const status = await this.getStatus(plugin.metadata.id);
-      if (status.installed) onboardable.push({ agentId: plugin.metadata.id });
+    const availability: AgentTypeAvailability[] = [];
+    for (const agentId of types) {
+      const status = await this.getStatus(agentId);
+      availability.push(
+        status.installed
+          ? { agentId, available: true, blockedReason: null }
+          : {
+              agentId,
+              available: false,
+              blockedReason: 'Its Switch connector is not installed on this computer.',
+            }
+      );
     }
-    return onboardable;
+    return availability;
   }
 
   /**

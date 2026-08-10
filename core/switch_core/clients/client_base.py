@@ -102,6 +102,7 @@ class ClientBase[ConfigT: ClientConfig]:
 
         self.nio_client: AsyncClient | None = None
         self.room_join_times: dict[str, int] = {}
+        self._room_joined_events: dict[str, asyncio.Event] = {}
         self._ready = asyncio.Event()
         self._startup_ts: int = 0
         self._last_sync_persist: float = 0.0
@@ -110,6 +111,33 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def wait_ready(self) -> None:
         await self._ready.wait()
+
+    def _joined_event(self, room_id: str) -> asyncio.Event:
+        event = self._room_joined_events.get(room_id)
+        if event is None:
+            event = asyncio.Event()
+            self._room_joined_events[room_id] = event
+        return event
+
+    def _mark_joined(self, room_id: str) -> None:
+        self.room_join_times[room_id] = int(time.time() * 1000)
+        self._joined_event(room_id).set()
+
+    async def wait_joined(self, room_id: str, timeout: float) -> bool:
+        """Block until this client's join to `room_id` has been observed (via
+        sync or an explicit join), up to `timeout` seconds. Returns True if
+        joined, False on timeout. Callers that need to *send* into a room they
+        have only just been invited to must await this first — a send issued
+        before the join lands is rejected by the homeserver, and any event that
+        does land before a member's join is filtered out by `_should_ignore`."""
+        event = self._joined_event(room_id)
+        if event.is_set():
+            return True
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
 
     @property
     def client(self) -> AsyncClient:
@@ -243,7 +271,7 @@ class ClientBase[ConfigT: ClientConfig]:
     ) -> None:
         if event.state_key == self.matrix_user_id and event.membership == "join":
             already_joined = room.room_id in self.room_join_times
-            self.room_join_times[room.room_id] = int(time.time() * 1000)
+            self._mark_joined(room.room_id)
             if not already_joined and event.server_timestamp >= self._startup_ts:
                 try:
                     await self.on_self_join(room, event)
@@ -438,7 +466,7 @@ class ClientBase[ConfigT: ClientConfig]:
         logger.info(
             "Client %s auto-accepting invite to %s", self.matrix_user_id, room.room_id
         )
-        await self.client.join(room.room_id)
+        await self.join_room(room.room_id)
 
     async def on_command(self, room: MatrixRoom, event: CommandEvent) -> None:
         pass
@@ -677,7 +705,7 @@ class ClientBase[ConfigT: ClientConfig]:
     async def join_room(self, room_id: str) -> None:
         resp = await self.client.join(room_id)
         if hasattr(resp, "room_id"):
-            self.room_join_times[room_id] = int(time.time() * 1000)
+            self._mark_joined(room_id)
             logger.info("Client %s joined %s", self.matrix_user_id, room_id)
         else:
             logger.error(

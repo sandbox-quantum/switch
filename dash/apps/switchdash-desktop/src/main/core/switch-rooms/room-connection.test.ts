@@ -35,7 +35,8 @@ function commandEvent(
 function messageEvent(
   addressed: boolean,
   threadId: string | null = null,
-  attachments: AttachmentRef[] = []
+  attachments: AttachmentRef[] = [],
+  messageId = 'msg-1'
 ): AgentBridgeEvent {
   return {
     type: 'message',
@@ -44,7 +45,7 @@ function messageEvent(
       addressed,
       sender: '@someone:switch',
       sender_name: 'Someone',
-      message_id: 'msg-1',
+      message_id: messageId,
       body: 'hello agent',
       timestamp: 1,
       thread_id: threadId,
@@ -119,6 +120,22 @@ function runtimeDetails(fetchMock: ReturnType<typeof makeFetch>): (string | null
   return fetchMock.mock.calls
     .filter((c) => String(c[0]).includes('/runtime-state'))
     .map((c) => JSON.parse((c[1] as RequestInit).body as string).detail);
+}
+
+function runtimeAnchors(fetchMock: ReturnType<typeof makeFetch>): (string | null)[] {
+  return fetchMock.mock.calls
+    .filter((c) => String(c[0]).includes('/runtime-state'))
+    .map((c) => JSON.parse((c[1] as RequestInit).body as string).anchor_event_id);
+}
+
+/** Anchors carried on `working` posts only — the bridge ignores the anchor on
+ * any other state, so those carry whatever happened to be set. */
+function workingAnchors(fetchMock: ReturnType<typeof makeFetch>): (string | null)[] {
+  return fetchMock.mock.calls
+    .filter((c) => String(c[0]).includes('/runtime-state'))
+    .map((c) => JSON.parse((c[1] as RequestInit).body as string))
+    .filter((b) => b.state === 'working')
+    .map((b) => b.anchor_event_id);
 }
 
 async function flush(times = 4): Promise<void> {
@@ -328,6 +345,101 @@ describe('RoomConnection', () => {
       // The gate re-checks after HUMAN_GATE_RETRY_MS (500ms).
       await vi.advanceTimersByTimeAsync(500);
       expect(vi.mocked(target.write).mock.calls.map((c) => c[0])[0]).toContain('<<');
+
+      conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The bridge repositions the runtime indicator only when the anchor CHANGES,
+  // and only ever to a message the agent has actually been handed — so these
+  // report what the session has seen, never what merely arrived in the room.
+
+  it('reports the addressed message as the anchor for the turn it starts', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [
+      messageEvent(true, null, [], 'msg-alpha'),
+    ]);
+
+    await flush();
+
+    expect(runtimeAnchors(fetchMock)).toContain('msg-alpha');
+    conn.stop();
+  });
+
+  it('moves the anchor to a follow-up message injected mid-turn', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [
+      messageEvent(true, null, [], 'msg-alpha'),
+      messageEvent(true, null, [], 'msg-beta'),
+    ]);
+
+    await flush(12);
+    // Force a push rather than waiting out the 5s refresh; the anchor rides on
+    // whatever the next runtime-state post happens to be.
+    conn.reportActivity('Editing x.py');
+    await flush();
+
+    const anchors = runtimeAnchors(fetchMock);
+    expect(anchors.at(-1)).toBe('msg-beta');
+    conn.stop();
+  });
+
+  it('does not anchor to a message the agent was never handed', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [
+      messageEvent(true, null, [], 'msg-alpha'),
+      // Unaddressed: surfaced as context only, so it must not look like the
+      // agent turned its attention to it.
+      messageEvent(false, null, [], 'msg-unaddressed'),
+    ]);
+
+    await flush(12);
+    conn.reportActivity('Editing x.py');
+    await flush();
+
+    expect(runtimeAnchors(fetchMock)).not.toContain('msg-unaddressed');
+    conn.stop();
+  });
+
+  it('stops reporting a live anchor once the turn ends', async () => {
+    // The refresh is what keeps re-reporting the anchor. If it outlived the
+    // turn it would go on naming a finished turn's message as the live one.
+    vi.useFakeTimers();
+    try {
+      const target: InjectionTarget = { write: vi.fn() };
+      const { conn, fetchMock } = connect({ acquire: () => target }, [
+        messageEvent(true, null, [], 'msg-alpha'),
+      ]);
+      await vi.advanceTimersByTimeAsync(1);
+
+      conn.onAgentStatusChange('idle');
+      await vi.advanceTimersByTimeAsync(1);
+      const settled = workingAnchors(fetchMock).length;
+
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect(workingAnchors(fetchMock).length).toBe(settled);
+      conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('repeats the current anchor on the periodic refresh so it moves nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      const target: InjectionTarget = { write: vi.fn() };
+      const { conn, fetchMock } = connect({ acquire: () => target }, [
+        messageEvent(true, null, [], 'msg-alpha'),
+      ]);
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(11_000);
+
+      const anchors = workingAnchors(fetchMock);
+      expect(anchors.length).toBeGreaterThan(1);
+      expect(anchors.every((a) => a === 'msg-alpha')).toBe(true);
 
       conn.stop();
     } finally {

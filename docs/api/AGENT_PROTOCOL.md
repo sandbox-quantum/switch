@@ -278,7 +278,11 @@ Accept: text/event-stream
   filter          all | addressed
   start_from      head | <sequence number>       (default head)
   spawn_capable   bool                            (default false)
-  protocol        protocol version
+
+  protocol          newest agent-protocol revision the client implements
+  protocol_accepts  oldest it still handles       (default: same as protocol)
+  client            artifact name, e.g. agent-runtime
+  client_version    that artifact's semver
 ```
 
 The client generates the connection id, which makes opening **idempotent**: a
@@ -289,9 +293,40 @@ be treated as a secret. An id belonging to a different agent is rejected.
 The server responds with an open `text/event-stream` and sends the connection's
 state as the first event.
 
-**Protocol version is checked at open.** An incompatible client is refused with
-a message telling the user to update. The runtime lives on the user's machine
-and Switch moves independently; silent degradation is not acceptable.
+**The four declaration parameters are optional, and absent means _unknown_.** A
+client built before they existed says nothing, and unknown is a state the model
+carries deliberately — it is not incompatible, and such a client connects
+normally (CHOO-1865). `protocol` previously defaulted to the server's own value,
+which read silence as agreement; since no shipped client sent it, the check had
+never once fired.
+
+`client` and `client_version` say which released artifact is connecting and
+where it is. They are recorded and reported, never judged: a semver says nothing
+about compatibility. That is what the contract revisions are for.
+
+**A declared protocol range is checked at open.** Client and server are
+compatible when their `[accepts, speaks]` ranges **overlap** — not when they are
+equal — and they then operate at the lower of the two `speaks`. A client whose
+range cannot meet the server's is refused with a `409` whose body carries both
+ranges and names which side is behind:
+
+```json
+{
+  "detail": {
+    "message": "...",
+    "contract": "agent-protocol",
+    "server": { "version": "0.12.3", "speaks": 1, "accepts": 1 },
+    "client": { "speaks": 2, "accepts": 2 },
+    "remedy": "update switch-core"
+  }
+}
+```
+
+The refusal carries the ranges because a refused client never receives a
+`connection_state` frame, so this is its only chance to learn what the server
+speaks. The runtime lives on the user's machine and Switch moves independently;
+silent degradation is not acceptable, and neither is a refusal that leaves the
+user guessing which side to move.
 
 ### 5.2 Heartbeat
 
@@ -447,13 +482,35 @@ New, carried on the same stream:
 
 | type | payload | meaning |
 |---|---|---|
-| `connection_state` | `connection_id`, `scope`, `filter`, `rooms`, `cursor`, `protocol` | first event on every stream |
+| `connection_state` | `connection_id`, `scope`, `filter`, `rooms`, `cursor`, `protocol`, `server`, `client` | first event on every stream |
 | `subscription_changed` | `rooms`, `reason` | scope changed — including a room going dark because another connection claimed it |
 | `gap` | `from_sequence`, `reason` | events were dropped; re-read context. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
 | `evicted` | `reason` | this connection lost its slot or was taken over; it must stop acting |
 
 `gap` and `evicted` exist so that degradation is always visible. A client that
 has missed events must never appear healthy.
+
+**`connection_state` is where the server declares itself** (CHOO-1865). It is
+the first frame of an already-authenticated stream, so no separate endpoint —
+and no unauthenticated one — is needed:
+
+```json
+{
+  "server": {
+    "version": "0.12.3",
+    "contracts": { "agent-protocol": { "speaks": 1, "accepts": 1 } }
+  },
+  "client": { "speaks": 1, "accepts": 1, "artifact": "agent-runtime", "version": "0.1.5" }
+}
+```
+
+`server.version` is `null` when switch-core cannot read its own version. Null
+means unknown and must be rendered as such, never as current. `db-schema` is
+internal to switch-core and appears in no externally facing response.
+
+`client` echoes back what the server understood the client to have said, with
+`null` for anything it did not. A declaration that silently failed to parse is
+worse than one never sent, because both sides believe it landed.
 
 ---
 
@@ -739,7 +796,8 @@ Fail loud, never fake. Concretely:
 | room slot already claimed | reject, naming the incumbent — except `connect_to_room`, which takes over and reports what it evicted |
 | slot taken over | incumbent's rooms change; it receives `subscription_changed` and goes dark on that room |
 | server restart | cursors invalidated; clients told to re-read |
-| incompatible protocol version | refuse at open with an upgrade message |
+| non-overlapping protocol ranges | refuse at open; the 409 body carries both ranges and names which side is behind |
+| client declares no protocol range | record as unknown and admit — unknown is not incompatible |
 | per-agent connection cap exceeded | reject loudly |
 
 A connection that has silently missed events must never appear healthy.
@@ -827,10 +885,11 @@ three renews is unaffected and unaware.
    of every union above.
 7. Remove the polling endpoints.
 
-Opportunistic, both relevant to this work: the `DORMANT` display bug, and
-`read_context`'s deep-history pagination, which discards Matrix's continuation
-token and so cannot page past roughly `limit * 5` events — this matters more
-once "re-read context" is the documented recovery path for a gap.
+Opportunistic, relevant to this work: the `DORMANT` display bug.
+`read_context`'s deep-history pagination is **done** (CHOO-2034) — it follows
+Matrix's continuation token, pages backwards for `before`, and reports
+`truncated` when it stops short, which matters now that "re-read context" is
+the documented recovery path for a gap.
 
 Both connector skills (`claude-code-plugin`, `codex-plugin`) and both plugin
 versions must be updated when the agent-facing contract changes.

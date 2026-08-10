@@ -4,6 +4,7 @@ import type { Agent } from '@shared/core/agents/agents';
 
 export type AgentCrudHooks = {
   'agent:created': (agent: Agent) => void | Promise<void>;
+  'agent:updated': (agent: Agent) => void | Promise<void>;
   'agent:deleted': (agentId: string) => void | Promise<void>;
 };
 

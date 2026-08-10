@@ -4,14 +4,17 @@
 
 - `src/main/core/updates/update-service.ts`
 - `src/main/core/updates/controller.ts`
+- `src/main/core/updates/github-token.ts` — the updater's `gh` CLI token
+- `src/main/core/updates/dev-harness.ts` — `SWITCHDASH_FAKE_UPDATE` replay
 - `build/`
 - `package.json`
 - `electron-builder.config.ts`
 - `electron-builder.canary.config.ts`
-- `scripts/release/build.ts`
-- `scripts/release/notarize-mac.ts`
-- `scripts/release/rebuild-native.ts`
-- `scripts/release/finalize-release.ts`
+- `.github/workflows/switchdash-release.yml` — the release pipeline (repo root, **not** under `dash/`)
+
+There is no `scripts/release/` directory. Releasing is done by the GitHub Actions
+workflow above, which calls `electron-builder` directly; the packaging, notarization and
+finalize steps are workflow jobs rather than TypeScript entry points.
 
 ## Rules
 
@@ -21,20 +24,44 @@
 
 ## Update Feed / Publishing Strategy
 
-The stable release pipeline publishes to **GitHub Releases** (primary feed) and **Cloudflare R2** (legacy/migration feed) in parallel. Both feeds are served from the same single build.
+The release pipeline publishes to **GitHub Releases** only. The Cloudflare R2 feed that
+ran alongside it during the migration is gone: neither electron-builder config has a
+`generic` publish block, and there is no R2 upload step.
 
-### Two feeds, one build
+### One feed
 
-electron-builder emits channel manifests named by the **first** publish provider's `channel`:
+electron-builder emits channel manifests named by the publish provider's `channel`:
 
-- Stable: `provider: github` has no explicit channel → defaults to `latest` → emits `latest*.yml`.
-- Canary: `provider: github` sets `channel: 'canary'` → emits `canary*.yml`.
+- Stable: `provider: github` (`releaseType: 'release'`) has no explicit channel → defaults to `latest` → emits `latest*.yml`.
+- Canary: `provider: github` (`releaseType: 'draft'`) sets `channel: 'canary'` → emits `canary*.yml`.
 
-The R2 feed uses different channel names (`v1-stable`, `v1-canary`) that pre-date the GitHub migration. Rather than running a second packaging pass, `scripts/release/build.ts` calls `duplicateChannelManifests()` after the electron-builder step to copy `latest*.yml → v1-stable*.yml` (or `canary*.yml → v1-canary*.yml`). The duplicated manifests are then uploaded to both the GitHub draft release and R2, so every client cohort sees a consistent manifest for its feed.
+The release repo is `sandbox-quantum/switch`, private, so the updater uses
+electron-updater's authenticated GitHub provider.
 
-### Guard: `upload-r2.ts` hard-fails on missing channel manifest
+### Draft until every platform has uploaded
 
-`scripts/release/upload-r2.ts` asserts that at least one `${channel}*.yml` file exists before uploading. If `duplicateChannelManifests` did not run or produced no output, the R2 upload step fails immediately with a clear message rather than silently uploading only binaries. A stale channel manifest (frozen at a previous version) combined with newer binaries would cause sha512 checksum failures on client download.
+The workflow does **not** let electron-builder publish (`--publish never`). Instead:
+
+1. `create-release` opens the GitHub Release as a **draft**. A draft is invisible to
+   electron-updater — `/releases/latest` skips drafts — so no client can see a
+   half-uploaded release.
+2. Each platform job builds, then `gh release upload`s its installers **and** its
+   electron-updater channel manifest.
+3. `publish-release` runs last. It **verifies every expected channel manifest is
+   present** and refuses to publish if any is missing, leaving the release a draft with
+   an error naming what's absent.
+
+That last step is the guard worth knowing about: binaries published against a stale or
+missing channel manifest produce sha512 checksum failures on client download, so the
+pipeline would rather stay a draft than publish an inconsistent release.
+
+### `UPDATE_CHANNEL` is a log label, not a feed selector
+
+`UPDATE_CHANNEL` (`src/shared/app-identity.ts`) is `'v1-stable'` / `'v1-canary'` — naming
+inherited from the retired R2 bucket. It is passed **only** to `log.info` calls in
+`update-service.ts` for diagnostics. It is **not** passed to `autoUpdater.channel` and not
+used to build a feed URL. Do not wire it into feed selection on the assumption that a
+constant named "channel" must be one.
 
 ### Update channels on GitHub
 
@@ -43,24 +70,17 @@ The app does **not** override `autoUpdater.channel`; the GitHub provider resolve
 - **Stable** (`allowPrerelease=false`): resolves to `latest`, fetches `latest*.yml` from the newest non-prerelease GitHub release.
 - **Canary** (`allowPrerelease=true`): resolves the target release tag from the Atom feed by matching the semver prerelease identifier of the installed version (`canary`) against each entry. Once a `-canary.N` tag is found it fetches `canary*.yml` from that release, as defined by `channel: 'canary'` in `electron-builder.canary.config.ts`.
 
-The `UPDATE_CHANNEL` / `v1-stable` / `v1-canary` naming applies **only** to the flat R2 bucket (via the `generic` publish block's `channel`). It is kept as a log label in `update-service.ts` for diagnostics but is not passed to `autoUpdater.channel`.
-
-### R2 decommission path
-
-R2 uploads continue until all clients are confirmed to have migrated to the GitHub-backed feed. At that point:
-
-1. Remove the `provider: generic` block from `electron-builder.config.ts` and `electron-builder.canary.config.ts`.
-2. Remove the `upload-r2.ts` call and `duplicateChannelManifests` call from `build.ts`.
-3. Decommission the R2 bucket.
-
 - Canary publishes to GitHub as prereleases. `ALLOW_PRERELEASE` in `update-service.ts` is driven by `IS_CANARY` so canary clients accept prerelease versions automatically.
-- The `finalize-release.ts` script runs after all three platform builds complete to flip the draft GitHub release to published. Until that job finishes the release remains a draft and is invisible to electron-updater clients on the GitHub feed.
+- The `publish-release` workflow job runs after all platform builds complete to flip the draft GitHub release to published. Until that job finishes the release remains a draft and is invisible to electron-updater clients.
 
-## Release Scripts Library Usage
+## Authenticating the updater
 
-- `scripts/release/build.ts` — uses `electron-builder`'s programmatic `build()` API (no CLI spawn)
-- `scripts/release/rebuild-native.ts` — uses `@electron/rebuild`'s `rebuild()` API (no CLI spawn)
-- `scripts/release/notarize-mac.ts` — uses `@electron/notarize`'s `notarize()` API for DMG submission + auto-staple; system spawns are kept only for `.app` bundle stapling and Gatekeeper verification
+The release repo is private, so a plain feed fetch 404s. `github-token.ts` sources a token
+from the user's `gh` CLI and it is handed to `autoUpdater.setFeedURL(...)` rather than
+exported as `GH_TOKEN`. That is deliberate and worth preserving: switchdash's environment
+is inherited by every child process it spawns — including `gh` itself, which prefers
+`GH_TOKEN` over its keyring — so a token parked there outlives the login it came from and
+shadows the next one until the app restarts.
 
 ## Current Notes
 

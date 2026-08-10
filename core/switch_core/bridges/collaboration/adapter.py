@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 
 from switch_core.bridges.collaboration.models import (
     ChannelType,
@@ -12,6 +15,23 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LiveRuntimeIndicator:
+    """The runtime status message currently posted for one agent in one channel.
+
+    ``body`` and ``thread_root_id`` are retained so the indicator can be
+    reposted verbatim, in the same thread, when it is moved to follow newer
+    traffic — a move has no access to the ``detail``/``deeplink_url`` the body
+    was originally rendered from.
+    """
+
+    message_ref: str
+    body: str
+    thread_root_id: str | None
 
 
 class CollaborationAdapter(ABC):
@@ -28,6 +48,15 @@ class CollaborationAdapter(ABC):
         # size against this before downloading so an oversize file is rejected
         # loudly instead of being pulled down and discarded.
         self._max_attachment_bytes = 20 * 1024 * 1024
+        # (channel_id, agent_name) -> the agent's live "working on it…" runtime
+        # indicator, and the operator pings posted alongside it. Adapters that
+        # render runtime state as a persistent message maintain these; the
+        # typing-indicator default leaves them empty.
+        self._working_msg: dict[tuple[str, str], LiveRuntimeIndicator] = {}
+        self._input_pings: dict[tuple[str, str], list[str]] = {}
+        # One lock per (channel_id, agent_name). Every mutation of the entries
+        # above happens under it — see _runtime_lock.
+        self._runtime_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -153,7 +182,54 @@ class CollaborationAdapter(ABC):
         self, channel_id: str, sender_name: str, is_typing: bool
     ) -> None: ...
 
+    def _runtime_lock(self, channel_id: str, agent_name: str) -> asyncio.Lock:
+        """The lock serialising runtime-indicator work for one agent in one
+        channel.
+
+        The indicator is mutated from two independent places — the periodic
+        activity refresh and a reposition triggered by new traffic — and each
+        reads the tracked message, awaits a platform call, then writes it back.
+        Left to interleave, the later write restores a superseded message ref:
+        the entry then names a message that has just been deleted while the one
+        actually on screen is referenced by nothing, so the end-of-turn clear
+        cannot remove it and it stays in the channel for good.
+        """
+        return self._runtime_locks.setdefault((channel_id, agent_name), asyncio.Lock())
+
     async def apply_runtime_state(
+        self,
+        channel_id: str,
+        agent_name: str,
+        state: str,
+        *,
+        notify_user: str | None,
+        thread_root_id: str | None,
+        deeplink_url: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Serialise against any other runtime-indicator work for this agent,
+        then apply the state. Adapters override ``_apply_runtime_state``."""
+        async with self._runtime_lock(channel_id, agent_name):
+            await self._apply_runtime_state(
+                channel_id,
+                agent_name,
+                state,
+                notify_user=notify_user,
+                thread_root_id=thread_root_id,
+                deeplink_url=deeplink_url,
+                detail=detail,
+            )
+
+    async def reposition_runtime_state(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Serialise against any other runtime-indicator work for this agent,
+        then move the indicator. Adapters override
+        ``_reposition_runtime_state``."""
+        async with self._runtime_lock(channel_id, agent_name):
+            await self._reposition_runtime_state(channel_id, agent_name, thread_root_id)
+
+    async def _apply_runtime_state(
         self,
         channel_id: str,
         agent_name: str,
@@ -192,6 +268,69 @@ class CollaborationAdapter(ABC):
             )
         else:
             await self.send_typing(channel_id, agent_name, False)
+
+    def agents_with_live_runtime_state(self, channel_id: str) -> list[str]:
+        """Agents with a runtime indicator currently posted in this channel.
+
+        Cheap and synchronous so a caller can skip the work of deciding whether
+        a message warrants a move when there is nothing to move."""
+        return [
+            agent_name
+            for (posted_channel, agent_name) in self._working_msg
+            if posted_channel == channel_id
+        ]
+
+    async def _reposition_runtime_state(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Move the agent's live runtime indicator to follow the latest message.
+
+        Called when a message the agent is party to has just crossed the bridge,
+        so the indicator no longer sits below the conversation it belongs to.
+        The replacement is posted *before* the original is removed: the
+        indicator is therefore never briefly absent, and a failed repost leaves
+        the original in place rather than clearing it.
+
+        ``thread_root_id`` is the thread that message belonged to, and is where
+        the indicator lands — so it follows the agent between threads (and back
+        out to the channel root) rather than being stranded in whichever thread
+        the turn happened to start in.
+
+        Runs under the agent's runtime lock, so the tracked indicator cannot be
+        cleared or refreshed part-way through.
+
+        Adapters that render runtime state as a typing indicator have nothing
+        positional to move, so the default does nothing.
+        """
+        key = (channel_id, agent_name)
+        live = self._working_msg.get(key)
+        if live is None:
+            return
+
+        ref = await self.send_message(channel_id, agent_name, live.body, thread_root_id)
+        if ref is None:
+            logger.warning(
+                "Could not repost the runtime indicator for %s in %s; leaving it "
+                "at its current position",
+                agent_name,
+                channel_id,
+            )
+            return
+
+        self._working_msg[key] = replace(
+            live, message_ref=ref, thread_root_id=thread_root_id
+        )
+        await self._remove_runtime_indicator(channel_id, live.message_ref)
+
+    async def _remove_runtime_indicator(
+        self, channel_id: str, message_ref: str
+    ) -> None:
+        """Delete a superseded runtime indicator.
+
+        Separate from ``delete_message`` so an adapter whose delete raises can
+        keep a failed cleanup from tearing down the turn — the worst case is a
+        duplicate indicator, which is visible, rather than a broken turn."""
+        await self.delete_message(channel_id, message_ref)
 
     @staticmethod
     def _deeplink_suffix(deeplink_url: str | None) -> str:
@@ -271,6 +410,17 @@ class CollaborationAdapter(ABC):
         server + team + channel name."""
         return None
 
+    async def home_deeplink(self) -> str | None:
+        """Link that opens this bridge's *workspace* — the Slack workspace, the
+        Discord guild, the Mattermost team — rather than one channel within it.
+        None when the platform has no such link or it cannot be built.
+
+        The bridge-level counterpart to :meth:`channel_deeplink`, for offering
+        "open the messaging app" next to the bridge itself. Built from the
+        connection config, which never leaves the server; only the resulting
+        URL is exposed."""
+        return None
+
     @abstractmethod
     async def get_channel_type(self, channel_id: str) -> ChannelType: ...
 
@@ -303,6 +453,17 @@ class CollaborationAdapter(ABC):
 
     @abstractmethod
     def translate_inbound(self, raw_message: str) -> str: ...
+
+    def prime_mention_targets(self, targets: dict[str, str]) -> None:
+        """Supply known ``username -> external user id`` pairs for this bridge.
+
+        Called on startup with every external user on the bridge, and again as
+        new ones are provisioned. Platforms that address people by an opaque id
+        (Slack's ``<@U…>``) need the mapping to render an outbound ``@name`` as
+        a real mention; without it the name goes out as plain text and the
+        person is never notified. Default is a no-op, since platforms that
+        mention by handle (Mattermost) need no mapping at all."""
+        return None
 
     async def ensure_channel_subscriptions(
         self, channels: list[tuple[str, str]]

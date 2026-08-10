@@ -1,3 +1,4 @@
+import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { generateSessionName } from './name-generation/generateSessionName';
@@ -12,6 +13,24 @@ export const sessionController = createRPCController({
   hydrateSession,
   dehydrateSession,
   markSessionSeen,
+  /**
+   * Tell the main process which session the user is looking at.
+   *
+   * Attachment is capped per remote host, and the focused session is the one
+   * that must always have a terminal: it is pinned against eviction and
+   * attached on demand. Pass null when leaving the session view.
+   */
+  async focusSession(sessionId: string | null) {
+    remoteAttachmentPool.setFocused(sessionId);
+  },
+  /** Attach a session's terminal on request — the detached state's Attach button. */
+  async attachSession(sessionId: string) {
+    return remoteAttachmentPool.requestAttach(sessionId, 'user');
+  },
+  /** Close a session's terminal, leaving its agent running on the VM. */
+  async detachSession(sessionId: string) {
+    await remoteAttachmentPool.requestDetach(sessionId);
+  },
   async createSession(params: CreateSessionParams) {
     return sessionService.createSession(params);
   },

@@ -68,6 +68,25 @@ export function hostBlockedReason(reachability: HostReachability): string {
   }`;
 }
 
+/**
+ * Raised when host-dependent work is attempted against a host known to be
+ * unreachable. Carries the reachability record so callers (and the UI) can
+ * render the modeled state rather than re-deriving it from a transport error.
+ *
+ * It lives with the model rather than with the service that throws it so that
+ * anything holding an error — including the RPC logging chokepoint — can
+ * recognise it without pulling in the service and its persistence.
+ */
+export class HostUnreachableError extends Error {
+  readonly reachability: HostReachability;
+
+  constructor(reachability: HostReachability) {
+    super(hostBlockedReason(reachability));
+    this.name = 'HostUnreachableError';
+    this.reachability = reachability;
+  }
+}
+
 export function unknownHostReachability(sshHost: string): HostReachability {
   return {
     sshHost,

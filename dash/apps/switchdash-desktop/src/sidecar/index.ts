@@ -27,7 +27,7 @@ import {
 } from './sidecar-paths';
 import { defaultRoomConnectionFactory, SidecarRuntime } from './sidecar-runtime';
 import { SidecarStateStore } from './sidecar-state';
-import { SIDECAR_VERSION } from './sidecar-version';
+import { SIDECAR_CONTROL, SIDECAR_VERSION } from './sidecar-version';
 import { exactTmuxTarget, parseAgentTmuxSessionName } from './vm-tmux';
 
 /**
@@ -380,6 +380,11 @@ async function main(): Promise<void> {
     token: server.getToken(),
     hash: bundleHash,
     version: SIDECAR_VERSION,
+    // What this sidecar speaks, declared in the file the client already reads
+    // (CHOO-1865). The version above says only which release this is;
+    // compatibility is this. A sidecar deployed before it existed omits the
+    // field, and the client must read that as unknown rather than as agreement.
+    contract: { speaks: SIDECAR_CONTROL.speaks, accepts: SIDECAR_CONTROL.accepts },
     epoch: store.epoch,
     pid: process.pid,
   })}\n`;

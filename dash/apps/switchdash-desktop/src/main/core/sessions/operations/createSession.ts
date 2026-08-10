@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@switchdash/shared';
 import { eq, sql } from 'drizzle-orm';
+import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
 import { db } from '@main/db/client';
@@ -65,7 +66,15 @@ export async function createSession(
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);
 
-    await built.agent.start(session, params.initialSize, false, params.initialPrompt);
+    if (params.attach === false && isAttachableRuntime(built.agent)) {
+      // Adopting a session the VM already started: the agent is running in its
+      // tmux pane, so only the sidecar and its shared relay are needed. Opening
+      // a terminal for each adopted session would put a whole host's worth of
+      // channels on one transport in a single reconcile pass.
+      await built.agent.ensureAttachable(session);
+    } else {
+      await built.agent.start(session, params.initialSize, false, params.initialPrompt);
+    }
   } catch (e) {
     await db.delete(sessions).where(eq(sessions.id, params.id));
     return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
