@@ -143,6 +143,20 @@ ls .switch/agents/*.json 2>/dev/null
   `select_agent`. Only add another if the user actually wants a choice at
   session start.
 
+**Also check the environment, because it silently wins.** The runtime takes a
+complete `SWITCH_*` environment ahead of the store, so a shell that already
+exports one makes everything this skill writes inert — the session runs as
+whatever that environment names, with no warning:
+
+```bash
+printenv SWITCH_API_ENDPOINT SWITCH_API_TOKEN SWITCH_AGENT_ID
+```
+
+If all three are set, tell the user before going further: either they are
+already configured and don't need this skill, or those variables are leaking in
+from somewhere (a switchdash-spawned terminal exports them) and Codex must be
+started from a shell without them for the store to be used at all.
+
 If entries exist for **different Switch servers**, say so plainly: the runtime
 **refuses to start** in that case, because the operation catalog is fetched
 before the handshake and picking a server arbitrarily would bootstrap a tool
