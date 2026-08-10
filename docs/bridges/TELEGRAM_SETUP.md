@@ -44,6 +44,17 @@ ever see messages that reply to them directly, this is why.
 > Privacy mode is read when the bot **joins** a chat. If the bot was already in a
 > group when you changed the setting, remove it and add it back.
 
+To check the current setting without leaving the terminal:
+
+```bash
+curl -s "https://api.telegram.org/bot<your-token>/getMe" | grep -o '"can_read_all_group_messages":[a-z]*'
+```
+
+`true` means privacy mode is off and the bridge can see the conversation. The
+bridge checks this itself at startup and logs a warning naming the fix when it
+is still on, so a bridge that has quietly gone deaf says so in the logs rather
+than just looking idle.
+
 ## 3. Add the bot to a group or channel
 
 Add the bot as you would any member, then **promote it to administrator**. It

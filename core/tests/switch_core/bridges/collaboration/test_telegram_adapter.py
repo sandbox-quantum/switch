@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import patch
 
@@ -1184,16 +1185,25 @@ class _FakeUpdater:
 
 
 class _FakeApplication:
-    def __init__(self) -> None:
+    def __init__(self, *, can_read_all_group_messages: bool = True) -> None:
         self.bot = _FakeBot()
         self.updater = _FakeUpdater()
         self.handlers: list[Any] = []
         self.started = False
         self.shut_down = False
+        self._can_read_all = can_read_all_group_messages
         self.bot.get_me = self._get_me  # type: ignore[attr-defined]
 
     async def _get_me(self) -> Any:
-        return type("_Me", (), {"id": BOT_USER_ID, "username": BOT_USERNAME})()
+        return type(
+            "_Me",
+            (),
+            {
+                "id": BOT_USER_ID,
+                "username": BOT_USERNAME,
+                "can_read_all_group_messages": self._can_read_all,
+            },
+        )()
 
     def add_handler(self, handler: Any) -> None:
         self.handlers.append(handler)
@@ -1240,6 +1250,45 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
     assert app.updater.polling_kwargs == {
         "allowed_updates": ["message", "channel_post", "my_chat_member"]
     }
+
+
+def test_privacy_mode_is_announced_at_startup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # BotFather enables it by default, and in that state the bridge starts
+    # cleanly and then appears to ignore the conversation. getMe reports the
+    # setting, so the degradation is disclosed rather than left to be deduced
+    # from an empty channel (CHOO-1686).
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication(can_read_all_group_messages=False)
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with caplog.at_level(logging.WARNING):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert "privacy mode is ENABLED" in caplog.text
+    assert "/setprivacy" in caplog.text
+    # The setting is only read on join, so re-adding is part of the fix.
+    assert "add it back" in caplog.text
+    # Still starts: it is degraded, not broken.
+    assert app.updater.polling_kwargs is not None
+
+
+def test_no_privacy_warning_when_the_bot_can_see_the_conversation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication(can_read_all_group_messages=True)
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with caplog.at_level(logging.WARNING):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert "privacy mode" not in caplog.text
 
 
 def test_stopping_shuts_the_application_down() -> None:

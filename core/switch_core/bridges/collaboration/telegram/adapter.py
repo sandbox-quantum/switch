@@ -137,11 +137,35 @@ class TelegramAdapter(CollaborationAdapter):
                 self._bot_username,
                 me.username,
             )
+        self._warn_if_privacy_mode_hides_traffic(me)
         await app.start()
         if app.updater is None:
             raise RuntimeError("Telegram application was built without an updater")
         await app.updater.start_polling(allowed_updates=_ALLOWED_UPDATES)
         logger.info("Telegram adapter connected as @%s (id %s)", me.username, me.id)
+
+    @staticmethod
+    def _warn_if_privacy_mode_hides_traffic(me: Any) -> None:
+        """Say so when the bot is configured to see almost nothing.
+
+        BotFather enables privacy mode by default, and a bot in that state
+        receives only `/`-prefixed messages, replies to itself and service
+        messages — so a bridge starts cleanly, provisions rooms, and then
+        appears to ignore the conversation, with nothing anywhere saying why.
+        getMe reports the setting, so the degradation is announced at startup
+        instead of being left for someone to deduce from an empty channel.
+        """
+        if getattr(me, "can_read_all_group_messages", False):
+            return
+        logger.warning(
+            "Telegram privacy mode is ENABLED for @%s: the bridge will NOT "
+            "receive ordinary group messages, only /commands and replies to "
+            "itself. Agents will look unresponsive. Disable it in BotFather "
+            "(/setprivacy -> select the bot -> Disable), then remove the bot "
+            "from each group and add it back — the setting is only read when "
+            "the bot joins.",
+            me.username,
+        )
 
     def _make_on_update(self) -> Callable[[Any, Any], Coroutine[Any, Any, None]]:
         async def on_update(update: Any, _context: Any) -> None:
@@ -675,6 +699,10 @@ class TelegramAdapter(CollaborationAdapter):
     # ── Update handling ──────────────────────────────────────────────────────
 
     async def _handle_update(self, update: Any) -> None:
+        # What Telegram actually delivered. With privacy mode on, the absence
+        # of a line here for a message someone can see in the chat is the whole
+        # diagnosis, so it is worth being able to turn on.
+        logger.debug("Telegram update received: %s", update)
         chat_member = getattr(update, "my_chat_member", None)
         if chat_member is not None:
             await self._handle_my_chat_member(chat_member)
