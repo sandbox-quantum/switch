@@ -1,6 +1,31 @@
 import type { DependencyDescriptor } from '@switchdash/core/deps/runtime';
 
 /**
+ * `apt-get -y` is not enough to make an install unattended.
+ *
+ * `-y` answers apt's own questions. It does not reach the hooks apt runs
+ * afterwards, each of which has its own frontend and will happily open a dialog
+ * on the terminal we attached:
+ *
+ * - **needrestart** draws a whiptail box ("Pending kernel upgrade", then
+ *   "Daemons using outdated libraries") and waits for a keypress. This is not
+ *   hypothetical — it is what left `gh` installed but `apt-get` never exiting on
+ *   a real host, holding `/var/lib/dpkg/lock-frontend` until it was killed by
+ *   hand. Every later install then failed with "Could not get lock", blaming a
+ *   lock our own tooling was holding.
+ * - **debconf** prompts for package configuration.
+ * - **dpkg** prompts when a config file we do not own has changed.
+ *
+ * Nobody can answer any of those, so all three are silenced rather than left to
+ * hang a step forever.
+ */
+const APT = 'sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get';
+
+function aptInstall(packages: string): string {
+  return `${APT} update && ${APT} install -y -o Dpkg::Options::=--force-confold ${packages}`;
+}
+
+/**
  * Core host tools a remote host needs to run switchdash agent sessions: the same
  * binaries the remote-session preflight verifies (tmux, node, git) plus gh, which
  * agents commonly rely on. Unlike agent dependencies (built from the plugin
@@ -24,7 +49,7 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
       linux: [
         {
           method: 'apt',
-          command: 'sudo apt-get update && sudo apt-get install -y git',
+          command: aptInstall('git'),
           recommended: true,
         },
       ],
@@ -42,7 +67,7 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
       linux: [
         {
           method: 'apt',
-          command: 'sudo apt-get update && sudo apt-get install -y tmux',
+          command: aptInstall('tmux'),
           recommended: true,
         },
       ],
@@ -89,7 +114,8 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
         {
           method: 'apt',
           command:
-            'sudo mkdir -p -m 755 /etc/apt/keyrings && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install -y gh',
+            'sudo mkdir -p -m 755 /etc/apt/keyrings && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && ' +
+            aptInstall('gh'),
           label: 'apt',
           recommended: true,
         },

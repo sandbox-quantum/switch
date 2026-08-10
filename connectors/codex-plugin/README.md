@@ -29,7 +29,7 @@ The config holds **no secret**. It names the variables the runtime needs under
   "mcpServers": {
     "switch": {
       "command": "npx",
-      "args": ["-y", "@sandbox-quantum/switch-agent-runtime@0.1.4"],
+      "args": ["-y", "@sandbox-quantum/switch-agent-runtime@0.1.6"],
       "env_vars": ["SWITCH_API_ENDPOINT", "SWITCH_API_TOKEN", "SWITCH_AGENT_ID", "…"],
       "startup_timeout_sec": 60
     }

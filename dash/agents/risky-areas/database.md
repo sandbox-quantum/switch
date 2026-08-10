@@ -130,9 +130,8 @@ guidance.
 
 | Column | Schema file |
 |--------|-------------|
-| `workspaces.config` | `src/shared/core/workspaces/workspace-config.ts` |
-| `workspaces.data` | `src/shared/core/workspaces/workspace-provider-data.ts` |
-| `conversations.config` | `src/shared/core/conversations/conversation-config.ts` |
+| `agents.provider_config` | `src/shared/core/agents/agent-provider-config.ts` |
+| `sessions.config` | `src/shared/core/sessions/session-config.ts` |
 
 ### Snapshot columns and raw SQL
 

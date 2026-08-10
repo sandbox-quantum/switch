@@ -1,12 +1,14 @@
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
 import { log } from '@main/lib/logger';
+import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LocalGhAuthStatus, probeLocalGhAuth, startLocalGhAuth } from './local-gh-auth';
 import { getRemoteSwitchSetupService } from './remote-switch-setup';
 import { switchSetupService } from './switch-setup-service';
 
 export const switchSetupController = createRPCController({
-  listOnboardable: () => switchSetupService.listOnboardable(),
+  /** Every Switch-capable agent type on this machine, usable or not. */
+  listAgentTypeAvailability: () => switchSetupService.listAgentTypeAvailability(),
 
   /** Whether this machine can fetch the MCP runtime from GitHub Packages. */
   getLocalGhAuth: (): Promise<LocalGhAuthStatus> => probeLocalGhAuth(),
@@ -14,20 +16,39 @@ export const switchSetupController = createRPCController({
   /** Interactive `gh` login/refresh on this machine; returns a PTY session id. */
   startLocalGhAuth: (): Promise<{ sessionId: string }> => startLocalGhAuth(),
   /**
-   * Agent types installed on a remote host. An unreachable host has no
-   * answerable list, so return none rather than throwing: this is a query that
-   * paints UI, and its caller renders the host-unreachable state alongside it,
-   * so the degraded result is disclosed. Throwing surfaced an ordinary,
-   * expected condition as an unhandled handler error with a stack trace.
+   * Every Switch-capable agent type on a remote host, usable or not.
+   *
+   * An unreachable host has no answerable list, so return none rather than
+   * throwing: this is a query that paints UI, and its caller renders the
+   * host-unreachable state alongside it, so the degraded result is disclosed.
+   * Throwing surfaced an ordinary, expected condition as an unhandled handler
+   * error with a stack trace.
    */
-  listOnboardableRemote: async (sshHost: string) => {
+  listAgentTypeAvailabilityRemote: async (sshHost: string): Promise<AgentTypeAvailability[]> => {
     if (hostReachabilityService.isBlocked(sshHost)) {
-      log.warn('switchSetup.listOnboardableRemote: host unreachable — no agent types', { sshHost });
+      log.warn('switchSetup.listAgentTypeAvailabilityRemote: host unreachable — no agent types', {
+        sshHost,
+      });
       return [];
     }
     const service = await getRemoteSwitchSetupService(sshHost);
     const statuses = await service.listAgentTypeStatuses();
-    return statuses.filter((s) => s.installed).map((s) => ({ agentId: s.agentId }));
+    return statuses.map((status) => {
+      if (!status.supported) {
+        return {
+          agentId: status.agentId,
+          available: false,
+          blockedReason: `switchdash cannot manage this agent type on ${sshHost}.`,
+        };
+      }
+      return status.installed
+        ? { agentId: status.agentId, available: true, blockedReason: null }
+        : {
+            agentId: status.agentId,
+            available: false,
+            blockedReason: `Its Switch connector is not installed on ${sshHost}.`,
+          };
+    });
   },
   getStatus: (agentId: string) => switchSetupService.getStatus(agentId),
   checkForUpdates: (agentId: string) => switchSetupService.checkForUpdates(agentId),

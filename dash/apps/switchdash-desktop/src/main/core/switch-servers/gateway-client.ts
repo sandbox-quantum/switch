@@ -1,15 +1,24 @@
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
+import {
+  managedServerHostBlocked,
+  managedServerStoppedPhase,
+} from '@main/core/managed-switch-server/managed-server-status';
+import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
   AddressingPolicy,
+  BridgeConfigField,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
+  RemoteBridgeType,
   RemoteExternalUser,
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
   SwitchAuthConfig,
   SwitchServer,
+  SwitchServerDeclaration,
   SwitchUser,
 } from '@shared/core/switch-servers/switch-servers';
 import { reauthenticateManagedServer, refreshSession } from './auth';
@@ -136,6 +145,22 @@ async function gatewayFetch(
   path: string,
   options: FetchOptions
 ): Promise<Response> {
+  // A remote-managed server's gateway is only reachable through the SSH forward.
+  // Once the host is known unreachable the forward is dead, so a fetch can only
+  // hang for its timeout and then report `Could not reach http://localhost:<port>`
+  // — a local address that was never the problem. Fail with the modeled host
+  // state instead, at the one point every gateway call passes through.
+  const blocked = managedServerHostBlocked(server);
+  if (blocked) throw new HostUnreachableError(blocked);
+
+  // Same argument one level down: a managed stack that is stopped has no
+  // gateway listening, so every call to it can only time out and report a port
+  // that was never the problem — and the session renewal on the way there
+  // warns about the same absence a second time. Report the lifecycle state the
+  // user is already looking at instead.
+  const stopped = managedServerStoppedPhase(server);
+  if (stopped) throw new ManagedServerStoppedError(server, stopped);
+
   const sendOnce = async (cookie: string | null): Promise<Response> => {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (options.body !== undefined) {
@@ -204,10 +229,42 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
   };
 }
 
-type UserResponseJson = { id: string; name: string; email: string; role: string };
+type ServerDeclarationJson = {
+  version: string | null;
+  contracts: Record<string, { speaks: number; accepts: number }>;
+};
+
+type UserResponseJson = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  server?: ServerDeclarationJson | null;
+};
+
+/**
+ * A server declaration, or null when this server did not make one.
+ *
+ * Validated rather than trusted: a malformed block reads as *unknown* instead
+ * of a half-populated declaration, because a version we invented is worse than
+ * one we admit we do not have (CHOO-1865).
+ */
+function mapServerDeclaration(raw: unknown): SwitchServerDeclaration | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const candidate = raw as Partial<ServerDeclarationJson>;
+  if (typeof candidate.contracts !== 'object' || candidate.contracts === null) return null;
+  const version = typeof candidate.version === 'string' ? candidate.version : null;
+  return { version, contracts: candidate.contracts };
+}
 
 function mapUser(json: UserResponseJson): SwitchUser {
-  return { id: json.id, name: json.name, email: json.email, role: json.role };
+  return {
+    id: json.id,
+    name: json.name,
+    email: json.email,
+    role: json.role,
+    server: mapServerDeclaration(json.server ?? null),
+  };
 }
 
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
@@ -484,6 +541,7 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
     display_name: string;
     status: string;
     is_default?: boolean;
+    home_url?: string | null;
   }>;
   return json.map((b) => ({
     id: b.bridge_id,
@@ -491,7 +549,110 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
     displayName: b.display_name,
     status: b.status,
     isDefault: b.is_default ?? false,
+    homeUrl: b.home_url ?? null,
   }));
+}
+
+/** Field names that hold a credential and must be masked on input. Mirrors the
+ * operator dashboard's `isSecretField`, widened to catch `*_private_key` (the
+ * Teams bridge's Graph encryption key), which its bare `api_key` alternation
+ * misses. */
+const SECRET_FIELD_RE = /token|password|secret|api[_-]?key|private[_-]?key|credential/i;
+
+/** JSON Schema as Pydantic's `model_json_schema()` emits it for a bridge config. */
+type BridgeConfigSchema = {
+  properties?: Record<string, { title?: string; description?: string; format?: string }>;
+  required?: string[];
+};
+
+function humanizeFieldKey(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function toConfigFields(schema: BridgeConfigSchema): BridgeConfigField[] {
+  const required = new Set(schema.required ?? []);
+  // Object key order follows the Pydantic model's field order, which puts the
+  // required credentials before the optional tuning knobs — worth preserving,
+  // so the form reads the way the platform's setup docs do.
+  return Object.entries(schema.properties ?? {}).map(([key, prop]) => ({
+    key,
+    label: prop.title ?? humanizeFieldKey(key),
+    description: prop.description ?? null,
+    required: required.has(key),
+    secret: prop.format === 'password' || SECRET_FIELD_RE.test(key),
+  }));
+}
+
+/**
+ * The bridge types a server can register, with the credential fields each needs
+ * (`GET /collaborations/types`).
+ *
+ * The field list is the server's to define — switch-core derives it from the
+ * adapter's own config model — so the attach form is generated from this rather
+ * than hard-coded per platform. A server running a newer switch-core that adds
+ * a bridge type, or a field to an existing one, works without an app release.
+ *
+ * Every schema-visible field is a string today (the sole int, the Teams listen
+ * port, is `SkipJsonSchema`), so values are collected as strings and the server
+ * coerces.
+ */
+export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBridgeType[]> {
+  const res = await gatewayFetch(server, '/collaborations/types', { authenticated: true });
+  const json = (await res.json()) as Array<{
+    key: string;
+    config_schema: BridgeConfigSchema;
+  }>;
+  return json.map((t) => ({ key: t.key, fields: toConfigFields(t.config_schema ?? {}) }));
+}
+
+/**
+ * Register a collaboration bridge on `server` (admin-only
+ * `POST /collaborations`), optionally making it the default for new rooms.
+ *
+ * The server validates the credentials against the adapter's config model,
+ * mints the bridge's Matrix client, persists it and **starts the adapter
+ * immediately** — there is no stack restart and no config file to write, so
+ * live sessions and connected agents are unaffected.
+ *
+ * `connectionConfig` holds platform credentials. Do not log it, do not return
+ * it to the renderer, and do not fold it into an error message: `GatewayError`
+ * quotes the *response* body only, never the request.
+ */
+export async function createBridge(
+  server: SwitchServer,
+  params: {
+    bridgeType: string;
+    displayName: string;
+    connectionConfig: Record<string, string>;
+    setAsDefault: boolean;
+  }
+): Promise<RemoteBridge> {
+  const res = await gatewayFetch(server, '/collaborations', {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      bridge_type: params.bridgeType,
+      display_name: params.displayName,
+      connection_config: params.connectionConfig,
+      set_as_default: params.setAsDefault,
+    },
+  });
+  const b = (await res.json()) as {
+    bridge_id: string;
+    bridge_type: string;
+    display_name: string;
+    status: string;
+    is_default?: boolean;
+    home_url?: string | null;
+  };
+  return {
+    id: b.bridge_id,
+    type: b.bridge_type,
+    displayName: b.display_name,
+    status: b.status,
+    isDefault: b.is_default ?? false,
+    homeUrl: b.home_url ?? null,
+  };
 }
 
 /**

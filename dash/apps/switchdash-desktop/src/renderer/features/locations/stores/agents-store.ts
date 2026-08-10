@@ -53,6 +53,34 @@ export class AgentsStore {
     });
   }
 
+  /** One agent by id, across every location — the palette resolves an agent's
+   *  provider from a search hit this way, so it can show the same provider mark
+   *  the sidebar does. */
+  agentById(agentId: string): Agent | null {
+    for (const agents of this.byLocation.values()) {
+      const found = agents.find((a) => a.id === agentId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * This install's agents that are registered on a given Switch server, i.e.
+   * the ones switchdash can actually act on there. The room views list and
+   * offer these and no others: an agent registered on some other switchdash
+   * cannot be shown under a room or driven from here, so offering it would
+   * promise something this app cannot deliver.
+   */
+  agentsOnServer(serverId: string): Agent[] {
+    const matching: Agent[] = [];
+    for (const agents of this.byLocation.values()) {
+      for (const agent of agents) {
+        if (agent.serverId === serverId && agent.switchAgentId) matching.push(agent);
+      }
+    }
+    return matching.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   /** The Switch server a location's agents belong to, or null if unlinked. */
   serverIdForLocation(locationId: string): string | null {
     const agents = this.byLocation.get(locationId);

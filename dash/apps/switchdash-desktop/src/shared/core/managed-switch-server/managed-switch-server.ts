@@ -25,17 +25,36 @@ export type DockerAvailability =
  *   not be restarted against the older pin.
  * - `unknown` — one of the two is not a comparable semver. Neither direction can
  *   be proven, so it is surfaced rather than assumed safe.
+ * - `unreadable` — the deployed version could not be read at all. Distinct from
+ *   "matches" on purpose (CHOO-1865): a probe that failed and a stack that is
+ *   in step used to be the same empty result, so a host we could not read
+ *   rendered as healthy. Unknown must never look like fine.
  */
-export type SwitchVersionDriftDirection = 'upgrade' | 'downgrade' | 'unknown';
+export type SwitchVersionDriftDirection = 'upgrade' | 'downgrade' | 'unknown' | 'unreadable';
 
-/** A mismatch between the deployed switch-core version and this build's pin. */
-export type SwitchVersionDrift = {
-  /** The version the stack is actually deployed at. */
-  deployed: string;
-  /** The version this build of switchdash pins. */
-  expected: string;
-  direction: SwitchVersionDriftDirection;
-};
+/**
+ * A mismatch between the deployed switch-core version and this build's pin.
+ *
+ * A union rather than one shape with nullable fields, so the invariant is the
+ * compiler's to keep: there is a deployed version in every case except the one
+ * where reading it is what failed.
+ */
+export type SwitchVersionDrift =
+  | {
+      /** The version the stack is actually deployed at. */
+      deployed: string;
+      /** The version this build of switchdash pins. */
+      expected: string;
+      direction: 'upgrade' | 'downgrade' | 'unknown';
+    }
+  | {
+      /** Null because the deployed version is exactly what could not be read. */
+      deployed: null;
+      expected: string;
+      direction: 'unreadable';
+      /** What failed, so the user is told more than "something did". */
+      reason: string;
+    };
 
 /**
  * Why a downgrade is refused, in one message — shared by the main process (as
@@ -70,6 +89,36 @@ export type LocalServerStatus = {
   /** Populated only when `phase === 'error'`. */
   error: string | null;
 };
+
+/**
+ * Raised when a call is made to a switchdash-managed server whose stack is not
+ * running. The gateway only exists while the stack is up, so reaching for it
+ * from a stopped one can only produce a transport error naming a local port
+ * that was never the problem — this reports the lifecycle state instead.
+ *
+ * It lives with the model, next to the phase it carries, so anything holding an
+ * error — including the RPC logging chokepoint — can recognise it without
+ * importing the supervisors or Docker.
+ */
+export class ManagedServerStoppedError extends Error {
+  readonly serverId: string;
+  readonly phase: LocalServerPhase;
+
+  constructor(server: { id: string; name: string }, phase: LocalServerPhase) {
+    super(managedServerStoppedReason(server.name, phase));
+    this.name = 'ManagedServerStoppedError';
+    this.serverId = server.id;
+    this.phase = phase;
+  }
+}
+
+/** Human-readable one-liner for a stopped managed stack, used in errors and the UI. */
+export function managedServerStoppedReason(serverName: string, phase: LocalServerPhase): string {
+  if (phase === 'error') {
+    return `${serverName}'s Switch stack failed to start, so its gateway is not running. Fix the error on the server's page, then start it again.`;
+  }
+  return `${serverName}'s Switch stack is not running. Start it from the server's page, then retry.`;
+}
 
 /** Outcome of a start request. `docker-unavailable` and `version-downgrade` are
  * separated from generic errors so the UI can point the user at installing /

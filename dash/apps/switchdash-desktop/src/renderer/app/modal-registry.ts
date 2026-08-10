@@ -2,12 +2,14 @@ import { CommandPaletteModal } from '@renderer/features/command-palette/command-
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
+import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';
 import { AddAgentsToRoomModal } from '@renderer/features/switch-rooms/AddAgentsToRoomModal';
 import { AddServerModal } from '@renderer/features/switch-servers/AddServerModal';
 import { AssignServerModal } from '@renderer/features/switch-servers/assign-server-modal';
+import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { CreateRoomModal } from '@renderer/features/switch-servers/CreateRoomModal';
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
@@ -56,6 +58,7 @@ export const modalRegistry = {
   }),
   deleteSessionModal: createModal(DeleteSessionModal, { size: 'sm' }),
   addServerModal: createModal(AddServerModal, { size: 'md', dismissOnOutsideClick: false }),
+  addHostModal: createModal(AddHostModal, { size: 'md', dismissOnOutsideClick: false }),
   assignServerModal: createModal(AssignServerModal, { size: 'sm', dismissOnOutsideClick: false }),
   renameServerModal: createModal(RenameServerModal, {
     size: 'xs',
@@ -63,6 +66,10 @@ export const modalRegistry = {
   }),
   deleteServerModal: createModal(DeleteServerModal, { size: 'sm' }),
   createRoomModal: createModal(CreateRoomModal, { size: 'md', dismissOnOutsideClick: false }),
+  connectMessagingAppModal: createModal(ConnectMessagingAppModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   addAgentsToRoomModal: createModal(AddAgentsToRoomModal, {
     size: 'sm',
     dismissOnOutsideClick: false,

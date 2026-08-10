@@ -27,11 +27,13 @@ export const LocationMainPanel = observer(function LocationMainPanel() {
     return <PendingLocationStatus location={store} />;
   }
 
-  // A blocked host outranks every other failure state: the location cannot
-  // bootstrap, mount, or find its path while its host is down, and showing the
-  // downstream symptom instead of the cause is what CHOO-1682 is about.
+  // A blocked host outranks every other view state, mounted included (CHOO-1682).
+  // A location that mounted before its host went down is still backed by nothing:
+  // its sessions, settings writes and sidecar controls all ride the SSH transport,
+  // so leaving the tabs up offers actions that can only fail. The panel names the
+  // cause instead, and the pane comes back on its own when the host does.
   const sshHost = store?.data?.sshHost ?? null;
-  if (sshHost && hostReachabilityStore.isBlocked(sshHost) && kind !== 'ready') {
+  if (sshHost && hostReachabilityStore.isBlocked(sshHost)) {
     return <HostUnreachablePanel reachability={hostReachabilityStore.get(sshHost)} />;
   }
 

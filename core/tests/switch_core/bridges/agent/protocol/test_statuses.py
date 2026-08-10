@@ -5,6 +5,7 @@ from typing import Any
 
 from switch_core.bridges.agent.protocol.connections import (
     PROTOCOL_VERSION,
+    ClientDeclaration,
     ConnectionRegistry,
 )
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
@@ -42,7 +43,7 @@ def _registry(
             delivery_filter="all",
             spawn_capable=spawn_capable,
             cursor=0,
-            protocol_version=PROTOCOL_VERSION,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
         )
         if room is not None:
             registry.claim_room(conn, room)

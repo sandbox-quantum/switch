@@ -4,11 +4,9 @@ import { CommandShortcutBinder } from '@renderer/lib/commands/command-shortcut-b
 import { AppKeyboardShortcuts } from '@renderer/lib/components/app-keyboard-shortcuts';
 import { MonacoKeyboardBridge } from '@renderer/lib/components/monaco-keyboard-bridge';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
-import {
-  useWorkspaceSlots,
-  useWorkspaceWrapParams,
-} from '@renderer/lib/layout/navigation-provider';
+import { useWorkspaceWrapParams } from '@renderer/lib/layout/navigation-provider';
 import { WorkspaceContentLayout, WorkspaceLayout } from '@renderer/lib/layout/workspace-layout';
+import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { Toaster } from '@renderer/lib/ui/toaster';
 
 export function Workspace() {

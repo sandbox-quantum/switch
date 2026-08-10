@@ -270,25 +270,46 @@ describe('switchSetupService.getStatus', () => {
   });
 });
 
-describe('switchSetupService.listOnboardable', () => {
-  it('returns only Switch-supported agent types whose connector is installed', async () => {
+describe('switchSetupService.listAgentTypeAvailability', () => {
+  it('reports a Switch-supported type with its connector installed as available', async () => {
     mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
     mocks.exec.mockImplementation(execImpl('0.1.0'));
     mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
 
-    const onboardable = await switchSetupService.listOnboardable();
-
-    expect(onboardable).toEqual([{ agentId: 'claude' }]);
+    expect(await switchSetupService.listAgentTypeAvailability()).toEqual([
+      { agentId: 'claude', available: true, blockedReason: null },
+    ]);
   });
 
-  it('omits supported agent types whose connector is not installed', async () => {
+  /**
+   * The type is still listed — that is the point of the change (CHOO-1809).
+   *
+   * Dropping it made "not set up here" indistinguishable from "does not exist":
+   * the dropdown simply had one fewer row and the user was left to guess why the
+   * agent they use every day was missing.
+   */
+  it('keeps a type whose connector is not installed, and says why it cannot be used', async () => {
     mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
     mocks.exec.mockImplementation(execImpl(null));
     mocks.readFile.mockImplementation(readFileImpl('0.0.0', '0.1.0'));
 
-    const onboardable = await switchSetupService.listOnboardable();
+    const availability = await switchSetupService.listAgentTypeAvailability();
 
-    expect(onboardable).toEqual([]);
+    expect(availability).toHaveLength(1);
+    expect(availability[0]!).toMatchObject({ agentId: 'claude', available: false });
+    expect(availability[0]!.blockedReason).toBeTruthy();
+  });
+
+  it('never lists an agent type that declares no Switch setup', async () => {
+    // `NONE_AGENT` cannot be onboarded at all, so it is not a thing the user
+    // could fix — listing it greyed out would be noise, not information.
+    mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
+    mocks.exec.mockImplementation(execImpl('0.1.0'));
+    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
+
+    const availability = await switchSetupService.listAgentTypeAvailability();
+
+    expect(availability.map((entry) => entry.agentId)).not.toContain(NONE_AGENT.metadata.id);
   });
 
   // An installed plugin still resolves its MCP server from a private registry
@@ -301,7 +322,7 @@ describe('switchSetupService.listOnboardable', () => {
       'the token cannot read packages',
       { ghInstalled: true, authenticated: true, canReadPackages: false },
     ],
-  ])('offers nothing when %s, even with the connector installed', async (_label, gh) => {
+  ])('makes nothing available when %s, even with the connector installed', async (_label, gh) => {
     mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
     mocks.exec.mockImplementation(execImpl('0.1.0'));
     mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
@@ -312,7 +333,12 @@ describe('switchSetupService.listOnboardable', () => {
       detail: 'nope',
     });
 
-    expect(await switchSetupService.listOnboardable()).toEqual([]);
+    const availability = await switchSetupService.listAgentTypeAvailability();
+
+    expect(availability.every((entry) => !entry.available)).toBe(true);
+    // Blocked for a reason no per-type install would fix, so it has to name the
+    // GitHub access rather than telling the user to install what they have.
+    expect(availability[0]!.blockedReason).toContain('GitHub');
   });
 });
 

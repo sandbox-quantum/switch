@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import {
-  hostBlockedReason,
   type HostReachability,
   type HostReachabilityStatus,
+  HostUnreachableError,
   isHostBlocked,
   unknownHostReachability,
 } from '@shared/core/remote-hosts/reachability';
@@ -59,21 +59,6 @@ type HostEntry = {
   /** In-flight probe, so concurrent callers coalesce onto one round trip. */
   inFlight?: Promise<HostReachability>;
 };
-
-/**
- * Raised when host-dependent work is attempted against a host known to be
- * unreachable. Carries the reachability record so callers (and the UI) can
- * render the modeled state rather than re-deriving it from a transport error.
- */
-export class HostUnreachableError extends Error {
-  readonly reachability: HostReachability;
-
-  constructor(reachability: HostReachability) {
-    super(hostBlockedReason(reachability));
-    this.name = 'HostUnreachableError';
-    this.reachability = reachability;
-  }
-}
 
 export type HostReachabilityChange = {
   previous: HostReachabilityStatus;

@@ -219,8 +219,14 @@ For Drizzle column helpers, use the exported `parseVersionedColumn` and
 
 ## All migrated columns
 
+These are the columns currently bound with `versionedJsonColumn()` in
+`src/main/db/schema.ts`:
+
 | Column | Schema file | Versioning |
 |--------|-------------|------------|
-| `workspaces.config` | `src/shared/core/workspaces/workspace-config.ts` | v1 → v2 → v3 (versioned from start) |
-| `workspaces.data` | `src/shared/core/workspaces/workspace-provider-data.ts` | unversioned (v0) |
-| `conversations.config` | `src/shared/core/conversations/conversation-config.ts` | unversioned (v0) |
+| `agents.provider_config` | `src/shared/core/agents/agent-provider-config.ts` | v1 (versioned from start) |
+| `sessions.config` | `src/shared/core/sessions/session-config.ts` | unversioned (v0) |
+
+The `workspaces.*` and `conversations.config` columns this table used to list are gone —
+both tables were dropped when the location/session model replaced the upstream
+project/workspace/conversation model. See `agents/architecture/data-model.md`.

@@ -5,7 +5,6 @@ import type { SidecarEndpoint } from '@main/core/agent-runtime/impl/remote-sidec
 import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-http';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
-import { HostUnreachableError } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
@@ -18,6 +17,7 @@ import { log } from '@main/lib/logger';
 import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import { makePtyId } from '@shared/core/pty/ptyId';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
 import { getRemoteAgentLocation } from './agent-location';
 import { connectRemoteAgent } from './connect-remote-agent';
@@ -503,6 +503,11 @@ class RemoteSessionReconciler {
       agentId: agent.id,
       title: roomId ? `Switch room ${roomId}` : 'Remote session',
       autoApprove: agent.autoApprove,
+      // The VM is already running this session; adoption only needs the row and
+      // the sidecar relay that reports on it. A terminal is opened when the user
+      // opens the session — a first sync against a busy host would otherwise
+      // spawn one PTY per adopted session in a single pass.
+      attach: false,
     });
     if (!result.success) {
       if (result.error.type === 'already-exists') {

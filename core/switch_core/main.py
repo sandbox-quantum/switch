@@ -86,6 +86,7 @@ from switch_core.matrix_admin import (
     wait_for_homeserver,
 )
 from switch_core.room_service import RoomService
+from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
 
@@ -538,6 +539,9 @@ def main() -> None:
     switch_log_level = os.environ.get("SWITCH_LOG_LEVEL", "INFO").upper()
     logging.getLogger().setLevel(log_level)
     logging.getLogger("switch_core").setLevel(switch_log_level)
+
+    running_version = switch_core_version()
+    logger.info("Starting switch-core %s", running_version or "(version unknown)")
 
     logger.info("Database migrations applied")
 

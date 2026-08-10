@@ -23,10 +23,9 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
   managedServerHostBlocked,
 }));
-vi.mock('@main/core/remote-hosts/host-reachability-service', () => ({
-  HostUnreachableError: class HostUnreachableError extends Error {},
-}));
 vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin: vi.fn() }));
+// Reaches the encrypted secrets store, and through it the database client.
+vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   fetchMe,

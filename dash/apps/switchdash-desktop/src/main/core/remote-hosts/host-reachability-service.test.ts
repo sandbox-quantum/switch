@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HostReachability } from '@shared/core/remote-hosts/reachability';
 import {
-  HostReachabilityService,
+  type HostReachability,
   HostUnreachableError,
-  probeDelayFor,
-} from './host-reachability-service';
+} from '@shared/core/remote-hosts/reachability';
+import { HostReachabilityService, probeDelayFor } from './host-reachability-service';
 
 vi.mock('./reachability-store', () => ({
   listPersistedReachability: vi.fn(async () => []),

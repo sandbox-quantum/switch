@@ -2,7 +2,8 @@
 /**
  * Sync the bundled standalone compose from the repo's source of truth.
  *
- *   node scripts/sync-standalone-compose.mjs
+ *   node scripts/sync-standalone-compose.mjs           # write the bundled copy
+ *   node scripts/sync-standalone-compose.mjs --check   # fail if it is stale
  *
  * Copies deploy/local/standalone-docker-compose.yml (the file the switch-release
  * workflow publishes to GHCR as `standalone-compose:<version>`) into
@@ -11,6 +12,11 @@
  * stays in lockstep with the pinned switch-core release. It reads the repo file
  * directly rather than pulling the OCI artifact so it works offline and before a
  * release exists; the two are identical by construction.
+ *
+ * `--check` exists because nothing verified this had run (CHOO-1865). The two
+ * copies could drift with only a comment asking nicely — which is exactly how
+ * the rename below went unnoticed. It catches both directions: a source change
+ * that was never synced, and a hand-edit to the bundled copy.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -47,6 +53,21 @@ const header = `# BUNDLED COPY — do not hand-edit. This is the standalone comp
 #
 `;
 
-const body = readFileSync(source, 'utf8');
-writeFileSync(dest, header + body, 'utf8');
+const expected = header + readFileSync(source, 'utf8');
+
+if (process.argv.includes('--check')) {
+  const actual = existsSync(dest) ? readFileSync(dest, 'utf8') : null;
+  if (actual !== expected) {
+    console.error(
+      `sync-standalone-compose: ${dest}\n` +
+        'is out of date. Either the source compose changed without re-syncing, or\n' +
+        'the bundled copy was hand-edited. Run `pnpm run sync:compose` and commit.'
+    );
+    process.exit(1);
+  }
+  console.log('Bundled standalone compose is up to date.');
+  process.exit(0);
+}
+
+writeFileSync(dest, expected, 'utf8');
 console.log(`Synced ${source}\n     -> ${dest}`);

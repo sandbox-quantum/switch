@@ -29,9 +29,27 @@ type RemoteShellProfileState =
  * servers cap simultaneous sessions (OpenSSH MaxSessions defaults to 10, and
  * proxies/tunnels can be lower); bursts of parallel probes (dependency checks,
  * plugin status, gh auth) otherwise trip "Channel open failure: open failed".
- * Long-lived PTY channels (execPty) are intentionally not counted here.
+ * Long-lived PTY channels (execPty) are intentionally not counted here — they
+ * would hold a slot for the terminal's whole life. They get their own
+ * open-only semaphore below.
  */
 const MAX_CONCURRENT_EXEC = 4;
+
+/**
+ * Max PTY channel OPENS in flight at once.
+ *
+ * A pty channel is long-lived — it is the interactive terminal — so it cannot
+ * hold an exec slot for its lifetime without starving every command on the
+ * connection. But the *open* is the expensive part on a slow transport, and a
+ * burst of them is what saturates a tunnel: one host re-attaching all its
+ * sessions at once pushed opens past `CHANNEL_OPEN_TIMEOUT_MS` and tripped the
+ * wedge watchdog. The slot is held only until the server answers, then freed
+ * while the channel lives on.
+ *
+ * `RemoteAttachmentPool` already serialises attaches per host; this is the
+ * backstop for every other path that opens a pty.
+ */
+const MAX_CONCURRENT_PTY_OPENS = 2;
 
 /**
  * Deadline for the server to answer a channel open (exec / pty / direct-tcpip
@@ -54,6 +72,10 @@ export class SshClientProxy {
   /** Semaphore state for short-lived exec channels. */
   private activeExec = 0;
   private readonly execQueue: Array<() => void> = [];
+
+  /** Semaphore state for pty channel opens (held across the open only). */
+  private activePtyOpens = 0;
+  private readonly ptyOpenQueue: Array<() => void> = [];
 
   constructor(
     readonly connectionId: string,
@@ -154,6 +176,26 @@ export class SshClientProxy {
     }
   }
 
+  /** Run `fn` once a pty-open slot is free; queues it when at capacity. */
+  private acquirePtyOpenSlot(fn: () => void): void {
+    if (this.activePtyOpens < MAX_CONCURRENT_PTY_OPENS) {
+      this.activePtyOpens++;
+      fn();
+    } else {
+      this.ptyOpenQueue.push(fn);
+    }
+  }
+
+  /** Free a pty-open slot and start the next queued open, if any. */
+  private releasePtyOpenSlot(): void {
+    const next = this.ptyOpenQueue.shift();
+    if (next) {
+      next();
+    } else {
+      this.activePtyOpens = Math.max(0, this.activePtyOpens - 1);
+    }
+  }
+
   /**
    * Guard a channel-open callback with the open deadline. Returns a wrapped
    * callback; when the deadline fires first, `callback` receives an
@@ -241,22 +283,39 @@ export class SshClientProxy {
 
   execPty(command: string, options: ExecOptions, callback: ClientCallback): void {
     // The timeout guards only the channel OPEN; the pty channel itself is
-    // long-lived (it is the interactive terminal).
-    const attempt = (retrying: boolean): void => {
-      this.client.exec(
-        command,
-        options,
-        this.withChannelOpenTimeout('pty', (err, channel) => {
-          if (err && !retrying && this.recoverFromAgentForwardRefusal(err)) {
-            attempt(true);
-            return;
-          }
-          callback(err, channel);
-        })
-      );
-    };
+    // long-lived (it is the interactive terminal). The slot is likewise held
+    // only across the open, so terminals never starve each other once running.
+    this.acquirePtyOpenSlot(() => {
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        this.releasePtyOpenSlot();
+      };
 
-    attempt(false);
+      const attempt = (retrying: boolean): void => {
+        try {
+          this.client.exec(
+            command,
+            options,
+            this.withChannelOpenTimeout('pty', (err, channel) => {
+              if (err && !retrying && this.recoverFromAgentForwardRefusal(err)) {
+                attempt(true);
+                return;
+              }
+              release();
+              callback(err, channel);
+            })
+          );
+        } catch (err) {
+          // e.g. connection not available — surface it, don't leak the slot.
+          release();
+          callback(err as Error, undefined as never);
+        }
+      };
+
+      attempt(false);
+    });
   }
 
   /**
@@ -312,6 +371,13 @@ export class SshClientProxy {
       // Each queued fn re-checks `this.client`, which now throws — the caller
       // gets an immediate error instead of waiting on a slot that never frees.
       this.activeExec++;
+      fn();
+    }
+
+    const queuedPtyOpens = this.ptyOpenQueue.splice(0);
+    this.activePtyOpens = 0;
+    for (const fn of queuedPtyOpens) {
+      this.activePtyOpens++;
       fn();
     }
   }

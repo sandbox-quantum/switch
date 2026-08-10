@@ -1,9 +1,6 @@
 import { session as electronSession } from 'electron';
-import {
-  managedServerSecretsKey,
-  managedServerStateDir,
-} from '@main/core/managed-switch-server/host/host-for-server';
-import { readPersistedPorts } from '@main/core/managed-switch-server/ports';
+import { LOCAL_SERVER_MATTERMOST_USER } from '@main/core/managed-switch-server/constants';
+import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { loadOrCreateSecrets } from '@main/core/managed-switch-server/secrets';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -13,29 +10,9 @@ import {
   mattermostPartition,
   type RoomEmbed,
 } from '@shared/core/switch-rooms/room-embed';
+import { mattermostOriginFor } from './mattermost-origin';
 
 const MATTERMOST_AUTH_COOKIE = 'MMAUTHTOKEN';
-const MATTERMOST_USER = 'user';
-
-/**
- * Where this server's Mattermost is reachable from the desktop, or null when we
- * don't run it. Only managed servers publish Mattermost on a port we chose and
- * hold credentials for; an external server's Mattermost (if any) is somebody
- * else's deployment.
- */
-async function mattermostOriginFor(serverId: string): Promise<string | null> {
-  const server = await getServer(serverId);
-  if (!server?.managed) return null;
-
-  const ports = await readPersistedPorts({ stateDir: managedServerStateDir(server) });
-  if (!ports) return null;
-
-  // Remote-managed stacks publish onto the SSH host's loopback and are reached
-  // through the same forwarded ports the gateway URL already uses, so the
-  // gateway's hostname is the right one to pair with the Mattermost port.
-  const gatewayHost = new URL(server.gatewayUrl).hostname;
-  return `http://${gatewayHost}:${ports.mattermost}`;
-}
 
 /**
  * Log the shared `user` account into Mattermost so the webview's partition
@@ -78,7 +55,7 @@ async function installMattermostSession(origin: string, serverId: string): Promi
     },
     credentials: 'include',
     body: JSON.stringify({
-      login_id: MATTERMOST_USER,
+      login_id: LOCAL_SERVER_MATTERMOST_USER,
       password: secrets.mattermostUserPassword,
     }),
   });

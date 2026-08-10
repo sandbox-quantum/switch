@@ -25,7 +25,12 @@ export type SidebarGrouping = 'agent' | 'room';
 /** Persisted sidebar UI state; fields may be absent in older DB blobs. */
 export type SidebarSnapshot = {
   expandedLocationIds?: string[];
-  locationOrder?: string[];
+  /**
+   * Manual order of the top-level agents in the agent-focused grouping, by
+   * agent id. Superseded `locationOrder`, which keyed the same intent by
+   * location and so could not order two agents sharing one.
+   */
+  agentOrder?: string[];
   sessionOrderByLocation?: Record<string, string[]>;
   sessionSortBy?: SidebarSessionSortBy;
   grouping?: SidebarGrouping;
@@ -39,12 +44,6 @@ export type SidebarSnapshot = {
   collapsedGroupKeys?: string[];
   /** Manual order of the top-level rooms in the room-focused grouping. */
   roomOrder?: string[];
-  /**
-   * Manual order of items within a grouped-view sub-group, keyed by a container
-   * id (e.g. an agent's room group, or a room's per-agent session group). Used by
-   * the grouped views' drag-to-reorder; absent groups fall back to the default sort.
-   */
-  groupOrder?: Record<string, string[]>;
   /**
    * Optional left-sidebar filters. Each dimension is additive and composes with
    * the others (AND across dimensions, OR within one). An empty array / false

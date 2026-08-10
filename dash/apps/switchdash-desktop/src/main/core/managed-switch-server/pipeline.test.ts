@@ -155,6 +155,36 @@ describe('startStack version guard', () => {
     expect(await startStack(opts)).toEqual({ kind: 'started', serverId: 'srv-1' });
   });
 
+  it('says so loudly when it cannot prove the start is not a downgrade', async () => {
+    // An uncomparable pair used to fall into the same "not a downgrade" branch
+    // as a clean match and pass in complete silence (CHOO-1865). It carries the
+    // same risk as a downgrade; we simply cannot prove it, and the log has to
+    // make that difference visible to whoever reads it afterwards.
+    readDeployedVersionMock.mockResolvedValue({
+      kind: 'deployed',
+      version: 'nightly',
+      source: 'container',
+    });
+    const { opts } = options();
+    await startStack(opts);
+
+    expect(logError).toHaveBeenCalledOnce();
+    expect(logError.mock.calls[0]?.[0]).toContain('not comparable');
+  });
+
+  it('stays silent when the versions match, so the log means something', async () => {
+    readDeployedVersionMock.mockResolvedValue({
+      kind: 'deployed',
+      version: '0.11.0',
+      source: 'container',
+    });
+    const { opts } = options();
+    await startStack(opts);
+
+    expect(logError).not.toHaveBeenCalled();
+    expect(logWarn).not.toHaveBeenCalled();
+  });
+
   it('refuses before authenticating to the registry, so nothing off-host happens either', async () => {
     readDeployedVersionMock.mockResolvedValue({
       kind: 'deployed',

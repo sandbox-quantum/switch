@@ -11,7 +11,24 @@ import { marketplaceMatchesSource } from './switch-setup-service';
 
 const EXEC_TIMEOUT_MS = 120_000;
 
+/** POSIX shells use 127 for "command not found". */
+const COMMAND_NOT_FOUND = 127;
+
 type RunResult = { code: number; stdout: string; stderr: string };
+
+/**
+ * Join path segments for the remote host, which is POSIX regardless of what
+ * switchdash is running on. `node:path`'s `join` would emit backslashes on a
+ * Windows desktop and the `cat` would fail on the host.
+ */
+function posixJoin(...segments: string[]): string {
+  return segments
+    .map((segment, index) =>
+      index === 0 ? segment.replace(/\/+$/, '') : segment.replace(/^\/+|\/+$/g, '')
+    )
+    .filter((segment) => segment.length > 0)
+    .join('/');
+}
 
 function unsupported(agentId: string): SwitchSetupStatus {
   return {
@@ -60,10 +77,14 @@ function parseJsonLoose(stdout: string): unknown {
  * Remote counterpart of SwitchSetupService: drives an agent type's
  * plugin-marketplace CLI (`<bin> plugin ...`) on an SSH host to manage its
  * Switch connector plugin, taking the host's verbs, flags and JSON shapes from
- * the same dialect table the local driver uses. Versions come from the CLI's own
- * JSON output (not on-disk manifests) so no SFTP round-trips are needed — which
- * is why a dialect that advertises no versions (Codex) reports "unknown" here
- * rather than "up to date".
+ * the same dialect table the local driver uses.
+ *
+ * Advertised versions come from the CLI's JSON where the dialect reports them,
+ * and otherwise from the marketplace's on-disk manifests — the same two files
+ * the local driver reads, fetched with `cat` over the exec channel already
+ * open. This used to stop at the CLI output, so Codex — whose marketplace
+ * listing carries no plugin versions — could never report an available update
+ * on a remote host, even though the manifests were sitting there.
  */
 export class RemoteSwitchSetupService {
   constructor(private readonly ctx: SshExecutionContext) {}
@@ -96,6 +117,17 @@ export class RemoteSwitchSetupService {
         stdout: e.stdout ?? '',
         stderr: e.stderr ?? e.message ?? '',
       };
+      // A shell reports 127 when the binary is not on PATH. For "is this agent
+      // type's connector installed?" that is the answer, not a fault: a host
+      // without Codex is a normal host. Warning about it filled the log with
+      // failures every time a plan was checked, which trains people to ignore
+      // the warnings that do matter.
+      if (result.code === COMMAND_NOT_FOUND) {
+        log.info('[remote-switch-setup] command not present on host', {
+          cmd: `${bin} ${args.join(' ')}`,
+        });
+        return result;
+      }
       log.warn('[remote-switch-setup] command failed', {
         cmd: `${bin} ${args.join(' ')}`,
         code: result.code,
@@ -111,10 +143,13 @@ export class RemoteSwitchSetupService {
   }
 
   /**
-   * Advertised version from CLI output alone — no SFTP round-trip to read
-   * manifests. Null means "unknown", which callers must not read as up to date;
-   * a dialect that does not report versions for uninstalled plugins always
-   * returns null here.
+   * The version the marketplace advertises, or null when it genuinely cannot be
+   * determined — which callers must not read as "up to date".
+   *
+   * Preferred source is the CLI's own JSON, which costs nothing extra. Codex
+   * does not report versions there, so fall back to the marketplace manifests
+   * on the host: the same path the local driver takes, and dialect-agnostic
+   * because each dialect names its own manifest directories.
    */
   private async advertisedVersion(
     bin: string,
@@ -123,9 +158,38 @@ export class RemoteSwitchSetupService {
     rules: SwitchSetupCliRules
   ): Promise<string | null> {
     const { stdout } = await this.run(bin, ['plugin', 'marketplace', 'list', '--json']);
-    return (
-      rules.parseAdvertisedVersions(parseJsonLoose(stdout), marketplaceName).get(pluginName) ?? null
+    const parsed = parseJsonLoose(stdout);
+
+    const fromCli = rules.parseAdvertisedVersions(parsed, marketplaceName).get(pluginName);
+    if (fromCli) return fromCli;
+
+    const market = rules
+      .parseMarketplaceList(parsed)
+      .find((m) => m.name === marketplaceName && m.root !== null);
+    if (!market?.root) return null;
+
+    const manifest = await this.readRemoteJson<{
+      plugins?: Array<{ name?: string; source?: string }>;
+    }>(posixJoin(market.root, rules.marketplaceManifestDir, 'marketplace.json'));
+    const entry = manifest?.plugins?.find((p) => p.name === pluginName);
+    if (!entry?.source) return null;
+
+    const pluginManifest = await this.readRemoteJson<{ version?: string }>(
+      posixJoin(market.root, entry.source, rules.pluginManifestDir, 'plugin.json')
     );
+    return pluginManifest?.version ?? null;
+  }
+
+  /**
+   * Read and parse a JSON file on the host. Null for anything that did not
+   * produce parseable JSON — a missing manifest is an ordinary outcome here
+   * (the marketplace may be laid out differently, or not checked out yet), and
+   * the caller already treats null as "unknown" rather than as a version.
+   */
+  private async readRemoteJson<T>(path: string): Promise<T | null> {
+    const res = await this.run('cat', [path]);
+    if (res.code !== 0) return null;
+    return (parseJsonLoose(res.stdout) as T | null) ?? null;
   }
 
   /**

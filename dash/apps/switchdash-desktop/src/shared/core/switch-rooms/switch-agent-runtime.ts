@@ -20,7 +20,7 @@ export const SWITCH_AGENT_RUNTIME_PACKAGE = '@sandbox-quantum/switch-agent-runti
  * `connectors/claude-code-plugin/.mcp.json`; `switch-agent-runtime.test.ts`
  * fails if the two drift. Bump both together when the runtime is republished.
  */
-export const SWITCH_AGENT_RUNTIME_VERSION = '0.1.5';
+export const SWITCH_AGENT_RUNTIME_VERSION = '0.1.6';
 
 /**
  * Credentials the runtime refuses to start without: it reads all three at

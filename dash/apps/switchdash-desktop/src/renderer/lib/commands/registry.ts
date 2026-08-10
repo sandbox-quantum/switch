@@ -1,5 +1,4 @@
 import { comparer, makeAutoObservable, reaction } from 'mobx';
-import { views } from '@renderer/app/view-registry';
 import type { ShortcutSettingsKey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { appState } from '@renderer/lib/stores/app-state';
 import { SCOPE_LEVELS, type AppCommand, type CommandProvider, type ScopeId } from './types';
@@ -66,12 +65,22 @@ class CommandRegistry {
 
 export const commandRegistry = new CommandRegistry();
 
+export type ViewCommandProviders = Record<
+  string,
+  { commandProvider?: (params: unknown) => CommandProvider }
+>;
+
 /**
  * Wires a MobX reaction that keeps the session-scope CommandProvider in sync
  * with the active view. Must be called once at app startup (after navigation
  * state is restored). No React dependency — runs entirely off MobX observables.
+ *
+ * The view map is passed in rather than imported: this module is reachable from
+ * the modal tree, so importing the registry's value here closed a cycle back
+ * into view-registry and left its initialisation order load-order dependent.
+ * The caller is the app entry point, which already owns the registry.
  */
-export function setupViewCommandProvider(): void {
+export function setupViewCommandProvider(views: ViewCommandProviders): void {
   reaction(
     () => {
       const viewId = appState.navigation.currentViewId;
@@ -79,9 +88,7 @@ export function setupViewCommandProvider(): void {
     },
     ({ viewId, params }) => {
       commandRegistry.unregister('session');
-      const def = (
-        views as unknown as Record<string, { commandProvider?: (p: unknown) => CommandProvider }>
-      )[viewId];
+      const def = views[viewId];
       if (def?.commandProvider) commandRegistry.register(def.commandProvider(params));
     },
     { fireImmediately: true, equals: comparer.structural }

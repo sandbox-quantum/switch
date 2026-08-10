@@ -30,9 +30,13 @@ jobs:
   prep:
     name: Resolve + verify version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       push: ${{ steps.version.outputs.push }}
+      compose_speaks: ${{ steps.contract.outputs.speaks }}
+      compose_accepts: ${{ steps.contract.outputs.accepts }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +60,20 @@ jobs:
             echo "push=false" >> "$GITHUB_OUTPUT"
           fi
           echo "Resolved version=$pkg_version (push on tag only)"
+
+      # The published compose artifact declares its stack-compose range twice:
+      # in the file (for whoever has already downloaded it) and as an OCI
+      # annotation here — which a consumer can read off the registry WITHOUT
+      # pulling it, to decide whether pulling is worth it (CHOO-1865).
+      - name: Read the stack-compose contract
+        id: contract
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import yaml
+          declared = yaml.safe_load(open("artifacts.yaml"))["contracts"]["stack-compose"]["artifacts"]["compose"]
+          print(f"speaks={declared['speaks']}")
+          print(f"accepts={declared['accepts']}")
+          PY
 
   images:
     name: Build & publish image (${{ matrix.image }})
@@ -178,4 +196,6 @@ jobs:
             --artifact-type application/vnd.switch.compose.v1+yaml \
             --annotation "org.opencontainers.image.version=${{ needs.prep.outputs.version }}" \
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "com.switch.contract.stack-compose.speaks=${{ needs.prep.outputs.compose_speaks }}" \
+            --annotation "com.switch.contract.stack-compose.accepts=${{ needs.prep.outputs.compose_accepts }}" \
             standalone-docker-compose.yml:application/yaml

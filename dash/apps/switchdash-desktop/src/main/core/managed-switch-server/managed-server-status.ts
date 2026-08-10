@@ -1,4 +1,5 @@
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
+import type { LocalServerPhase } from '@shared/core/managed-switch-server/managed-switch-server';
 import { type HostReachability, isHostBlocked } from '@shared/core/remote-hosts/reachability';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { localServerService } from './local-server-service';
@@ -41,4 +42,30 @@ export function managedServerHostBlocked(server: SwitchServer): HostReachability
   if (!server.managed || server.managementKind !== 'remote' || server.sshHost === null) return null;
   const reachability = hostReachabilityService.get(server.sshHost);
   return isHostBlocked(reachability) ? reachability : null;
+}
+
+/**
+ * The phase of a managed server's stack when it is settled on *not serving*, or
+ * null when a call to it may legitimately be attempted.
+ *
+ * Only `stopped` and `error` count. `starting` and `stopping` are transitions —
+ * the stack that is coming up is reached through exactly these calls (the boot
+ * sequence registers and signs in while the phase is still `starting`), so
+ * gating on "not running" rather than "settled not running" would block the
+ * very work that makes it running.
+ *
+ * A remote-managed server whose host is blocked returns null: that is the
+ * host's state to report, via {@link managedServerHostBlocked}, and a phase
+ * read across a dead SSH forward is stale anyway.
+ */
+export function managedServerStoppedPhase(server: SwitchServer): LocalServerPhase | null {
+  if (!server.managed) return null;
+  let phase: LocalServerPhase;
+  if (server.managementKind === 'remote') {
+    if (server.sshHost === null || hostReachabilityService.isBlocked(server.sshHost)) return null;
+    phase = remoteServerService.getStatus(server.sshHost).phase;
+  } else {
+    phase = localServerService.getStatus().phase;
+  }
+  return phase === 'stopped' || phase === 'error' ? phase : null;
 }

@@ -3,13 +3,14 @@ import type { SidecarRunStatus } from '@main/core/agent-runtime/impl/remote-side
 import { verdictFor } from './verdict';
 
 const CLIENT = 'client-hash';
-const CLIENT_VERSION = '1.7';
+const CLIENT_VERSION = '1.7.0';
 
 const status = (over: Partial<SidecarRunStatus>): SidecarRunStatus => ({
   running: true,
   compatible: true,
   hash: CLIENT,
   version: CLIENT_VERSION,
+  contract: { speaks: 1, accepts: 1 },
   epoch: 1,
   pid: 100,
   liveSessions: 0,

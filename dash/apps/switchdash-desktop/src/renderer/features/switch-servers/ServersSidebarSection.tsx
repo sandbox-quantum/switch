@@ -13,12 +13,8 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import {
-  isCurrentView,
-  useNavigate,
-  useParams,
-  useWorkspaceSlots,
-} from '@renderer/lib/layout/navigation-provider';
+import { isCurrentView, useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { buttonVariants } from '@renderer/lib/ui/button';
 import {
@@ -36,6 +32,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { SidebarMenu, SidebarMenuButton } from '../sidebar/sidebar-primitives';
 import { localServerStore } from './local-server-store';
 import { remoteServerStore } from './remote-server-store';
+import { serverAvailability } from './server-availability';
 import { switchServersStore } from './switch-servers-store';
 
 export const ServersSidebarSection = observer(function ServersSidebarSection() {
@@ -161,7 +158,9 @@ function ServerDriftIndicator({ drift }: { drift: SwitchVersionDrift }) {
     ? `switch-core ${drift.expected} is available (running ${drift.deployed})`
     : drift.direction === 'downgrade'
       ? `Runs switch-core ${drift.deployed} — newer than this app expects (${drift.expected})`
-      : `Runs switch-core ${drift.deployed}; this app expects ${drift.expected}`;
+      : drift.direction === 'unreadable'
+        ? `Can't read which switch-core this runs; this app expects ${drift.expected}`
+        : `Runs switch-core ${drift.deployed}; this app expects ${drift.expected}`;
 
   return (
     <Tooltip>
@@ -214,15 +213,9 @@ const ServerEntry = observer(function ServerEntry({ serverId }: { serverId: stri
   // session, or room must not clear the "this server is selected" affordance.
   const isScoped = store.activeServerId === serverId;
 
-  // A managed server that isn't running has no gateway to reach, so it can't be
-  // signed into — show it as dormant (grey dot, no sign-in) until it's started.
-  const managedRunning = !server.managed
-    ? true
-    : server.managementKind === 'remote' && server.sshHost
-      ? remoteServerStore.isRunning(server.sshHost)
-      : localServerStore.isRunning;
-  const dormant = server.managed && !managedRunning;
-  const needsSignIn = !dormant && !connected;
+  const availability = serverAvailability(serverId);
+  const dormant = availability === 'dormant';
+  const needsSignIn = availability === 'signed-out';
 
   // Drift is reported for a stopped stack too — its volumes still hold the
   // schema the last version migrated to — so this is deliberately not gated on

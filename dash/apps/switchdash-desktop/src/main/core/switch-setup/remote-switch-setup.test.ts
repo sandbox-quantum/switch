@@ -121,9 +121,36 @@ function claudeExecImpl(installedVersion: string, advertisedVersion: string) {
   };
 }
 
-function codexExecImpl(marketplaceSource: string) {
-  return (_bin: string, args: string[] = []) => {
+const CODEX_MARKET_ROOT = '/home/dev/.codex/marketplaces/switch-plugins';
+
+/** The two manifests the marketplace fallback reads, keyed by absolute path. */
+function codexManifests(advertisedVersion: string): Record<string, string> {
+  return {
+    [`${CODEX_MARKET_ROOT}/.claude-plugin/marketplace.json`]: JSON.stringify({
+      plugins: [{ name: 'switch-connector-codex', source: 'connectors/codex-plugin' }],
+    }),
+    [`${CODEX_MARKET_ROOT}/connectors/codex-plugin/.codex-plugin/plugin.json`]: JSON.stringify({
+      version: advertisedVersion,
+    }),
+  };
+}
+
+function codexExecImpl(marketplaceSource: string, manifests: Record<string, string> = {}) {
+  return (bin: string, args: string[] = []) => {
     const a = args.join(' ');
+    if (bin === 'cat') {
+      const body = manifests[args[0] ?? ''];
+      if (body === undefined) {
+        return Promise.reject(
+          Object.assign(new Error('cat: No such file or directory'), {
+            code: 1,
+            stdout: '',
+            stderr: 'cat: No such file or directory',
+          })
+        );
+      }
+      return Promise.resolve({ stdout: body, stderr: '' });
+    }
     if (a === 'plugin list --json') {
       return Promise.resolve({
         stdout: JSON.stringify({
@@ -149,7 +176,7 @@ function codexExecImpl(marketplaceSource: string) {
           marketplaces: [
             {
               name: 'switch-plugins',
-              root: '/home/dev/.codex/marketplaces/switch-plugins',
+              root: CODEX_MARKET_ROOT,
               marketplaceSource: { sourceType: 'github', source: marketplaceSource },
             },
           ],
@@ -190,21 +217,86 @@ describe('RemoteSwitchSetupService.getStatus', () => {
     });
   });
 
-  it('issues exactly one plugin list and one marketplace list for codex', async () => {
-    // Codex advertises no versions, so an unknown latest is the correct answer —
-    // re-reading the plugin list to look for one would only cost another SSH exec.
-    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
+  /**
+   * Codex's marketplace listing carries no plugin versions, so the CLI alone can
+   * never say whether an update exists. It does not follow that none does — the
+   * versions are in the marketplace's manifests on the host, which is where the
+   * local driver has always read them from.
+   */
+  describe('codex, whose CLI advertises no versions', () => {
+    it('reads the advertised version from the marketplace manifests', async () => {
+      mocks.exec.mockImplementation(
+        codexExecImpl('sandbox-quantum/switch', codexManifests('0.2.0'))
+      );
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+      const status = await service.getStatus('codex');
+
+      expect(status).toMatchObject({
+        supported: true,
+        installed: true,
+        installedVersion: '0.1.0',
+        latestVersion: '0.2.0',
+        updateAvailable: true,
+      });
+    });
+
+    it('reports no update when the manifest matches what is installed', async () => {
+      mocks.exec.mockImplementation(
+        codexExecImpl('sandbox-quantum/switch', codexManifests('0.1.0'))
+      );
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+
+      expect(await service.getStatus('codex')).toMatchObject({
+        latestVersion: '0.1.0',
+        updateAvailable: false,
+      });
+    });
+
+    it('reports the latest version as unknown when the manifests cannot be read', async () => {
+      // Unreadable manifests mean we do not know, which must not be rendered as
+      // "up to date" — the stale-green this surface exists to avoid.
+      mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+      const status = await service.getStatus('codex');
+
+      expect(status).toMatchObject({
+        installed: true,
+        installedVersion: '0.1.0',
+        latestVersion: null,
+        updateAvailable: false,
+      });
+    });
+
+    it('reads each manifest once and does not re-read the plugin list', async () => {
+      mocks.exec.mockImplementation(
+        codexExecImpl('sandbox-quantum/switch', codexManifests('0.2.0'))
+      );
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+      await service.getStatus('codex');
+
+      expect(calls()).toEqual([
+        'plugin list --json',
+        'plugin marketplace list --json',
+        `${CODEX_MARKET_ROOT}/.claude-plugin/marketplace.json`,
+        `${CODEX_MARKET_ROOT}/connectors/codex-plugin/.codex-plugin/plugin.json`,
+      ]);
+    });
+  });
+
+  it('does not read manifests when the CLI already advertises versions', async () => {
+    // Claude Code reports them in `marketplace list --json`, so the fallback is
+    // dead weight there — two SSH round trips per status read.
+    mocks.getPlugin.mockReturnValue(CLAUDE_AGENT);
+    mocks.resolveCommandPath.mockResolvedValue('/usr/bin/claude');
+    mocks.exec.mockImplementation(claudeExecImpl('0.1.0', '0.2.0'));
 
     const service = await getRemoteSwitchSetupService(SSH_HOST);
-    const status = await service.getStatus('codex');
+    await service.getStatus('claude');
 
-    expect(status).toMatchObject({
-      supported: true,
-      installed: true,
-      installedVersion: '0.1.0',
-      latestVersion: null,
-      updateAvailable: false,
-    });
     expect(calls()).toEqual(['plugin list --json', 'plugin marketplace list --json']);
   });
 });

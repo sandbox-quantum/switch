@@ -5,6 +5,7 @@ import re
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 import httpx
 from pydantic import BaseModel
@@ -14,7 +15,10 @@ from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import (
+    CollaborationAdapter,
+    LiveRuntimeIndicator,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -60,19 +64,11 @@ class SlackAdapter(CollaborationAdapter):
         # message per channel — used to thread the "thinking" indicator into the
         # conversation the agent is responding to.
         self._last_thread_ts: dict[str, str] = {}
-        # Slack username → user id, for resolving outbound @mentions to real
-        # Slack mentions. Populated as users are resolved.
+        # Folded Slack username → user id, for resolving outbound @mentions to
+        # real Slack mentions. Primed from the bridge's known external users and
+        # topped up as new ones are resolved.
         self._username_to_id: dict[str, str] = {}
         self._thinking_ts: dict[tuple[str, str], str] = {}
-        # (channel_id, agent_name) -> message ref of the agent's live "working
-        # on it…" runtime-state message, so it can be deleted when the agent
-        # stops working. Slack can truly delete, so a persistent message is
-        # preferable to the ephemeral typing indicator here.
-        self._working_msg: dict[tuple[str, str], str] = {}
-        # (channel_id, agent_name) -> refs of the live "needs your input" pings,
-        # kept so they can be removed when the turn ends. The working indicator
-        # stays up alongside these — the agent is mid-turn, just paused.
-        self._input_pings: dict[tuple[str, str], list[str]] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -449,7 +445,7 @@ class SlackAdapter(CollaborationAdapter):
 
     # ── Runtime state ──────────────────────────────────────────────────────────
 
-    async def apply_runtime_state(
+    async def _apply_runtime_state(
         self,
         channel_id: str,
         agent_name: str,
@@ -482,11 +478,16 @@ class SlackAdapter(CollaborationAdapter):
             existing = self._working_msg.get(key)
             if existing is not None:
                 # Refresh the live message in place with the latest activity.
-                await self.update_message(channel_id, existing, body)
+                # Position is a separate concern — see reposition_runtime_state,
+                # which moves the indicator when the conversation moves on.
+                await self.update_message(channel_id, existing.message_ref, body)
+                self._working_msg[key] = replace(existing, body=body)
                 return
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
-                self._working_msg[key] = ref
+                self._working_msg[key] = LiveRuntimeIndicator(
+                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                )
         elif state == "awaiting-input":
             # Leave the working indicator up; add a ping and track it.
             ref = await self._ping_operator(
@@ -499,9 +500,9 @@ class SlackAdapter(CollaborationAdapter):
             await self._clear_input_pings(channel_id, agent_name)
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
-        ref = self._working_msg.pop((channel_id, agent_name), None)
-        if ref is not None:
-            await self.delete_message(channel_id, ref)
+        live = self._working_msg.pop((channel_id, agent_name), None)
+        if live is not None:
+            await self.delete_message(channel_id, live.message_ref)
 
     async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
         refs = self._input_pings.pop((channel_id, agent_name), [])
@@ -595,6 +596,13 @@ class SlackAdapter(CollaborationAdapter):
             f"slack://channel?team={self._config.workspace_id}&id={external_channel_id}"
         )
 
+    async def home_deeplink(self) -> str | None:
+        """`slack://open?team=<workspace>` — opens this workspace in the Slack
+        desktop app, matching the scheme `channel_deeplink` already uses."""
+        if not self._config.workspace_id:
+            return None
+        return f"slack://open?team={self._config.workspace_id}"
+
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
@@ -665,6 +673,22 @@ class SlackAdapter(CollaborationAdapter):
         message = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"[\2](\1)", message)
         return re.sub(r"<(https?://[^>]+)>", r"\1", message)
 
+    def prime_mention_targets(self, targets: dict[str, str]) -> None:
+        for name, external_id in targets.items():
+            self._remember_mention_target(name, external_id)
+
+    def _remember_mention_target(self, name: str, external_id: str) -> None:
+        """Record a name → Slack id pair for outbound mention rendering.
+
+        Slack handles are case-insensitive, so the map is keyed on the folded
+        name. App and bot senders also reach here — their `external_id` is a
+        `B…` bot id, which cannot form a valid user mention — so only real user
+        ids (`U…`, or `W…` on enterprise grid) are kept; emitting `<@B…>` would
+        render as broken markup rather than a mention."""
+        if not external_id.startswith(("U", "W")):
+            return
+        self._username_to_id[name.casefold()] = external_id
+
     def _translate_mentions_to_slack(self, content: str) -> str:
         """Rewrite `@username` to a Slack `<@USER_ID>` mention for users we know,
         so Slack renders the person's display name. Unknown names (e.g. agents,
@@ -672,10 +696,10 @@ class SlackAdapter(CollaborationAdapter):
 
         def _replace(match: re.Match[str]) -> str:
             username = match.group(1)
-            user_id = self._username_to_id.get(username)
+            user_id = self._username_to_id.get(username.casefold())
             return f"<@{user_id}>" if user_id else match.group(0)
 
-        return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+        return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
 
     # ── Socket Mode event handling ───────────────────────────────────────────
 
@@ -1100,7 +1124,7 @@ class SlackAdapter(CollaborationAdapter):
             )
             resolved = SlackUser(name=name, display_name=display_name)
             self._user_cache[slack_user_id] = resolved
-            self._username_to_id[name] = slack_user_id
+            self._remember_mention_target(name, slack_user_id)
             return resolved
         except SlackApiError as e:
             logger.warning("Failed to resolve Slack user %s: %s", slack_user_id, e)

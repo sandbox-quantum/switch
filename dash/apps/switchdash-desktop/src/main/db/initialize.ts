@@ -13,6 +13,33 @@ const sqlFiles = import.meta.glob('@root/drizzle/*.sql', {
 
 type JournalEntry = { idx: number; when: number; tag: string; breakpoints: boolean };
 
+/**
+ * Bundled migration SQL that the journal does not list.
+ *
+ * The runner iterates the journal, so a `.sql` file missing from it is not
+ * "pending" — it is invisible, and can never be applied on any machine while the
+ * app boots reporting success with the table absent. Migration 0046 shipped in
+ * exactly that state (CHOO-1809): the SQL and its snapshot were committed and
+ * the journal entry was not, which is only detectable by looking for the
+ * mismatch, never by running the migrations.
+ *
+ * Exported for the test that locks the invariant in; the runner asserts it at
+ * boot because it is a packaging mistake, not a recoverable condition.
+ */
+export function orphanedMigrationTags(sqlKeys: string[], journalTags: string[]): string[] {
+  const known = new Set(journalTags);
+  return sqlKeys
+    .map(migrationTagFromKey)
+    .filter((tag): tag is string => !!tag && !known.has(tag))
+    .sort();
+}
+
+/** A bundled SQL file's migration tag — its basename without the extension. */
+function migrationTagFromKey(key: string): string | null {
+  const base = key.split('/').at(-1);
+  return base?.endsWith('.sql') ? base.slice(0, -'.sql'.length) : null;
+}
+
 function runBundledMigrations(connection: BetterSqlite3.Database): void {
   const migrationLog = log.child({ component: 'db-migration' });
   const startedAt = Date.now();
@@ -25,6 +52,27 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
       created_at NUMERIC
     )
   `);
+
+  const entries = (journal as { entries: JournalEntry[] }).entries;
+
+  const orphans = orphanedMigrationTags(
+    Object.keys(sqlFiles),
+    entries.map((entry) => entry.tag)
+  );
+  if (orphans.length) {
+    throw new Error(
+      `Migration SQL is not registered in the journal: ${orphans.join(', ')}. ` +
+        `The journal drives which migrations run, so these would never be applied. ` +
+        `Add the entry to drizzle/meta/_journal.json (or regenerate with db:generate).`
+    );
+  }
+
+  // Resolved by exact tag rather than substring: `0012_foo` would otherwise also
+  // match a bundled `0012_foo_bar.sql`, and whichever the glob happened to list
+  // first would be applied under the other's name.
+  const sqlByTag = new Map(
+    Object.keys(sqlFiles).map((key) => [migrationTagFromKey(key), key] as const)
+  );
 
   const lastRow = connection
     .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at DESC LIMIT 1')
@@ -41,10 +89,10 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
     // A failed migration is unrecoverable and cannot be reconstructed after the
     // fact, so which one was being applied is recorded as it happens.
     connection.transaction(() => {
-      for (const entry of (journal as { entries: JournalEntry[] }).entries) {
+      for (const entry of entries) {
         if (entry.when <= lastTimestamp) continue;
 
-        const sqlKey = Object.keys(sqlFiles).find((k) => k.includes(entry.tag));
+        const sqlKey = sqlByTag.get(entry.tag);
         if (!sqlKey) throw new Error(`Missing bundled SQL for migration: ${entry.tag}`);
 
         const sql = sqlFiles[sqlKey];
@@ -92,7 +140,7 @@ function runBundledMigrations(connection: BetterSqlite3.Database): void {
 function ensureSearchIndex(connection: BetterSqlite3.Database): void {
   // Bump this version string whenever the FTS schema changes — the table is
   // dropped and recreated, and backfill() + seedCommands() repopulate it.
-  const SEARCH_INDEX_VERSION = '4';
+  const SEARCH_INDEX_VERSION = '5';
 
   const row = connection.prepare(`SELECT value FROM kv WHERE key = 'fts_version'`).get() as
     | { value: string }
@@ -102,7 +150,10 @@ function ensureSearchIndex(connection: BetterSqlite3.Database): void {
     connection.exec(`DROP TABLE IF EXISTS search_index`);
     connection.exec(`
       CREATE VIRTUAL TABLE search_index USING fts5(
-        item_type,
+        -- UNINDEXED: the type is a discriminator, not content. Indexed under a
+        -- trigram tokenizer it made its own literal searchable, so "ses" matched
+        -- every session and "com" every command through this column alone.
+        item_type   UNINDEXED,
         item_id     UNINDEXED,
         location_id UNINDEXED,
         session_id  UNINDEXED,
@@ -120,13 +171,14 @@ function ensureSearchIndex(connection: BetterSqlite3.Database): void {
 }
 
 /**
- * Creates the FTS5 virtual table and companion meta table used for location
- * file indexing. Managed outside Drizzle (same reason as ensureSearchIndex).
- * Version-gated via `kv` so the tables can be dropped and recreated on schema
- * changes without a full Drizzle migration.
+ * Drops the location file index. It existed to back file results in the
+ * command palette; those are gone, and nothing else ever read it. An existing
+ * database still carries the tables and their rows, so they are removed here
+ * rather than left behind as a write-only index. Version-gated via `kv` like
+ * the tables were, so this runs once per database.
  */
-function ensureFileIndex(connection: BetterSqlite3.Database): void {
-  const FILE_INDEX_VERSION = '2';
+function dropFileIndex(connection: BetterSqlite3.Database): void {
+  const FILE_INDEX_VERSION = 'dropped';
 
   const row = connection.prepare(`SELECT value FROM kv WHERE key = 'file_index_version'`).get() as
     | { value: string }
@@ -137,20 +189,6 @@ function ensureFileIndex(connection: BetterSqlite3.Database): void {
   connection.exec(`DROP TABLE IF EXISTS location_file_index`);
   connection.exec(`DROP TABLE IF EXISTS workspace_file_index_meta`);
   connection.exec(`DROP TABLE IF EXISTS location_file_index_meta`);
-  connection.exec(`
-    CREATE VIRTUAL TABLE location_file_index USING fts5(
-      location_id UNINDEXED,
-      path,
-      filename,
-      tokenize = 'trigram case_sensitive 0'
-    )
-  `);
-  connection.exec(`
-    CREATE TABLE location_file_index_meta (
-      location_id TEXT PRIMARY KEY,
-      indexed_at  INTEGER NOT NULL
-    )
-  `);
   connection
     .prepare(
       `INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES ('file_index_version', ?, unixepoch())`
@@ -177,6 +215,6 @@ export async function initializeDatabase(
   const conn = connection ?? (await import('./client')).sqlite;
   runBundledMigrations(conn);
   ensureSearchIndex(conn);
-  ensureFileIndex(conn);
+  dropFileIndex(conn);
   return conn;
 }

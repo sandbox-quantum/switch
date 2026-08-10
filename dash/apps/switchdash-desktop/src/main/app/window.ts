@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { BrowserWindow } from 'electron';
-import appIcon from '@/assets/images/switchdash/switchdash_logo.png?asset';
+import appIcon from '@/assets/images/switchdash/icon-dock.png?asset';
 import { log } from '@main/lib/logger';
 import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';

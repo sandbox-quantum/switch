@@ -66,17 +66,36 @@ def test_collab_api_module_is_gone() -> None:
 # ── 2. gateway collaboration routes are authorized ───────────────────────────
 
 
+WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
+
+
 def test_bridge_write_routes_require_admin() -> None:
-    """create + set-default (the state-changing admin actions) must be gated on
-    require_admin — a bridge is an unowned, workspace-wide integration holding
-    platform secrets."""
-    admin_gated = {
-        (frozenset(route.methods), route.path)
+    """EVERY state-changing route must be gated on require_admin — a bridge is an
+    unowned, workspace-wide integration holding platform secrets, so there is no
+    owner to scope mutation to.
+
+    Derived from the router rather than a hand-listed set: a new write route that
+    forgets the gate fails here instead of shipping open.
+    """
+    unguarded = sorted(
+        f"{sorted(route.methods & WRITE_METHODS)} {route.path}"
         for route in router.routes
-        if require_admin in _dependency_calls(route.dependant)
-    }
-    assert (frozenset({"POST"}), "") in admin_gated  # create
-    assert (frozenset({"POST"}), "/{bridge_id}/default") in admin_gated  # set-default
+        if route.methods & WRITE_METHODS
+        and require_admin not in _dependency_calls(route.dependant)
+    )
+    assert not unguarded, (
+        f"collaboration write routes missing require_admin: {unguarded}"
+    )
+
+
+def test_known_bridge_write_routes_are_present() -> None:
+    """Guard against the check above passing vacuously if a route is renamed or
+    dropped: the four writes we know about must still exist."""
+    routes = {(frozenset(r.methods) & WRITE_METHODS, r.path) for r in router.routes}
+    assert (frozenset({"POST"}), "") in routes  # create
+    assert (frozenset({"POST"}), "/{bridge_id}/default") in routes  # set-default
+    assert (frozenset({"PATCH"}), "/{bridge_id}") in routes  # update
+    assert (frozenset({"DELETE"}), "/{bridge_id}") in routes  # delete
 
 
 def test_every_collaboration_route_requires_authentication() -> None:
@@ -117,6 +136,16 @@ def _admin() -> User:
     return User(id="admin-1", name="admin", email="admin@test", role="admin")
 
 
+class _NoRunningBridges:
+    """Stands in for the lifecycle service, which the endpoint consults only to
+    ask a live adapter for its workspace link. Nothing is running here, so it
+    reports no adapter and the response carries no `home_url` — the same path a
+    stopped bridge takes in production."""
+
+    def get_adapter(self, bridge_id: str) -> None:
+        return None
+
+
 async def test_set_default_promotes_and_demotes(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -127,7 +156,12 @@ async def test_set_default_promotes_and_demotes(
 
     async with session_factory() as session:
         detail = await set_default_bridge(
-            second, session, _BRIDGE_STORE, _ROOM_STORE, _admin()
+            second,
+            session,
+            _BRIDGE_STORE,
+            _ROOM_STORE,
+            _NoRunningBridges(),  # type: ignore[arg-type]
+            _admin(),
         )
         assert detail.bridge_id == second
         assert detail.is_default is True
@@ -144,6 +178,11 @@ async def test_set_default_unknown_bridge_is_404(
     async with session_factory() as session:
         with pytest.raises(HTTPException) as exc:
             await set_default_bridge(
-                "does-not-exist", session, _BRIDGE_STORE, _ROOM_STORE, _admin()
+                "does-not-exist",
+                session,
+                _BRIDGE_STORE,
+                _ROOM_STORE,
+                _NoRunningBridges(),  # type: ignore[arg-type]
+                _admin(),
             )
         assert exc.value.status_code == 404

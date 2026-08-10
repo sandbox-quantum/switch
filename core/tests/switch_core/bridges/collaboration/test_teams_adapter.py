@@ -907,7 +907,7 @@ def test_working_posts_status_card() -> None:
     )
 
     assert len(fake.threads) == 1
-    assert adapter._working_msg[("19:abc@thread.tacv2", "worker")] == "M1"
+    assert adapter._working_msg[("19:abc@thread.tacv2", "worker")].message_ref == "M1"
 
 
 def test_working_detail_refreshes_in_place() -> None:
@@ -939,7 +939,7 @@ def test_working_detail_refreshes_in_place() -> None:
     assert len(fake.threads) == 1
     assert len(fake.updates) == 1
     assert fake.updates[0]["activity_id"] == "M1"
-    assert adapter._working_msg[("19:abc@thread.tacv2", "worker")] == "M1"
+    assert adapter._working_msg[("19:abc@thread.tacv2", "worker")].message_ref == "M1"
 
 
 def test_idle_clears_working_message() -> None:
@@ -996,7 +996,7 @@ def test_awaiting_input_keeps_working_and_pings() -> None:
     )
 
     # Working indicator stays up; a ping is tracked separately.
-    assert adapter._working_msg[key] == "M1"
+    assert adapter._working_msg[key].message_ref == "M1"
     assert adapter._input_pings[key] == ["M2"]
 
     _run(

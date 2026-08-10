@@ -1,6 +1,6 @@
 [project]
 name = "switch-core"
-version = "0.12.1"
+version = "0.12.4"
 description = "Switch — AI agent orchestration and governance platform"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,7 +22,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2,<3",
     "asyncpg>=0.29,<1",
     "pydantic>=2,<3",
-    "pydantic-settings>=2.0,<3.0",
+    "pydantic-settings>=2.14.2,<3.0",
     "alembic>=1.15,<2",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
@@ -31,8 +31,8 @@ dependencies = [
     "Markdown>=3,<4",
     "slack-sdk>=3.41.0",
     "mattermostdriver>=7.3.2",
-    "aiohttp>=3.10,<4",
-    "cryptography>=43,<47",
+    "aiohttp>=3.14.3,<4",
+    "cryptography>=50.0.0,<51",
     "fastmcp>=3.2.0,<4",
     "bcrypt>=4.0,<5",
     "PyJWT>=2.9,<3",

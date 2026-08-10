@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.db.models import User
+from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
@@ -35,6 +35,48 @@ from switch_core.room_service import RoomService
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _home_url(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """Link that opens the bridge's workspace in its messaging app, built by
+    the live adapter. None when the bridge is not running or the platform has
+    no such link — the same "offer it only when it works" rule the per-room
+    channel deeplink follows."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
+        return None
+    try:
+        return await adapter.home_deeplink()
+    except Exception:
+        logger.warning(
+            "Failed to build home deeplink for bridge %s", bridge_id, exc_info=True
+        )
+        return None
+
+
+async def _detail(
+    bridge: CollaborationBridge,
+    *,
+    room_count: int,
+    collab_lifecycle: CollaborationBridgeLifecycleService,
+    is_default: bool | None = None,
+) -> BridgeDetail:
+    """One place every response shape is built, so a new field cannot reach
+    some endpoints and miss others. `is_default` overrides the stored value for
+    a caller that just changed it in the same request."""
+    return BridgeDetail(
+        bridge_id=bridge.id,
+        bridge_type=bridge.type,
+        display_name=bridge.display_name,
+        status=bridge.status,
+        agent_greetings_enabled=bridge.agent_greetings_enabled,
+        is_default=bridge.is_default if is_default is None else is_default,
+        room_count=room_count,
+        created_at=str(bridge.created_at),
+        home_url=await _home_url(bridge.id, collab_lifecycle),
+    )
 
 
 @router.get("/types")
@@ -83,15 +125,8 @@ async def create_bridge(
         await session.commit()
         is_default = True
 
-    return BridgeDetail(
-        bridge_id=bridge.id,
-        bridge_type=bridge.type,
-        display_name=bridge.display_name,
-        status=bridge.status,
-        agent_greetings_enabled=bridge.agent_greetings_enabled,
-        is_default=is_default,
-        room_count=0,
-        created_at=str(bridge.created_at),
+    return await _detail(
+        bridge, room_count=0, collab_lifecycle=collab_lifecycle, is_default=is_default
     )
 
 
@@ -101,6 +136,9 @@ async def set_default_bridge(
     session: Annotated[AsyncSession, Depends(get_session)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
     _user: Annotated[User, Depends(require_admin)],
 ) -> BridgeDetail:
     """Nominate a bridge as the instance default, demoting the previous one."""
@@ -111,15 +149,8 @@ async def set_default_bridge(
     await session.commit()
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
-    return BridgeDetail(
-        bridge_id=bridge.id,
-        bridge_type=bridge.type,
-        display_name=bridge.display_name,
-        status=bridge.status,
-        agent_greetings_enabled=bridge.agent_greetings_enabled,
-        is_default=bridge.is_default,
-        room_count=len(rooms),
-        created_at=str(bridge.created_at),
+    return await _detail(
+        bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle
     )
 
 
@@ -128,6 +159,9 @@ async def list_bridges(
     session: Annotated[AsyncSession, Depends(get_session)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> list[BridgeDetail]:
     bridges = await bridge_store.get_all(session)
@@ -136,15 +170,8 @@ async def list_bridges(
     for bridge in bridges:
         rooms = await room_store.get_by_bridge(session, bridge.id)
         details.append(
-            BridgeDetail(
-                bridge_id=bridge.id,
-                bridge_type=bridge.type,
-                display_name=bridge.display_name,
-                status=bridge.status,
-                agent_greetings_enabled=bridge.agent_greetings_enabled,
-                is_default=bridge.is_default,
-                room_count=len(rooms),
-                created_at=str(bridge.created_at),
+            await _detail(
+                bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle
             )
         )
 
@@ -158,7 +185,12 @@ async def update_bridge(
     session: Annotated[AsyncSession, Depends(get_session)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     room_store: Annotated[RoomStore, Depends(get_room_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
+    # Admin-only for the same reason as registering one: a bridge is an unowned,
+    # workspace-wide integration, so there is no owner to scope mutation to.
+    _user: Annotated[User, Depends(require_admin)],
 ) -> BridgeDetail:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -169,15 +201,8 @@ async def update_bridge(
     )
     await session.commit()
     rooms = await room_store.get_by_bridge(session, bridge_id)
-    return BridgeDetail(
-        bridge_id=bridge.id,
-        bridge_type=bridge.type,
-        display_name=bridge.display_name,
-        status=bridge.status,
-        agent_greetings_enabled=bridge.agent_greetings_enabled,
-        is_default=bridge.is_default,
-        room_count=len(rooms),
-        created_at=str(bridge.created_at),
+    return await _detail(
+        bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle
     )
 
 
@@ -215,7 +240,9 @@ async def delete_bridge(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
-    _user: Annotated[User, Depends(get_current_user)],
+    # Admin-only: deleting a bridge cascades into deleting every room on it, so
+    # this is the most destructive operation on the router.
+    _user: Annotated[User, Depends(require_admin)],
 ) -> dict[str, bool]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:

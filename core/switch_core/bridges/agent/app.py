@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
+from switch_core.bridges.agent.api.version_routes import router as version_router
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import init_dependencies
@@ -135,6 +136,7 @@ def create_agent_bridge_app(
     app.include_router(api_router, prefix="/agents", tags=["api"])
     app.include_router(operations_router)
     app.include_router(deeplink_router, tags=["deeplink"])
+    app.include_router(version_router, tags=["version"])
 
     app.state.config = config
 

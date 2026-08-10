@@ -10,7 +10,6 @@ import type { FileSystemProvider } from '@main/core/fs/types';
 import { LifecycleScriptService } from '@main/core/locations/lifecycle-service';
 import type { LocationRuntime } from '@main/core/locations/location-runtime';
 import { type LocationRuntimeFactoryResult } from '@main/core/locations/location-runtime-registry';
-import { locationFileIndexService } from '@main/core/search/location-file-index-service';
 import { preflightRemoteSession } from '@main/core/sessions/remote-session-preflight';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
@@ -127,7 +126,6 @@ export function createLocationRuntimeFactory(
       runtime,
 
       onCreateSideEffect: (rt) => {
-        void locationFileIndexService.onRuntimeCreated(locationId, rt);
         void (async () => {
           if (scripts?.setup && (locationSettings.autoRunSetupScriptOnSessionCreation ?? true)) {
             const setupResult = await runLifecycleScriptWithPolicy({
@@ -173,7 +171,6 @@ export function createLocationRuntimeFactory(
       onCreate: context.extraHooks?.onCreate,
 
       onDestroy: async (rt) => {
-        locationFileIndexService.onRuntimeDestroyed(locationId);
         const latestSessionSettings = await getEffectiveSessionSettings({
           locationSettings: context.settings,
           sessionFs: rt.fs,

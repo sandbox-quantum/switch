@@ -76,6 +76,15 @@ export type CreateSessionParams = {
    * the parent `agentId` (it runs in the parent's working directory).
    */
   agentName?: string;
+  /**
+   * Open a terminal for the new session. Defaults to true.
+   *
+   * Pass false when the agent is already running and the row is only catching
+   * up with it — the remote session reconciler adopting a session the VM
+   * started on its own. Such a session is made attachable (sidecar + hook-event
+   * relay) but gets no PTY until someone views it.
+   */
+  attach?: boolean;
 };
 
 export type CreateSessionError =

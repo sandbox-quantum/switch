@@ -154,6 +154,12 @@ class AgentRuntimeStateEvent(SwitchEvent):
     # place on the live working message. Transient — never persisted. Only
     # meaningful while `state == "working"`; None → generic "working on it…".
     detail: str | None = None
+    # Event id of the most recent message the agent has actually been handed.
+    # The bridge moves the runtime indicator below the conversation when this
+    # changes, so the indicator only claims the agent has seen a message once
+    # the agent really has. Unchanged between reports (e.g. the periodic
+    # activity refresh) means the indicator stays where it is.
+    anchor_event_id: str | None = None
 
 
 # ── Permission ────────────────────────────────────────────────────────────────

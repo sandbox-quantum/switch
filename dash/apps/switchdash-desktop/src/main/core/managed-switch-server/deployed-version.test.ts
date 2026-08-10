@@ -179,16 +179,26 @@ describe('readVersionStatus', () => {
     });
   });
 
-  it('stays quiet but warns when the host cannot be read', async () => {
+  it('reports an unreadable host as unreadable, not as no drift', async () => {
+    // It used to return drift: null — the same answer a healthy, in-step stack
+    // gives — so a failed probe rendered as fine and the user was told nothing
+    // (CHOO-1865). Unknown must never look like fine.
     const host = fakeHost({ imagesError: new Error('ssh: connection closed'), env: null });
     expect(await readVersionStatus(host, '0.11.0')).toEqual({
       deployedVersion: null,
-      drift: null,
+      drift: {
+        deployed: null,
+        expected: '0.11.0',
+        direction: 'unreadable',
+        reason: expect.stringContaining('ssh: connection closed'),
+      },
     });
     expect(warn).toHaveBeenCalledOnce();
   });
 
   it('reports nothing for a host with no stack', async () => {
+    // `absent` is genuinely not a drift: nothing has been deployed here, which
+    // is a first start rather than a failed check.
     const host = fakeHost({ images: new Map(), env: null });
     expect(await readVersionStatus(host, '0.11.0')).toEqual({
       deployedVersion: null,

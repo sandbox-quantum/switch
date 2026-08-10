@@ -8,17 +8,22 @@ function switchSetupQueryKey(agentId: string) {
 }
 
 /**
- * Agent types that can be onboarded into Switch right now — Switch-supported AND
- * with their connector plugin installed. Drives the onboarding agent-type picker.
- * When `sshHost` is set the availability is resolved on that remote host (over
- * SSH) rather than the local machine, so a remote agent offers the types the
- * host actually has installed.
+ * Every Switch-capable agent type, each carrying whether it can be onboarded
+ * here and — when it cannot — why. Drives the onboarding agent-type picker,
+ * which shows the whole roster and greys out what is not set up rather than
+ * hiding it (CHOO-1809).
+ *
+ * When `sshHost` is set, availability is resolved on that remote host over SSH
+ * rather than on this machine: a type installed locally and absent on the host
+ * being targeted is not available *there*, which is the question being asked.
  */
-export function useOnboardableAgentTypes(sshHost?: string) {
+export function useAgentTypeAvailability(sshHost?: string) {
   return useQuery({
-    queryKey: ['switch-setup', 'onboardable', sshHost ?? 'local'] as const,
+    queryKey: ['switch-setup', 'agent-type-availability', sshHost ?? 'local'] as const,
     queryFn: () =>
-      sshHost ? rpc.switchSetup.listOnboardableRemote(sshHost) : rpc.switchSetup.listOnboardable(),
+      sshHost
+        ? rpc.switchSetup.listAgentTypeAvailabilityRemote(sshHost)
+        : rpc.switchSetup.listAgentTypeAvailability(),
     staleTime: 30_000,
   });
 }

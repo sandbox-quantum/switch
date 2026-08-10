@@ -1,10 +1,10 @@
 import { err, ok, type Result } from '@switchdash/shared';
 import type { IDisposable } from '@switchdash/shared';
-import { HostUnreachableError } from '@main/core/remote-hosts/host-reachability-service';
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { LifecycleMap } from '@main/lib/lifecycle-map';
 import { log } from '@main/lib/logger';
 import type { Location } from '@shared/core/locations/locations';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import { createProvider } from './create-location-provider';
 import type { LocationProvider } from './location-provider';
 import { TimeoutSignal, withTimeout } from './utils';

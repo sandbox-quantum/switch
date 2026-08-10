@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
@@ -24,9 +24,11 @@ import {
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
-import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
 
 type Props = BaseModalProps<void> & { roomId: string };
+
+/** An agent that can be added: this install's agent, by its Switch identity. */
+type Candidate = { id: string; name: string };
 
 export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   roomId,
@@ -37,29 +39,25 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   const serverId = switchRoomsStore.roomServerId(roomId);
   const roomName = switchRoomsStore.roomNameById(roomId);
 
-  const [selected, setSelected] = useState<RemoteAgentSummary[]>([]);
+  const [selected, setSelected] = useState<Candidate[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const agentsQuery = useQuery({
-    queryKey: ['remote-agents', serverId],
-    queryFn: () => rpc.switchServers.listRemoteAgents(serverId!),
-    enabled: !!serverId,
-  });
-  const membersQuery = useQuery({
-    queryKey: ['roomAgentIds', serverId, roomId],
-    queryFn: () => rpc.switchServers.listRoomAgentIds({ serverId: serverId!, roomId }),
-    enabled: !!serverId,
-  });
-
-  // Agents already in the room are dropped rather than shown as no-ops: the
-  // server ignores them, so offering them would suggest an effect there isn't.
-  const members = new Set(membersQuery.data ?? []);
-  const candidates = (agentsQuery.data ?? []).filter(
-    (a) => !members.has(a.id) && !selected.some((s) => s.id === a.id)
-  );
-  const loading = agentsQuery.isLoading || membersQuery.isLoading;
-  const nothingToAdd = !loading && candidates.length === 0 && selected.length === 0;
+  // Who can be added is answered from the same state the sidebar draws the room
+  // from, not from a query of its own: the room's members and the agents on
+  // offer have to be the same two sets the tree uses, or the picker and the
+  // sidebar can disagree about who is already in the room.
+  const members = new Set(switchRoomsStore.localMemberIds(roomId));
+  // Only this install's agents are offered. An agent registered on another
+  // switchdash could be added server-side but could never be shown or driven
+  // from here, so it is not ours to offer.
+  const candidates: Candidate[] = serverId
+    ? agentsStore
+        .agentsOnServer(serverId)
+        .map((agent) => ({ id: agent.switchAgentId as string, name: agent.name }))
+        .filter((a) => !members.has(a.id) && !selected.some((s) => s.id === a.id))
+    : [];
+  const nothingToAdd = candidates.length === 0 && selected.length === 0;
 
   const handleSubmit = useCallback(async () => {
     if (!serverId || selected.length === 0) return;
@@ -72,11 +70,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
         roomId,
         agentIds: selected.map((a) => a.id),
       });
-      // The sidebar lists agents under a room by membership, so the caches that
-      // answer "which rooms is this agent in" have to be re-read, not just the
-      // room list.
-      await switchRoomsStore.refreshAll();
-      await switchRoomsStore.loadRoomNames();
+      await switchRoomsStore.refreshRoomState();
       onSuccess();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -104,32 +98,32 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
             <Combobox
               items={candidates}
               value={null}
-              onValueChange={(next: RemoteAgentSummary | null) => {
+              onValueChange={(next: Candidate | null) => {
                 if (next) setSelected((current) => [...current, next]);
                 setError(null);
               }}
-              isItemEqualToValue={(a: RemoteAgentSummary, b: RemoteAgentSummary) => a.id === b.id}
-              filter={(item: RemoteAgentSummary, query) =>
+              isItemEqualToValue={(a: Candidate, b: Candidate) => a.id === b.id}
+              filter={(item: Candidate, query) =>
                 item.name.toLowerCase().includes(query.toLowerCase())
               }
               autoHighlight
             >
               <ComboboxTrigger
-                disabled={loading || nothingToAdd}
+                disabled={nothingToAdd}
                 className={cn(
                   'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
-                  (loading || nothingToAdd) && 'cursor-not-allowed opacity-60'
+                  nothingToAdd && 'cursor-not-allowed opacity-60'
                 )}
               >
                 <span className="flex-1 truncate text-left text-foreground-muted">
-                  {loading ? 'Loading agents…' : 'Add an agent'}
+                  Add an agent
                 </span>
                 <ChevronDown className="size-3.5 shrink-0 text-foreground-muted" />
               </ComboboxTrigger>
               <ComboboxContent className="min-w-(--anchor-width)">
                 <ComboboxInput showTrigger={false} placeholder="Search agents…" />
                 <ComboboxList>
-                  {(item: RemoteAgentSummary) => (
+                  {(item: Candidate) => (
                     <ComboboxItem key={item.id} value={item}>
                       <span className="min-w-0 flex-1 truncate">{item.name}</span>
                     </ComboboxItem>
@@ -162,7 +156,8 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
             )}
             {nothingToAdd && (
               <p className="mt-1 text-xs text-foreground-muted">
-                Every agent on this server is already in the room.
+                Every agent on this switchdash is already in the room. Agents registered elsewhere
+                can only be added from the gateway.
               </p>
             )}
           </Field>

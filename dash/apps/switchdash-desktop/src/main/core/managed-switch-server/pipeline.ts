@@ -52,10 +52,18 @@ export type StartStackOptions = {
  * was last started with, so a refused start leaves the host exactly as it was
  * and re-installing the newer switchdash is enough to recover.
  *
- * A host whose deployed version cannot be read is allowed through with a
- * warning rather than blocked — a transient daemon or SSH failure must not make
- * the app unstartable — so this is a guard against the known-bad case, not a
- * proof of safety.
+ * This blocks the PROVABLE downgrade only. Two cases pass through, and both are
+ * now said out loud rather than passing in silence (CHOO-1865):
+ *
+ * - The deployed version cannot be read. A transient daemon or SSH failure must
+ *   not make the app unstartable.
+ * - The two versions are not comparable — a dev tag, a fork's tag, anything that
+ *   is not semver. `classifyVersionDrift` reports `unknown`, which used to fall
+ *   into the same "not a downgrade" branch as a clean match and vanish. It
+ *   carries the same risk as a downgrade; we simply cannot prove it.
+ *
+ * So this is a guard against the known-bad case, not a proof of safety, and the
+ * log has to make that difference visible to whoever reads it afterwards.
  */
 async function refuseDowngrade(
   host: ServerHost
@@ -69,7 +77,15 @@ async function refuseDowngrade(
     return null;
   }
   const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
-  if (drift?.direction !== 'downgrade') return null;
+  if (drift?.direction === 'unknown') {
+    log.error(
+      `managed-switch-server: starting ${host.label} without proving it is not a downgrade — ` +
+        `deployed switch-core ${deployed.version} and pinned ${COMPATIBLE_SWITCH_VERSION} are not comparable. ` +
+        `If the deployed one is in fact newer, its database has already migrated and this start may strand it.`
+    );
+    return null;
+  }
+  if (drift?.direction !== 'downgrade' || drift.deployed === null) return null;
   log.error(
     `managed-switch-server: refusing to downgrade ${host.label} from switch-core ${drift.deployed} to ${drift.expected}`
   );

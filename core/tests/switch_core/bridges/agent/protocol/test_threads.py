@@ -42,9 +42,9 @@ class _FakeNio:
         self._events = events or {}
 
     async def room_messages(
-        self, room_id: str, start: str = "", limit: int = 0
+        self, room_id: str, start: str | None = None, limit: int = 0
     ) -> SimpleNamespace:
-        return SimpleNamespace(chunk=self._chunk)
+        return SimpleNamespace(chunk=self._chunk, end=None)
 
     async def room_get_event(self, room_id: str, event_id: str) -> Any:
         ev = self._events.get(event_id)
@@ -108,7 +108,7 @@ class TestReadContextThreads:
         ]
         svc = _service_with_client(_FakeNio(chunk=chunk))
 
-        result = await svc.read_context("agent", "room")
+        result = (await svc.read_context("agent", "room"))["threads"]
 
         # Two threads: e3 (latest 150) then e1 (latest 200) — most-active last.
         assert [g["root"]["id"] for g in result] == ["e3", "e1"]
@@ -122,7 +122,7 @@ class TestReadContextThreads:
         events = {"e1": _ev("e1", "old root", 100)}
         svc = _service_with_client(_FakeNio(chunk=chunk, events=events))
 
-        result = await svc.read_context("agent", "room")
+        result = (await svc.read_context("agent", "room"))["threads"]
 
         assert len(result) == 1
         assert result[0]["root"]["id"] == "e1"
@@ -134,7 +134,7 @@ class TestReadContextThreads:
         chunk = [_ev("e9", "reply", 200, thread_root="e1")]
         svc = _service_with_client(_FakeNio(chunk=chunk, events={}))
 
-        result = await svc.read_context("agent", "room")
+        result = (await svc.read_context("agent", "room"))["threads"]
 
         assert len(result) == 1
         assert result[0]["root"]["id"] == "e1"

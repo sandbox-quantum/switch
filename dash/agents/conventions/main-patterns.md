@@ -23,7 +23,7 @@ Controllers are assembled into the router in `src/main/rpc.ts`:
 ```ts
 export const rpcRouter = createRPCRouter({
   sessions: sessionController,
-  projects: projectController,
+  locations: locationsController,
   // ...
 });
 ```
@@ -60,21 +60,35 @@ Some domains expose a provider interface with a single local backend, leaving ro
 additional backends without changing call sites:
 
 ```
-src/main/core/projects/
-├── project-provider.ts            # Interface
-├── create-project-provider.ts     # Factory
-└── project-manager.ts             # Orchestrates the provider
+src/main/core/locations/
+├── location-provider.ts           # Interface
+├── create-location-provider.ts    # Factory
+└── location-manager.ts            # Orchestrates the provider
 ```
 
-Used in: projects, filesystem (`fs/impl/local-fs.ts`), terminals (`terminals/impl/local-terminal-provider.ts`).
-Switchdash is local-only — these providers currently have local implementations only.
+Used in: locations, filesystem (`fs/impl/local-fs.ts`), terminals (`terminals/impl/local-terminal-provider.ts`).
 
-## Result Type (`src/main/lib/result.ts`)
+**Switchdash is not local-only, and this is the pattern that carries the difference.**
+An agent runs either locally or on an SSH host, so the backend behind an interface is a
+real choice rather than a placeholder for one:
 
-Explicit error handling via discriminated union:
+- `execution-context` has `local-execution-context.ts` **and** `ssh-execution-context.ts`
+- `agent-runtime/impl/` has `local-agent-runtime.ts` **and** `ssh-agent-runtime.ts`
+- `dependencies` has local detection **and** `remote-dependency-manager.ts` /
+  `ssh-install-runner.ts`
+
+`fs` and `terminals` do currently have only a local implementation. When adding a backend,
+check whether the remote path needs one too — and see the sidecar section of `AGENTS.md`,
+because a remote session is served by `src/sidecar/`, which is a second implementation that
+will not follow your change automatically.
+
+## Result Type (`@switchdash/shared`)
+
+Explicit error handling via discriminated union. The type lives in the shared workspace
+package (`packages/shared/src/result.ts`), not in `src/main/lib/`:
 
 ```ts
-import { ok, err, type Result } from '../lib/result';
+import { ok, err, type Result } from '@switchdash/shared';
 
 async function doSomething(): Promise<Result<Data, SomeError>> {
   if (problem) return err({ type: 'not_found' as const });

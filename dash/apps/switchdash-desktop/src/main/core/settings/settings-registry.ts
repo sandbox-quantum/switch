@@ -68,6 +68,9 @@ export const SETTINGS_DEFAULTS = {
   resourceMonitor: {
     enabled: false,
   },
+  remote: {
+    maxAttachedSessionsPerHost: 4,
+  },
   changesViewMode: {
     unstaged: 'flat' as const,
     staged: 'flat' as const,

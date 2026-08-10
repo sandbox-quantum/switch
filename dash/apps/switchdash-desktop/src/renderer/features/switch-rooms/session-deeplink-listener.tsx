@@ -3,9 +3,9 @@ import { toast } from 'sonner';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { events } from '@renderer/lib/ipc';
-import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
+import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
+import { appState } from '@renderer/lib/stores/app-state';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { pickDeeplinkTarget } from './session-deeplink-resolve';
 import { switchRoomsStore as roomConnectionsStore } from './switch-rooms-store';
@@ -49,8 +49,7 @@ function findSessionById(sessionId: string): { locationId: string; sessionId: st
  * Listens for `switchdash://session?…` deeplinks (delivered by the main process
  * after a messaging-app click) and focuses the app on the matching agent
  * session: it selects the session's Switch server (so the server-scoped sidebar
- * shows it), reveals/expands the session in the sidebar, and navigates to the
- * session view. A render-less component so it can subscribe via the typed event
+ * shows it) and navigates to the session view. A render-less component so it can subscribe via the typed event
  * bus and use the navigation store. No live session for the room → logged and
  * ignored.
  */
@@ -78,9 +77,6 @@ export function SessionDeeplinkListener(): null {
           });
           return;
         }
-        // Scope the sidebar to the session's server first; otherwise its location
-        // is filtered out of the server-scoped tree and the reveal has nothing
-        // to expand.
         console.info('[deeplink] navigating to session', {
           linkSessionId: sessionId,
           matchedSessionId: match.sessionId,
@@ -88,11 +84,11 @@ export function SessionDeeplinkListener(): null {
           locationId: match.locationId,
           roomId,
         });
-        if (!agentsStore.loaded) await agentsStore.load();
-        const serverId = agentsStore.serverIdForLocation(match.locationId);
-        if (serverId) await switchServersStore.setActive(serverId);
-        sidebarStore.revealSessionInRoom(match.locationId, roomId);
-        sidebarStore.requestScrollToSession(match.sessionId);
+        // Scope the sidebar to the session's server first; otherwise its location
+        // is filtered out of the server-scoped tree and there is no row to
+        // reveal. Navigating is all the sidebar needs — it expands and scrolls
+        // to whatever the open view selects, from any origin.
+        await scopeToLocationServer(match.locationId);
         appState.navigation.navigate('session', match);
       })();
     });

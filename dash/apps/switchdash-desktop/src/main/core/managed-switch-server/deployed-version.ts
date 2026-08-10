@@ -92,10 +92,17 @@ export function classifyVersionDrift(
  * `host`. Shared by the local and remote supervisors so both surface the same
  * thing at boot.
  *
- * A host we cannot read reports no drift: the caller is a status reconcile, and
- * inventing a drift banner out of a failed probe would be worse than staying
- * quiet. The start path guards separately (see `startStack`), so an unreadable
- * host here cannot let a downgrade through.
+ * A host we cannot read reports an `unreadable` drift rather than none
+ * (CHOO-1865). It previously returned null, which is what a stack in step
+ * returns — so a failed probe rendered exactly like a healthy server, and the
+ * user was told nothing at all. Saying "we could not check" is honest; saying
+ * nothing is not.
+ *
+ * `absent` still reports no drift, and that is not the same omission: nothing
+ * has been deployed here, which is a first start rather than a failure.
+ *
+ * The start path guards separately (see `startStack`), so an unreadable host
+ * here cannot let a downgrade through.
  */
 export async function readVersionStatus(
   host: ServerHost,
@@ -107,7 +114,15 @@ export async function readVersionStatus(
       `managed-switch-server: could not read the deployed switch-core version on ${host.label}`,
       { reason: deployed.reason }
     );
-    return { deployedVersion: null, drift: null };
+    return {
+      deployedVersion: null,
+      drift: {
+        deployed: null,
+        expected,
+        direction: 'unreadable',
+        reason: deployed.reason,
+      },
+    };
   }
   if (deployed.kind === 'absent') return { deployedVersion: null, drift: null };
   return {

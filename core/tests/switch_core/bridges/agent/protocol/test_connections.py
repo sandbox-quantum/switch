@@ -9,7 +9,9 @@ import pytest
 from switch_core.bridges.agent.protocol.connections import (
     HEARTBEAT_TTL_SECONDS,
     MAX_CONNECTIONS_PER_AGENT,
+    PROTOCOL_ACCEPTS,
     PROTOCOL_VERSION,
+    ClientDeclaration,
     ConnectionRegistry,
     NoStreamAttachedError,
     ProtocolVersionError,
@@ -41,7 +43,7 @@ def _open(
         delivery_filter=delivery_filter,  # type: ignore[arg-type]
         spawn_capable=spawn_capable,
         cursor=cursor,
-        protocol_version=PROTOCOL_VERSION,
+        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
     )
 
 
@@ -81,8 +83,97 @@ def test_incompatible_protocol_is_refused() -> None:
             delivery_filter="all",
             spawn_capable=False,
             cursor=0,
-            protocol_version=PROTOCOL_VERSION + 1,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION + 1),
         )
+
+
+def _open_declaring(
+    registry: ConnectionRegistry, declaration: ClientDeclaration, *, cid: str = "c1"
+):
+    return registry.open(
+        agent_id=AGENT,
+        connection_id=cid,
+        scope="single",
+        delivery_filter="all",
+        spawn_capable=False,
+        cursor=0,
+        declaration=declaration,
+    )
+
+
+def test_a_client_that_declares_nothing_is_admitted_as_unknown() -> None:
+    """Unknown is not incompatible.
+
+    Refusing on silence would lock out every client built before there was
+    anything to say, and Part 1 of CHOO-1865 refuses nobody.
+    """
+    registry = ConnectionRegistry()
+    conn = _open_declaring(registry, ClientDeclaration())
+
+    assert conn.declaration.declares_protocol is False
+    assert conn.declaration.protocol_floor is None
+
+
+def test_a_client_declaring_only_speaks_is_read_as_a_single_revision() -> None:
+    """Which is exactly how the original exact-match check behaved."""
+    declaration = ClientDeclaration(speaks=PROTOCOL_VERSION)
+
+    assert declaration.protocol_floor == PROTOCOL_VERSION
+
+
+def test_overlapping_ranges_are_admitted() -> None:
+    registry = ConnectionRegistry()
+    conn = _open_declaring(
+        registry,
+        ClientDeclaration(speaks=PROTOCOL_VERSION + 3, accepts=PROTOCOL_ACCEPTS),
+    )
+
+    assert conn is not None
+
+
+def test_a_client_whose_ceiling_is_below_the_server_floor_is_refused() -> None:
+    registry = ConnectionRegistry()
+    with pytest.raises(ProtocolVersionError) as excinfo:
+        _open_declaring(
+            registry,
+            ClientDeclaration(
+                speaks=PROTOCOL_ACCEPTS - 1, accepts=PROTOCOL_ACCEPTS - 1
+            ),
+        )
+
+    # The client is behind, so the client is what should move.
+    assert excinfo.value.remedy == "update the Switch agent runtime"
+
+
+def test_a_client_whose_floor_is_above_the_server_ceiling_is_refused() -> None:
+    registry = ConnectionRegistry()
+    with pytest.raises(ProtocolVersionError) as excinfo:
+        _open_declaring(
+            registry,
+            ClientDeclaration(
+                speaks=PROTOCOL_VERSION + 1, accepts=PROTOCOL_VERSION + 1
+            ),
+        )
+
+    # The server is behind, so naming the runtime would send the user to
+    # downgrade the side that was already right.
+    assert excinfo.value.remedy == "update switch-core"
+
+
+def test_a_reattach_replaces_the_declaration() -> None:
+    """The connection outlives the socket; what is on the other end need not.
+
+    A client can be upgraded and reattach to the same connection id.
+    """
+    registry = ConnectionRegistry()
+    _open_declaring(
+        registry, ClientDeclaration(speaks=PROTOCOL_VERSION, version="1.0.0")
+    )
+    conn = _open_declaring(
+        registry, ClientDeclaration(speaks=PROTOCOL_VERSION, version="1.1.0")
+    )
+
+    assert conn.declaration.version == "1.1.0"
 
 
 def test_connection_cap_is_enforced_loudly() -> None:

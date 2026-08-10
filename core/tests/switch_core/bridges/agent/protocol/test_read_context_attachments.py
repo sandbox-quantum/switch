@@ -40,8 +40,9 @@ def _text_event() -> nio.RoomMessageText:
 
 
 def _build_service(chunk: list[object]) -> ProtocolService:
-    async def _room_messages(matrix_room_id: str, start: str, limit: int):
-        return SimpleNamespace(chunk=chunk)
+    async def _room_messages(matrix_room_id: str, start: str | None, limit: int):
+        # No continuation token: this page is the start of the room.
+        return SimpleNamespace(chunk=chunk, end=None)
 
     fake_client = SimpleNamespace(
         nio_client=SimpleNamespace(room_messages=_room_messages)
@@ -65,7 +66,7 @@ async def test_image_event_carries_attachment() -> None:
     svc = _build_service([_image_event()])
 
     # read_context returns thread groups; a standalone message is its own root.
-    groups = await svc.read_context("agent-1", "room-1")
+    groups = (await svc.read_context("agent-1", "room-1"))["threads"]
 
     assert len(groups) == 1
     root = groups[0]["root"]
@@ -84,7 +85,7 @@ async def test_image_event_carries_attachment() -> None:
 async def test_text_event_has_empty_attachments() -> None:
     svc = _build_service([_text_event()])
 
-    groups = await svc.read_context("agent-1", "room-1")
+    groups = (await svc.read_context("agent-1", "room-1"))["threads"]
 
     assert len(groups) == 1
     root = groups[0]["root"]
