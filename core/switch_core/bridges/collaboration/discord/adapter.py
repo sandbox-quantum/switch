@@ -12,6 +12,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
@@ -438,6 +439,13 @@ class DiscordAdapter(CollaborationAdapter):
                 caption,
                 thread_root_id,
             )
+
+    def slash_invite_hint(self) -> str:
+        # Discord declares each argument as its own named field, so the option
+        # name is part of the invocation. Read from the registry the commands
+        # are registered from, so a renamed argument cannot leave this stale.
+        option = COMMANDS_BY_NAME["invite-agent"].args_spec[0].name
+        return f"`/invite-agent {option}:agent-name` — the Discord slash command"
 
     async def admin_message(
         self,

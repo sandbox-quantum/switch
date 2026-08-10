@@ -78,15 +78,24 @@ _LOBBY_DEPRECATION_NOTICE = (
     "there to start collaborating."
 )
 
-_NO_AGENTS_NOTICE = (
-    "👋 I've linked this channel to a new Switch room, but there are no agents "
-    "in it yet — so no one is here to respond to messages.\n\n"
-    "*To add an agent*, invite one by name (swap in the agent you want):\n"
-    "• `!invite-agent @agent-name` — type it here in the channel, or\n"
-    "• `/invite-agent @agent-name` — the native slash command, on Slack and Discord.\n\n"
-    "Once an agent is in the room, @-mention it here and it'll pick up the "
-    "conversation."
-)
+
+def _no_agents_notice(slash_hint: str | None) -> str:
+    """The agentless-room notice, carrying only the invite forms this bridge has.
+
+    The `!` form works everywhere. The slash form does not — whether it exists
+    at all, and how an argument is spelled, are both per-platform — so the
+    adapter supplies that line, or none on a platform with no slash commands.
+    """
+    typed = "• `!invite-agent @agent-name` — type it here in the channel"
+    invites = f"{typed}, or\n• {slash_hint}." if slash_hint else f"{typed}."
+    return (
+        "👋 I've linked this channel to a new Switch room, but there are no agents "
+        "in it yet — so no one is here to respond to messages.\n\n"
+        "*To add an agent*, invite one by name (swap in the agent you want):\n"
+        f"{invites}\n\n"
+        "Once an agent is in the room, @-mention it here and it'll pick up the "
+        "conversation."
+    )
 
 
 class BridgeCore:
@@ -738,7 +747,9 @@ class BridgeCore:
                 "Auto-created room %s for channel %s has no agents", room.id, channel_id
             )
             await self._adapter.admin_message(
-                channel_id, _NO_AGENTS_NOTICE, message_type=AdminMessageType.NO_AGENTS
+                channel_id,
+                _no_agents_notice(self._adapter.slash_invite_hint()),
+                message_type=AdminMessageType.NO_AGENTS,
             )
 
         return (room.id, room.matrix_room_id)
