@@ -300,6 +300,66 @@ def test_a_bang_prefixed_message_routes_as_a_command() -> None:
     assert commands[0].message_ref == f"{CHAT_ID}:11"
 
 
+def test_a_slash_prefixed_message_routes_as_a_command() -> None:
+    # `/name` is Telegram's native command convention — the client renders it
+    # as a tappable link — and with privacy mode left on it is the only text a
+    # bot reliably receives in a group. It has to reach the same dispatcher as
+    # `!name` or the documented commands simply do nothing (CHOO-1686).
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    messages: list[InboundMessage] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    adapter._on_message = lambda m: _collect(messages, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="/invite-agent @scout")))
+
+    assert messages == []
+    assert commands[0].command == "invite-agent"
+    assert commands[0].args == "@scout"
+
+
+def test_a_command_addressed_to_the_bot_drops_the_bot_name() -> None:
+    # Telegram appends @botname when the command is picked from autocomplete
+    # in a group; the dispatcher must still see the bare command.
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=f"/invite-agent@{BOT_USERNAME} @scout")
+        )
+    )
+
+    assert commands[0].command == "invite-agent"
+    assert commands[0].args == "@scout"
+
+
+def test_a_bare_command_has_no_arguments() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(adapter._handle_message(_FakeInbound(text="/list-agents")))
+
+    assert commands[0].command == "list-agents"
+    assert commands[0].args == ""
+
+
+@pytest.mark.parametrize("text", ["/", "!", "/ spaced", "hello /not-a-command"])
+def test_text_that_only_looks_like_a_command_is_bridged_as_a_message(text: str) -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    messages: list[InboundMessage] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    adapter._on_message = lambda m: _collect(messages, m)
+
+    _run(adapter._handle_message(_FakeInbound(text=text)))
+
+    assert commands == []
+    assert len(messages) == 1
+
+
 def test_tagging_the_bot_itself_is_reported() -> None:
     adapter = _adapter()
     seen: list[InboundMessage] = []

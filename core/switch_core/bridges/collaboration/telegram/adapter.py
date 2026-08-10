@@ -54,6 +54,9 @@ _MEDIA_GROUP_MAX = 10
 
 _ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member"]
 
+# Switch's own in-room prefix, plus Telegram's native one.
+_COMMAND_PREFIXES = ("!", "/")
+
 # Supergroup and channel ids are the internal id with a -100 prefix; t.me/c/
 # links carry the internal id alone.
 _SUPERGROUP_PREFIX = "-100"
@@ -742,17 +745,17 @@ class TelegramAdapter(CollaborationAdapter):
         root_id = self._root_id_of(message)
         message_ref = f"{chat_id}:{message.message_id}"
 
-        stripped = content.strip()
-        if stripped.startswith("!") and self._on_command:
-            parts = stripped.split(None, 1)
+        parsed = self._parse_command(content.strip())
+        if parsed is not None and self._on_command:
+            name, args = parsed
             await self._on_command(
                 InboundCommand(
                     channel_id=chat_id,
                     channel_type=channel_type,
                     sender_id=str(author.id),
                     sender_name=username,
-                    command=parts[0].lstrip("!"),
-                    args=parts[1].strip() if len(parts) > 1 else "",
+                    command=name,
+                    args=args,
                     message_ref=message_ref,
                     root_id=root_id,
                     channel_name=channel_name,
@@ -814,6 +817,27 @@ class TelegramAdapter(CollaborationAdapter):
                     channel_name=channel_name,
                 )
             )
+
+    @staticmethod
+    def _parse_command(text: str) -> tuple[str, str] | None:
+        """Split an in-room command out of a message, or None if it is not one.
+
+        Telegram's native command convention is `/name`: the client renders it
+        as a tappable link and offers autocomplete for it, and — with privacy
+        mode left enabled — a `/`-prefixed message is the *only* text a bot
+        reliably receives in a group. So `/name` is accepted as a first-class
+        command alongside Switch's own `!name`, both mapping to the same
+        dispatcher, exactly as Slack's native slash commands already do.
+        """
+        if not text or text[0] not in _COMMAND_PREFIXES:
+            return None
+        parts = text.split(None, 1)
+        # Picked from Telegram's autocomplete in a group, a command arrives
+        # addressed to the bot: `/invite-agent@acme_switch_bot`.
+        name = parts[0][1:].split("@", 1)[0]
+        if not name:
+            return None
+        return name, parts[1].strip() if len(parts) > 1 else ""
 
     @staticmethod
     def _root_id_of(message: Any) -> str | None:

@@ -83,7 +83,8 @@ _NO_AGENTS_NOTICE = (
     "in it yet — so no one is here to respond to messages.\n\n"
     "*To add an agent*, invite one by name (swap in the agent you want):\n"
     "• `!invite-agent @agent-name` — type it here in the channel, or\n"
-    "• `/invite-agent @agent-name` — the Slack slash command.\n\n"
+    "• `/invite-agent @agent-name` — the slash command, on the platforms that "
+    "have one (Slack, Telegram).\n\n"
     "Once an agent is in the room, @-mention it here and it'll pick up the "
     "conversation."
 )
