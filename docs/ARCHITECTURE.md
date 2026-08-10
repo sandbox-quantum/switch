@@ -92,15 +92,15 @@ flowchart LR
 | Persistence | `db/` | PostgreSQL via SQLAlchemy async; table models in `db/models.py`, query logic in `db/stores/`. |
 | Homeserver admin | `matrix_admin.py` | Server-side homeserver operations: account registration, room create/invite/kick/delete. |
 
-### The desktop app (switchdash)
+### The desktop app (Switch Console)
 
-`dash/` is a local-first Electron desktop app (a fork; see
-`dash/NOTICE`) for managing the local coding-agent sessions that participate in
+`console/` is a local-first Electron desktop app (a fork; see
+`console/NOTICE`) for managing the local coding-agent sessions that participate in
 Switch — which rooms an agent belongs to, its config, and session scheduling
 (e.g. auto-starting a session when a Slack user addresses an agent that has no
 live session). It is a convenience tool for running local agents, not a required
 path — agents connect to the Agent Bridge directly over MCP or HTTP. It has its
-own architecture docs under `dash/agents/`.
+own architecture docs under `console/agents/`.
 
 ---
 
@@ -352,7 +352,7 @@ A quick index for navigation:
 | Migrations | `core/switch_core/migrations/` |
 | Gateway API (backend) | `core/switch_core/gateway/` |
 | Operator dashboard (SPA) | `gateway/` (top level) |
-| Desktop app | `dash/` |
+| Desktop app | `console/` |
 
 ---
 

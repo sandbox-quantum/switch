@@ -1,10 +1,16 @@
 name: CLA Assistant
 
+# CLA enforcement is temporarily disabled pending official SandboxAQ Legal
+# approval of the CLA (CHOO-1253). While disabled, this workflow runs only on
+# manual dispatch and never gates pull requests. To re-enable, restore the
+# issue_comment and pull_request_target triggers below (and restore CLA.md):
+#
+#   issue_comment:
+#     types: [created]
+#   pull_request_target:
+#     types: [opened, synchronize]
 on:
-  issue_comment:
-    types: [created]
-  pull_request_target:
-    types: [opened, synchronize]
+  workflow_dispatch:
 
 permissions:
   actions: write

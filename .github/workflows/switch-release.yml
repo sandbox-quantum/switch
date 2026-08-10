@@ -186,7 +186,7 @@ jobs:
       - name: Push compose artifact
         # Publishes deploy/local/standalone-docker-compose.yml to GHCR as an OCI
         # artifact, stamped with the same version as the images so a single tag
-        # pins the whole standalone stack. switchdash bundles this exact file at
+        # pins the whole standalone stack. Switch Console bundles this exact file at
         # build time. `latest` moves with each release.
         if: ${{ needs.prep.outputs.push == 'true' }}
         working-directory: deploy/local

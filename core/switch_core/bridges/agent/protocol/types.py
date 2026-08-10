@@ -18,7 +18,7 @@ class TaskProtocolConfig(BaseModel):
 #   - "unsupported": the command never applies to this agent-type.
 #   - "always": the agent-type can always act on it, regardless of session.
 #   - "session_dependent": support depends on the specific live session — e.g.
-#     a Claude Code session launched from switchdash can be controlled, but a
+#     a Claude Code session launched from Switch Console can be controlled, but a
 #     standalone `claude` session started in a plain terminal cannot. The live
 #     session declares its own capabilities via AgentRuntimeState.
 CommandLevel = Literal["unsupported", "always", "session_dependent"]
@@ -207,7 +207,7 @@ class CommandPayload(BaseModel):
     user_id: str
     user_name: str
     # Thread root of the originating command message, so a controller executing
-    # the command (e.g. switchdash on reset/compact) can have the agent post its
+    # the command (e.g. Switch Console on reset/compact) can have the agent post its
     # completion notice back into that same thread. None when the command was
     # not in a thread.
     thread_id: str | None = None

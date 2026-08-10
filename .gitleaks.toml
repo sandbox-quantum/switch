@@ -15,5 +15,5 @@ regexes = [
 ]
 paths = [
   # Log-redaction tests exercise deliberately fake vendor tokens.
-  '''dash/apps/switchdash-desktop/src/main/lib/file-logger\.test\.ts$''',
+  '''console/apps/switch-console-desktop/src/main/lib/file-logger\.test\.ts$''',
 ]

@@ -145,7 +145,7 @@ class AgentRuntimeStateEvent(SwitchEvent):
     state: str
     notify_user: str | None = None
     thread_id: str | None = None
-    # A `switchdash://session?…` deeplink the reporting client (switchdash)
+    # A `switchdash://session?…` deeplink the reporting client (Switch Console)
     # built so the bridged message can link back to its session. Relayed as-is;
     # switch-core does not construct it. None for clients that don't supply one.
     deeplink_url: str | None = None

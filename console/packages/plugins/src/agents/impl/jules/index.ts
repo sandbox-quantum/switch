@@ -1,0 +1,56 @@
+import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
+import { buildStandardCommand, npmDependency } from '@switch-console/core/agents/plugins/helpers';
+import { icon } from './icon';
+
+export const plugin = definePlugin(
+  {
+    id: 'jules',
+    name: 'Jules',
+    description:
+      "Google's Jules CLI for managing asynchronous remote coding sessions and a terminal dashboard.",
+    websiteUrl: 'https://jules.google/docs/cli/reference/',
+  },
+  {
+    autoApprove: {
+      kind: 'none',
+    },
+    effort: {
+      kind: 'none',
+    },
+    hooks: {
+      kind: 'none',
+    },
+    hostDependency: npmDependency({
+      id: 'jules',
+      package: '@google/jules',
+      versionArgs: ['version'],
+    }),
+    mcp: {
+      kind: 'none',
+    },
+    models: {
+      kind: 'none',
+    },
+    plugins: {
+      kind: 'none',
+    },
+    prompt: {
+      kind: 'keystroke',
+    },
+    sessions: {
+      kind: 'stateless',
+    },
+    repoAgents: { kind: 'none' },
+    switchSetup: { kind: 'none' },
+  },
+  { icon }
+);
+
+export const provider = registerPluginBehavior(plugin, {
+  prompt: {
+    buildCommand: (ctx) =>
+      buildStandardCommand(ctx, {
+        initialPromptFlag: '',
+      }),
+  },
+});

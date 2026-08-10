@@ -1,13 +1,13 @@
 # Publish the shared agent runtime to GitHub Packages.
 #
 # The package is consumed two ways, and only one of them needs a registry:
-# switchdash builds it from the workspace, so it never waits on a publish. The
+# Switch Console builds it from the workspace, so it never waits on a publish. The
 # Claude Code plugin runs it with `npx`, and that needs a version to exist.
 #
 # Triggered by a tag, so a version can be published from a BRANCH — you should
 # not have to merge to main to test the thing you are testing. To cut one:
 #
-#   # bump "version" in dash/packages/switch-agent-runtime/package.json first
+#   # bump "version" in console/packages/switch-agent-runtime/package.json first
 #   git tag switch-agent-runtime-v0.1.0
 #   git push origin switch-agent-runtime-v0.1.0
 #
@@ -52,7 +52,7 @@ jobs:
       packages: write
     defaults:
       run:
-        working-directory: dash
+        working-directory: console
 
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
           fetch-depth: 0
 
       # Pinned rather than read from packageManager: that field lives in
-      # dash/package.json, and the action looks at the repo root.
+      # console/package.json, and the action looks at the repo root.
       - uses: pnpm/action-setup@v4
         with:
           version: 10.28.2
@@ -71,7 +71,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: dash/pnpm-lock.yaml
+          cache-dependency-path: console/pnpm-lock.yaml
           registry-url: https://npm.pkg.github.com
           scope: '@sandbox-quantum'
 
@@ -82,7 +82,7 @@ jobs:
       - run: pnpm --filter @sandbox-quantum/switch-agent-runtime run build
 
       - name: Publish if this version is new
-        working-directory: dash/packages/switch-agent-runtime
+        working-directory: console/packages/switch-agent-runtime
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_REF: ${{ github.ref }}

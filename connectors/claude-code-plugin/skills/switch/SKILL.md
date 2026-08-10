@@ -217,7 +217,7 @@ react if relevant (e.g. greet a new arrival and explain the room). Your
 own join never produces one.
 
 **Under a supervisor, the same events arrive as text instead.** A session
-switchdash launched shares its connection: switchdash reads the stream and
+Switch Console launched shares its connection: Switch Console reads the stream and
 delivers each event into your session as a `[Switch] …` line rather than a
 `<channel>` notification, so you are not told twice. What is delivered, what
 is filtered out, the unread count and the gap warning are all the same

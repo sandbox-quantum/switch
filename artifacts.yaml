@@ -64,18 +64,18 @@ artifacts:
     declared_in: core/pyproject.toml
     published_as: switch-core
 
-  switchdash:
+  switch-console:
     description: The desktop app.
     version: 0.19.3
-    declared_in: dash/apps/switchdash-desktop/package.json
+    declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
     #
     # They coincide today, and must not be wired together: bumping
     # core/pyproject.toml is the first step of cutting a switch-core release, so
-    # a derived pin would immediately point switchdash at images that do not
+    # a derived pin would immediately point Switch Console at images that do not
     # exist on the registry yet and break local-server mode for everyone on
-    # main. This moves only when switchdash is ready to bundle that release —
+    # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
       switch-core: 0.12.3
@@ -83,11 +83,11 @@ artifacts:
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
     version: 0.2.0
-    declared_in: dash/packages/switch-agent-runtime/package.json
+    declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
     description: >-
-      The remote runtime switchdash deploys to an agent host. Deployed rather
+      The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
     version: 1.8.0
@@ -120,7 +120,7 @@ artifacts:
   compose:
     description: >-
       The standalone compose file, published as an OCI artifact. Unlike the
-      chart this one has a real peer — switchdash's local-server mode drives it
+      chart this one has a real peer — Switch Console's local-server mode drives it
       — so it does carry a contract, below.
     version_from: switch-core
     published_as: standalone-compose
@@ -153,23 +153,23 @@ contracts:
       wrong.
     artifacts:
       switch-core: { speaks: 1, accepts: 1 }
-      switchdash: { speaks: 1, accepts: 1 }
+      switch-console: { speaks: 1, accepts: 1 }
 
   stack-compose:
     description: >-
       The interface of the published standalone compose artifact — its service
-      names, profiles, and environment variables — which switchdash's
+      names, profiles, and environment variables — which Switch Console's
       local-server mode drives.
     artifacts:
-      switchdash: { speaks: 1, accepts: 1 }
+      switch-console: { speaks: 1, accepts: 1 }
       compose: { speaks: 1, accepts: 1 }
 
   sidecar-control:
     description: >-
-      How switchdash controls a deployed sidecar on a remote host: the ready
+      How Switch Console controls a deployed sidecar on a remote host: the ready
       file it reads, and the control channel it opens.
     artifacts:
-      switchdash: { speaks: 1, accepts: 1 }
+      switch-console: { speaks: 1, accepts: 1 }
       sidecar: { speaks: 1, accepts: 1 }
 
   db-schema:

@@ -15,7 +15,7 @@ IDLE = "idle"
 class AgentRuntimeStateStore:
     """Per-(agent, room) runtime state — what an agent's session is doing.
 
-    One row per (agent, room), upserted as the switchdash-managed session
+    One row per (agent, room), upserted as the Switch Console-managed session
     transitions. Not a liveness store (that is `AgentSessionStore`); this only
     records the last reported state so it can be queried (`!status`) and
     re-surfaced on the bridge.

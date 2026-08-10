@@ -13,7 +13,7 @@ message bus.
 
 All Switch tools are served by a local runtime running beside you,
 registered as the `switch` MCP server. This plugin does **not** bundle it:
-switchdash registers it when it launches your session, through a per-agent
+Switch Console registers it when it launches your session, through a per-agent
 Codex profile (`--profile <name>`). Tool calls travel that runtime's
 connection to Switch, so you never talk to the Switch server directly. If
 the Switch tools are missing, the session was launched without the profile;
@@ -39,7 +39,7 @@ say so rather than guessing.
    ignoring it: work may have been interrupted somewhere else, and the
    other session will not be told by anyone but you.
 3. **Delivery starts automatically.** `connect_to_room` claims the room on
-   the connection your session was launched with, and switchdash — which
+   the connection your session was launched with, and Switch Console — which
    holds that connection — delivers the room's events into your session as
    `[Switch] …` lines. No separate tool call is needed, and calling
    `connect_to_room` with a new `room_id` re-targets delivery. See
@@ -201,9 +201,9 @@ outstanding work.
 ## Receiving room events
 
 Room events reach you as **`[Switch] …` lines delivered into this session**
-by switchdash, which holds your session's connection to Switch. They are not
+by Switch Console, which holds your session's connection to Switch. They are not
 MCP notifications: they arrive in your input the way a message from the
-operator does. If your session was not started by switchdash, nothing
+operator does. If your session was not started by Switch Console, nothing
 delivers events to you at all and `read_context` is your only source — say
 so rather than waiting for a line that will never come.
 

@@ -22,7 +22,7 @@ keep you informed of progress.
 When reporting, please include where relevant:
 
 - The component and version / commit affected (e.g. `switch-core`, the gateway,
-  switchdash, a collaboration bridge).
+  Switch Console, a collaboration bridge).
 - A clear description of the vulnerability and its impact.
 - Steps to reproduce or a proof of concept.
 - Any suggested remediation.
@@ -30,8 +30,8 @@ When reporting, please include where relevant:
 ## Scope
 
 This policy covers the code in this repository: the Switch control plane
-(`core/`), the operator gateway (`gateway/`), the switchdash desktop app
-(`dash/`), the connector plugins (`connectors/`), and the deployment assets
+(`core/`), the operator gateway (`gateway/`), the Switch Console desktop app
+(`console/`), the connector plugins (`connectors/`), and the deployment assets
 (`deploy/`). Vulnerabilities in third-party dependencies should be reported to
 the upstream project; if a dependency issue affects Switch specifically, let us
 know so we can pull in the fix.

@@ -1076,7 +1076,7 @@ class ProtocolService:
         Persists the latest state (so it is queryable via `!status`) and emits
         a `com.switch.agent.runtime_state` room event the collaboration bridge
         picks up to surface the state on the bridged channel. Reported by the
-        switchdash connector as its managed session transitions.
+        Switch Console connector as its managed session transitions.
 
         `thread_id` (the triggering message's thread, when it was in one) rides
         the event so the bridge can surface the state in that thread. It is
@@ -1094,7 +1094,7 @@ class ProtocolService:
         anything.
 
         The `switchdash://` deeplink is rewritten to a gateway HTTP redirect when
-        `GATEWAY_PUBLIC_URL` is configured, so the "Open in SwitchDash" link is
+        `GATEWAY_PUBLIC_URL` is configured, so the "Open in Switch Console" link is
         clickable on platforms that only linkify http(s) (Discord). The rewritten
         link is what gets persisted and emitted, so both the bridged status
         message and the `!status` command surface a clickable link. When unset,
@@ -1609,7 +1609,7 @@ class ProtocolService:
         """Refresh an auto_session connector's global "watching" heartbeat.
 
         Pinged on a cadence (well under ALWAYS_ON_TTL) by the connector
-        (switchdash) while it is watching this agent's rooms. Makes the agent
+        (Switch Console) while it is watching this agent's rooms. Makes the agent
         report DORMANT (rather than DISCONNECTED) in rooms where it has no live
         session, which licenses the "Starting a session…" reply when addressed.
         Uses the room-agnostic (room_id=None) heartbeat slot.

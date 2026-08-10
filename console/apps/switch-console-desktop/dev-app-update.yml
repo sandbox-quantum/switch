@@ -1,0 +1,4 @@
+provider: github
+owner: sandbox-quantum
+repo: switch
+updaterCacheDirName: switch-console-updater

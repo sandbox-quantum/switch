@@ -203,11 +203,11 @@ async def test_the_second_session_actually_gets_the_room(harness: Any) -> None:
 async def test_the_evicted_session_is_woken_so_its_stream_reports_the_loss(
     harness: Any,
 ) -> None:
-    """How the loser — and through it, switchdash's sidebar — finds out.
+    """How the loser — and through it, Switch Console's sidebar — finds out.
 
     The eviction reaches the previous holder as `subscription_changed` on its
     own stream. Its client clears the room from the session, which is what stops
-    switchdash showing two sessions under one room.
+    Switch Console showing two sessions under one room.
     """
     first = _open(harness.registry, "session-one")
     await _connect_as("session-one")

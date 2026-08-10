@@ -1,8 +1,8 @@
 name: PR CI
 
-# Pull-request checks for the three code trees (core/, dash/, gateway/) plus a
+# Pull-request checks for the three code trees (core/, console/, gateway/) plus a
 # repo-wide secret scan. Complements the tag-driven release workflows
-# (switch-release.yml, switchdash-release.yml) — this file is the ongoing
+# (switch-release.yml, switch-console-release.yml) — this file is the ongoing
 # per-PR gate, they publish on tags.
 #
 # Fork safety: this uses `pull_request` (NOT `pull_request_target`), so runs
@@ -12,7 +12,7 @@ name: PR CI
 #
 # Path filtering: a `changes` job (dorny/paths-filter) detects which trees a PR
 # touched; each tree's job is gated on its filter, so a backend-only PR skips
-# the dash/gateway jobs entirely. Shared files (workflows, root config) fan out
+# the console/gateway jobs entirely. Shared files (workflows, root config) fan out
 # to everything, since a change there can affect any tree. On a push to main
 # every tree runs regardless: the filter resolves its base differently outside a
 # PR, and a main run that quietly skipped the tree it should have checked would
@@ -44,7 +44,7 @@ jobs:
       pull-requests: read
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
-      dash: ${{ steps.filter.outputs.dash }}
+      console: ${{ steps.filter.outputs.console }}
       gateway: ${{ steps.filter.outputs.gateway }}
       artifacts: ${{ steps.filter.outputs.artifacts }}
     steps:
@@ -64,12 +64,12 @@ jobs:
               - *shared
               - 'core/**'
               - 'connectors/**'
-            dash:
+            console:
               - *shared
-              - 'dash/**'
-              # switchdash bundles a generated copy of this file, and the job
+              - 'console/**'
+              # Switch Console bundles a generated copy of this file, and the job
               # below verifies the copy is current — so a change here has to
-              # run the dash job even though it lives outside dash/.
+              # run the console job even though it lives outside console/.
               - 'deploy/local/standalone-docker-compose.yml'
             gateway:
               - *shared
@@ -83,11 +83,11 @@ jobs:
               - 'scripts/gen_artifacts.py'
               - 'core/switch_core/artifacts.py'
               - 'core/pyproject.toml'
-              - 'dash/packages/shared/src/artifacts.ts'
-              - 'dash/packages/switch-agent-runtime/src/artifacts.ts'
-              - 'dash/apps/switchdash-desktop/package.json'
-              - 'dash/apps/switchdash-desktop/src/shared/app-identity*.ts'
-              - 'dash/packages/switch-agent-runtime/package.json'
+              - 'console/packages/shared/src/artifacts.ts'
+              - 'console/packages/switch-agent-runtime/src/artifacts.ts'
+              - 'console/apps/switch-console-desktop/package.json'
+              - 'console/apps/switch-console-desktop/src/shared/app-identity*.ts'
+              - 'console/packages/switch-agent-runtime/package.json'
               - 'connectors/**/plugin.json'
 
   backend:
@@ -124,14 +124,14 @@ jobs:
       - name: pytest
         run: uv run --project core pytest -c core/pyproject.toml core/tests/
 
-  dash:
-    name: Switchdash (dash)
+  console:
+    name: Switch Console
     needs: changes
-    if: ${{ needs.changes.outputs.dash == 'true' || github.event_name == 'push' }}
+    if: ${{ needs.changes.outputs.console == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: dash
+        working-directory: console
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -144,9 +144,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version-file: dash/.nvmrc
+          node-version-file: console/.nvmrc
           cache: pnpm
-          cache-dependency-path: dash/pnpm-lock.yaml
+          cache-dependency-path: console/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -161,7 +161,7 @@ jobs:
       # comment asking nicely, which is how it silently stopped running once
       # already (CHOO-1865).
       - name: Bundled standalone compose is current
-        run: pnpm --filter switchdash-desktop run sync:compose:check
+        run: pnpm --filter switch-console-desktop run sync:compose:check
 
       - name: Build workspace packages
         run: pnpm -r --filter './packages/**' run build
@@ -185,7 +185,7 @@ jobs:
     # hand-editing a generated module. The same check compares the registry
     # against the version files packaging ecosystems own. It needs no formatter
     # or Node toolchain, which is why this is its own small job rather than a
-    # step inside the backend or dash trees.
+    # step inside the backend or console trees.
     needs: changes
     if: ${{ needs.changes.outputs.artifacts == 'true' || github.event_name == 'push' }}
     runs-on: ubuntu-latest

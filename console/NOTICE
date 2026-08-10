@@ -1,0 +1,11 @@
+Switch Console
+Copyright 2025 SandboxAQ
+
+Switch Console is initally a fork of emdash (https://github.com/generalaction/emdash),
+Copyright General Action, Inc., licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0). Portions originally developed as
+part of emdash are used and modified here under the terms of that license.
+
+The "Switch Console" name, logos, and associated branding are not part of the
+upstream emdash project and are owned by SandboxAQ. See the repository-root
+LICENSE for the terms that apply to this distribution.

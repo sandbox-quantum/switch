@@ -41,7 +41,7 @@ authorised for returns **404**, not 403, because registries do not admit that
 private packages exist. "Package not found" almost always means "not logged
 in" here.
 
-Sessions launched by switchdash get this handed to them and need nothing.
+Sessions launched by Switch Console get this handed to them and need nothing.
 This step is for **standalone Claude Code**, where nothing is injecting it.
 
 First check whether it is already set up:

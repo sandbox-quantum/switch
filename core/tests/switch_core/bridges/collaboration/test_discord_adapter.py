@@ -7,6 +7,7 @@ from unittest.mock import patch
 import discord
 import pytest
 
+from switch_core.bridges.agent.commands import COMMANDS
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
@@ -532,6 +533,67 @@ def test_send_message_posts_via_webhook_with_agent_identity() -> None:
     assert ref == f"{CHANNEL_ID}:901"
 
 
+def test_long_message_is_split_across_posts_not_dropped() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+    body = "\n".join(f"line {i}" for i in range(1000))
+
+    ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
+
+    # Discord rejects anything over 2,000 characters outright, so before this
+    # the whole message was logged and thrown away.
+    assert len(webhook.sent) > 1
+    assert all(len(c["content"]) <= 2000 for c in webhook.sent)
+    assert "\n".join(c["content"] for c in webhook.sent) == body
+    # Every part keeps the agent's identity.
+    assert {c["username"] for c in webhook.sent} == {"my-agent"}
+    # The ref is the FIRST part: replies thread under where the message starts.
+    assert ref == f"{CHANNEL_ID}:901"
+
+
+def test_long_admin_message_is_split_across_posts() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    body = "\n".join(f"- `!cmd-{i}` — does a thing" for i in range(200))
+
+    ref = _run(adapter.admin_message(str(CHANNEL_ID), body))
+
+    assert len(channel.sent) > 1
+    assert all(len(c["content"]) <= 2000 for c in channel.sent)
+    assert "\n".join(c["content"] for c in channel.sent) == body
+    assert ref == f"{CHANNEL_ID}:501"
+
+
+def test_failed_part_leaves_a_visible_truncation_notice() -> None:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[CHANNEL_ID] = webhook
+    body = "\n".join(f"line {i}" for i in range(1000))
+
+    sends = {"n": 0}
+    original = webhook.send
+
+    async def flaky(**kwargs: Any) -> Any:
+        sends["n"] += 1
+        if sends["n"] == 2:
+            raise discord.HTTPException(_FakeResponse(), "too long")
+        return await original(**kwargs)
+
+    webhook.send = flaky  # type: ignore[method-assign]
+    ref = _run(adapter.send_message(str(CHANNEL_ID), "my-agent", body))
+
+    # Part 1 landed, part 2 failed: the reader is told rather than left with a
+    # message that just stops.
+    assert "Only 1 of" in webhook.sent[-1]["content"]
+    assert ref == f"{CHANNEL_ID}:901"
+
+
 def test_send_message_with_thread_root_posts_into_thread() -> None:
     adapter = _adapter()
     channel = _FakeChannel()
@@ -1004,6 +1066,29 @@ class _BotUser:
         return f"bot#{self.id}"
 
 
+class _FakeConnectionState:
+    """The two client-state attributes ``discord.app_commands.CommandTree``
+    reads: it parks itself on ``_command_tree`` and consults ``_translator``
+    when rendering a command payload."""
+
+    def __init__(self) -> None:
+        self._command_tree: Any = None
+        self._translator: Any = None
+
+
+class _FakeCommandHTTP:
+    """Captures the guild-scoped slash-command sync ``start()`` performs."""
+
+    def __init__(self) -> None:
+        self.bulk_upserts: list[tuple[int, int, list[Any]]] = []
+
+    async def bulk_upsert_guild_commands(
+        self, application_id: int, guild_id: int, payload: list[Any]
+    ) -> list[Any]:
+        self.bulk_upserts.append((application_id, guild_id, payload))
+        return []
+
+
 class _FakeGatewayClient:
     """Controllable stand-in for ``discord.Client`` used by ``start()``.
 
@@ -1018,6 +1103,11 @@ class _FakeGatewayClient:
         self.logged_in = False
         self.closed = False
         self.registered_events: list[Any] = []
+        # start() builds an app-command tree on the client and syncs it to the
+        # guild, so the stand-in has to carry what CommandTree reaches for.
+        self.application_id = 555
+        self.http = _FakeCommandHTTP()
+        self._connection = _FakeConnectionState()
         self.connect_behavior = "hang"
         self.connect_exc: BaseException = RuntimeError("gateway boom")
         self._ready_event = asyncio.Event()
@@ -1065,9 +1155,22 @@ def test_start_becomes_ready_then_stop_closes_client() -> None:
             assert fake.registered_events  # on_message handler registered
             assert adapter._bot_user_id == BOT_USER_ID
 
+            # Slash commands are published to the configured GUILD, never
+            # globally: the adapter is single-guild by construction, guild
+            # commands apply immediately, and a global registration is
+            # per-application so it would leak into other bridges' guilds.
+            assert len(fake.http.bulk_upserts) == 1
+            application_id, guild_id, payload = fake.http.bulk_upserts[0]
+            assert application_id == fake.application_id
+            assert guild_id == GUILD_ID
+            assert {c["name"] for c in payload} == {
+                c.name for c in COMMANDS if not c.hidden and c.description
+            }
+
             await adapter.stop()
             assert fake.closed
             assert adapter._client is None
+            assert adapter._tree is None
 
     _run(scenario())
 

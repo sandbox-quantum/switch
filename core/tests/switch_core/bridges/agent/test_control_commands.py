@@ -118,7 +118,7 @@ async def test_no_live_session_reports_nothing_to_reset(
     )
 
     # No live session at all → the "nothing to reset" message, NOT the
-    # "wasn't started from switchdash" one, and nothing is enqueued.
+    # "wasn't started from Switch Console" one, and nothing is enqueued.
     assert len(reply.bodies) == 1
     assert "nothing to reset" in reply.bodies[0]
     assert enqueue == []
@@ -144,7 +144,7 @@ async def test_live_session_without_capability_reports_switchdash(
     )
 
     assert len(reply.bodies) == 1
-    assert "switchdash" in reply.bodies[0]
+    assert "Switch Console" in reply.bodies[0]
     assert enqueue == []
 
 

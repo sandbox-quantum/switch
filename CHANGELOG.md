@@ -18,14 +18,14 @@ leaves its contracts alone.
 - **switch-core** — the backend service (`core/`). Released by tagging
   `switch-v<version>`; the version lives in `core/pyproject.toml`. See
   [RELEASING.md](RELEASING.md).
-- **switchdash** — the desktop app (`dash/`). Released by tagging
-  `switchdash-v<version>`; the version lives in
-  `dash/apps/switchdash-desktop/package.json`.
+- **switch-console** — the desktop app (`dash/`). Released by tagging
+  `switch-console-v<version>`; the version lives in
+  `dash/apps/switch-console-desktop/package.json`.
 - **agent-runtime** — the Switch protocol client and MCP runtime
   (`dash/packages/switch-agent-runtime/`), published to a package registry.
-- **sidecar** — the remote runtime switchdash deploys to an agent host
-  (`dash/apps/switchdash-desktop/src/sidecar/`). Versioned in
-  `sidecar-version.ts` and deployed by switchdash, not published separately.
+- **sidecar** — the remote runtime Switch Console deploys to an agent host
+  (`dash/apps/switch-console-desktop/src/sidecar/`). Versioned in
+  `sidecar-version.ts` and deployed by Switch Console, not published separately.
 - **switch-connector** / **switch-connector-codex** — the two connector plugins
   (`connectors/`), versioned in their respective plugin manifests.
 
@@ -292,7 +292,7 @@ version of their own to them without also giving them a release of their own.
 
 ---
 
-## switchdash
+## switch-console
 
 ### [Unreleased]
 
@@ -300,6 +300,62 @@ version of their own to them without also giving them a release of their own.
 - Bump the Codex session runtime pin (`SWITCH_AGENT_RUNTIME_VERSION`) to `0.1.6`
   so switchdash-launched Codex sessions run the published runtime. Ships in the
   next switchdash release.
+
+#### Fixed
+- The server page no longer sits on _"Checking sign-in options…"_ forever after
+  connectivity returns. Which login methods a server offers was read once when
+  the page mounted, and a read that failed was never retried, so a blip left the
+  sign-in form unrendered until you navigated away or restarted. It now recovers
+  on the signals connection status already used — the page's Refresh button,
+  returning to the app window, and a remote host becoming reachable again. The
+  Refresh button in particular re-checked only the connection status, so the one
+  control a user would reach for did nothing visible (CHOO-2042).
+- A server whose gateway cannot be reached now says so in one line and retries
+  on its own, instead of stacking three surfaces that each described the same
+  failure differently: a red banner quoting a raw internal error
+  (`Error invoking remote method 'switchServers.getAuthConfig': …`), a
+  "Not signed in" row, and a sign-in panel that claimed to be checking options
+  it would never receive. There is nothing to sign into while the gateway is
+  down, so the sign-in form no longer appears at all. The underlying error goes
+  to the console (CHOO-2042).
+- The sidebar no longer offers "Sign in" on a server it cannot reach, which was
+  an action that could not work. Unreachable is now modelled apart from
+  signed-out, so the rooms list also stops reporting an unreachable server as
+  merely needing sign-in. A server whose data is unavailable shows a red dot
+  rather than amber, for both causes: neither is a transitional state
+  (CHOO-2042).
+- A directory that already holds agents for one Switch server can now onboard its
+  agents to another. "Already onboarded" was judged per directory rather than per
+  server, so every candidate was filtered out as a duplicate and the modal offered
+  an empty list — of agents that existed, on a server that did not have them
+  (CHOO-2044).
+- The sidebar no longer draws a directory's agents under a server they do not
+  belong to. A directory resolved to a single server — whichever of its agents was
+  returned first — and then every agent in it was rendered under that one, so
+  onboarding a single agent to a second server appeared to drag the rest across
+  with it. Nothing had been onboarded; each agent is now drawn under its own
+  server, and a shared directory shows under all of them (CHOO-2044).
+- Onboarding an agent whose credentials belong to **another** Switch server no
+  longer overwrites those credentials. The import path looked the existing
+  identity up on the target server, did not find it, and fell back to minting a
+  fresh one — writing it back over the same `.switch/agents/<name>.json` and
+  silently breaking the agent the other server was still running. It now refuses
+  and names the server the identity belongs to. Such agents are listed in the
+  Add Agent modal but not selectable, with the reason shown; a plain definition
+  carrying no Switch identity is still adopted as before (CHOO-2044).
+- The Add Agent modal no longer offers a permanently disabled button over a list
+  it will not submit. A directory carrying another server's leftover
+  `.claude/settings.local.json` took the detected-agent branch, verified that
+  foreign agent against the current server, failed, and disabled the only button
+  on screen — with the onboardable agents listed above it. The onboard action now
+  takes precedence, and a detected agent belonging to another server says so
+  (CHOO-2044).
+- The Add Agent modal no longer shows the create form, or the existing-agents
+  list, before an agent type is picked. Both depend on the type — it decides
+  which agents can be brought in and how a new one runs — so the form asked for a
+  name, a description and a config, then ended at a button that could not be
+  pressed. Everything below the directory now waits for the type, and the modal
+  asks for it instead (CHOO-2044).
 
 ### [0.19.3] - 2026-08-09
 
@@ -437,7 +493,7 @@ version of their own to them without also giving them a release of their own.
   so nothing could ever produce an activity update (CHOO-1935).
 - In-app release links resolve again: the sidebar update indicator and the
   Settings Update card pointed at `.../releases/tag/v<version>`, which is not a
-  real tag (the app is tagged `switchdash-v<version>`), so the user hit a 404;
+  real tag (the app is tagged `switch-console-v<version>`), so the user hit a 404;
   the release-notes fetch had the same broken tag and now also authenticates
   with the gh CLI token so it can read the private release feed instead of
   silently returning nothing (#134).
@@ -777,7 +833,7 @@ migrations 0031–0036, including a locations backfill).
   the existing file fails (local, remote-SSH, and plugin-fs providers).
 
 Desktop-app releases predating this changelog live in the git log and in the
-per-release notes on their GitHub Releases (`switchdash-v*` tags).
+per-release notes on their GitHub Releases (`switch-console-v*` tags).
 
 ---
 
@@ -787,6 +843,27 @@ The Switch protocol client and MCP runtime
 (`dash/packages/switch-agent-runtime/`). Version lives in its `package.json`.
 
 ### [Unreleased]
+
+### [0.2.0] - 2026-08-10
+
+#### Added
+- Resolves its own Switch identity and credentials from the local agent store
+  (`./.switch/agents/`), not only from the environment — so a connector-plugin
+  session that is handed the server but no identity can start standalone instead
+  of exiting before the handshake (CHOO-1962).
+- `select_agent` tool: when the store names several agents on one server,
+  identity is left open and `select_agent` binds it; the event stream and
+  heartbeat start on bind rather than at boot (CHOO-1962).
+- Degraded startup: on a resolution failure — no credentials, an ambiguous
+  multi-server store, or an unreachable Switch — the runtime starts anyway and
+  serves a single `switch_unavailable` tool whose result is the diagnostic,
+  instead of vanishing so Switch tools read as silently missing (CHOO-1962).
+
+#### Changed
+- An unexpanded `${SWITCH_*}` placeholder now counts as absent rather than as a
+  value, so a Claude connector session falls through to the store instead of
+  dying on its own placeholder. Half a set of vars still refuses to start
+  (CHOO-1962).
 
 ### [0.1.6] - 2026-08-09
 

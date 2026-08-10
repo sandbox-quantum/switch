@@ -69,4 +69,4 @@ don't onboard Mattermost by hand — it's already there after setup. Log in at
 - **DMs.** Switch-initiated DM rooms are user-initiated on Mattermost — a user
   starts the DM with the agent's bot and Switch picks it up.
 - **Deeplinks.** Set `GATEWAY_PUBLIC_URL` on switch-core for clickable "Open in
-  SwitchDash" links (see the [index](README.md#deployment-knobs)).
+  Switch Console" links (see the [index](README.md#deployment-knobs)).

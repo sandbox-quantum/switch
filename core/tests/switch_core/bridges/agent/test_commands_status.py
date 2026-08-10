@@ -110,13 +110,13 @@ class TestFormatStatusLines:
             {"a": "switchdash://session?server=s&agent=a&room=r"},
         )
         assert out.endswith(
-            "· [Open in SwitchDash](switchdash://session?server=s&agent=a&room=r)"
+            "· [Open in Switch Console](switchdash://session?server=s&agent=a&room=r)"
         )
 
     def test_no_deeplink_segment_when_absent(self) -> None:
         agents = [_agent("a", "alice", "session_addressable")]
         out = _format_status_lines(agents, {"a": AgentStatus.LIVE}, {}, {})
-        assert "SwitchDash" not in out
+        assert "Switch Console" not in out
 
     def test_deeplink_hidden_when_session_not_live_here(self) -> None:
         # A stored link survives a room switch; don't surface it where the
@@ -129,7 +129,7 @@ class TestFormatStatusLines:
             {},
             {"a": "switchdash://session?server=s&agent=a&room=r"},
         )
-        assert "SwitchDash" not in out
+        assert "Switch Console" not in out
 
 
 class TestStatusCommandRegistration:
