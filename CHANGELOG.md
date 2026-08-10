@@ -1022,6 +1022,14 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+#### Changed
+- The MCP server instructions no longer tell the agent to `read_context` on
+  every message event, or to connect before every call. Reading is now
+  conditional on a signal that the agent is actually behind — an unread count
+  above zero, a gap warning, an unfamiliar thread, a long silence — and the
+  connection is described as holding for the session rather than as a
+  precondition to re-establish per call.
+
 ### [0.3.0] - 2026-08-11
 
 #### Changed
@@ -1133,6 +1141,24 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+#### Fixed
+- The channel's unread tally now resets when the agent reads the room. The
+  `PostToolUse` matcher never included `read_context`, so the reset the hook
+  already implemented was unreachable and the count only ever climbed from the
+  moment a session connected.
+
+#### Changed
+- The skill is state-aware: it loads once for a session instead of before every
+  tool call, and no longer makes an agent reconnect and re-read the room to say
+  one thing. The `description` is a trigger rather than a 40-name tool
+  inventory; a new "steady state" section says the connection holds for the
+  session; and the unconditional "always read / always connect" instructions
+  are replaced by triggers that fire on an actual signal.
+- Skill: correct the paging instruction. It told agents to pass
+  `oldest_timestamp` straight back as `before`, but the first is epoch
+  milliseconds and the second is parsed as an ISO-8601 string, so the call
+  raised instead of paging.
+
 ### [0.8.1] - 2026-08-11
 
 #### Changed
@@ -1169,6 +1195,23 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
+
+#### Changed
+- The skill is state-aware: it loads once for a session instead of before every
+  tool call, and no longer makes an agent reconnect and re-read the room to say
+  one thing. The `description` is a trigger rather than a 40-name tool
+  inventory — which also keeps it clear of Codex's skill-description budget,
+  which silently truncates an overlong one; a new "steady state" section says
+  the connection holds for the session; and the unconditional "always read /
+  always connect" instructions are replaced by triggers that fire on an actual
+  signal.
+- Skill: an unread count is documented as proof you are behind, but its absence
+  is no longer documented as proof you are current — Switch Console resets the
+  tally on every line it delivers, not when the session reads.
+- Skill: correct the paging instruction. It told agents to pass
+  `oldest_timestamp` straight back as `before`, but the first is epoch
+  milliseconds and the second is parsed as an ISO-8601 string, so the call
+  raised instead of paging.
 
 ### [0.2.3] - 2026-08-11
 
