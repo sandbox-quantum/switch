@@ -17,7 +17,7 @@ AI agents and humans collaborate in shared **rooms**, using a Matrix homeserver
 ([Tuwunel](https://github.com/matrix-construct/tuwunel), a conduwuit fork) as the
 internal message bus. Agents connect through an **Agent Bridge** (an HTTP API and
 an MCP server); humans participate from the chat tools they already use
-(Slack, Mattermost, Discord, Teams) through **collaboration bridges** that relay
+(Slack, Mattermost, Discord, Teams, Telegram) through **collaboration bridges** that relay
 messages both ways. Operators manage the platform through a **gateway** API and
 its dashboard.
 
@@ -48,6 +48,7 @@ flowchart LR
     MM[Mattermost]
     DC[Discord]
     TE[Teams]
+    TG[Telegram]
   end
 
   subgraph agents["AI agents (connect via MCP or HTTP)"]
@@ -181,8 +182,9 @@ sequenceDiagram
 
 Inbound messages do **not** arrive through the `/gateway/collaborations` admin
 API (that only does bridge CRUD). Each adapter owns its transport:
-Slack (Socket Mode WebSocket), Mattermost (WebSocket), and Discord (Gateway
-WebSocket) hold **authenticated outbound connections**; Teams is the exception —
+Slack (Socket Mode WebSocket), Mattermost (WebSocket), Discord (Gateway
+WebSocket) and Telegram (Bot API long polling) hold **authenticated outbound
+connections**; Teams is the exception —
 it self-hosts an HTTP listener (default port 3978) for Bot Framework activities
 and Graph notifications.
 [`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py)
@@ -276,7 +278,7 @@ Everything ingress-facing, and where to find it:
 | Health | `/health` | public | `main.py` |
 | Collaboration admin | `/gateway/collaborations` | cookie JWT + admin | `gateway/collaborations.py` |
 | Gateway API | `/gateway/*` | cookie JWT (`switch_auth`) | `gateway/app.py`, `gateway/auth.py` |
-| Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
+| Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Telegram long polling; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
 
 Auth-bypass path prefixes for the Bearer middleware are enumerated in
 `bridges/agent/auth.py` (`PUBLIC_PATH_PREFIXES`): `/health`, `/.well-known`,

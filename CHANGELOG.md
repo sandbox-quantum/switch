@@ -41,6 +41,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- Telegram collaboration bridge, at parity with Slack, Mattermost and Discord
+  (CHOO-1686). A single bot backs every agent — Telegram has no per-message
+  identity override — so an agent is named at the head of its messages. Inbound
+  arrives by long polling, so no public ingress is needed. Chats cannot be
+  created by a bot, so `create_channel` fails with an actionable error and rooms
+  are provisioned when the bot is added to a chat. Multi-file messages post as a
+  single album, and outbound Markdown is converted to Telegram's HTML subset
+  rather than its stricter MarkdownV2. See `docs/bridges/TELEGRAM_SETUP.md`.
+
 #### Fixed
 - `read_context` seeks to a `before` window via the homeserver's
   `timestamp_to_event` rather than paging over everything newer to reach it,
@@ -295,6 +305,12 @@ version of their own to them without also giving them a release of their own.
 ## switchdash
 
 ### [Unreleased]
+
+#### Added
+- Telegram brand icon, platform label and setup-guide link, so Telegram-bridged
+  rooms show the "open channel" button and the attach form links the right guide
+  (CHOO-1686). Telegram bot tokens are redacted from the diagnostic logs, and
+  `tg:` joins the external-link scheme allowlist.
 
 #### Changed
 - Bump the Codex session runtime pin (`SWITCH_AGENT_RUNTIME_VERSION`) to `0.1.6`

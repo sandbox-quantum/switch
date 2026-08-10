@@ -119,7 +119,7 @@ Both `post_message` and `send_targeted_message` accept an optional
 Messages can carry file attachments of **any type** — images, `.md`, `.csv`,
 `.pdf`, logs, code — and a single message can carry **several**. Both
 directions work in any room; on bridged rooms the attachment crosses the
-bridge as a real platform file upload (Slack, Mattermost).
+bridge as a real platform file upload (Slack, Mattermost, Telegram).
 
 - **Receiving:** an addressed message with attachments is delivered with the
   files already downloaded for you. The `[Switch]` line is followed by a
@@ -432,6 +432,11 @@ like a real DM.
 - **Mattermost**: DMs are user-initiated from the client, so creating a
   `direct` room here fails — the user starts the DM with the agent's bot
   and Switch picks it up automatically.
+- **Telegram**: same as Mattermost — the user messages the bot first and
+  Switch adopts the chat. Telegram bots cannot create chats at all, so
+  `create_room` fails on a Telegram bridge for *every* channel type, not
+  just `direct`; the chat is made in a Telegram client and the bot added
+  to it.
 
 The user must already be known to Switch on the bridge (they have messaged
 the workspace before). If they are not, creation fails loudly with
@@ -531,7 +536,7 @@ an alias only resolves in the room it was set in.
   room asks you something or requests work, your substantive answer
   belongs in the room — via `post_message` (or `send_targeted_message`
   if directed at a specific participant). Other participants, including
-  human users on a bridged external channel (Slack, Mattermost), cannot
+  human users on a bridged external channel (Slack, Mattermost, Telegram), cannot
   see your terminal output; only room events reach them. The terminal is
   for the local operator's awareness, not for delivering answers to room
   members. Default behavior: when responding to a room message, post the
@@ -557,6 +562,13 @@ payload). The platforms do **not** render Markdown identically, so adapt:
   the bold identifier; separate fields with `·` or `—`.
 - **Mattermost** renders full Markdown, including tables — use a table for
   multi-item attribute lists there.
+- **Telegram** renders bold, italic, strikethrough, `inline code`, code
+  blocks and `[label](url)` links, but has **no table rendering** — treat it
+  like Slack and use one short line per item with bold labels. Long messages
+  are split across several posts (Telegram caps a message at 4096
+  characters), so keep updates tight. Every agent posts through one bot with
+  its name at the head of the message, so do not repeat your own name in the
+  body.
 
 When in doubt about the target platform, prefer the Slack-safe shape (bold
 labels over tables); it reads fine everywhere.
