@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 from unittest.mock import patch
 
@@ -719,6 +720,71 @@ def test_a_body_over_the_cap_is_split_rather_than_rejected() -> None:
     assert all(len(m["text"]) <= 4096 for m in sent)
     # The ref names the head of the run, so an edit or delete finds it.
     assert ref == f"{CHAT_ID}:501"
+
+
+def _tags_balanced(text: str) -> bool:
+    stack: list[str] = []
+    for match in re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
+        if match.group(1):
+            if not stack or stack[-1] != match.group(2):
+                return False
+            stack.pop()
+        else:
+            stack.append(match.group(2))
+    return not stack
+
+
+def _visible(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text).replace("\n", "")
+
+
+@pytest.mark.parametrize(
+    ("name", "markdown"),
+    [
+        ("code block", "```\n" + "x" * 9000 + "\n```"),
+        ("bold run", "**" + "word " * 1200 + "**"),
+        ("bulleted list", "\n".join(f"- **item {i}** padding" for i in range(300))),
+        ("link text", "[" + "L" * 5000 + "](https://e.com)"),
+        ("unformatted", "y" * 10000),
+    ],
+)
+def test_a_split_never_leaves_broken_markup(name: str, markdown: str) -> None:
+    # A cut landing inside the formatting makes Telegram reject *both* halves,
+    # so a long code block — the most common thing an agent posts — arrives
+    # completely unformatted. Tags open at a cut are closed and reopened.
+    adapter = _adapter()
+
+    chunks = adapter._chunk(adapter.translate_outbound(markdown))
+
+    assert all(len(c) <= 4096 for c in chunks), name
+    assert all(_tags_balanced(c) for c in chunks), name
+
+
+def test_a_split_code_block_resumes_as_a_code_block() -> None:
+    adapter = _adapter()
+
+    chunks = adapter._chunk(adapter.translate_outbound("```\n" + "x" * 9000 + "\n```"))
+
+    assert len(chunks) > 1
+    assert chunks[0].endswith("</pre>")
+    assert chunks[1].startswith("<pre>")
+
+
+def test_splitting_loses_no_text() -> None:
+    adapter = _adapter()
+    body = adapter.translate_outbound(
+        "**Report**\n\n" + "\n".join(f"- line {i}" for i in range(700))
+    )
+
+    chunks = adapter._chunk(body)
+
+    assert _visible("".join(chunks)) == _visible(body)
+
+
+def test_a_body_at_exactly_the_cap_is_left_whole() -> None:
+    adapter = _adapter()
+
+    assert adapter._chunk("a" * 4096) == ["a" * 4096]
 
 
 def test_only_the_first_chunk_replies_into_the_thread() -> None:

@@ -622,6 +622,7 @@ class TelegramAdapter(CollaborationAdapter):
     _ITALIC_STAR_RE = re.compile(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])")
     _ITALIC_USCORE_RE = re.compile(r"(?<![\w_])_([^_\n]+?)_(?![\w_])")
     _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
+    _TAG_RE = re.compile(r"<(/?)([a-z]+)[^>]*>")
 
     def translate_outbound(self, content: str) -> str:
         """Render Switch's Markdown as the HTML subset Telegram accepts.
@@ -1162,23 +1163,81 @@ class TelegramAdapter(CollaborationAdapter):
             )
             return None
 
+    @classmethod
+    def _open_tags(cls, text: str) -> list[tuple[str, str]]:
+        """The tags still open at the end of `text`, outermost first.
+
+        Returned as `(name, opening tag)` so each can be both closed here and
+        reopened verbatim — an `<a href="…">` has to carry its target across."""
+        stack: list[tuple[str, str]] = []
+        for match in cls._TAG_RE.finditer(text):
+            closing, name = match.group(1), match.group(2)
+            if not closing:
+                stack.append((name, match.group(0)))
+                continue
+            for index in range(len(stack) - 1, -1, -1):
+                if stack[index][0] == name:
+                    del stack[index]
+                    break
+        return stack
+
     @staticmethod
-    def _chunk(body: str) -> list[str]:
-        """Break a body into Telegram-sized pieces on the cleanest line break.
+    def _safe_split(text: str, limit: int) -> int:
+        """The best place to cut `text` at or before `limit`.
+
+        Never inside a tag — half an `<a href="…">` is unparseable — and on a
+        line break when there is one late enough to be worth using."""
+        cut = min(limit, len(text))
+        last_open = text.rfind("<", 0, cut)
+        if last_open > text.rfind(">", 0, cut):
+            cut = last_open
+        newline = text.rfind("\n", 0, cut)
+        if newline > cut // 2:
+            cut = newline
+        return max(cut, 1)
+
+    @classmethod
+    def _chunk(cls, body: str) -> list[str]:
+        """Break a body into Telegram-sized pieces, keeping the markup valid.
 
         Agent output routinely runs past the 4096-character cap, and Telegram
-        rejects an oversize message outright rather than truncating it."""
+        rejects an oversize message outright rather than truncating it. A naive
+        split lands inside the formatting — a long code block is the usual
+        casualty — and Telegram then refuses each half, so the whole thing
+        arrives unformatted. Tags left open at a cut are therefore closed at the
+        end of one piece and reopened at the start of the next.
+        """
         if len(body) <= _MAX_TEXT_CHARS:
             return [body]
+
         chunks: list[str] = []
-        remaining = body
-        while len(remaining) > _MAX_TEXT_CHARS:
-            window = remaining[:_MAX_TEXT_CHARS]
-            split = window.rfind("\n")
-            if split <= 0:
-                split = _MAX_TEXT_CHARS
-            chunks.append(remaining[:split].rstrip("\n"))
-            remaining = remaining[split:].lstrip("\n")
-        if remaining:
-            chunks.append(remaining)
-        return chunks
+        rest = body
+        reopen = ""
+        while True:
+            candidate = reopen + rest
+            if len(candidate) <= _MAX_TEXT_CHARS:
+                chunks.append(candidate)
+                return chunks
+
+            cut = cls._safe_split(candidate, _MAX_TEXT_CHARS)
+            closers = cls._closing_tags(candidate[:cut])
+            if cut + len(closers) > _MAX_TEXT_CHARS:
+                # Closing the open tags would overflow; cut earlier to fit them.
+                cut = cls._safe_split(candidate, _MAX_TEXT_CHARS - len(closers))
+                closers = cls._closing_tags(candidate[:cut])
+            if cut <= len(reopen):
+                # No progress possible on a tag boundary — cut hard instead, so
+                # a pathological body cannot loop forever.
+                cut = min(_MAX_TEXT_CHARS, len(candidate))
+                closers = ""
+
+            head = candidate[:cut]
+            chunks.append(head.rstrip("\n") + closers)
+            reopen = "".join(tag for _, tag in cls._open_tags(head)) if closers else ""
+            rest = candidate[cut:].lstrip("\n")
+            if not rest:
+                return chunks
+
+    @classmethod
+    def _closing_tags(cls, text: str) -> str:
+        return "".join(f"</{name}>" for name, _ in reversed(cls._open_tags(text)))
