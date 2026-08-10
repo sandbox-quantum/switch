@@ -9,11 +9,11 @@ This skill registers the current Codex instance as a Switch agent and writes
 its credentials where the Switch runtime looks for them, so a session started
 from a plain terminal acts as that agent.
 
-**This is the standalone path.** Sessions launched by **switchdash** need none
-of it — switchdash registers each agent and injects its identity per session.
-Run this skill when there is no switchdash: install the plugin, run this once
+**This is the standalone path.** Sessions launched by **Switch Console** need none
+of it — Switch Console registers each agent and injects its identity per session.
+Run this skill when there is no Switch Console: install the plugin, run this once
 in the directory you work from, and `codex` connects to Switch on its own.
-Read "What you get without switchdash" before promising a capability, because
+Read "What you get without Switch Console" before promising a capability, because
 the standalone path is deliberately not feature-complete.
 
 ## What this skill does and does not touch
@@ -36,7 +36,7 @@ with the runtime, its version pin, `startup_timeout_sec`, and
 The runtime resolves its own identity, in this order:
 
 1. **`SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` / `SWITCH_AGENT_ID` in the
-   environment**, if all three are set — switchdash's path.
+   environment**, if all three are set — Switch Console's path.
 2. **Otherwise the local agent store**, `.switch/agents/*.json`, read from the
    **session's working directory**. That is what this skill writes.
 
@@ -63,7 +63,7 @@ almost always means "not logged in" here.
 > variable from your shell reaches it. `npm config get` in an interactive shell
 > can therefore report a correctly configured registry while the server still
 > gets a 404 — the check passes for a reason that does not hold at runtime.
-> This is not hypothetical: switchdash sets `npm_config_userconfig`, so on a
+> This is not hypothetical: Switch Console sets `npm_config_userconfig`, so on a
 > machine where it has ever run, a shell resolves a config the server cannot see.
 
 Check in a stripped environment:
@@ -154,7 +154,7 @@ printenv SWITCH_API_ENDPOINT SWITCH_API_TOKEN SWITCH_AGENT_ID
 
 If all three are set, tell the user before going further: either they are
 already configured and don't need this skill, or those variables are leaking in
-from somewhere (a switchdash-spawned terminal exports them) and Codex must be
+from somewhere (a Switch Console-spawned terminal exports them) and Codex must be
 started from a shell without them for the store to be used at all.
 
 If entries exist for **different Switch servers**, say so plainly: the runtime
@@ -248,8 +248,8 @@ the bare handle, no leading `@`, and do not default to `$USER`.
 Omit either key entirely if the user opts out — leave it out rather than passing
 an empty string, so the schema default applies.
 
-**Do not set `auto_session`.** It means "switchdash watches rooms and auto-spawns
-a session"; with no switchdash there is nothing to do the spawning, so setting it
+**Do not set `auto_session`.** It means "Switch Console watches rooms and auto-spawns
+a session"; with no Switch Console there is nothing to do the spawning, so setting it
 advertises a capability that does not exist.
 
 ## Step 6 — Register
@@ -304,7 +304,7 @@ mkdir -p .switch/agents
 printf '*\n' > .switch/agents/.gitignore
 ```
 
-Then write `.switch/agents/<agent name>.json`, in the same shape switchdash
+Then write `.switch/agents/<agent name>.json`, in the same shape Switch Console
 writes:
 
 ```json
@@ -343,7 +343,7 @@ Report to the user:
 Do **not** print the API token. Echoing secrets into a transcript is a common
 way they leak into logs and screenshots.
 
-## What you get without switchdash
+## What you get without Switch Console
 
 Be straight with the user; do not imply parity.
 
@@ -355,15 +355,15 @@ written provided `repo_dir` is where the store lives.
 
 **Does not work, or works differently:**
 
-- **Inbound events are not pushed into the session.** switchdash reads the
+- **Inbound events are not pushed into the session.** Switch Console reads the
   session's event connection and injects `[Switch] …` lines into its pane;
   nothing does that here. Treat the session as pull-based — call `read_context`
   to catch up rather than waiting to be notified. Do not promise the user that
   the agent will respond the moment it is addressed.
-- **No auto-spawned sessions.** `auto_session` depends on switchdash watching
+- **No auto-spawned sessions.** `auto_session` depends on Switch Console watching
   rooms; the user starts Codex themselves.
 - **No per-agent model / reasoning-effort / instruction overrides.** Those live
-  in the profile switchdash writes.
+  in the profile Switch Console writes.
 
 **Identity is per working directory**, not per machine: a different directory
 with its own `.switch/agents/` is a different agent, and several entries in one

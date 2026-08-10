@@ -89,7 +89,7 @@ each ships its own copy of the Switch room-workflow skill at
 - `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
   room-workflow skill, a **`configure`** skill (the standalone setup path — it
   registers the agent and supplies the bundled server's credentials so Codex
-  reaches Switch with no switchdash involved), and its own MCP config,
+  reaches Switch with no Switch Console involved), and its own MCP config,
   declared as `"mcpServers": "./.mcp.json"`, so a
   Codex session gets the Switch tools from the plugin alone. Codex does not
   expand `${VAR}` in a bundled config, so the server names its variables under

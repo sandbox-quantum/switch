@@ -8,7 +8,7 @@ server** that provides the Switch tools, plus two skills:
   order to participate in a Switch room correctly.
 - **`skills/configure/SKILL.md`** — the **standalone setup path**: register
   this Codex instance as a Switch agent and give the bundled server the
-  credentials it needs, so `codex` connects to Switch with no switchdash
+  credentials it needs, so `codex` connects to Switch with no Switch Console
   involved. See "Standalone setup" below.
 
 Manifest: `.codex-plugin/plugin.json`. Registered in the repo marketplace
@@ -118,9 +118,9 @@ the pre-profile design declares a `url`, which merges with a `command` entry
 into a server that is both, and Codex then refuses to load the config at all.
 Switch Console removes such an entry.
 
-## Standalone setup (no switchdash)
+## Standalone setup (no Switch Console)
 
-The `configure` skill covers the case switchdash does not: a user who installs
+The `configure` skill covers the case Switch Console does not: a user who installs
 this plugin and wants `codex` to reach Switch from a plain terminal. It
 registers the agent against the bridge (`POST /agents/register-known` with
 `agent_type: "codex"`) and writes the credentials to
@@ -129,7 +129,7 @@ registers the agent against the bridge (`POST /agents/register-known` with
 **It writes no MCP config at all.** The plugin's `.mcp.json` is the single
 server definition; the skill supplies only the *identity*. Since
 `switch-agent-runtime` 0.2.0 the runtime resolves that itself — environment
-first (switchdash's path, untouched), otherwise the local agent store read from
+first (Switch Console's path, untouched), otherwise the local agent store read from
 the session's working directory.
 
 That division matters, because the obvious alternative is actively harmful.
@@ -150,7 +150,7 @@ must resolve the `@sandbox-quantum` scope from *its own* environment.
 
 This is worth stating because the failure is silent and the obvious check lies:
 `npm config get` in an interactive shell can report a correctly configured
-registry the server never sees, since switchdash exports `npm_config_userconfig`
+registry the server never sees, since Switch Console exports `npm_config_userconfig`
 pointing at its own npmrc. The server then queries `registry.npmjs.org`, gets a
 404 (private packages are not admitted to exist), and dies before the handshake
 — with no symptom beyond the tools being absent. The `configure` skill therefore
@@ -163,7 +163,7 @@ Works: the full Switch tool surface (including `send_attachment` /
 `download_attachment` — neither is gated on which process owns the connection),
 room participation, tasks, roles, moderation, and the offline run command.
 
-Does not: **inbound events are not pushed into the session.** switchdash reads
+Does not: **inbound events are not pushed into the session.** Switch Console reads
 the session's event connection and injects `[Switch] …` lines into its pane;
 standalone, nothing does. The runtime opens its own connection (no
 `SWITCH_CONNECTION_ID` is set, which is correct — that names a connection a
