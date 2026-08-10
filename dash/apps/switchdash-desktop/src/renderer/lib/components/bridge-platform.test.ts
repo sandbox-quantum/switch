@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from './bridge-platform';
 
 /** Every bridge type switch-core registers today (`main.py` register_adapter). */
-const BRIDGE_TYPES = ['slack', 'mattermost', 'discord', 'teams'];
+const BRIDGE_TYPES = ['slack', 'mattermost', 'discord', 'teams', 'telegram'];
 
 const BRIDGE_ICON_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -21,6 +21,7 @@ describe('bridgePlatformLabel', () => {
     expect(bridgePlatformLabel('mattermost')).toBe('Mattermost');
     expect(bridgePlatformLabel('discord')).toBe('Discord');
     expect(bridgePlatformLabel('teams')).toBe('Microsoft Teams');
+    expect(bridgePlatformLabel('telegram')).toBe('Telegram');
   });
 
   it('falls back to the raw key for a type this build does not know', () => {

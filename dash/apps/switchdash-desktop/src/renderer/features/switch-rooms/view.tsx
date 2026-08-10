@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -22,7 +23,7 @@ const OpenInMessagingApp = observer(function OpenInMessagingApp({ roomId }: { ro
   const bridgeType = switchRoomsStore.roomBridgeTypeById(roomId);
   if (!switchRoomsStore.roomChannelUrl(roomId)) return null;
 
-  const platform = bridgeType ?? 'messaging app';
+  const platform = bridgePlatformLabel(bridgeType);
   return (
     <Tooltip>
       <TooltipTrigger

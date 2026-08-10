@@ -11,6 +11,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   mattermost: 'Mattermost',
   discord: 'Discord',
   teams: 'Microsoft Teams',
+  telegram: 'Telegram',
 };
 
 /**
@@ -39,6 +40,7 @@ const PLATFORM_DOCS: Record<string, string> = {
   mattermost: `${DOCS_BASE}/MATTERMOST_SETUP.md`,
   discord: `${DOCS_BASE}/DISCORD_SETUP.md`,
   teams: `${DOCS_BASE}/TEAMS_SETUP.md`,
+  telegram: `${DOCS_BASE}/TELEGRAM_SETUP.md`,
 };
 
 /**

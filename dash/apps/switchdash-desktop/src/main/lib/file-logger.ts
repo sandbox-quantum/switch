@@ -74,6 +74,9 @@ const SECRET_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
   // so it is matched structurally. Kept after the JWT rule, whose middle
   // segment is far longer than six characters, so the two cannot collide.
   [/\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g, '[REDACTED_DISCORD_TOKEN]'],
+  // Telegram bot token: numeric bot id : 35-char hmac. Also unprefixed, so it
+  // is matched structurally. The colon keeps it clear of the Discord rule.
+  [/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, '[REDACTED_TELEGRAM_TOKEN]'],
 ];
 
 const PII_PATTERNS: Array<[RegExp, RedactionReplacement]> = [

@@ -1,7 +1,7 @@
 # Collaboration bridge setup
 
 A **collaboration bridge** is a two-way relay between an external chat platform
-(Slack, Mattermost, Microsoft Teams, Discord) and Switch's internal Matrix
+(Slack, Mattermost, Microsoft Teams, Discord, Telegram) and Switch's internal Matrix
 rooms. Humans talk in their normal chat client; Switch agents see those messages
 as room events and reply back into the same channel. Each external channel maps
 to a Switch room, and each Switch agent is presented in the channel under its own
@@ -16,6 +16,7 @@ shared onboarding model, then the per-platform guide:
 | Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound) | not required |
 | Microsoft Teams | [`TEAMS_SETUP.md`](TEAMS_SETUP.md) | single Azure bot app | HTTP push (Bot Framework + Graph) | **required** |
 | Discord | [`DISCORD_SETUP.md`](DISCORD_SETUP.md) | single bot app | Gateway WebSocket (outbound) | not required |
+| Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, name in the message body | long polling (outbound) | not required |
 
 ## The onboarding model (same for every bridge)
 
@@ -37,21 +38,24 @@ bridges and lets you edit or remove them.
 
 ### Registered bridge types
 
-`slack`, `mattermost`, `teams`, `discord`. The dashboard's Add-bridge form lists
-the live set and the fields each one requires.
+`slack`, `mattermost`, `teams`, `discord`, `telegram`. The dashboard's Add-bridge
+form lists the live set and the fields each one requires.
 
 ## Once a bridge is live
 
 - **Rooms.** Depending on the platform, a Switch room is created for a channel
-  either when the bot is added to it (Slack, Mattermost, Teams) or lazily on the
-  first bridged message (Discord — it has no "app added to channel" signal).
-  Existing Switch rooms can also be bound to a channel at room-creation time.
+  either when the bot is added to it (Slack, Mattermost, Teams, Telegram) or
+  lazily on the first bridged message (Discord — it has no "app added to channel"
+  signal). Existing Switch rooms can also be bound to a channel at room-creation
+  time. Telegram is the one platform where Switch cannot create the channel
+  itself: the Bot API has no such call, so chats are made in a Telegram client
+  and adopted.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
   address it; unaddressed chatter is bridged as context. Bridge in-room commands
   (e.g. `!invite-agent`) and slash commands work per platform.
 - **"Open in SwitchDash" links.** Agents surface a `switchdash://…` deeplink with
-  their runtime status. Platforms that only linkify `http(s)` (notably Discord)
-  need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable
+  their runtime status. Platforms that only linkify `http(s)` (notably Discord and
+  Telegram) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable
   `https://<switch-api-host>/deeplink/session?…` redirect. See the Discord guide.
 
 ## Deployment knobs

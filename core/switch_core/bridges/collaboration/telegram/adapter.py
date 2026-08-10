@@ -247,7 +247,9 @@ class TelegramAdapter(CollaborationAdapter):
                 filename,
                 mimetype,
                 data,
-                caption,
+                # An overflowing caption has already been posted on its own;
+                # handing it to the fallback would send it a second time.
+                None if overflow_ref else caption,
                 thread_root_id,
             )
 
@@ -333,7 +335,11 @@ class TelegramAdapter(CollaborationAdapter):
                 e,
             )
             return await super().send_attachments(
-                channel_id, sender_name, files, caption, thread_root_id
+                channel_id,
+                sender_name,
+                files,
+                None if overflow_ref else caption,
+                thread_root_id,
             )
         first = sent[0] if sent else None
         return overflow_ref or (self._ref(first) if first is not None else None)

@@ -183,12 +183,12 @@ class AppService implements IInitializable, IDisposable {
       throw new Error('Invalid URL format');
     }
     // http/https plus the messaging-app schemes used by the sidebar "open in
-    // Slack/Mattermost" room deeplinks (links the gateway builds from a room's
-    // bridge); other schemes (file:, javascript:, …) stay blocked.
-    if (!['http:', 'https:', 'slack:', 'mattermost:'].includes(parsedUrl.protocol)) {
+    // Slack/Mattermost/Telegram" room deeplinks (links the gateway builds from
+    // a room's bridge); other schemes (file:, javascript:, …) stay blocked.
+    if (!['http:', 'https:', 'slack:', 'mattermost:', 'tg:'].includes(parsedUrl.protocol)) {
       throw new Error(
         `Protocol "${parsedUrl.protocol}" is not allowed. Only http, https, ` +
-          `slack and mattermost URLs are permitted.`
+          `slack, mattermost and tg URLs are permitted.`
       );
     }
     await shell.openExternal(url);

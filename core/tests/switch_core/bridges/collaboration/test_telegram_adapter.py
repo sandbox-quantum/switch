@@ -1,0 +1,1206 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from telegram.error import BadRequest, TelegramError
+
+from switch_core.bridges.collaboration.models import (
+    InboundCommand,
+    InboundMessage,
+    OutboundAttachment,
+)
+from switch_core.bridges.collaboration.telegram import adapter as adapter_module
+from switch_core.bridges.collaboration.telegram.adapter import (
+    TelegramAdapter,
+    TelegramConnectionConfig,
+)
+
+CHAT_ID = -1001234567890
+BOT_USER_ID = 42
+BOT_USERNAME = "acme_switch_bot"
+
+
+def _run(coro: Any) -> Any:
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+class _FakeChat:
+    def __init__(
+        self,
+        chat_id: int = CHAT_ID,
+        *,
+        chat_type: str = "supergroup",
+        title: str | None = "general",
+        username: str | None = None,
+    ) -> None:
+        self.id = chat_id
+        self.type = chat_type
+        self.title = title
+        self.username = username
+
+
+class _FakeUser:
+    def __init__(
+        self,
+        user_id: int = 7,
+        *,
+        username: str | None = "alice",
+        first_name: str = "Alice",
+        last_name: str = "",
+    ) -> None:
+        self.id = user_id
+        self.username = username
+        self.first_name = first_name
+        self.last_name = last_name
+
+
+class _FakeSentMessage:
+    def __init__(self, chat: _FakeChat, message_id: int) -> None:
+        self.chat = chat
+        self.message_id = message_id
+
+
+class _FakeFileHandle:
+    def __init__(self, data: bytes, *, fail: bool = False) -> None:
+        self._data = data
+        self._fail = fail
+
+    async def download_as_bytearray(self) -> bytearray:
+        if self._fail:
+            raise TelegramError("file is gone")
+        return bytearray(self._data)
+
+
+class _FakePhotoSize:
+    def __init__(self, file_id: str, unique: str, size: int) -> None:
+        self.file_id = file_id
+        self.file_unique_id = unique
+        self.file_size = size
+
+
+class _FakeDocument:
+    def __init__(
+        self, file_id: str, name: str, mime: str | None, size: int | None
+    ) -> None:
+        self.file_id = file_id
+        self.file_name = name
+        self.mime_type = mime
+        self.file_size = size
+
+
+class _FakeInbound:
+    """An inbound Telegram message. Only the fields the adapter reads."""
+
+    def __init__(
+        self,
+        *,
+        chat: _FakeChat | None = None,
+        message_id: int = 11,
+        text: str | None = "hello",
+        caption: str | None = None,
+        from_user: Any = "default",
+        reply_to_message: Any = None,
+        message_thread_id: int | None = None,
+        new_chat_members: list[Any] | None = None,
+        photo: list[Any] | None = None,
+        document: Any = None,
+    ) -> None:
+        self.chat = chat if chat is not None else _FakeChat()
+        self.message_id = message_id
+        self.text = text
+        self.caption = caption
+        self.from_user = _FakeUser() if from_user == "default" else from_user
+        self.reply_to_message = reply_to_message
+        self.message_thread_id = message_thread_id
+        self.new_chat_members = new_chat_members
+        self.photo = photo
+        self.document = document
+
+
+class _FakeBot:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+        self.photos: list[dict[str, Any]] = []
+        self.documents: list[dict[str, Any]] = []
+        self.albums: list[dict[str, Any]] = []
+        self.edits: list[dict[str, Any]] = []
+        self.deletes: list[dict[str, Any]] = []
+        self.actions: list[dict[str, Any]] = []
+        self.files: dict[str, _FakeFileHandle] = {}
+        self.chat: _FakeChat = _FakeChat()
+        self._next_id = 500
+        # Set to an exception to make the next send_message raise it once.
+        self.send_message_error: Exception | None = None
+        self.send_photo_error: Exception | None = None
+        self.send_album_error: Exception | None = None
+
+    def _mint(self, chat_id: Any) -> _FakeSentMessage:
+        self._next_id += 1
+        return _FakeSentMessage(_FakeChat(int(chat_id)), self._next_id)
+
+    async def send_message(self, **kwargs: Any) -> _FakeSentMessage:
+        if self.send_message_error is not None:
+            error = self.send_message_error
+            self.send_message_error = None
+            raise error
+        self.messages.append(kwargs)
+        return self._mint(kwargs["chat_id"])
+
+    async def send_photo(self, **kwargs: Any) -> _FakeSentMessage:
+        if self.send_photo_error is not None:
+            error = self.send_photo_error
+            self.send_photo_error = None
+            raise error
+        self.photos.append(kwargs)
+        return self._mint(kwargs["chat_id"])
+
+    async def send_document(self, **kwargs: Any) -> _FakeSentMessage:
+        self.documents.append(kwargs)
+        return self._mint(kwargs["chat_id"])
+
+    async def send_media_group(self, **kwargs: Any) -> list[_FakeSentMessage]:
+        if self.send_album_error is not None:
+            error = self.send_album_error
+            self.send_album_error = None
+            raise error
+        self.albums.append(kwargs)
+        return [self._mint(kwargs["chat_id"]) for _ in kwargs["media"]]
+
+    async def edit_message_text(self, **kwargs: Any) -> None:
+        self.edits.append(kwargs)
+
+    async def delete_message(self, **kwargs: Any) -> None:
+        self.deletes.append(kwargs)
+
+    async def send_chat_action(self, **kwargs: Any) -> None:
+        self.actions.append(kwargs)
+
+    async def get_chat(self, chat_id: Any) -> _FakeChat:
+        return self.chat
+
+    async def get_file(self, file_id: str) -> _FakeFileHandle:
+        handle = self.files.get(file_id)
+        if handle is None:
+            raise TelegramError(f"no such file {file_id}")
+        return handle
+
+
+def _adapter() -> TelegramAdapter:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    adapter._bot_user_id = BOT_USER_ID
+    adapter._bot = _FakeBot()
+    return adapter
+
+
+def _bot(adapter: TelegramAdapter) -> _FakeBot:
+    return adapter._bot  # type: ignore[no-any-return]
+
+
+# ── Inbound bridging ─────────────────────────────────────────────────────────
+
+
+async def _collect(sink: list[Any], value: Any) -> None:
+    sink.append(value)
+
+
+def test_inbound_message_is_bridged_with_chat_and_sender() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="hello team")))
+
+    assert len(seen) == 1
+    assert seen[0].channel_id == str(CHAT_ID)
+    assert seen[0].channel_type == "channel_private"
+    assert seen[0].sender_name == "alice"
+    assert seen[0].content == "hello team"
+    assert seen[0].message_ref == f"{CHAT_ID}:11"
+    assert seen[0].channel_name == "general"
+
+
+def test_the_bots_own_messages_are_dropped() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(from_user=_FakeUser(user_id=BOT_USER_ID, username="the_bot"))
+        )
+    )
+
+    assert seen == []
+
+
+def test_a_repeated_message_id_is_only_bridged_once() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(message_id=11)))
+    _run(adapter._handle_message(_FakeInbound(message_id=11)))
+
+    assert len(seen) == 1
+
+
+def test_the_same_message_id_in_another_chat_is_not_a_duplicate() -> None:
+    # Telegram numbers messages per chat, so the id alone cannot dedupe.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(message_id=11)))
+    _run(
+        adapter._handle_message(
+            _FakeInbound(message_id=11, chat=_FakeChat(chat_id=-100999))
+        )
+    )
+
+    assert len(seen) == 2
+
+
+def test_a_caption_stands_in_for_text_on_a_media_message() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    photo = _FakePhotoSize("small", "u1", 10)
+    _bot(adapter).files["small"] = _FakeFileHandle(b"img")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, caption="look at this", photo=[photo])
+        )
+    )
+
+    assert seen[0].content == "look at this"
+
+
+def test_a_bang_prefixed_message_routes_as_a_command() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    messages: list[InboundMessage] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    adapter._on_message = lambda m: _collect(messages, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="!invite-agent @scout")))
+
+    assert messages == []
+    assert commands[0].command == "invite-agent"
+    assert commands[0].args == "@scout"
+    assert commands[0].message_ref == f"{CHAT_ID}:11"
+
+
+def test_tagging_the_bot_itself_is_reported() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(text=f"hey @{BOT_USERNAME} help")))
+
+    assert seen[0].self_mention_token == BOT_USERNAME
+
+
+def test_a_message_naming_no_one_has_no_self_mention() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="hey @someone_else")))
+
+    assert seen[0].self_mention_token is None
+
+
+def test_a_channel_post_with_no_author_is_skipped() -> None:
+    # Broadcast channel posts are authored by the channel, so there is no
+    # sender to attribute them to.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(from_user=None)))
+
+    assert seen == []
+
+
+# ── Threading ────────────────────────────────────────────────────────────────
+
+
+def test_a_forum_topic_id_is_the_thread_root() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(message_thread_id=88)))
+
+    assert seen[0].root_id == "88"
+
+
+def test_outside_a_forum_the_replied_to_message_is_the_root() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(reply_to_message=_FakeInbound(message_id=5))
+        )
+    )
+
+    assert seen[0].root_id == "5"
+
+
+def test_a_top_level_message_has_no_root() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound()))
+
+    assert seen[0].root_id is None
+
+
+# ── Joins ────────────────────────────────────────────────────────────────────
+
+
+def test_a_person_joining_is_reported_as_a_user_join() -> None:
+    adapter = _adapter()
+    joins: list[Any] = []
+    adapter._on_user_joined = lambda j: _collect(joins, j)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(new_chat_members=[_FakeUser(user_id=9, username="bob")])
+        )
+    )
+
+    assert joins[0].external_user_id == "9"
+    assert joins[0].external_username == "bob"
+    assert joins[0].channel_id == str(CHAT_ID)
+
+
+def test_the_bot_being_added_provisions_the_room() -> None:
+    # Telegram gives the "app added to channel" signal Discord lacks, so the
+    # room can be created on join rather than waiting for a message.
+    adapter = _adapter()
+    app_joins: list[Any] = []
+    adapter._on_app_joined = lambda j: _collect(app_joins, j)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(new_chat_members=[_FakeUser(user_id=BOT_USER_ID)])
+        )
+    )
+
+    assert app_joins[0].channel_id == str(CHAT_ID)
+    assert app_joins[0].channel_name == "general"
+
+
+def test_a_membership_update_for_the_bot_provisions_the_room() -> None:
+    adapter = _adapter()
+    app_joins: list[Any] = []
+    adapter._on_app_joined = lambda j: _collect(app_joins, j)
+
+    _run(
+        adapter._handle_update(
+            _FakeUpdate(
+                my_chat_member=_FakeChatMemberUpdate(
+                    _FakeChat(), status="administrator"
+                )
+            )
+        )
+    )
+
+    assert app_joins[0].channel_id == str(CHAT_ID)
+
+
+def test_the_bot_being_removed_provisions_nothing() -> None:
+    adapter = _adapter()
+    app_joins: list[Any] = []
+    adapter._on_app_joined = lambda j: _collect(app_joins, j)
+
+    _run(
+        adapter._handle_update(
+            _FakeUpdate(
+                my_chat_member=_FakeChatMemberUpdate(_FakeChat(), status="left")
+            )
+        )
+    )
+
+    assert app_joins == []
+
+
+def test_a_one_to_one_chat_does_not_provision_a_room_on_join() -> None:
+    adapter = _adapter()
+    app_joins: list[Any] = []
+    adapter._on_app_joined = lambda j: _collect(app_joins, j)
+
+    _run(
+        adapter._handle_update(
+            _FakeUpdate(
+                my_chat_member=_FakeChatMemberUpdate(
+                    _FakeChat(chat_type="private"), status="member"
+                )
+            )
+        )
+    )
+
+    assert app_joins == []
+
+
+class _FakeChatMemberUpdate:
+    def __init__(self, chat: _FakeChat, *, status: str) -> None:
+        self.chat = chat
+        self.new_chat_member = type("_M", (), {"status": status})()
+
+
+class _FakeUpdate:
+    def __init__(self, *, message: Any = None, my_chat_member: Any = None) -> None:
+        self.message = message
+        self.channel_post = None
+        self.my_chat_member = my_chat_member
+
+
+# ── Sender names ─────────────────────────────────────────────────────────────
+
+
+def test_a_person_without_a_username_is_named_from_their_display_name() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                from_user=_FakeUser(
+                    user_id=9, username=None, first_name="Ada", last_name="Lovelace"
+                )
+            )
+        )
+    )
+
+    # It has to survive being written as @name in a room, so no spaces.
+    assert seen[0].sender_name == "AdaLovelace"
+
+
+def test_a_person_with_no_name_at_all_falls_back_to_their_id() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                from_user=_FakeUser(
+                    user_id=9, username=None, first_name="", last_name=""
+                )
+            )
+        )
+    )
+
+    assert seen[0].sender_name == "user9"
+
+
+# ── Inbound attachments ──────────────────────────────────────────────────────
+
+
+def test_the_largest_size_of_a_photo_is_the_one_relayed() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    bot = _bot(adapter)
+    bot.files["big"] = _FakeFileHandle(b"full-size")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None,
+                photo=[
+                    _FakePhotoSize("small", "u1", 10),
+                    _FakePhotoSize("big", "u2", 900),
+                ],
+            )
+        )
+    )
+
+    assert [a.filename for a in seen[0].attachments] == ["photo_u2.jpg"]
+    assert seen[0].attachments[0].mimetype == "image/jpeg"
+    assert seen[0].attachments[0].data == b"full-size"
+
+
+def test_a_document_keeps_its_name_and_type() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    _bot(adapter).files["d1"] = _FakeFileHandle(b"col1,col2")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None, document=_FakeDocument("d1", "report.csv", "text/csv", 9)
+            )
+        )
+    )
+
+    assert seen[0].attachments[0].filename == "report.csv"
+    assert seen[0].attachments[0].mimetype == "text/csv"
+
+
+def test_an_oversize_attachment_is_disclosed_not_dropped() -> None:
+    adapter = _adapter()
+    adapter.set_max_attachment_bytes(100)
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None,
+                document=_FakeDocument(
+                    "d1", "huge.bin", "application/octet-stream", 5000
+                ),
+            )
+        )
+    )
+
+    assert seen[0].attachments == []
+    assert seen[0].attachment_failures[0].filename == "huge.bin"
+    assert "exceeds" in seen[0].attachment_failures[0].reason
+
+
+def test_the_bot_api_download_ceiling_applies_even_when_the_bridge_allows_more() -> (
+    None
+):
+    adapter = _adapter()
+    adapter.set_max_attachment_bytes(200 * 1024 * 1024)
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None,
+                document=_FakeDocument("d1", "huge.bin", None, 50 * 1024 * 1024),
+            )
+        )
+    )
+
+    assert seen[0].attachments == []
+    assert seen[0].attachment_failures[0].filename == "huge.bin"
+
+
+def test_a_failed_download_is_disclosed_not_dropped() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    _bot(adapter).files["d1"] = _FakeFileHandle(b"", fail=True)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, document=_FakeDocument("d1", "x.bin", None, 4))
+        )
+    )
+
+    assert seen[0].attachments == []
+    assert "download failed" in seen[0].attachment_failures[0].reason
+
+
+# ── Outbound messaging ───────────────────────────────────────────────────────
+
+
+def test_an_agents_name_leads_a_single_line_message() -> None:
+    adapter = _adapter()
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", "on it"))
+
+    sent = _bot(adapter).messages[0]
+    assert sent["text"] == "<b>scout</b>: on it"
+    assert sent["chat_id"] == CHAT_ID
+    assert ref == f"{CHAT_ID}:501"
+
+
+def test_an_agents_name_sits_above_a_multi_line_message() -> None:
+    adapter = _adapter()
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "line one\nline two"))
+
+    assert _bot(adapter).messages[0]["text"] == "<b>scout</b>\nline one\nline two"
+
+
+def test_a_threaded_reply_is_anchored_to_its_root() -> None:
+    adapter = _adapter()
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", "in thread", "88"))
+
+    params = _bot(adapter).messages[0]["reply_parameters"]
+    assert params.message_id == 88
+    # A root that has since been deleted must not take the message down with it.
+    assert params.allow_sending_without_reply is True
+
+
+def test_a_body_over_the_cap_is_split_rather_than_rejected() -> None:
+    adapter = _adapter()
+    body = "\n".join(["x" * 200] * 60)
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", body))
+
+    sent = _bot(adapter).messages
+    assert len(sent) > 1
+    assert all(len(m["text"]) <= 4096 for m in sent)
+    # The ref names the head of the run, so an edit or delete finds it.
+    assert ref == f"{CHAT_ID}:501"
+
+
+def test_only_the_first_chunk_replies_into_the_thread() -> None:
+    # Every chunk carrying reply_parameters would make Telegram render the
+    # quoted root once per message.
+    adapter = _adapter()
+    body = "\n".join(["x" * 200] * 60)
+
+    _run(adapter.send_message(str(CHAT_ID), "scout", body, "88"))
+
+    sent = _bot(adapter).messages
+    assert "reply_parameters" in sent[0]
+    assert all("reply_parameters" not in m for m in sent[1:])
+
+
+def test_markup_telegram_rejects_is_resent_as_plain_text() -> None:
+    # Losing the message is the one outcome that is not acceptable.
+    adapter = _adapter()
+    _bot(adapter).send_message_error = BadRequest("Can't parse entities: bad tag")
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", "<b>oops</unclosed>"))
+
+    sent = _bot(adapter).messages
+    assert len(sent) == 1
+    assert "parse_mode" not in sent[0]
+    assert "<" not in sent[0]["text"]
+    assert ref is not None
+
+
+def test_a_non_formatting_failure_is_not_retried() -> None:
+    adapter = _adapter()
+    _bot(adapter).send_message_error = BadRequest("chat not found")
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", "hello"))
+
+    assert ref is None
+    assert _bot(adapter).messages == []
+
+
+def test_an_admin_notice_carries_no_agent_name() -> None:
+    adapter = _adapter()
+
+    _run(adapter.admin_message(str(CHAT_ID), "scout is not in this room"))
+
+    assert _bot(adapter).messages[0]["text"] == "scout is not in this room"
+
+
+def test_editing_a_message_targets_its_chat_and_id() -> None:
+    adapter = _adapter()
+
+    _run(adapter.update_message(str(CHAT_ID), f"{CHAT_ID}:501", "new text"))
+
+    edit = _bot(adapter).edits[0]
+    assert edit["chat_id"] == CHAT_ID
+    assert edit["message_id"] == 501
+    assert edit["text"] == "new text"
+
+
+def test_an_edit_that_changes_nothing_is_not_an_error() -> None:
+    adapter = _adapter()
+
+    async def _raise(**_kwargs: Any) -> None:
+        raise BadRequest("Message is not modified")
+
+    _bot(adapter).edit_message_text = _raise  # type: ignore[method-assign]
+
+    # Must not raise.
+    _run(adapter.update_message(str(CHAT_ID), f"{CHAT_ID}:501", "same"))
+
+
+def test_deleting_a_message_targets_its_chat_and_id() -> None:
+    adapter = _adapter()
+
+    _run(adapter.delete_message(str(CHAT_ID), f"{CHAT_ID}:501"))
+
+    assert _bot(adapter).deletes[0] == {"chat_id": CHAT_ID, "message_id": 501}
+
+
+def test_a_malformed_message_ref_is_refused_rather_than_guessed() -> None:
+    adapter = _adapter()
+
+    _run(adapter.delete_message(str(CHAT_ID), "nonsense"))
+
+    assert _bot(adapter).deletes == []
+
+
+# ── Typing ───────────────────────────────────────────────────────────────────
+
+
+def test_typing_on_sends_a_chat_action() -> None:
+    adapter = _adapter()
+
+    _run(adapter.send_typing(str(CHAT_ID), "scout", True))
+
+    assert _bot(adapter).actions[0]["chat_id"] == CHAT_ID
+
+
+def test_typing_off_sends_nothing() -> None:
+    # Telegram's chat action expires on its own; there is no cancel call.
+    adapter = _adapter()
+
+    _run(adapter.send_typing(str(CHAT_ID), "scout", False))
+
+    assert _bot(adapter).actions == []
+
+
+# ── Outbound attachments ─────────────────────────────────────────────────────
+
+
+def test_an_image_is_sent_as_a_photo_so_it_previews() -> None:
+    adapter = _adapter()
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "chart.png", "image/png", b"bytes", "the chart"
+        )
+    )
+
+    assert _bot(adapter).documents == []
+    assert _bot(adapter).photos[0]["caption"] == "<b>scout</b>: the chart"
+
+
+def test_a_non_image_is_sent_as_a_document_so_its_bytes_survive() -> None:
+    adapter = _adapter()
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "report.csv", "text/csv", b"a,b", None
+        )
+    )
+
+    doc = _bot(adapter).documents[0]
+    assert doc["filename"] == "report.csv"
+    assert doc["caption"] == "<b>scout</b>"
+
+
+def test_an_image_too_big_to_preview_is_sent_as_a_document() -> None:
+    adapter = _adapter()
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "huge.png", "image/png", b"x" * (11 * 1024 * 1024)
+        )
+    )
+
+    assert _bot(adapter).photos == []
+    assert _bot(adapter).documents[0]["filename"] == "huge.png"
+
+
+def test_a_caption_too_long_for_a_file_posts_ahead_of_it() -> None:
+    adapter = _adapter()
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "x.bin", "application/octet-stream", b"x", "c" * 2000
+        )
+    )
+
+    assert len(_bot(adapter).messages) == 1
+    assert _bot(adapter).documents[0]["caption"] is None
+
+
+def test_a_failed_upload_falls_back_to_a_disclosed_notice() -> None:
+    adapter = _adapter()
+    _bot(adapter).send_photo_error = TelegramError("upload rejected")
+
+    _run(adapter.send_attachment(str(CHAT_ID), "scout", "c.png", "image/png", b"bytes"))
+
+    assert "couldn't be relayed" in _bot(adapter).messages[0]["text"]
+    assert "c.png" in _bot(adapter).messages[0]["text"]
+
+
+def test_an_overflowing_caption_is_not_posted_twice_when_the_upload_fails() -> None:
+    # The caption has already gone out on its own; handing it to the fallback
+    # notice as well would say the same thing twice.
+    adapter = _adapter()
+    _bot(adapter).send_photo_error = TelegramError("upload rejected")
+
+    _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "c.png", "image/png", b"bytes", "c" * 2000
+        )
+    )
+
+    posted = _bot(adapter).messages
+    assert len(posted) == 2
+    assert "c" * 2000 in posted[0]["text"]
+    assert "c" * 100 not in posted[1]["text"]
+    assert "couldn't be relayed" in posted[1]["text"]
+
+
+def test_several_images_arrive_as_one_album() -> None:
+    adapter = _adapter()
+    files = [
+        OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a"),
+        OutboundAttachment(filename="b.png", mimetype="image/png", data=b"b"),
+    ]
+
+    _run(adapter.send_attachments(str(CHAT_ID), "scout", files, "two charts"))
+
+    album = _bot(adapter).albums[0]
+    assert len(album["media"]) == 2
+    # Only the first item's caption shows for the album as a whole.
+    assert album["media"][0].caption == "<b>scout</b>: two charts"
+    assert album["media"][1].caption is None
+    assert _bot(adapter).photos == []
+
+
+def test_a_mixed_batch_falls_back_to_one_message_per_file() -> None:
+    # sendMediaGroup will not mix photos with documents.
+    adapter = _adapter()
+    files = [
+        OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a"),
+        OutboundAttachment(filename="b.csv", mimetype="text/csv", data=b"b"),
+    ]
+
+    _run(adapter.send_attachments(str(CHAT_ID), "scout", files))
+
+    assert _bot(adapter).albums == []
+    assert len(_bot(adapter).photos) == 1
+    assert len(_bot(adapter).documents) == 1
+
+
+def test_a_batch_over_the_album_limit_falls_back_to_one_message_per_file() -> None:
+    adapter = _adapter()
+    files = [
+        OutboundAttachment(filename=f"{i}.png", mimetype="image/png", data=b"x")
+        for i in range(11)
+    ]
+
+    _run(adapter.send_attachments(str(CHAT_ID), "scout", files))
+
+    assert _bot(adapter).albums == []
+    assert len(_bot(adapter).photos) == 11
+
+
+def test_a_single_file_batch_is_just_an_attachment() -> None:
+    adapter = _adapter()
+    files = [OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a")]
+
+    _run(adapter.send_attachments(str(CHAT_ID), "scout", files, "one"))
+
+    assert _bot(adapter).albums == []
+    assert _bot(adapter).photos[0]["caption"] == "<b>scout</b>: one"
+
+
+def test_a_rejected_album_still_delivers_the_files() -> None:
+    adapter = _adapter()
+    _bot(adapter).send_album_error = TelegramError("album rejected")
+    files = [
+        OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a"),
+        OutboundAttachment(filename="b.png", mimetype="image/png", data=b"b"),
+    ]
+
+    _run(adapter.send_attachments(str(CHAT_ID), "scout", files))
+
+    assert len(_bot(adapter).photos) == 2
+
+
+# ── Runtime state ────────────────────────────────────────────────────────────
+
+
+def test_working_posts_a_status_message() -> None:
+    adapter = _adapter()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", notify_user=None, thread_root_id=None
+        )
+    )
+
+    assert "Working on it" in _bot(adapter).messages[0]["text"]
+    assert (str(CHAT_ID), "scout") in adapter._working_msg
+
+
+def test_working_again_edits_the_status_rather_than_reposting() -> None:
+    adapter = _adapter()
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", notify_user=None, thread_root_id=None
+        )
+    )
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID),
+            "scout",
+            "working",
+            notify_user=None,
+            thread_root_id=None,
+            detail="Editing adapter.py",
+        )
+    )
+
+    assert len(_bot(adapter).messages) == 1
+    assert "Editing adapter.py" in _bot(adapter).edits[0]["text"]
+
+
+def test_awaiting_input_pings_the_operator() -> None:
+    adapter = _adapter()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID),
+            "scout",
+            "awaiting-input",
+            notify_user="alice",
+            thread_root_id=None,
+        )
+    )
+
+    assert "needs your input" in _bot(adapter).messages[0]["text"]
+    assert adapter._input_pings[(str(CHAT_ID), "scout")]
+
+
+def test_going_idle_removes_the_status_and_the_pings() -> None:
+    adapter = _adapter()
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", notify_user=None, thread_root_id=None
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID),
+            "scout",
+            "awaiting-input",
+            notify_user="alice",
+            thread_root_id=None,
+        )
+    )
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "idle", notify_user=None, thread_root_id=None
+        )
+    )
+
+    assert adapter._working_msg == {}
+    assert adapter._input_pings == {}
+    assert len(_bot(adapter).deletes) == 2
+
+
+def test_the_status_message_follows_the_conversation() -> None:
+    # Repositioning comes from the base class, but only for adapters that track
+    # the indicator — this asserts Telegram does.
+    adapter = _adapter()
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", notify_user=None, thread_root_id=None
+        )
+    )
+    original = adapter._working_msg[(str(CHAT_ID), "scout")].message_ref
+
+    _run(adapter.reposition_runtime_state(str(CHAT_ID), "scout", "88"))
+
+    moved = adapter._working_msg[(str(CHAT_ID), "scout")]
+    assert moved.message_ref != original
+    assert moved.thread_root_id == "88"
+    # The replacement goes up before the original comes down.
+    assert _bot(adapter).deletes[0]["message_id"] == int(original.split(":")[1])
+
+
+# ── Translation ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("**bold**", "<b>bold</b>"),
+        ("*italic*", "<i>italic</i>"),
+        ("_italic_", "<i>italic</i>"),
+        ("~~gone~~", "<s>gone</s>"),
+        ("`code`", "<code>code</code>"),
+        ("## Heading", "<b>Heading</b>"),
+        ("- item", "• item"),
+        ("[label](https://e.com)", '<a href="https://e.com">label</a>'),
+    ],
+)
+def test_markdown_becomes_telegram_html(markdown: str, expected: str) -> None:
+    assert _adapter().translate_outbound(markdown) == expected
+
+
+def test_html_characters_in_the_body_are_escaped() -> None:
+    # Otherwise Telegram reads them as markup and rejects the whole message.
+    assert _adapter().translate_outbound("a < b & c") == "a &lt; b &amp; c"
+
+
+def test_code_contents_are_never_treated_as_markup() -> None:
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound("```py\nif a < b and *x*:\n```")
+
+    assert rendered == "<pre>if a &lt; b and *x*:</pre>"
+
+
+def test_a_url_is_escaped_once_not_twice() -> None:
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound("[x](https://e.com?a=1&b=2)")
+
+    assert rendered == '<a href="https://e.com?a=1&amp;b=2">x</a>'
+
+
+def test_a_table_is_left_as_written() -> None:
+    # Telegram cannot render tables; mangling one helps nobody.
+    adapter = _adapter()
+    table = "| a | b |\n| - | - |"
+
+    assert adapter.translate_outbound(table) == table
+
+
+def test_a_known_person_is_mentioned_by_id() -> None:
+    adapter = _adapter()
+    adapter.prime_mention_targets({"alice": "12345"})
+
+    rendered = adapter.translate_outbound("ping @alice")
+
+    assert rendered == 'ping <a href="tg://user?id=12345">@alice</a>'
+
+
+def test_an_unknown_name_stays_plain_so_the_client_can_link_it() -> None:
+    adapter = _adapter()
+
+    assert adapter.translate_outbound("ping @bob") == "ping @bob"
+
+
+def test_an_agent_name_is_not_turned_into_a_mention() -> None:
+    # Agents are not Telegram users; linking them would go nowhere.
+    adapter = _adapter()
+    adapter.prime_mention_targets({"alice": "12345"})
+
+    assert adapter.translate_outbound("@switch.cmcdermott") == "@switch.cmcdermott"
+
+
+def test_priming_ignores_entries_that_are_not_numeric_ids() -> None:
+    adapter = _adapter()
+
+    adapter.prime_mention_targets({"alice": "not-an-id", "": "5"})
+
+    assert adapter.translate_outbound("@alice") == "@alice"
+
+
+def test_inbound_text_needs_no_rewriting() -> None:
+    # Telegram already delivers @handle the way Switch expects.
+    adapter = _adapter()
+
+    assert adapter.translate_inbound("hi @alice") == "hi @alice"
+
+
+# ── Lifecycle ────────────────────────────────────────────────────────────────
+
+
+class _FakeUpdater:
+    def __init__(self) -> None:
+        self.polling_kwargs: dict[str, Any] | None = None
+        self.stopped = False
+
+    async def start_polling(self, **kwargs: Any) -> None:
+        self.polling_kwargs = kwargs
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeApplication:
+    def __init__(self) -> None:
+        self.bot = _FakeBot()
+        self.updater = _FakeUpdater()
+        self.handlers: list[Any] = []
+        self.started = False
+        self.shut_down = False
+        self.bot.get_me = self._get_me  # type: ignore[attr-defined]
+
+    async def _get_me(self) -> Any:
+        return type("_Me", (), {"id": BOT_USER_ID, "username": BOT_USERNAME})()
+
+    def add_handler(self, handler: Any) -> None:
+        self.handlers.append(handler)
+
+    async def initialize(self) -> None:
+        self.initialized = True
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.started = False
+
+    async def shutdown(self) -> None:
+        self.shut_down = True
+
+
+class _FakeBuilder:
+    def __init__(self, app: _FakeApplication) -> None:
+        self._app = app
+
+    def token(self, _token: str) -> _FakeBuilder:
+        return self
+
+    def build(self) -> _FakeApplication:
+        return self._app
+
+
+async def _noop(_value: Any) -> None:
+    return None
+
+
+def test_starting_begins_polling_and_learns_the_bot_id() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert app.started is True
+    assert adapter._bot_user_id == BOT_USER_ID
+    assert app.updater.polling_kwargs == {
+        "allowed_updates": ["message", "channel_post", "my_chat_member"]
+    }
+
+
+def test_stopping_shuts_the_application_down() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+    _run(adapter.stop())
+
+    assert app.updater.stopped is True
+    assert app.shut_down is True
+    assert adapter._bot is None
+
+
+def test_sending_before_the_bridge_is_connected_fails_loudly() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        _run(adapter.send_message(str(CHAT_ID), "scout", "hello"))

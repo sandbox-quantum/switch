@@ -21,6 +21,10 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.telegram.adapter import (
+    TelegramAdapter,
+    TelegramConnectionConfig,
+)
 
 
 def _service() -> CollaborationBridgeLifecycleService:
@@ -63,6 +67,18 @@ def test_discord_adapter_registers_with_expected_required_fields() -> None:
     schema = service.get_config_schema("discord")
     assert set(schema["properties"]) == {"bot_token", "guild_id"}
     assert set(schema["required"]) == {"bot_token", "guild_id"}
+
+
+def test_telegram_adapter_registers_with_expected_required_fields() -> None:
+    service = _service()
+    service.register_adapter("telegram", TelegramAdapter, TelegramConnectionConfig)
+
+    assert service.get_registered_types() == ["telegram"]
+    schema = service.get_config_schema("telegram")
+    # bot_username is required alongside the token because every t.me link the
+    # bridge hands out is built from it, with no API call to fall back on.
+    assert set(schema["properties"]) == {"bot_token", "bot_username"}
+    assert set(schema["required"]) == {"bot_token", "bot_username"}
 
 
 def test_get_config_schema_exposes_required_fields() -> None:
