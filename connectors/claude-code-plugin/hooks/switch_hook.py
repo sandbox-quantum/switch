@@ -4,11 +4,14 @@
 Reads the hook event payload from stdin, manages session state, and calls the
 Switch Agent Bridge HTTP API for pre/post tool mediation and event reporting.
 
-Config is read from environment variables set in the user's
-`.claude/settings.local.json` env block (the same values consumed by the MCP
-server in `.mcp.json`):
+Credentials come from the environment when a host injects one (Switch Console
+does), and otherwise from the same local agent store the Switch runtime reads,
+`<project>/.switch/agents/*.json`. Both sources matter: a session started by
+hand has only the store, and a hook that read the environment alone reported
+itself unconfigured and skipped every mediation check in silence.
   SWITCH_API_ENDPOINT  — Switch server URL
   SWITCH_API_TOKEN     — Agent API key
+  SWITCH_AGENT_ID      — Which stored agent to use, when the store holds several
   CLAUDE_PLUGIN_DATA   — Persistent plugin data directory (auto-injected)
 """
 
@@ -21,9 +24,118 @@ import time
 import urllib.request
 import uuid
 
-API_ENDPOINT = os.environ.get("SWITCH_API_ENDPOINT", "").rstrip("/")
-API_TOKEN = os.environ.get("SWITCH_API_TOKEN", "")
+API_ENDPOINT = os.environ.get("SWITCH_API_ENDPOINT", "").strip().rstrip("/")
+API_TOKEN = os.environ.get("SWITCH_API_TOKEN", "").strip()
+ENV_AGENT_ID = os.environ.get("SWITCH_AGENT_ID", "").strip()
 PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA", "")
+
+# The store is per working directory, and the runtime reads it from the
+# session's. `CLAUDE_PROJECT_DIR` is that same directory named explicitly, so
+# prefer it and let cwd stand in when the host does not set it.
+PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR", "") or os.getcwd()
+AGENTS_DIR = os.path.join(PROJECT_DIR, ".switch", "agents")
+
+
+def _read_agent_store() -> list[dict]:
+    """Every usable agent provisioned in this working directory.
+
+    Mirrors the runtime's reader: the `{"env": {...}}` shape Switch Console
+    writes, plus the flat field names that are the obvious thing to write by
+    hand. An entry missing any of the three is not usable and is skipped —
+    the caller's job is to pick between agents, not to repair them.
+    """
+    try:
+        filenames = sorted(f for f in os.listdir(AGENTS_DIR) if f.endswith(".json"))
+    except OSError:
+        return []
+
+    agents = []
+    for filename in filenames:
+        try:
+            with open(os.path.join(AGENTS_DIR, filename)) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        env = data.get("env")
+        env = env if isinstance(env, dict) else {}
+        agent = {
+            "agent_id": str(
+                data.get("agent_id") or env.get("SWITCH_AGENT_ID") or ""
+            ).strip(),
+            "endpoint": str(
+                data.get("endpoint") or env.get("SWITCH_API_ENDPOINT") or ""
+            )
+            .strip()
+            .rstrip("/"),
+            "token": str(
+                data.get("token") or env.get("SWITCH_API_TOKEN") or ""
+            ).strip(),
+        }
+        if agent["agent_id"] and agent["endpoint"] and agent["token"]:
+            agents.append(agent)
+    return agents
+
+
+_CREDENTIALS_CACHE: dict[str, tuple[str, str]] = {}
+
+
+def _credentials(agent_id: str = "") -> tuple[str, str]:
+    """`(endpoint, token)` to act as `agent_id`, or `("", "")` if unresolvable.
+
+    `agent_id` is the agent the session actually bound, recorded when it joined
+    a room. It is what makes the lookup exact when a directory provisions
+    several agents — without it the only safe answer there is to give up,
+    since mediating as the wrong agent is worse than not mediating.
+    """
+    if agent_id in _CREDENTIALS_CACHE:
+        return _CREDENTIALS_CACHE[agent_id]
+
+    resolved = _resolve_credentials(agent_id)
+    _CREDENTIALS_CACHE[agent_id] = resolved
+    return resolved
+
+
+def _resolve_credentials(agent_id: str) -> tuple[str, str]:
+    # A complete environment wins: it is what Switch Console injects per session,
+    # and it is chosen for that session deliberately.
+    if API_ENDPOINT and API_TOKEN:
+        return API_ENDPOINT, API_TOKEN
+
+    candidates = _read_agent_store()
+    wanted = agent_id or ENV_AGENT_ID
+    if wanted:
+        candidates = [a for a in candidates if a["agent_id"] == wanted]
+    if API_ENDPOINT:
+        candidates = [a for a in candidates if a["endpoint"] == API_ENDPOINT]
+
+    if len(candidates) == 1:
+        return candidates[0]["endpoint"], candidates[0]["token"]
+    return "", ""
+
+
+def _configured() -> bool:
+    """Whether this directory has any Switch identity for the hook to use."""
+    return bool(API_ENDPOINT and API_TOKEN) or bool(_read_agent_store())
+
+
+def _has_credentials(agent_id: str) -> bool:
+    """Whether this agent can be mediated for — saying so when it cannot.
+
+    Reaching here means the session is in a room, so it resolved an identity
+    somehow and this hook could not follow it. Mediation is then not happening,
+    and the one thing worse than that is it not happening quietly.
+    """
+    if _credentials(agent_id)[1]:
+        return True
+    print(
+        f"[switch_hook] no credentials for agent {agent_id} in {AGENTS_DIR} and none in "
+        "the environment — tool mediation and event reporting are NOT running for this "
+        "session. Run the connector's `configure` skill in this directory.",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _state_path(session_id: str) -> str:
@@ -45,15 +157,19 @@ def _save_state(session_id: str, state: dict) -> None:
         json.dump(state, f)
 
 
-def _api_call(method: str, path: str, body: dict) -> dict:
-    url = f"{API_ENDPOINT}{path}"
+def _api_call(method: str, path: str, body: dict, agent_id: str = "") -> dict:
+    endpoint, token = _credentials(agent_id)
+    if not endpoint or not token:
+        raise RuntimeError(f"no Switch credentials for agent {agent_id or '(unknown)'}")
+
+    url = f"{endpoint}{path}"
     data = json.dumps(body).encode()
     req = urllib.request.Request(
         url,
         data=data,
         method=method,
         headers={
-            "Authorization": f"Bearer {API_TOKEN}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
     )
@@ -154,6 +270,8 @@ def handle_pre_tool_use(event: dict) -> None:
     state = _load_state(event["session_id"])
     if state is None:
         return
+    if not _has_credentials(state["agent_id"]):
+        return
 
     request_id = str(uuid.uuid4())
     body = {
@@ -165,7 +283,10 @@ def handle_pre_tool_use(event: dict) -> None:
 
     try:
         resp = _api_call(
-            "POST", f"/agents/{state['agent_id']}/mediation/pre-tool-call", body
+            "POST",
+            f"/agents/{state['agent_id']}/mediation/pre-tool-call",
+            body,
+            state["agent_id"],
         )
     except Exception:
         return
@@ -195,6 +316,8 @@ def handle_pre_tool_use(event: dict) -> None:
 def handle_post_tool_use(event: dict) -> None:
     state = _load_state(event["session_id"])
     if state is None:
+        return
+    if not _has_credentials(state["agent_id"]):
         return
 
     agent_id = state["agent_id"]
@@ -229,6 +352,7 @@ def handle_post_tool_use(event: dict) -> None:
                     }
                 ],
             },
+            agent_id,
         )
     except Exception:
         pass
@@ -243,6 +367,7 @@ def handle_post_tool_use(event: dict) -> None:
                 "result": tool_output,
                 "request_id": request_id,
             },
+            agent_id,
         )
     except Exception:
         return
@@ -272,19 +397,23 @@ def main() -> None:
             file=sys.stderr,
         )
         print(f"[switch_hook] PLUGIN_DATA={PLUGIN_DATA!r}", file=sys.stderr)
+        print(
+            f"[switch_hook] store={AGENTS_DIR!r} agents={len(_read_agent_store())}",
+            file=sys.stderr,
+        )
 
     # "Not configured" is an expected state for a freshly-installed plugin
     # — the user hasn't run `/configure` yet, or is in the middle of doing
     # so. Don't spam every tool call with a hook error during setup; just
-    # exit cleanly and let the tool proceed. Once the env vars are set,
-    # real failures (network, auth, mediation denials) will still surface.
-    if not API_ENDPOINT or not API_TOKEN or not PLUGIN_DATA:
+    # exit cleanly and let the tool proceed. Once an identity exists, in the
+    # environment or the store, real failures (network, auth, mediation
+    # denials) will still surface.
+    if not PLUGIN_DATA or not _configured():
         if debug:
             missing = [
                 name
                 for name, value in (
-                    ("SWITCH_API_ENDPOINT", API_ENDPOINT),
-                    ("SWITCH_API_TOKEN", API_TOKEN),
+                    ("a Switch identity (environment or agent store)", _configured()),
                     ("CLAUDE_PLUGIN_DATA", PLUGIN_DATA),
                 )
                 if not value

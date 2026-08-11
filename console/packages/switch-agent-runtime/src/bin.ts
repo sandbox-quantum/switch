@@ -174,10 +174,14 @@ function bindIdentity(agent: { endpoint: string; token: string; agentId: string;
 /**
  * Work out who this process is.
  *
- * Environment first, unconditionally: switchdash launches the majority of
- * sessions and injects the identity it has already chosen for each one, and
- * that path predates the store. Only a session nobody configured that way falls
- * through to disk.
+ * A complete environment wins unconditionally: switchdash launches the majority
+ * of sessions and injects the identity it has already chosen for each one, and
+ * that path predates the store.
+ *
+ * Short of that, the environment is read as a *pointer* rather than a
+ * credential. An agent id with no token names an entry in the store to complete
+ * from disk; an endpoint on its own narrows the store to one server. Only an
+ * environment saying nothing at all leaves the choice entirely to the store.
  */
 function resolveIdentity(): void {
   if (ENV.endpoint && ENV.token && ENV.agentId) {
@@ -185,25 +189,50 @@ function resolveIdentity(): void {
     return;
   }
 
-  // Half an identity is a broken config, not a reason to go looking on disk:
-  // silently authenticating as some other agent is worse than not starting.
-  if (ENV.token || ENV.agentId) {
+  const store = readAgentStore(process.cwd());
+
+  // An environment that names an agent but carries no token is not half a
+  // config, it is a pointer: a host settings file that says which agent this
+  // directory is while deliberately keeping the credential out of the working
+  // tree. Claude Code exports such a block into this process, so refusing it
+  // outright stranded exactly the sessions the store was built to serve.
+  //
+  // Completing it from disk keeps the guarantee the refusal was protecting.
+  // The agent id makes the lookup exact — the entry it matches is the agent the
+  // environment asked for, not one picked for it — so there is no way to end up
+  // authenticated as somebody else. A miss stays fatal for that same reason:
+  // falling through to a general store search could bind a different agent than
+  // the one named, which is the failure the check exists to prevent.
+  if (ENV.agentId && !ENV.token) {
+    const named = store.agents.find((a) => a.agentId === ENV.agentId);
+    const endpointMatches =
+      !ENV.endpoint || (named && normalizeEndpoint(named.endpoint) === normalizeEndpoint(ENV.endpoint));
+
+    if (named && endpointMatches) {
+      bindIdentity(named);
+      return;
+    }
+
     return degrade(
-      `incomplete SWITCH_* environment — got ${[
-        ENV.endpoint ? 'endpoint' : null,
-        ENV.token ? 'token' : null,
-        ENV.agentId ? 'agent_id' : null,
-      ]
-        .filter(Boolean)
-        .join(' + ')}, need all three\n` +
-        `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
-        `  token=${ENV.token ? 'set' : 'MISSING'}\n` +
-        `  agent_id=${ENV.agentId || 'MISSING'}\n` +
-        `Set the missing ones, or unset all three to use the local agent store instead.`
+      `SWITCH_AGENT_ID is ${ENV.agentId} and SWITCH_API_TOKEN is not set, so the token has to come from ${store.projectDir} — and no agent there matches\n` +
+        (named
+          ? `  ${named.name} has that id but belongs to ${normalizeEndpoint(named.endpoint)}, while SWITCH_API_ENDPOINT is ${normalizeEndpoint(ENV.endpoint)}\n`
+          : `  ${store.agents.length === 0 ? 'the store is empty' : `known: ${store.agents.map((a) => `${a.name} (${a.agentId})`).join(', ')}`}\n`) +
+        `Set SWITCH_API_TOKEN as well, or unset SWITCH_AGENT_ID to pick from the store, or run the connector's \`configure\` skill in this directory.`
     );
   }
 
-  const store = readAgentStore(process.cwd());
+  // A token that names nobody is still a broken config: every request this
+  // process makes is addressed to an agent id, and there is nothing to infer
+  // one from.
+  if (ENV.token) {
+    return degrade(
+      `SWITCH_API_TOKEN is set but SWITCH_AGENT_ID is not, so this session cannot say which agent it is\n` +
+        `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
+        `  agent_id=MISSING\n` +
+        `Set SWITCH_AGENT_ID too, or unset both to use the local agent store instead.`
+    );
+  }
 
   if (store.agents.length === 0) {
     const unusable = store.unusable.length

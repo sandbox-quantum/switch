@@ -71,6 +71,27 @@ async function opsServer(): Promise<string> {
   return `http://127.0.0.1:${port}`;
 }
 
+/**
+ * An ops endpoint that remembers who asked.
+ *
+ * Which agent the runtime *bound* is only observable in the credentials it then
+ * uses: the agent id is in the ops path and the token is in its Authorization
+ * header. Asserting on those is what distinguishes "resolved the agent the
+ * environment named" from "picked one and carried on".
+ */
+async function recordingOpsServer(): Promise<{ endpoint: string; calls: () => string[] }> {
+  const calls: string[] = [];
+  const server = http.createServer((req, res) => {
+    calls.push(`${req.url} ${req.headers.authorization ?? ''}`);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ operations: {} }));
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  return { endpoint: `http://127.0.0.1:${port}`, calls: () => calls };
+}
+
 /** An endpoint that accepts the connection and then never answers. */
 async function blackHoleServer(): Promise<string> {
   const server = http.createServer(() => {
@@ -388,9 +409,48 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     expect(answer.result?.content?.[0]?.text).toContain('alice');
   });
 
-  it('does not fall back to the store on half an identity, and says so', async () => {
-    // Being the wrong agent is worse than being no agent: a partial environment
-    // is a broken config, and quietly using the store instead would hide it.
+  it('completes a token-less environment from the store rather than refusing', async () => {
+    // The shape a host settings file produces: it names the agent and leaves the
+    // credential on disk. Claude Code exports that block into this process, so
+    // treating it as half a config stranded every hand-started session — the
+    // exact case the store exists for.
+    const { endpoint, calls } = await recordingOpsServer();
+    const run = start({ SWITCH_API_ENDPOINT: endpoint, SWITCH_AGENT_ID: 'uuid-solo' }, (root) =>
+      provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+
+    await handshake(run);
+    const listed = (await request(run, 2, 'tools/list')) as {
+      result?: { tools?: { name: string }[] };
+    };
+
+    expect((listed.result?.tools ?? []).map((t) => t.name)).not.toContain('switch_unavailable');
+    // The store's token, against the id the environment named — on the ops call
+    // and on everything that follows it.
+    expect(calls()).toContain('/agents/uuid-solo/ops Bearer tok-solo');
+    expect(calls().every((c) => c.startsWith('/agents/uuid-solo/') && c.endsWith('Bearer tok-solo'))).toBe(
+      true
+    );
+  });
+
+  it('binds the agent the environment names, not whichever the store lists first', async () => {
+    // With several provisioned, "it worked" is not evidence: the guarantee is
+    // that the id in the environment decides, so the wrong pick must be visible.
+    const { endpoint, calls } = await recordingOpsServer();
+    const run = start({ SWITCH_AGENT_ID: 'uuid-b' }, (root) => {
+      provision(root, { slug: 'alice', agentId: 'uuid-a', endpoint, token: 'tok-a' });
+      provision(root, { slug: 'bob', agentId: 'uuid-b', endpoint, token: 'tok-b' });
+    });
+
+    await handshake(run);
+
+    expect(calls()).toContain('/agents/uuid-b/ops Bearer tok-b');
+    expect(calls().some((c) => c.includes('uuid-a') || c.includes('tok-a'))).toBe(false);
+  });
+
+  it('refuses when the environment names an agent the store does not hold', async () => {
+    // Falling through to a general store search here would bind somebody else,
+    // which is the failure the old blanket refusal was right to prevent.
     const endpoint = await opsServer();
     const run = start({ SWITCH_AGENT_ID: 'uuid-env' }, (root) =>
       provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
@@ -399,7 +459,35 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     const { tools, text } = await degradedAnswer(run);
 
     expect(tools).toEqual(['switch_unavailable']);
-    expect(text).toContain('incomplete SWITCH_* environment');
+    expect(text).toContain('uuid-env');
+    expect(text).toContain('uuid-solo');
+  });
+
+  it('refuses when the named agent belongs to a different server', async () => {
+    const endpoint = await opsServer();
+    const run = start(
+      { SWITCH_API_ENDPOINT: 'https://elsewhere.example', SWITCH_AGENT_ID: 'uuid-solo' },
+      (root) => provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('elsewhere.example');
+  });
+
+  it('still refuses a token that names no agent', async () => {
+    // Unchanged, and for the original reason: every request is addressed to an
+    // agent id, and a bare token gives nothing to infer one from.
+    const endpoint = await opsServer();
+    const run = start({ SWITCH_API_ENDPOINT: endpoint, SWITCH_API_TOKEN: 'tok-env' }, (root) =>
+      provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('SWITCH_AGENT_ID');
   });
 
   it(
