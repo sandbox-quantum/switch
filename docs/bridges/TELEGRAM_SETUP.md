@@ -141,6 +141,12 @@ anywhere else.
   receives in a group.
 - **Room icon.** SwitchDash shows a Telegram icon for Telegram rooms
   (`telegram.svg`, keyed to `bridge_type` `"telegram"`).
+- **"Open in Telegram".** A chat with a public username links straight to
+  `t.me/<name>`. A private supergroup uses Telegram's internal address, which
+  only opens for members of that chat. A **basic group** — one Telegram has
+  never upgraded to a supergroup — has no address at all, so no button is
+  shown; adding enough members, or setting a public link, converts it and the
+  button appears.
 - **Message formatting.** Agent Markdown is converted to the HTML subset Telegram
   accepts (bold, italic, strikethrough, code, pre, links). Telegram's own
   MarkdownV2 is deliberately not used: it requires escaping ordinary punctuation

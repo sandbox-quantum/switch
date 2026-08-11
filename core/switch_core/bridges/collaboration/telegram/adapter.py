@@ -539,17 +539,47 @@ class TelegramAdapter(CollaborationAdapter):
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
-        """`https://t.me/c/<internal id>` — the canonical link for a supergroup
-        or channel, which the Telegram desktop app claims.
+        """A link that opens this chat in Telegram, or None when it has none.
 
-        Pure: derived from the chat id, no API call. Basic groups and 1:1 chats
-        have no addressable link, so they get none rather than a broken one."""
+        A chat with a public username has a real `t.me/<name>` address that
+        works anywhere. A private supergroup or channel only has the internal
+        form, which needs a message id — bare `t.me/c/<id>` does not reliably
+        resolve — and opens only for members. A basic group (one that has never
+        been upgraded to a supergroup) has no address at all, so it gets none
+        rather than a button that goes nowhere.
+        """
+        if not external_channel_id:
+            return None
+
+        username = await self._chat_username(external_channel_id)
+        if username:
+            return f"https://t.me/{username}"
+
         if not external_channel_id.startswith(_SUPERGROUP_PREFIX):
             return None
         internal = external_channel_id[len(_SUPERGROUP_PREFIX) :]
         if not internal.isdigit():
             return None
-        return f"https://t.me/c/{internal}"
+        return f"https://t.me/c/{internal}/1"
+
+    async def _chat_username(self, channel_id: str) -> str | None:
+        """The chat's public `@name`, if it has one.
+
+        Best effort: a failed lookup falls through to the id-derived link
+        rather than costing the caller its button."""
+        if self._bot is None:
+            return None
+        try:
+            chat = await self._bot.get_chat(self._chat_id(channel_id))
+        except Exception:
+            logger.debug(
+                "Could not resolve Telegram chat %s while building a deeplink",
+                channel_id,
+                exc_info=True,
+            )
+            return None
+        username = getattr(chat, "username", None)
+        return str(username) if username else None
 
     async def home_deeplink(self) -> str | None:
         """`https://t.me/<bot username>` — the bot's own chat, which is the

@@ -152,10 +152,44 @@ def test_agent_identities_are_a_no_op_under_the_single_bot_model() -> None:
 # ── Links ────────────────────────────────────────────────────────────────────
 
 
-def test_a_supergroup_link_drops_the_internal_prefix() -> None:
+def test_a_private_supergroup_link_carries_a_message_id() -> None:
+    # Bare `t.me/c/<id>` does not reliably resolve — the canonical private form
+    # includes a message id, and opens for members of the chat.
     assert (
-        _run(_adapter().channel_deeplink(SUPERGROUP_ID)) == "https://t.me/c/1234567890"
+        _run(_adapter().channel_deeplink(SUPERGROUP_ID))
+        == "https://t.me/c/1234567890/1"
     )
+
+
+def test_a_public_chat_uses_its_real_address() -> None:
+    # A username gives a link that works in a browser as well as the app, so it
+    # beats the internal form whenever the chat has one.
+    adapter = _adapter(_FakeChat("supergroup", username="acme_public"))
+
+    assert _run(adapter.channel_deeplink(SUPERGROUP_ID)) == "https://t.me/acme_public"
+
+
+def test_a_failed_lookup_still_yields_the_internal_link() -> None:
+    # Losing the button because one API call failed is worse than the link the
+    # chat id alone can produce.
+    adapter = _adapter()
+
+    async def _fail(_chat_id: Any) -> _FakeChat:
+        raise RuntimeError("telegram unreachable")
+
+    adapter._bot.get_chat = _fail  # type: ignore[union-attr]
+
+    assert (
+        _run(adapter.channel_deeplink(SUPERGROUP_ID)) == "https://t.me/c/1234567890/1"
+    )
+
+
+def test_a_basic_group_has_no_channel_link() -> None:
+    # A group that has never been upgraded to a supergroup is not addressable
+    # by URL at all, so the caller hides the button rather than showing a dud.
+    adapter = _adapter(_FakeChat("group"))
+
+    assert _run(adapter.channel_deeplink("-987654321")) is None
 
 
 def test_a_one_to_one_chat_has_no_channel_link() -> None:
