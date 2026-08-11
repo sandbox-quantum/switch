@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, Conflict, TelegramError
 
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
@@ -1313,9 +1313,50 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
 
     assert app.started is True
     assert adapter._bot_user_id == BOT_USER_ID
-    assert app.updater.polling_kwargs == {
-        "allowed_updates": ["message", "channel_post", "my_chat_member"]
-    }
+    assert app.updater.polling_kwargs is not None
+    assert app.updater.polling_kwargs["allowed_updates"] == [
+        "message",
+        "channel_post",
+        "my_chat_member",
+    ]
+
+
+def test_a_second_poller_on_the_same_token_is_named(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Telegram hands each update to one getUpdates caller, so a leftover
+    # deployment or a second replica quietly takes a share of the traffic:
+    # outbound still works, inbound goes dead, and nothing says why unless the
+    # Conflict is surfaced (CHOO-1686).
+    with caplog.at_level(logging.ERROR):
+        TelegramAdapter._on_polling_error(Conflict("terminated by other getUpdates"))
+
+    assert "Another process is polling Telegram with this bot token" in caplog.text
+    assert "missing inbound messages" in caplog.text
+
+
+def test_other_polling_errors_are_reported_but_not_misdiagnosed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        TelegramAdapter._on_polling_error(TelegramError("temporary network blip"))
+
+    assert "temporary network blip" in caplog.text
+    assert "Another process" not in caplog.text
+
+
+def test_polling_installs_the_error_callback() -> None:
+    # Without it the Conflict never reaches the log at all.
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert app.updater.polling_kwargs is not None
+    assert "error_callback" in app.updater.polling_kwargs
 
 
 def test_privacy_mode_is_announced_at_startup(

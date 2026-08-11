@@ -110,6 +110,28 @@ a path is rejected, because the redirect is served at `/deeplink/session` on the
 API root (the agent-bridge app, **not** under the `/gateway` mount) and a path
 prefix would build links that 404.
 
+## One instance per bot token
+
+Telegram delivers each update to **one** long-polling caller and rejects the
+others with a `Conflict`. Two processes sharing a bot token therefore split the
+inbound traffic between them at random, which looks like this: the bridge still
+sends fine, agents still post, but messages from people are seen intermittently
+or not at all.
+
+So:
+
+- **Do not run switch-core with more than one replica** while a Telegram bridge
+  is configured on it.
+- **Give each environment its own bot.** A dev deployment and a production
+  deployment on the same token will steal each other's messages. Make a second
+  bot in BotFather for dev.
+- After a redeploy, make sure the previous instance is actually gone — an old
+  process still holding the token produces exactly this symptom.
+
+The bridge logs an error naming this when Telegram reports the conflict, so
+check the logs for "Another process is polling Telegram" before looking
+anywhere else.
+
 ## Notes
 
 - **Commands.** Both `/invite-agent @agent-name` and `!invite-agent @agent-name`

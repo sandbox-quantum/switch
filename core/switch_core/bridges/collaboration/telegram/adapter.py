@@ -16,7 +16,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, ChatType, ParseMode
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, Conflict, TelegramError
 from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
 from switch_core.bridges.collaboration.adapter import (
@@ -141,8 +141,32 @@ class TelegramAdapter(CollaborationAdapter):
         await app.start()
         if app.updater is None:
             raise RuntimeError("Telegram application was built without an updater")
-        await app.updater.start_polling(allowed_updates=_ALLOWED_UPDATES)
+        await app.updater.start_polling(
+            allowed_updates=_ALLOWED_UPDATES, error_callback=self._on_polling_error
+        )
         logger.info("Telegram adapter connected as @%s (id %s)", me.username, me.id)
+
+    @staticmethod
+    def _on_polling_error(error: TelegramError) -> None:
+        """Report a polling failure, naming the one that looks like nothing.
+
+        Telegram hands each update to a single getUpdates caller, so a second
+        process on the same bot token silently takes a share of the traffic —
+        outbound keeps working, inbound goes intermittent or dead, and the only
+        evidence is a Conflict the poller would otherwise swallow and retry.
+        """
+        if isinstance(error, Conflict):
+            logger.error(
+                "Another process is polling Telegram with this bot token. "
+                "Telegram gives each update to only ONE caller, so this bridge "
+                "is now missing inbound messages while still able to send. "
+                "Stop the other instance — an old deployment still running, a "
+                "local run, or a second replica — or give it its own bot. "
+                "Telegram said: %s",
+                error,
+            )
+            return
+        logger.warning("Telegram polling error: %s", error)
 
     @staticmethod
     def _warn_if_privacy_mode_hides_traffic(me: Any) -> None:
