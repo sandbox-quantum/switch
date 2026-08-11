@@ -26,8 +26,11 @@ leaves its contracts alone.
 - **sidecar** — the remote runtime Switch Console deploys to an agent host
   (`dash/apps/switch-console-desktop/src/sidecar/`). Versioned in
   `sidecar-version.ts` and deployed by Switch Console, not published separately.
-- **switch-connector** / **switch-connector-codex** — the two connector plugins
-  (`connectors/`), versioned in their respective plugin manifests.
+- **switch-connector** / **switch-connector-codex** / **switch-connector-opencode**
+  — the three connectors (`connectors/`), versioned in their respective
+  manifests. The first two are installed from the plugin marketplace; the
+  OpenCode one is written by Switch Console, which has no marketplace to install
+  from, so its version identifies the source rather than an install.
 
 Three things are **not** separately versioned, and ship under the switch-core
 release so a single tag pins the whole stack: the **operator dashboard**
@@ -1226,3 +1229,24 @@ manifest history.
 
 Releases before this changelog existed are in the git log and in the plugin
 manifest history.
+
+---
+
+## switch-connector-opencode
+
+`connectors/opencode-plugin/`. Version lives in `package.json`.
+
+Unlike the other two connectors, nothing installs this one from a marketplace —
+OpenCode has none. Switch Console writes its files directly, so the version is
+for humans reading a diff rather than for an installer, and an install reports
+the app version that wrote it rather than a version of its own.
+
+### [Unreleased]
+
+### [0.1.0]
+
+First release. Registers the Switch MCP server in OpenCode's global config as a
+local server, so the runtime takes its credentials from the session environment
+and none is written to disk. Ships a reporting plugin that gives OpenCode
+sessions real working and completed states, and names the tool a turn is
+currently running.

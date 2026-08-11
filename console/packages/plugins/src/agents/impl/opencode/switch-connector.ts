@@ -33,6 +33,10 @@ type OpencodeConfig = {
 /**
  * The Switch MCP server as OpenCode declares one.
  *
+ * Mirrors `connectors/opencode-plugin/opencode.json`, which is the source of
+ * truth for what this connector registers; `connector-assets.test.ts` fails if
+ * the two disagree.
+ *
  * Registered as a `local` (stdio) server, which is what keeps the credential
  * off disk: OpenCode spawns a local server with the full parent environment,
  * so the runtime inherits the `SWITCH_*` variables Switch Console already puts

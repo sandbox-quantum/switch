@@ -444,6 +444,7 @@ forgotten and someone will debug a build they think is newer than it is.
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
 | Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (it ships the skill and its own `.mcp.json`) — installs will not pick it up otherwise |
+| OpenCode connector | `connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
 | Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and **both** connectors' `.mcp.json` pin the version sessions actually run, as does `SWITCH_AGENT_RUNTIME_PIN` in `packages/plugins/src/distribution.ts` for agent types whose connector the app writes rather than installs. Those three pins are the only ones, and `runtime-pin.test.ts` fails if they disagree |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,

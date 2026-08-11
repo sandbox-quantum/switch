@@ -1,11 +1,3 @@
-// Verbatim copy of `connectors/opencode-plugin/plugin/switch-notifications.js`.
-//
-// That file is the source of truth — edit it, not this. The app carries this
-// copy because it writes the connector itself rather than fetching it from a
-// marketplace, and `connector-assets.test.ts` fails if the two drift. Drift
-// here is silent and nasty: the connector directory is what gets reviewed,
-// while sessions run whatever is embedded below.
-export const OPENCODE_PLUGIN_CONTENT = `\
 /* global fetch, process */
 
 // Identifies this plugin build in OpenCode's own log. The file is dropped into
@@ -113,7 +105,7 @@ export const SwitchdashNotifications = async (input) => {
         return;
       }
 
-      // Gated on \`working\` so an idle outside a turn — at session start, or
+      // Gated on `working` so an idle outside a turn — at session start, or
       // trailing after one already completed — does not report a turn that
       // never ran.
       if (event.type === 'session.idle') {
@@ -157,7 +149,7 @@ export const SwitchdashNotifications = async (input) => {
 
 async function postToSwitchdash({ port, token, ptyId, type, body }) {
   try {
-    await fetch(\`http://127.0.0.1:\${port}/hook\`, {
+    await fetch(`http://127.0.0.1:${port}/hook`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -187,4 +179,3 @@ function getOpenCodeSessionId(event) {
 function isOpenCodeSessionId(value) {
   return typeof value === 'string' && value.trim().startsWith('ses');
 }
-`;
