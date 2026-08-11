@@ -41,6 +41,10 @@ def load_hook(
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project_dir))
+    # The hook reads the store from the working directory first, as the runtime
+    # does. Without this the cases would resolve against whatever directory the
+    # suite happens to be run from, and pass or fail on that.
+    monkeypatch.chdir(project_dir)
 
     spec = importlib.util.spec_from_file_location("switch_hook_under_test", HOOK_PATH)
     assert spec is not None and spec.loader is not None
@@ -243,3 +247,123 @@ def test_unconfigured_directory_is_an_ordinary_answer(
 
     assert hook._read_agent_store() == []
     assert hook._configured() is False
+
+
+def test_environment_naming_another_agent_does_not_lend_its_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The session bound agent A; the environment is complete for agent B.
+
+    Reachable by resuming an old conversation under a reconfigured identity —
+    the session state still names A. Using B's token against A's URL is the one
+    thing taking `agent_id` as a parameter exists to prevent.
+    """
+    provision(tmp_path, "alice", agent_id="uuid-a", token="tok-a")
+    hook = load_hook(
+        monkeypatch,
+        tmp_path,
+        SWITCH_API_ENDPOINT="https://switch.example",
+        SWITCH_API_TOKEN="tok-b",
+        SWITCH_AGENT_ID="uuid-b",
+    )
+
+    # Resolves A from the store, never B's token.
+    assert hook._credentials("uuid-a") == ("https://switch.example", "tok-a")
+    # And refuses outright for an agent that is in neither.
+    assert hook._credentials("uuid-c") == ("", "")
+
+
+def test_unexpanded_placeholders_are_not_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A host may spawn this before expanding its settings env block.
+
+    Taken literally, `${SWITCH_API_ENDPOINT}` becomes the base of every URL the
+    hook builds — so each call raises, gets swallowed, and mediation stops with
+    no signal at all, which is the bug this fallback exists to remove. The
+    runtime guards the same case; see `bin.handshake.test.ts`.
+    """
+    provision(tmp_path, "solo", agent_id="uuid-solo", token="tok-store")
+    hook = load_hook(
+        monkeypatch,
+        tmp_path,
+        SWITCH_API_ENDPOINT="${SWITCH_API_ENDPOINT}",
+        SWITCH_API_TOKEN="${SWITCH_API_TOKEN}",
+        SWITCH_AGENT_ID="${SWITCH_AGENT_ID}",
+    )
+
+    assert hook.API_ENDPOINT == ""
+    assert hook._credentials("") == ("https://switch.example", "tok-store")
+
+
+def test_endpoint_breaks_a_tie_between_entries_sharing_an_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Matches the runtime, which narrows by endpoint before counting."""
+    provision(
+        tmp_path,
+        "here",
+        agent_id="uuid-dup",
+        endpoint="https://a.example",
+        token="tok-here",
+    )
+    provision(
+        tmp_path,
+        "away",
+        agent_id="uuid-dup",
+        endpoint="https://b.example",
+        token="tok-away",
+    )
+    hook = load_hook(monkeypatch, tmp_path, SWITCH_API_ENDPOINT="https://a.example")
+
+    assert hook._credentials("uuid-dup") == ("https://a.example", "tok-here")
+
+
+def test_it_says_why_it_cannot_mediate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole point of the fallback is that failure stops being silent, and
+    each cause needs a different fix — so the reason has to be named, not just
+    the fact."""
+    provision(tmp_path, "a-first", agent_id="uuid-dup", token="tok-a")
+    provision(tmp_path, "b-second", agent_id="uuid-dup", token="tok-b")
+    hook = load_hook(monkeypatch, tmp_path)
+
+    assert hook._has_credentials("uuid-dup") is False
+    duplicate = capsys.readouterr().err
+    assert "2 entries" in duplicate
+    assert "NOT running" in duplicate
+
+    assert hook._has_credentials("uuid-absent") is False
+    assert "no entry for agent uuid-absent" in capsys.readouterr().err
+
+
+def test_handlers_do_nothing_when_credentials_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Covers the wiring, not just the resolver: a handler that skipped the
+    check would try the call and swallow the failure silently."""
+    plugin_data = tmp_path / "plugin-data"
+    plugin_data.mkdir()
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+    hook = load_hook(monkeypatch, tmp_path)
+    (plugin_data / "session_s1.json").write_text(
+        json.dumps({"room_id": "!room:switch.local", "agent_id": "uuid-nobody"})
+    )
+
+    event = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+        "session_id": "s1",
+    }
+    hook.handle_pre_tool_use(event)
+    hook.handle_post_tool_use(
+        {**event, "hook_event_name": "PostToolUse", "tool_response": {}}
+    )
+
+    captured = capsys.readouterr()
+    # No verdict emitted on stdout — the tool proceeds unmediated — and the
+    # reason is on stderr rather than nowhere.
+    assert captured.out == ""
+    assert "NOT running" in captured.err

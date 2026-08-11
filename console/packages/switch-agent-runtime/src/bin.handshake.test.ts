@@ -506,6 +506,59 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     expect(text).not.toContain('agent_id=MISSING');
   });
 
+  it('refuses when only some ${SWITCH_*} expanded, rather than filling the gap from disk', async () => {
+    // A templating step that resolved two of three and left the token literal
+    // meant to supply a credential and failed. Treating the literal as "absent"
+    // would authenticate with whatever the store holds and never mention it.
+    const endpoint = await opsServer();
+    const run = start(
+      {
+        SWITCH_API_ENDPOINT: endpoint,
+        SWITCH_AGENT_ID: 'uuid-solo',
+        SWITCH_API_TOKEN: '${SWITCH_API_TOKEN}',
+      },
+      (root) => provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('SWITCH_API_TOKEN');
+  });
+
+  it('says the store was unreadable rather than empty when it is', async () => {
+    // "Nothing provisioned" and "one entry that will not parse" need different
+    // fixes, and reporting the second as the first sends the reader nowhere.
+    const endpoint = await opsServer();
+    const run = start({ SWITCH_API_ENDPOINT: endpoint, SWITCH_AGENT_ID: 'uuid-solo' }, (root) => {
+      const dir = join(root, '.switch', 'agents');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'solo.json'), '{ not json');
+    });
+
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('solo');
+    expect(text).not.toContain('the store is empty');
+  });
+
+  it('lets an explicit endpoint break a tie between two entries sharing an id', async () => {
+    const wanted = await recordingOpsServer();
+    const other = await opsServer();
+    const run = start(
+      { SWITCH_API_ENDPOINT: wanted.endpoint, SWITCH_AGENT_ID: 'uuid-dup' },
+      (root) => {
+        provision(root, { slug: 'here', agentId: 'uuid-dup', endpoint: wanted.endpoint, token: 'tok-here' });
+        provision(root, { slug: 'away', agentId: 'uuid-dup', endpoint: other, token: 'tok-away' });
+      }
+    );
+
+    await handshake(run);
+
+    expect(wanted.calls()).toContain('/agents/uuid-dup/ops Bearer tok-here');
+  });
+
   it('refuses when two store entries claim the same agent id', async () => {
     // Two files, two tokens, nothing saying which is current. Taking the first
     // would leave the session working while the hook — which refuses on this

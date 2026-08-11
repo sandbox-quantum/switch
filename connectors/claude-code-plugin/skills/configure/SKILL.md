@@ -207,11 +207,15 @@ The answer is passed as `options.channels_enabled` in the register payload.
 ## Step 6 — Repository directory and notify user
 
 Switch shows room participants a paste-ready command when the agent is addressed
-with no live session:
+with no live session. It is built from what you record here and in Step 5, so it
+carries the channels flag when you said channels work:
 
 ```
-cd "<repo_dir>" && claude "connect to switch room <name>"
+cd "<repo_dir>" && claude "connect to switch room <name>" \
+  --dangerously-load-development-channels plugin:switch-connector@switch-plugins
 ```
+
+(without the flag when `channels_enabled` is false).
 
 `repo_dir` is what makes it useful — **and it matters twice over**, because the
 runtime reads the agent store from the session's working directory. `repo_dir`

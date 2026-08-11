@@ -21,12 +21,15 @@
  * from its own getppid(), so each session's hook reaches its own runtime
  * without any cross-session coordination.
  *
- * Identity is resolved in two steps, environment first. Switch Console puts the
- * `SWITCH_*` vars in the session's environment when it launches one itself, and
- * that path is taken whole whenever all three are present. Otherwise the local
- * agent store decides — the working tree says which agents are provisioned
- * here, `$HOME` holds their secrets — and where it names more than one, the
- * session picks with `select_agent` before anything else will answer.
+ * Identity is resolved from the environment and the local agent store together,
+ * environment first. Switch Console puts all three `SWITCH_*` vars in a session
+ * it launches itself, and that is taken whole. Short of that the environment is
+ * read as a pointer rather than a credential: an agent id with no token names
+ * the store entry to complete from disk, an endpoint narrows the store to one
+ * server, and neither is guessed past — an id matching nothing still refuses.
+ * The store is the working tree's `.switch/agents/`, one file per agent
+ * carrying its own token, and where it names more than one the session picks
+ * with `select_agent` before anything else will answer.
  *
  * Endpoints are the one ambiguity that cannot be deferred: the tool surface is
  * fetched before the handshake, so the server has to be known by then. A store
@@ -151,6 +154,28 @@ const ENV = {
   agentId: envValue(ENV_AGENT_ID),
 };
 
+const ENV_RAW: [string, string][] = [
+  ['SWITCH_API_ENDPOINT', ENV_ENDPOINT],
+  ['SWITCH_API_TOKEN', ENV_TOKEN],
+  ['SWITCH_AGENT_ID', ENV_AGENT_ID],
+];
+
+/**
+ * Variables a host left as `${VAR}` while expanding others.
+ *
+ * All of them unexpanded is Claude Code's pre-expansion spawn, which is
+ * ordinary and handled by treating the values as absent. *Some* of them is not:
+ * it means a templating step ran and one substitution did not resolve. Left
+ * alone that reads as "this variable was deliberately omitted", which for the
+ * token means quietly authenticating with whatever the store holds instead of
+ * the credential the environment was trying to supply.
+ */
+function partiallyUnresolved(): string[] {
+  const unresolved = ENV_RAW.filter(([, raw]) => looksUnresolved(raw));
+  const resolved = ENV_RAW.filter(([, raw]) => raw !== '' && !looksUnresolved(raw));
+  return unresolved.length > 0 && resolved.length > 0 ? unresolved.map(([name]) => name) : [];
+}
+
 /**
  * Agents provisioned here when startup could not pick between them.
  *
@@ -184,9 +209,32 @@ function bindIdentity(agent: { endpoint: string; token: string; agentId: string;
  * environment saying nothing at all leaves the choice entirely to the store.
  */
 function resolveIdentity(): void {
+  const stuck = partiallyUnresolved();
+  if (stuck.length > 0) {
+    return degrade(
+      `${stuck.join(' and ')} ${stuck.length > 1 ? 'are' : 'is'} still a literal \${...} while other SWITCH_* variables expanded, so a substitution step did not finish\n` +
+        `Resolving the rest from the agent store would authenticate as whatever is on disk and hide that, so this refuses instead.\n` +
+        `Fix the expansion, or unset ${stuck.join(' and ')} to use the store deliberately.`
+    );
+  }
+
   if (ENV.endpoint && ENV.token && ENV.agentId) {
     bindIdentity({ ...ENV, name: '' });
     return;
+  }
+
+  // A token that names nobody is a broken config however the store looks, and
+  // it is not completed from disk the way a bare agent id is: the missing piece
+  // would be the endpoint, and inferring where to send a credential is a
+  // different order of risk from inferring which credential to send.
+  if (ENV.token) {
+    return degrade(
+      `incomplete SWITCH_* environment — a token was supplied, so all three are required\n` +
+        `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
+        `  token=set\n` +
+        `  agent_id=${ENV.agentId || 'MISSING'}\n` +
+        `Set the missing one, or unset SWITCH_API_TOKEN to resolve against the agent store instead.`
+    );
   }
 
   const store = readAgentStore(process.cwd());
@@ -203,14 +251,19 @@ function resolveIdentity(): void {
   // authenticated as somebody else. A miss stays fatal for that same reason:
   // falling through to a general store search could bind a different agent than
   // the one named, which is the failure the check exists to prevent.
-  if (ENV.agentId && !ENV.token) {
-    const claiming = store.agents.filter((a) => a.agentId === ENV.agentId);
+  if (ENV.agentId) {
+    const byId = store.agents.filter((a) => a.agentId === ENV.agentId);
+    // An explicit endpoint narrows first, so it can break a tie rather than
+    // only confirming or rejecting a choice already made.
+    const claiming = ENV.endpoint
+      ? byId.filter((a) => normalizeEndpoint(a.endpoint) === normalizeEndpoint(ENV.endpoint))
+      : byId;
 
-    // Two files claiming one agent hold two tokens, and nothing in the store
-    // says which is current. Refuse rather than take the first: the hook that
-    // mediates this session's tool calls refuses on exactly this condition, so
-    // binding here would produce a session that works while its governance is
-    // silently switched off — the worst of the available outcomes.
+    // Two files still claiming one agent hold two tokens, and nothing in the
+    // store says which is current. Refuse rather than take the first: the hook
+    // that mediates this session's tool calls refuses on exactly this
+    // condition, so binding here would produce a session that works while its
+    // governance is silently switched off — the worst outcome available.
     if (claiming.length > 1) {
       return degrade(
         `SWITCH_AGENT_ID is ${ENV.agentId}, but ${claiming.length} entries in ${store.projectDir} claim it:\n` +
@@ -219,35 +272,23 @@ function resolveIdentity(): void {
       );
     }
 
-    const named = claiming[0];
-    if (
-      named &&
-      (!ENV.endpoint || normalizeEndpoint(named.endpoint) === normalizeEndpoint(ENV.endpoint))
-    ) {
-      bindIdentity(named);
+    if (claiming.length === 1) {
+      bindIdentity(claiming[0]);
       return;
     }
 
+    // "No agents" and "agents that could not be read" need different fixes, so
+    // the unusable entries are named rather than collapsed into "empty".
+    const unusable = store.unusable.length
+      ? `\nEntries found but unusable:\n${store.unusable.map((u) => `  ${u.slug}: ${u.reason}`).join('\n')}`
+      : '';
+
     return degrade(
       `SWITCH_AGENT_ID is ${ENV.agentId} and SWITCH_API_TOKEN is not set, so the token has to come from ${store.projectDir} — and no agent there matches\n` +
-        (named
-          ? `  ${named.name} has that id but belongs to ${normalizeEndpoint(named.endpoint)}, while SWITCH_API_ENDPOINT is ${normalizeEndpoint(ENV.endpoint)}\n`
-          : `  ${store.agents.length === 0 ? 'the store is empty' : `known: ${store.agents.map((a) => `${a.name} (${a.agentId})`).join(', ')}`}\n`) +
-        `Set SWITCH_API_TOKEN as well, or unset SWITCH_AGENT_ID to pick from the store, or run the connector's \`configure\` skill in this directory.`
-    );
-  }
-
-  // A token present but incomplete is still a broken config. It is not resolved
-  // against the store the way a bare agent id is: the missing piece would be the
-  // endpoint, and inferring where to send a credential is a different order of
-  // risk from inferring which credential to send.
-  if (ENV.token) {
-    return degrade(
-      `incomplete SWITCH_* environment — a token was supplied, so all three are required\n` +
-        `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
-        `  token=set\n` +
-        `  agent_id=${ENV.agentId || 'MISSING'}\n` +
-        `Set the missing one, or unset SWITCH_API_TOKEN to resolve against the agent store instead.`
+        (byId.length > 0
+          ? `  ${byId.map((a) => `${a.name} has that id but belongs to ${normalizeEndpoint(a.endpoint)}`).join('\n  ')}, while SWITCH_API_ENDPOINT is ${normalizeEndpoint(ENV.endpoint)}\n`
+          : `  ${store.agents.length === 0 ? 'no usable agent is provisioned there' : `known: ${store.agents.map((a) => `${a.name} (${a.agentId})`).join(', ')}`}\n`) +
+        `Set SWITCH_API_TOKEN as well, or unset SWITCH_AGENT_ID to pick from the store, or run the connector's \`configure\` skill in this directory.${unusable}`
     );
   }
 

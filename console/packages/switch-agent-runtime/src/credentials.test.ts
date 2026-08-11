@@ -2,7 +2,12 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AGENTS_DIR_RELATIVE, distinctEndpoints, readAgentStore } from './credentials';
+import {
+  AGENTS_DIR_RELATIVE,
+  distinctEndpoints,
+  normalizeEndpoint,
+  readAgentStore,
+} from './credentials';
 
 const roots: string[] = [];
 
@@ -139,5 +144,23 @@ describe('distinctEndpoints', () => {
     ] as Parameters<typeof distinctEndpoints>[0];
 
     expect(distinctEndpoints(agents)).toEqual(['https://switch.example']);
+  });
+});
+
+describe('normalizeEndpoint', () => {
+  it('folds the case of the parts that are defined to be case-insensitive', () => {
+    // This gates whether an identity binds, not just how endpoints are grouped
+    // for display, so a differently-cased host must not read as another server.
+    expect(normalizeEndpoint('HTTPS://Switch.Example')).toBe('https://switch.example');
+    expect(normalizeEndpoint('https://switch.example/')).toBe('https://switch.example');
+    expect(normalizeEndpoint('  https://Switch.Example:8000/  ')).toBe('https://switch.example:8000');
+  });
+
+  it('leaves the path alone, which is case-sensitive', () => {
+    expect(normalizeEndpoint('https://Switch.Example/Api/V1')).toBe('https://switch.example/Api/V1');
+  });
+
+  it('passes through a value with no authority to fold', () => {
+    expect(normalizeEndpoint('localhost:8000')).toBe('localhost:8000');
   });
 });

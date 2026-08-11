@@ -24,16 +24,42 @@ import time
 import urllib.request
 import uuid
 
-API_ENDPOINT = os.environ.get("SWITCH_API_ENDPOINT", "").strip().rstrip("/")
-API_TOKEN = os.environ.get("SWITCH_API_TOKEN", "").strip()
-ENV_AGENT_ID = os.environ.get("SWITCH_AGENT_ID", "").strip()
+
+def _looks_unresolved(value: str) -> bool:
+    """A host may spawn this before expanding its settings env block, leaving
+    `${VAR}` literals. Those are not values — and taken as values they become a
+    URL nothing can be fetched from, failing every call in silence."""
+    return value.startswith("${") and value.endswith("}")
+
+
+def _env_value(name: str) -> str:
+    raw = os.environ.get(name, "")
+    return "" if _looks_unresolved(raw) else raw.strip()
+
+
+API_ENDPOINT = _env_value("SWITCH_API_ENDPOINT").rstrip("/")
+API_TOKEN = _env_value("SWITCH_API_TOKEN")
+ENV_AGENT_ID = _env_value("SWITCH_AGENT_ID")
 PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA", "")
 
+# Every SWITCH_* variable this reads, and where the runtime reads it from, are
+# the same — so where they disagree the session is mediated as one agent and
+# acts as another. The two are kept deliberately in step; see
+# `resolveIdentity()` in the runtime's `bin.ts`.
+#
 # The store is per working directory, and the runtime reads it from the
-# session's. `CLAUDE_PROJECT_DIR` is that same directory named explicitly, so
-# prefer it and let cwd stand in when the host does not set it.
-PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR", "") or os.getcwd()
-AGENTS_DIR = os.path.join(PROJECT_DIR, ".switch", "agents")
+# process's. `CLAUDE_PROJECT_DIR` names the same directory explicitly, but only
+# cwd is guaranteed to be what the runtime used, so cwd is tried first and the
+# other only stands in when it holds nothing.
+_STORE_DIRS = [
+    os.path.join(d, ".switch", "agents")
+    for d in dict.fromkeys(
+        p for p in (os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR", "")) if p
+    )
+]
+AGENTS_DIR = _STORE_DIRS[0] if _STORE_DIRS else ".switch/agents"
+
+_STORE_CACHE: list[dict] | None = None
 
 
 def _read_agent_store() -> list[dict]:
@@ -43,38 +69,50 @@ def _read_agent_store() -> list[dict]:
     writes, plus the flat field names that are the obvious thing to write by
     hand. An entry missing any of the three is not usable and is skipped —
     the caller's job is to pick between agents, not to repair them.
-    """
-    try:
-        filenames = sorted(f for f in os.listdir(AGENTS_DIR) if f.endswith(".json"))
-    except OSError:
-        return []
 
-    agents = []
-    for filename in filenames:
+    Cached: this runs per hook event, several times, and the process is too
+    short-lived for the directory to change underneath it.
+    """
+    global _STORE_CACHE
+    if _STORE_CACHE is not None:
+        return _STORE_CACHE
+
+    agents: list[dict] = []
+    for directory in _STORE_DIRS:
         try:
-            with open(os.path.join(AGENTS_DIR, filename)) as f:
-                data = json.load(f)
-        except (OSError, ValueError):
+            filenames = sorted(f for f in os.listdir(directory) if f.endswith(".json"))
+        except OSError:
             continue
-        if not isinstance(data, dict):
-            continue
-        env = data.get("env")
-        env = env if isinstance(env, dict) else {}
-        agent = {
-            "agent_id": str(
-                data.get("agent_id") or env.get("SWITCH_AGENT_ID") or ""
-            ).strip(),
-            "endpoint": str(
-                data.get("endpoint") or env.get("SWITCH_API_ENDPOINT") or ""
-            )
-            .strip()
-            .rstrip("/"),
-            "token": str(
-                data.get("token") or env.get("SWITCH_API_TOKEN") or ""
-            ).strip(),
-        }
-        if agent["agent_id"] and agent["endpoint"] and agent["token"]:
-            agents.append(agent)
+
+        for filename in filenames:
+            try:
+                with open(os.path.join(directory, filename)) as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            env = data.get("env")
+            env = env if isinstance(env, dict) else {}
+            agent = {
+                "agent_id": str(
+                    data.get("agent_id") or env.get("SWITCH_AGENT_ID") or ""
+                ).strip(),
+                "endpoint": str(
+                    data.get("endpoint") or env.get("SWITCH_API_ENDPOINT") or ""
+                )
+                .strip()
+                .rstrip("/"),
+                "token": str(
+                    data.get("token") or env.get("SWITCH_API_TOKEN") or ""
+                ).strip(),
+            }
+            if agent["agent_id"] and agent["endpoint"] and agent["token"]:
+                agents.append(agent)
+        if agents:
+            break
+
+    _STORE_CACHE = agents
     return agents
 
 
@@ -103,13 +141,21 @@ def _resolve_credentials(agent_id: str) -> tuple[str, str]:
     # same three values the runtime requires — the two resolve the same directory
     # and the same environment, and a session whose tool calls are mediated as a
     # different agent than it acts as is worse than one that is not mediated.
+    #
+    # And it wins only for the agent it names. `agent_id` is who the session
+    # actually bound; if the environment names someone else, using its token
+    # would authenticate agent B's credential against agent A's URL, which is
+    # the one outcome this function exists to prevent.
     if API_ENDPOINT and API_TOKEN and ENV_AGENT_ID:
-        return API_ENDPOINT, API_TOKEN
+        if not agent_id or agent_id == ENV_AGENT_ID:
+            return API_ENDPOINT, API_TOKEN
 
     candidates = _read_agent_store()
     wanted = agent_id or ENV_AGENT_ID
     if wanted:
         candidates = [a for a in candidates if a["agent_id"] == wanted]
+    # Narrow by endpoint before counting, so an explicit endpoint can break a
+    # tie — the same order the runtime resolves in.
     if API_ENDPOINT:
         candidates = [a for a in candidates if a["endpoint"] == API_ENDPOINT]
 
@@ -132,10 +178,21 @@ def _has_credentials(agent_id: str) -> bool:
     """
     if _credentials(agent_id)[1]:
         return True
+
+    # Which of these it is decides the fix, so name it rather than reporting
+    # every case as "missing credentials" and sending the reader after a token
+    # that may be sitting right there.
+    claiming = [a for a in _read_agent_store() if a["agent_id"] == agent_id]
+    if len(claiming) > 1:
+        why = f"{len(claiming)} entries in {AGENTS_DIR} claim agent {agent_id}, so which token is current is unknowable — leave exactly one"
+    elif claiming:
+        why = f"agent {agent_id} is in {AGENTS_DIR} but belongs to {claiming[0]['endpoint']}, while this session expects {API_ENDPOINT}"
+    else:
+        why = f"no entry for agent {agent_id} in {AGENTS_DIR}, and no complete SWITCH_* environment — run the connector's `configure` skill in this directory"
+
     print(
-        f"[switch_hook] no credentials for agent {agent_id} in {AGENTS_DIR} and none in "
-        "the environment — tool mediation and event reporting are NOT running for this "
-        "session. Run the connector's `configure` skill in this directory.",
+        f"[switch_hook] {why}. Tool mediation and event reporting are NOT running "
+        "for this session.",
         file=sys.stderr,
     )
     return False
