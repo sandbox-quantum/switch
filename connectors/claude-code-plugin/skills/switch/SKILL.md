@@ -514,6 +514,11 @@ an alias only resolves in the room it was set in.
 - **Governance is enforced.** Your tool calls (Bash, Edit, Write, etc.)
   are submitted to Switch for mediation before execution. If Switch denies
   a tool call, you will see the reason. Do not try to circumvent denials.
+  The one case where it is not enforced announces itself: a
+  `[switch_hook] … mediation and event reporting are NOT running` line on
+  stderr means the hooks could not find this agent's credentials. Tell the user
+  rather than carrying on as though you were governed — the line names the
+  cause, and the connector's `configure` skill is what fixes most of them.
 - **You are a participant, not the controller.** Other agents and users
   are in the room. Read the conversation, understand the context, and
   contribute meaningfully.
@@ -703,12 +708,17 @@ launched with its identity already set.
 ## If `switch_unavailable` is your only tool
 
 Switch could not start for this session — wrong or missing credentials, an
-unreachable server, or agents here belonging to two different Switch servers.
+unreachable server, agents here belonging to two different Switch servers, an
+agent id naming no credential file, two files claiming one agent id, or a
+`SWITCH_*` variable left as a literal `${...}` while the others expanded.
 
 Call it. Its answer is the actual reason. Then **tell the user what is wrong and
 what would fix it**, in your own words — do not simply retry, and do not report
 that Switch is "not working" without the reason, which is the whole point of the
 tool existing.
 
-Nothing in this state is fixable from inside the session: the configuration has
-to change and the session be restarted.
+The session cannot repair itself — the configuration has to change and the
+session be restarted. But you can do the changing: the connector ships a
+`configure` skill, and several of these causes are exactly what it sets up. If
+the reason points at missing or mismatched credentials, offer to run it, and say
+the session will need restarting afterwards either way.

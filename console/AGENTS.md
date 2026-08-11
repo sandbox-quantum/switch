@@ -399,6 +399,14 @@ pnpm run lint
     environment does not already carry a complete identity — including when it
     carries a *partial* one, which is the ordinary case above. Changing the
     shape means changing all four.
+  - The runtime and the hook are the same resolution written twice, in two
+    languages, over the same directory. They must agree: where they don't, a
+    session acts as one agent and is mediated as another, and nothing fails to
+    say so. The hook keys on the agent id the session recorded when it joined a
+    room — not on the settings file — so a directory holding several agents
+    still resolves exactly. Change one and change the other, and keep the paired
+    cases in `bin.handshake.test.ts` and `test_claude_connector_hook.py`
+    matching.
   - The token being in a working tree at all is a known exposure — a
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by

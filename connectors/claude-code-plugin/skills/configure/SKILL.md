@@ -30,10 +30,20 @@ Two things read that identity, and they read it the same way:
 2. **Otherwise the local agent store**, `.switch/agents/*.json`, read from the
    **session's working directory**. That is what this skill writes.
 
-A partial environment is resolved against the store rather than refused: an
-agent id with no token names the store entry to take the token from. An id that
-matches nothing there is still an error, because the alternative is
-authenticating as an agent nobody asked for.
+A partial environment is read as a *pointer* rather than refused outright, but
+only in one direction: an agent id with **no token** names the store entry to
+take the token from. An id matching nothing there is still an error, because the
+alternative is authenticating as an agent nobody asked for. A **token** with
+either of the others missing is also still an error — there is nothing to infer
+an endpoint from, and guessing where to send a credential is a different order
+of risk from guessing which one to send. An endpoint on its own only narrows the
+store to one server.
+
+**This needs a runtime newer than `0.3.0`.** Check the pin in the plugin's
+`.mcp.json`: on `0.3.0` and earlier, *any* partial `SWITCH_*` environment is a
+hard error, so Step 8b's pointer leaves every session in the directory serving
+nothing but `switch_unavailable`. If the pin is that old, either upgrade the
+plugin first or skip Step 8b and rely on the store alone.
 
 **Identity is per working directory**, not per machine. A different directory
 with its own `.switch/agents/` is a different agent, and several entries in one
@@ -90,7 +100,14 @@ Finally, check the settings files, which is where an older setup put things:
 
 If either has an `env.SWITCH_AGENT_ID`, this directory (or this machine) was
 configured before. Report which file and which agent, and offer the same
-keep / reconfigure choice. Use `AskUserQuestion`, and offer a third option when
+keep / reconfigure choice.
+
+**Check both for `env.SWITCH_API_TOKEN` too.** A correctly configured agent has
+none in either file — but one left by an older setup makes the environment
+complete, which beats the store outright, so the session runs as that token's
+agent no matter what this skill writes afterwards. If you find one, say so: it
+has to go (Step 8b), and because it has been sitting in a settings file it
+should be treated as exposed and rotated. Use `AskUserQuestion`, and offer a third option when
 `.claude/agents/*.md` subagents exist:
 
 - **Keep it** — stop the skill.
@@ -112,12 +129,38 @@ The same is true of two entries claiming the **same** agent id: the runtime
 cannot tell which token is current, so it refuses rather than guessing. Leave
 exactly one.
 
-## Step 2 — Switch server URL
+## Step 2 — Switch server URL, and prove it before going on
 
-Confirm the Switch server URL — the agent-bridge endpoint, written as
+Confirm the Switch server URL — the **agent-bridge** endpoint, written as
 `SWITCH_API_ENDPOINT`. If it is already set in the environment, offer that as
-the default; otherwise ask for the deployment's hostname (e.g.
+the default; otherwise ask for the deployment's base URL, **with a scheme** (e.g.
 `http://localhost:8000` for local dev).
+
+**It is not the gateway URL, and that is the most common way this goes wrong.**
+The gateway is the web UI the user mints their token in; the agent bridge is the
+API this agent talks to. They are often the same host and often not. Take a bare
+scheme-and-host: strip any path (`/gateway`, `/agents/register-known`, a trailing
+`/`) before using it, because every later step appends its own.
+
+Hold the agreed value as `ENDPOINT` — later steps all build on it — and check it
+now, rather than discovering at Step 7 that it was wrong:
+
+```bash
+ENDPOINT="https://switch.example"   # the value confirmed above, no trailing slash
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 "$ENDPOINT/health"
+```
+
+- **`200`** — this is the agent bridge. Continue.
+- **`000`** — nothing answered: wrong host or port, the server is not running,
+  or a proxy is in the way. Show the user the URL you tried and stop.
+- **`404`** — something is there but it is not the bridge. Most likely the
+  gateway, or a path left on the end. Ask again.
+- **`401` / `403`** — something is enforcing auth in front of `/health`, which
+  the bridge does not. Treat it as the wrong URL and ask.
+
+Do not skip this because the user sounded confident. Step 7 registers with
+`curl -s` under `set -eu`, so an unreachable host there fails with no message at
+all — this probe is what turns that into something the user can act on.
 
 ## Step 3 — Registration token
 
@@ -134,7 +177,14 @@ Don't just say "from the admin" — point at the concrete UI surface.
 
 **Treat the token as sensitive.** It mints agents owned by its user. Never echo
 it, never write it to any file, never inline it in a shell command (it would
-land in shell history). Pass it via the environment variable only.
+land in shell history). Pass it via the environment variable only — `export` it
+in one command, then reference it by name in the next.
+
+**If the user pasted it into the conversation, it is already exposed.** It is in
+the transcript, and wherever that transcript is stored or logged. Say so plainly
+and tell them to revoke it in the gateway's API keys tab once setup is done —
+don't quietly carry on as though a pasted secret were the same as an exported
+one.
 
 ## Step 4 — Agent name and description
 
@@ -211,11 +261,16 @@ with no live session. It is built from what you record here and in Step 5, so it
 carries the channels flag when you said channels work:
 
 ```
-cd "<repo_dir>" && claude "connect to switch room <name>" \
+cd <repo_dir> && claude "connect to switch room <name>" \
   --dangerously-load-development-channels plugin:switch-connector@switch-plugins
 ```
 
 (without the flag when `channels_enabled` is false).
+
+**Note the path is not quoted** in what Switch generates, so a `repo_dir`
+containing a space produces a command that breaks when pasted. If the directory
+has one, say so and let the user choose a different one or accept that the
+posted command needs hand-editing.
 
 `repo_dir` is what makes it useful — **and it matters twice over**, because the
 runtime reads the agent store from the session's working directory. `repo_dir`
@@ -265,6 +320,26 @@ up the `claude-code` known-agent spec and returns the agent's `id` and `api_key`
 > zsh** — use `http_status` — and a `$(...)` capture of the body must not swallow
 > the exit code you intend to branch on.
 
+> ⚠️ **Write this to a file and run it; do not paste it into `bash -lc '…'`.**
+> The `jq` filter below is single-quoted and contains its own quotes and
+> newlines. Wrapped in another layer of single quotes it collapses and `jq`
+> fails with `syntax error, unexpected ':'` — which reads as a bad payload
+> rather than a quoting accident. Write it with a **quoted** heredoc
+> (`cat <<'EOF' > /tmp/register.sh`, so the shell expands nothing on the way in),
+> then `bash /tmp/register.sh`, then delete it.
+
+**Define every variable in the same script**, before the code below — `set -eu`
+aborts on the first unset one with `ENDPOINT: unbound variable` and no
+registration happens:
+
+- `ENDPOINT` — from Step 2. `NAME`, `DESC` — from Step 4.
+- `CHANNELS_ENABLED` — from Step 5, the bare JSON literal `true` or `false`
+  (passed with `--argjson`, not `--arg`).
+- `REPO_DIR`, `NOTIFY_USER` — from Step 6. **Set them to the empty string** when
+  the user opted out; leaving them unset trips `set -u`.
+- `SWITCH_REGISTRATION_TOKEN` — from Step 3, already exported into the
+  environment. Do not assign it inside the script; that puts it in the file.
+
 The whole sequence, gitignore first so the token is never briefly tracked:
 
 ```bash
@@ -296,10 +371,6 @@ chmod 600 ".switch/agents/$NAME.json"
 jq -r '"registered " + .id' "$resp"
 rm -f "$resp"
 ```
-
-`$CHANNELS_ENABLED` must be the JSON literal `true` or `false` (passed via
-`--argjson`, not `--arg`). Set `$REPO_DIR` and `$NOTIFY_USER` to the values from
-Step 6, or empty to omit them.
 
 The token goes from the response straight into the file without ever being
 echoed or held in a variable that a later command would need. The resulting file
@@ -335,6 +406,8 @@ you see that exact 401, suspect this before blaming the token.
 **Responses:**
 
 - `401` — bad registration token (or the pitfall above); stop.
+- `400 Unknown agent type: claude-code` — the server predates Claude Code
+  support. Say so and stop; do not fall back to another type.
 - `400` with a name validation error — re-ask in Step 4.
 - `409` — that name already exists. The bridge refuses to clobber it because
   re-registering rotates the API key and invalidates the old credentials.
@@ -386,18 +459,28 @@ which for an agent acting on someone else's message means it simply stops.
 }
 ```
 
-**Do not put `SWITCH_API_TOKEN` here.** If the file already has one from an older
-setup, remove it — the credential belongs in exactly one place, and this is not
-it. This block is a *pointer*, not a credential: it says which agent this
-directory is, and the runtime takes the token for that id from the store. It is
-what picks a default when the directory holds several agents.
+**Do not put `SWITCH_API_TOKEN` here — in this file or the user-global one.** If
+either already has one from an older setup, remove it. This matters more than it
+looks: a leftover token in `~/.claude/settings.json` combines with the endpoint
+and id here to make a *complete* environment, which outranks the store
+entirely — so the session silently runs as whatever that old token belongs to
+and nothing you write below is ever read. Check both files and strip it from
+both.
+
+This block is a *pointer*, not a credential: it says which agent this directory
+is, and the runtime takes the token for that id from the store.
+
+**It pins the identity; it does not suggest one.** When it names an agent, the
+session binds that agent at startup and `select_agent` is not offered at all —
+so in a directory holding several agents this decides, rather than defaulting.
+Leave it out if you want the choice made per session instead.
 
 Claude Code exports this block into the environment of everything it spawns, the
-Switch runtime included, so it is load-bearing rather than decorative — and
-getting it wrong is not cosmetic. An id here that names no entry in
-`.switch/agents/` leaves every session in this directory with no Switch tools
-but `switch_unavailable`, which reports the mismatch. Keep the two in step: if
-you rewrite one, rewrite the other.
+Switch runtime and the connector's hooks included, so it is load-bearing rather
+than decorative — and getting it wrong is not cosmetic. An id here that names no
+entry in `.switch/agents/` leaves every session in this directory with no Switch
+tools but `switch_unavailable`, which reports the mismatch. Keep the two in step:
+if you rewrite one, rewrite the other.
 
 ## Step 9 — Confirm
 
@@ -442,12 +525,17 @@ from the `name` field, not the filename; on a duplicate name keep the
 higher-priority one (project over user).
 
 A subagent launched via `--agent` adopts that file's `tools` allowlist. If the
-allowlist excludes the Switch MCP tools and the `Skill` tool, the launched
-session **cannot** load the Switch skill or call `connect_to_room`, so it can't
-participate in a room. Mark a subagent **eligible** when either it has **no**
-`tools` field (it inherits everything), or its allowlist explicitly includes
-`Skill` **and** the Switch MCP tools. Otherwise mark it **skipped** with the
+allowlist excludes the Switch MCP tools, the launched session **cannot** call
+`connect_to_room` or `post_message`, so it can't participate in a room. Mark a
+subagent **eligible** when either it has **no** `tools` field (it inherits
+everything), or its allowlist contains an entry beginning
+`mcp__plugin_switch-connector_switch`. Otherwise mark it **skipped** with the
 reason. Do not rewrite the user's subagent files to add tools.
+
+This is deliberately the same test Switch Console applies, so the two agree on
+which subagents are usable. Note it does **not** require `Skill` — a session can
+call the Switch tools without loading the room-workflow skill first; it just
+does so with less guidance.
 
 If no subagent files exist, skip this whole step silently.
 
@@ -464,36 +552,76 @@ defaulting to all eligible. If the user declines all, skip the rest.
 name for each child is derived server-side as `<main-agent-name>.<subagent_name>`,
 so send only the bare `subagent_name` and `description`.
 
-**`parent_agent_id` is this directory's main agent — read it, don't ask.** It is
-`$SWITCH_AGENT_ID`, or the id from Step 7 when you registered the main agent in
-this same run. Only ask if neither is available.
+**`parent_agent_id` is this directory's main agent.** Set `PARENT_AGENT_ID`
+explicitly, from whichever of these applies:
+
+- You registered the main agent earlier **in this run** — use the id Step 7
+  printed. **Do not use `$SWITCH_AGENT_ID` here.** Step 8b wrote it to the
+  settings file, and Claude Code only exports that at session start, so within
+  this run the variable is still empty — you would send `parent_agent_id: ""`
+  and get `404 Parent agent not found`.
+- You came here from Step 1 on an already-configured directory — use the id you
+  read out of the settings file (or `$SWITCH_AGENT_ID`, which a restarted
+  session does have).
 
 **Subagents inherit the parent's settings automatically.** The server reads the
 parent's recorded `channels_enabled`, `repo_dir` and `notify_user` and applies
 them as the base for every subagent, so you do not need to pass them. Set a key
 in `options` only to deliberately *override* an inherited value.
 
+`SUBS_JSON` is a JSON array of the selected subagents, built with `jq` rather
+than by hand so descriptions containing quotes survive:
+
 ```bash
-curl -sf -X POST "$ENDPOINT/agents/register-known-bulk" \
-  -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$(jq -nc \
-       --arg parent "$SWITCH_AGENT_ID" \
-       --argjson subs "$SUBS_JSON" \
-       '{agent_type:"claude-code", parent_agent_id:$parent,
-         options:{}, subagents:$subs, overwrite:false}')"
+SUBS_JSON=$(jq -nc '[
+  {subagent_name: "reviewer",  description: "Reviews diffs"},
+  {subagent_name: "test-writer", description: "Writes tests"}
+]')
 ```
 
-`$SUBS_JSON` is a JSON array of `{"subagent_name": "...", "description": "..."}`.
-The same token-handling rules and env-expansion pitfall from Step 7 apply. The
-response is `{"results": [{"subagent_name","name","id","api_key"}, ...]}` — and
-as in Step 7, **each `api_key` is returned once**, so write the files in the same
-command that makes the request. Handle a `409` by naming which ones already exist
-and asking; never overwrite silently.
+Then register **and write the credential files in the same command** — every
+`api_key` in the response is returned once, exactly as in Step 7, and the same
+heredoc rule applies:
 
-### 10d — Write per-subagent credential files
+```bash
+set -eu
+mkdir -p .claude/switch-subagents
+printf '*\n' > .claude/switch-subagents/.gitignore
 
-For each result, write
+resp=$(mktemp)
+http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known-bulk" \
+  -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc --arg parent "$PARENT_AGENT_ID" --argjson subs "$SUBS_JSON" \
+       '{agent_type:"claude-code", parent_agent_id:$parent,
+         options:{}, subagents:$subs, overwrite:false}')")
+
+if [ "$http_status" != "200" ]; then
+  printf 'bulk registration failed (%s): ' "$http_status"; cat "$resp"; rm -f "$resp"; exit 1
+fi
+
+jq -r --arg ep "$ENDPOINT" '.results[]
+  | "\(.subagent_name)\t" + ({env: {SWITCH_API_ENDPOINT: $ep,
+                                    SWITCH_API_TOKEN: .api_key,
+                                    SWITCH_AGENT_ID: .id}} | tostring)' "$resp" \
+| while IFS="$(printf '\t')" read -r sub body; do
+    printf '%s\n' "$body" > ".claude/switch-subagents/$sub.settings.json"
+    chmod 600 ".claude/switch-subagents/$sub.settings.json"
+  done
+
+jq -r '.results[] | "registered " + .name + " (" + .id + ")"' "$resp"
+rm -f "$resp"
+```
+
+**Responses:** `404 Parent agent not found` — `PARENT_AGENT_ID` is wrong or
+empty (see above). `400 No subagents provided` — `SUBS_JSON` was an empty array.
+`400 Duplicate subagent in batch` — two selected files declare the same `name`;
+the 10a de-duplication did not run. `409` — one or more derived names already
+exist; name which, and ask. Never overwrite silently.
+
+### 10d — What those credential files are
+
+The loop above writes one file per subagent at
 `<repo>/.claude/switch-subagents/<subagent_name>.settings.json` — the exact path
 the offline-session command points `--settings` at:
 
@@ -507,12 +635,17 @@ the offline-session command points `--settings` at:
 }
 ```
 
-These carry **per-subagent API tokens**. Create
-`.claude/switch-subagents/.gitignore` containing `*` before writing them.
+These carry **per-subagent API tokens**, which is why the `.gitignore` goes in
+before the request rather than after.
 
-Note this is a *complete* identity, unlike the main agent's Step 8b pointer —
-a `--settings` launch replaces the session's identity outright rather than
-naming an entry in the store, so all three values have to be present here.
+Note this is a *complete* identity, unlike the main agent's Step 8b pointer — a
+`--settings` launch replaces the session's identity outright rather than naming
+an entry in the store, so all three values have to be present here.
+
+This is also the one Claude-specific credential location Switch Console has
+since moved on from: it writes subagent credentials to `.switch/agents/` like
+everything else. The server-side launch command still points at this path, so it
+is the right one to write today, but expect it to migrate.
 
 ### 10e — Tell the user how to launch a subagent
 
@@ -579,9 +712,17 @@ on an Anthropic-subscription install, which is what Step 5 was deciding.
   `SWITCH_HOOK_DEBUG=1` to see which source they found.
 - **Every room action asks for approval** — Step 8a did not land. Check
   `permissions.allow` in `.claude/settings.local.json`.
-- **Tools missing entirely** — the plugin is not installed or not enabled, or its
-  pinned runtime is too old to read the store. Restart Claude Code after any
-  change.
+- **Tools missing entirely** — the plugin is not installed or not enabled
+  (`/plugin` lists what is), or its pinned runtime is too old to read the store.
+  Restart Claude Code after any change.
+- **It names a variable still written `${...}`** — a settings or wrapper script
+  expanded some `SWITCH_*` values and not others. The runtime refuses that rather
+  than filling the gap from disk, because a failed substitution and a deliberate
+  omission would otherwise look identical. Fix the expansion, or unset the
+  variable to use the store on purpose.
+- **It names two files claiming one agent id** — a reconfigure left an old entry
+  behind. Two entries mean two tokens and no way to tell which is current, so
+  both the runtime and the hooks refuse. Delete the stale one.
 - **`connection closed: initialize response`** — the runtime died before the
   handshake; the reason is in `~/.switch/sessions/<ppid>/startup-error.log`. Read
   it rather than guessing: the host reports every cause identically.

@@ -694,7 +694,25 @@ server's registry **plus** three tools the runtime serves itself:
 directory names more than one agent. If the fetch fails the runtime does not
 refuse to start — it **degrades**, serving a single `switch_unavailable` tool
 that reports why. Dying before the MCP handshake left the session with no
-explanation at all, which is worse than an honest one-tool surface.
+explanation at all, which is worse than an honest one-tool surface. The same
+degrade carries every identity failure below, for the same reason.
+
+**Identity resolution reads the environment as a pointer, not only as a
+credential.** All three of `SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` /
+`SWITCH_AGENT_ID` present is taken whole — that is what Switch Console injects
+per session. Short of that, what is present narrows what is read from
+`.switch/agents/`: an agent id with no token names the entry to take the token
+from, and an endpoint on its own selects the server when the directory spans
+more than one. Nothing is guessed past — an id matching no entry, two entries
+claiming one id, and a token missing its endpoint or agent id all degrade rather
+than resolve, because binding an identity nobody named is worse than not
+starting.
+
+That matters because a host settings file is a live part of the environment: the
+Claude Code connector's `.claude/settings.local.json` names the directory's
+agent and deliberately keeps the token out, and Claude Code exports that block
+into every process it spawns. Treating such an environment as merely incomplete
+stranded exactly the standalone sessions the store exists to serve.
 
 Planned second mode off the same code: *daemon* (long-lived, `scope: all`,
 `spawn_capable`) alongside today's *session* mode (child of the agent,

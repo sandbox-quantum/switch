@@ -714,7 +714,9 @@ launched with its identity already set.
 ## If `switch_unavailable` is your only tool
 
 Switch could not start for this session — wrong or missing credentials, an
-unreachable server, or agents here belonging to two different Switch servers.
+unreachable server, agents here belonging to two different Switch servers, an
+agent id naming no credential file, two files claiming one agent id, or a
+`SWITCH_*` variable left as a literal `${...}` while the others expanded.
 
 Call it. Its answer is the actual reason. Then **tell the user what is wrong and
 what would fix it**, in your own words — do not simply retry, and do not report
