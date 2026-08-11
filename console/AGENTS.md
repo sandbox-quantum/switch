@@ -387,10 +387,18 @@ pnpm run lint
   id only — it is Claude Code's own file, read by every session in the
   directory, and does not need the credential. Do not add a token back to it:
   two copies is how one goes stale and authenticates as the wrong agent.
-  - Three consumers read this layout: switchdash, the sidecar, and
-    `@sandboxaq/switch-agent-runtime` (which reads it directly when
-    nothing sets `SWITCH_*` in the environment). Changing the shape means
-    changing all three.
+  - **That file is a pointer, and Claude Code makes it a live one.** Its `env`
+    block becomes real process environment for everything a session spawns, the
+    Switch runtime and the connector's hooks included — so the agent id in it
+    decides who a hand-started session is, and an id naming no entry under
+    `.switch/agents/` fails every session in that directory rather than falling
+    back. Keep the two in step; changing one means changing the other.
+  - Four consumers read this layout: switchdash, the sidecar,
+    `@sandboxaq/switch-agent-runtime`, and the Claude connector's
+    `hooks/switch_hook.py`. The runtime and the hook read it whenever the
+    environment does not already carry a complete identity — including when it
+    carries a *partial* one, which is the ordinary case above. Changing the
+    shape means changing all four.
   - The token being in a working tree at all is a known exposure — a
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
