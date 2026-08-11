@@ -1,9 +1,10 @@
 /**
  * Translating a bridge's channel link into one that opens anywhere.
  *
- * Each bridge hands out whichever link its platform prefers. Discord and Teams
- * use ordinary https URLs, which their desktop clients register for — the app
- * catches them when installed, the browser serves them when not. Mattermost and
+ * Each bridge hands out whichever link its platform prefers. Discord, Teams and
+ * Telegram use ordinary https URLs, which their desktop clients register for —
+ * the app catches them when installed, the browser serves them when not.
+ * Mattermost and
  * Slack instead use a private scheme that only their desktop app answers, so on
  * a machine without that app the click reaches nobody and nothing happens.
  *
