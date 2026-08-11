@@ -12,7 +12,10 @@ the end of one piece and reopened at the start of the next.
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 MAX_MESSAGE = 4096
 
@@ -80,18 +83,60 @@ def chunk_message(body: str) -> list[str]:
             # Closing the open tags would overflow; cut earlier to fit them.
             cut = safe_split(candidate, MAX_MESSAGE - len(closers))
             closers = closing_tags(candidate[:cut])
-        if cut <= len(reopen):
-            # No progress possible on a tag boundary — cut hard instead, so
-            # a pathological body cannot loop forever.
-            cut = min(MAX_MESSAGE, len(candidate))
-            closers = ""
+        # A cut this early means the markup itself is the problem — a single
+        # tag longer than a whole message, or more nesting than one can carry.
+        # Either way no split preserves it, and forcing one yields a piece with
+        # a byte or two of text in it.
+        if cut <= len(reopen) or cut < MAX_MESSAGE // 4:
+            # Cutting hard here would sever a tag mid-character and put a bare
+            # `<` on the wire, which Telegram rejects — and the plain-text retry
+            # cannot recognise the fragment as a tag either, so the text is
+            # mangled too. Drop the markup for the remainder instead:
+            # unformatted and whole beats formatted and broken.
+            logger.warning(
+                "A Telegram message's markup cannot be split to fit (%d chars "
+                "of open tags, best cut at %d); sending the rest unformatted",
+                len(reopen),
+                cut,
+            )
+            return chunks + _plain_chunks(strip_tags(rest))
 
         head = candidate[:cut]
-        chunks.append(head.rstrip("\n") + closers)
+        chunks.append(head.removesuffix("\n") + closers)
         reopen = "".join(tag for _, tag in open_tags(head)) if closers else ""
-        rest = candidate[cut:].lstrip("\n")
+        # Only the single newline the cut was made on is consumed — it is the
+        # separator between the two messages. Stripping the whole run would
+        # swallow blank lines that are part of the body.
+        rest = candidate[cut:].removeprefix("\n")
         if not rest:
             return chunks
+
+
+_ANCHOR_RE = re.compile(r'<a href="([^"]*)">(.*?)</a>', re.DOTALL)
+
+
+def strip_tags(text: str) -> str:
+    """The text with the markup removed, for a body whose markup cannot be kept.
+
+    A link becomes `label (target)` rather than just `label`: the target is the
+    part a reader cannot recover, and dropping it silently would lose the very
+    thing that made the message too long to format. Entities stay escaped —
+    these pieces are still sent with HTML parse mode, they simply have no tags.
+    """
+    return _TAG_RE.sub("", _ANCHOR_RE.sub(r"\2 (\1)", text))
+
+
+def _plain_chunks(text: str) -> list[str]:
+    """Split unmarked text on the cleanest line break under the cap."""
+    chunks: list[str] = []
+    rest = text
+    while len(rest) > MAX_MESSAGE:
+        cut = safe_split(rest, MAX_MESSAGE)
+        chunks.append(rest[:cut].removesuffix("\n"))
+        rest = rest[cut:].removeprefix("\n")
+    if rest:
+        chunks.append(rest)
+    return chunks
 
 
 def closing_tags(text: str) -> str:

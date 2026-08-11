@@ -604,8 +604,10 @@ def test_a_person_without_a_username_is_named_from_their_display_name() -> None:
         )
     )
 
-    # It has to survive being written as @name in a room, so no spaces.
-    assert seen[0].sender_name == "AdaLovelace"
+    # It has to survive being written as @name in a room, so no spaces — and it
+    # carries the numeric id, because display names are not unique and two
+    # people sharing a handle would share a room identity.
+    assert seen[0].sender_name == "AdaLovelace_9"
 
 
 def test_a_person_with_no_name_at_all_falls_back_to_their_id() -> None:
@@ -1650,3 +1652,121 @@ def test_a_menu_telegram_rejects_does_not_stop_the_bridge(
 
     assert "Could not publish the Telegram command menu" in caplog.text
     assert app.updater.polling_kwargs is not None
+
+
+def test_a_mention_inside_a_link_does_not_nest_anchors() -> None:
+    # Rewriting an `@name` that sits in a link's label or target produced an
+    # anchor inside an anchor, which Telegram rejects — and a caption or an edit
+    # has no plain-text retry to save it (CHOO-1686).
+    adapter = _adapter()
+    adapter.prime_mention_targets({"alice": "555"})
+
+    assert (
+        adapter.translate_outbound("[profile](https://x.com/@alice)")
+        == '<a href="https://x.com/@alice">profile</a>'
+    )
+    assert (
+        adapter.translate_outbound("[ping @alice](https://x.com)")
+        == '<a href="https://x.com">ping @alice</a>'
+    )
+
+
+def test_formatting_inside_a_link_label_still_renders() -> None:
+    adapter = _adapter()
+
+    assert (
+        adapter.translate_outbound("[**bold** link](https://e.com)")
+        == '<a href="https://e.com"><b>bold</b> link</a>'
+    )
+
+
+def test_a_mention_outside_a_link_is_still_rendered() -> None:
+    adapter = _adapter()
+    adapter.prime_mention_targets({"alice": "555"})
+
+    assert (
+        adapter.translate_outbound("hi @alice")
+        == 'hi <a href="tg://user?id=555">@alice</a>'
+    )
+
+
+def test_unmatched_brackets_do_not_stall_the_bridge() -> None:
+    # `[` inside the link label's character class made the matcher retry the
+    # whole tail from every position: 200k characters of unmatched brackets —
+    # a pasted log, a changelog of `[FIX]` lines — blocked the event loop for
+    # about thirteen seconds, and served as a denial of service.
+    import time
+
+    adapter = _adapter()
+    body = "[unclosed " * 20_000
+
+    started = time.monotonic()
+    adapter.translate_outbound(body)
+
+    assert time.monotonic() - started < 1.0
+
+
+def test_an_over_long_edit_is_cut_to_valid_markup() -> None:
+    # An edit cannot be split across messages the way a send can, and cutting
+    # the rendered HTML by character count left it ending mid-attribute — which
+    # Telegram rejects, losing the edit entirely.
+    adapter = _adapter()
+    rendered = adapter.translate_outbound("**" + "word " * 1500 + "**")
+
+    clamped = adapter._clamp(rendered)
+
+    assert len(clamped) <= 4096
+    assert clamped.count("<b>") == clamped.count("</b>")
+
+
+def test_an_edit_telegram_will_not_parse_is_resent_unformatted() -> None:
+    # Without this the status message silently stays stale for good.
+    adapter = _adapter()
+    calls: list[dict[str, Any]] = []
+
+    async def _edit(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise BadRequest("Can't parse entities: bad tag")
+
+    _bot(adapter).edit_message_text = _edit  # type: ignore[method-assign]
+
+    _run(adapter.update_message(str(CHAT_ID), f"{CHAT_ID}:501", "<b>oops</unclosed>"))
+
+    assert len(calls) == 2
+    assert "parse_mode" not in calls[1]
+    assert "<" not in calls[1]["text"]
+
+
+def test_two_people_with_the_same_display_name_stay_distinct() -> None:
+    # Stripping spaces makes collisions likelier ("Ann Marie" and "AnnMarie"),
+    # and two people sharing a handle would share a room identity — a mention
+    # meant for one reaching whichever spoke last.
+    adapter = _adapter()
+
+    class _U:
+        def __init__(self, user_id: int, first: str, last: str) -> None:
+            self.id = user_id
+            self.username = None
+            self.first_name = first
+            self.last_name = last
+
+    assert adapter._display_name(_U(1, "Ann", "Marie")) != adapter._display_name(
+        _U(2, "AnnMarie", "")
+    )
+
+
+def test_a_public_username_is_used_as_is() -> None:
+    adapter = _adapter()
+
+    assert adapter._display_name(_FakeUser(user_id=7, username="alice")) == "alice"
+
+
+def test_the_underscore_spelling_is_only_translated_for_slash_commands() -> None:
+    # `!` is Switch's own prefix and its names are spelled as the dispatcher
+    # knows them, so rewriting there would turn a typo into another command.
+    adapter = _adapter()
+
+    assert adapter._parse_command("/list_agents") == ("list-agents", "")
+    assert adapter._parse_command("!list_agents") == ("list_agents", "")
+    assert adapter._parse_command("!list-agents") == ("list-agents", "")

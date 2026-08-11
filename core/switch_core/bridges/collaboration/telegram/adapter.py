@@ -474,7 +474,33 @@ class TelegramAdapter(CollaborationAdapter):
             # An edit that changes nothing is reported as an error; it is not one.
             if "not modified" in str(e).lower():
                 return
-            logger.error("Failed to update Telegram message %s: %s", message_ref, e)
+            if "parse" not in str(e).lower():
+                logger.error("Failed to update Telegram message %s: %s", message_ref, e)
+                return
+            # Same disclosed fallback as a send: markup Telegram will not accept
+            # must not cost the edit entirely, or a status message stays stale
+            # for good with nothing on screen saying why.
+            logger.warning(
+                "Telegram rejected the formatting of an edit to %s (%s) — "
+                "resending it unformatted",
+                message_ref,
+                e,
+            )
+            try:
+                await bot.edit_message_text(
+                    chat_id=self._chat_id(chat_ref or channel_id),
+                    message_id=int(message_id),
+                    text=html.unescape(
+                        re.sub(r"<[^>]+>", "", self._clamp(new_content))
+                    ),
+                    link_preview_options=_NO_PREVIEW,
+                )
+            except TelegramError as retry_error:
+                logger.error(
+                    "Failed to update Telegram message %s: %s",
+                    message_ref,
+                    retry_error,
+                )
         except TelegramError as e:
             logger.error("Failed to update Telegram message %s: %s", message_ref, e)
 
@@ -717,7 +743,11 @@ class TelegramAdapter(CollaborationAdapter):
     _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
     _HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*)$", re.MULTILINE)
     _BULLET_RE = re.compile(r"^([ \t]*)[-*+][ \t]+", re.MULTILINE)
-    _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
+    # `[` is excluded from the label and `(` from the target deliberately: with
+    # them allowed, a run of unmatched `[` makes the engine retry the whole tail
+    # from every position, which is quadratic — seconds of blocked event loop on
+    # a paste of bracketed log lines, and a denial of service on a hostile one.
+    _LINK_RE = re.compile(r"\[([^\[\]\n]*)\]\(([^()\s]*)\)")
     _BOLD_RE = re.compile(r"\*\*([^\n]+?)\*\*")
     _STRIKE_RE = re.compile(r"~~([^\n]+?)~~")
     _ITALIC_STAR_RE = re.compile(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])")
@@ -759,18 +789,21 @@ class TelegramAdapter(CollaborationAdapter):
 
         text = self._HEADING_RE.sub(r"<b>\1</b>", text)
         text = self._BULLET_RE.sub(r"\1• ", text)
-        # The href is already entity-escaped along with the rest of the body;
-        # only the attribute quote still has to be neutralised.
-        text = self._LINK_RE.sub(
-            lambda m: (
-                f'<a href="{m.group(2).replace(chr(34), "&quot;")}">{m.group(1)}</a>'
-            ),
-            text,
-        )
         text = self._BOLD_RE.sub(r"<b>\1</b>", text)
         text = self._STRIKE_RE.sub(r"<s>\1</s>", text)
         text = self._ITALIC_STAR_RE.sub(r"<i>\1</i>", text)
         text = self._ITALIC_USCORE_RE.sub(r"<i>\1</i>", text)
+
+        # Links are rendered after the inline marks — so a formatted label still
+        # converts — and stashed like code spans, because the mention pass that
+        # follows would otherwise rewrite an `@name` sitting in the label or the
+        # target, nesting an anchor inside an anchor. Telegram rejects that, and
+        # a rejected caption or edit has no plain-text retry to fall back on.
+        def _link(match: re.Match[str]) -> str:
+            href = match.group(2).replace('"', "&quot;")
+            return _stash(f'<a href="{href}">{match.group(1)}</a>')
+
+        text = self._LINK_RE.sub(_link, text)
         text = self._MENTION_RE.sub(self._render_mention, text)
 
         for index, rendered in enumerate(stash):
@@ -1041,9 +1074,11 @@ class TelegramAdapter(CollaborationAdapter):
         if not name:
             return None
         # Telegram will not register a command containing a hyphen, so the menu
-        # publishes `invite_agent` for `invite-agent`. Whichever the user picked
-        # or typed resolves to the one name the dispatcher knows.
-        if name not in COMMANDS_BY_NAME:
+        # publishes `invite_agent` for `invite-agent`. Only the `/` form needs
+        # that translation back — `!` is Switch's own prefix and its names are
+        # spelled exactly as the dispatcher knows them, so rewriting there would
+        # silently turn a typo into a different command.
+        if text[0] == "/" and name not in COMMANDS_BY_NAME:
             name = name.replace("_", "-")
         return name, parts[1].strip() if len(parts) > 1 else ""
 
@@ -1079,8 +1114,14 @@ class TelegramAdapter(CollaborationAdapter):
             str(getattr(user, "first_name", "") or ""),
             str(getattr(user, "last_name", "") or ""),
         ]
-        joined = "".join(part for part in parts if part).strip()
-        return joined.replace(" ", "") or f"user{getattr(user, 'id', '')}"
+        joined = "".join(part for part in parts if part).strip().replace(" ", "")
+        # The numeric id is appended, not used only as a fallback: display names
+        # are not unique and stripping the spaces makes collisions likelier
+        # still ("Ann Marie" and "AnnMarie" both give AnnMarie). Two people
+        # sharing a handle would share a room identity, and a mention meant for
+        # one would reach whichever spoke last.
+        user_id = getattr(user, "id", "")
+        return f"{joined}_{user_id}" if joined else f"user{user_id}"
 
     # ── Attachments ──────────────────────────────────────────────────────────
 
@@ -1260,7 +1301,22 @@ class TelegramAdapter(CollaborationAdapter):
 
     @staticmethod
     def _clamp(text: str) -> str:
-        return text if len(text) <= MAX_MESSAGE else text[: MAX_MESSAGE - 1] + "…"
+        """The largest valid prefix of an edit that Telegram will accept.
+
+        An edit cannot be split across messages the way a send can, so an
+        over-long one is cut — but cutting the rendered HTML by character count
+        lands mid-tag or mid-attribute, which Telegram rejects outright, and an
+        edit has nowhere to fall back to. Reusing the chunker's first piece
+        keeps the markup balanced."""
+        if len(text) <= MAX_MESSAGE:
+            return text
+        head = chunk_message(text)[0]
+        logger.warning(
+            "A Telegram edit of %d characters was cut to %d to fit the limit",
+            len(text),
+            len(head),
+        )
+        return head
 
     async def _split_caption(
         self, channel_id: str, caption: str, thread_root_id: str | None
