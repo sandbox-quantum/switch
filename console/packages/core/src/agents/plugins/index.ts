@@ -75,7 +75,7 @@ export type {
   SwitchLaunchProfileFile,
   SwitchLaunchSpecialization,
 } from './capabilities/mcp';
-export type { IPlugins } from './capabilities/plugins';
+export type { IPlugins, PluginScope } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
 export {
   RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,

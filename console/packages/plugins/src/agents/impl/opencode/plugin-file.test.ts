@@ -1,3 +1,4 @@
+import { Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 
@@ -6,12 +7,12 @@ import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 // silent — the session simply stops reporting, with no error anywhere.
 describe('OPENCODE_PLUGIN_CONTENT', () => {
   it('parses as JavaScript', () => {
-    // `new Function` parses its argument as a function body, which accepts every
-    // declaration this module uses once the ES export keyword is dropped. It
-    // never runs — a syntax error is what we are looking for, and it is
-    // otherwise only discoverable by launching a session and noticing silence.
-    const asFunctionBody = OPENCODE_PLUGIN_CONTENT.replace(/^export /gm, '');
-    expect(() => new Function(asFunctionBody)).not.toThrow();
+    // Compile-only: `vm.Script` parses without executing, so this catches a
+    // syntax error that is otherwise only discoverable by launching a session
+    // and noticing the silence. The ES export keyword is dropped because a
+    // Script is not a Module; nothing else in the file is module-specific.
+    const asScript = OPENCODE_PLUGIN_CONTENT.replace(/^export /gm, '');
+    expect(() => new Script(asScript)).not.toThrow();
   });
 
   it('exports the factory under the name the drop path installs', () => {

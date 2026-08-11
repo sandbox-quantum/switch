@@ -6,11 +6,41 @@ import {
   opencodeMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
 import { buildOpencodeHookBehavior } from './hooks';
+import { icon } from './icon';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 
 const OPENCODE_PLUGIN_PATH = '.opencode/plugins/switchdash-notifications.js';
 const validateSessionId = (id: string) => id.startsWith('ses');
-import { icon } from './icon';
+
+/**
+ * OpenCode, installed into the user prefix on Linux.
+ *
+ * npm's default global prefix there is a system directory, so `npm install -g`
+ * needs root — which the user a remote agent runs as typically does not have,
+ * and the install fails with EACCES. `$HOME/.local` needs no root, and
+ * `$HOME/.local/bin` is already on the PATH Switch Console captures for a
+ * remote host, so the binary is found afterwards without further wiring.
+ *
+ * macOS and Windows keep the plain global install: their default prefixes are
+ * user-writable, and changing them would strand anyone who already has it.
+ */
+const OPENCODE_HOST_DEPENDENCY = (() => {
+  const base = npmDependency({ id: 'opencode', package: 'opencode-ai' });
+  return {
+    ...base,
+    installCommands: {
+      ...base.installCommands,
+      linux: [
+        {
+          method: 'npm' as const,
+          command: 'npm install -g --prefix "$HOME/.local" opencode-ai',
+          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+          recommended: true,
+        },
+      ],
+    },
+  };
+})();
 
 export const plugin = definePlugin(
   {
@@ -40,7 +70,7 @@ export const plugin = definePlugin(
       // nothing sends the idle_prompt that used to stand in for them.
       supportedEvents: ['start', 'stop', 'session', 'tool-use', 'tool-done'],
     },
-    hostDependency: npmDependency({ id: 'opencode', package: 'opencode-ai' }),
+    hostDependency: OPENCODE_HOST_DEPENDENCY,
     mcp: {
       kind: 'supported',
       scope: 'global',
