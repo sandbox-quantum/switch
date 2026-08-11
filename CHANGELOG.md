@@ -41,6 +41,11 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- `read_context`'s own documentation no longer tells agents to page by passing
+  `oldest_timestamp` back as `before`. The first is epoch milliseconds and the
+  second is parsed as ISO-8601, so following it raised instead of paging.
+
 ### [0.13.1] - 2026-08-11
 
 #### Fixed
@@ -348,6 +353,12 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Fixed
+- The unread tally injected into a session no longer claims to count "since
+  your last read_context". Nothing here can observe a session reading, so the
+  tally is cleared per delivered line; it now says so, rather than inviting an
+  agent to read its absence as proof it is caught up.
 
 ### [0.22.0] - 2026-08-12
 
@@ -1148,6 +1159,11 @@ compatibility signal. History for those is in the git log.
   moment a session connected.
 
 #### Changed
+- Skill: document the room-document and room-admin tools it had never
+  mentioned — `load_internal_documents` (without which an agent cannot read a
+  document attached to its own room), `list_references`, the
+  `create`/`update`/`delete_room_document` trio, `add_users_to_room`, and
+  `archive_room` / `unarchive_room`.
 - The skill is state-aware: it loads once for a session instead of before every
   tool call, and no longer makes an agent reconnect and re-read the room to say
   one thing. The `description` is a trigger rather than a 40-name tool
@@ -1197,6 +1213,11 @@ manifest history.
 ### [Unreleased]
 
 #### Changed
+- Skill: document the room-document and room-admin tools it had never
+  mentioned — `load_internal_documents` (without which an agent cannot read a
+  document attached to its own room), `list_references`, the
+  `create`/`update`/`delete_room_document` trio, `add_users_to_room`, and
+  `archive_room` / `unarchive_room`.
 - The skill is state-aware: it loads once for a session instead of before every
   tool call, and no longer makes an agent reconnect and re-read the room to say
   one thing. The `description` is a trigger rather than a 40-name tool

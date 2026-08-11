@@ -89,14 +89,16 @@ SKILLS = sorted(
 )
 
 
+# Tools the agent runtime serves itself, so absent from the bridge's surface.
+# The skills index them alongside the bridge tools because an agent calls them
+# the same way, but they are registered by
+# `console/packages/switch-agent-runtime/`, not here — checking them against
+# this server's registrations would fail on tools that are working correctly.
 RUNTIME_TOOLS = {"send_attachment", "download_attachment"}
-"""Tools the agent runtime serves itself, so absent from the bridge's surface.
 
-The skills index them alongside the bridge tools because an agent calls them
-the same way, but they are registered by
-`dash/packages/switch-agent-runtime/`, not here — checking them against this
-server's registrations would fail on tools that are working correctly.
-"""
+# Served only when startup could not produce an identity, in place of the normal
+# surface, and documented in their own sections rather than the index.
+DEGRADED_TOOLS = {"select_agent", "switch_unavailable"}
 
 
 def _indexed_tools(skill: Path) -> list[str]:
@@ -106,13 +108,42 @@ def _indexed_tools(skill: Path) -> list[str]:
     rather than the frontmatter: the `description:` is always-resident context
     on both hosts (and Codex truncates it to fit a budget), so it carries a
     trigger rather than an inventory.
+
+    Every bullet in the section must parse. A tool silently dropping out
+    because someone bolded it, indented it, or folded two onto one line is the
+    failure this whole file exists to prevent, so an unparseable bullet is an
+    error rather than a skipped line.
     """
     body = skill.read_text()
     section = re.search(r"^## Tool index$(.*?)(?=^## |\Z)", body, re.MULTILINE | re.S)
     assert section is not None, f"no '## Tool index' section in {skill}"
-    names = re.findall(r"^- `([a-z_]+)`", section.group(1), re.MULTILINE)
-    assert names, f"no tool bullets under '## Tool index' in {skill}"
+    bullets = re.findall(r"^[ \t]*[-*].*$", section.group(1), re.MULTILINE)
+    assert bullets, f"no tool bullets under '## Tool index' in {skill}"
+    names = []
+    for bullet in bullets:
+        match = re.fullmatch(r"- `([a-z_]+)` — .*", bullet)
+        assert match is not None, (
+            f"{skill}: tool-index bullet is not `- \\`name\\` — description`, so "
+            f"the tool it names would not be checked: {bullet!r}"
+        )
+        names.append(match.group(1))
     return names
+
+
+async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
+    """The index names every tool the bridge serves — no silent omissions.
+
+    The frontmatter list this replaced was one mechanical line; a prose bullet
+    list is easy to shorten by accident. Without this, deleting a bullet passes
+    every other check in the file: the drift test still sees two identical
+    indexes, and the registration test only ever objects to *extra* names.
+    """
+    for skill in SKILLS:
+        indexed = set(_indexed_tools(skill))
+        missing = tool_names - indexed - DEGRADED_TOOLS
+        assert not missing, (
+            f"{skill} does not index registered tools: {sorted(missing)}"
+        )
 
 
 def test_both_skills_index_the_same_tools() -> None:
