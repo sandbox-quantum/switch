@@ -41,6 +41,15 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+
+- The OpenCode server-side connector no longer hangs when the OpenCode server
+  raises a tool permission request. The connector's event loop ignored
+  `permission.updated`, so no reply was ever sent, the session never went idle,
+  and the response stream blocked forever. Permission requests are now answered
+  automatically — this connector reports tool calls after the fact and performs
+  no pre-invocation mediation, so there is nothing for a prompt to gate.
+
 ### [0.13.1] - 2026-08-11
 
 #### Fixed
