@@ -1,6 +1,13 @@
 # Agent Bridge Protocol
 
-Status: **design, under review** (CHOO-1857)
+Status: **Stages A and B implemented; Stage C outstanding** (CHOO-1857, closed)
+
+This began as a design proposal and is now largely built. The connection model,
+scope/filter/room slots, the heartbeat and state machine, the event envelope and
+its payloads, the operations registry and both front doors all describe shipped
+behaviour. What remains is Stage C — retiring `connection_model` — plus the
+individual items still marked as proposed below. Trust a section that describes
+current behaviour; check anything labelled *proposed*.
 
 This document specifies the protocol between an agent and Switch: how an agent
 connects, what it receives, what it sends, and what happens when things break.
@@ -11,9 +18,12 @@ authoritative spec for the connection model `ARCHITECTURE.md` §4.3 summarises.
 
 ## 1. Why this changes
 
-Four problems in the current model, all structural rather than incidental.
+Four problems in the model this replaces, all structural rather than
+incidental. Three are now fixed; the fourth is Stage C and still live.
 
-**Two sources of truth for "which session is in which room."** `connect_to_room`
+**Two sources of truth for "which session is in which room."** *(fixed —
+`connect_to_room` claims the room on the caller's own connection.)*
+`connect_to_room`
 is an MCP tool that writes a row keyed on the MCP transport session id, while
 events are fetched over an unrelated HTTP request that never mentions it. The
 thing that joined the room and the thing receiving that room's events are two
@@ -22,22 +32,26 @@ other dies. Clients then keep their own copies — Switch Console persists a
 session→room map to SQLite, the remote reconciler mirrors it, the sidecar keeps
 a third — so the same fact is stored four times and reconciled nowhere.
 
-**Events are held in memory and destroyed on read.** The event queue is a
-per-agent, per-room `asyncio.Queue`. A poll *removes* what it returns, so only
-one consumer can exist (hence `SWITCH_CHANNEL_DISABLE_POLL`, which Switch Console
-sets to stop the connector stealing its events). Nothing survives a restart,
-and there is no way to ask "what did I miss?" because no record is kept.
+**Events are held in memory and destroyed on read.** *(fixed — the buffer is
+read, never drained, with a cursor per reader.)* The event queue was a
+per-agent, per-room `asyncio.Queue`. A poll *removed* what it returned, so only
+one consumer could exist (hence `SWITCH_CHANNEL_DISABLE_POLL`, which Switch
+Console set to stop the connector stealing its events; the variable still
+exists, repurposed — see below). Nothing survived a restart, and there was no
+way to ask "what did I miss?" because no record was kept.
 
-**Liveness is guessed from timestamps by every reader independently.** Three
-heartbeat endpoints with three cadences and three TTLs exist because there are
-three connection models. Each caller compares `last_seen_at` against a TTL at
-read time; nobody owns the answer. There is no session-close signal at all, so
-bindings linger until they expire.
+**Liveness is guessed from timestamps by every reader independently.** *(fixed —
+`POST /connection/beat` owns the answer, and status computation takes the
+connection registry.)* Three heartbeat endpoints with three cadences and three
+TTLs existed because there were three connection models. Each caller compared
+`last_seen_at` against a TTL at read time; nobody owned the answer. There was no
+session-close signal at all, so bindings lingered until they expired.
 
 **Connection models leak agent implementation details into the server.**
+*(still true — this is Stage C.)*
 `always_on` / `session_addressable` / `session_passive` / `auto_session` is
-branched on in 22 places, but almost all of those reduce to "is there a live
-connection, and what does it cover" — facts the server could observe rather
+branched on throughout the server, but almost all of those reduce to "is there a
+live connection, and what does it cover" — facts the server could observe rather
 than be told.
 
 ### Non-goals
@@ -47,8 +61,8 @@ than be told.
   memory). This design assumes one process and notes the seams where that
   assumption is load-bearing.
 - Replacing MCP. MCP remains the agent's tool surface.
-- AG-UI (CHOO-1685). This design should not make it harder to land; it does not
-  attempt it.
+- AG-UI (CHOO-1685), which is being worked separately. This design should not
+  make it harder to land; it does not attempt it.
 
 ---
 
@@ -100,9 +114,9 @@ selects *events within them*.
 
 A session uses `single` + `all` — it needs unaddressed traffic for context and
 for missed-message counts. A daemon uses `all` + `addressed` — it is watching
-for a reason to start a session, not following conversations. This replaces
-the separate `/notifications` endpoint and collapses the two notification
-builders (CHOO-1810) into one.
+for a reason to start a session, not following conversations. This is what
+makes the separate `/notifications` endpoint and the second notification builder
+(CHOO-1810) removable — neither has actually been removed yet.
 
 ### 2.4 Room slots
 
@@ -119,9 +133,12 @@ builders (CHOO-1810) into one.
 Exactly one recipient per room at all times: no duplicate delivery, no
 coordination needed for handoff in either direction.
 
-This rule already exists — implemented client-side in
-`auto-session-watcher.ts`, which skips a room when Switch Console's own map says a
-session covers it. Moving it into the protocol is the split-brain fix.
+This rule was originally implemented client-side in `auto-session-watcher.ts`,
+which skipped a room when Switch Console's own map said a session covered it.
+That move into the protocol has happened: the server answers the question by
+never delivering the event, and the client keeps no copy of the fact. What
+remains client-side is only a narrow spawn-in-flight guard over the live
+connection map, which is deliberately not a persisted mirror.
 
 **Collision.** If a `single` connection tries to claim a room already claimed
 by a live connection of the same agent, the claim is **rejected** with an error
@@ -194,8 +211,8 @@ increasing **sequence number**. Events are appended when produced and removed
 only when confirmed or aged out — **never on read**.
 
 Delivery becomes a read, which makes it repeatable, resumable and verifiable.
-It also permits more than one reader, which is what allows
-`SWITCH_CHANNEL_DISABLE_POLL` to be deleted.
+It also permits more than one reader, which removed the reason
+`SWITCH_CHANNEL_DISABLE_POLL` existed (see §12 for what became of it).
 
 The buffer is **in memory** for the first implementation. Restart loses
 undelivered events — accepted, and made loud (§5.5). It sits behind a narrow
@@ -423,7 +440,7 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
 |---|---|---|
 | `type` | string | one of the types below |
 | `room_id` | string | Switch room id |
-| `room_name` | string | *new* — `all`-scope clients receive events for rooms they never explicitly connected to |
+| `room_name` | string | *proposed, not implemented* — `all`-scope clients receive events for rooms they never explicitly connected to |
 | `bridge_id` | string \| null | collaboration bridge, if any |
 | `channel_type` | string \| null | `channel_public`, `channel_private`, `direct` |
 | `payload` | object | per type |
@@ -482,9 +499,9 @@ New, carried on the same stream:
 
 | type | payload | meaning |
 |---|---|---|
-| `connection_state` | `connection_id`, `scope`, `filter`, `rooms`, `cursor`, `protocol`, `server`, `client` | first event on every stream |
+| `connection_state` | `connection_id`, `agent_id`, `scope`, `filter`, `spawn_capable`, `rooms`, `cursor`, `protocol`, `heartbeat_interval_seconds`, `server`, `client` | first event on every stream |
 | `subscription_changed` | `rooms`, `reason` | scope changed — including a room going dark because another connection claimed it |
-| `gap` | `from_sequence`, `reason` | events were dropped; re-read context. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
+| `gap` | `from_sequence`, `resumed_at`, `reason` | events were dropped; re-read context. Carried to the agent on the next surfaced event, not as a wake of its own (§4.2) |
 | `evicted` | `reason` | this connection lost its slot or was taken over; it must stop acting |
 
 `gap` and `evicted` exist so that degradation is always visible. A client that
@@ -658,37 +675,44 @@ in memory — nothing to transmit, leak or get wrong. The connection id never
 appears in a prompt or a config file, and the process can refuse a tool call
 immediately when its own stream is down.
 
-**This is what ships now.** The runtime lives in the plugin at
-`connectors/claude-code-plugin/runtime`. It holds the stream, serves the whole
+**This is what ships now.** The runtime's source lives at
+`console/packages/switch-agent-runtime`. It holds the stream, serves the whole
 operation surface over stdio, and turns each tool call into
 `POST /ops/{operation}` carrying its own connection id — so an agent never
 talks to Switch directly and correlation is structural.
 
-**Distribution is not solved yet.** A marketplace installs a plugin from its
-own subtree (`source: ./connectors/claude-code-plugin`), so the runtime has to
-sit *inside* the plugin to be installed with it — a sibling directory is not
-copied and the path dangles. With a second connector plugin that means a
-second copy, which is the thing worth avoiding. The answer is to publish the
-runtime as a package each plugin depends on (the launcher already runs an
-install step, so this is a small change), and that should happen before the
-Codex plugin ships rather than after.
+**Distribution is solved.** The runtime is published to npmjs as
+`@sandboxaq/switch-agent-runtime`, and each plugin's bundled `.mcp.json` runs it
+via `npx`. There is no copy of the runtime inside either plugin subtree, so the
+second connector plugin cost nothing to add — which is why the original plan of
+one copy per plugin was abandoned before the Codex plugin shipped.
 
 The operation list is fetched from the server at startup rather than hardcoded,
-so the tool surface is whatever the server actually offers. If that fetch
-fails the runtime refuses to start: an empty tool surface would look like
-"Switch has nothing to offer" rather than a broken connection.
+so the tool surface is whatever the server actually offers. That surface is the
+server's registry **plus** three tools the runtime serves itself:
+`send_attachment`, `download_attachment`, and `select_agent` where the working
+directory names more than one agent. If the fetch fails the runtime does not
+refuse to start — it **degrades**, serving a single `switch_unavailable` tool
+that reports why. Dying before the MCP handshake left the session with no
+explanation at all, which is worse than an honest one-tool surface.
 
 Planned second mode off the same code: *daemon* (long-lived, `scope: all`,
 `spawn_capable`) alongside today's *session* mode (child of the agent,
 `scope: single`).
 
-- **Claude Code** — plugin `.mcp.json` at the plugin root, `${CLAUDE_PLUGIN_ROOT}`
-  for the path, `${VAR}` expansion for endpoint and token.
-- **Codex** — Codex expands neither, and a stdio server cannot be expressed on
-  argv the way an HTTP one can, so Switch Console writes a per-agent Codex profile
-  (`$CODEX_HOME/<slug>.config.toml`) registering the server and launches with
-  `--profile <slug>`. It controls the launch, so it can also inject per-session
-  credentials.
+Both hosts now register the server the same way — from the plugin's own bundled
+`.mcp.json`, running the published runtime over `npx`. Neither needs a path
+placeholder or `${VAR}` expansion, because the runtime resolves its own
+credentials from `.switch/agents/` in the working directory rather than being
+handed them in the config. The remaining difference is what the *host* adds:
+
+- **Claude Code** — nothing beyond the plugin; the bundled `.mcp.json` is the
+  whole registration.
+- **Codex** — Switch Console writes a per-agent Codex profile
+  (`$CODEX_HOME/<slug>.config.toml`, launched with `--profile <slug>`) carrying
+  model, reasoning effort and instructions. It registers **no** MCP server; the
+  plugin does that. An agent that specializes none of those three gets no
+  profile at all.
 
 ### 9.2 Remote MCP (fallback)
 
@@ -775,8 +799,13 @@ Two consequences, stated rather than hidden:
   resumes wherever the server's cursor sits. Left honestly broken; the fix is
   to migrate the client.
 
-`SWITCH_CHANNEL_DISABLE_POLL` can be deleted as soon as reads are
-non-destructive — before SSE exists.
+`SWITCH_CHANNEL_DISABLE_POLL` was expected to be deletable once reads became
+non-destructive. It was not deleted — it was **repurposed**, keeping the name
+for compatibility. It no longer stops a second poll (there is no poll to steal);
+it suppresses *notification surfacing* in the runtime, so a session whose events
+Switch Console already delivers into the pane does not also receive them as MCP
+notifications. Same variable, different problem: double delivery, not double
+poll.
 
 Polling endpoints are removed in a later, separate release.
 
@@ -821,7 +850,7 @@ A connection that has silently missed events must never appear healthy.
    drift. Unblocks the local runtime and closes the overlap with CHOO-490.
 
    **The two MCP servers are merged into one local runtime.** *(implemented)*
-   `@sandbox-quantum/switch-agent-runtime` serves the tool surface over stdio —
+   `@sandboxaq/switch-agent-runtime` serves the tool surface over stdio —
    fetched from the server at startup, so it cannot drift — and translates each
    call to `POST /ops/${toolName}` on its connection. Each connector plugin now
    registers exactly one MCP server (`switch`); the separate remote `switch` and
@@ -867,16 +896,14 @@ three renews is unaffected and unaware.
    `AdminClient` and the bridge app — the Matrix clients are wired before the
    bridge, so the bridge could no longer own it.
 
-5. Switch Console (`RoomConnection` → session-grained connection that repoints
-   rooms; daemon mode) and the sidecar, which reuses the same class verbatim —
-   `sidecar-runtime.ts` constructs `RoomConnection` directly, so the two migrate
-   together rather than separately. The `auto_session` watcher's
-   `/notifications` poll folds into an `all`-scope connection, and its three
-   heartbeat loops collapse into one beat.
+5. *(implemented)* Switch Console (`RoomConnection` → session-grained connection
+   that repoints rooms; daemon mode) and the sidecar, which reuses the same
+   class verbatim — `sidecar-runtime.ts` constructs `RoomConnection` directly,
+   so the two migrated together rather than separately. The `auto_session`
+   watcher's `/notifications` poll folded into an `all`-scope connection, and
+   its three heartbeat loops collapsed into one beat.
 
-   Note `RoomConnection` has no client-side cursor today: the poll URL carries
-   only `timeout` and the server drains the queue on read. Resume is something
-   this migration *adds*, not something it has to preserve.
+   `RoomConnection` resumes from a cursor; the pre-migration poll did not.
 
 **Stage C — the removals. Gated on the clients having transitioned.**
 
@@ -898,12 +925,14 @@ versions must be updated when the agent-facing contract changes.
 
 ## 14. Related work
 
-- **CHOO-490** — HTTP protocol parity. Overlaps directly; this document is the
-  contract both should serve.
-- **CHOO-1810** — two notification builders. Closed by §2.3: one delivery path
-  with a declared filter.
-- **CHOO-1685** — AG-UI. Not addressed; the event envelope is versioned and
-  additive so it stays landable.
+- **CHOO-490** — HTTP protocol parity. Delivered: the operation surface has an
+  HTTP front door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`)
+  serving the same registry as MCP.
+- **CHOO-1810** — two notification builders. §2.3 shipped, but this is **not**
+  closed: both builders still exist, and `GET /agents/{id}/notifications` is
+  still a live route.
+- **CHOO-1685** — AG-UI. Being worked separately rather than here; the event
+  envelope is versioned and additive so it stays landable.
 - **CHOO-1101 / CHOO-1366 / CHOO-1811** — bugs caused by the polling model.
   Useful as tests of whether this design makes them impossible rather than
   merely fixed.

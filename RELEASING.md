@@ -111,11 +111,10 @@ switch-core releases are **not** gated and need no such ping.
 ## Where artifacts are published
 
 The images, the chart, and the standalone compose artifact all go to **GitHub
-Container Registry (GHCR)** by default. While the repository is private the
-packages are private too; they become public automatically when the
-repository/packages are made public at the public-repo move (CHOO-1260). The
-registry and namespace are workflow env vars (`REGISTRY`, `IMAGE_NAMESPACE`) so
-retargeting to another registry (e.g. ECR) is a one-line change, not a rewrite.
+Container Registry (GHCR)** by default, and are public alongside the repository
+— pulling them needs no credential. The registry and namespace are workflow env
+vars (`REGISTRY`, `IMAGE_NAMESPACE`) so retargeting to another registry (e.g.
+ECR) is a one-line change, not a rewrite.
 
 Consuming the published artifacts:
 

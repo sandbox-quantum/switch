@@ -78,12 +78,6 @@ export interface ServerHost {
   /** Whether Docker is usable on the host (CLI resolves AND daemon answers). */
   detectDocker(): Promise<DockerAvailability>;
 
-  /** Authenticate the host's Docker to GHCR so the private release images pull
-   * before the public-repo flip (CHOO-1260). Best-effort: warns and proceeds
-   * when no credentials are available, so a public image is a no-op and a
-   * private one fails loudly on the subsequent pull. */
-  ensureGhcrLogin(): Promise<void>;
-
   /** Free host ports for the stack to publish on the host's loopback. The
    * remote host picks numbers free on BOTH the remote and the desktop loopback,
    * so the same number can be mirrored by the local forward. */

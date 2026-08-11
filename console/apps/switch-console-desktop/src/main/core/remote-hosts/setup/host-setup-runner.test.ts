@@ -516,46 +516,6 @@ describe('plan completion', () => {
   });
 });
 
-describe('gh-auth steps', () => {
-  const ghStep = (patch: Partial<HostSetupStep> = {}) =>
-    step('gh:auth', { kind: 'gh-auth', name: 'GitHub CLI login', optional: true, ...patch });
-
-  it('tells the user to sign in rather than reporting a missing install command', async () => {
-    const { runner, installOrder } = makeRunner({
-      checks: { 'gh:auth': [{ outcome: 'missing' }] },
-      installs: {},
-      canInstall: () => false,
-    });
-
-    const result = await runner.runSingleStep(plan([ghStep()]), 'gh:auth');
-
-    expect(installOrder).toEqual([]);
-    expect(result.steps[0]!.error).toMatch(/Use Sign in to start it/);
-  });
-
-  it('leads with why a login that already exists is still not enough', async () => {
-    const { runner } = makeRunner({
-      checks: {
-        'gh:auth': [
-          {
-            outcome: 'missing',
-            error: 'The GitHub token is missing the read:packages scope.',
-          },
-        ],
-      },
-      installs: {},
-      canInstall: () => false,
-    });
-
-    const result = await runner.runSingleStep(plan([ghStep()]), 'gh:auth');
-
-    expect(result.steps[0]!.state).toBe('failed');
-    expect(result.steps[0]!.error).toMatch(
-      /^The GitHub token is missing the read:packages scope\./
-    );
-  });
-});
-
 describe('runner determinism', () => {
   it('does not mutate the plan it was given', async () => {
     const { runner } = makeRunner({ checks: { git: [{ outcome: 'satisfied' }] }, installs: {} });

@@ -18,7 +18,6 @@ function makeSignals(): UpdateSignals & { calls: string[] } {
     progress: vi.fn(() => void calls.push('progress')),
     downloaded: vi.fn(() => void calls.push('downloaded')),
     failed: vi.fn(() => void calls.push('failed')),
-    authRequired: vi.fn(() => void calls.push('authRequired')),
   };
 }
 
@@ -103,14 +102,6 @@ describe('FakeUpdateDriver', () => {
 
     expect(await driver.check()).toBeNull();
     expect(signals.calls).toEqual(['checking', 'failed']);
-  });
-
-  it('signals missing credentials', async () => {
-    const signals = makeSignals();
-    const driver = new FakeUpdateDriver('auth-required', signals, '0.18.0', 40);
-
-    expect(await driver.check()).toBeNull();
-    expect(signals.calls).toEqual(['checking', 'authRequired']);
   });
 
   it('signals up-to-date', async () => {

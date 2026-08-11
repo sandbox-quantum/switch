@@ -35,8 +35,8 @@ electron-builder emits channel manifests named by the publish provider's `channe
 - Stable: `provider: github` (`releaseType: 'release'`) has no explicit channel → defaults to `latest` → emits `latest*.yml`.
 - Canary: `provider: github` (`releaseType: 'draft'`) sets `channel: 'canary'` → emits `canary*.yml`.
 
-The release repo is `sandbox-quantum/switch`, private, so the updater uses
-electron-updater's authenticated GitHub provider.
+The release repo is `sandbox-quantum/switch`, public, so the updater reads the feed
+with electron-updater's GitHub provider and no credential.
 
 ### Draft until every platform has uploaded
 
@@ -75,12 +75,14 @@ The app does **not** override `autoUpdater.channel`; the GitHub provider resolve
 
 ## Authenticating the updater
 
-The release repo is private, so a plain feed fetch 404s. `github-token.ts` sources a token
-from the user's `gh` CLI and it is handed to `autoUpdater.setFeedURL(...)` rather than
-exported as `GH_TOKEN`. That is deliberate and worth preserving: Switch Console's environment
-is inherited by every child process it spawns — including `gh` itself, which prefers
-`GH_TOKEN` over its keyring — so a token parked there outlives the login it came from and
-shadows the next one until the app restarts.
+Nothing to authenticate: the release repo is public, so the feed and the release-notes
+API are both read anonymously.
+
+If a credential is ever needed here again, hand it to `autoUpdater.setFeedURL(...)`
+rather than exporting `GH_TOKEN`. Switch Console's environment is inherited by every
+child process it spawns — including `gh` itself, which prefers `GH_TOKEN` over its
+keyring — so a token parked there outlives the login it came from and shadows the next
+one until the app restarts.
 
 ## Current Notes
 

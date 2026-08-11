@@ -22,7 +22,7 @@ vi.hoisted(() => {
  * through. Every other row had its Install button in plain sight.
  */
 import { PrerequisiteRow } from '@renderer/features/remote-hosts/setup/setup-rows';
-import type { HostSetupPlan, HostSetupStep } from '@shared/core/remote-hosts/setup';
+import type { HostSetupStep } from '@shared/core/remote-hosts/setup';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -36,9 +36,9 @@ afterEach(async () => {
 
 function step(patch: Partial<HostSetupStep>): HostSetupStep {
   return {
-    id: 'gh:auth',
-    kind: 'gh-auth',
-    name: 'GitHub CLI login',
+    id: 'tmux',
+    kind: 'core-dependency',
+    name: 'tmux',
     state: 'pending',
     outcome: 'missing',
     version: null,
@@ -47,27 +47,9 @@ function step(patch: Partial<HostSetupStep>): HostSetupStep {
     error: null,
     output: null,
     optional: false,
-    dependsOn: ['gh'],
+    dependsOn: [],
     updatedAt: '2026-02-02T00:00:00.000Z',
     ...patch,
-  };
-}
-
-function planWith(auth: HostSetupStep, ghState: HostSetupStep['state']): HostSetupPlan {
-  return {
-    sshHost: 'dev-vm',
-    status: 'idle',
-    steps: [
-      {
-        ...step({ id: 'gh', kind: 'core-dependency', name: 'GitHub CLI', dependsOn: [] }),
-        state: ghState,
-        outcome: ghState === 'satisfied' ? 'satisfied' : 'missing',
-      },
-      auth,
-    ],
-    currentStepId: null,
-    createdAt: '2026-02-02T00:00:00.000Z',
-    updatedAt: '2026-02-02T00:00:00.000Z',
   };
 }
 
@@ -80,7 +62,7 @@ async function render(node: React.ReactNode): Promise<HTMLDivElement> {
 }
 
 function row(
-  auth: HostSetupStep,
+  target: HostSetupStep,
   ghState: HostSetupStep['state'] = 'satisfied',
   overrides: {
     hostBusy?: boolean;
@@ -92,19 +74,16 @@ function row(
 ) {
   return (
     <PrerequisiteRow
-      step={auth}
-      plan={planWith(auth, ghState)}
+      step={target}
       isCurrent={false}
       installing={false}
       updating={overrides.updating ?? false}
       rechecking={overrides.rechecking ?? false}
       hostBusy={overrides.hostBusy ?? false}
       activity={null}
-      authenticating={false}
       onInstall={() => {}}
       onUpdate={overrides.onUpdate ?? (() => {})}
       onRecheck={overrides.onRecheck ?? (() => {})}
-      onAuthenticate={() => {}}
       onOpen={() => {}}
     />
   );
@@ -117,46 +96,6 @@ function buttonLabels(el: HTMLElement): string[] {
 function recheckButton(el: HTMLElement): HTMLButtonElement | null {
   return el.querySelector('button[aria-label^="Re-check"]');
 }
-
-describe('the GitHub login row', () => {
-  it('offers Sign in on the row itself, not only inside the sheet', async () => {
-    const el = await render(row(step({})));
-
-    expect(buttonLabels(el)).toContain('Sign in');
-  });
-
-  it('says Re-authenticate when the login exists but lacks read:packages', async () => {
-    const el = await render(row(step({ error: 'gh is missing the read:packages scope' })));
-
-    expect(buttonLabels(el)).toContain('Re-authenticate');
-  });
-
-  it('offers nothing while gh itself is still missing', async () => {
-    // The device flow runs `gh` on the host. A Sign in button here would only
-    // produce a failure that says nothing about the real problem.
-    const el = await render(row(step({}), 'pending'));
-
-    expect(buttonLabels(el)).not.toContain('Sign in');
-  });
-
-  it('offers no action once the login is good', async () => {
-    // The row itself is a button (it opens the detail sheet), so this asks that
-    // no *action* is offered rather than that no button exists.
-    const el = await render(
-      row(step({ state: 'satisfied', outcome: 'satisfied', version: 'amaudruz' }))
-    );
-
-    expect(buttonLabels(el)).not.toContain('Sign in');
-    expect(buttonLabels(el)).not.toContain('Re-authenticate');
-    expect(buttonLabels(el)).not.toContain('Install');
-  });
-
-  it('never offers Install for a login — it is a device flow, not a package', async () => {
-    const el = await render(row(step({})));
-
-    expect(buttonLabels(el)).not.toContain('Install');
-  });
-});
 
 /**
  * Re-checking one row exists because the whole-host re-check costs an SSH round
@@ -217,34 +156,22 @@ describe('the per-row re-check', () => {
 /**
  * While a check runs, a row offers nothing but the check (CHOO-1809).
  *
- * Two separate defects produced the same complaint. A check moves a step
- * through `checking` on its way back to a verdict, and the sign-in predicate
- * read "not satisfied" as "signed out" — so re-checking a working GitHub login
- * flashed a Sign in button at someone already signed in. Meanwhile Install
- * stayed live on every other row, even though the runner takes one operation
- * per host and would have refused it.
+ * Install stayed live on every other row even though the runner takes one
+ * operation per host and would have refused it — an offer that cannot be
+ * honoured reads as this dependency's fault rather than as the button never
+ * having been live.
  */
 describe('actions while the host is working', () => {
-  it('offers no Sign in while this row is mid-check', async () => {
+  it('offers no Install while this row is mid-check', async () => {
     const el = await render(row(step({ state: 'checking' })));
 
-    expect(buttonLabels(el)).not.toContain('Sign in');
+    expect(buttonLabels(el)).not.toContain('Install');
   });
 
-  it('offers no Sign in on a satisfied login being re-checked', async () => {
-    // The case Louis hit: the button appeared on a login that was fine.
-    const el = await render(
-      row(step({ state: 'checking', outcome: 'satisfied', version: 'amaudruz' }))
-    );
-
-    expect(buttonLabels(el)).not.toContain('Sign in');
-    expect(buttonLabels(el)).not.toContain('Re-authenticate');
-  });
-
-  it('withdraws Sign in from an idle row while the host is busy elsewhere', async () => {
+  it('withdraws Install from an idle row while the host is busy elsewhere', async () => {
     const el = await render(row(step({}), 'satisfied', { hostBusy: true }));
 
-    expect(buttonLabels(el)).not.toContain('Sign in');
+    expect(buttonLabels(el)).not.toContain('Install');
   });
 
   it('still shows the check control, so something says work is happening', async () => {

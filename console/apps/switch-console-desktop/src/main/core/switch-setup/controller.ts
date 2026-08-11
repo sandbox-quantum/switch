@@ -2,7 +2,6 @@ import { hostReachabilityService } from '@main/core/remote-hosts/production-host
 import { log } from '@main/lib/logger';
 import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { type LocalGhAuthStatus, probeLocalGhAuth, startLocalGhAuth } from './local-gh-auth';
 import { getRemoteSwitchSetupService } from './remote-switch-setup';
 import { switchSetupService } from './switch-setup-service';
 
@@ -10,11 +9,6 @@ export const switchSetupController = createRPCController({
   /** Every Switch-capable agent type on this machine, usable or not. */
   listAgentTypeAvailability: () => switchSetupService.listAgentTypeAvailability(),
 
-  /** Whether this machine can fetch the MCP runtime from GitHub Packages. */
-  getLocalGhAuth: (): Promise<LocalGhAuthStatus> => probeLocalGhAuth(),
-
-  /** Interactive `gh` login/refresh on this machine; returns a PTY session id. */
-  startLocalGhAuth: (): Promise<{ sessionId: string }> => startLocalGhAuth(),
   /**
    * Every Switch-capable agent type on a remote host, usable or not.
    *

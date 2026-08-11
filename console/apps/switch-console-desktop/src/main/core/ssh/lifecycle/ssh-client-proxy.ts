@@ -28,7 +28,7 @@ type RemoteShellProfileState =
  * Max concurrent short-lived `exec` (command) channels per connection. SSH
  * servers cap simultaneous sessions (OpenSSH MaxSessions defaults to 10, and
  * proxies/tunnels can be lower); bursts of parallel probes (dependency checks,
- * plugin status, gh auth) otherwise trip "Channel open failure: open failed".
+ * plugin status) otherwise trip "Channel open failure: open failed".
  * Long-lived PTY channels (execPty) are intentionally not counted here — they
  * would hold a slot for the terminal's whole life. They get their own
  * open-only semaphore below.

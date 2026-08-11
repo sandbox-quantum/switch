@@ -1,52 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { GhAuthStatus } from '../gh-auth';
 import {
   condenseCommandOutput,
   describeInstallFailure,
   outcomeForDependency,
-  outcomeForGhAuth,
 } from './step-outcomes';
-
-function ghStatus(overrides: Partial<GhAuthStatus>): GhAuthStatus {
-  return {
-    authenticated: true,
-    account: 'octocat',
-    canReadPackages: true,
-    detail: null,
-    ...overrides,
-  };
-}
-
-describe('outcomeForGhAuth', () => {
-  it('is satisfied only when the login can also read packages', () => {
-    expect(outcomeForGhAuth(ghStatus({}))).toEqual({ outcome: 'satisfied', version: 'octocat' });
-  });
-
-  it('does not accept a login that lacks read:packages, and says why', () => {
-    const result = outcomeForGhAuth(
-      ghStatus({
-        canReadPackages: false,
-        detail: 'The GitHub token is missing the read:packages scope.',
-      })
-    );
-
-    expect(result.outcome).toBe('missing');
-    expect(result.error).toMatch(/read:packages/);
-  });
-
-  it('reports a host with no login at all as missing', () => {
-    const result = outcomeForGhAuth(
-      ghStatus({
-        authenticated: false,
-        account: null,
-        canReadPackages: false,
-        detail: 'Not logged in.',
-      })
-    );
-
-    expect(result).toEqual({ outcome: 'missing', error: 'Not logged in.' });
-  });
-});
 
 describe('outcomeForDependency', () => {
   it('reports an available dependency as satisfied with its version', () => {
@@ -175,7 +132,7 @@ describe('describeInstallFailure — the install command could not run', () => {
   const banner = [
     '  ____              _ ',
     ' / ___|  __ _ _ __ | |',
-    'alg-bench-debian-12-v260624',
+    'example-host-debian-12-v260624',
     '/bin/bash: line 1: npm: command not found',
   ].join('\n');
 

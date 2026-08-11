@@ -24,5 +24,3 @@ export const updateDownloadedEvent = defineEvent<{ version: string }>('update:do
 export const updateInstallingEvent = defineEvent<void>('update:installing');
 
 export const updateErrorEvent = defineEvent<{ message: string }>('update:error');
-
-export const updateAuthRequiredEvent = defineEvent<void>('update:auth-required');

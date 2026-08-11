@@ -21,7 +21,7 @@ Claude Code-specific and deliberately not part of this one.
 ## The Switch MCP server
 
 The manifest declares `"mcpServers": "./.mcp.json"`, and that file registers
-`@sandbox-quantum/switch-agent-runtime` over stdio under the server name
+`@sandboxaq/switch-agent-runtime` over stdio under the server name
 `switch` — the name the skill assumes. A Codex session with this plugin
 installed has the Switch tools, whether or not Switch Console launched it.
 
@@ -33,7 +33,7 @@ The config holds **no secret**. It names the variables the runtime needs under
   "mcpServers": {
     "switch": {
       "command": "npx",
-      "args": ["-y", "@sandbox-quantum/switch-agent-runtime@0.1.6"],
+      "args": ["-y", "@sandboxaq/switch-agent-runtime@0.1.6"],
       "env_vars": ["SWITCH_API_ENDPOINT", "SWITCH_API_TOKEN", "SWITCH_AGENT_ID", "…"],
       "startup_timeout_sec": 60
     }
@@ -56,9 +56,9 @@ depends on them:
   such. (This was previously documented the other way round, as a reason the
   server could not ship here at all.)
 - **An unset name is simply not forwarded.** So the list can name
-  Switch Console-only variables (`SWITCH_CONNECTION_ID`, the npm registry settings)
-  without breaking a session that has none of them. The Claude connector cannot
-  do this: `${VAR}` expansion makes every declared variable mandatory.
+  Switch Console-only variables (`SWITCH_CONNECTION_ID`) without breaking a
+  session that has none of them. The Claude connector cannot do this: `${VAR}`
+  expansion makes every declared variable mandatory.
 
 `startup_timeout_sec` is raised from Codex's 10s default because a host that has
 never run the runtime can exceed it on the `npx` fetch alone, and a timeout
@@ -141,21 +141,6 @@ along with `startup_timeout_sec`. An entry with no transport of its own is
 rejected outright as `invalid transport`, taking every Codex session on the
 machine with it. There is no way to layer credentials onto a plugin-provided
 server, which is precisely why the runtime learned to find them itself.
-
-### The npm environment is part of the contract
-
-Codex hands the MCP server a fixed env allowlist, and `npm_config_*` is not in
-it. The runtime is fetched with `npx` from a **private** registry, so the server
-must resolve the `@sandbox-quantum` scope from *its own* environment.
-
-This is worth stating because the failure is silent and the obvious check lies:
-`npm config get` in an interactive shell can report a correctly configured
-registry the server never sees, since Switch Console exports `npm_config_userconfig`
-pointing at its own npmrc. The server then queries `registry.npmjs.org`, gets a
-404 (private packages are not admitted to exist), and dies before the handshake
-— with no symptom beyond the tools being absent. The `configure` skill therefore
-verifies with a stripped environment (`env -i HOME=... PATH=...`) rather than
-trusting the shell's answer.
 
 ### What standalone does and does not get
 

@@ -4,12 +4,7 @@ import { listPlugins } from '@main/core/providers/plugin-registry';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import type { HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan, HostSetupStep } from '@shared/core/remote-hosts/setup';
-import {
-  agentPluginStepId,
-  buildSetupPlan,
-  GH_AUTH_STEP_ID,
-  reconcileInterruptedPlan,
-} from './plan-builder';
+import { agentPluginStepId, buildSetupPlan, reconcileInterruptedPlan } from './plan-builder';
 
 const NOW = '2026-02-02T00:00:00.000Z';
 
@@ -32,23 +27,20 @@ function build(existing: HostSetupPlan | null = null) {
 }
 
 describe('buildSetupPlan', () => {
-  it('orders core tools first, then gh login, then each agent CLI before its plugin', () => {
+  it('orders core tools first, then each agent CLI before its plugin', () => {
     expect(build().steps.map((s) => s.id)).toEqual([
       'git',
       'node',
       'tmux',
       'gh',
-      GH_AUTH_STEP_ID,
       'claude-code',
       agentPluginStepId('claude-code'),
     ]);
   });
 
-  it('marks gh and its login optional so they cannot strand a host', () => {
+  it('leaves every core tool required, so none can strand a host silently', () => {
     const plan = build();
     const optional = plan.steps.filter((s) => s.optional).map((s) => s.id);
-    // gh is required: without it the Switch connector cannot fetch its runtime,
-    // so an agent on this host would start with no Switch tools (CHOO-1873).
     expect(optional).toEqual([]);
   });
 
@@ -79,7 +71,6 @@ describe('buildSetupPlan', () => {
   it('assigns the right kind to each step', () => {
     const kinds = Object.fromEntries(build().steps.map((s) => [s.id, s.kind]));
     expect(kinds.git).toBe('core-dependency');
-    expect(kinds[GH_AUTH_STEP_ID]).toBe('gh-auth');
     expect(kinds['claude-code']).toBe('agent-cli');
     expect(kinds[agentPluginStepId('claude-code')]).toBe('agent-plugin');
   });
@@ -286,10 +277,7 @@ describe('buildSetupPlan — against the real registry', () => {
   it('reports a host with every prerequisite installed as ready, whatever agent types ship', () => {
     // The reported bug: all prerequisites present, one agent CLI absent, and the
     // host badge read "Setup required".
-    const plan = satisfy(
-      realPlan(),
-      (step) => step.kind === 'core-dependency' || step.kind === 'gh-auth'
-    );
+    const plan = satisfy(realPlan(), (step) => step.kind === 'core-dependency');
 
     expect(deriveHostStatus(reachable, plan).kind).toBe('ready');
   });
@@ -298,7 +286,7 @@ describe('buildSetupPlan — against the real registry', () => {
     // The inverse, so the test above cannot pass by never blocking anything.
     const plan = satisfy(
       realPlan(),
-      (step) => (step.kind === 'core-dependency' || step.kind === 'gh-auth') && step.id !== 'node'
+      (step) => step.kind === 'core-dependency' && step.id !== 'node'
     );
 
     expect(deriveHostStatus(reachable, plan).kind).toBe('setup-required');

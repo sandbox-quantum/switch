@@ -6,10 +6,7 @@ const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
   listPlugins: vi.fn(),
   readFile: vi.fn(),
-  probeLocalGhAuth: vi.fn(),
 }));
-
-vi.mock('./local-gh-auth', () => ({ probeLocalGhAuth: mocks.probeLocalGhAuth }));
 
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
   LocalExecutionContext: class {
@@ -213,14 +210,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.resolveCommandPath.mockResolvedValue('/usr/bin/claude');
   mocks.getPlugin.mockReturnValue(CLI_AGENT);
-  mocks.probeLocalGhAuth.mockResolvedValue({
-    ghInstalled: true,
-    authenticated: true,
-    canReadPackages: true,
-    account: 'octocat',
-    envShadowed: false,
-    detail: null,
-  });
 });
 
 describe('switchSetupService.getStatus', () => {
@@ -310,35 +299,6 @@ describe('switchSetupService.listAgentTypeAvailability', () => {
     const availability = await switchSetupService.listAgentTypeAvailability();
 
     expect(availability.map((entry) => entry.agentId)).not.toContain(NONE_AGENT.metadata.id);
-  });
-
-  // An installed plugin still resolves its MCP server from a private registry
-  // at session start. Offering the agent type on the strength of the install
-  // alone onboards an agent that comes up with no Switch tools.
-  it.each([
-    ['gh is not installed', { ghInstalled: false, authenticated: false, canReadPackages: false }],
-    ['there is no login', { ghInstalled: true, authenticated: false, canReadPackages: false }],
-    [
-      'the token cannot read packages',
-      { ghInstalled: true, authenticated: true, canReadPackages: false },
-    ],
-  ])('makes nothing available when %s, even with the connector installed', async (_label, gh) => {
-    mocks.listPlugins.mockReturnValue([CLI_AGENT, NONE_AGENT]);
-    mocks.exec.mockImplementation(execImpl('0.1.0'));
-    mocks.readFile.mockImplementation(readFileImpl('0.1.0', '0.1.0'));
-    mocks.probeLocalGhAuth.mockResolvedValue({
-      ...gh,
-      account: null,
-      envShadowed: false,
-      detail: 'nope',
-    });
-
-    const availability = await switchSetupService.listAgentTypeAvailability();
-
-    expect(availability.every((entry) => !entry.available)).toBe(true);
-    // Blocked for a reason no per-type install would fix, so it has to name the
-    // GitHub access rather than telling the user to install what they have.
-    expect(availability[0]!.blockedReason).toContain('GitHub');
   });
 });
 

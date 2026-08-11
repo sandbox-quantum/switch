@@ -124,14 +124,6 @@ describe('presentUpdate', () => {
       expect(failed.indicatorLabel).toBe('Update failed');
       expect(failed.actionable).toBe(true);
     });
-
-    it('treats missing credentials as a fixable prompt, not a failure', () => {
-      const auth = present({ status: 'auth-required' });
-
-      expect(auth.title).toMatch(/sign in/i);
-      expect(auth.detail).toMatch(/gh auth login/);
-      expect(auth.actionKind).toBe('check');
-    });
   });
 
   it('never renders an empty indicator label once a version is known', () => {
@@ -144,7 +136,6 @@ describe('presentUpdate', () => {
       { status: 'downloaded' },
       { status: 'installing' },
       { status: 'error', message: 'x' },
-      { status: 'auth-required' },
     ];
 
     for (const state of states) {

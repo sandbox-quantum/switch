@@ -1,5 +1,10 @@
 # Project Overview
 
+**This repository is public.** Everything written here is world-readable and
+permanent, git history included. See "This repository is public" in the root
+`CLAUDE.md` for what that rules out — credentials, internal hostnames and
+infrastructure names, personal addresses. It applies to test fixtures too.
+
 Switch Console is a cross-platform, local-first Electron app for orchestrating multiple AI
 coding agents in parallel. Each agent runs in its own session in its location's directory
 (there are no Git worktrees). An agent runs either locally or — when configured remote — on an
@@ -57,10 +62,9 @@ One cost was accepted rather than avoided: because `APP_NAME_LOWER` moved, `apt`
 `dnf` treat `switch-console` as a new package rather than an upgrade of `switchdash`,
 so a Linux user upgrading across the rename has to remove the old package by hand.
 
-The **update feed** points at GitHub Releases on the private
-`sandbox-quantum/switch` repo (see `electron-builder.config.ts` `publish`): the app
-distributes to repo-readers and authenticates the updater with the user's `gh` CLI token
-(`src/main/core/updates/github-token.ts`). The SQLite database file is `switchdash.db`;
+The **update feed** points at GitHub Releases on the public
+`sandbox-quantum/switch` repo (see `electron-builder.config.ts` `publish`): the feed is
+read unauthenticated, so the updater needs no token. The SQLite database file is `switchdash.db`;
 installs upgrading from a pre-rebrand build are migrated forward from their legacy database
 on first launch — see `LEGACY_DB_FILENAMES` in `src/main/db/default-path.ts` and the
 copy-migration in `database-file.ts` (those legacy filenames are the only place the
@@ -384,7 +388,7 @@ pnpm run lint
   directory, and does not need the credential. Do not add a token back to it:
   two copies is how one goes stale and authenticates as the wrong agent.
   - Three consumers read this layout: switchdash, the sidecar, and
-    `@sandbox-quantum/switch-agent-runtime` (which reads it directly when
+    `@sandboxaq/switch-agent-runtime` (which reads it directly when
     nothing sets `SWITCH_*` in the environment). Changing the shape means
     changing all three.
   - The token being in a working tree at all is a known exposure — a
@@ -417,7 +421,7 @@ The pairs that must stay in step:
 | `agent-hooks/hook-config-service.ts` + `ssh-agent-runtime.installRemoteHooks` | `sidecar/session-spawner.installHooks` | nothing — same failure mode: one side quietly installs fewer hooks |
 | `switch-rooms/auto-session-watcher.ts` | `sidecar/notification-watcher.ts` | nothing — two implementations of one watcher |
 | `switch-rooms/room-connection.ts` | — | shared: the sidecar constructs the same class |
-| protocol client (stream, heartbeat, cursor) | — | shared: `@sandbox-quantum/switch-agent-runtime` |
+| protocol client (stream, heartbeat, cursor) | — | shared: `@sandboxaq/switch-agent-runtime` |
 
 Where a row says *shared*, a change lands in both for free — prefer putting
 logic there. Where it says *nothing*, you are editing one of two copies and the
@@ -439,21 +443,21 @@ forgotten and someone will debug a build they think is newer than it is.
 |---|---|---|
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
-| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills) — installs will not pick it up otherwise |
-| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and two pins name the version sessions actually run — the Claude connector `.mcp.json`, and `SWITCH_AGENT_RUNTIME_VERSION` in `src/shared/core/switch-rooms/switch-agent-runtime.ts` (which the Codex profile uses) |
+| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and **both** connectors' `.mcp.json` pin the version sessions actually run. Nothing in the app pins it — the plugins register the runtime themselves — so those two files are the only pins |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
 dependencies. A comment or a rename that changes nothing does not need one.
 
-**The runtime's version and its two pins move at different times, in this
-order.** Bump `package.json` with the change; the pins must keep naming a
+**The runtime's version and the connector pins move at different times, in
+this order.** Bump `package.json` with the change; the pins must keep naming a
 version that is *published*, so they stay behind until the tag exists
 (`git tag switch-agent-runtime-v<version> && git push origin <tag>`), and only
 then move to it. Pinning ahead points every session at something the registry
-does not have. `switch-agent-runtime.test.ts` enforces exactly this: the two
-pins must agree with each other, and neither may run ahead of `package.json`.
-The cost of the lag is real and worth stating in the PR — a change to `bin.ts`
-reaches no session until the tag is pushed and the pins follow.
+does not have. Nothing checks this for you — the pins and `package.json` are
+free to sit apart, and how far apart is a release decision rather than an
+invariant. The cost of the lag is real and worth stating in the PR — a change
+to `bin.ts` reaches no session until the tag is pushed and the pins follow.
 
 Two traps worth knowing rather than rediscovering:
 

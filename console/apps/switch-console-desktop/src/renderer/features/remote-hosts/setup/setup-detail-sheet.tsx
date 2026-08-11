@@ -20,19 +20,13 @@ import { Label } from '@renderer/lib/ui/label';
 import { Sheet, SheetContent, SheetHeader } from '@renderer/lib/ui/sheet';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
-import {
-  isStepInFlight,
-  type HostSetupPlan,
-  type HostSetupStep,
-} from '@shared/core/remote-hosts/setup';
+import { isStepInFlight, type HostSetupStep } from '@shared/core/remote-hosts/setup';
 import {
   agentTypeBadge,
   canInstall,
   canOfferAction,
-  canSignIn,
   canSkip,
   outcomeLabel,
-  signInLabel,
   stepBadge,
   type AgentTypeRow,
 } from './step-presentation';
@@ -161,40 +155,29 @@ function ObservationCard({
 
 function StepActions({
   step,
-  plan,
   onInstall,
   installing,
   hostBusy,
   onSkip,
   skipping,
-  onAuthenticate,
 }: {
   step: HostSetupStep;
-  /** Needed to tell whether this step's own prerequisites are in place. */
-  plan: HostSetupPlan | null;
   onInstall: () => void;
   installing: boolean;
   /** True while any operation is running on this host. */
   hostBusy: boolean;
   onSkip: () => void;
   skipping: boolean;
-  onAuthenticate: () => void;
 }) {
   // The same rule the rows follow: while the host is working, the only honest
   // thing to show is what it is doing. The runner would refuse these anyway.
   if (!canOfferAction(hostBusy, installing)) return null;
-  const signInOffered = canSignIn(step, plan);
   const installable = canInstall(step);
   const busy = installing || isStepInFlight(step);
-  if (!signInOffered && !installable && !canSkip(step)) return null;
+  if (!installable && !canSkip(step)) return null;
 
   return (
     <div className="flex shrink-0 items-center gap-1.5">
-      {signInOffered && (
-        <Button size="xs" onClick={onAuthenticate}>
-          {signInLabel(step)}
-        </Button>
-      )}
       {installable && (
         <Button size="xs" disabled={busy} onClick={onInstall}>
           {busy ? (
@@ -250,7 +233,6 @@ export type SheetTarget =
 export function SetupDetailSheet({
   target,
   sshHost,
-  plan,
   icon,
   activityFor,
   onClose,
@@ -259,12 +241,9 @@ export function SetupDetailSheet({
   hostBusy,
   onSkip,
   skippingStepId,
-  onAuthenticate,
 }: {
   target: SheetTarget | null;
   sshHost: string;
-  /** Needed to tell whether a step's own prerequisites are in place. */
-  plan: HostSetupPlan | null;
   /** Icon for the prerequisite being shown; agent types use their own. */
   icon: React.ReactNode;
   /** The running command's latest line for a step, if it is running. */
@@ -276,7 +255,6 @@ export function SetupDetailSheet({
   hostBusy: boolean;
   onSkip: (stepId: string) => void;
   skippingStepId: string | null;
-  onAuthenticate: () => void;
 }) {
   return (
     <Sheet open={target !== null} onOpenChange={(open) => !open && onClose()}>
@@ -305,13 +283,11 @@ export function SetupDetailSheet({
                       actions={
                         <StepActions
                           step={target.step}
-                          plan={plan}
                           onInstall={() => onInstall(target.step.id)}
                           installing={installingStepId === target.step.id}
                           hostBusy={hostBusy}
                           onSkip={() => onSkip(target.step.id)}
                           skipping={skippingStepId === target.step.id}
-                          onAuthenticate={onAuthenticate}
                         />
                       }
                     />
@@ -321,14 +297,12 @@ export function SetupDetailSheet({
                 <AgentTypeDetail
                   row={target.row}
                   sshHost={sshHost}
-                  plan={plan}
                   activityFor={activityFor}
                   onInstall={onInstall}
                   installingStepId={installingStepId}
                   hostBusy={hostBusy}
                   onSkip={onSkip}
                   skippingStepId={skippingStepId}
-                  onAuthenticate={onAuthenticate}
                 />
               )}
             </div>
@@ -342,18 +316,15 @@ export function SetupDetailSheet({
 function AgentTypeDetail({
   row,
   sshHost,
-  plan,
   activityFor,
   onInstall,
   installingStepId,
   hostBusy,
   onSkip,
   skippingStepId,
-  onAuthenticate,
 }: {
   row: AgentTypeRow;
   sshHost: string;
-  plan: HostSetupPlan | null;
   activityFor: (stepId: string) => string | null;
   onInstall: (stepId: string) => void;
   installingStepId: string | null;
@@ -361,7 +332,6 @@ function AgentTypeDetail({
   hostBusy: boolean;
   onSkip: (stepId: string) => void;
   skippingStepId: string | null;
-  onAuthenticate: () => void;
 }) {
   const badge = agentTypeBadge(row);
   return (
@@ -381,13 +351,11 @@ function AgentTypeDetail({
           actions={
             <StepActions
               step={row.cli}
-              plan={plan}
               onInstall={() => onInstall(row.cli.id)}
               installing={installingStepId === row.cli.id}
               hostBusy={hostBusy}
               onSkip={() => onSkip(row.cli.id)}
               skipping={skippingStepId === row.cli.id}
-              onAuthenticate={onAuthenticate}
             />
           }
         />
@@ -409,13 +377,11 @@ function AgentTypeDetail({
               </div>
               <StepActions
                 step={row.plugin}
-                plan={plan}
                 onInstall={() => onInstall(row.plugin!.id)}
                 installing={installingStepId === row.plugin.id}
                 hostBusy={hostBusy}
                 onSkip={() => onSkip(row.plugin!.id)}
                 skipping={skippingStepId === row.plugin.id}
-                onAuthenticate={onAuthenticate}
               />
             </div>
             {row.plugin.state === 'failed' && row.plugin.error && (

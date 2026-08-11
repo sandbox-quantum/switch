@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { SwitchEventStream } from '@sandbox-quantum/switch-agent-runtime';
+import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import {

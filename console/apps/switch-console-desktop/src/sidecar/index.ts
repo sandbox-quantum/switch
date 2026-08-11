@@ -14,7 +14,6 @@ import { createTmuxRun } from '@main/core/switch-rooms/tmux-injection-sink';
 import { type AgentLaunchSpec } from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
 import { NotificationWatcher, type WatcherLogger } from './notification-watcher';
-import { npmRegistryAuthEnv } from './npm-registry-auth';
 import { InProcessSessionSpawner } from './session-spawner';
 import { createSidecarLogger, requireEnv } from './sidecar-logger';
 import {
@@ -287,10 +286,6 @@ async function main(): Promise<void> {
       SWITCH_API_ENDPOINT: creds.apiEndpoint,
       SWITCH_API_TOKEN: creds.token,
       SWITCH_AGENT_ID: creds.agentId,
-      // Without this a spawned session's `npx` asks npmjs.com for a package
-      // that only exists on GitHub Packages, and reports a 404 that says
-      // nothing about registries or credentials.
-      ...(await npmRegistryAuthEnv(repoDir, log)),
     },
     isPaneLive,
     log,

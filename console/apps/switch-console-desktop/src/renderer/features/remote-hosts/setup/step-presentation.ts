@@ -51,13 +51,11 @@ export function canSkip(step: HostSetupStep): boolean {
 /**
  * Whether Switch Console can attempt an install for this step.
  *
- * The GitHub login is excluded because it is an interactive device flow, not an
- * install. Whether an install command actually exists for this host's platform
- * is known only in the main process — if it does not, the attempt reports that
- * plainly rather than the button being silently absent.
+ * Whether an install command actually exists for this host's platform is known
+ * only in the main process — if it does not, the attempt reports that plainly
+ * rather than the button being silently absent.
  */
 export function canInstall(step: HostSetupStep): boolean {
-  if (step.kind === 'gh-auth') return false;
   if (
     step.state === 'satisfied' ||
     step.state === 'checking' ||
@@ -74,47 +72,20 @@ export function canInstall(step: HostSetupStep): boolean {
  *
  * Gated on `updateAvailable` alone, which is only ever true when a newer
  * version is *known* to exist — never inferred from a version we could not
- * read. A login has no version to replace, and something not yet installed
- * needs Install rather than Update.
+ * read. Something not yet installed needs Install rather than Update.
  */
 export function canUpdate(step: HostSetupStep): boolean {
-  if (step.kind === 'gh-auth') return false;
   if (step.state !== 'satisfied') return false;
   return step.updateAvailable;
 }
 
-/**
- * Whether everything this step declares a dependency on has been satisfied.
- *
- * The GitHub login is the case that matters: its device flow runs `gh` on the
- * host, so offering it before `gh` exists sends the user into a failure that
- * says nothing about the real problem.
- */
+/** Whether everything this step declares a dependency on has been satisfied. */
 export function dependenciesMet(step: HostSetupStep, plan: HostSetupPlan | null): boolean {
   if (step.dependsOn.length === 0) return true;
   if (!plan) return false;
   return step.dependsOn.every(
     (id) => plan.steps.find((candidate) => candidate.id === id)?.state === 'satisfied'
   );
-}
-
-/**
- * Whether to offer the GitHub sign-in for this step.
- *
- * Only once `gh` itself is installed: the device flow runs `gh` on the host, so
- * offering it earlier sends the user into a failure that says nothing about the
- * real problem.
- */
-export function canSignIn(step: HostSetupStep, plan: HostSetupPlan | null): boolean {
-  if (step.kind !== 'gh-auth') return false;
-  // Same in-flight exclusion `canInstall` makes. A check moves the step through
-  // `checking` on its way back to a verdict, and "not yet satisfied" during
-  // that window is not the same fact as "signed out" — without this, re-checking
-  // a working login flashes a Sign in button at someone already signed in.
-  if (step.state === 'satisfied' || step.state === 'checking' || step.state === 'installing') {
-    return false;
-  }
-  return dependenciesMet(step, plan);
 }
 
 /**
@@ -131,15 +102,6 @@ export function canSignIn(step: HostSetupStep, plan: HostSetupPlan | null): bool
  */
 export function canOfferAction(hostBusy: boolean, isInstallingThisRow: boolean): boolean {
   return !hostBusy || isInstallingThisRow;
-}
-
-/**
- * A login that exists but lacks a scope is not signed out, and telling someone
- * already signed in to "sign in" reads as wrong advice — even though re-running
- * the flow is in fact the fix.
- */
-export function signInLabel(step: HostSetupStep): string {
-  return step.error?.includes('read:packages') ? 'Re-authenticate' : 'Sign in';
 }
 
 /**

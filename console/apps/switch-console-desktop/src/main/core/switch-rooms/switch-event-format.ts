@@ -2,7 +2,7 @@
  * Formatting agent-bridge events for injection into a session's terminal.
  *
  * The event *shapes* are protocol, and live in
- * `@sandbox-quantum/switch-agent-runtime`; they are re-exported here so the
+ * `@sandboxaq/switch-agent-runtime`; they are re-exported here so the
  * many call sites that import both from this module keep working. What is
  * genuinely Switch Console's is below: turning an event into the line a human (and
  * an agent reading its own terminal) sees.
@@ -15,14 +15,14 @@ export type {
   MessagePayload,
   RoomJoinPayload,
   TaskPayload,
-} from '@sandbox-quantum/switch-agent-runtime';
+} from '@sandboxaq/switch-agent-runtime';
 import type {
   AgentBridgeEvent,
   CommandPayload,
   MessagePayload,
   RoomJoinPayload,
   TaskPayload,
-} from '@sandbox-quantum/switch-agent-runtime';
+} from '@sandboxaq/switch-agent-runtime';
 
 /**
  * Format an agent-bridge event as a self-contained line to inject into the

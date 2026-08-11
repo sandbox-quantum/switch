@@ -1,9 +1,8 @@
 # Installing Switch Console
 
 Switch Console is distributed as a desktop app through **GitHub Releases on this
-repository** (`sandbox-quantum/switch`). The repo is private, so the release
-downloads are automatically limited to people with repo-read access — there is
-no separate sign-up or allowlist. No need to build from source.
+repository** (`sandbox-quantum/switch`). The repo is public, so the downloads
+need no account, token or sign-up. No need to build from source.
 
 > Builds are currently **macOS arm64** (Apple Silicon) and **Linux x64**.
 > Windows is not built yet.
@@ -12,58 +11,41 @@ no separate sign-up or allowlist. No need to build from source.
 
 ### Option A — browser (simplest)
 
-1. Make sure you're signed in to GitHub with read access to
-   `sandbox-quantum/switch`.
-2. Open the repo's **[Releases](https://github.com/sandbox-quantum/switch/releases)**
+1. Open the repo's **[Releases](https://github.com/sandbox-quantum/switch/releases)**
    page.
-3. Find the latest release titled **`Switch Console <version>`** (tag
+2. Find the latest release titled **`Switch Console <version>`** (tag
    `switch-console-v<version>`).
-4. Under **Assets**, download the file for your platform — `.dmg` on macOS, or
+3. Under **Assets**, download the file for your platform — `.dmg` on macOS, or
    one of `.AppImage` / `.deb` / `.rpm` on Linux.
-
-If you don't have repo access the assets return a 404 — ask in the Switch
-Workforce hub to be added as a repo reader.
 
 ### Option B — command line
 
-```bash
-# Latest Switch Console release (requires `gh auth login` with repo access):
-gh release list --repo sandbox-quantum/switch | grep switch-console-v
+Release assets are public, so a plain `curl` works — no token, no `gh`:
 
-# Download the installer from a specific release (macOS):
+```bash
+# Download an installer from a specific release (macOS):
+curl -fLO https://github.com/sandbox-quantum/switch/releases/download/switch-console-v<version>/switch-console-arm64.dmg
+
+# Linux — pick the format your distro uses:
+curl -fLO https://github.com/sandbox-quantum/switch/releases/download/switch-console-v<version>/switch-console-x86_64.AppImage
+```
+
+With the [`gh` CLI](https://cli.github.com), if you prefer it:
+
+```bash
+gh release list --repo sandbox-quantum/switch | grep switch-console-v
 gh release download switch-console-v<version> \
   --repo sandbox-quantum/switch \
   --pattern '*.dmg'
-
-# Linux — pick the format your distro uses:
-gh release download switch-console-v<version> \
-  --repo sandbox-quantum/switch \
-  --pattern '*.AppImage'   # or '*.deb' / '*.rpm'
 ```
-
-> A plain `curl` of the asset URL will **not** work — private-repo release
-> assets require authentication (a browser session or a `gh`/GitHub token).
 
 ## Install (macOS)
 
 1. Open the downloaded `.dmg`.
 2. Drag **Switch Console** into your **Applications** folder.
 
-### First launch — one-time Gatekeeper bypass
-
-These builds are **unsigned** (no Apple Developer certificate), so macOS
-Gatekeeper blocks the first launch. Clear it once, either way:
-
-- **Right-click → Open**: right-click (or Control-click) Switch Console in
-  Applications, choose **Open**, then confirm **Open** in the dialog. macOS
-  remembers the choice for future launches.
-- **Or via Terminal**:
-
-  ```bash
-  xattr -dr com.apple.quarantine "/Applications/Switch Console.app"
-  ```
-
-After that, launch Switch Console normally.
+Tagged macOS releases are signed and notarized with SandboxAQ's Developer ID, so
+they open without a Gatekeeper bypass.
 
 ## Install (Linux x64)
 
@@ -90,23 +72,15 @@ Linux builds are **unsigned**. Pick the format your distro uses:
 
 > The app does not yet set a `desktopName`, so desktop environments may not
 > associate its windows with the installed `.desktop` entry (the icon can appear
-> as a duplicate or generic entry in the taskbar). Tracked under CHOO-1905.
+> as a duplicate or generic entry in the taskbar).
 
 ## Updating
 
-Switch Console checks this repo's Releases for new versions in-app. Because the repo
-is private, the updater authenticates using the **GitHub CLI token you already
-have** — no extra login inside the app:
+Switch Console checks this repo's Releases for new versions in-app and offers the
+update when one is available — no sign-in of any kind. Settings checks
+automatically; you can also recheck manually.
 
-1. Make sure the [`gh` CLI](https://cli.github.com) is installed and you've run
-   `gh auth login` once.
-2. Switch Console reads your token via `gh auth token` and offers the update when
-   one is available (Settings → checks automatically; you can also recheck
-   manually).
-
-If `gh` isn't installed or you're not logged in, the app shows
-"Sign in to GitHub to enable updates" and stays on the current version — you can
-always grab a newer build manually from the
+You can always grab a newer build manually from the
 [Releases page](https://github.com/sandbox-quantum/switch/releases) and
 re-install (drag over the old app).
 

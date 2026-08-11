@@ -7,33 +7,18 @@
  * for detail — so a host reads like the rest of the product.
  */
 
-import {
-  GitBranch,
-  Github,
-  KeyRound,
-  Package,
-  Puzzle,
-  RefreshCw,
-  Server,
-  SquareTerminal,
-} from 'lucide-react';
+import { GitBranch, Package, Puzzle, RefreshCw, Server, SquareTerminal } from 'lucide-react';
 import { Loader2 } from 'lucide-react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { Button } from '@renderer/lib/ui/button';
 import { Label } from '@renderer/lib/ui/label';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
-import {
-  isStepInFlight,
-  type HostSetupPlan,
-  type HostSetupStep,
-} from '@shared/core/remote-hosts/setup';
+import { isStepInFlight, type HostSetupStep } from '@shared/core/remote-hosts/setup';
 import {
   canInstall,
   canOfferAction,
-  canSignIn,
   canUpdate,
-  signInLabel,
   stepBadge,
   versionSubtitle,
   type AgentTypeRow,
@@ -45,11 +30,10 @@ const PREREQUISITE_ICON: Record<string, React.ComponentType<{ className?: string
   git: GitBranch,
   tmux: SquareTerminal,
   node: Package,
-  gh: Github,
 };
 
 export function PrerequisiteIcon({ step, size = 16 }: { step: HostSetupStep; size?: 16 | 24 }) {
-  const Icon = step.kind === 'gh-auth' ? KeyRound : (PREREQUISITE_ICON[step.id] ?? Server);
+  const Icon = PREREQUISITE_ICON[step.id] ?? Server;
   return <Icon className={cn('text-foreground-muted', size === 24 ? 'size-6' : 'size-4')} />;
 }
 
@@ -226,23 +210,18 @@ function UpdateAction({
 
 export function PrerequisiteRow({
   step,
-  plan,
   isCurrent,
   installing,
   updating,
   rechecking,
   hostBusy,
   activity,
-  authenticating,
   onInstall,
   onUpdate,
   onRecheck,
-  onAuthenticate,
   onOpen,
 }: {
   step: HostSetupStep;
-  /** Needed to tell whether this step's own prerequisites are in place. */
-  plan: HostSetupPlan | null;
   isCurrent: boolean;
   installing: boolean;
   /** True while this row's update is the operation in flight. */
@@ -252,11 +231,9 @@ export function PrerequisiteRow({
   hostBusy: boolean;
   activity: string | null;
   /** True while the sign-in terminal for this step is already open. */
-  authenticating: boolean;
   onInstall: () => void;
   onUpdate: () => void;
   onRecheck: () => void;
-  onAuthenticate: () => void;
   onOpen: () => void;
 }) {
   return (
@@ -269,29 +246,12 @@ export function PrerequisiteRow({
       highlighted={isCurrent}
       action={
         <>
-          {/*
-            Signing in is this row's install: it is the one action that makes the
-            step satisfied, so it belongs beside it rather than one click away
-            inside the detail sheet.
-          */}
-          {canOfferAction(hostBusy, installing || updating) &&
-            (canSignIn(step, plan) ? (
-              <Button
-                size="xs"
-                disabled={authenticating}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onAuthenticate();
-                }}
-              >
-                {signInLabel(step)}
-              </Button>
-            ) : (
-              <>
-                <UpdateAction step={step} updating={updating} onUpdate={onUpdate} />
-                <InstallAction step={step} installing={installing} onInstall={onInstall} />
-              </>
-            ))}
+          {canOfferAction(hostBusy, installing || updating) && (
+            <>
+              <UpdateAction step={step} updating={updating} onUpdate={onUpdate} />
+              <InstallAction step={step} installing={installing} onInstall={onInstall} />
+            </>
+          )}
           {/* Last, so the primary action keeps the same place whether or not
               there is one to take. */}
           <RecheckAction

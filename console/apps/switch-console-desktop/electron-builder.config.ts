@@ -71,16 +71,14 @@ const config: Configuration = {
   ],
   directories: { output: 'release' },
   artifactName: `${ARTIFACT_PREFIX}-\${arch}.\${ext}`,
-  // Switch Console is distributed via GitHub Releases on the private switch repo.
-  // The app reads the auth-gated feed using the user's `gh` CLI token (see
-  // src/main/core/updates). This is the one place the release identity diverges
-  // from Switch Console (the app id / artifact names stay on Switch Console — see AGENTS.md).
+  // Switch Console is distributed via GitHub Releases on the switch repo. This is
+  // the one place the release identity diverges from Switch Console (the app id /
+  // artifact names stay on Switch Console — see AGENTS.md).
   publish: [
     {
       provider: 'github',
       owner: RELEASE_REPO_OWNER,
       repo: RELEASE_REPO_NAME,
-      private: true,
       releaseType: 'release',
     },
   ],

@@ -22,7 +22,6 @@ import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-s
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
-import { remoteNpmRegistryAuthEnv } from '@main/core/switch-rooms/npm-registry-auth';
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
@@ -763,13 +762,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
         );
       }
 
-      // Skipped on the re-attach path above: the pane already has its
-      // environment and tmux applies `-e` only when it creates a session, so
-      // recomputing this would cost two round trips and change nothing.
-      const npmAuthEnv = reattaching
-        ? {}
-        : await remoteNpmRegistryAuthEnv(this.ctx, this.sessionPath);
-
       const [profile, colorEnv] = await Promise.all([
         this.proxy.getRemoteShellProfile(),
         getTerminalColorEnv(),
@@ -782,7 +774,6 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
           ...colorEnv,
           ...this.sessionEnvVars,
           ...hookEnv,
-          ...npmAuthEnv,
           ...identityVars,
           ...switchEnv,
         },

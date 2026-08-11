@@ -8,8 +8,6 @@
  */
 
 import type { DependencyCheckOutcome } from '@shared/core/remote-hosts/setup';
-import type { GhAuthStatus } from '../gh-auth';
-import type { StepCheckResult } from './host-setup-runner';
 
 /**
  * Translate a probed dependency into an observation.
@@ -131,20 +129,4 @@ export function describeInstallFailure(
   }
 
   return message;
-}
-
-/**
- * Translate a probed GitHub login into an observation.
- *
- * Being logged in is not the same as being usable: without `read:packages`
- * every session this host starts fetches its MCP runtime from GitHub Packages
- * and gets a 403 several layers below anything that mentions `gh` (CHOO-1873).
- * Reporting that login as satisfied is the stale-green bug in another coat, so
- * the step stays outstanding and carries the reason.
- */
-export function outcomeForGhAuth(status: GhAuthStatus): StepCheckResult {
-  if (status.authenticated && status.canReadPackages) {
-    return { outcome: 'satisfied', version: status.account };
-  }
-  return { outcome: 'missing', error: status.detail ?? undefined };
 }

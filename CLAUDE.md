@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## This repository is public
+
+Everything you write here is world-readable, permanently, including in git
+history — a later commit cannot take it back. Keep internal detail out of it:
+
+- **No credentials or tokens**, not even expired or "test" ones, and not in
+  fixtures. A secret committed here is a secret to rotate, not to delete.
+- **No internal infrastructure**: hostnames, IPs, cluster or account names,
+  bucket names, ARNs, internal URLs. Test fixtures use obvious placeholders.
+- **No personal data**: individual email addresses, Slack ids, employee names.
+  Prefer a role address to a person's.
+- **Keep internal tooling in `internal/`**, which is untracked and stays that
+  way. Do not reference internal-only systems from tracked files.
+- **Ticket keys** (`CHOO-…`) are fine in source comments and design notes as
+  traceability, but write so the comment stands on its own without the ticket —
+  a reader outside the company cannot open it. Keep them out of user-facing
+  docs and the changelog.
+
 ## Project Overview
 
 Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost).
@@ -82,7 +100,7 @@ each ships its own copy of the Switch room-workflow skill at
 
 - `connectors/claude-code-plugin/` — manifest `.claude-plugin/plugin.json`.
   Ships the skill plus an MCP config (`.mcp.json`) and hooks. It contains **no
-  runtime code**: the MCP server is `@sandbox-quantum/switch-agent-runtime`,
+  runtime code**: the MCP server is `@sandboxaq/switch-agent-runtime`,
   fetched with `npx` and built from `console/packages/switch-agent-runtime/`.
   Switch Console imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.

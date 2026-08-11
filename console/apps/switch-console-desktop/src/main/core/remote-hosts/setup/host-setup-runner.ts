@@ -430,16 +430,6 @@ function findStep(plan: HostSetupPlan, stepId: string): HostSetupStep {
 
 /** Why a step cannot be advanced automatically — stated in terms of what we saw. */
 function describeUnactionable(step: HostSetupStep): string {
-  // Not a failure of ours to fix: signing in to GitHub is a device flow the
-  // user drives in a terminal. Say what they need to do rather than reporting
-  // it as a missing install command. A login that exists but lacks a scope
-  // says so first — "sign in" reads as wrong advice to someone already signed
-  // in, and re-running the flow is nonetheless the fix.
-  if (step.kind === 'gh-auth') {
-    const prefix = step.error ? `${step.error} ` : '';
-    return `${prefix}Signing in to GitHub needs a one-time code you enter yourself. Use Sign in to start it.`;
-  }
-
   switch (step.outcome) {
     case 'not-running':
       return `${step.name} is installed but not running. Start it on the host, then retry.`;

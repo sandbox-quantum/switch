@@ -12,17 +12,11 @@ import {
   getRemoteDependencyManager,
   remoteDependencyDescriptor,
 } from '@main/core/dependencies/remote-dependency-manager';
-import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
-import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
-import { openSsh2Pty } from '@main/core/pty/ssh2-pty';
-import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { buildRemoteShellCommand } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import type { SwitchAgentConfig } from '@shared/switch-agents';
-import { probeGhAuthStatus, type GhAuthStatus } from './gh-auth';
 import { listSshConfigHosts } from './list-ssh-config-hosts';
 import { hostReachabilityService } from './production-host-reachability';
 import { deletePersistedReachability } from './reachability-store';
@@ -39,8 +33,6 @@ import {
 } from './setup/host-setup-service';
 import { listRemoteHosts, removeRemoteHost, upsertRemoteHost, type RemoteHost } from './store';
 
-export type { GhAuthStatus };
-
 /** A single dependency's status on a remote host, enriched for the UI. */
 export type RemoteDependencyView = {
   id: string;
@@ -53,12 +45,6 @@ export type RemoteDependencyView = {
   docUrl?: string;
   /** True when Switch Console has an install command for this host's platform. */
   canInstall: boolean;
-  /**
-   * GitHub CLI auth status. Present only on the `gh` dependency once its binary
-   * is available — `gh` being installed is not enough to use it, it must also be
-   * authenticated and hold the `read:packages` scope.
-   */
-  ghAuth?: GhAuthStatus;
 };
 
 export type TestConnectionResult = { ok: true } | { ok: false; message: string };
@@ -93,64 +79,7 @@ async function probeDeps(sshHost: string): Promise<RemoteDependencyView[]> {
     };
   });
 
-  // gh being installed is not enough — it must also be authenticated. Only probe
-  // auth when the binary is present (probing gh auth without gh would just fail).
-  const gh = views.find((v) => v.id === 'gh');
-  if (gh && gh.status === 'available') {
-    gh.ghAuth = await probeGhAuthStatus(sshHost);
-  }
-
   return views;
-}
-
-/**
- * Start an interactive `gh auth login` device-flow session on a remote host over
- * SSH. Runs in a PTY registered with the shared PtySessionRegistry so the renderer
- * can attach a live terminal (subscribe to output, send keystrokes) via the pty
- * RPC/events. gh prints a one-time code and a verification URL; the user opens the
- * URL in their own browser and enters the code. Returns the PTY session id.
- *
- * `read:packages` is requested explicitly because `gh auth login` does not ask
- * for it — its defaults are `gist`, `read:org`, `repo` and `workflow`. Sessions
- * on this host fetch their MCP runtime from GitHub Packages, and without that
- * scope the registry refuses with
- * `403 … token provided does not match expected scopes`, several layers below
- * anything that mentions `gh`. Asking for it during the one interactive login
- * the user already performs is the only point where it costs nothing; every
- * other route ends in `gh auth refresh` on a box they thought was set up.
- */
-async function startGhAuth(sshHost: string): Promise<{ sessionId: string }> {
-  const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
-  const profile = await proxy.getRemoteShellProfile();
-  // Login when logged out, refresh when already logged in. `gh auth login` on
-  // an authenticated host stops to ask whether you meant to re-authenticate,
-  // which is a confusing thing to meet when all you needed was a scope; `gh
-  // auth refresh` adds it without disturbing the existing login. Both are the
-  // same device-code flow in this PTY, so the user sees no difference.
-  const remoteCommand = buildRemoteShellCommand(
-    profile,
-    'if gh auth status >/dev/null 2>&1; then ' +
-      'gh auth refresh --hostname github.com --scopes read:packages; ' +
-      'else ' +
-      'gh auth login --hostname github.com --git-protocol https --web --scopes read:packages; ' +
-      'fi'
-  );
-  const sessionId = `gh-auth:${crypto.randomUUID()}`;
-
-  const opened = await openSsh2Pty(proxy, {
-    id: sessionId,
-    command: remoteCommand,
-    cols: 80,
-    rows: 24,
-  });
-  if (!opened.success) {
-    throw new Error(`Could not start gh auth on ${sshHost}: ${opened.error.message}`);
-  }
-
-  ptySessionRegistry.register(sessionId, opened.data, {
-    metadata: { title: `gh auth login (${sshHost})`, isRemote: true },
-  });
-  return { sessionId };
 }
 
 export const remoteHostsController = createRPCController({
@@ -245,10 +174,6 @@ export const remoteHostsController = createRPCController({
     detectSwitchAgentRemote(params.sshHost, params.remoteRepoDir),
 
   probeDeps: (sshHost: string): Promise<RemoteDependencyView[]> => probeDeps(sshHost),
-
-  /** Begin an interactive `gh auth login` PTY session on the host; returns its pty session id. */
-  startGhAuth: (params: { sshHost: string }): Promise<{ sessionId: string }> =>
-    startGhAuth(params.sshHost),
 
   installDep: async (params: {
     sshHost: string;

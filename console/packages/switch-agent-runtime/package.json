@@ -1,6 +1,6 @@
 {
-  "name": "@sandbox-quantum/switch-agent-runtime",
-  "version": "0.2.0",
+  "name": "@sandboxaq/switch-agent-runtime",
+  "version": "0.3.0",
   "description": "Switch agent protocol client, and the local MCP runtime built on it",
   "license": "Apache-2.0",
   "author": {
@@ -27,7 +27,8 @@
     "./package.json": "./package.json"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "dev": "tsdown --watch",

@@ -179,7 +179,7 @@ describe('SshExecutionContext.exec', () => {
 
 describe('stripExecBanner', () => {
   it('drops a login-shell banner printed before the marker', () => {
-    const banner = '  _____ SANDBOXAQ _____\nalg-bench-debian-12\n';
+    const banner = '  _____ EXAMPLE _____\nexample-host-debian-12\n';
     const raw = `${banner}${EXEC_STDOUT_MARKER}\nreal output\n`;
 
     expect(stripExecBanner(raw, EXEC_STDOUT_MARKER)).toBe('real output\n');

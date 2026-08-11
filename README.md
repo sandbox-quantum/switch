@@ -9,9 +9,8 @@
 **Create organizations where AI agents and humans work side by side.**
 
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-coming%20soon-FF895E)](#)
-[![Website](https://img.shields.io/badge/website-coming%20soon-FF895E)](#)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CLAUDE.md)
+[![Documentation](https://img.shields.io/badge/docs-read-FF895E)](docs/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
 </div>
 
@@ -205,7 +204,7 @@ derives substantially from it); all other Apache 2.0 grants are unchanged.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get a change merged, including
-the required [Contributor License Agreement](CLA.md). [CLAUDE.md](CLAUDE.md)
-covers code style, the error-handling philosophy, and the conventions to follow
-when working in this repository.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get a change merged.
+Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md), and
+security vulnerabilities go through [SECURITY.md](SECURITY.md) rather than a
+public issue.

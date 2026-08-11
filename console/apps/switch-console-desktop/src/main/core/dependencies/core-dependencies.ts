@@ -26,10 +26,10 @@ function aptInstall(packages: string): string {
 }
 
 /**
- * Core host tools a remote host needs to run Switch Console agent sessions: the same
- * binaries the remote-session preflight verifies (tmux, node, git) plus gh, which
- * agents commonly rely on. Unlike agent dependencies (built from the plugin
- * registry), these are static — the plugin system has no notion of host tooling.
+ * Core host tools a remote host needs to run Switch Console agent sessions: the
+ * same binaries the remote-session preflight verifies (tmux, node, git). Unlike
+ * agent dependencies (built from the plugin registry), these are static — the
+ * plugin system has no notion of host tooling.
  *
  * These are surfaced only on the remote-host management page; the local
  * dependency manager continues to track agent CLIs only. `updates`/`uninstall`
@@ -97,32 +97,6 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
             'set -e; A=$(uname -m); case "$A" in x86_64) A=x64;; aarch64|arm64) A=arm64;; *) echo "unsupported arch $A" >&2; exit 1;; esac; F=$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -oE "node-v22[0-9.]*-linux-$A\\.tar\\.xz" | head -1); curl -fsSL "https://nodejs.org/dist/latest-v22.x/$F" | sudo tar -xJ -C /usr/local --strip-components=1',
           label: 'Official tarball',
           recommended: true,
-        },
-      ],
-    },
-  },
-  {
-    id: 'gh',
-    name: 'GitHub CLI',
-    category: 'core',
-    commands: ['gh'],
-    versionArgs: ['--version'],
-    docUrl: 'https://github.com/cli/cli#installation',
-    installCommands: {
-      macos: [{ method: 'homebrew', command: 'brew install gh', recommended: true }],
-      linux: [
-        {
-          method: 'apt',
-          command:
-            'sudo mkdir -p -m 755 /etc/apt/keyrings && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && ' +
-            aptInstall('gh'),
-          label: 'apt',
-          recommended: true,
-        },
-        {
-          method: 'homebrew',
-          command: 'brew install gh',
-          label: 'Homebrew',
         },
       ],
     },

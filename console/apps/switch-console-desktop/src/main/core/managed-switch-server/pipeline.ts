@@ -116,9 +116,6 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   const downgrade = await refuseDowngrade(host);
   if (downgrade) return downgrade;
 
-  onMessage('Authenticating to image registry…');
-  await host.ensureGhcrLogin();
-
   onMessage('Preparing configuration…');
   await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
   const secrets = await loadOrCreateSecrets(host);

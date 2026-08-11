@@ -30,7 +30,6 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
-import { GhAuthPanel } from '../gh-auth-panel';
 import { hostReachabilityStore } from '../host-reachability-store';
 import { hostSetupStore } from '../host-setup-store';
 import { HostUnreachablePanel } from '../host-unreachable-panel';
@@ -75,7 +74,6 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
   const recheckStep = useRecheckSetupStep(sshHost);
   const updateStep = useUpdateSetupStep(sshHost);
 
-  const [authenticatingGh, setAuthenticatingGh] = useState(false);
   const [sheetTarget, setSheetTarget] = useState<SheetTarget | null>(null);
   const reachability = hostReachabilityStore.get(sshHost);
   const blocked = isHostBlocked(reachability);
@@ -228,38 +226,17 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                       <div key={step.id} className="w-full py-0.5">
                         <PrerequisiteRow
                           step={step}
-                          plan={plan.data ?? null}
                           isCurrent={step.id === currentStepId}
                           installing={installingStepId === step.id}
                           updating={updatingStepId === step.id}
                           rechecking={recheckingStepId === step.id}
                           hostBusy={busy}
                           activity={activityFor(step.id)}
-                          authenticating={authenticatingGh && step.kind === 'gh-auth'}
                           onInstall={() => installStep.mutate(step.id)}
                           onUpdate={() => updateStep.mutate(step.id)}
                           onRecheck={() => recheckStep.mutate(step.id)}
-                          onAuthenticate={() => setAuthenticatingGh(true)}
                           onOpen={() => setSheetTarget({ kind: 'prerequisite', step })}
                         />
-                        {/*
-                        Opens against the row it belongs to rather than at the
-                        foot of the page: the terminal is the continuation of
-                        that one row's Sign in, and appending it below
-                        everything else meant scrolling away from the thing you
-                        just clicked to find it.
-                      */}
-                        {authenticatingGh && step.kind === 'gh-auth' && (
-                          <div className="px-3 pt-2 pb-1">
-                            <GhAuthPanel
-                              sshHost={sshHost}
-                              onDone={() => {
-                                setAuthenticatingGh(false);
-                                recheck.mutate();
-                              }}
-                            />
-                          </div>
-                        )}
                       </div>
                     ))}
                   </section>
@@ -293,7 +270,6 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
             <SetupDetailSheet
               target={liveTarget}
               sshHost={sshHost}
-              plan={plan.data ?? null}
               icon={
                 liveTarget?.kind === 'prerequisite' ? (
                   <PrerequisiteIcon step={liveTarget.step} size={24} />
@@ -306,10 +282,6 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
               hostBusy={busy}
               onSkip={(stepId) => skip.mutate(stepId)}
               skippingStepId={skip.isPending ? (skip.variables ?? null) : null}
-              onAuthenticate={() => {
-                setSheetTarget(null);
-                setAuthenticatingGh(true);
-              }}
             />
           </>
         )}

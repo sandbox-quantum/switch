@@ -25,22 +25,15 @@ import {
   type HostSetupPlan,
   type HostSetupStep,
 } from '@shared/core/remote-hosts/setup';
-import { probeGhAuthStatus } from '../gh-auth';
 import { hostReachabilityService } from '../production-host-reachability';
 import { HostSetupRunner, type StepCheckResult, type StepInstallResult } from './host-setup-runner';
 import { InstallProgressReader } from './install-progress';
-import {
-  agentPluginStepId,
-  buildSetupPlan,
-  GH_AUTH_STEP_ID,
-  reconcileInterruptedPlan,
-} from './plan-builder';
+import { agentPluginStepId, buildSetupPlan, reconcileInterruptedPlan } from './plan-builder';
 import { deleteSetupPlan, getSetupPlan, listSetupPlans, saveSetupPlan } from './setup-plan-store';
 import {
   condenseCommandOutput,
   describeInstallFailure,
   outcomeForDependency,
-  outcomeForGhAuth,
 } from './step-outcomes';
 
 /** Runners are per-host so two hosts can be set up at once, but a host only once. */
@@ -165,9 +158,6 @@ function runnerFor(sshHost: string, manager: HostDependencyManager): HostSetupRu
     publish: (plan) => events.emit(hostSetupPlanEventChannel, plan),
     requireReachable: (host) => hostReachabilityService.requireReachable(host),
     canInstall: (step) => {
-      // The gh device flow is interactive by nature — it needs a terminal the
-      // user types into, so it can never be part of an unattended run.
-      if (step.kind === 'gh-auth') return false;
       if (step.kind === 'agent-plugin') return true;
       return manager.getInstallOptions(step.id).length > 0;
     },
@@ -193,10 +183,6 @@ export async function checkStep(
   manager: HostDependencyManager,
   step: HostSetupStep
 ): Promise<StepCheckResult> {
-  if (step.kind === 'gh-auth') {
-    return outcomeForGhAuth(await probeGhAuthStatus(sshHost));
-  }
-
   if (step.kind === 'agent-plugin') {
     const service = await getRemoteSwitchSetupService(sshHost);
     const agentId = stepAgentId(step);
@@ -348,10 +334,6 @@ export async function updateStep(
   manager: HostDependencyManager,
   step: HostSetupStep
 ): Promise<StepInstallResult> {
-  if (step.kind === 'gh-auth') {
-    return { ok: false, error: 'A GitHub login is not something that can be updated.' };
-  }
-
   if (step.kind === 'agent-plugin') {
     const service = await getRemoteSwitchSetupService(sshHost);
     const result = await service.update(stepAgentId(step));
@@ -464,4 +446,4 @@ export async function discardSetupPlan(sshHost: string): Promise<void> {
   await deleteSetupPlan(sshHost);
 }
 
-export { agentPluginStepId, GH_AUTH_STEP_ID };
+export { agentPluginStepId };

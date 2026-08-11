@@ -10,18 +10,6 @@
  * Electron and the database) spawns from it.
  */
 
-import { NPM_TOKEN_VAR } from '@shared/core/npm-registry';
-
-/** npm package name of the local Switch MCP runtime. */
-export const SWITCH_AGENT_RUNTIME_PACKAGE = '@sandbox-quantum/switch-agent-runtime';
-
-/**
- * Exact version the runtime is pinned to. Must match the pin in
- * `connectors/claude-code-plugin/.mcp.json`; `switch-agent-runtime.test.ts`
- * fails if the two drift. Bump both together when the runtime is republished.
- */
-export const SWITCH_AGENT_RUNTIME_VERSION = '0.2.0';
-
 /**
  * The credentials switchdash injects into a session it launches. The runtime
  * takes all three together as its identity and asks no further questions —
@@ -44,8 +32,7 @@ export const SWITCH_RUNTIME_REQUIRED_ENV = [
 
 /**
  * Values the runtime uses when present and does without when absent — the
- * connection id and poll suppression it reads directly, plus the npm settings
- * `npx` needs to resolve the package from the private registry.
+ * connection id and poll suppression it reads directly.
  *
  * Kept apart from the required tier because the two hosts cannot treat them
  * alike. Codex forwards names, so an unset one is simply not passed, and the
@@ -58,8 +45,6 @@ export const SWITCH_RUNTIME_REQUIRED_ENV = [
 export const SWITCH_RUNTIME_OPTIONAL_ENV = [
   'SWITCH_CONNECTION_ID',
   'SWITCH_CHANNEL_DISABLE_POLL',
-  'npm_config_userconfig',
-  NPM_TOKEN_VAR,
 ] as const;
 
 /** Every variable a host must route to the runtime, required tier first. */

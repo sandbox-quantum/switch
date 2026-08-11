@@ -48,8 +48,7 @@ export const LOCAL_SERVER_NAME = 'Local Switch server';
  * web dashboard is available. */
 export const LOCAL_SERVER_PROFILES = ['collab', 'gateway'] as const;
 
-/** Registry the private release images live in until the public-repo flip
- * (CHOO-1260); used for the authenticated `docker login` before pulling. */
+/** Registry the release images are published to and pulled from. */
 export const GHCR_REGISTRY = 'ghcr.io';
 
 /** The gateway admin account the stack seeds (GATEWAY_ADMIN_EMAIL). Switch Console

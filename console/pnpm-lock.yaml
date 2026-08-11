@@ -19,7 +19,7 @@ importers:
       '@parcel/watcher':
         specifier: ^2.5.6
         version: 2.5.6
-      '@sandbox-quantum/switch-agent-runtime':
+      '@sandboxaq/switch-agent-runtime':
         specifier: workspace:*
         version: link:../../packages/switch-agent-runtime
       '@switch-console/core':

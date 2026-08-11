@@ -6,7 +6,6 @@ import { openExternalUrl } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { menuCheckForUpdatesChannel } from '@shared/events/appEvents';
 import {
-  updateAuthRequiredEvent,
   updateAvailableEvent,
   updateCheckingEvent,
   updateDownloadedEvent,
@@ -42,8 +41,7 @@ export type UpdateState =
   | { status: 'downloading'; progress?: DownloadProgress }
   | { status: 'downloaded' }
   | { status: 'installing' }
-  | { status: 'error'; message: string }
-  | { status: 'auth-required' };
+  | { status: 'error'; message: string };
 
 /** Statuses where main is mid-flight and a fresh check would interrupt it. */
 const IN_FLIGHT_STATUSES: ReadonlySet<UpdateState['status']> = new Set([
@@ -58,15 +56,7 @@ const IN_FLIGHT_STATUSES: ReadonlySet<UpdateState['status']> = new Set([
  * src/main/core/updates/update-service.ts.
  */
 type MainUpdateState = {
-  status:
-    | 'idle'
-    | 'checking'
-    | 'available'
-    | 'downloading'
-    | 'downloaded'
-    | 'installing'
-    | 'error'
-    | 'auth-required';
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
   currentVersion: string;
   availableVersion?: string;
   updateInfo?: { version: string; releaseDate?: string; releaseName?: string | null };
@@ -97,8 +87,6 @@ export function mainStateToRendererState(main: MainUpdateState): UpdateState {
       return { status: 'installing' };
     case 'error':
       return { status: 'error', message: main.error || 'The update could not be completed.' };
-    case 'auth-required':
-      return { status: 'auth-required' };
     default:
       return { status: 'idle' };
   }
@@ -222,12 +210,6 @@ export class UpdateStore {
       });
     });
 
-    events.on(updateAuthRequiredEvent, () => {
-      runInAction(() => {
-        this.state = { status: 'auth-required' };
-      });
-    });
-
     events.on(menuCheckForUpdatesChannel, () => {
       void this.check();
     });
@@ -278,11 +260,7 @@ export class UpdateStore {
         });
       } else if (res.result === null) {
         runInAction(() => {
-          // The main process emits update:auth-required when no gh token is
-          // available; don't clobber that with idle on the null check result.
-          if (this.state.status !== 'auth-required') {
-            this.state = { status: 'idle' };
-          }
+          this.state = { status: 'idle' };
         });
       }
     } catch {

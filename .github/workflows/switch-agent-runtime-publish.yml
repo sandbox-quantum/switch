@@ -1,8 +1,10 @@
-# Publish the shared agent runtime to GitHub Packages.
+# Publish the shared agent runtime to the public npm registry.
 #
 # The package is consumed two ways, and only one of them needs a registry:
 # Switch Console builds it from the workspace, so it never waits on a publish. The
-# Claude Code plugin runs it with `npx`, and that needs a version to exist.
+# connector plugins run it with `npx`, and that needs a version to exist — for
+# anyone, including people outside SandboxAQ, which is why this publishes to
+# npmjs.com rather than to a registry that demands a credential to read.
 #
 # Triggered by a tag, so a version can be published from a BRANCH — you should
 # not have to merge to main to test the thing you are testing. To cut one:
@@ -23,9 +25,17 @@
 # Publishing is idempotent: a tag for a version already on the registry reports
 # that and exits cleanly rather than failing.
 #
-# No secret is needed. GitHub Packages accepts the workflow's own GITHUB_TOKEN
-# with `packages: write`, so there is no PAT to create, rotate, or leak.
-# Consumers authenticate with `gh auth token` on the host instead.
+# No secret is needed, and none is stored. npm trusted publishing authenticates
+# this workflow by OIDC: GitHub mints a short-lived token asserting which
+# repository and workflow file is running, and npm checks that against the
+# trusted publisher registered for the package. There is no NPM_TOKEN to
+# create, rotate, or leak, and a token stolen from anywhere else cannot publish.
+#
+# That registration is manual, one-time, and must exist BEFORE this workflow
+# first runs. It names the repository, THIS FILE'S NAME, and the environment
+# below — all case-sensitive, none validated when saved, so renaming any of
+# them breaks publishing and the error arrives at the next release rather than
+# at the rename.
 name: Publish switch-agent-runtime
 
 on:
@@ -44,18 +54,28 @@ jobs:
     runs-on: ubuntu-latest
     # Publish only from a matching tag or from main. A workflow_dispatch from an
     # arbitrary branch would otherwise publish whatever that branch's
-    # package.json says into the real @sandbox-quantum namespace, bypassing the
+    # package.json says into the real @sandboxaq namespace, bypassing the
     # tag-vs-version guard below (which only runs on the tag path).
     if: ${{ startsWith(github.ref, 'refs/tags/switch-agent-runtime-v') || github.ref == 'refs/heads/main' }}
+    # Gates the publish on the `release` environment's protection rules, so a
+    # pushed tag queues a release for approval rather than shipping one.
+    #
+    # It is also half of the trusted publisher's identity: the environment is a
+    # claim in the OIDC token, so this name and the one registered on npm must
+    # match exactly. Changing it here without changing it there fails the
+    # publish, and only at the next release.
+    environment: release
     permissions:
       contents: read
-      packages: write
+      # Mints the OIDC token npm verifies. This replaces `packages: write`:
+      # nothing here can write to a registry with an ambient credential.
+      id-token: write
     defaults:
       run:
         working-directory: console
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         # Full history + tags so the version guard can resolve the tag pointing
         # at HEAD on a workflow_dispatch (where github.ref is a branch, not the tag).
         with:
@@ -63,28 +83,38 @@ jobs:
 
       # Pinned rather than read from packageManager: that field lives in
       # console/package.json, and the action looks at the repo root.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 10.28.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: console/pnpm-lock.yaml
-          registry-url: https://npm.pkg.github.com
-          scope: '@sandbox-quantum'
+          # Still required with OIDC: this is what writes the .npmrc that points
+          # npm at the public registry for the scope.
+          registry-url: https://registry.npmjs.org
+          scope: '@sandboxaq'
+
+      # Trusted publishing needs npm 11.5.1+; Node 22 ships an older one, and
+      # without this the publish fails with an authentication error that says
+      # nothing about the version.
+      #
+      # Held on 11.x rather than `@latest`: npm 12 requires Node ^22.22.2, so
+      # `@latest` couples this job to whatever patch `node-version: 22` resolves
+      # to today, and the next npm major would break it without a change here.
+      - run: npm install -g npm@^11.15.0
 
       - run: pnpm install --frozen-lockfile
 
       # Build from source rather than trusting a committed artifact — the whole
       # point of publishing is that there is no artifact in the repo to drift.
-      - run: pnpm --filter @sandbox-quantum/switch-agent-runtime run build
+      - run: pnpm --filter @sandboxaq/switch-agent-runtime run build
 
       - name: Publish if this version is new
         working-directory: console/packages/switch-agent-runtime
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -127,11 +157,20 @@ jobs:
             exit 0
           fi
 
+          # --access public: a scoped package defaults to private, which on this
+          # account is not merely unwanted but unpublishable. Harmless to repeat
+          # after the first publish sets it.
+          #
+          # --provenance: signed attestation of which workflow and commit built
+          # the tarball. It requires a PUBLIC repository — while this one is
+          # private the publish fails here, deliberately, rather than shipping a
+          # release that can never be given provenance retroactively.
+          #
           # A prerelease must not become what `@latest` resolves to.
           case "$version" in
-            *-*) npm publish --tag next ;;
-            *)   npm publish ;;
+            *-*) npm publish --access public --provenance --tag next ;;
+            *)   npm publish --access public --provenance ;;
           esac
           echo "Published $name@$version"
-          echo "Point the plugin at it: bump the pinned version in" \
-               "connectors/claude-code-plugin/.mcp.json and the plugin's own version."
+          echo "Point the sessions at it: bump the version in both connectors'" \
+               ".mcp.json — plus the plugin versions."

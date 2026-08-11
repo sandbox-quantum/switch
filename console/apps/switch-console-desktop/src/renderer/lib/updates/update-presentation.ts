@@ -169,20 +169,6 @@ export function presentUpdate(state: UpdateState, currentVersion: string): Updat
         progressPercent: null,
       };
 
-    case 'auth-required':
-      return {
-        tone: 'warning',
-        indicatorLabel: 'Sign in for updates',
-        indicatorIcon: 'alert',
-        actionable: true,
-        title: 'Sign in to GitHub for updates',
-        detail: 'Run `gh auth login` in a terminal, then check again.',
-        actionKind: 'check',
-        actionLabel: 'Check again',
-        busy: false,
-        progressPercent: null,
-      };
-
     default:
       return {
         tone: 'neutral',

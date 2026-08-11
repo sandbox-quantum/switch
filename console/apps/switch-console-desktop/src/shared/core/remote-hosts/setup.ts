@@ -79,7 +79,7 @@ export type HostSetupStepState =
   | 'skipped';
 
 /** What kind of thing a step manages, for rendering and for install routing. */
-export type HostSetupStepKind = 'core-dependency' | 'agent-cli' | 'agent-plugin' | 'gh-auth';
+export type HostSetupStepKind = 'core-dependency' | 'agent-cli' | 'agent-plugin';
 
 export type HostSetupStep = {
   /** Stable within a plan. Dependency id for deps; `<agentId>:plugin` for plugins. */
@@ -112,11 +112,7 @@ export type HostSetupStep = {
   error: string | null;
   /** Raw command output from a failed install — the detail users need. */
   output: string | null;
-  /**
-   * An optional step does not block the run or the host's usability. `gh` is
-   * the motivating case: it needs an interactive device-flow login that a user
-   * may reasonably defer without the host being unusable.
-   */
+  /** An optional step does not block the run or the host's usability. */
   optional: boolean;
   /** Steps that must be satisfied before this one is attempted. */
   dependsOn: string[];
@@ -189,7 +185,7 @@ export function agentPluginStepId(agentId: string): string {
  * perfectly well installed.
  */
 export function isHostLevelStep(step: HostSetupStep): boolean {
-  return step.kind === 'core-dependency' || step.kind === 'gh-auth';
+  return step.kind === 'core-dependency';
 }
 
 /** The agent type a step belongs to, or null when the step is host-level. */

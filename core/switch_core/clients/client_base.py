@@ -10,6 +10,7 @@ import markdown
 from nio import (
     AsyncClient,
     InviteMemberEvent,
+    JoinedRoomsError,
     LoginError,
     MatrixRoom,
     ReactionEvent,
@@ -119,19 +120,39 @@ class ClientBase[ConfigT: ClientConfig]:
             self._room_joined_events[room_id] = event
         return event
 
-    def _mark_joined(self, room_id: str) -> None:
-        self.room_join_times[room_id] = int(time.time() * 1000)
+    def _mark_joined(self, room_id: str, joined_at_ms: int) -> None:
+        self.room_join_times[room_id] = joined_at_ms
         self._joined_event(room_id).set()
 
+    async def _is_joined_on_server(self, room_id: str) -> bool:
+        resp = await self.client.joined_rooms()
+        if isinstance(resp, JoinedRoomsError):
+            logger.error(
+                "Failed to list joined rooms for %s: %s",
+                self.matrix_user_id,
+                resp.message,
+            )
+            return False
+        return room_id in resp.rooms
+
     async def wait_joined(self, room_id: str, timeout: float) -> bool:
-        """Block until this client's join to `room_id` has been observed (via
-        sync or an explicit join), up to `timeout` seconds. Returns True if
-        joined, False on timeout. Callers that need to *send* into a room they
-        have only just been invited to must await this first — a send issued
-        before the join lands is rejected by the homeserver, and any event that
-        does land before a member's join is filtered out by `_should_ignore`."""
+        """Block until this client is a member of `room_id`, up to `timeout`
+        seconds. Returns True if joined, False on timeout. Callers that need to
+        *send* into a room they have only just been invited to must await this
+        first — a send issued before the join lands is rejected by the
+        homeserver, and any event that does land before a member's join is
+        filtered out by `_should_ignore`.
+
+        A join observed through sync sets the event, but a join that predates
+        this process never replays: the client resumes from a stored
+        `next_batch` token, so an incremental sync carries no member event for a
+        room it joined in an earlier run, and re-inviting an existing member is
+        a no-op. The homeserver is therefore asked directly before waiting."""
         event = self._joined_event(room_id)
         if event.is_set():
+            return True
+        if await self._is_joined_on_server(room_id):
+            self._mark_joined(room_id, self._startup_ts)
             return True
         try:
             await asyncio.wait_for(event.wait(), timeout)
@@ -271,7 +292,7 @@ class ClientBase[ConfigT: ClientConfig]:
     ) -> None:
         if event.state_key == self.matrix_user_id and event.membership == "join":
             already_joined = room.room_id in self.room_join_times
-            self._mark_joined(room.room_id)
+            self._mark_joined(room.room_id, event.server_timestamp)
             if not already_joined and event.server_timestamp >= self._startup_ts:
                 try:
                     await self.on_self_join(room, event)
@@ -705,7 +726,7 @@ class ClientBase[ConfigT: ClientConfig]:
     async def join_room(self, room_id: str) -> None:
         resp = await self.client.join(room_id)
         if hasattr(resp, "room_id"):
-            self._mark_joined(room_id)
+            self._mark_joined(room_id, int(time.time() * 1000))
             logger.info("Client %s joined %s", self.matrix_user_id, room_id)
         else:
             logger.error(

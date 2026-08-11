@@ -66,15 +66,6 @@ vi.mock('@main/core/pty/ssh2-pty', () => ({ openSsh2Pty }));
 
 vi.mock('@main/core/pty/spawn-utils', () => ({ resolveSshCommand }));
 
-const remoteNpmRegistryAuthEnv = vi.hoisted(() =>
-  vi.fn(async () => ({
-    npm_config_userconfig: '/repo/.switchdash/npmrc',
-    SWITCHDASH_GITHUB_TOKEN: 'remote-tok',
-  }))
-);
-
-vi.mock('@main/core/switch-rooms/npm-registry-auth', () => ({ remoteNpmRegistryAuthEnv }));
-
 vi.mock('@main/core/pty/terminal-color-scheme', () => ({
   getTerminalColorEnv: vi.fn(async () => ({})),
 }));
@@ -253,7 +244,6 @@ describe('SshAgentRuntime', () => {
     vi.mocked(getPlugin).mockImplementation(defaultGetPlugin as never);
     resolveSshCommand.mockClear();
     deployAndLaunch.mockClear();
-    remoteNpmRegistryAuthEnv.mockClear();
     sidecarStop.mockClear();
     httpPostJsonOverChannel.mockClear();
     httpPostForJsonOverChannel.mockReset();
@@ -662,42 +652,6 @@ describe('SshAgentRuntime', () => {
     httpPostForJsonOverChannel.mockResolvedValue({} as never);
 
     await expect(sshProvider({ tmux: true }).start(session())).rejects.toThrow(/no connection id/);
-  });
-
-  // The runtime is fetched with `npx` from a private registry, so without this
-  // the remote session comes up with no MCP server and npm reports a 404 that
-  // names neither the registry nor the missing credential.
-  it('gives a freshly launched remote session its registry access', async () => {
-    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
-    mockSpawn(exitHandlers);
-
-    await sshProvider({ tmux: true }).start(session());
-
-    expect(remoteNpmRegistryAuthEnv).toHaveBeenCalledTimes(1);
-    const env = (resolveSshCommand.mock.calls[0] as unknown[])[2] as Record<string, string>;
-    expect(env.npm_config_userconfig).toBe('/repo/.switchdash/npmrc');
-    expect(env.SWITCHDASH_GITHUB_TOKEN).toBe('remote-tok');
-  });
-
-  // Re-attach is decided from whether this runtime has already opened the pane,
-  // not from the sidecar being up: with on-demand attachment the sidecar is
-  // running long before the first PTY, so reading it would make every first
-  // attach look like a re-attach and silently lose its registry config.
-  it('does not recompute registry access when re-attaching', async () => {
-    const exitHandlers: Array<Array<(info: PtyExitInfo) => void>> = [];
-    mockSpawn(exitHandlers);
-    const provider = sshProvider({ tmux: true });
-
-    await provider.start(session());
-    expect(remoteNpmRegistryAuthEnv).toHaveBeenCalledTimes(1);
-
-    for (const handler of exitHandlers[0] ?? []) handler({ exitCode: 1 });
-    await provider.attach();
-    expect(openSsh2Pty).toHaveBeenCalledTimes(2);
-
-    // The pane still has the environment it was created with; tmux applies
-    // `-e` only at creation, so recomputing would cost round trips for nothing.
-    expect(remoteNpmRegistryAuthEnv).toHaveBeenCalledTimes(1);
   });
 
   it('starts the hook-event relay against the sidecar endpoint when tmux is on', async () => {

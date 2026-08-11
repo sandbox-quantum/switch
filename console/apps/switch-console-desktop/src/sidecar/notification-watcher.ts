@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { SwitchEventStream } from '@sandbox-quantum/switch-agent-runtime';
+import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 
 // How often the auto_session gate is re-read, so toggling it takes effect

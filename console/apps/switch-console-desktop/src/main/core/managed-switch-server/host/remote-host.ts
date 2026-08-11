@@ -15,7 +15,6 @@ import type { LocalServerPorts } from '../free-port';
 import { remoteServerStateDir } from '../paths';
 import { PortForwarder } from './port-forward';
 import { pickRemoteFreePorts } from './remote-free-port';
-import { ensureRemoteGhcrLogin } from './remote-ghcr-auth';
 import { hostSlug, remoteSecretsKey } from './remote-identity';
 import type { ServerHost } from './types';
 
@@ -181,14 +180,6 @@ export class RemoteServerHost implements ServerHost {
       }
       return { available: false, reason: 'daemon-down', detail: message };
     }
-  }
-
-  ensureGhcrLogin(): Promise<void> {
-    return ensureRemoteGhcrLogin({
-      ctx: this.ctx,
-      writeFile: (relPath, content, mode) => this.writeFile(relPath, content, mode),
-      label: this.label,
-    });
   }
 
   pickFreePorts(): Promise<LocalServerPorts> {

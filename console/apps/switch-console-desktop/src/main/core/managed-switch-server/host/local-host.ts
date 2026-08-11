@@ -7,7 +7,6 @@ import type { DockerAvailability } from '@shared/core/managed-switch-server/mana
 import { LOCAL_SERVER_PROJECT_NAME } from '../constants';
 import { DOCKER_EXECUTABLE, detectDocker } from '../docker';
 import { type LocalServerPorts, pickFreePorts } from '../free-port';
-import { ensureLocalGhcrLogin } from '../ghcr-auth';
 import { localServerDir } from '../paths';
 import type { ServerHost } from './types';
 
@@ -88,10 +87,6 @@ export class LocalServerHost implements ServerHost {
 
   detectDocker(): Promise<DockerAvailability> {
     return detectDocker();
-  }
-
-  ensureGhcrLogin(): Promise<void> {
-    return ensureLocalGhcrLogin();
   }
 
   pickFreePorts(): Promise<LocalServerPorts> {

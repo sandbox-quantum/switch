@@ -48,81 +48,6 @@ the environment and will report no identity no matter what this skill writes.
 The version in play is the pin in the plugin's `.mcp.json`; if it is below
 0.2.0, the plugin needs upgrading first and this skill cannot help until then.
 
-## Step 0 — Registry access for the runtime
-
-The MCP server is fetched with `npx @sandbox-quantum/switch-agent-runtime`.
-That package is published to **GitHub Packages** and is private, so npm needs
-to know which registry serves the `@sandbox-quantum` scope and how to
-authenticate. Without both, `npx` fails — and it fails **misleadingly**: a
-private package you are not authorised for returns **404**, not 403, because
-registries do not admit that private packages exist. "Package not found"
-almost always means "not logged in" here.
-
-> **Check it the way the MCP server will run it, not the way your shell runs
-> it.** Codex starts the server with a fixed env allowlist, so no `npm_config_*`
-> variable from your shell reaches it. `npm config get` in an interactive shell
-> can therefore report a correctly configured registry while the server still
-> gets a 404 — the check passes for a reason that does not hold at runtime.
-> This is not hypothetical: Switch Console sets `npm_config_userconfig`, so on a
-> machine where it has ever run, a shell resolves a config the server cannot see.
-
-Check in a stripped environment:
-
-```bash
-env -i HOME="$HOME" PATH="$PATH" npm config get @sandbox-quantum:registry
-```
-
-If that prints `https://npm.pkg.github.com`, skip to Step 1. If it prints
-`undefined`, the registry is not configured for the server's environment even
-if your shell says otherwise.
-
-Note where npm would actually write before changing anything:
-
-```bash
-npm config get userconfig
-```
-
-If that is not `~/.npmrc`, a plain `npm config set` writes somewhere the MCP
-server will never read. Force the target explicitly.
-
-Setting it up needs the GitHub CLI, authenticated **and holding the
-`read:packages` scope** (`gh auth status`). If `gh` is missing or logged out,
-stop and tell the user to install it and run `gh auth login` — guessing a token
-is not something to attempt.
-
-Then look at the `Token scopes:` line. **`gh auth login` does not request
-`read:packages`** — the defaults are `gist`, `read:org`, `repo` and `workflow`.
-A perfectly healthy login therefore produces a token the registry refuses:
-
-```
-npm error 403 Permission permission_denied: The token provided does not match expected scopes.
-```
-
-If it is absent, have the user run `gh auth refresh -h github.com -s read:packages`.
-That opens a device-code prompt; on a headless box the alternative is a classic
-PAT with `read:packages`.
-
-Then, with the user's agreement (this writes to their `~/.npmrc`):
-
-```bash
-export npm_config_userconfig="$HOME/.npmrc"
-npm config set @sandbox-quantum:registry https://npm.pkg.github.com
-npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
-```
-
-Verify in a **stripped** environment again, so this proves what the server will
-experience:
-
-```bash
-env -i HOME="$HOME" PATH="$PATH" npm view @sandbox-quantum/switch-agent-runtime version
-```
-
-Two things to tell the user plainly rather than leave them to discover:
-
-- This writes a **real token into `~/.npmrc`** (mode 0600) — a credential at rest.
-- It **expires when `gh` rotates its token**, with the same misleading 404 as the
-  symptom. Re-running the two `npm config set` lines fixes it.
-
 ## Step 1 — Check what is already there
 
 The store is read from the **working directory**, so check the directory the
@@ -384,8 +309,9 @@ directory are chosen between at session start with `select_agent`.
   (`codex plugin list`), or its pinned runtime predates 0.2.0. Restart Codex
   after any change.
 - **`connection closed: initialize response`** — the runtime died before the
-  handshake; the reason is in `~/.switch/sessions/<ppid>/startup-error.log`. The
-  usual cause is the registry auth in Step 0 having lapsed.
-- **404 fetching the runtime** — registry auth, not a missing package. Re-run the
-  two `npm config set` lines from Step 0, then re-check in a stripped
-  environment.
+  handshake; the reason is in `~/.switch/sessions/<ppid>/startup-error.log`. Read
+  it rather than guessing: the host reports every cause identically.
+- **404 fetching the runtime** — the runtime is on the public npm registry, so
+  this is a reachability problem (offline, proxy, or a registry override in an
+  `.npmrc`), not an authentication one. `npm view @sandboxaq/switch-agent-runtime
+  version` should print a version.

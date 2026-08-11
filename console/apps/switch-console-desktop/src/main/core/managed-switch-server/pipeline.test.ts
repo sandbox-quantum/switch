@@ -64,7 +64,6 @@ function options() {
     label: 'this computer',
     writeFile,
     detectDocker: () => Promise.resolve({ available: true, version: '27.0.0' }),
-    ensureGhcrLogin: vi.fn(() => Promise.resolve()),
     establishNetworking: vi.fn(() => Promise.resolve()),
   };
   return {
@@ -185,14 +184,14 @@ describe('startStack version guard', () => {
     expect(logWarn).not.toHaveBeenCalled();
   });
 
-  it('refuses before authenticating to the registry, so nothing off-host happens either', async () => {
+  it('refuses before writing configuration, so nothing off-host happens either', async () => {
     readDeployedVersionMock.mockResolvedValue({
       kind: 'deployed',
       version: '0.12.0',
       source: 'env-file',
     });
-    const { opts } = options();
+    const { writeFile, opts } = options();
     await startStack(opts);
-    expect(opts.host.ensureGhcrLogin).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
   });
 });

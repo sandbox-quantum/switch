@@ -9,7 +9,7 @@ export const APP_NAME_LOWER = 'switch-console-canary';
 export const UPDATE_CHANNEL = 'v1-canary';
 export const ARTIFACT_PREFIX = 'switch-console-canary';
 
-// Keep in sync with RELEASE_REPO_* in ./app-identity.ts (CHOO-1260 flip point).
+// Keep in sync with RELEASE_REPO_* in ./app-identity.ts.
 export const RELEASE_REPO_OWNER = 'sandbox-quantum';
 export const RELEASE_REPO_NAME = 'switch';
 
@@ -17,4 +17,4 @@ export const RELEASE_REPO_NAME = 'switch';
 // against `switch-console.pins.switch-core` in artifacts.yaml by `just artifacts`,
 // so they can no longer drift apart — this used to say "keep in sync" and rely
 // on whoever edited one remembering the other (CHOO-1865).
-export const COMPATIBLE_SWITCH_VERSION = '0.12.3';
+export const COMPATIBLE_SWITCH_VERSION = '0.13.1';

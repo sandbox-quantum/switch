@@ -22,7 +22,7 @@ const BANNER = [
   ' / ____|               | | |                  /\\   / __ \\',
   " \\___ \\ / _` | '_ \\ / _` | '_ \\ / _ \\ \\/ /  / /\\ \\| |  | |",
   '|_____/ \\__,_|_| |_|\\__,_|_.__/ \\___/_/\\_\\/_/    \\_\\___\\_\\',
-  'alg-bench-debian-12-v260624-9131585f',
+  'example-host-debian-12-v260624-9131585f',
 ].join('\n');
 
 describe('resolveCommandPath with login-shell banner noise', () => {

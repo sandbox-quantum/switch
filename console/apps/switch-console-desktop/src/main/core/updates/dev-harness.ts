@@ -20,8 +20,6 @@ export const FAKE_UPDATE_SCENARIOS = [
   'download-error',
   /** The check itself fails. */
   'check-error',
-  /** The check reports no GitHub credentials. */
-  'auth-required',
   /** Check finds nothing. */
   'up-to-date',
 ] as const;
@@ -48,7 +46,6 @@ export interface UpdateSignals {
   }): void;
   downloaded(version: string): void;
   failed(error: unknown): void;
-  authRequired(): void;
 }
 
 export function isFakeUpdateScenario(value: string): value is FakeUpdateScenario {
@@ -107,10 +104,6 @@ export class FakeUpdateDriver {
     if (this.disposed) return null;
 
     switch (this.scenario) {
-      case 'auth-required':
-        this.signals.authRequired();
-        return null;
-
       case 'check-error':
         this.signals.failed(new Error('Simulated update check failure (HTTP 503)'));
         return null;

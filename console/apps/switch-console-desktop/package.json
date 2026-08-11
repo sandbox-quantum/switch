@@ -1,6 +1,6 @@
 {
   "name": "@switch-console/desktop",
-  "version": "0.19.3",
+  "version": "0.21.0",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",
@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@parcel/watcher": "^2.5.6",
-    "@sandbox-quantum/switch-agent-runtime": "workspace:*",
+    "@sandboxaq/switch-agent-runtime": "workspace:*",
     "@switch-console/core": "workspace:*",
     "@switch-console/plugins": "workspace:*",
     "@switch-console/shared": "workspace:*",

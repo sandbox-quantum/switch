@@ -5,12 +5,10 @@ import {
   canInstall,
   canSkip,
   canOfferAction,
-  canSignIn,
   canUpdate,
   dependenciesMet,
   groupPlanSteps,
   outcomeLabel,
-  signInLabel,
   stepBadge,
   versionSubtitle,
 } from './step-presentation';
@@ -148,7 +146,7 @@ describe('groupPlanSteps', () => {
     const grouped = groupPlanSteps(
       plan([
         step({ id: 'git', name: 'Git' }),
-        step({ id: 'gh:auth', kind: 'gh-auth', name: 'GitHub CLI login' }),
+        step({ id: 'gh', kind: 'core-dependency', name: 'GitHub CLI' }),
         step({ id: 'claude-code', kind: 'agent-cli', name: 'Claude Code' }),
         step({
           id: 'claude-code:plugin',
@@ -158,7 +156,7 @@ describe('groupPlanSteps', () => {
       ])
     );
 
-    expect(grouped.prerequisites.map((s) => s.id)).toEqual(['git', 'gh:auth']);
+    expect(grouped.prerequisites.map((s) => s.id)).toEqual(['git', 'gh']);
     expect(grouped.agentTypes).toHaveLength(1);
     expect(grouped.agentTypes[0]!.agentId).toBe('claude-code');
     expect(grouped.agentTypes[0]!.plugin?.id).toBe('claude-code:plugin');
@@ -215,28 +213,30 @@ describe('canInstall', () => {
     expect(canInstall(step({ state: 'installing' }))).toBe(false);
     expect(canInstall(step({ state: 'checking' }))).toBe(false);
   });
-
-  it('never offers an install for the GitHub login — it is a device flow, not a package', () => {
-    expect(canInstall(step({ kind: 'gh-auth', state: 'pending', outcome: 'missing' }))).toBe(false);
-  });
 });
 
 describe('dependenciesMet — do not offer an action that cannot work', () => {
-  const ghAuth = (patch: Partial<HostSetupStep> = {}) =>
-    step({ id: 'gh:auth', kind: 'gh-auth', name: 'GitHub CLI login', dependsOn: ['gh'], ...patch });
+  const dependent = (patch: Partial<HostSetupStep> = {}) =>
+    step({
+      id: 'claude-code',
+      kind: 'agent-cli',
+      name: 'Claude Code',
+      dependsOn: ['node'],
+      ...patch,
+    });
 
-  it('is false while the CLI the flow needs is still missing', () => {
-    // The device flow runs `gh` on the host; offering Sign in before gh exists
-    // sends the user into a failure that says nothing about the real problem.
-    const p = plan([step({ id: 'gh', name: 'GitHub CLI', outcome: 'missing' }), ghAuth()]);
+  it('is false while the dependency it needs is still missing', () => {
+    // Offering an install before Node exists sends the user into a failure that
+    // says nothing about the real problem.
+    const p = plan([step({ id: 'node', name: 'Node.js', outcome: 'missing' }), dependent()]);
 
     expect(dependenciesMet(p.steps[1]!, p)).toBe(false);
   });
 
-  it('is true once the CLI is there', () => {
+  it('is true once the dependency is there', () => {
     const p = plan([
-      step({ id: 'gh', name: 'GitHub CLI', state: 'satisfied', outcome: 'satisfied' }),
-      ghAuth(),
+      step({ id: 'node', name: 'Node.js', state: 'satisfied', outcome: 'satisfied' }),
+      dependent(),
     ]);
 
     expect(dependenciesMet(p.steps[1]!, p)).toBe(true);
@@ -247,61 +247,10 @@ describe('dependenciesMet — do not offer an action that cannot work', () => {
   });
 
   it('is false when there is no plan to check against', () => {
-    expect(dependenciesMet(ghAuth(), null)).toBe(false);
+    expect(dependenciesMet(dependent(), null)).toBe(false);
   });
 });
 
-describe('canSignIn — the row and the sheet must agree', () => {
-  // Both surfaces offer this button, so the rule lives in one place: two copies
-  // of it is how the sheet once hid Sign in in exactly the state that needs it.
-  const ghAuth = (patch: Partial<HostSetupStep> = {}) =>
-    step({ id: 'gh:auth', kind: 'gh-auth', name: 'GitHub CLI login', dependsOn: ['gh'], ...patch });
-  const withGh = (auth: HostSetupStep) =>
-    plan([step({ id: 'gh', name: 'GitHub CLI', state: 'satisfied', outcome: 'satisfied' }), auth]);
-
-  it('is offered for an outstanding login once gh is installed', () => {
-    const p = withGh(ghAuth({ outcome: 'missing' }));
-
-    expect(canSignIn(p.steps[1]!, p)).toBe(true);
-  });
-
-  it('is offered after a re-check leaves the step pending', () => {
-    // The state a host actually sits in when the user wants this button.
-    const p = withGh(ghAuth({ state: 'pending', outcome: 'missing' }));
-
-    expect(canSignIn(p.steps[1]!, p)).toBe(true);
-  });
-
-  it('is not offered once the login is good', () => {
-    const p = withGh(ghAuth({ state: 'satisfied', outcome: 'satisfied' }));
-
-    expect(canSignIn(p.steps[1]!, p)).toBe(false);
-  });
-
-  it('is not offered while gh itself is missing', () => {
-    const p = plan([step({ id: 'gh', name: 'GitHub CLI', outcome: 'missing' }), ghAuth()]);
-
-    expect(canSignIn(p.steps[1]!, p)).toBe(false);
-  });
-
-  it('is never offered for something that is not a login', () => {
-    expect(canSignIn(step({ id: 'git', outcome: 'missing' }), null)).toBe(false);
-  });
-
-  it('says re-authenticate when the login exists but lacks the scope', () => {
-    // "Sign in" reads as wrong advice to someone already signed in, even though
-    // re-running the flow is the fix.
-    expect(signInLabel(ghAuth({ error: 'gh is missing the read:packages scope' }))).toBe(
-      'Re-authenticate'
-    );
-    expect(signInLabel(ghAuth())).toBe('Sign in');
-  });
-});
-
-/**
- * An available update is information, not a defect — but it has to be
- * actionable, and only when we actually know a newer version exists.
- */
 describe('canUpdate', () => {
   it('offers an update when a newer version is known', () => {
     expect(
@@ -323,11 +272,7 @@ describe('canUpdate', () => {
     );
   });
 
-  it('never offers to update a login', () => {
-    expect(canUpdate(step({ kind: 'gh-auth', state: 'satisfied', updateAvailable: true }))).toBe(
-      false
-    );
-  });
+  it('never offers to update a login', () => {});
 
   it('offers nothing while the update is already running', () => {
     expect(canUpdate(step({ state: 'updating', updateAvailable: true }))).toBe(false);

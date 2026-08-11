@@ -14,7 +14,6 @@ import {
   UPDATE_CHANNEL,
 } from '@shared/app-identity';
 import {
-  updateAuthRequiredEvent,
   updateAvailableEvent,
   updateCheckingEvent,
   updateDownloadedEvent,
@@ -33,7 +32,6 @@ import {
   readFakeDownloadDuration,
   readFakeUpdateScenario,
 } from './dev-harness';
-import { getGithubTokenFromGhCli } from './github-token';
 import { formatUpdaterError, sanitizeUpdaterLogArgs } from './utils';
 
 const { autoUpdater } = _electronUpdater;
@@ -49,15 +47,7 @@ const FAKE_STARTUP_DELAY_MS = 1_500;
 const FAKE_INSTALL_ROLLBACK_MS = 3_000;
 
 export interface UpdateState {
-  status:
-    | 'idle'
-    | 'checking'
-    | 'available'
-    | 'downloading'
-    | 'downloaded'
-    | 'installing'
-    | 'error'
-    | 'auth-required';
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
   lastCheck?: Date;
   nextCheck?: Date;
   currentVersion: string;
@@ -215,11 +205,6 @@ class UpdateService implements IInitializable, IDisposable {
       this.updateState.rollbackVersion = this.updateState.currentVersion;
       events.emit(updateDownloadedEvent, { version });
     },
-
-    authRequired: () => {
-      this.updateState.status = 'auth-required';
-      events.emit(updateAuthRequiredEvent, undefined);
-    },
   };
 
   private setupEventListeners(): void {
@@ -270,40 +255,18 @@ class UpdateService implements IInitializable, IDisposable {
   }
 
   private async _performCheck(): Promise<UpdateInfo | null> {
-    if (this.updateState.status === 'error' || this.updateState.status === 'auth-required') {
+    if (this.updateState.status === 'error') {
       this.updateState.status = 'idle';
       this.updateState.error = undefined;
     }
 
     if (this.fake) return this.fake.check();
 
-    // The switch release feed is a private repo, so the updater needs a token.
-    // Reuse the user's existing `gh` login rather than shipping a secret. Without
-    // a token we stay dormant (auth-required) instead of erroring every hour.
-    const token = await getGithubTokenFromGhCli();
-    if (!token) {
-      this.signals.authRequired();
-      log.info('Skipping update check: no GitHub token from gh CLI (run `gh auth login`)');
-      return null;
-    }
-    // A private repo needs electron-updater's authenticated provider
-    // (api.github.com); the public releases.atom feed 404s and the auth header
-    // alone does not select it. The token goes through setFeedURL rather than
-    // GH_TOKEN: the environment is inherited by every child process Switch Console
-    // spawns — including `gh` itself, which prefers GH_TOKEN over the keyring —
-    // so a token left there outlives the login it came from and shadows the
-    // next one until the app restarts.
     autoUpdater.setFeedURL({
       provider: 'github',
       owner: RELEASE_REPO_OWNER,
       repo: RELEASE_REPO_NAME,
-      private: true,
-      token,
     });
-    autoUpdater.requestHeaders = {
-      'Cache-Control': 'no-cache',
-      authorization: `token ${token}`,
-    };
 
     log.info('Checking for updates...', {
       channel: UPDATE_CHANNEL,
@@ -437,12 +400,7 @@ class UpdateService implements IInitializable, IDisposable {
       const version = this.updateState.availableVersion;
       if (!version) return null;
 
-      // The release feed is a private repo: an unauthenticated read 404s on
-      // every release, so reuse the token the update check already relies on.
-      const token = await getGithubTokenFromGhCli();
-      const response = await fetch(switchConsoleReleaseApiUrl(version), {
-        headers: token ? { authorization: `token ${token}` } : {},
-      });
+      const response = await fetch(switchConsoleReleaseApiUrl(version));
 
       if (!response.ok) {
         log.warn('Could not fetch release notes', {
@@ -450,7 +408,6 @@ class UpdateService implements IInitializable, IDisposable {
           stage: 'fetch',
           errorCode: `http_${response.status}`,
           version,
-          authenticated: token !== null,
         });
         return null;
       }
