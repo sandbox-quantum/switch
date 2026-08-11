@@ -1021,8 +1021,19 @@ The Switch protocol client and MCP runtime
   `switch_unavailable` with a perfectly good store on disk beside it.
 
   The agent id makes the lookup exact, so nothing is guessed: an id that matches
-  no store entry, or one belonging to a different server, still refuses. A token
-  with no agent id also still refuses — there is nothing to infer an id from.
+  no store entry, one belonging to a different server, or one claimed by two
+  entries at once all still refuse. A token missing either of the others also
+  still refuses — inferring where to send a credential is a different order of
+  risk from inferring which one to send.
+- Refuses a *partly* expanded environment instead of filling the gap from disk.
+  Some `${SWITCH_*}` still literal while others resolved means a substitution
+  step did not finish, which is not the same as a value deliberately omitted —
+  and silently completing it from the store would authenticate as whatever is on
+  disk without saying so. All three unexpanded is still the host's ordinary
+  pre-expansion spawn.
+- `normalizeEndpoint` folds scheme and host case. It went from grouping
+  endpoints for display to gating whether an identity binds, and a
+  differently-cased host is the same server.
 
 ### [0.3.0] - 2026-08-11
 
@@ -1141,8 +1152,23 @@ compatibility signal. History for those is in the git log.
   keeps the token out of there, so it reported itself unconfigured and returned
   without reporting or mediating anything — silently, on every tool call. It now
   falls back to the same `.switch/agents/*.json` store the runtime reads, keyed
-  on the agent id the session recorded when it joined a room, and says so on
-  stderr when it cannot resolve one instead of skipping quietly.
+  on the agent id the session recorded when it joined a room, and names the
+  cause on stderr when it cannot resolve one instead of skipping quietly.
+
+#### Changed
+- The `configure` skill is rebuilt on the standalone shape the Codex connector
+  uses: registration and the credential write happen in one command (the API key
+  is returned once), the server URL is probed before anything depends on it, and
+  the skill states which runtime the identity pointer it writes requires. It also
+  writes `permissions.allow` for the connector's tools, which Switch Console
+  always did and a skill-configured install went without — so every room action
+  stopped for an approval prompt.
+- The per-project vs global scope choice is gone. Global wrote the identity
+  machine-wide, but credentials are only ever read from the session's working
+  directory, so it behaved as per-project with extra steps.
+- Both room-workflow skills list the full set of reasons `switch_unavailable`
+  can be the only tool, and the Claude one now points at the `configure` skill
+  as the remedy for the ones it can fix.
 
 ### [0.8.1] - 2026-08-11
 
@@ -1182,6 +1208,11 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
+
+#### Changed
+- Skill: list the full set of reasons `switch_unavailable` can be the only tool.
+  The runtime is shared, so the identity failures added there apply here too;
+  three of the six were missing.
 
 ### [0.2.3] - 2026-08-11
 
