@@ -132,6 +132,40 @@ const CODEX_CONTROL: SessionControl = {
   },
 };
 
+/**
+ * OpenCode: also a TUI. It starts a fresh session on `/new` rather than
+ * `/clear`, and summarises the transcript on `/compact`.
+ */
+const OPENCODE_CONTROL: SessionControl = {
+  capabilities: { reset: true, compact: true, interrupt: true },
+  plan(command, ctx) {
+    switch (command) {
+      case 'interrupt':
+        // OpenCode interrupts on Escape pressed TWICE. Two ESC bytes in one
+        // write (`\x1b\x1b`) are coalesced by its input parser into a single
+        // escape sequence and do nothing at all, so they go as two separate
+        // steps — the executor spaces steps apart, which is what makes each
+        // land as its own keypress.
+        return [
+          { kind: 'raw', data: ESC },
+          { kind: 'raw', data: ESC },
+        ];
+      case 'compact':
+        return [
+          { kind: 'prompt', text: '/compact' },
+          { kind: 'prompt', text: reconnectAndAnnounce(ctx, 'context has been compacted') },
+        ];
+      case 'reset':
+        return [
+          { kind: 'prompt', text: '/new' },
+          { kind: 'prompt', text: reconnectAndAnnounce(ctx, 'session has been reset') },
+        ];
+      default:
+        return null;
+    }
+  },
+};
+
 const NO_CONTROL: SessionControl = {
   capabilities: { reset: false, compact: false, interrupt: false },
   plan: () => null,
@@ -140,6 +174,7 @@ const NO_CONTROL: SessionControl = {
 const BY_PROVIDER: Record<string, SessionControl> = {
   claude: CLAUDE_CONTROL,
   codex: CODEX_CONTROL,
+  opencode: OPENCODE_CONTROL,
 };
 
 /** Resolve the session-control support + recipes for a provider. */

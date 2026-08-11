@@ -17,7 +17,7 @@ describe('resolveSessionControl', () => {
     expect(control.plan('interrupt', ctx)).toBeNull();
   });
 
-  it.each(['claude', 'codex'])('supports all three commands for %s', (providerId) => {
+  it.each(['claude', 'codex', 'opencode'])('supports all three commands for %s', (providerId) => {
     expect(resolveSessionControl(providerId).capabilities).toEqual({
       reset: true,
       compact: true,
@@ -33,18 +33,19 @@ describe('resolveSessionControl', () => {
     ]);
   });
 
-  it.each(['claude', 'codex'])('returns null for an unknown command on %s', (providerId) => {
+  it.each(['claude', 'codex', 'opencode'])('returns null for an unknown command on %s', (providerId) => {
     expect(resolveSessionControl(providerId).plan('explode', ctx)).toBeNull();
   });
 
-  it.each(['claude', 'codex'])(
+  it.each(['claude', 'codex', 'opencode'])(
     'reconnects and re-assumes the role after %s reset',
     (providerId) => {
       const steps = resolveSessionControl(providerId).plan('reset', ctx);
       expect(steps).not.toBeNull();
 
-      // `/clear` drops the context, so the follow-up must put the agent back in
-      // the room, back in its role, and tell the asker in their thread.
+      // Whatever the provider calls it, reset drops the context — so the
+      // follow-up must put the agent back in the room, back in its role, and
+      // tell the asker in their thread.
       const announce = steps!.at(-1);
       expect(announce).toMatchObject({ kind: 'prompt' });
       const text = (announce as { text: string }).text;
@@ -77,10 +78,40 @@ describe('resolveSessionControl', () => {
     });
   });
 
-  it.each(['claude', 'codex'])('announces the compaction back to the room on %s', (providerId) => {
+  it.each(['claude', 'codex', 'opencode'])('announces the compaction back to the room on %s', (providerId) => {
     const steps = resolveSessionControl(providerId).plan('compact', ctx);
     expect(steps).not.toBeNull();
     expect((steps!.at(-1) as { text: string }).text).toContain('context has been compacted');
+  });
+
+  // OpenCode needs Escape TWICE, and coalesces `\x1b\x1b` arriving as one write
+  // into a single escape sequence that does nothing — so the two must stay
+  // separate steps for the executor to space them apart. A regression here is
+  // silent: the interrupt is simply ignored and the turn keeps running.
+  it('interrupts opencode with two separate ESC writes', () => {
+    expect(resolveSessionControl('opencode').plan('interrupt', ctx)).toEqual([
+      { kind: 'raw', data: ESC },
+      { kind: 'raw', data: ESC },
+    ]);
+  });
+
+  it('does not interrupt opencode with one doubled ESC write', () => {
+    const steps = resolveSessionControl('opencode').plan('interrupt', ctx);
+    expect(steps).not.toContainEqual({ kind: 'raw', data: `${ESC}${ESC}` });
+  });
+
+  // OpenCode has no /clear; a fresh session is /new.
+  it('resets opencode with /new rather than /clear', () => {
+    const steps = resolveSessionControl('opencode').plan('reset', ctx);
+    expect(steps?.[0]).toEqual({ kind: 'prompt', text: '/new' });
+    expect(steps).not.toContainEqual({ kind: 'prompt', text: '/clear' });
+  });
+
+  it('compacts opencode with /compact and no preceding interrupt', () => {
+    expect(resolveSessionControl('opencode').plan('compact', ctx)?.[0]).toEqual({
+      kind: 'prompt',
+      text: '/compact',
+    });
   });
 
   it('omits the role and thread clauses when there is neither', () => {
