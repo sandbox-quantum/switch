@@ -74,8 +74,16 @@ exports one makes everything this skill writes inert — the session runs as
 whatever that environment names, with no warning:
 
 ```bash
-printenv SWITCH_API_ENDPOINT SWITCH_API_TOKEN SWITCH_AGENT_ID
+for v in SWITCH_API_ENDPOINT SWITCH_API_TOKEN SWITCH_AGENT_ID; do
+  eval "printf '%s=%s\n' \"$v\" \"\${$v:+set}\""
+done
 ```
+
+(One lookup per variable, deliberately. `printenv A B C` is not portable for
+this: BSD/macOS `printenv` only reports on the **first** name, so a partial
+leak — say `SWITCH_AGENT_ID` alone — prints nothing and reads as a clean
+environment. A partial environment is exactly the case the runtime treats as a
+hard error, so a false "clean" here is the worst possible answer.)
 
 If all three are set, tell the user before going further: either they are
 already configured and don't need this skill, or those variables are leaking in
@@ -208,6 +216,27 @@ you see that exact 401, suspect this before blaming the token.
 The response is `{"id":"...","api_key":"..."}`. If `curl` exits non-zero, re-run
 with `-i` instead of `-sf` and show the user the status and body, then stop.
 
+> ⚠️ **Register and write the credentials file in ONE shell command.** This is
+> the single most important instruction in this skill, and getting it wrong is
+> the one way to leave things worse than you found them.
+>
+> The `api_key` is returned by that one call and **never again** — it cannot be
+> read back from the server. And **each command you run is a separate shell
+> process**, so a variable set in one does not exist in the next. Register in
+> one command and try to use `$api_key` in another and it is empty: the agent
+> now exists on the server with a token nobody holds, and re-registering to
+> recover returns `409`.
+>
+> This is not hypothetical — it happened twice in testing before this note
+> existed. So do not split them. Do the curl and the file write in a **single**
+> invocation, as Step 7 shows, or at minimum redirect the response body to a
+> file (`--output`) in the same command that makes the request, and read it
+> back from there.
+>
+> Two shell details, both from real runs: `status` is a **reserved variable in
+> zsh** — use `http_status` — and a `$(...)` capture of the body must not
+> swallow the exit code you intend to branch on.
+
 **Responses:**
 
 - `401` — bad registration token (or the pitfall above); stop.
@@ -215,29 +244,65 @@ with `-i` instead of `-sf` and show the user the status and body, then stop.
   and stop; do not fall back to another type.
 - `400` with a name validation error — re-ask in Step 4.
 - `409` — that name already exists. The bridge refuses to clobber it because
-  re-registering rotates the API key and invalidates the old credentials. Ask
-  the user (recommended: pick a different name). Only re-run with
-  `overwrite:true` if they explicitly want that. Never do it silently.
+  re-registering rotates the API key and invalidates the old credentials.
+  **First work out which case this is**, because the fix differs:
+  - **You created it moments ago, in this run** (a retry, or a re-run after a
+    later step failed). The agent is yours but its token is gone — it was only
+    ever returned once. There is no way to read it back, so the only recoveries
+    are to re-run with `overwrite:true` (mints a fresh key for the same name)
+    or to pick a new name and leave the orphan behind. Say plainly which you
+    are doing and why; do not present this as a clean success.
+  - **It pre-dates this run** — someone else's agent, or the user's own from an
+    earlier setup. Ask before touching it; the recommended answer is a
+    different name. Overwriting rotates a key that a live session may be using.
+
+  Only use `overwrite:true` on an explicit decision. Never silently.
 - Any other non-2xx — show status and body, then stop.
 
 ## Step 7 — Write the credentials file
 
-Create the gitignore **first**, so the token is never briefly tracked:
+**Do this in the same command as Step 6's registration** — see the warning
+there. The whole sequence, gitignore first so the token is never briefly
+tracked:
 
 ```bash
+set -eu
 mkdir -p .switch/agents
 printf '*\n' > .switch/agents/.gitignore
+
+resp=$(mktemp)
+http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
+  -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
+       --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+       '{agent_type:"codex", name:$name, description:$desc,
+         options:((if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)
+                  + (if $notify_user == "" then {} else {notify_user:$notify_user} end)),
+         overwrite:false}')")
+
+if [ "$http_status" != "200" ]; then
+  printf 'registration failed (%s): ' "$http_status"; cat "$resp"; rm -f "$resp"; exit 1
+fi
+
+jq --arg ep "$ENDPOINT" \
+   '{env: {SWITCH_API_ENDPOINT: $ep, SWITCH_API_TOKEN: .api_key, SWITCH_AGENT_ID: .id}}' \
+   "$resp" > ".switch/agents/$NAME.json"
+chmod 600 ".switch/agents/$NAME.json"
+jq -r '"registered " + .id' "$resp"
+rm -f "$resp"
 ```
 
-Then write `.switch/agents/<agent name>.json`, in the same shape Switch Console
-writes:
+The token goes from the response straight into the file without ever being
+echoed or held in a variable that a later command would need. The resulting
+file is the same shape Switch Console writes:
 
 ```json
 {
   "env": {
     "SWITCH_API_ENDPOINT": "<url from step 2>",
-    "SWITCH_API_TOKEN": "<api_key from step 6>",
-    "SWITCH_AGENT_ID": "<id from step 6>"
+    "SWITCH_API_TOKEN": "<api_key>",
+    "SWITCH_AGENT_ID": "<id>"
   }
 }
 ```
