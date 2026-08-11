@@ -792,6 +792,8 @@ class TelegramAdapter(CollaborationAdapter):
     async def _handle_message(self, message: Any) -> None:
         chat = message.chat
         chat_id = str(chat.id)
+        if self._report_migration(message, chat_id):
+            return
         channel_type = self._channel_type_of(chat)
         channel_name = getattr(chat, "title", None)
 
@@ -870,6 +872,46 @@ class TelegramAdapter(CollaborationAdapter):
                 ),
             )
         )
+
+    @staticmethod
+    def _report_migration(message: Any, chat_id: str) -> bool:
+        """Say so when Telegram has given this chat a new id.
+
+        A basic group becomes a supergroup the moment it outgrows one — adding
+        members, promoting a bot, enabling history — and Telegram issues it a
+        brand new chat id when that happens. The room is still keyed to the old
+        one, so inbound stops matching any room while outbound keeps working,
+        because Telegram forwards sends addressed to the old id. That asymmetry
+        is impossible to read from the outside, so it is named here.
+
+        Returns True when the message is the migration notice itself and should
+        not be bridged.
+        """
+        migrated_to = getattr(message, "migrate_to_chat_id", None)
+        if migrated_to:
+            logger.error(
+                "Telegram chat %s has been upgraded to a supergroup and now has "
+                "the id %s. This room is still bound to the old id, so messages "
+                "from it will no longer match — while replies still arrive, "
+                "because Telegram forwards them. Update the room's external "
+                "channel id to %s.",
+                chat_id,
+                migrated_to,
+                migrated_to,
+            )
+            return True
+        migrated_from = getattr(message, "migrate_from_chat_id", None)
+        if migrated_from:
+            logger.warning(
+                "Telegram chat %s is the supergroup that replaced chat %s. If a "
+                "room is still bound to %s, re-point it at %s.",
+                chat_id,
+                migrated_from,
+                migrated_from,
+                chat_id,
+            )
+            return True
+        return False
 
     async def _handle_new_members(
         self,

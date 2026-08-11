@@ -434,6 +434,53 @@ def test_a_top_level_message_has_no_root() -> None:
 # ── Joins ────────────────────────────────────────────────────────────────────
 
 
+def test_a_group_becoming_a_supergroup_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Telegram reissues the chat id on upgrade. The room stays bound to the old
+    # one, so inbound silently stops matching while outbound keeps working —
+    # Telegram forwards sends to the old id. Unreadable from outside; named here.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    notice = _FakeInbound(text=None)
+    notice.migrate_to_chat_id = -1009876543210  # type: ignore[attr-defined]
+
+    with caplog.at_level(logging.ERROR):
+        _run(adapter._handle_message(notice))
+
+    assert "upgraded to a supergroup" in caplog.text
+    assert "-1009876543210" in caplog.text
+    # The notice itself is not conversation.
+    assert seen == []
+
+
+def test_the_replacement_supergroup_names_the_chat_it_replaced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    notice = _FakeInbound(text=None)
+    notice.migrate_from_chat_id = -4912345678  # type: ignore[attr-defined]
+
+    with caplog.at_level(logging.WARNING):
+        _run(adapter._handle_message(notice))
+
+    assert "-4912345678" in caplog.text
+    assert seen == []
+
+
+def test_an_ordinary_message_is_not_mistaken_for_a_migration() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="just talking")))
+
+    assert len(seen) == 1
+
+
 def test_a_person_joining_is_reported_as_a_user_join() -> None:
     adapter = _adapter()
     joins: list[Any] = []
