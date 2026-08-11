@@ -362,8 +362,7 @@ version of their own to them without also giving them a release of their own.
 #### Added
 - Telegram brand icon, platform label and setup-guide link, so Telegram-bridged
   rooms show the "open channel" button and the attach form links the right guide
-  (CHOO-1686). Telegram bot tokens are redacted from the diagnostic logs, and
-  `tg:` joins the external-link scheme allowlist.
+  (CHOO-1686). Telegram bot tokens are also redacted from the diagnostic logs.
 
 #### Fixed
 - Opening a room from a deeplink expands the sidebar groups hiding it
