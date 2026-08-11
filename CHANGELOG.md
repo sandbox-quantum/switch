@@ -41,6 +41,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+
+- `opencode` is a registerable known agent type, alongside `claude-code` and
+  `codex`. It carries its own option set — auto-session, working directory and
+  notify-user — rather than borrowing another type's, and the start-session
+  command it shows in a room passes the prompt as a flag, since OpenCode reads
+  its first positional argument as a directory to open.
+
 #### Fixed
 
 - The OpenCode server-side connector no longer hangs when the OpenCode server
@@ -357,6 +365,24 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Added
+
+- **OpenCode is now a supported Switch agent type**, locally and on remote
+  hosts. An OpenCode session can be onboarded as a Switch agent, join rooms,
+  take injected prompts, and be reset, compacted or interrupted from a room.
+  It reports working and completed rather than sitting on "awaiting input" for
+  its whole life, and names the tool it is running on the bridged message.
+
+  OpenCode has no plugin marketplace to install a connector from, so Switch
+  Console writes one: the Switch MCP server is registered in OpenCode's global
+  config as a local server, which lets the runtime inherit its credentials from
+  the session environment rather than having a token written to disk. Install,
+  update and uninstall are on the agent's card in Settings → Agents, and on a
+  remote host in that host's setup, exactly as for the other agent types.
+
+  OpenCode agents previously registered as Claude Code, so an operator asked to
+  start one by hand was told to run `claude`. They now register as themselves.
 
 #### Fixed
 

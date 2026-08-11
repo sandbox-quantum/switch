@@ -96,7 +96,17 @@ just test -k "test_name"         # run specific test
 
 There are **two** connector plugins under `connectors/`, one per agent host, and
 each ships its own copy of the Switch room-workflow skill at
-`skills/switch/SKILL.md`:
+`skills/switch/SKILL.md`.
+
+**Not every supported agent type has one.** A connector plugin is how an agent
+gets its Switch tools *when its host has a plugin marketplace to install one
+from*. OpenCode has none — its `plugin` subcommand installs a single npm module
+and has no list, remove or version verb — so Switch Console writes its connector
+itself instead, registering the Switch MCP server directly in OpenCode's global
+config. That path is the `switchSetup: { kind: 'files' }` capability; see
+`console/packages/plugins/src/agents/impl/opencode/switch-connector.ts`. So
+"which agent types are supported" and "what is in `connectors/`" are different
+questions, and the rules below apply to the two directories, not to every type:
 
 - `connectors/claude-code-plugin/` — manifest `.claude-plugin/plugin.json`.
   Ships the skill plus an MCP config (`.mcp.json`) and hooks. It contains **no
@@ -132,13 +142,29 @@ each ships its own copy of the Switch room-workflow skill at
   settings, and Codex caches an install per version, so an install on an older
   plugin has no Switch tools until it is upgraded.
 
+- **OpenCode has no directory here.** Its connector is written by Switch
+  Console rather than installed, so there is no manifest and no version of its
+  own — a status read compares the app version that stamped the install against
+  the running one. The MCP server is registered as a `local` (stdio) server, and
+  that is deliberate: OpenCode spawns a local server with the parent
+  environment, so the runtime inherits `SWITCH_*` from the session and no
+  credential is written into a config file shared by every OpenCode session on
+  the machine. OpenCode *does* interpolate `{env:VAR}` and `{file:path}` in its
+  config (unlike Codex's name-forwarding and Claude's `${VAR}`), so a remote
+  server carrying a header would also have been possible; stdio was chosen
+  because it needs no interpolation at all. Its config rejects unknown keys on
+  an MCP entry and fails the whole config with them, which is why the install
+  bookkeeping sits in a file beside the config rather than inside it.
+
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, or anything an agent-facing client needs to know:
 
 - **Update both skills.** A room-workflow change must land in
   `connectors/claude-code-plugin/skills/switch/SKILL.md` *and*
   `connectors/codex-plugin/skills/switch/SKILL.md` so the documented workflow
-  matches actual behavior on both hosts.
+  matches actual behavior on both hosts. OpenCode has no skill of its own yet;
+  when it gets one this becomes three, and `core/tests/switch_core/bridges/
+  agent/test_mcp_tool_surface.py` asserts the count.
 - **Bump the versions of whatever you changed, in the same commit.** Not at
   release time — it gets forgotten, and then a version number is a claim nobody
   can trust. `console/AGENTS.md` has the table (both plugins, runtime package,
