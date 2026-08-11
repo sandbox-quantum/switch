@@ -5,6 +5,7 @@ import {
   npmDependency,
   opencodeMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
+import { buildOpencodeHookBehavior } from './hooks';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 
 const OPENCODE_PLUGIN_PATH = '.opencode/plugins/switchdash-notifications.js';
@@ -29,7 +30,15 @@ export const plugin = definePlugin(
     hooks: {
       kind: 'plugin',
       scope: 'workspace',
-      supportedEvents: ['notification', 'stop', 'session'],
+      // 'start' is declared even though OpenCode has no turn-start event: the
+      // dropped plugin derives one from a new user message and posts it. Saying
+      // so suppresses the synthetic start the hook service would otherwise emit
+      // on input-submitted, which would both duplicate this one and miss turns
+      // the user starts by typing into the TUI directly.
+      //
+      // No 'notification': the plugin reports real turn boundaries now, so
+      // nothing sends the idle_prompt that used to stand in for them.
+      supportedEvents: ['start', 'stop', 'session', 'tool-use', 'tool-done'],
     },
     hostDependency: npmDependency({ id: 'opencode', package: 'opencode-ai' }),
     mcp: {
@@ -71,6 +80,7 @@ export const provider = registerPluginBehavior(plugin, {
       }),
   },
   sessions: { validateSessionId },
+  hooks: buildOpencodeHookBehavior(),
   mcp: opencodeMcpAdapter(),
   plugins: createFileDropPlugin({
     relativePath: OPENCODE_PLUGIN_PATH,

@@ -33,9 +33,12 @@ describe('resolveSessionControl', () => {
     ]);
   });
 
-  it.each(['claude', 'codex', 'opencode'])('returns null for an unknown command on %s', (providerId) => {
-    expect(resolveSessionControl(providerId).plan('explode', ctx)).toBeNull();
-  });
+  it.each(['claude', 'codex', 'opencode'])(
+    'returns null for an unknown command on %s',
+    (providerId) => {
+      expect(resolveSessionControl(providerId).plan('explode', ctx)).toBeNull();
+    }
+  );
 
   it.each(['claude', 'codex', 'opencode'])(
     'reconnects and re-assumes the role after %s reset',
@@ -78,11 +81,14 @@ describe('resolveSessionControl', () => {
     });
   });
 
-  it.each(['claude', 'codex', 'opencode'])('announces the compaction back to the room on %s', (providerId) => {
-    const steps = resolveSessionControl(providerId).plan('compact', ctx);
-    expect(steps).not.toBeNull();
-    expect((steps!.at(-1) as { text: string }).text).toContain('context has been compacted');
-  });
+  it.each(['claude', 'codex', 'opencode'])(
+    'announces the compaction back to the room on %s',
+    (providerId) => {
+      const steps = resolveSessionControl(providerId).plan('compact', ctx);
+      expect(steps).not.toBeNull();
+      expect((steps!.at(-1) as { text: string }).text).toContain('context has been compacted');
+    }
+  );
 
   // OpenCode needs Escape TWICE, and coalesces `\x1b\x1b` arriving as one write
   // into a single escape sequence that does nothing — so the two must stay
