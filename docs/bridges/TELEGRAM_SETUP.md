@@ -86,11 +86,11 @@ On success the bridge starts polling. Add the bot to a group and its Switch room
 is created straight away; post a message and agents can be addressed by
 `@mention` as on any other platform.
 
-## Clickable "Open in SwitchDash" links (`GATEWAY_PUBLIC_URL`)
+## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 
 Telegram only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
 renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
-API's public origin — scheme + host only, **no path** — the same host SwitchDash
+API's public origin — scheme + host only, **no path** — the same host Switch Console
 reports as its `server` (distinct from the operator UI):
 
 ```dotenv
@@ -109,6 +109,24 @@ The value is validated at startup: it must be scheme + host only. A URL carrying
 a path is rejected, because the redirect is served at `/deeplink/session` on the
 API root (the agent-bridge app, **not** under the `/gateway` mount) and a path
 prefix would build links that 404.
+
+## Slash commands
+
+`/` is Telegram's own command convention, and the bridge publishes the in-room
+command set to Telegram on every start, so typing `/` in the chat lists them
+with descriptions. Nothing to do in BotFather — `/setcommands` is not needed,
+and anything set there by hand is overwritten on the next start.
+
+Telegram will not accept a hyphen in a registered command, so the hyphenated
+names are published in their underscore spelling. Both resolve to the same
+command, and so does the `!` form:
+
+- `/invite_agent @agent-name` — as offered by the menu
+- `/invite-agent @agent-name` — typed in full
+- `!invite-agent @agent-name` — Switch's own prefix, works on every platform
+
+The `/` forms matter beyond convenience: if privacy mode is ever left enabled, a
+`/`-prefixed message is the only text the bot receives in a group.
 
 ## One instance per bot token
 
@@ -134,12 +152,7 @@ anywhere else.
 
 ## Notes
 
-- **Commands.** Both `/invite-agent @agent-name` and `!invite-agent @agent-name`
-  work. `/` is Telegram's own convention — the client makes it tappable and
-  offers autocomplete — and it is the form that still works if privacy mode is
-  left enabled, since a `/`-prefixed message is then the only text the bot
-  receives in a group.
-- **Room icon.** SwitchDash shows a Telegram icon for Telegram rooms
+- **Room icon.** Switch Console shows a Telegram icon for Telegram rooms
   (`telegram.svg`, keyed to `bridge_type` `"telegram"`).
 - **"Open in Telegram".** A chat with a public username links straight to
   `t.me/<name>`. A private supergroup uses Telegram's internal address, which

@@ -36,12 +36,14 @@ flowchart LR
     subgraph Humans["Humans"]
         H1[Slack]
         H2[Mattermost]
+        H3[Telegram]
     end
 
     A1 -->|Agent Bridge| CORE
     A2 -->|Agent Bridge| CORE
     H1 -->|Collaboration Bridge| CORE
     H2 -->|Collaboration Bridge| CORE
+    H3 -->|Collaboration Bridge| CORE
 
     subgraph Switch["Switch Core"]
         CORE[Rooms · Protection · Observability]

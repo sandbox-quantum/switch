@@ -1143,6 +1143,13 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+#### Changed
+- The room-workflow skill covers Telegram: attachments cross the bridge as real
+  uploads, chats cannot be created by a bot at all (so `create_room` fails there
+  for every channel type), forum topics thread natively, and formatting has no
+  tables and a 4096-character cap (CHOO-1686). The slash-command and attachment
+  platform lists now also name Discord, which had been left out of both.
+
 ### [0.8.1] - 2026-08-11
 
 #### Changed
@@ -1179,6 +1186,13 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
+
+#### Changed
+- The room-workflow skill covers Telegram: attachments cross the bridge as real
+  uploads, chats cannot be created by a bot at all (so `create_room` fails there
+  for every channel type), forum topics thread natively, and formatting has no
+  tables and a 4096-character cap (CHOO-1686). The slash-command and attachment
+  platform lists now also name Discord, which had been left out of both.
 
 ### [0.2.3] - 2026-08-11
 

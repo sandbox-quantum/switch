@@ -60,7 +60,8 @@ form lists the live set and the fields each one requires.
 - **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only linkify `http(s)` (notably Discord and
   Telegram) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable
-  `https://<switch-api-host>/deeplink/session?…` redirect. See the Discord guide.
+  `https://<switch-api-host>/deeplink/session?…` redirect. See the Discord or
+  Telegram guide.
 
 ## Deployment knobs
 

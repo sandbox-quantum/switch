@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 from unittest.mock import patch
 
@@ -113,6 +112,7 @@ class _FakeInbound:
         new_chat_members: list[Any] | None = None,
         photo: list[Any] | None = None,
         document: Any = None,
+        **service: Any,
     ) -> None:
         self.chat = chat if chat is not None else _FakeChat()
         self.message_id = message_id
@@ -124,6 +124,9 @@ class _FakeInbound:
         self.new_chat_members = new_chat_members
         self.photo = photo
         self.document = document
+        # Service-message and other-media fields, set only when a test needs one.
+        for field, value in service.items():
+            setattr(self, field, value)
 
 
 class _FakeBot:
@@ -136,6 +139,7 @@ class _FakeBot:
         self.deletes: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.files: dict[str, _FakeFileHandle] = {}
+        self.published_commands: list[Any] = []
         self.chat: _FakeChat = _FakeChat()
         self._next_id = 500
         # Set to an exception to make the next send_message raise it once.
@@ -183,6 +187,9 @@ class _FakeBot:
 
     async def send_chat_action(self, **kwargs: Any) -> None:
         self.actions.append(kwargs)
+
+    async def set_my_commands(self, commands: Any) -> None:
+        self.published_commands = list(commands)
 
     async def get_chat(self, chat_id: Any) -> _FakeChat:
         return self.chat
@@ -767,71 +774,6 @@ def test_a_body_over_the_cap_is_split_rather_than_rejected() -> None:
     assert all(len(m["text"]) <= 4096 for m in sent)
     # The ref names the head of the run, so an edit or delete finds it.
     assert ref == f"{CHAT_ID}:501"
-
-
-def _tags_balanced(text: str) -> bool:
-    stack: list[str] = []
-    for match in re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
-        if match.group(1):
-            if not stack or stack[-1] != match.group(2):
-                return False
-            stack.pop()
-        else:
-            stack.append(match.group(2))
-    return not stack
-
-
-def _visible(text: str) -> str:
-    return re.sub(r"<[^>]+>", "", text).replace("\n", "")
-
-
-@pytest.mark.parametrize(
-    ("name", "markdown"),
-    [
-        ("code block", "```\n" + "x" * 9000 + "\n```"),
-        ("bold run", "**" + "word " * 1200 + "**"),
-        ("bulleted list", "\n".join(f"- **item {i}** padding" for i in range(300))),
-        ("link text", "[" + "L" * 5000 + "](https://e.com)"),
-        ("unformatted", "y" * 10000),
-    ],
-)
-def test_a_split_never_leaves_broken_markup(name: str, markdown: str) -> None:
-    # A cut landing inside the formatting makes Telegram reject *both* halves,
-    # so a long code block — the most common thing an agent posts — arrives
-    # completely unformatted. Tags open at a cut are closed and reopened.
-    adapter = _adapter()
-
-    chunks = adapter._chunk(adapter.translate_outbound(markdown))
-
-    assert all(len(c) <= 4096 for c in chunks), name
-    assert all(_tags_balanced(c) for c in chunks), name
-
-
-def test_a_split_code_block_resumes_as_a_code_block() -> None:
-    adapter = _adapter()
-
-    chunks = adapter._chunk(adapter.translate_outbound("```\n" + "x" * 9000 + "\n```"))
-
-    assert len(chunks) > 1
-    assert chunks[0].endswith("</pre>")
-    assert chunks[1].startswith("<pre>")
-
-
-def test_splitting_loses_no_text() -> None:
-    adapter = _adapter()
-    body = adapter.translate_outbound(
-        "**Report**\n\n" + "\n".join(f"- line {i}" for i in range(700))
-    )
-
-    chunks = adapter._chunk(body)
-
-    assert _visible("".join(chunks)) == _visible(body)
-
-
-def test_a_body_at_exactly_the_cap_is_left_whole() -> None:
-    adapter = _adapter()
-
-    assert adapter._chunk("a" * 4096) == ["a" * 4096]
 
 
 def test_only_the_first_chunk_replies_into_the_thread() -> None:
@@ -1467,3 +1409,244 @@ def test_sending_before_the_bridge_is_connected_fails_loudly() -> None:
 
     with pytest.raises(RuntimeError, match="not connected"):
         _run(adapter.send_message(str(CHAT_ID), "scout", "hello"))
+
+
+class _FakeMedia:
+    def __init__(
+        self, file_id: str, *, name: str | None = None, mime: str | None = None
+    ) -> None:
+        self.file_id = file_id
+        self.file_name = name
+        self.mime_type = mime
+        self.file_size = 4
+
+
+@pytest.mark.parametrize(
+    ("field", "filename", "mimetype"),
+    [
+        ("video", "video.mp4", "video/mp4"),
+        ("animation", "animation.mp4", "video/mp4"),
+        ("audio", "audio.mp3", "audio/mpeg"),
+        ("voice", "voice.ogg", "audio/ogg"),
+        ("video_note", "video_note.mp4", "video/mp4"),
+    ],
+)
+def test_every_media_kind_is_relayed(field: str, filename: str, mimetype: str) -> None:
+    # Telegram models each kind as its own field rather than one attachments
+    # list, so a kind missing from the loop is simply never relayed.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    _bot(adapter).files["m1"] = _FakeFileHandle(b"media")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, caption="look", **{field: _FakeMedia("m1")})
+        )
+    )
+
+    assert [a.filename for a in seen[0].attachments] == [filename]
+    assert seen[0].attachments[0].mimetype == mimetype
+
+
+def test_media_keeps_its_own_name_and_type_when_telegram_supplies_them() -> None:
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    _bot(adapter).files["m1"] = _FakeFileHandle(b"media")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None,
+                caption="clip",
+                video=_FakeMedia("m1", name="demo.mov", mime="video/quicktime"),
+            )
+        )
+    )
+
+    assert seen[0].attachments[0].filename == "demo.mov"
+    assert seen[0].attachments[0].mimetype == "video/quicktime"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["left_chat_member", "new_chat_title", "pinned_message", "group_chat_created"],
+)
+def test_service_messages_are_not_bridged_as_empty_messages(field: str) -> None:
+    # A service message has a real sender and no body. Telegram has no empty
+    # user message, so relaying one puts a blank line in the room (CHOO-1686).
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(text=None, **{field: object()})))
+
+    assert seen == []
+
+
+def test_a_photo_with_no_caption_is_still_bridged() -> None:
+    # The service-message guard keys on there being nothing at all to relay, so
+    # it must not swallow a wordless image.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    _bot(adapter).files["p1"] = _FakeFileHandle(b"img")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, photo=[_FakePhotoSize("p1", "u1", 4)])
+        )
+    )
+
+    assert len(seen) == 1
+    assert seen[0].content == ""
+    assert len(seen[0].attachments) == 1
+
+
+def test_an_undownloadable_attachment_is_still_bridged_as_a_failure() -> None:
+    # Disclosure beats silence: the guard must not treat "only failures" as a
+    # service message and drop the disclosure with it.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    _bot(adapter).files["d1"] = _FakeFileHandle(b"", fail=True)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, document=_FakeDocument("d1", "x.bin", None, 4))
+        )
+    )
+
+    assert len(seen) == 1
+    assert seen[0].attachment_failures[0].filename == "x.bin"
+
+
+def test_a_forum_topic_message_belongs_to_the_chat_not_the_topic() -> None:
+    # The topic id is the thread root; the room is still keyed on the chat.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(message_thread_id=88)))
+
+    assert seen[0].channel_id == str(CHAT_ID)
+    assert seen[0].root_id == "88"
+
+
+def test_the_dedupe_cache_evicts_oldest_first() -> None:
+    # Unbounded growth would be a slow leak on a busy bridge; eviction is what
+    # bounds it, and an evicted id must be able to bridge again.
+    adapter = _adapter()
+    adapter._seen_ids_max = 3
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    for message_id in (1, 2, 3, 4):
+        _run(adapter._handle_message(_FakeInbound(message_id=message_id)))
+
+    assert len(adapter._seen_ids) == 3
+    assert (str(CHAT_ID), 1) not in adapter._seen_ids
+
+    _run(adapter._handle_message(_FakeInbound(message_id=1)))
+
+    assert len(seen) == 5
+
+
+def test_a_command_published_under_its_underscore_name_still_resolves() -> None:
+    # Telegram will not register a hyphen, so the menu offers `/invite_agent`.
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(adapter._handle_message(_FakeInbound(text="/invite_agent @scout")))
+
+    assert commands[0].command == "invite-agent"
+    assert commands[0].args == "@scout"
+
+
+def test_a_username_that_disagrees_with_the_bot_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Every t.me link is built from the configured name, so a mismatch produces
+    # links that quietly point at the wrong bot.
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username="wrong_name")
+    )
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with caplog.at_level(logging.WARNING):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert "does not match" in caplog.text
+    assert BOT_USERNAME in caplog.text
+
+
+def test_a_bad_token_fails_the_start_rather_than_running_deaf() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="bad", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    async def _unauthorised() -> Any:
+        raise TelegramError("Unauthorized")
+
+    app.bot.get_me = _unauthorised  # type: ignore[attr-defined]
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with pytest.raises(TelegramError, match="Unauthorized"):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert app.updater.polling_kwargs is None
+
+
+def test_an_application_without_an_updater_fails_loudly() -> None:
+    # Polling is the only inbound path; an application that cannot poll would
+    # otherwise send happily and receive nothing.
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+    app.updater = None  # type: ignore[assignment]
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with pytest.raises(RuntimeError, match="without an updater"):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+
+def test_the_command_menu_is_published_in_telegrams_spelling() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    published = {c.command for c in app.bot.published_commands}
+    assert "invite_agent" in published
+    assert not any("-" in name for name in published)
+
+
+def test_a_menu_telegram_rejects_does_not_stop_the_bridge(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The bridge is fully usable without the menu; refusing to start over it
+    # would be a far worse outcome.
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    async def _reject(_commands: Any) -> None:
+        raise TelegramError("bad menu")
+
+    app.bot.set_my_commands = _reject  # type: ignore[attr-defined]
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with caplog.at_level(logging.ERROR):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert "Could not publish the Telegram command menu" in caplog.text
+    assert app.updater.polling_kwargs is not None

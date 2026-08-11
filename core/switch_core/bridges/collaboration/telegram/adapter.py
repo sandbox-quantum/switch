@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import Any
 
 from telegram import (
+    BotCommand,
     InputMediaDocument,
     InputMediaPhoto,
     LinkPreviewOptions,
@@ -19,6 +20,7 @@ from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import BadRequest, Conflict, TelegramError
 from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
+from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -35,13 +37,15 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.telegram.chunking import (
+    MAX_MESSAGE,
+    chunk_message,
+)
 
 logger = logging.getLogger(__name__)
 
-# Telegram's hard limits. A message over the text cap is rejected outright, so
-# long agent output is split rather than lost; a caption over the caption cap
-# is posted as its own message ahead of the file.
-_MAX_TEXT_CHARS = 4096
+# A caption over this is posted as its own message ahead of the file. The
+# message-length cap lives in `chunking`, which owns the splitting.
 _MAX_CAPTION_CHARS = 1024
 
 # The Bot API refuses to serve a file larger than this, whatever the bridge's
@@ -56,6 +60,12 @@ _ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member"]
 
 # Switch's own in-room prefix, plus Telegram's native one.
 _COMMAND_PREFIXES = ("!", "/")
+
+# Telegram will only register a command spelled in these characters, and caps a
+# description at 256. A name it rejects is left out of the menu rather than
+# taking the whole call down.
+_TELEGRAM_COMMAND_RE = re.compile(r"[a-z0-9_-]{1,32}")
+_MAX_COMMAND_DESCRIPTION = 256
 
 # Supergroup and channel ids are the internal id with a -100 prefix; t.me/c/
 # links carry the internal id alone.
@@ -145,6 +155,38 @@ class TelegramAdapter(CollaborationAdapter):
             allowed_updates=_ALLOWED_UPDATES, error_callback=self._on_polling_error
         )
         logger.info("Telegram adapter connected as @%s (id %s)", me.username, me.id)
+        await self._publish_command_menu()
+
+    async def _publish_command_menu(self) -> None:
+        """Publish the in-room command set so Telegram offers it as you type.
+
+        Telegram only accepts `[a-z0-9_]` in a registered command, so the
+        hyphenated names are published in their underscore spelling —
+        `/invite_agent` — and `_parse_command` accepts either. Without this the
+        commands still work when typed in full, but nothing suggests them, and
+        a `/` menu that lists none implies the bot has none.
+
+        A failure here is logged and left non-fatal, as Discord's sync is: the
+        bridge is fully usable without the menu, and losing it is a far better
+        outcome than refusing to start.
+        """
+        menu = [
+            BotCommand(
+                command=command.name.replace("-", "_"),
+                description=command.description[:_MAX_COMMAND_DESCRIPTION],
+            )
+            for command in COMMANDS
+            if not command.hidden and _TELEGRAM_COMMAND_RE.fullmatch(command.name)
+        ]
+        try:
+            await self._require_bot().set_my_commands(menu)
+        except Exception:
+            logger.exception(
+                "Could not publish the Telegram command menu — commands still "
+                "work when typed, but will not be suggested"
+            )
+            return
+        logger.info("Published %d Telegram commands", len(menu))
 
     @staticmethod
     def _on_polling_error(error: TelegramError) -> None:
@@ -681,7 +723,6 @@ class TelegramAdapter(CollaborationAdapter):
     _ITALIC_STAR_RE = re.compile(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])")
     _ITALIC_USCORE_RE = re.compile(r"(?<![\w_])_([^_\n]+?)_(?![\w_])")
     _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
-    _TAG_RE = re.compile(r"<(/?)([a-z]+)[^>]*>")
 
     def translate_outbound(self, content: str) -> str:
         """Render Switch's Markdown as the HTML subset Telegram accepts.
@@ -759,10 +800,15 @@ class TelegramAdapter(CollaborationAdapter):
     # ── Update handling ──────────────────────────────────────────────────────
 
     async def _handle_update(self, update: Any) -> None:
-        # What Telegram actually delivered. With privacy mode on, the absence
-        # of a line here for a message someone can see in the chat is the whole
-        # diagnosis, so it is worth being able to turn on.
-        logger.debug("Telegram update received: %s", update)
+        # That Telegram delivered something, and for which chat. With privacy
+        # mode on, the absence of a line here for a message someone can see in
+        # the chat is the whole diagnosis — which needs the shape of the update,
+        # not its contents, so the body and sender are deliberately left out.
+        logger.debug(
+            "Telegram update %s received (%s)",
+            getattr(update, "update_id", "?"),
+            self._update_shape(update),
+        )
         chat_member = getattr(update, "my_chat_member", None)
         if chat_member is not None:
             await self._handle_my_chat_member(chat_member)
@@ -857,6 +903,18 @@ class TelegramAdapter(CollaborationAdapter):
             return
 
         attachments, attachment_failures = await self._fetch_attachments(message)
+        if not content and not attachments and not attachment_failures:
+            # A service message — someone left, the title changed, a message was
+            # pinned — carries a real sender and no body. Telegram has no such
+            # thing as an empty user message, so nothing to bridge means nothing
+            # was said. Relaying it puts a blank line in the room.
+            logger.debug(
+                "Skipping Telegram service message %s in %s",
+                message.message_id,
+                chat_id,
+            )
+            return
+
         await self._on_message(
             InboundMessage(
                 channel_id=chat_id,
@@ -877,6 +935,21 @@ class TelegramAdapter(CollaborationAdapter):
                 ),
             )
         )
+
+    @staticmethod
+    def _update_shape(update: Any) -> str:
+        """Which kind of update this is and which chat it belongs to.
+
+        Enough to tell whether Telegram is delivering, without putting message
+        bodies or sender names into the log — this runs server-side, where the
+        desktop app's redaction does not reach."""
+        for field in ("message", "channel_post", "my_chat_member"):
+            payload = getattr(update, field, None)
+            if payload is None:
+                continue
+            chat = getattr(payload, "chat", None)
+            return f"{field} in chat {getattr(chat, 'id', '?')}"
+        return "no recognised payload"
 
     @staticmethod
     def _report_migration(message: Any, chat_id: str) -> bool:
@@ -967,6 +1040,11 @@ class TelegramAdapter(CollaborationAdapter):
         name = parts[0][1:].split("@", 1)[0]
         if not name:
             return None
+        # Telegram will not register a command containing a hyphen, so the menu
+        # publishes `invite_agent` for `invite-agent`. Whichever the user picked
+        # or typed resolves to the one name the dispatcher knows.
+        if name not in COMMANDS_BY_NAME:
+            name = name.replace("_", "-")
         return name, parts[1].strip() if len(parts) > 1 else ""
 
     @staticmethod
@@ -1182,9 +1260,7 @@ class TelegramAdapter(CollaborationAdapter):
 
     @staticmethod
     def _clamp(text: str) -> str:
-        return (
-            text if len(text) <= _MAX_TEXT_CHARS else text[: _MAX_TEXT_CHARS - 1] + "…"
-        )
+        return text if len(text) <= MAX_MESSAGE else text[: MAX_MESSAGE - 1] + "…"
 
     async def _split_caption(
         self, channel_id: str, caption: str, thread_root_id: str | None
@@ -1208,7 +1284,7 @@ class TelegramAdapter(CollaborationAdapter):
         head of the run."""
         bot = self._require_bot()
         first_ref: str | None = None
-        for index, chunk in enumerate(self._chunk(body)):
+        for index, chunk in enumerate(chunk_message(body)):
             kwargs = self._reply_kwargs(thread_root_id) if index == 0 else {}
             sent = await self._send_chunk(bot, channel_id, chunk, kwargs)
             if sent is None:
@@ -1263,82 +1339,3 @@ class TelegramAdapter(CollaborationAdapter):
                 "Failed to send message to Telegram chat %s: %s", channel_id, e
             )
             return None
-
-    @classmethod
-    def _open_tags(cls, text: str) -> list[tuple[str, str]]:
-        """The tags still open at the end of `text`, outermost first.
-
-        Returned as `(name, opening tag)` so each can be both closed here and
-        reopened verbatim — an `<a href="…">` has to carry its target across."""
-        stack: list[tuple[str, str]] = []
-        for match in cls._TAG_RE.finditer(text):
-            closing, name = match.group(1), match.group(2)
-            if not closing:
-                stack.append((name, match.group(0)))
-                continue
-            for index in range(len(stack) - 1, -1, -1):
-                if stack[index][0] == name:
-                    del stack[index]
-                    break
-        return stack
-
-    @staticmethod
-    def _safe_split(text: str, limit: int) -> int:
-        """The best place to cut `text` at or before `limit`.
-
-        Never inside a tag — half an `<a href="…">` is unparseable — and on a
-        line break when there is one late enough to be worth using."""
-        cut = min(limit, len(text))
-        last_open = text.rfind("<", 0, cut)
-        if last_open > text.rfind(">", 0, cut):
-            cut = last_open
-        newline = text.rfind("\n", 0, cut)
-        if newline > cut // 2:
-            cut = newline
-        return max(cut, 1)
-
-    @classmethod
-    def _chunk(cls, body: str) -> list[str]:
-        """Break a body into Telegram-sized pieces, keeping the markup valid.
-
-        Agent output routinely runs past the 4096-character cap, and Telegram
-        rejects an oversize message outright rather than truncating it. A naive
-        split lands inside the formatting — a long code block is the usual
-        casualty — and Telegram then refuses each half, so the whole thing
-        arrives unformatted. Tags left open at a cut are therefore closed at the
-        end of one piece and reopened at the start of the next.
-        """
-        if len(body) <= _MAX_TEXT_CHARS:
-            return [body]
-
-        chunks: list[str] = []
-        rest = body
-        reopen = ""
-        while True:
-            candidate = reopen + rest
-            if len(candidate) <= _MAX_TEXT_CHARS:
-                chunks.append(candidate)
-                return chunks
-
-            cut = cls._safe_split(candidate, _MAX_TEXT_CHARS)
-            closers = cls._closing_tags(candidate[:cut])
-            if cut + len(closers) > _MAX_TEXT_CHARS:
-                # Closing the open tags would overflow; cut earlier to fit them.
-                cut = cls._safe_split(candidate, _MAX_TEXT_CHARS - len(closers))
-                closers = cls._closing_tags(candidate[:cut])
-            if cut <= len(reopen):
-                # No progress possible on a tag boundary — cut hard instead, so
-                # a pathological body cannot loop forever.
-                cut = min(_MAX_TEXT_CHARS, len(candidate))
-                closers = ""
-
-            head = candidate[:cut]
-            chunks.append(head.rstrip("\n") + closers)
-            reopen = "".join(tag for _, tag in cls._open_tags(head)) if closers else ""
-            rest = candidate[cut:].lstrip("\n")
-            if not rest:
-                return chunks
-
-    @classmethod
-    def _closing_tags(cls, text: str) -> str:
-        return "".join(f"</{name}>" for name, _ in reversed(cls._open_tags(text)))
