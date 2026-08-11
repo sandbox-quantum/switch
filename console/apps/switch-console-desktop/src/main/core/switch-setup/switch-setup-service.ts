@@ -1,10 +1,14 @@
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
+import { app } from 'electron';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
 import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
+import { createPluginFs } from '../providers/plugin-fs';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import {
   cliRulesFor,
@@ -39,6 +43,16 @@ export function marketplaceMatchesSource(entry: RegisteredMarketplace, source: s
 export type SwitchSetupResult = { success: boolean; message?: string };
 
 const EXEC_TIMEOUT_MS = 120_000;
+
+/**
+ * The version stamped into a file-based connector install, and the one it is
+ * compared against. It ships inside the app, so the app's version is what
+ * identifies it. Read lazily: `app` is unavailable in the sidecar and in unit
+ * tests that never touch this path.
+ */
+function appVersion(): string {
+  return app?.getVersion() ?? '0.0.0';
+}
 
 /** A CLI failure with no stderr still needs to say something. */
 function installFailureMessage(raw: string): string {
@@ -79,6 +93,25 @@ function unsupported(agentId: string): SwitchSetupStatus {
  */
 class SwitchSetupService {
   private readonly ctx = new LocalExecutionContext();
+
+  /**
+   * The `files` connector behavior for an agent whose connector Switch Console
+   * writes itself, or null for any other agent.
+   */
+  private resolveFiles(agentId: string) {
+    const plugin = getPlugin(agentId);
+    if (plugin.capabilities.switchSetup.kind !== 'files') return null;
+    const files = plugin.behavior.switchSetup?.files;
+    if (!files) {
+      // A declared descriptor with no behavior cannot install anything, and
+      // reporting "not installed" forever would send the user to a button that
+      // silently does nothing.
+      throw new Error(
+        `Agent '${agentId}' declares a file-based Switch connector but implements no behavior for it.`
+      );
+    }
+    return { files, homeFs: createPluginFs(homedir()) };
+  }
 
   /** Returns the `cli` descriptor + agent binary, or null when unsupported/unresolvable. */
   private async resolve(agentId: string) {
@@ -197,8 +230,32 @@ class SwitchSetupService {
     }
   }
 
+  /**
+   * Status of a file-based connector. There is no catalog to consult: what the
+   * running app ships is the latest there is, so an install written by an older
+   * build is what "update available" means here.
+   */
+  private async filesStatus(agentId: string): Promise<SwitchSetupStatus> {
+    const resolved = this.resolveFiles(agentId);
+    if (!resolved) return unsupported(agentId);
+    const installedVersion = await resolved.files.installedVersion(resolved.homeFs);
+    const latestVersion = appVersion();
+    return {
+      agentId,
+      supported: true,
+      installed: installedVersion !== null,
+      installedVersion,
+      latestVersion,
+      updateAvailable: installedVersion !== null && isNewerVersion(installedVersion, latestVersion),
+      refreshError: null,
+    };
+  }
+
   /** Fast, local status read — no network/catalog refresh. */
   async getStatus(agentId: string): Promise<SwitchSetupStatus> {
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.filesStatus(agentId);
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
     const { descriptor, bin, rules } = resolved;
@@ -239,7 +296,7 @@ class SwitchSetupService {
    */
   async listAgentTypeAvailability(): Promise<AgentTypeAvailability[]> {
     const types = listPlugins()
-      .filter((plugin) => plugin.capabilities.switchSetup.kind === 'cli')
+      .filter((plugin) => plugin.capabilities.switchSetup.kind !== 'none')
       .map((plugin) => plugin.metadata.id);
 
     const availability: AgentTypeAvailability[] = [];
@@ -264,6 +321,11 @@ class SwitchSetupService {
    * versions with `refreshError` set so the UI can disclose the staleness.
    */
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
+    // A file-based connector ships inside the app, so there is no catalog to
+    // refresh and the plain status read is already current.
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.filesStatus(agentId);
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
     const { descriptor, bin, rules } = resolved;
@@ -288,7 +350,27 @@ class SwitchSetupService {
     return { ...(await this.getStatus(agentId)), refreshError };
   }
 
+  /** Install, update and uninstall for a file-based connector. */
+  private async runFiles(
+    agentId: string,
+    action: (files: ISwitchSetupFilesBehavior, homeFs: PluginFs) => Promise<unknown>
+  ): Promise<SwitchSetupResult> {
+    const resolved = this.resolveFiles(agentId);
+    if (!resolved)
+      return { success: false, message: 'Switch setup is not supported for this agent.' };
+    try {
+      await action(resolved.files, resolved.homeFs);
+      return { success: true };
+    } catch (err) {
+      log.error('switch-setup: file-based connector operation failed', { agentId, err });
+      return { success: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   async install(agentId: string): Promise<SwitchSetupResult> {
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.runFiles(agentId, (files, fs) => files.install(fs, { version: appVersion() }));
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
@@ -320,6 +402,11 @@ class SwitchSetupService {
    * otherwise fail it — after the uninstall has already succeeded.
    */
   async update(agentId: string): Promise<SwitchSetupResult> {
+    // Installing a file-based connector overwrites in place, so update is the
+    // same operation — there is no removed-but-not-reinstalled window.
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.runFiles(agentId, (files, fs) => files.install(fs, { version: appVersion() }));
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
@@ -363,6 +450,9 @@ class SwitchSetupService {
   }
 
   async uninstall(agentId: string): Promise<SwitchSetupResult> {
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.runFiles(agentId, (files, fs) => files.uninstall(fs));
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };

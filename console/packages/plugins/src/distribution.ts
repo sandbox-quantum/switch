@@ -8,3 +8,19 @@
  * (RELEASE_REPO_* in apps/switch-console-desktop/src/shared/app-identity.ts).
  */
 export const SWITCH_MARKETPLACE_SOURCE = 'sandbox-quantum/switch';
+
+/**
+ * The published agent-runtime version a session runs, for agents whose Switch
+ * connector Switch Console writes itself rather than installing from the
+ * marketplace.
+ *
+ * The two marketplace connectors pin this in their own `.mcp.json`, which is
+ * what a Claude Code or Codex session actually reads. An agent with no
+ * marketplace has no such file, so the pin lives here instead — and the two
+ * must agree, or one host runs a different runtime from the others for no
+ * visible reason. `runtime-pin.test.ts` fails when they drift.
+ *
+ * It must name a version that is *published*: the tag is pushed separately from
+ * the merge, so this moves after the tag exists, never ahead of it.
+ */
+export const SWITCH_AGENT_RUNTIME_PIN = '@sandboxaq/switch-agent-runtime@0.3.0';

@@ -8,6 +8,7 @@ import {
 import { buildOpencodeHookBehavior } from './hooks';
 import { icon } from './icon';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
+import { buildOpencodeSwitchConnector } from './switch-connector';
 
 const OPENCODE_PLUGIN_PATH = '.opencode/plugins/switchdash-notifications.js';
 const validateSessionId = (id: string) => id.startsWith('ses');
@@ -91,7 +92,10 @@ export const plugin = definePlugin(
       kind: 'resumable',
     },
     repoAgents: { kind: 'none' },
-    switchSetup: { kind: 'none' },
+    // OpenCode has no plugin marketplace to install a connector from — its
+    // `plugin` subcommand installs one npm module and has no list, remove or
+    // version verb — so Switch Console writes the connector's files itself.
+    switchSetup: { kind: 'files', connectorName: 'Switch connector' },
   },
   { icon }
 );
@@ -111,6 +115,7 @@ export const provider = registerPluginBehavior(plugin, {
   },
   sessions: { validateSessionId },
   hooks: buildOpencodeHookBehavior(),
+  switchSetup: { files: buildOpencodeSwitchConnector() },
   mcp: opencodeMcpAdapter(),
   plugins: createFileDropPlugin({
     relativePath: OPENCODE_PLUGIN_PATH,

@@ -15,7 +15,39 @@ import type { PluginFs } from '../../runtime/fs';
  * for a local dir or a remote SSH host, so one implementation covers both.
  */
 export type ISwitchSetupBehavior = {
-  removeCredentials(fs: PluginFs): Promise<void>;
+  removeCredentials?(fs: PluginFs): Promise<void>;
+  /**
+   * Installing and removing the connector's files. Required by — and only
+   * consulted for — a `kind: 'files'` descriptor.
+   */
+  files?: ISwitchSetupFilesBehavior;
+};
+
+/**
+ * Installing the Switch connector for an agent that has no plugin marketplace
+ * to install it from.
+ *
+ * The marketplace dialects assume a CLI that can fetch, list and version a
+ * plugin. An agent without one still needs the same outcome — the Switch MCP
+ * server registered, and the room-workflow skill on disk — so Switch Console
+ * writes those files itself and owns the bookkeeping the CLI would otherwise
+ * do. `version` is what the running app ships, so a status read can tell an
+ * install written by an older build from a current one.
+ *
+ * `fs` is rooted at the agent's home directory and behaves identically for a
+ * local machine and a remote SSH host, so one implementation serves both.
+ */
+export type ISwitchSetupFilesBehavior = {
+  /** Write the connector's files. Returns the home-relative paths written. */
+  install(fs: PluginFs, params: { version: string }): Promise<string[]>;
+  /** Remove them again, leaving unrelated config untouched. */
+  uninstall(fs: PluginFs): Promise<void>;
+  /**
+   * The version recorded by the last install, or null when not installed.
+   * Null must mean absent rather than unreadable — a status read that cannot
+   * tell the difference reports a broken install as a missing one.
+   */
+  installedVersion(fs: PluginFs): Promise<string | null>;
 };
 
 /**
@@ -39,10 +71,12 @@ export type SwitchSetupCliDialect = (typeof SWITCH_SETUP_CLI_DIALECTS)[number];
 /**
  * Describes how an agent type installs and manages its Switch connector plugin.
  *
- * kind: 'cli'  — the agent exposes a plugin marketplace CLI. The main-process
- *                switch-setup service drives that CLI from these descriptor
- *                fields, using the verb/parse rules for the declared `dialect`.
- * kind: 'none' — the agent has no Switch connector setup; the UI surfaces nothing.
+ * kind: 'cli'   — the agent exposes a plugin marketplace CLI. The main-process
+ *                 switch-setup service drives that CLI from these descriptor
+ *                 fields, using the verb/parse rules for the declared `dialect`.
+ * kind: 'files' — the agent has no marketplace, so Switch Console writes the
+ *                 connector's files itself via {@link ISwitchSetupFilesBehavior}.
+ * kind: 'none'  — the agent has no Switch connector setup; the UI surfaces nothing.
  *
  * The descriptor is purely declarative — one generic driver serves every agent
  * that shares the marketplace model, with `dialect` naming the surface
@@ -66,6 +100,14 @@ export const switchSetupCapability = definePluginCapability<ISwitchSetupBehavior
       scope: z.enum(['user', 'project', 'local']).default('user'),
       /** Which CLI dialect this agent's `plugin` subcommand speaks. */
       dialect: z.enum(SWITCH_SETUP_CLI_DIALECTS).default('claude-code'),
+    }),
+    z.object({
+      kind: z.literal('files'),
+      /**
+       * What the settings card calls this install. There is no marketplace to
+       * name it, so the descriptor carries the label.
+       */
+      connectorName: z.string(),
     }),
     z.object({ kind: z.literal('none') }),
   ])

@@ -95,6 +95,7 @@ export type {
 } from './capabilities/repo-agents';
 export type {
   ISwitchSetupBehavior,
+  ISwitchSetupFilesBehavior,
   SwitchSetupCliDialect,
   SwitchSetupDescriptor,
 } from './capabilities/switch-setup';

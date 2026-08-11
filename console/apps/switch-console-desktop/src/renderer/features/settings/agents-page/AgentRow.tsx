@@ -32,7 +32,7 @@ export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: ()
           <div className="flex items-center gap-1.5">
             <AgentRowStatus
               agentId={agent.id}
-              supportsSwitch={agent.capabilities.switchSetup.kind === 'cli'}
+              supportsSwitch={agent.capabilities.switchSetup.kind !== 'none'}
               cliInstalled={isInstalled}
               cliUpdateAvailable={!!updateState.render}
             />

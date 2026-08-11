@@ -1,4 +1,7 @@
+import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
+import { app } from 'electron';
+import { createRemoteHomePluginFs } from '@main/core/agent-runtime/impl/remote-home-plugin-fs';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
@@ -13,6 +16,15 @@ const EXEC_TIMEOUT_MS = 120_000;
 
 /** POSIX shells use 127 for "command not found". */
 const COMMAND_NOT_FOUND = 127;
+
+/**
+ * The version stamped into a file-based connector install. It ships inside the
+ * app, so the app's version identifies it — on a remote host as locally. Read
+ * lazily: `app` is absent outside the desktop process.
+ */
+function appVersion(): string {
+  return app?.getVersion() ?? '0.0.0';
+}
 
 type RunResult = { code: number; stdout: string; stderr: string };
 
@@ -88,6 +100,22 @@ function parseJsonLoose(stdout: string): unknown {
  */
 export class RemoteSwitchSetupService {
   constructor(private readonly ctx: SshExecutionContext) {}
+
+  /**
+   * The `files` connector behavior for an agent whose connector Switch Console
+   * writes itself, rooted at the remote host's home. Null for any other agent.
+   */
+  private resolveFiles(agentId: string) {
+    const plugin = getPlugin(agentId);
+    if (plugin.capabilities.switchSetup.kind !== 'files') return null;
+    const files = plugin.behavior.switchSetup?.files;
+    if (!files) {
+      throw new Error(
+        `Agent '${agentId}' declares a file-based Switch connector but implements no behavior for it.`
+      );
+    }
+    return { files, homeFs: createRemoteHomePluginFs(this.ctx) };
+  }
 
   private async resolve(agentId: string) {
     const plugin = getPlugin(agentId);
@@ -228,7 +256,47 @@ export class RemoteSwitchSetupService {
     }
   }
 
+  /**
+   * Status of a file-based connector on this host. Its content ships inside the
+   * app, so the app's version is the latest there is and an install stamped by
+   * an older build is what "update available" means.
+   */
+  private async filesStatus(agentId: string, version: string): Promise<SwitchSetupStatus> {
+    const resolved = this.resolveFiles(agentId);
+    if (!resolved) return unsupported(agentId);
+    const installedVersion = await resolved.files.installedVersion(resolved.homeFs);
+    return {
+      agentId,
+      supported: true,
+      installed: installedVersion !== null,
+      installedVersion,
+      latestVersion: version,
+      updateAvailable: installedVersion !== null && isNewerVersion(installedVersion, version),
+      refreshError: null,
+    };
+  }
+
+  /** Install, update and uninstall for a file-based connector on this host. */
+  private async runFiles(
+    agentId: string,
+    action: (files: ISwitchSetupFilesBehavior, homeFs: PluginFs) => Promise<unknown>
+  ): Promise<SwitchSetupResult> {
+    const resolved = this.resolveFiles(agentId);
+    if (!resolved)
+      return { success: false, message: 'Switch setup is not supported for this agent.' };
+    try {
+      await action(resolved.files, resolved.homeFs);
+      return { success: true };
+    } catch (err) {
+      log.error('remote-switch-setup: file-based connector operation failed', { agentId, err });
+      return { success: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   async getStatus(agentId: string): Promise<SwitchSetupStatus> {
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.filesStatus(agentId, appVersion());
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
     const { descriptor, bin, ref, rules } = resolved;
@@ -264,6 +332,10 @@ export class RemoteSwitchSetupService {
    * versions with `refreshError` set so the UI can disclose the staleness.
    */
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
+    // A file-based connector ships inside the app: nothing to refresh.
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      return this.filesStatus(agentId, appVersion());
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
     const { descriptor, bin, marketplaceSource, rules } = resolved;
@@ -284,6 +356,10 @@ export class RemoteSwitchSetupService {
   }
 
   async install(agentId: string): Promise<SwitchSetupResult> {
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      const version = appVersion();
+      return this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
@@ -305,6 +381,12 @@ export class RemoteSwitchSetupService {
    * would otherwise fail it after the uninstall has already succeeded.
    */
   async update(agentId: string): Promise<SwitchSetupResult> {
+    // Installing overwrites in place, so update is the same operation — there
+    // is no removed-but-not-reinstalled window to report on.
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
+      const version = appVersion();
+      return this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
+    }
     const resolved = await this.resolve(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
@@ -348,7 +430,7 @@ export class RemoteSwitchSetupService {
   async listAgentTypeStatuses(): Promise<SwitchSetupStatus[]> {
     const statuses: SwitchSetupStatus[] = [];
     for (const plugin of listPlugins()) {
-      if (plugin.capabilities.switchSetup.kind !== 'cli') continue;
+      if (plugin.capabilities.switchSetup.kind === 'none') continue;
       statuses.push(await this.getStatus(plugin.metadata.id));
     }
     return statuses;
