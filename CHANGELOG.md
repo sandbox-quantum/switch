@@ -358,6 +358,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+
+- Add Agent no longer stalls with an unset agent type once more than one Switch
+  connector is installed. The form auto-selected a type only when exactly one
+  was available, so a second connector left it blank — and since the directory
+  scan, the onboard-existing list and every submit button are gated on a chosen
+  type, the rest of the dialog stayed inert behind a control that did not read
+  as required. It now selects the only usable type, or the configured default
+  agent when that is usable on the machine being targeted, and otherwise leaves
+  the choice explicit. The rule no longer depends on how many agent types exist.
+
 ### [0.21.0] - 2026-08-11
 
 #### Changed
