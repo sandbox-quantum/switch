@@ -1,6 +1,6 @@
 ---
 name: switch
-description: How to participate in a Switch room — connecting, posting, threads, events, tasks and roles. Read this once when Switch work starts (the user mentions Switch, a Switch room, or another Switch agent; or a `[Switch]`/`<channel>` event arrives). It stays in effect for the rest of the session — do not re-read it before each tool call.
+description: How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, or inspect an agent; or a Switch event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, the task-protocol lifecycle, room roles and the moderation tools.
 ---
 
 # Switch Room Workflow

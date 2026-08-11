@@ -1166,8 +1166,9 @@ compatibility signal. History for those is in the git log.
   `archive_room` / `unarchive_room`.
 - The skill is state-aware: it loads once for a session instead of before every
   tool call, and no longer makes an agent reconnect and re-read the room to say
-  one thing. The `description` is a trigger rather than a 40-name tool
-  inventory; a new "steady state" section says the connection holds for the
+  one thing. The `description` still directs the agent to load the skill — a
+  passive rewording stopped it loading at all in live runs — but says to load it
+  once, and drops the 40-name tool inventory; a new "steady state" section says the connection holds for the
   session; and the unconditional "always read / always connect" instructions
   are replaced by triggers that fire on an actual signal.
 - Skill: correct the paging instruction. It told agents to pass
