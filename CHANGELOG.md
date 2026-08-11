@@ -1010,6 +1010,20 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+#### Fixed
+- An environment naming an agent but carrying no token now resolves against the
+  local agent store instead of refusing to start. Any partial `SWITCH_*`
+  environment was treated as a broken config, but that is the exact shape a host
+  settings file produces when the credential is deliberately kept out of the
+  working tree — and Claude Code exports its settings `env` block into the
+  process, MCP subprocesses included. Every hand-started Claude Code session set
+  up by the connector's `configure` skill therefore degraded to
+  `switch_unavailable` with a perfectly good store on disk beside it.
+
+  The agent id makes the lookup exact, so nothing is guessed: an id that matches
+  no store entry, or one belonging to a different server, still refuses. A token
+  with no agent id also still refuses — there is nothing to infer an id from.
+
 ### [0.3.0] - 2026-08-11
 
 #### Changed
@@ -1121,6 +1135,15 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+#### Fixed
+- The hook no longer skips mediation on a standalone install. It read its
+  credentials from the environment only, and the `configure` skill deliberately
+  keeps the token out of there, so it reported itself unconfigured and returned
+  without reporting or mediating anything — silently, on every tool call. It now
+  falls back to the same `.switch/agents/*.json` store the runtime reads, keyed
+  on the agent id the session recorded when it joined a room, and says so on
+  stderr when it cannot resolve one instead of skipping quietly.
+
 ### [0.8.1] - 2026-08-11
 
 #### Changed
@@ -1134,8 +1157,10 @@ compatibility signal. History for those is in the git log.
   conclude anything from a truncated read.
 
 #### Removed
-- Dropped the bundled `configure` skill as part of removing the private-repo /
-  `gh` setup machinery now that the repository is public (CHOO-2023).
+- Dropped the `configure` skill's Step 0, which installed the private-repo /
+  `gh` setup machinery, now that the repository is public (CHOO-2023). The skill
+  itself stays; an earlier version of this entry said it had been removed
+  wholesale, which it had not.
 
 ### [0.7.9] - 2026-08-09
 
