@@ -97,12 +97,51 @@ surface from a deployment the agent may not belong to. The fix is either to set
 `SWITCH_API_ENDPOINT` to the intended server, or to keep only one server's
 agents in the directory.
 
-## Step 2 — Switch server URL
+## Step 2 — Switch server URL, and prove it before going on
 
-Confirm the Switch server URL — the agent-bridge endpoint. If
-`SWITCH_API_ENDPOINT` is already set in the environment, offer it as the
-default; otherwise ask for the deployment's hostname (e.g.
-`http://localhost:8000` for local dev).
+You need the **agent-bridge** URL, which on most deployments is **not** the
+gateway URL. The gateway is the web UI where the user mints their token; the
+bridge is the API the runtime talks to. They are usually different hosts — e.g.
+`switch-gateway.example.ts.net` (UI) versus `switch-api.example.ts.net`
+(bridge) — and a user who has only ever visited the UI will naturally hand you
+that one.
+
+If `SWITCH_API_ENDPOINT` is set in the environment, offer it. Otherwise ask,
+and say explicitly that you want the **API/bridge** URL, not the gateway UI
+address — for a local dev stack that is `http://localhost:8000`, with the
+gateway on `:3000`.
+
+**It must be a bare base URL** — scheme and host, no path. Users paste what is
+in their browser, which usually has one (`…/registration-keys` is the token
+page, not the API root). Strip any path and trailing slash before using it.
+
+**Then prove it before doing anything else**, with the bridge's public health
+route:
+
+```bash
+curl -s --max-time 10 "$ENDPOINT/health"
+```
+
+- **`{"status":"ok"}`** — correct base URL. Continue.
+- **`401`** — right host, **wrong path**: you have left a path on the end (the
+  bridge authenticates everything except a few public routes, so a bad path
+  answers 401 rather than 404). Strip back to scheme+host and probe again.
+- **`405`, `404`, or HTML** — wrong host. This is the gateway or a static
+  server, not the bridge. Ask for the bridge URL; do not go hunting for another
+  path on this one. `/gateway/agents/register-known` is **not** it — the
+  gateway's registration route is session-authenticated and will not accept a
+  registration token.
+- **Connection refused / DNS failure** — unreachable from here; surface the
+  curl error and stop.
+
+Use `/health` specifically, not the registration route. An unauthenticated POST
+to `/agents/register-known` returns 401 on the correct host *and* on a wrong
+path on that host, so it cannot tell you the base URL is right — measured on a
+live deployment.
+
+Getting this wrong is the single most likely way this skill wastes someone's
+time, because without the probe the mistake only surfaces at registration,
+several steps later, after the user has already handed over a token.
 
 ## Step 3 — Registration token
 
@@ -118,8 +157,24 @@ to the API keys tab, and create (or copy an existing) registration token."**
 Don't just say "from the admin" — point at the concrete UI surface.
 
 **Treat the token as sensitive.** It mints agents owned by its user. Never echo
-it, never write it to any file, never inline it in a shell command (it would
-land in shell history). Pass it via the environment variable only.
+it, never write it to any file.
+
+> ⚠️ **If the user pastes the token into the conversation, it is already
+> exposed** — it is in the transcript, and anything you do next cannot unspill
+> it. Do not compound it by putting the value on a command line, where it also
+> lands in shell history and process listings. Instead:
+>
+> - Ask the user to export it in their own shell and re-run, so it reaches you
+>   only as `$SWITCH_REGISTRATION_TOKEN`:
+>   `export SWITCH_REGISTRATION_TOKEN=...` (a leading space keeps it out of
+>   history in most shells).
+> - If they would rather continue with the pasted value, say plainly that you
+>   are going to use it and that **they should rotate it afterwards** in the
+>   gateway's API keys tab. Then write it into the environment of the single
+>   registration command rather than `export`ing it into the session.
+>
+> Either way, tell them once. A token pasted into a chat window and then used
+> without comment is the failure nobody notices until it matters.
 
 ## Step 4 — Agent name and description
 
@@ -262,8 +317,27 @@ with `-i` instead of `-sf` and show the user the status and body, then stop.
 ## Step 7 — Write the credentials file
 
 **Do this in the same command as Step 6's registration** — see the warning
-there. The whole sequence, gitignore first so the token is never briefly
-tracked:
+there.
+
+> ⚠️ **Write these lines to a file and run that file.** Do not paste them
+> inside `bash -lc '...'`. The jq filter is single-quoted, and nesting it in an
+> outer single-quoted string collapses the quoting — jq then sees bare
+> `agent_type:"codex"` and dies with `syntax error, unexpected ':'`, or curl
+> receives a blank argument. This has already cost one real run:
+>
+> ```bash
+> cat > /tmp/switch-configure.sh <<'SCRIPT'
+> ...the script below...
+> SCRIPT
+> bash /tmp/switch-configure.sh
+> ```
+>
+> The quoted heredoc (`<<'SCRIPT'`) is what keeps the body intact.
+
+`ENDPOINT`, `NAME`, `DESC`, `REPO_DIR`, `NOTIFY_USER` and
+`SWITCH_REGISTRATION_TOKEN` must be exported in the environment the script runs
+in. `REPO_DIR` and `NOTIFY_USER` may be empty strings — the server normalises a
+blank to "unset", so there is no need to build the payload conditionally.
 
 ```bash
 set -eu
@@ -273,16 +347,15 @@ printf '*\n' > .switch/agents/.gitignore
 resp=$(mktemp)
 http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
-       --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
-       '{agent_type:"codex", name:$name, description:$desc,
-         options:((if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)
-                  + (if $notify_user == "" then {} else {notify_user:$notify_user} end)),
-         overwrite:false}')")
+         --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+         '{agent_type:"codex", name:$name, description:$desc,
+           options:{repo_dir:$repo_dir, notify_user:$notify_user},
+           overwrite:false}')")
 
 if [ "$http_status" != "200" ]; then
-  printf 'registration failed (%s): ' "$http_status"; cat "$resp"; rm -f "$resp"; exit 1
+  printf 'registration failed (%s): ' "$http_status"; cat "$resp"; echo; rm -f "$resp"; exit 1
 fi
 
 jq --arg ep "$ENDPOINT" \
