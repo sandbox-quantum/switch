@@ -487,7 +487,40 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     const { tools, text } = await degradedAnswer(run);
 
     expect(tools).toEqual(['switch_unavailable']);
-    expect(text).toContain('SWITCH_AGENT_ID');
+    expect(text).toContain('agent_id=MISSING');
+  });
+
+  it('reports which piece is missing when a token comes without an endpoint', async () => {
+    // The diagnostic has to name the variable actually absent. Saying "agent_id
+    // is not set" while it plainly is sends the reader after the wrong thing.
+    const endpoint = await opsServer();
+    const run = start({ SWITCH_API_TOKEN: 'tok-env', SWITCH_AGENT_ID: 'uuid-env' }, (root) =>
+      provision(root, { slug: 'solo', agentId: 'uuid-solo', endpoint, token: 'tok-solo' })
+    );
+
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('endpoint=MISSING');
+    expect(text).toContain('agent_id=uuid-env');
+    expect(text).not.toContain('agent_id=MISSING');
+  });
+
+  it('refuses when two store entries claim the same agent id', async () => {
+    // Two files, two tokens, nothing saying which is current. Taking the first
+    // would leave the session working while the hook — which refuses on this
+    // same condition — quietly stops mediating it.
+    const endpoint = await opsServer();
+    const run = start({ SWITCH_AGENT_ID: 'uuid-dup' }, (root) => {
+      provision(root, { slug: 'a-first', agentId: 'uuid-dup', endpoint, token: 'tok-a' });
+      provision(root, { slug: 'b-second', agentId: 'uuid-dup', endpoint, token: 'tok-b' });
+    });
+
+    const { tools, text } = await degradedAnswer(run);
+
+    expect(tools).toEqual(['switch_unavailable']);
+    expect(text).toContain('a-first.json');
+    expect(text).toContain('b-second.json');
   });
 
   it(

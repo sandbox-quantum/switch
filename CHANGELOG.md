@@ -1158,9 +1158,9 @@ compatibility signal. History for those is in the git log.
 
 #### Removed
 - Dropped the `configure` skill's Step 0, which installed the private-repo /
-  `gh` setup machinery, now that the repository is public (CHOO-2023). The skill
-  itself stays; an earlier version of this entry said it had been removed
-  wholesale, which it had not.
+  `gh` setup machinery, now that the repository is public. The skill itself
+  stays; an earlier version of this entry said it had been removed wholesale,
+  which it had not.
 
 ### [0.7.9] - 2026-08-09
 

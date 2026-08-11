@@ -99,8 +99,11 @@ def _credentials(agent_id: str = "") -> tuple[str, str]:
 
 def _resolve_credentials(agent_id: str) -> tuple[str, str]:
     # A complete environment wins: it is what Switch Console injects per session,
-    # and it is chosen for that session deliberately.
-    if API_ENDPOINT and API_TOKEN:
+    # and it is chosen for that session deliberately. "Complete" must mean the
+    # same three values the runtime requires — the two resolve the same directory
+    # and the same environment, and a session whose tool calls are mediated as a
+    # different agent than it acts as is worse than one that is not mediated.
+    if API_ENDPOINT and API_TOKEN and ENV_AGENT_ID:
         return API_ENDPOINT, API_TOKEN
 
     candidates = _read_agent_store()

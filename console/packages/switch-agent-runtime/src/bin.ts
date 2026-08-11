@@ -204,11 +204,26 @@ function resolveIdentity(): void {
   // falling through to a general store search could bind a different agent than
   // the one named, which is the failure the check exists to prevent.
   if (ENV.agentId && !ENV.token) {
-    const named = store.agents.find((a) => a.agentId === ENV.agentId);
-    const endpointMatches =
-      !ENV.endpoint || (named && normalizeEndpoint(named.endpoint) === normalizeEndpoint(ENV.endpoint));
+    const claiming = store.agents.filter((a) => a.agentId === ENV.agentId);
 
-    if (named && endpointMatches) {
+    // Two files claiming one agent hold two tokens, and nothing in the store
+    // says which is current. Refuse rather than take the first: the hook that
+    // mediates this session's tool calls refuses on exactly this condition, so
+    // binding here would produce a session that works while its governance is
+    // silently switched off — the worst of the available outcomes.
+    if (claiming.length > 1) {
+      return degrade(
+        `SWITCH_AGENT_ID is ${ENV.agentId}, but ${claiming.length} entries in ${store.projectDir} claim it:\n` +
+          claiming.map((a) => `  ${a.slug}.json`).join('\n') +
+          `\nLeave exactly one of them, or set SWITCH_API_TOKEN to say which credential to use.`
+      );
+    }
+
+    const named = claiming[0];
+    if (
+      named &&
+      (!ENV.endpoint || normalizeEndpoint(named.endpoint) === normalizeEndpoint(ENV.endpoint))
+    ) {
       bindIdentity(named);
       return;
     }
@@ -222,15 +237,17 @@ function resolveIdentity(): void {
     );
   }
 
-  // A token that names nobody is still a broken config: every request this
-  // process makes is addressed to an agent id, and there is nothing to infer
-  // one from.
+  // A token present but incomplete is still a broken config. It is not resolved
+  // against the store the way a bare agent id is: the missing piece would be the
+  // endpoint, and inferring where to send a credential is a different order of
+  // risk from inferring which credential to send.
   if (ENV.token) {
     return degrade(
-      `SWITCH_API_TOKEN is set but SWITCH_AGENT_ID is not, so this session cannot say which agent it is\n` +
+      `incomplete SWITCH_* environment — a token was supplied, so all three are required\n` +
         `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
-        `  agent_id=MISSING\n` +
-        `Set SWITCH_AGENT_ID too, or unset both to use the local agent store instead.`
+        `  token=set\n` +
+        `  agent_id=${ENV.agentId || 'MISSING'}\n` +
+        `Set the missing one, or unset SWITCH_API_TOKEN to resolve against the agent store instead.`
     );
   }
 

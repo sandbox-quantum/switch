@@ -95,17 +95,22 @@ keep / reconfigure choice. Use `AskUserQuestion`, and offer a third option when
 
 - **Keep it** — stop the skill.
 - **Add subagents** — keep the existing main agent and jump straight to
-  Step 9 to bring in `.claude/agents/*.md` subagents under it. The parent is the
-  already-configured agent: use its id as `parent_agent_id`. Skip Steps 2–8
+  Step 10 to bring in `.claude/agents/*.md` subagents under it. The parent is the
+  already-configured agent: use its id as `parent_agent_id`. Skip Steps 2–9
   entirely — you are not re-registering the main agent, only adding children.
 - **Reconfigure** — proceed through the flow below to replace the identity.
 
 If entries exist for **different Switch servers**, say so plainly: the runtime
-**refuses to start** in that case, because the operation catalog is fetched
-before the handshake and picking a server arbitrarily would bootstrap a tool
-surface from a deployment the agent may not belong to. The fix is either to set
+**refuses to bind an identity** in that case, because the operation catalog is
+fetched before the handshake and picking a server arbitrarily would bootstrap a
+tool surface from a deployment the agent may not belong to. It still starts, and
+serves one tool that explains the problem. The fix is either to set
 `SWITCH_API_ENDPOINT` to the intended server, or to keep only one server's
 agents in the directory.
+
+The same is true of two entries claiming the **same** agent id: the runtime
+cannot tell which token is current, so it refuses rather than guessing. Leave
+exactly one.
 
 ## Step 2 — Switch server URL
 
@@ -386,8 +391,9 @@ what picks a default when the directory holds several agents.
 Claude Code exports this block into the environment of everything it spawns, the
 Switch runtime included, so it is load-bearing rather than decorative — and
 getting it wrong is not cosmetic. An id here that names no entry in
-`.switch/agents/` makes every session in this directory fail to start, by
-design. Keep the two in step: if you rewrite one, rewrite the other.
+`.switch/agents/` leaves every session in this directory with no Switch tools
+but `switch_unavailable`, which reports the mismatch. Keep the two in step: if
+you rewrite one, rewrite the other.
 
 ## Step 9 — Confirm
 
