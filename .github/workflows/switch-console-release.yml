@@ -1,0 +1,303 @@
+name: Switch Console release
+
+# Builds the Switch Console desktop app and publishes it to a GitHub Release on this
+# repo, so anyone can install it without building from source. The repo is public,
+# so the release assets are too — no token, no ACL.
+#
+# macOS (arm64) is signed + notarized. Linux (x64) builds AppImage, deb and rpm,
+# unsigned. Windows is not built yet (needs an Authenticode / Azure Trusted
+# Signing identity — tracked as a follow-up).
+#
+# Trigger by pushing a tag like `switch-console-v1.1.34` (the version after
+# `switch-console-v` MUST match apps/switch-console-desktop/package.json `version`).
+# `workflow_dispatch` builds the artifacts for testing without creating a Release.
+#
+# The Release stays a **draft** until every platform job has uploaded, and is
+# published by the final `publish-release` job. A draft is invisible to
+# electron-updater (`/releases/latest` skips drafts, and the prerelease listing
+# filters them), so a half-uploaded Release can never become the update feed.
+#
+# Builds are signed + notarized with the org's Developer ID when the Apple secrets
+# (APPLE_CSC_LINK / APPLE_CSC_KEY_PASSWORD / APPLE_API_KEY_P8 / APPLE_API_KEY_ID /
+# APPLE_API_ISSUER) are present; without them they fall back to an unsigned ad-hoc
+# build.
+
+on:
+  push:
+    tags:
+      - 'switch-console-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: console
+
+jobs:
+  # Creates the (assetless) Release up front so the platform jobs can run
+  # concurrently and each upload into it, rather than chaining Linux behind macOS
+  # purely to wait for the Release to exist. It is created as a draft: an
+  # assetless or half-uploaded published Release breaks every installed app on
+  # the platform whose manifest is still missing (ERR_UPDATER_CHANNEL_FILE_NOT_FOUND),
+  # and the macOS job can sit for hours waiting on `release`-environment approval.
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#switch-console-v}"
+          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
+          echo "tag=$tag_version package.json=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#switch-console-v}"
+          notes="Switch Console desktop app $version — macOS arm64 and Linux x64.
+
+          **macOS (arm64):** download the .dmg, open it, drag Switch Console to Applications. Signed and notarized with SandboxAQ's Developer ID — it opens without a Gatekeeper bypass.
+
+          **Linux (x64):** download the .AppImage (\`chmod +x\` then run), the .deb (\`sudo apt install ./<file>.deb\`) or the .rpm (\`sudo dnf install ./<file>.rpm\`). Linux builds are unsigned.
+
+          In-app updates require a GitHub login via the gh CLI (\`gh auth login\`)."
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Switch Console $version" \
+            --draft \
+            --notes "$notes"
+
+  build-macos:
+    name: Build & release (macOS arm64)
+    runs-on: macos-14
+    # The Apple Developer ID signing secrets live in the `release` environment
+    # (required reviewers + branch policy), so a run must be approved and can
+    # only come from main or a tag — a workflow_dispatch from an arbitrary
+    # branch cannot reach the org signing identity.
+    environment: release
+    # Runs on dispatch too (from main), where create-release is skipped rather
+    # than run. Restricted to main / tags so a feature-branch dispatch is skipped.
+    needs: create-release
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
+    # Surface the cert/key secrets through env so step-level `if:` can gate on
+    # them — the `secrets` context is not allowed in `if:` expressions.
+    env:
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.5.3
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#switch-console-v}"
+          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
+          echo "tag=$tag_version package.json=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules for Electron
+        # postinstall skips electron-rebuild under CI; do it explicitly so
+        # better-sqlite3 / node-pty match the packaged Electron ABI.
+        run: pnpm --filter @switch-console/desktop run rebuild
+
+      - name: Build workspace packages + app
+        # Root recursive build (topological): packages/** then the desktop app.
+        run: pnpm run build
+
+      - name: Write App Store Connect API key
+        # electron-builder's notarizer wants the .p8 as a file path. Only write it
+        # when the secret is present; absence leaves APPLE_API_KEY empty so the
+        # package step falls back to an unsigned/ad-hoc build.
+        if: ${{ env.APPLE_API_KEY_P8 != '' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/appstore"
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/appstore/AuthKey.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/appstore/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Package (mac arm64, no publish)
+        working-directory: console/apps/switch-console-desktop
+        env:
+          # Developer ID signing: when the cert secret is set, electron-builder
+          # signs with it and the config enables notarization. When it's empty,
+          # disable identity discovery so the build falls back to ad-hoc signing
+          # instead of failing on a missing identity.
+          CSC_LINK: ${{ secrets.APPLE_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.APPLE_CSC_LINK != '' && 'true' || 'false' }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: pnpm exec electron-builder --mac --publish never --config electron-builder.config.ts
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: console/apps/switch-console-desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Upload the installable artifacts (.dmg, .zip) AND the channel manifest
+          # (latest-mac.yml) + blockmaps — electron-updater needs the manifest to
+          # detect/download updates, so a dmg-only release would silently break
+          # auto-update.
+          shopt -s nullglob
+          assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Upload build artifacts (dispatch runs, no Release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: switch-console-macos-arm64
+          path: |
+            console/apps/switch-console-desktop/release/*.dmg
+            console/apps/switch-console-desktop/release/*.zip
+          if-no-files-found: error
+
+  build-linux:
+    name: Build & release (Linux x64)
+    runs-on: ubuntu-latest
+    # Waits only for the Release to exist, not for the macOS build — the two
+    # platform jobs are independent. Linux is unsigned, so no cert secrets.
+    needs: create-release
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.5.3
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Install rpm tooling
+        # electron-builder's rpm target needs the `rpm` binary; deb + AppImage
+        # tooling is already present on ubuntu-latest.
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#switch-console-v}"
+          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
+          echo "tag=$tag_version package.json=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules for Electron
+        run: pnpm --filter @switch-console/desktop run rebuild
+
+      - name: Build workspace packages + app
+        run: pnpm run build
+
+      - name: Package (linux x64, no publish)
+        working-directory: console/apps/switch-console-desktop
+        run: pnpm exec electron-builder --linux --publish never --config electron-builder.config.ts
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: console/apps/switch-console-desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Attach the Linux installers + the electron-updater channel manifest
+          # (latest-linux.yml) so auto-update works on Linux too.
+          shopt -s nullglob
+          assets=(release/*.AppImage release/*.deb release/*.rpm release/*.blockmap release/latest-linux.yml)
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Upload build artifacts (dispatch runs, no Release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: switch-console-linux-x64
+          path: |
+            console/apps/switch-console-desktop/release/*.AppImage
+            console/apps/switch-console-desktop/release/*.deb
+            console/apps/switch-console-desktop/release/*.rpm
+          if-no-files-found: error
+
+  # Flips the draft to a published Release, once — and only once — every platform
+  # job has uploaded. `needs` with no `if: !cancelled()` is the gate: if either
+  # build fails, is cancelled or is never approved, this job is skipped and the
+  # Release stays a draft, visible to maintainers and to nobody's updater.
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [create-release, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    # This job never checks out, so the workflow-level `console` working directory
+    # does not exist for it.
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Verify every channel manifest is present
+        # The manifests are what auto-update reads. Publishing without one is the
+        # exact failure this job exists to prevent, so check rather than trust
+        # that the upload steps ran.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          echo "$assets"
+          missing=""
+          for required in latest-mac.yml latest-linux.yml; do
+            printf '%s\n' "$assets" | grep -qx "$required" || missing="$missing $required"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Refusing to publish $GITHUB_REF_NAME — missing channel manifest(s):$missing. The Release stays a draft; re-run the failed platform job."
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest

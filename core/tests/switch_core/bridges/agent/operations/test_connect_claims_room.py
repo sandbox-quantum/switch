@@ -8,7 +8,7 @@ remember. Two consequences, and the second is the point:
   room its own connection does not cover;
 - the claim lands on that connection's stream as `subscription_changed`, so a
   supervisor holding the connection learns the room **from Switch** instead of
-  reading the agent's tool result. Reading the tool result is what switchdash
+  reading the agent's tool result. Reading the tool result is what Switch Console
   did, and it broke silently the moment the result's shape changed.
 
 The claim is also what resolves a second session (CHOO-1419): a live claimant is
@@ -132,7 +132,7 @@ def test_the_evicted_session_is_woken_so_it_learns_it_lost_the_room() -> None:
     """The loser has to find out, and its stream is the only way it can.
 
     Without the wake it stays blocked on its read, still believing it holds the
-    room, and switchdash keeps showing it under that room.
+    room, and Switch Console keeps showing it under that room.
     """
     registry = ConnectionRegistry()
     incumbent = _open(registry, "first-session")

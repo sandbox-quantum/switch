@@ -103,8 +103,8 @@ def test_the_switchdash_pin_is_not_wired_to_switch_cores_version() -> None:
     that are not on the registry yet, breaking it for everyone on main.
     """
     registry = gen.load_registry()
-    switchdash = next(a for a in registry.artifacts if a.name == "switchdash")
-    assert "switch-core" in switchdash.pins
+    switch_console = next(a for a in registry.artifacts if a.name == "switch-console")
+    assert "switch-core" in switch_console.pins
 
 
 def test_every_contract_peer_is_an_artifact_the_registry_knows() -> None:

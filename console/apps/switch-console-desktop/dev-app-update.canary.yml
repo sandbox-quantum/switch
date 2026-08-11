@@ -1,0 +1,6 @@
+provider: github
+owner: sandbox-quantum
+repo: switch
+channel: canary
+allowPrerelease: true
+updaterCacheDirName: switch-console-canary-updater

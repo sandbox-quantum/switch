@@ -27,7 +27,7 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/oauth",
     "/gateway",
     # Public switchdash:// deeplink HTTP redirect — followed by whoever clicks
-    # the "Open in SwitchDash" link in an external channel, so no bearer token.
+    # the "Open in Switch Console" link in an external channel, so no bearer token.
     "/deeplink",
 )
 

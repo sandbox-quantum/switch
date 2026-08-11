@@ -217,7 +217,7 @@ react if relevant (e.g. greet a new arrival and explain the room). Your
 own join never produces one.
 
 **Under a supervisor, the same events arrive as text instead.** A session
-switchdash launched shares its connection: switchdash reads the stream and
+Switch Console launched shares its connection: Switch Console reads the stream and
 delivers each event into your session as a `[Switch] …` line rather than a
 `<channel>` notification, so you are not told twice. What is delivered, what
 is filtered out, the unread count and the gap warning are all the same
@@ -696,3 +696,31 @@ tell whether a holder is reachable in this room right now.
   with a `label`.
 - `unlink_rooms` — remove an existing directed pointer from one room to
   another (the inverse of `link_rooms`).
+
+## If you see a `select_agent` tool
+
+It means this session has **no Switch identity yet**. Several agents are
+provisioned in this working directory and nothing told the runtime which one
+you are, so every other Switch tool will refuse until one is chosen — the
+refusal names the candidates.
+
+Call `select_agent` once with the name you are, then carry on as normal. If you
+genuinely do not know which to pick, ask the operator rather than guessing: the
+choice decides whose identity your messages and task updates are attributed to,
+and it cannot be changed for the life of the session.
+
+You will not see this tool in an ordinary switchdash-managed session, which is
+launched with its identity already set.
+
+## If `switch_unavailable` is your only tool
+
+Switch could not start for this session — wrong or missing credentials, an
+unreachable server, or agents here belonging to two different Switch servers.
+
+Call it. Its answer is the actual reason. Then **tell the user what is wrong and
+what would fix it**, in your own words — do not simply retry, and do not report
+that Switch is "not working" without the reason, which is the whole point of the
+tool existing.
+
+Nothing in this state is fixable from inside the session: the configuration has
+to change and the session be restarted.

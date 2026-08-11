@@ -4,10 +4,6 @@
 
 set dotenv-load := true
 
-# SandboxAQ-internal recipes (AWS/EKS/ECR deploy, Helm install, dev VMs).
-# Optional so the public repo — which has no internal/ — still works.
-import? 'internal/justfile'
-
 # ── List available recipes ─────────────────────────────────────────────────────
 default:
     @just --list

@@ -8,7 +8,7 @@ This directory is the self-contained Python project (import root `switch_core`,
 distribution name `switch-core`): its `pyproject.toml`, `uv.lock`, and
 `alembic.ini` live here, alongside the package (`switch_core/`) and the test
 suite (`tests/`). The operator dashboard frontend lives in the top-level
-[`gateway/`](../gateway/) tree, and the desktop app in [`dash/`](../dash/).
+[`gateway/`](../gateway/) tree, and the desktop app in [`console/`](../console/).
 
 For the full picture — architecture, development commands, and the wider
 repository layout — see the [repository README](../README.md).

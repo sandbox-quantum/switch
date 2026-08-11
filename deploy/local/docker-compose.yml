@@ -64,7 +64,7 @@ services:
       # leave a "(message deleted)" tombstone. Requires Mattermost >= v10.2.
       MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
-      # Both of these exist for switchdash's embedded room view (CHOO-1674):
+      # Both of these exist for Switch Console's embedded room view (CHOO-1674):
       # the onboarding checklist opens a modal over a dimmed page inside the
       # pane, and Mattermost only turns known schemes into links, so without
       # the second the `switchdash://session?…` deeplinks agents post render as

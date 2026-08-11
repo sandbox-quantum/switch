@@ -178,10 +178,40 @@ async def _check_control_target(
 
 
 @dataclass(frozen=True)
+class CommandArg:
+    """One positional argument of a command, declared for bridges that need it.
+
+    The `!` path does not read this: it free-text parses `event.args` exactly as
+    it always has, and every handler still pulls its arguments out of that
+    string via `_mention_tokens`. The spec exists for platforms whose native
+    commands are *registered* with a declared signature — Discord application
+    commands — so the argument surface is described once, here, instead of
+    being restated per bridge and drifting from the handlers.
+
+    Every argument declared today is a mention-style token (`@agent`, `@role`,
+    `@alias`) matching `mentions.NAME_CHAR`, so a bridge can round-trip a
+    declared value back into the positional `args` string the handlers parse.
+    A command taking genuine free text is not representable here and would need
+    a kind/type field adding before it could be declared.
+
+    `name` is what the user sees as the field label on platforms that render
+    one, so it must be lowercase and match Discord's `^[-_a-z0-9]{1,32}$`.
+    """
+
+    name: str
+    description: str
+    required: bool
+
+
+@dataclass(frozen=True)
 class Command:
     name: str
     description: str
     handler: CommandHandler | None = None
+    # Declared positional arguments, in the order the handlers parse them out
+    # of `args`. Empty for the many commands that take none. Only consumed by
+    # bridges that register native commands (see CommandArg).
+    args_spec: tuple[CommandArg, ...] = ()
     # (client, args, room_id) -> bool. Whether this agent is addressed. Default:
     # name- or held-role match (or everyone when no `@`).
     addressed: CommandTargeting = field(default=_addressed_by_name_or_role)
@@ -255,11 +285,11 @@ async def _dispatch_control_command(
     integration profile, then — for `session_dependent` — checks that a live
     session actually reports it can execute the command (via its runtime-state
     control capabilities). When actionable, acknowledges in the room and queues
-    a `command` event for the agent's controller (e.g. switchdash) to execute.
+    a `command` event for the agent's controller (e.g. Switch Console) to execute.
 
     Two distinct "can't act" cases are reported separately: no live session in
     the room at all (`no_live_session_msg`) vs. a live session that can't be
-    controlled from here — e.g. not started from switchdash (`no_session_msg`).
+    controlled from here — e.g. not started from Switch Console (`no_session_msg`).
     """
     agent = await client._fresh_agent()
     profile = agent.integration_profile or {}
@@ -310,8 +340,8 @@ async def _dispatch_control_command(
         args = role or ""
 
     # Mirror the runtime "working" surface: link back to the session in
-    # switchdash when we know its deeplink.
-    body = f"{ack} ([Open in SwitchDash]({deeplink}))" if deeplink else ack
+    # Switch Console when we know its deeplink.
+    body = f"{ack} ([Open in Switch Console]({deeplink}))" if deeplink else ack
     await _reply(client, room, event, body)
     client._event_buffer.enqueue(
         client.agent.id,
@@ -347,7 +377,7 @@ async def _cmd_reset(
         ),
         no_session_msg=(
             "My session can't be reset from here — it wasn't started from "
-            "switchdash, so my operator needs to reset it manually (e.g. by "
+            "Switch Console, so my operator needs to reset it manually (e.g. by "
             "restarting my session)."
         ),
     )
@@ -368,7 +398,7 @@ async def _cmd_compact(
         ),
         no_session_msg=(
             "I can't compact from here — my session wasn't started from "
-            "switchdash, so my operator needs to compact it manually."
+            "Switch Console, so my operator needs to compact it manually."
         ),
     )
 
@@ -388,7 +418,7 @@ async def _cmd_interrupt(
         ),
         no_session_msg=(
             "I can't be interrupted from here — my session wasn't started from "
-            "switchdash, so my operator needs to interrupt it manually."
+            "Switch Console, so my operator needs to interrupt it manually."
         ),
     )
 
@@ -649,7 +679,7 @@ def _format_status_lines(
 ) -> str:
     """Render the !status summary: one line per agent (sorted by name) with
     its presence emoji + label, runtime state (if any), agent_type, task
-    capabilities, and a switchdash deeplink to its session when one is known.
+    capabilities, and a Switch Console deeplink to its session when one is known.
 
     The deeplink is shown only for an agent whose session is LIVE in this room:
     the stored link is per (agent, room) and survives a room switch, so once the
@@ -674,7 +704,7 @@ def _format_status_lines(
             parts.append("+".join(caps))
         deeplink = deeplinks.get(agent.id)
         if deeplink and status == AgentStatus.LIVE:
-            parts.append(f"[Open in SwitchDash]({deeplink})")
+            parts.append(f"[Open in Switch Console]({deeplink})")
         lines.append("- " + " · ".join(parts))
     return "\n".join(lines)
 
@@ -983,6 +1013,9 @@ COMMANDS: list[Command] = [
         "Usage: `!reset @agent-name` or `!reset @role` (the role's holder). "
         "A target is required — use `!reset-all-agents` to reset everyone.",
         _cmd_reset,
+        args_spec=(
+            CommandArg("target", "Agent name, alias, or role to reset", required=True),
+        ),
         # The first @token names the agent to reset (by name or held role). A
         # bare `!reset` (no target) addresses NO ONE, so it can never
         # accidentally reset every agent — that is the explicit
@@ -1003,6 +1036,11 @@ COMMANDS: list[Command] = [
         "Usage: `!compact @agent-name` or `!compact @role` (the role's holder). "
         "A target is required — use `!compact-all-agents` for everyone.",
         _cmd_compact,
+        args_spec=(
+            CommandArg(
+                "target", "Agent name, alias, or role to compact", required=True
+            ),
+        ),
         # Require an explicit target — see `reset` — so a bare `!compact` never
         # fans out to the whole room by accident.
         addressed=_addressed_by_required_first_mention,
@@ -1021,6 +1059,11 @@ COMMANDS: list[Command] = [
         "Usage: `!interrupt @agent-name` or `!interrupt @role` (the role's holder). "
         "A target is required — use `!interrupt-all-agents` for everyone.",
         _cmd_interrupt,
+        args_spec=(
+            CommandArg(
+                "target", "Agent name, alias, or role to interrupt", required=True
+            ),
+        ),
         addressed=_addressed_by_required_first_mention,
         admin_check=_check_control_target,
     ),
@@ -1073,18 +1116,32 @@ COMMANDS: list[Command] = [
         "set-alias",
         "Give an agent a room alias. Usage: `!set-alias @agent-name @alias`.",
         _cmd_set_alias,
+        args_spec=(
+            CommandArg("agent", "The agent to give an alias to", required=True),
+            CommandArg("alias", "The alias to use for it in this room", required=True),
+        ),
         admin_owned=True,
     ),
     Command(
         "remove-alias",
         "Remove a room alias. Usage: `!remove-alias @alias` (or `@agent-name`).",
         _cmd_remove_alias,
+        args_spec=(
+            CommandArg(
+                "alias", "The alias to clear (or the agent's name)", required=True
+            ),
+        ),
         admin_owned=True,
     ),
     Command(
         "invite-agent",
         "Add an existing agent to this room. Usage: `!invite-agent @agent-name`.",
         _cmd_invite,
+        args_spec=(
+            CommandArg(
+                "agent", "The registered agent to add to this room", required=True
+            ),
+        ),
         admin_owned=True,
     ),
     Command(
@@ -1110,6 +1167,16 @@ COMMANDS: list[Command] = [
         "Usage: `!run-cmd @agent-name`, `!run-cmd @role` (the role's holder), "
         "or `!run-cmd @agent-name @role` to also assume that role on connect.",
         _cmd_run_cmd,
+        # `role` is second because the handler reads it from the second token,
+        # so it cannot be given without `agent` — see the positional-gap check
+        # in the Discord adapter, which rejects that combination loudly rather
+        # than silently shifting the role into the agent slot.
+        args_spec=(
+            CommandArg("agent", "Agent to show the start command for", required=False),
+            CommandArg(
+                "role", "Role for that agent to assume on connect", required=False
+            ),
+        ),
         # Only the first @token targets; a second @token is the role to assume,
         # not an address — so it doesn't pull in whoever else holds that role.
         addressed=_addressed_by_first_mention,

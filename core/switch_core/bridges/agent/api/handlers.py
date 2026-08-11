@@ -559,7 +559,7 @@ async def watch_heartbeat(
 ) -> dict[str, bool]:
     """Refresh an auto_session connector's global "watching" heartbeat.
 
-    Pinged on a cadence by the connector (switchdash) while it is watching this
+    Pinged on a cadence by the connector (Switch Console) while it is watching this
     agent's rooms. Keeps the agent reporting DORMANT (rather than offline) in
     rooms with no live session, so addressing it yields a "Starting a session…"
     reply while the connector spins one up. Room-agnostic; decoupled from the
@@ -597,7 +597,7 @@ async def set_runtime_state(
     """Report the agent's session runtime state (working/awaiting-input/idle).
 
     Persists the state and emits a room event the collaboration bridge surfaces
-    on the bridged channel. Reported by the switchdash connector for sessions
+    on the bridged channel. Reported by the Switch Console connector for sessions
     it manages.
     """
     try:

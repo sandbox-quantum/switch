@@ -93,7 +93,7 @@ class ClaudeCodeOptions(KnownAgentOptions):
     instead of `session_addressable`."""
 
     auto_session: bool = False
-    """When True, the operator's connector (switchdash) watches every room this
+    """When True, the operator's connector (Switch Console) watches every room this
     agent belongs to and automatically spins up a Claude Code session — wired
     to the right working dir/identity and connected to the room — the moment the
     agent is addressed in a room where it has no live session. The registered
@@ -178,7 +178,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
             event_reporting=["tool_calls"],
             task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # Claude Code can reset / compact / interrupt only when a session is
-            # driving it from switchdash (which can inject keystrokes and
+            # driving it from Switch Console (which can inject keystrokes and
             # relaunch it). A standalone `claude` session can't be controlled,
             # so all three resolve per live session via AgentRuntimeState.
             command_capabilities=CommandCapabilities(
@@ -299,11 +299,11 @@ class ClaudeCodeKnownAgent(KnownAgent):
 
 class CodexOptions(KnownAgentOptions):
     auto_session: bool = False
-    """When True, the operator's connector (switchdash) watches every room this
+    """When True, the operator's connector (Switch Console) watches every room this
     agent belongs to and auto-spawns a Codex session — connected to the room and
     wired to the agent's identity — the moment the agent is addressed in a room
     where it has no live session. The registered profile becomes `auto_session`.
-    Codex has no plugin-channel of its own; switchdash delivers inbound room
+    Codex has no plugin-channel of its own; Switch Console delivers inbound room
     messages by injecting them into the session's terminal (CHOO-1436)."""
 
     repo_dir: str | None = None
@@ -317,7 +317,7 @@ class CodexOptions(KnownAgentOptions):
     unavailable-session message so the operator gets a notification. Bare name,
     no leading `@`. None → post without a mention."""
 
-    # No `channels_enabled`: switchdash sends it for every provider, but Codex
+    # No `channels_enabled`: Switch Console sends it for every provider, but Codex
     # has no connector channel of its own, so nothing here could act on it.
     # `KnownAgentOptions` ignores unknown keys, so the shared registration path
     # still works — and the schema-driven gateway form does not render a control
@@ -344,7 +344,7 @@ class CodexKnownAgent(KnownAgent):
     @classmethod
     def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
         assert isinstance(options, CodexOptions)
-        # switchdash watches + auto-spawns when auto_session; otherwise it keeps a
+        # Switch Console watches + auto-spawns when auto_session; otherwise it keeps a
         # session live and delivers messages by terminal injection, which is the
         # session_addressable model. Codex does not report per-tool events or
         # mediate tool calls (it runs auto-approved), so those lists stay empty —
@@ -360,7 +360,7 @@ class CodexKnownAgent(KnownAgent):
             event_reporting=[],
             task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
             # Same story as Claude Code: Codex is a TUI, so reset / compact /
-            # interrupt only work when switchdash is driving the session and can
+            # interrupt only work when Switch Console is driving the session and can
             # inject keystrokes. A standalone `codex` can't be controlled, so all
             # three resolve per live session via AgentRuntimeState.
             command_capabilities=CommandCapabilities(
@@ -384,7 +384,7 @@ class CodexKnownAgent(KnownAgent):
 
         Mirrors the Claude Code shape but emits a `codex "…"` command (never a
         `claude` one) and omits Claude-specific flags. Codex sessions are normally
-        auto-managed by switchdash, so this fallback is shown mainly when no
+        auto-managed by Switch Console, so this fallback is shown mainly when no
         connector is watching.
         """
         assert isinstance(options, CodexOptions)

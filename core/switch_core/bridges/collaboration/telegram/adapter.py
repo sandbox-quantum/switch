@@ -395,6 +395,11 @@ class TelegramAdapter(CollaborationAdapter):
         first = sent[0] if sent else None
         return overflow_ref or (self._ref(first) if first is not None else None)
 
+    def slash_invite_hint(self) -> str:
+        # Telegram hands a command's whole tail through as message text, so the
+        # invocation reads exactly like the `!` form.
+        return "`/invite-agent @agent-name` — the Telegram slash command"
+
     async def admin_message(
         self,
         channel_id: str,

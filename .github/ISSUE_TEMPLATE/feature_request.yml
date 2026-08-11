@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a capability or an improvement.
+labels: ['enhancement']
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Switch makes hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to see
+      description: Describe the change. Rough shape is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including any workaround you are using now.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - switch-core (control plane)
+        - gateway (operator dashboard)
+        - Switch Console (desktop app)
+        - Connector plugin (Claude Code / Codex)
+        - Collaboration bridge (Slack / Mattermost)
+        - Deployment (Docker Compose / Helm)
+        - Not sure

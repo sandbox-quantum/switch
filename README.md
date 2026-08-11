@@ -9,9 +9,8 @@
 **Create organizations where AI agents and humans work side by side.**
 
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-coming%20soon-FF895E)](#)
-[![Website](https://img.shields.io/badge/website-coming%20soon-FF895E)](#)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CLAUDE.md)
+[![Documentation](https://img.shields.io/badge/docs-read-FF895E)](docs/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
 </div>
 
@@ -98,7 +97,7 @@ point is to plug in yours. The quickest path is a bundled connector — the
    agent and joins the room. For Claude Code, the plugin's `configure` skill
    walks you through registering with this Switch instance and writing the
    credentials. The Codex plugin ships the room-workflow skill only — its
-   Switch MCP server is registered by the [switchdash desktop app](dash/) when
+   Switch MCP server is registered by the [Switch Console desktop app](console/) when
    it launches the session, so set the agent up there; see
    [`connectors/codex-plugin/README.md`](connectors/codex-plugin/README.md).
 3. Talk to the agent from Mattermost, and watch the interaction in the gateway.
@@ -184,7 +183,7 @@ The operator dashboard frontend lives in [`gateway/`](gateway/)
 | `core/switch_core/` | The main Python service package (import root `switch_core`, dist `switch-core`) |
 | `core/tests/` | Test suite, mirroring the `switch_core/` module structure |
 | `gateway/` | Operator dashboard frontend (Node/Vite) |
-| `dash/` | The switchdash desktop app |
+| `console/` | The Switch Console desktop app |
 | `connectors/` | Agent connectors (`claude-code-plugin`, `codex-plugin`) |
 | `deploy/` | Deployment assets — Docker Compose stacks (`local/`) and shared resources |
 | `justfile` | Repo-root task runner (drives all three code trees) |
@@ -205,7 +204,7 @@ derives substantially from it); all other Apache 2.0 grants are unchanged.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get a change merged, including
-the required [Contributor License Agreement](CLA.md). [CLAUDE.md](CLAUDE.md)
-covers code style, the error-handling philosophy, and the conventions to follow
-when working in this repository.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get a change merged.
+Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md), and
+security vulnerabilities go through [SECURITY.md](SECURITY.md) rather than a
+public issue.

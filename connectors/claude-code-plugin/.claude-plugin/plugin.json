@@ -1,5 +1,5 @@
 {
   "name": "switch-connector",
-  "version": "0.7.9",
+  "version": "0.8.1",
   "description": "Connect Claude Code to a Switch platform instance as a participating agent"
 }

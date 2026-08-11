@@ -456,7 +456,7 @@ class TestALapsedHeartbeatStopsDelivery:
     handing over events. That pairing is undetectable from either side: the
     client sees traffic and assumes it is healthy, the room is told the agent is
     offline. It is what produced "my connector isn't reporting in" while
-    switchdash was demonstrably receiving the same message and spawning a
+    Switch Console was demonstrably receiving the same message and spawning a
     session from it.
     """
 

@@ -35,11 +35,15 @@ The backend is a single FastAPI service, assembled in
 [`core/switch_core/main.py`](../core/switch_core/main.py). The Agent Bridge app is
 the root ASGI app; the MCP server, health check, and gateway are mounted onto it:
 
-- `POST/GET /agents/...` — Agent Bridge HTTP API
+- `POST/GET /agents/...` — Agent Bridge HTTP API, including the
+  `/agents/{id}/ops` operation-dispatch surface
 - `/mcp` — MCP server (agent tool surface)
 - `/health` — health check
+- `/version` — build and contract version
+- `/deeplink/session` — public redirect into the desktop app's URL scheme
 - `/gateway` — gateway management API (backs the operator dashboard); includes
-  the admin-gated collaboration-bridge admin API (`/gateway/collaborations`)
+  the collaboration-bridge admin API (`/gateway/collaborations`), where reads are
+  open to any authenticated user and mutations are admin-only
 
 ```mermaid
 flowchart LR
@@ -85,6 +89,7 @@ flowchart LR
 | Component | Where | Responsibility |
 |-----------|-------|----------------|
 | Agent Bridge | `bridges/agent/` | Server-side entry point for agents: HTTP API + MCP server, event delivery, task protocol, mediation, moderation. |
+| Server-side connectors | `bridges/agent/server_connectors/` | Switch-hosted connectors that drive an external agent host (e.g. OpenCode) from the server, rather than the agent connecting in. Registered by type at startup and managed via `/gateway/connectors`. |
 | Collaboration bridges | `bridges/collaboration/` | Two-way relay between external chat platforms and Matrix rooms, via per-platform adapters and puppet clients. |
 | Resource bridge | `bridges/resource/` | Handles resource + mediation requests (tool/model access, room-document load/CRUD) via the resource-manager client. |
 | Matrix clients | `clients/` | One `matrix-nio` client per participant (agent, bridge, user) and per system actor (admin, resource manager). |
@@ -93,15 +98,15 @@ flowchart LR
 | Persistence | `db/` | PostgreSQL via SQLAlchemy async; table models in `db/models.py`, query logic in `db/stores/`. |
 | Homeserver admin | `matrix_admin.py` | Server-side homeserver operations: account registration, room create/invite/kick/delete. |
 
-### The desktop app (switchdash)
+### The desktop app (Switch Console)
 
-`dash/` is a local-first Electron desktop app (a fork; see
-`dash/NOTICE`) for managing the local coding-agent sessions that participate in
+`console/` is a local-first Electron desktop app (a fork; see
+`console/NOTICE`) for managing the local coding-agent sessions that participate in
 Switch — which rooms an agent belongs to, its config, and session scheduling
 (e.g. auto-starting a session when a Slack user addresses an agent that has no
 live session). It is a convenience tool for running local agents, not a required
 path — agents connect to the Agent Bridge directly over MCP or HTTP. It has its
-own architecture docs under `dash/agents/`.
+own architecture docs under `console/agents/`.
 
 ---
 
@@ -130,6 +135,8 @@ The relational schema is defined in
   (external pointers, internal docs, and bundles), each with independent
   read/write visibility.
 - **CollaborationBridge** — configured external chat bridges.
+- **ServerConnector** — a Switch-hosted connector driving an external agent host
+  (e.g. OpenCode) from the server, rather than the agent connecting in.
 - **BridgeMessageMap** — correlates a Matrix event with its external-platform
   post (for edits, threading, and loop prevention).
 - **Tool** / **Model** / **Skill** — capabilities attached to agents, consulted
@@ -202,7 +209,9 @@ address it. With no policy an agent is open to any room participant (today's
 behaviour). When a policy is set and the sender is not permitted, `AgentClient`
 demotes the message to unaddressed room chatter and posts a one-shot reply to the
 sender; `delegate_task` (an explicit, tracked addressing vector) instead fails
-loud with a `PermissionError`. Configured via `PUT /agents/{id}/addressing-policy`.
+loud with a `PermissionError`. Configured via
+`PUT /gateway/agents/{id}/addressing-policy` — a gateway route under cookie-JWT
+auth with an owner-or-admin check, not an agent-facing one.
 
 The outbound direction is symmetric: a `BridgeClient` observes agent messages in
 the room and `BridgeCore.handle_outbound_message` relays them back out under the
@@ -240,9 +249,13 @@ agent's name/icon, preserving threads and attachments.
   registers a future per request; the `ResourceManagerClient`
   ([`clients/resource_manager_client.py`](../core/switch_core/clients/resource_manager_client.py))
   evaluates the request (e.g. tool/model access against the agent's attached
-  capabilities) and resolves the verdict. A room-level protection verdict path
-  exists in the bridge but is not yet fully wired (`handle_protection_verdict`
-  is gated pending protection setup).
+  capabilities) and resolves the verdict.
+- **Room-level protection is stubbed, not wired.**
+  `BridgeCore.handle_protection_verdict`
+  ([`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py))
+  has no callers — note it sits in the *collaboration* bridge, not this one.
+  `Room.protection_config` is persisted and settable via
+  `PUT /gateway/rooms/{id}/protection`, but nothing reads it yet.
 
 ### 4.4 In-room commands
 
@@ -251,6 +264,11 @@ Humans and agents can issue `!`-commands in a room (e.g. `!help`, `!list-agents`
 in [`bridges/agent/commands.py`](../core/switch_core/bridges/agent/commands.py);
 admin-owned commands are executed by the `AdminClient`, the rest by the agents
 themselves.
+
+On Discord the same registry is also published as native slash commands
+([`bridges/collaboration/discord/slash.py`](../core/switch_core/bridges/collaboration/discord/slash.py)):
+a slash invocation is reassembled into the positional form the `!` handlers
+already parse, so both entry points reach one implementation.
 
 ### 4.5 Room provisioning & lifecycle
 
@@ -273,10 +291,13 @@ Everything ingress-facing, and where to find it:
 | Entry point | Path / transport | Auth | Code |
 |-------------|------------------|------|------|
 | Agent Bridge API | `/agents/*` (HTTP) | Bearer (agent API key / registration token) | `bridges/agent/api/`, `auth.py` |
+| Agent operations | `/agents/{id}/ops`, `/agents/{id}/ops/{operation}` | Bearer | `bridges/agent/api/operations.py`, `bridges/agent/operations/` |
 | Agent event stream | `/agents/{id}/events` (SSE) | Bearer | `bridges/agent/protocol/stream.py`, `protocol/connections.py` |
-| MCP server | `/mcp` (HTTP, FastMCP) | Bearer | `bridges/agent/mcp/server.py` |
+| MCP server | `/mcp` (HTTP, FastMCP) | Bearer (agent API key, or an OIDC token when configured) | `bridges/agent/mcp/server.py` |
 | Health | `/health` | public | `main.py` |
-| Collaboration admin | `/gateway/collaborations` | cookie JWT + admin | `gateway/collaborations.py` |
+| Version | `/version` | public | `bridges/agent/api/version_routes.py` |
+| Session deeplink | `/deeplink/session` | public | `bridges/agent/deeplink.py` |
+| Collaboration admin | `/gateway/collaborations` | cookie JWT (reads) / + admin (writes) | `gateway/collaborations.py` |
 | Gateway API | `/gateway/*` | cookie JWT (`switch_auth`) | `gateway/app.py`, `gateway/auth.py` |
 | Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Telegram long polling; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
 
@@ -293,7 +314,10 @@ Auth-bypass path prefixes for the Bearer middleware are enumerated in
   ([`bridges/agent/auth.py`](../core/switch_core/bridges/agent/auth.py)) accepts
   two credential kinds: an agent API key (SHA-256 hashed, looked up in
   `ApiKeyStore`) and a registration token (used only for the registration
-  endpoint).
+  endpoint). On `/mcp` only, and only when `OAUTH_ISSUER_URL` is configured, a
+  third kind is accepted: an OIDC access token, resolved to an agent by the
+  `oauth_client_id` matching its `azp`/`client_id` claim. That path is what the
+  `/oauth` auth-bypass prefix serves.
 - **Gateway authentication** — cookie-based JWT
   ([`gateway/auth.py`](../core/switch_core/gateway/auth.py)): passwords hashed
   with bcrypt, a `switch_auth` HS256 cookie (`httponly`, `samesite=lax`),
@@ -342,8 +366,11 @@ A quick index for navigation:
 | App assembly & startup | `core/switch_core/main.py` |
 | Configuration | `core/switch_core/config.py` |
 | Authorization policy | `core/switch_core/authz.py` |
+| Scoped addressing policy | `core/switch_core/addressing.py` |
 | Token encryption | `core/switch_core/crypto.py` |
 | Agent Bridge (API, MCP, protocol, auth, commands) | `core/switch_core/bridges/agent/` |
+| Agent operation registry | `core/switch_core/bridges/agent/operations/` |
+| Server-side connectors | `core/switch_core/bridges/agent/server_connectors/` |
 | Collaboration bridges (adapters, core, lifecycle) | `core/switch_core/bridges/collaboration/` |
 | Resource bridge | `core/switch_core/bridges/resource/` |
 | Matrix clients | `core/switch_core/clients/` |
@@ -354,7 +381,9 @@ A quick index for navigation:
 | Migrations | `core/switch_core/migrations/` |
 | Gateway API (backend) | `core/switch_core/gateway/` |
 | Operator dashboard (SPA) | `gateway/` (top level) |
-| Desktop app | `dash/` |
+| Desktop app | `console/` |
+| Connector plugins (Claude Code, Codex) | `connectors/` |
+| Deployment assets (Helm, Compose) | `deploy/` |
 
 ---
 

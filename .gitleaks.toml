@@ -15,7 +15,7 @@ regexes = [
 ]
 paths = [
   # Log-redaction tests exercise deliberately fake vendor tokens.
-  '''dash/apps/switchdash-desktop/src/main/lib/file-logger\.test\.ts$''',
+  '''console/apps/switch-console-desktop/src/main/lib/file-logger\.test\.ts$''',
   # Telegram adapter tests need a realistically-shaped bot token, which the
   # default telegram-bot-api-token rule matches on sight.
   '''core/tests/switch_core/bridges/collaboration/test_telegram_.*\.py$''',

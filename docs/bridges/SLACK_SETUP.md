@@ -201,7 +201,7 @@ manifest) so Switch's in-room commands work from Slack.
 
 ## Notes
 
-- **Deeplinks.** Slack linkifies `http(s)`, so "Open in SwitchDash" links work
+- **Deeplinks.** Slack linkifies `http(s)`, so "Open in Switch Console" links work
   once `GATEWAY_PUBLIC_URL` is set on switch-core (see the
   [index](README.md#deployment-knobs)); otherwise the raw `switchdash://` link is
   posted.

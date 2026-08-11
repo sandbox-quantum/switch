@@ -151,19 +151,19 @@ class RuntimeStateRequest(BaseModel):
     # message — not merely because one arrived. Report the same value on a
     # periodic refresh; only a genuine change moves the indicator.
     anchor_event_id: str | None = None
-    # A `switchdash://session?…` deeplink switchdash builds so the bridged
+    # A `switchdash://session?…` deeplink Switch Console builds so the bridged
     # working / awaiting-input message can link back to its session. Relayed
     # verbatim to the channel; null for connectors that don't manage a UI.
     deeplink_url: str | None = None
     # A short, human-readable line describing what the agent is doing right now
     # (e.g. "Editing room-connection.ts", "Running git push"). The connector
-    # (switchdash) decides granularity and wording; the bridge surfaces it in
+    # (Switch Console) decides granularity and wording; the bridge surfaces it in
     # place on the live "working on it…" message. Only meaningful while
     # `state == "working"`; null falls back to the generic "working on it…".
     detail: str | None = None
     # Which session-control commands this managed session can execute, e.g.
     # {"reset": true, "compact": true, "interrupt": true}. Reported by
-    # switchdash for sessions it controls; null for connectors that can't be
+    # Switch Console for sessions it controls; null for connectors that can't be
     # controlled (a session_dependent command then resolves to unsupported).
     control_capabilities: dict[str, bool] | None = None
 

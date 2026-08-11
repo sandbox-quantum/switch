@@ -1,4 +1,0 @@
-provider: github
-owner: sandbox-quantum
-repo: switch
-updaterCacheDirName: switchdash-updater

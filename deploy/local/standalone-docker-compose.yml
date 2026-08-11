@@ -1,7 +1,7 @@
 # Standalone all-in-one Switch stack, running published GHCR images.
 #
 # This file is a VERSIONED CONTRACT: service names, profiles, and the env vars
-# below are the interface switchdash (and any other consumer) pins against. It
+# below are the interface Switch Console (and any other consumer) pins against. It
 # is itself published to GHCR as an OCI artifact per `switch-v*` release, tagged
 # with the same version as the images. Change the interface deliberately.
 #
@@ -25,10 +25,10 @@
 # or misspelt env var silently floated the whole stack to whatever had most
 # recently been published — a different switch-core on every `up`, with nothing
 # to say so. Compose now refuses to start rather than pick a version nobody
-# asked for (CHOO-1865). `.env.example` sets it, and switchdash writes it.
+# asked for (CHOO-1865). `.env.example` sets it, and Switch Console writes it.
 
 # What this compose artifact speaks on the `stack-compose` contract, which is
-# what switchdash's local-server mode pins against (CHOO-1865). The version this
+# what Switch Console's local-server mode pins against (CHOO-1865). The version this
 # file is published under says which release it is; this says what it speaks.
 # Compose ignores `x-` keys.
 x-switch-contract:
@@ -96,7 +96,7 @@ services:
       TUWUNEL_MAX_REQUEST_SIZE: "20000000"
 
   mattermost:
-    # Pinned rather than `latest`: switchdash embeds this Mattermost's web UI
+    # Pinned rather than `latest`: Switch Console embeds this Mattermost's web UI
     # and depends on its DOM structure, so an unattended upgrade could break
     # the embedded room view on a `docker compose pull` no one initiated.
     image: mattermost/mattermost-team-edition:11.9.0

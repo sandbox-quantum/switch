@@ -1,7 +1,7 @@
 """Tests for the silent session-renewal endpoint (CHOO-1435).
 
 `POST /gateway/auth/refresh` re-mints the `switch_auth` cookie for a caller
-whose current cookie is still valid, so an active switchdash client renews its
+whose current cookie is still valid, so an active Switch Console client renews its
 session before expiry without bouncing the user to sign-in. The route depends
 on `get_current_user`, which already rejects a missing/expired/invalid cookie
 with 401 — so an expired session cannot renew itself. Here we exercise the

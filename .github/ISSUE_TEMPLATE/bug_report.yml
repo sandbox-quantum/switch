@@ -1,0 +1,69 @@
+name: Bug report
+description: Something in Switch behaves incorrectly.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this.
+
+        **Do not report security vulnerabilities here.** Use the Security tab →
+        *Report a vulnerability*, as described in [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Where did you see this?
+      options:
+        - switch-core (control plane)
+        - gateway (operator dashboard)
+        - Switch Console (desktop app)
+        - Connector plugin (Claude Code / Codex)
+        - Collaboration bridge (Slack / Mattermost)
+        - Deployment (Docker Compose / Helm)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release version, image tag, or commit SHA.
+      placeholder: 'switch-core 0.13.0 / console 0.20.0 / d8db4e5'
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste any relevant output. It is rendered as a code block, so no backticks needed.
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and version, and anything else that might matter.
+      placeholder: 'macOS 15.2 (arm64), Docker 27.0.0'

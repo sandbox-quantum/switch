@@ -13,92 +13,20 @@ local Switch runtime can connect.
 
 The plugin no longer uses Claude Code's `userConfig` block (which is global
 and can't be overridden per-project). Instead, both pieces of the plugin
-read three environment variables at startup:
+read three values at startup:
 
 - `SWITCH_API_ENDPOINT` — Switch server URL
-- `SWITCH_API_TOKEN` — the agent's API key (returned at registration)
 - `SWITCH_AGENT_ID` — the agent's ID (returned at registration)
+- `SWITCH_API_TOKEN` — the agent's API key (returned at registration)
 
-Claude Code populates these from the `env` block in a settings file. By
+They reach the runtime one of two ways: from the environment, when something
+(switchdash) sets it, or read by the runtime itself from the per-agent
+`.switch/agents/<name>.json`. The settings file carries only the first two, so
+the token sits in exactly one place. By
 choosing project-local vs. user-global settings, the user decides whether
 this Switch identity is tied to one repo or shared across all of them.
 This skill walks through registration and writes that block.
 
-Separately from the agent's identity, the runtime itself is fetched from a
-private registry, which needs its own one-time setup — Step 0.
-
-## Step 0 — Registry access for the runtime
-
-The plugin's MCP server is fetched with
-`npx @sandbox-quantum/switch-agent-runtime`. That package is published to
-**GitHub Packages** and is private, so npm needs to know which registry
-serves the `@sandbox-quantum` scope and how to authenticate. Without both,
-`npx` fails — and it fails **misleadingly**: a private package you are not
-authorised for returns **404**, not 403, because registries do not admit that
-private packages exist. "Package not found" almost always means "not logged
-in" here.
-
-Sessions launched by switchdash get this handed to them and need nothing.
-This step is for **standalone Claude Code**, where nothing is injecting it.
-
-First check whether it is already set up:
-
-```bash
-npm config get @sandbox-quantum:registry
-```
-
-If that prints `https://npm.pkg.github.com`, skip to Step 1.
-
-Otherwise it needs the GitHub CLI, authenticated **and holding the
-`read:packages` scope**:
-
-```bash
-gh auth status
-```
-
-If `gh` is missing or logged out, stop and tell the user to install it and run
-`gh auth login` — everything below depends on it, and guessing a token is not
-something to attempt.
-
-Then look at the `Token scopes:` line. **`gh auth login` does not request
-`read:packages`** — the default scopes are `gist`, `read:org`, `repo` and
-`workflow`. A perfectly healthy login therefore produces a token the registry
-refuses:
-
-```
-npm error 403 Permission permission_denied: The token provided does not match expected scopes.
-```
-
-If `read:packages` is absent, have the user add it:
-
-```bash
-gh auth refresh -h github.com -s read:packages
-```
-
-That opens a device-code prompt in a browser. If they cannot complete it (a
-headless box, for instance), the alternative is a classic PAT with
-`read:packages`, used in place of `gh auth token` below.
-
-Then, with the user's agreement (this writes to their `~/.npmrc`):
-
-```bash
-npm config set @sandbox-quantum:registry https://npm.pkg.github.com
-npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
-```
-
-Verify it resolves before moving on, so a failure surfaces here rather than as
-a broken MCP server later:
-
-```bash
-npm view @sandbox-quantum/switch-agent-runtime version
-```
-
-Two things to tell the user plainly rather than leave them to discover:
-
-- This writes a **real token into `~/.npmrc`** (mode 0600). It is how npm
-  authenticates to any private registry, but it is a credential at rest.
-- It **expires when `gh` rotates its token**, and the symptom is the same
-  misleading 404. Re-running the two `npm config set` lines fixes it.
 
 ## Step 1 — Check existing config
 
@@ -109,8 +37,9 @@ configured:
   directory; do not create it yet)
 - User-global: `~/.claude/settings.json`
 
-If either contains `env.SWITCH_API_TOKEN` **and** `env.SWITCH_AGENT_ID`
-the plugin is already wired up. Report what's there (server URL, agent
+If either contains `env.SWITCH_AGENT_ID` **and** `env.SWITCH_API_ENDPOINT`
+the plugin is already wired up. (Do not look for `env.SWITCH_API_TOKEN` —
+a correctly configured agent has none there; its token is under `$HOME`.) Report what's there (server URL, agent
 id, which file) and use `AskUserQuestion` to offer three choices:
 
 - **Keep it** — stop the skill. Re-registering would mint a fresh agent
@@ -429,12 +358,38 @@ show the user the HTTP status and response body, then stop.
   retry with `overwrite:true` silently.
 - Any other non-2xx — show the status and body, then stop.
 
-## Step 10 — Write settings
+## Step 10 — Write settings, and the agent's credentials
 
-Read the target settings file (create with `{}` if absent). Merge the new
-values into the top-level `env` object, preserving any other keys in the
-file (the user may have unrelated settings there — permissions,
-keybindings, plugin toggles):
+Two files, with different jobs. The settings file is Claude Code's own and is
+read by **every** session in the directory, so it carries no credential — only
+which agent this directory is. The per-agent credentials file is what
+authenticates one specific agent, and is what the Switch runtime reads when
+nothing sets `SWITCH_*` in the environment.
+
+**10a — the settings file.** Read the target settings file (create with `{}` if
+absent). Merge into the top-level `env` object, preserving any other keys (the
+user may have unrelated settings there — permissions, keybindings, plugin
+toggles):
+
+```json
+{
+  "env": {
+    "SWITCH_API_ENDPOINT": "<url from step 2>",
+    "SWITCH_AGENT_ID": "<id from step 7>"
+  }
+}
+```
+
+**Do not put `SWITCH_API_TOKEN` here.** If the file already has one from an
+older setup, remove it — the credential belongs in one place, and this is not
+it.
+
+Use `Read` to load the existing JSON, parse it, merge, then `Write` the full
+result back. Do not edit the file blindly with a regex — JSON formatting and
+adjacent keys matter, and a bad merge can break unrelated Claude Code config.
+
+**10b — the credentials file.** Write `.switch/agents/<agent name>.json` in the
+working directory, in the same shape switchdash writes:
 
 ```json
 {
@@ -446,13 +401,12 @@ keybindings, plugin toggles):
 }
 ```
 
-If `env` does not exist, add it. If the keys already exist with
-different values, overwrite them — the user already confirmed in step 1.
+Create `.switch/agents/.gitignore` containing `*` **before** writing it, so the
+token is never briefly tracked. Add `.switch/` to the repo's own `.gitignore`
+too if it is not already covered.
 
-Use `Read` to load the existing JSON, parse it, merge, then `Write` the
-full result back. Do not edit the file blindly with a regex — JSON
-formatting and adjacent keys matter, and a bad merge can break unrelated
-Claude Code config.
+The runtime reads this file itself (`switch-agent-runtime` 0.2.0+), so no `env`
+block in any MCP config is needed to carry the credentials.
 
 ## Step 11 — Confirm
 
@@ -460,14 +414,14 @@ Report to the user:
 
 - The agent name and ID that were registered with Switch.
 - Which settings file was written.
-- That they need to **restart Claude Code** (or reload the session) for
-  the new `env` block to take effect — the `switch` MCP server and
-  Switch runtime only reads environment variables at startup,
-  so an active session won't see the new values.
+- Which settings file was written, and that the credentials went to
+  `.switch/agents/<name>.json` (git-ignored) rather than into the settings file.
+- That they need to **restart Claude Code** (or reload the session) —
+  the runtime resolves its identity once at startup, so an active
+  session won't see the new credentials.
 
-Do **not** print the API token. It's now in the settings file; the user
-can find it there if they need it. Echoing secrets into the transcript
-is a common way they leak into logs or screenshots.
+Do **not** print the API token. Echoing secrets into the transcript is a
+common way they leak into logs or screenshots.
 
 ## Step 12 — Bring in existing Claude Code subagents (optional)
 
@@ -598,11 +552,11 @@ is exactly the path the offline-session command points `--settings` at:
 }
 ```
 
-These files hold **per-subagent API tokens** — treat them exactly like
-the main settings file: write the token only here, never echo it. Ensure
-the directory is git-ignored: create `.claude/switch-subagents/.gitignore`
-containing `*` (or add the directory to the repo's `.gitignore`) so the
-tokens never get committed.
+These files hold **per-subagent API tokens** — treat them exactly like the
+per-agent credentials file: write the token only here, never echo it. Ensure the
+directory is git-ignored: create `.claude/switch-subagents/.gitignore`
+containing `*` (or add the directory to the repo's `.gitignore`) so the tokens
+never get committed.
 
 ### 12f — Tell the user how to launch a subagent
 
@@ -619,10 +573,10 @@ cd <repo> && claude "connect to switch room <name>" \
 > ⚠️ **Both `--agent` and `--settings` are required — together.** `--agent`
 > adopts the subagent persona; `--settings` supplies *that subagent's own*
 > Switch credentials. Dropping `--settings` does **not** error — the session
-> launches and silently authenticates as the **parent** agent, so the
-> subagent's actions get attributed to the wrong identity. Always pass both.
-> (Likewise, the settings file alone without `--agent` just runs the parent
-> persona with the subagent's token.) Tell the user this explicitly.
+> launches and silently authenticates as the **parent** agent, so the subagent's
+> actions get attributed to the wrong identity. Always pass both. (Likewise, the
+> settings file alone without `--agent` just runs the parent persona with the
+> subagent's token.) Tell the user this explicitly.
 
 Switch also posts this exact command automatically whenever someone
 addresses the subagent in a room while it has no live session (it's

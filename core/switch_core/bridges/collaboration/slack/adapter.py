@@ -174,6 +174,11 @@ class SlackAdapter(CollaborationAdapter):
             )
             return None
 
+    def slash_invite_hint(self) -> str:
+        # Slack passes a slash command's whole tail through as free text, so the
+        # invocation reads exactly like the `!` form.
+        return "`/invite-agent @agent-name` — the Slack slash command"
+
     async def admin_message(
         self,
         channel_id: str,

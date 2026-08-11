@@ -51,7 +51,7 @@ class TestBuildProfileConnectionModel:
 class TestBuildProfileCommandCapabilities:
     def test_claude_code_commands_are_session_dependent(self) -> None:
         # Claude Code can be reset/compacted/interrupted only when a session is
-        # driving it from switchdash — so all three depend on the live session.
+        # driving it from Switch Console — so all three depend on the live session.
         caps = ClaudeCodeKnownAgent.build_profile(
             ClaudeCodeOptions(channels_enabled=True)
         ).command_capabilities
@@ -261,11 +261,11 @@ class TestCodexKnownAgent:
         assert profile.task_protocol.can_accept is True
 
     def test_commands_are_session_dependent(self) -> None:
-        # Codex is a TUI driven by switchdash keystroke injection, same as Claude
+        # Codex is a TUI driven by Switch Console keystroke injection, same as Claude
         # Code — so reset/compact/interrupt depend on a live managed session.
-        # Must stay in step with `BY_PROVIDER.codex` in switchdash's
+        # Must stay in step with `BY_PROVIDER.codex` in Switch Console's
         # `main/core/switch-rooms/session-control.ts`; declaring a command here
-        # that switchdash cannot execute yields a worse message than "unsupported".
+        # that Switch Console cannot execute yields a worse message than "unsupported".
         caps = CodexKnownAgent.build_profile(CodexOptions()).command_capabilities
         assert caps.reset == "session_dependent"
         assert caps.compact == "session_dependent"
@@ -348,7 +348,7 @@ class TestCodexKnownAgent:
         assert msg.startswith("@cmcd\n\n")
 
     def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
-        # switchdash sends channels_enabled for every provider, so registration
+        # Switch Console sends channels_enabled for every provider, so registration
         # must still accept it — but Codex has no channel, so it is not a field.
         # The gateway renders the options form from this schema; a declared field
         # would be an interactive control that changes nothing.

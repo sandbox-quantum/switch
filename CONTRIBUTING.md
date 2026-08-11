@@ -3,25 +3,11 @@
 Thanks for your interest in contributing! This guide covers what you need to
 get a change merged.
 
-## Contributor License Agreement (required)
-
-Agent Switch requires every contributor to sign a
-[Contributor License Agreement](CLA.md) before their contributions can be
-merged. This is a one-time step:
-
-1. Open your pull request as usual.
-2. An automated CLA assistant will comment on the PR with a link to the CLA and
-   a status check.
-3. Reply to the PR with the exact sentence:
-
-   > I have read the CLA Document and I hereby sign the CLA
-
-Your signature is recorded automatically and applies to all future
-contributions — you only sign once.
+Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). To
+report a security vulnerability, follow [SECURITY.md](SECURITY.md) rather than
+opening an issue.
 
 ## Development setup
-
-See [CLAUDE.md](CLAUDE.md) for the full developer guide. In short:
 
 ```bash
 uv sync            # install dependencies
@@ -38,10 +24,12 @@ just migrate       # apply database migrations
 
 ## Conventions
 
-[CLAUDE.md](CLAUDE.md) documents the code style, import rules, and the
-error-handling philosophy ("fail loud, never fake") this project follows.
-Please read it before making substantial changes — matching the surrounding
-code and these conventions keeps review fast.
+Code style, import rules, and the error-handling philosophy ("fail loud, never
+fake") are documented in [CLAUDE.md](CLAUDE.md). That file is written as
+instructions for AI coding agents working in this repository, but the
+conventions it describes are the ones the project follows, so it is worth
+reading before making substantial changes — matching the surrounding code keeps
+review fast.
 
 ## License
 

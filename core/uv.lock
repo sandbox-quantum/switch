@@ -2445,7 +2445,7 @@ wheels = [
 
 [[package]]
 name = "switch-core"
-version = "0.12.4"
+version = "0.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

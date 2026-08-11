@@ -51,9 +51,13 @@ form lists the live set and the fields each one requires.
   itself: the Bot API has no such call, so chats are made in a Telegram client
   and adopted.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
-  address it; unaddressed chatter is bridged as context. Bridge in-room commands
-  (e.g. `!invite-agent`) and slash commands work per platform.
-- **"Open in SwitchDash" links.** Agents surface a `switchdash://…` deeplink with
+  address it; unaddressed chatter is bridged as context. In-room commands (e.g.
+  `!invite-agent`) work on every platform. Slack, Discord and Telegram
+  additionally expose them as **native slash commands** (`/invite-agent`) routed
+  into the same handler — declared in the app manifest on Slack, registered
+  automatically per guild on Discord, and accepted alongside `!` on Telegram,
+  where `/` is the platform's own convention.
+- **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only linkify `http(s)` (notably Discord and
   Telegram) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable
   `https://<switch-api-host>/deeplink/session?…` redirect. See the Discord guide.
@@ -64,7 +68,7 @@ Most bridge configuration is per-bridge (in `connection_config`). A few things
 are deployment-level environment config on switch-core:
 
 - **`GATEWAY_PUBLIC_URL`** — the Switch API's public origin (scheme + host only,
-  no path): the same host SwitchDash reports as its `server`, and distinct from
+  no path): the same host Switch Console reports as its `server`, and distinct from
   the operator UI. Used to build the clickable deeplink redirect, which is served
   at `/deeplink/session` on the API root (the agent-bridge app), **not** under the
   `/gateway` mount — so front it with a proxy that routes the API root, not only

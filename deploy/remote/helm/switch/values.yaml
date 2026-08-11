@@ -189,7 +189,7 @@ mattermost:
   regularUser: user
   siteUrl: ""
   # User-facing Mattermost URL, used to build channel deeplinks (the
-  # mattermost:// links surfaced in switchdash). Distinct from the internal
+  # mattermost:// links surfaced in Switch Console). Distinct from the internal
   # cluster address Switch connects to. Empty → falls back to the internal URL.
   publicUrl: ""
   maxUsersPerTeam: 1000

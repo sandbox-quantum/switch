@@ -59,10 +59,10 @@ class SwitchConfig(BaseSettings):
     frontend_base_url: str | None = None
 
     # Public origin (scheme + host, no path) of the Switch API — the same host
-    # switchdash reports as its `server`, e.g. https://switch-api.<tailnet>.ts.net.
+    # Switch Console reports as its `server`, e.g. https://switch-api.<tailnet>.ts.net.
     # Distinct from `frontend_base_url`, which is the operator UI. Powers the
     # `switchdash://` deeplink HTTP redirect (`/deeplink/session`, served on the
-    # agent-bridge app) so the "Open in SwitchDash" link is clickable on platforms
+    # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
     # unset, the raw `switchdash://` deeplink is posted as-is.
     gateway_public_url: str | None = None

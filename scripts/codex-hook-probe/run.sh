@@ -4,16 +4,16 @@
 # reading the binary:
 #
 #   1. Does Codex deliver a hook's event payload on stdin, with no positional
-#      operands? switchdash's hook commands pipe stdin into curl (`-d @-`), so a
+#      operands? Switch Console's hook commands pipe stdin into curl (`-d @-`), so a
 #      payload handed over as a positional operand instead would leave them
-#      posting an empty body. This one is live: SessionStart is how switchdash
+#      posting an empty body. This one is live: SessionStart is how Switch Console
 #      captures the rollout id.
 #
 #   2. What shape does `tool_response` take for an MCP tool call? Claude Code
 #      unwraps the MCP result; Codex forwards the `CallToolResult` envelope, so
 #      the payload sits under `structuredContent` / `content[0].text`. The hook
-#      enricher handles either shape. switchdash no longer installs a PostToolUse
-#      hook for Codex — a session's room comes from the connection switchdash
+#      enricher handles either shape. Switch Console no longer installs a PostToolUse
+#      hook for Codex — a session's room comes from the connection Switch Console
 #      hands it — so this is a record of Codex's delivery contract, kept for when
 #      a PostToolUse hook is wanted again, not something shipping code depends on.
 #
@@ -63,7 +63,7 @@ fi
 chmod 600 "$CODEX_HOME/auth.json"
 
 # The hook commands record what Codex actually handed them: the operand count,
-# the first operand, and stdin. Deliberately NOT the commands switchdash
+# the first operand, and stdin. Deliberately NOT the commands Switch Console
 # generates — this measures the delivery mechanism, not our shell.
 #
 # Built with json.dumps rather than a heredoc: the commands contain quotes, and
@@ -115,9 +115,9 @@ echo
 # `--dangerously-bypass-hook-trust` is required: Codex persists a `trusted_hash`
 # per hook and silently skips any it has not been told to trust, so without it
 # the probe reports "HOOK DID NOT FIRE" for reasons that have nothing to do with
-# what it is measuring. switchdash passes the same flag on every Codex session
+# what it is measuring. Switch Console passes the same flag on every Codex session
 # (see `CODEX_HOOK_TRUST_FLAG` in
-# dash/packages/plugins/src/agents/impl/codex/hooks.ts).
+# console/packages/plugins/src/agents/impl/codex/hooks.ts).
 CODEX_HOME="$CODEX_HOME" codex exec \
   --dangerously-bypass-approvals-and-sandbox \
   --dangerously-bypass-hook-trust \
