@@ -85,6 +85,27 @@ function InterfaceSettingsPage() {
 // SettingsPage
 // ---------------------------------------------------------------------------
 
+/**
+ * The tabs that have a pane to show. `docs` is an external link, and several
+ * `SettingsPageTab` values are hidden in v0, so this is a subset.
+ */
+const TAB_CONTENT: Partial<Record<SettingsPageTab, () => React.ReactNode>> = {
+  general: () => <GeneralSettingsPage />,
+  'clis-models': () => <AgentsSettingsPage />,
+  interface: () => <InterfaceSettingsPage />,
+};
+
+/**
+ * A persisted snapshot can name a tab this build no longer renders — one hidden
+ * in v0, or retired outright. Showing Settings with an empty pane and no tab
+ * selected reads as broken, so fall back to General.
+ */
+export function resolveSettingsTab(tab: unknown): SettingsPageTab {
+  return typeof tab === 'string' && Object.hasOwn(TAB_CONTENT, tab)
+    ? (tab as SettingsPageTab)
+    : 'general';
+}
+
 export function SettingsPage({
   tab: activeTab,
   onTabChange,
@@ -111,13 +132,7 @@ export function SettingsPage({
     { id: 'docs', label: 'Docs', isExternal: true },
   ];
 
-  const tabContent: Record<string, React.ReactNode> = {
-    general: <GeneralSettingsPage />,
-    'clis-models': <AgentsSettingsPage />,
-    interface: <InterfaceSettingsPage />,
-  };
-
-  const currentContent = tabContent[activeTab];
+  const currentContent = TAB_CONTENT[activeTab]?.();
 
   return (
     <PageLayout
