@@ -153,6 +153,9 @@ class TelegramAdapter(CollaborationAdapter):
         # at startup. It is a global setting and says nothing about any one
         # chat, so it is only half of what _chat_visibility decides.
         self._privacy_mode_disabled = False
+        # Whether BotFather allows this bot into groups at all, also from
+        # getMe. Assumed until the bot answers, which is BotFather's default.
+        self._can_join_groups = True
         # chat id -> the visibility last announced in it, so a reconnect or a
         # second join repeats nothing while a real change is always said.
         self._visibility_announced: dict[str, str] = {}
@@ -188,16 +191,36 @@ class TelegramAdapter(CollaborationAdapter):
         me = await app.bot.get_me()
         self._bot_user_id = me.id
         if me.username and me.username != self._bot_username:
+            # The configured value used to win, and every link built from it
+            # pointed at whatever account that name resolves to — which is not
+            # this bot, and on Telegram is quite possibly somebody else's. The
+            # token identifies the bot; the name is a label an operator typed.
             logger.warning(
-                "Configured Telegram bot_username %r does not match the bot's "
-                "actual username %r — deeplinks will use the configured value",
+                "Configured Telegram bot_username %r is not this bot's username "
+                "%r — using the one the Bot API reports, so links resolve. Fix "
+                "the bridge's configuration: the field wants the @handle, not "
+                "the display name",
                 self._bot_username,
                 me.username,
             )
+        if me.username:
+            self._bot_username = str(me.username)
         self._privacy_mode_disabled = bool(
             getattr(me, "can_read_all_group_messages", False)
         )
+        # A bot with "Allow Groups?" turned off in BotFather cannot be added to
+        # one at all, and Telegram answers an add-to-group link by opening a
+        # chat with the bot — a link that looks like it did nothing.
+        self._can_join_groups = bool(getattr(me, "can_join_groups", True))
         self._report_privacy_mode()
+        if not self._can_join_groups:
+            logger.warning(
+                "Telegram bot @%s has groups disabled in BotFather, so it cannot "
+                "be added to one and the 'Add to a Telegram group' link is not "
+                "offered. Enable it in BotFather: /mybots -> select the bot -> "
+                "Bot Settings -> Allow Groups?",
+                self._bot_username,
+            )
         await app.start()
         if app.updater is None:
             raise RuntimeError("Telegram application was built without an updater")
@@ -433,23 +456,37 @@ class TelegramAdapter(CollaborationAdapter):
         mode, and no promoting the bot by hand afterwards. `admin=` names the
         rights the dialog pre-selects; see _GROUP_ADMIN_RIGHTS for why they are
         the ones asked for.
+
+        The username is the one the Bot API reports, not the configured one —
+        a link built from a name that resolves to some other account opens a
+        chat with *it* and looks like the link did nothing.
+
+        The group link is withheld from a bot BotFather has barred from groups,
+        because Telegram answers such a link by opening a chat with the bot:
+        indistinguishable, from the outside, from a broken link.
         """
         if not self._bot_username:
             return []
         base = f"https://t.me/{self._bot_username}"
-        return [
-            BridgeInstallLink(
-                key="group",
-                label="Add to a Telegram group",
-                description=(
-                    "Pick a group and confirm. The bot joins as an administrator, "
-                    "which is what lets it see the conversation, and Switch "
-                    "creates the room as soon as it lands."
-                ),
-                url=(
-                    f"{base}?startgroup={_INSTALL_PAYLOAD}&admin={_GROUP_ADMIN_RIGHTS}"
-                ),
-            ),
+        links = []
+        if self._can_join_groups:
+            links.append(
+                BridgeInstallLink(
+                    key="group",
+                    label="Add to a Telegram group",
+                    description=(
+                        "Pick a group and confirm. The bot joins as an "
+                        "administrator, which is what lets it see the "
+                        "conversation, and Switch creates the room as soon as it "
+                        "lands."
+                    ),
+                    url=(
+                        f"{base}?startgroup={_INSTALL_PAYLOAD}"
+                        f"&admin={_GROUP_ADMIN_RIGHTS}"
+                    ),
+                )
+            )
+        links.append(
             BridgeInstallLink(
                 key="channel",
                 label="Add to a Telegram channel",
@@ -463,8 +500,9 @@ class TelegramAdapter(CollaborationAdapter):
                 # to read one from. Giving it a value here would look symmetric
                 # with the group link and mean nothing.
                 url=f"{base}?startchannel&admin={_CHANNEL_ADMIN_RIGHTS}",
-            ),
-        ]
+            )
+        )
+        return links
 
     def _make_on_update(self) -> Callable[[Any, Any], Coroutine[Any, Any, None]]:
         async def on_update(update: Any, _context: Any) -> None:

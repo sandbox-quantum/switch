@@ -72,6 +72,15 @@ version of their own to them without also giving them a release of their own.
   promotion fixes it.
 
 #### Fixed
+- Telegram links are built from the username the Bot API reports rather than the
+  one in the bridge's config. A configured name that is not the bot's resolves to
+  whichever account does own it, so every link opened a chat with a stranger —
+  and the mismatch was already detected and then ignored, with the wrong value
+  used anyway. The bot's own name wins and the correction is logged.
+- The "add to a Telegram group" link is withheld from a bot BotFather has barred
+  from groups. Telegram answers such a link by opening a chat with the bot, which
+  from the outside is indistinguishable from a link that does nothing; the reason
+  is logged with the setting to change instead.
 - A room follows its Telegram chat when the chat is reissued a new id, which
   Telegram does silently whenever a group becomes a supergroup. The room was
   left bound to the old id, so nothing anyone typed reached Switch again while

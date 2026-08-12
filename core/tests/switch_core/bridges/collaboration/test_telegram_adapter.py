@@ -1271,25 +1271,31 @@ class _FakeUpdater:
 
 
 class _FakeApplication:
-    def __init__(self, *, can_read_all_group_messages: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        can_read_all_group_messages: bool = True,
+        can_join_groups: bool | None = None,
+    ) -> None:
         self.bot = _FakeBot()
         self.updater = _FakeUpdater()
         self.handlers: list[Any] = []
         self.started = False
         self.shut_down = False
         self._can_read_all = can_read_all_group_messages
+        # None leaves the field off getMe entirely, as an older Bot API would.
+        self._can_join_groups = can_join_groups
         self.bot.get_me = self._get_me  # type: ignore[attr-defined]
 
     async def _get_me(self) -> Any:
-        return type(
-            "_Me",
-            (),
-            {
-                "id": BOT_USER_ID,
-                "username": BOT_USERNAME,
-                "can_read_all_group_messages": self._can_read_all,
-            },
-        )()
+        fields: dict[str, Any] = {
+            "id": BOT_USER_ID,
+            "username": BOT_USERNAME,
+            "can_read_all_group_messages": self._can_read_all,
+        }
+        if self._can_join_groups is not None:
+            fields["can_join_groups"] = self._can_join_groups
+        return type("_Me", (), fields)()
 
     def add_handler(self, handler: Any) -> None:
         self.handlers.append(handler)
@@ -1596,11 +1602,13 @@ def test_a_command_published_under_its_underscore_name_still_resolves() -> None:
     assert commands[0].args == "@scout"
 
 
-def test_a_username_that_disagrees_with_the_bot_is_reported(
+def test_the_bots_own_username_wins_over_a_configured_one(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # Every t.me link is built from the configured name, so a mismatch produces
-    # links that quietly point at the wrong bot.
+    # Every t.me link is built from this name, and a name that is not the
+    # bot's resolves to whatever account does own it — so the link opens a
+    # chat with a stranger and reads as a link that did nothing. The token
+    # says which bot this is; the configured name is a label someone typed.
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username="wrong_name")
     )
@@ -1610,8 +1618,46 @@ def test_a_username_that_disagrees_with_the_bot_is_reported(
         with caplog.at_level(logging.WARNING):
             _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
 
-    assert "does not match" in caplog.text
+    assert "wrong_name" in caplog.text
     assert BOT_USERNAME in caplog.text
+    # Corrected everywhere a link is built from it, not just complained about.
+    assert adapter._bot_username == BOT_USERNAME
+    for link in _run(adapter.install_links()):
+        assert f"t.me/{BOT_USERNAME}" in link.url
+    assert _run(adapter.home_deeplink()) == f"https://t.me/{BOT_USERNAME}"
+
+
+def test_groups_disabled_in_botfather_withholds_the_group_link(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Telegram answers an add-to-group link for such a bot by opening a chat
+    # with it, which is indistinguishable from a broken link. Better to not
+    # offer it and say why.
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication(can_join_groups=False)
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        with caplog.at_level(logging.WARNING):
+            _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert [link.key for link in _run(adapter.install_links())] == ["channel"]
+    assert "Allow Groups" in caplog.text
+
+
+def test_groups_are_assumed_allowed_when_the_bot_does_not_say() -> None:
+    # BotFather's default, and an older Bot API that omits the field must not
+    # be read as a refusal.
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert [link.key for link in _run(adapter.install_links())] == ["group", "channel"]
 
 
 def test_a_bad_token_fails_the_start_rather_than_running_deaf() -> None:
