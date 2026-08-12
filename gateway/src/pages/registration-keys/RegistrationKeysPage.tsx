@@ -2,6 +2,7 @@ import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import DoneOutline from "@mui/icons-material/DoneOutline";
+import SearchIcon from "@mui/icons-material/Search";
 import {
   Box,
   Button,
@@ -12,7 +13,9 @@ import {
   DialogContentText,
   DialogTitle,
   IconButton,
+  InputAdornment,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -30,6 +33,7 @@ export default function RegistrationKeysPage() {
   const [deleting, setDeleting] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [agentSearch, setAgentSearch] = useState("");
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -67,10 +71,15 @@ export default function RegistrationKeysPage() {
     [keys],
   );
 
-  const agentKeys = useMemo(
-    () => keys?.filter((k) => k.type === "agent") ?? [],
-    [keys],
-  );
+  const agentKeys = useMemo(() => {
+    const all = keys?.filter((k) => k.type === "agent") ?? [];
+    const q = agentSearch.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter(
+      (k) =>
+        k.label.toLowerCase().includes(q) || k.key_prefix.toLowerCase().includes(q),
+    );
+  }, [keys, agentSearch]);
 
   const regColumns = useMemo<GridColDef<ApiKeyDetail>[]>(
     () => [
@@ -162,7 +171,7 @@ export default function RegistrationKeysPage() {
   );
 
   return (
-    <Box>
+    <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
         <Typography variant="h5">API Keys</Typography>
         <Button
@@ -180,26 +189,53 @@ export default function RegistrationKeysPage() {
       {loading ? (
         <CircularProgress />
       ) : (
-        <DataTable
-          rows={registrationKeys}
-          columns={regColumns}
-          height={Math.min(400, 108 + registrationKeys.length * 52)}
-          pageSize={10}
-        />
+        <Box
+          sx={{
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            height: Math.min(400, 108 + registrationKeys.length * 52),
+          }}
+        >
+          <DataTable
+            rows={registrationKeys}
+            columns={regColumns}
+            fillHeight
+            pageSize={10}
+          />
+        </Box>
       )}
 
-      <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 3, mb: 1 }}>
-        Agent Keys
-      </Typography>
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        sx={{ mt: 3, mb: 1 }}
+      >
+        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          Agent Keys
+        </Typography>
+        <TextField
+          size="small"
+          placeholder="Search agents…"
+          value={agentSearch}
+          onChange={(e) => setAgentSearch(e.target.value)}
+          sx={{ width: 280 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+      </Stack>
       {loading ? (
         <CircularProgress />
       ) : (
-        <DataTable
-          rows={agentKeys}
-          columns={agentColumns}
-          height={Math.min(400, 108 + agentKeys.length * 52)}
-          pageSize={10}
-        />
+        <DataTable rows={agentKeys} columns={agentColumns} fillHeight pageSize={25} />
       )}
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
