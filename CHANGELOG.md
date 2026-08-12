@@ -349,6 +349,18 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.22.0] - 2026-08-12
+
+#### Added
+- Linux **arm64** desktop artifacts are now built and published alongside x64 —
+  AppImage, deb, and rpm (#202).
+- **Windows x64** releases are now built and published (unsigned) (CHOO-1468).
+
+#### Changed
+- The Codex session runtime version is now derived from the artifact registry
+  rather than a hand-maintained `SWITCH_AGENT_RUNTIME_VERSION` constant; the
+  constant and its parity test are removed (#198).
+
 ### [0.21.0] - 2026-08-11
 
 #### Changed
