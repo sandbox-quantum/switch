@@ -81,6 +81,14 @@ version of their own to them without also giving them a release of their own.
   from groups. Telegram answers such a link by opening a chat with the bot, which
   from the outside is indistinguishable from a link that does nothing; the reason
   is logged with the setting to change instead.
+- The admin-granting group link no longer dead-ends on clients that offer no
+  group to pick. Telegram shows that picker only for groups where the person can
+  add or edit admins, and clients disagree about which qualify — a basic group is
+  commonly excluded, since promoting a bot in one converts it to a supergroup —
+  and when none qualify it opens a chat with the bot instead. A second link that
+  every client honours is offered beside it: the bot joins as an ordinary member,
+  says in the chat that it can only see messages tagging it, and promoting it
+  there finishes the install.
 - A room follows its Telegram chat when the chat is reissued a new id, which
   Telegram does silently whenever a group becomes a supergroup. The room was
   left bound to the old id, so nothing anyone typed reached Switch again while

@@ -45,15 +45,30 @@ On success the bridge starts polling.
 
 ## 2. Add the bot to a chat, from the dashboard
 
-On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**
-with two links. The icon is shown to admins, and only while the bridge is
-running — the links are built by the live bridge, so a bridge that failed to
-start offers none.
+On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**.
+The icon is shown to admins, and only while the bridge is running — the links
+are built by the live bridge, so a bridge that failed to start offers none.
 
 - **Add to a Telegram group** — opens Telegram, asks which group, and adds the
   bot as an administrator with the one right the bridge uses. One confirmation.
-- **Add to a Telegram channel** — the same for a broadcast channel, which needs
-  the rights that posting and editing there require.
+- **Add to a group without admin rights** — the fallback, for when the first
+  offers no group to pick. See below.
+- **Add to a Telegram channel** — for a broadcast channel, which needs the
+  rights that posting and editing there require.
+
+### If the first link offers you no group
+
+Telegram shows the admin-granting picker only for groups where you can add or
+edit admins, and clients disagree about which groups qualify — a **basic group**
+is commonly left out, because promoting a bot in one converts it to a
+supergroup. When nothing qualifies, Telegram opens a chat with the bot instead,
+which looks like a link that did nothing.
+
+Use **Add to a group without admin rights**. It works on every client: the bot
+joins as an ordinary member, tells you in the chat that it can only see messages
+that tag it, and promoting it there — **Delete Messages** is the only right worth
+granting — bridges the whole conversation and gets you a confirmation in the
+chat.
 
 Switch creates the room the moment the bot lands in the chat, and the bot says
 in the chat what it can see.

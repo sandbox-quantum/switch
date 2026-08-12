@@ -15,6 +15,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.telegram import adapter as adapter_module
 from switch_core.bridges.collaboration.telegram.adapter import (
+    _INSTALL_PAYLOAD,
     TelegramAdapter,
     TelegramConnectionConfig,
 )
@@ -1657,7 +1658,11 @@ def test_groups_are_assumed_allowed_when_the_bot_does_not_say() -> None:
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
         _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
 
-    assert [link.key for link in _run(adapter.install_links())] == ["group", "channel"]
+    assert [link.key for link in _run(adapter.install_links())] == [
+        "group",
+        "group_member",
+        "channel",
+    ]
 
 
 def test_a_bad_token_fails_the_start_rather_than_running_deaf() -> None:
@@ -2241,3 +2246,37 @@ def test_a_bridge_with_no_bot_username_offers_no_install_link() -> None:
     adapter._bot_username = ""
 
     assert _run(adapter.install_links()) == []
+
+
+def test_a_group_link_without_admin_rights_is_offered_beside_it() -> None:
+    # The `admin=` picker lists only groups the person already administers, and
+    # clients differ on which qualify — when none do, Telegram opens a chat with
+    # the bot and the link reads as broken. The plain form every client honours
+    # is offered as well, and the mention-only notice finishes the job.
+    adapter = _adapter()
+
+    links = {link.key: link for link in _run(adapter.install_links())}
+
+    assert "group_member" in links
+    assert links["group_member"].url.endswith(f"?startgroup={_INSTALL_PAYLOAD}")
+    assert "admin=" not in links["group_member"].url
+
+
+def test_the_fallback_says_what_it_costs() -> None:
+    # An operator picking it has to know it is the reduced mode, not a
+    # different route to the same place.
+    adapter = _adapter()
+
+    fallback = next(
+        link for link in _run(adapter.install_links()) if link.key == "group_member"
+    )
+
+    assert "tag it" in fallback.description
+    assert "administrator" in fallback.description
+
+
+def test_both_group_links_go_when_groups_are_barred() -> None:
+    adapter = _adapter()
+    adapter._can_join_groups = False
+
+    assert [link.key for link in _run(adapter.install_links())] == ["channel"]

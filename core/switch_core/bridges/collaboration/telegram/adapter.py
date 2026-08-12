@@ -457,13 +457,24 @@ class TelegramAdapter(CollaborationAdapter):
         rights the dialog pre-selects; see _GROUP_ADMIN_RIGHTS for why they are
         the ones asked for.
 
+        **The `admin=` form is not universal**, which is why there are two group
+        links rather than one. Telegram shows that picker only for groups where
+        the person can add or edit admins, and clients differ on which groups
+        qualify — a basic group is commonly left out, because promoting a bot in
+        one converts it to a supergroup. When nothing qualifies, the client
+        falls back to opening a chat with the bot, and a link that lands in a DM
+        reads as a link that did nothing. So the plain form, which every client
+        honours, is offered beside it: it adds the bot as an ordinary member,
+        the bridge says in the chat that it can only see mentions, and promoting
+        it there finishes the job.
+
         The username is the one the Bot API reports, not the configured one —
         a link built from a name that resolves to some other account opens a
         chat with *it* and looks like the link did nothing.
 
-        The group link is withheld from a bot BotFather has barred from groups,
-        because Telegram answers such a link by opening a chat with the bot:
-        indistinguishable, from the outside, from a broken link.
+        The group links are withheld from a bot BotFather has barred from
+        groups, because Telegram answers those by opening a chat with the bot
+        too.
         """
         if not self._bot_username:
             return []
@@ -478,12 +489,27 @@ class TelegramAdapter(CollaborationAdapter):
                         "Pick a group and confirm. The bot joins as an "
                         "administrator, which is what lets it see the "
                         "conversation, and Switch creates the room as soon as it "
-                        "lands."
+                        "lands. If your Telegram offers no chat to pick, use the "
+                        "link below instead — some clients only list groups you "
+                        "already administer."
                     ),
                     url=(
                         f"{base}?startgroup={_INSTALL_PAYLOAD}"
                         f"&admin={_GROUP_ADMIN_RIGHTS}"
                     ),
+                )
+            )
+            links.append(
+                BridgeInstallLink(
+                    key="group_member",
+                    label="Add to a group without admin rights",
+                    description=(
+                        "Works on every Telegram client. The bot joins as an "
+                        "ordinary member, so Telegram only shows it messages that "
+                        "tag it — it will say so in the chat, and making it an "
+                        "administrator there bridges the whole conversation."
+                    ),
+                    url=f"{base}?startgroup={_INSTALL_PAYLOAD}",
                 )
             )
         links.append(
