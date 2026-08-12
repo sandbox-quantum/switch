@@ -356,6 +356,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- A Codex agent's model, reasoning effort and instructions can now be changed
+  after the agent is created, from a **Codex configuration** section in its
+  Settings tab. They were previously write-once in the add-agent dialog, with no
+  way to edit them (CHOO-1985). Codex reads the values only when a session
+  starts, so a save applies to the next session; a session that is already
+  running is named in the section, with a Restart that resumes it on the new
+  configuration. Clearing every field removes the agent's launch profile rather
+  than leaving it orphaned.
+
 ### [0.22.1] - 2026-08-12
 
 #### Changed

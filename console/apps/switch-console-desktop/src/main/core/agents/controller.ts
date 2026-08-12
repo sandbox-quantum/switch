@@ -28,6 +28,7 @@ import {
   setAgentAutoSession,
   type AgentAutoSessionParams,
 } from './setAgentAutoSession';
+import { setAgentProviderConfig, type AgentProviderConfigParams } from './setAgentProviderConfig';
 import { updateAgent, type UpdateAgentParams } from './updateAgent';
 
 export const agentsController = createRPCController({
@@ -62,6 +63,8 @@ export const agentsController = createRPCController({
     setAgentAutoSession(params),
   setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
     setAgentAutoApprove(params),
+  setAgentProviderConfig: (params: AgentProviderConfigParams): Promise<void> =>
+    setAgentProviderConfig(params),
   getAgentAutoSession: (params: { agentId: string }): Promise<boolean> =>
     getAgentAutoSession(params),
 });

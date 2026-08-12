@@ -4,6 +4,7 @@ import { AddressingPolicySettingsSection } from '@renderer/features/locations/co
 import { AgentDefinitionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-definition-settings-section';
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { AutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-session-settings-section';
+import { CodexConfigSettingsSection } from '@renderer/features/locations/components/settings-view/sections/codex-config-settings-section';
 import {
   asMounted,
   getLocationStore,
@@ -43,6 +44,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
       <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
       <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
       <AgentDefinitionSettingsSection locationId={locationId} agentId={agentId} />
+      <CodexConfigSettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );
 });
