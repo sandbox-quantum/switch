@@ -123,8 +123,19 @@ export default function CollaborationsPage() {
               width: 110,
               sortable: false,
               filterable: false,
+              // Right-aligned and bottom-anchored to the same edge on every
+              // row: rows carry one icon or two depending on whether the
+              // platform offers an install link, and without this the delete
+              // buttons sit at different x positions down the column.
+              align: "right" as const,
               renderCell: ({ row }: { row: BridgeRow }) => (
-                <Stack direction="row" spacing={0.5}>
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  alignItems="center"
+                  justifyContent="flex-end"
+                  height="100%"
+                >
                   {(row.install_links ?? []).length > 0 && (
                     <Tooltip title="Add this app to a chat">
                       <IconButton

@@ -1880,8 +1880,8 @@ def test_no_group_link_asks_to_be_an_administrator() -> None:
 
 
 def test_the_channel_install_link_asks_for_what_posting_there_needs() -> None:
-    # A channel is a broadcast chat: posting and editing are admin-only, so the
-    # rights are wider than a group's and are named as such.
+    # A channel is a broadcast chat: posting and editing are admin-only, so it
+    # is the one link that does ask for rights, and they are named as such.
     adapter = _adapter()
 
     channel = next(
@@ -1891,6 +1891,20 @@ def test_the_channel_install_link_asks_for_what_posting_there_needs() -> None:
     assert "startchannel" in channel.url
     rights = channel.url.split("admin=", 1)[1].split("&", 1)[0].split("+")
     assert set(rights) == {"post_messages", "edit_messages", "delete_messages"}
+
+
+def test_the_channel_link_says_its_picker_may_be_empty() -> None:
+    # Its picker holds only channels the person administers, and most people
+    # have none — Telegram then opens a chat with the bot, which reads as a
+    # broken link unless the dialog has already said what to expect.
+    adapter = _adapter()
+
+    channel = next(
+        link for link in _run(adapter.install_links()) if link.key == "channel"
+    )
+
+    assert "nothing to pick" in channel.description
+    assert "not groups" in channel.description
 
 
 def test_an_install_link_carries_no_credential() -> None:

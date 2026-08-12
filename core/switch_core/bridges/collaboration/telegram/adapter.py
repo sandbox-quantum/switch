@@ -498,8 +498,10 @@ class TelegramAdapter(CollaborationAdapter):
                 key="channel",
                 label="Add to a Telegram channel",
                 description=(
-                    "For broadcast channels, where posting is admin-only. Pick "
-                    "the channel and confirm."
+                    "For broadcast channels only — not groups. Posting to one is "
+                    "admin-only, so Telegram lists just the channels you "
+                    "administer here; if you have none, it opens a chat with the "
+                    "bot and there is nothing to pick."
                 ),
                 # `startchannel` deliberately carries no payload: Telegram
                 # documents the start parameter as group-only and "absent in

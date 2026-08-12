@@ -71,9 +71,13 @@ are built by the live bridge, so a bridge that failed to start offers none.
   one and confirm; the bot needs no permissions there. Switch creates the room
   as the bot lands, and the bot says in the chat whether it can see the
   conversation.
-- **Add to a Telegram channel** — for a broadcast channel. Posting to one is
-  admin-only, so this link does ask: **Post Messages**, **Edit Messages** and
-  **Delete Messages**, and nothing beyond them.
+- **Add to a Telegram channel** — for a broadcast channel, which is not the same
+  thing as a group. Posting to one is admin-only, so this link does ask: **Post
+  Messages**, **Edit Messages** and **Delete Messages**, and nothing beyond them.
+  Telegram builds its picker from the channels **you administer**; with none, it
+  opens a chat with the bot and there is nothing to select. That is Telegram
+  saying "you have no channels", not a broken link — most deployments never need
+  this one.
 
 A bot cannot be added to a chat by Switch, and it cannot add anyone else: people
 join from a Telegram client or an invite link.

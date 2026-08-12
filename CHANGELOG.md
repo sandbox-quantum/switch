@@ -73,6 +73,10 @@ version of their own to them without also giving them a release of their own.
   promotion fixes it.
 
 #### Fixed
+- Bridge row action icons line up down the column again. A row carries one icon
+  or two depending on whether its platform offers an install link, and the pair
+  was not anchored to the same edge as the single, so the delete buttons sat at
+  different positions on different rows.
 - Telegram links are built from the username the Bot API reports rather than the
   one in the bridge's config. A configured name that is not the bot's resolves to
   whichever account does own it, so every link opened a chat with a stranger —
