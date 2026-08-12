@@ -182,9 +182,25 @@ Package desktop artifacts locally:
 ```bash
 pnpm run package
 pnpm run package:mac
-pnpm run package:linux
+pnpm run package:linux         # x64
+pnpm run package:linux:arm64
 pnpm run package:win
 ```
+
+Two things these scripts do NOT do for you:
+
+- **Build the workspace packages.** They package the app only, so on a fresh
+  clone the renderer build fails with `Failed to resolve entry for package
+  "@switch-console/shared"` — its `exports` point at a `dist/` that no one has
+  written yet. Run `pnpm run build` from the repo root (or
+  `pnpm -r --filter './packages/**' run build`) first.
+- **Rebuild the native modules.** `npmRebuild` is off, so whatever
+  `pnpm --filter @switch-console/desktop run rebuild` last produced is what
+  gets copied into the package.
+
+The Linux scripts name an arch for that second reason: the natives are built for
+the host, so packaging the other arch yields a package that installs, launches,
+and dies on the first wrong-arch `.node`. Build each arch on that arch.
 
 Run formatting, linting, type checks, and tests:
 

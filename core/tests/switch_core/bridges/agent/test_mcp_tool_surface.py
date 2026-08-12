@@ -89,42 +89,84 @@ SKILLS = sorted(
 )
 
 
-def _frontmatter_tools(skill: Path) -> list[str]:
-    """The tool names listed in a skill's frontmatter `description:` trigger.
+# Tools the agent runtime serves itself, so absent from the bridge's surface.
+# The skills index them alongside the bridge tools because an agent calls them
+# the same way, but they are registered by
+# `console/packages/switch-agent-runtime/`, not here — checking them against
+# this server's registrations would fail on tools that are working correctly.
+RUNTIME_TOOLS = {"send_attachment", "download_attachment"}
 
-    Both skills carry them as one parenthesised, comma-separated run — the
-    first parenthetical in the file. Read rather than YAML-parsed so the
-    unquoted (Claude) and quoted (Codex) forms are handled the same way.
+# Served only when startup could not produce an identity, in place of the normal
+# surface, and documented in their own sections rather than the index.
+DEGRADED_TOOLS = {"select_agent", "switch_unavailable"}
+
+
+def _indexed_tools(skill: Path) -> list[str]:
+    """The tool names listed in a skill's `## Tool index` section.
+
+    One tool per bullet, opening with the backticked name. Read from the body
+    rather than the frontmatter: the `description:` is always-resident context
+    on both hosts (and Codex truncates it to fit a budget), so it carries a
+    trigger rather than an inventory.
+
+    Every bullet in the section must parse. A tool silently dropping out
+    because someone bolded it, indented it, or folded two onto one line is the
+    failure this whole file exists to prevent, so an unparseable bullet is an
+    error rather than a skipped line.
     """
-    match = re.search(
-        r"^description:.*?\(([a-z_, ]+)\)", skill.read_text(), re.MULTILINE
-    )
-    assert match is not None, f"no parenthesised tool list in {skill}"
-    return [name.strip() for name in match.group(1).split(",") if name.strip()]
+    body = skill.read_text()
+    section = re.search(r"^## Tool index$(.*?)(?=^## |\Z)", body, re.MULTILINE | re.S)
+    assert section is not None, f"no '## Tool index' section in {skill}"
+    bullets = re.findall(r"^[ \t]*[-*].*$", section.group(1), re.MULTILINE)
+    assert bullets, f"no tool bullets under '## Tool index' in {skill}"
+    names = []
+    for bullet in bullets:
+        match = re.fullmatch(r"- `([a-z_]+)` — .*", bullet)
+        assert match is not None, (
+            f"{skill}: tool-index bullet is not `- \\`name\\` — description`, so "
+            f"the tool it names would not be checked: {bullet!r}"
+        )
+        names.append(match.group(1))
+    return names
 
 
-def test_both_skills_advertise_the_same_tools() -> None:
-    """The two connectors' trigger lists must not drift apart.
+async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
+    """The index names every tool the bridge serves — no silent omissions.
+
+    The frontmatter list this replaced was one mechanical line; a prose bullet
+    list is easy to shorten by accident. Without this, deleting a bullet passes
+    every other check in the file: the drift test still sees two identical
+    indexes, and the registration test only ever objects to *extra* names.
+    """
+    for skill in SKILLS:
+        indexed = set(_indexed_tools(skill))
+        missing = tool_names - indexed - DEGRADED_TOOLS
+        assert not missing, (
+            f"{skill} does not index registered tools: {sorted(missing)}"
+        )
+
+
+def test_both_skills_index_the_same_tools() -> None:
+    """The two connectors' tool indexes must not drift apart.
 
     They are host-specific documents but the tool surface behind them is one
-    surface, and a tool added to one skill's trigger is silently absent from
-    the other's.
+    surface, and a tool added to one skill's index is silently absent from the
+    other's.
     """
     assert len(SKILLS) == 2, f"expected two connector skills, found {SKILLS}"
-    first, second = (_frontmatter_tools(skill) for skill in SKILLS)
+    first, second = (_indexed_tools(skill) for skill in SKILLS)
     assert first == second
 
 
-async def test_skill_frontmatter_tools_are_registered(tool_names: set[str]) -> None:
-    """Every tool named in a skill's trigger list actually exists.
+async def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:
+    """Every tool a skill's index advertises actually exists.
 
     Derived from the files rather than restated here, so this half cannot go
     stale the way the hand-maintained set above can. It does not replace that
-    set: the skills also name tools in their bodies (`list_linked_rooms`,
-    `update_room`) that never appear in the trigger.
+    set: that one pins names this test would accept being dropped entirely.
     """
     for skill in SKILLS:
-        advertised = set(_frontmatter_tools(skill))
+        advertised = set(_indexed_tools(skill)) - RUNTIME_TOOLS
         assert advertised <= tool_names, (
             f"{skill} advertises unregistered tools: {sorted(advertised - tool_names)}"
         )
