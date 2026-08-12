@@ -448,10 +448,18 @@ class CollaborationAdapter(ABC):
         Empty by default: on most platforms installation is an app-directory or
         OAuth flow the operator runs elsewhere, and inventing a link for it
         would be a link to nowhere. An adapter overrides this only when the
-        platform accepts a URL that both selects the chat and grants the
-        permissions the bridge needs, so the operator does not have to
-        reproduce a permission list by hand."""
+        platform accepts a URL that selects the chat and works on every client
+        of that platform."""
         return []
+
+    async def install_note(self) -> str | None:
+        """What the links do not cover, in the platform's own terms.
+
+        Rendered under :meth:`install_links` in the operator dashboard. Some
+        kinds of chat cannot be reached by a link at all, and the operator is
+        better told where to go instead than left to conclude a button is
+        missing. Markdown-free plain text; None when there is nothing to add."""
+        return None
 
     @abstractmethod
     async def get_channel_type(self, channel_id: str) -> ChannelType: ...

@@ -1,7 +1,6 @@
 import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
-import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import {
   Box,
   Button,
@@ -25,6 +24,7 @@ import { type BridgeDetail, deleteBridge, updateBridge } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges } from "../../data/hooks";
 import { formatDate, titleCase } from "../../theme/hootFormat";
+import AddToChatDialog from "./AddToChatDialog";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
 
 type BridgeRow = BridgeDetail & { id: string };
@@ -191,43 +191,10 @@ export default function CollaborationsPage() {
         onSuccess={() => refetch()}
       />
 
-      <Dialog
-        open={!!installTarget}
+      <AddToChatDialog
+        bridge={installTarget}
         onClose={() => setInstallTarget(null)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Add {installTarget?.display_name} to a chat</DialogTitle>
-        <DialogContent>
-          <DialogContentText sx={{ mb: 2 }}>
-            Each link opens {titleCase(installTarget?.bridge_type ?? "")}, asks
-            which chat to join, and grants the permissions the bridge needs in
-            the same confirmation. Switch creates the room as soon as the bot
-            lands in the chat.
-          </DialogContentText>
-          <Stack spacing={2}>
-            {(installTarget?.install_links ?? []).map((link) => (
-              <Box key={link.key}>
-                <Button
-                  variant="outlined"
-                  startIcon={<OpenInNewOutlined />}
-                  href={link.url}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                >
-                  {link.label}
-                </Button>
-                <Typography variant="body2" color="text.secondary" mt={0.5}>
-                  {link.description}
-                </Typography>
-              </Box>
-            ))}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setInstallTarget(null)}>Close</Button>
-        </DialogActions>
-      </Dialog>
+      />
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Delete collaboration bridge</DialogTitle>

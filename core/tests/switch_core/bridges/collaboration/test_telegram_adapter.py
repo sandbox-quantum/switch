@@ -2259,3 +2259,16 @@ def test_no_link_is_offered_when_groups_are_barred() -> None:
     adapter._can_join_groups = False
 
     assert _run(adapter.install_links()) == []
+
+
+def test_the_install_note_gives_the_route_a_channel_has_to_take() -> None:
+    # No link can add a bot to a channel on every client, so the dialog that
+    # offers the group link has to say where to go instead — otherwise a
+    # missing button is all the operator sees.
+    adapter = _adapter()
+
+    note = _run(adapter.install_note())
+
+    assert note is not None
+    assert "Administrators" in note
+    assert "Post Messages" in note

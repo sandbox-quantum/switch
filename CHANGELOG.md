@@ -61,7 +61,9 @@ version of their own to them without also giving them a release of their own.
   link: that would need Telegram's `admin=` parameter, which not every client
   implements, and the ones that do not open a chat with the bot instead — a link
   that works for some people is worse than a documented step that works for all
-  of them.
+  of them. The dashboard's **Add to a chat** dialog says so: alongside the links,
+  a bridge can supply an `install_note` naming the chats no link reaches and the
+  route they take instead, so a missing button is never all the operator sees.
 - A bridged chat is told what the bridge can see in it, and told again whenever
   that changes — so promoting the bot confirms itself and retracts the earlier
   warning, and a demotion does not pass unmentioned. Visibility is settled per

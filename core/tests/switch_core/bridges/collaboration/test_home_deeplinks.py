@@ -158,3 +158,9 @@ def test_no_install_link_carries_a_credential() -> None:
             assert BOT_TOKEN not in link.url
             assert ADMIN_PASSWORD not in link.url
             assert "xapp-" not in link.url
+
+
+def test_base_adapter_offers_no_install_note() -> None:
+    # Most platforms have nothing to add beyond their links, and an empty
+    # panel in the dialog would be worse than none.
+    assert _run(CollaborationAdapter.install_note(object())) is None  # type: ignore[arg-type]

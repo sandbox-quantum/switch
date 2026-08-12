@@ -75,6 +75,23 @@ async def _install_links(
         return []
 
 
+async def _install_note(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> str | None:
+    """What the install links do not cover, in the platform's own terms. None
+    when the bridge is not running or the platform has nothing to add."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
+        return None
+    try:
+        return await adapter.install_note()
+    except Exception:
+        logger.warning(
+            "Failed to build the install note for bridge %s", bridge_id, exc_info=True
+        )
+        return None
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -96,6 +113,7 @@ async def _detail(
         created_at=str(bridge.created_at),
         home_url=await _home_url(bridge.id, collab_lifecycle),
         install_links=await _install_links(bridge.id, collab_lifecycle),
+        install_note=await _install_note(bridge.id, collab_lifecycle),
     )
 
 

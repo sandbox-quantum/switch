@@ -472,16 +472,29 @@ class TelegramAdapter(CollaborationAdapter):
                 description=(
                     "Pick a group and confirm — the bot needs no permissions "
                     "there. Switch creates the room as it lands, and the bot "
-                    "says in the chat whether it can see the conversation. To "
-                    "bridge a broadcast channel instead, add the bot from the "
-                    "channel's Administrators screen; Telegram has no link for "
-                    "that which every client honours."
+                    "says in the chat whether it can see the conversation."
                 ),
                 url=(
                     f"https://t.me/{self._bot_username}?startgroup={_INSTALL_PAYLOAD}"
                 ),
             )
         ]
+
+    async def install_note(self) -> str | None:
+        """Where to go for a broadcast channel, which has no link.
+
+        Telegram admits a bot to a channel as an administrator or not at all,
+        and the parameter that would grant that in a link is not honoured by
+        every Telegram client. So there is nothing to click, and the operator
+        is told the route that does work rather than left looking for a button.
+        """
+        return (
+            "Broadcast channels have no link: Telegram only admits a bot to one "
+            "as an administrator, and no link does that on every Telegram "
+            "client. Add the bot from the channel itself — Administrators → Add "
+            "Admin → the bot → Post Messages, Edit Messages, Delete Messages — "
+            "and Switch adopts it as a room the moment it lands."
+        )
 
     def _make_on_update(self) -> Callable[[Any, Any], Coroutine[Any, Any, None]]:
         async def on_update(update: Any, _context: Any) -> None:

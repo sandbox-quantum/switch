@@ -125,6 +125,8 @@ export interface BridgeDetail {
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
   install_links?: BridgeInstallLink[];
+  // What those links do not cover — chats that have to be joined by hand.
+  install_note?: string | null;
 }
 
 export interface ExternalUserSummary {

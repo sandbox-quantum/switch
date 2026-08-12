@@ -426,6 +426,9 @@ class BridgeDetail(BaseModel):
     # adapter. Empty when the bridge is not running or the platform has no such
     # link, in which case installation stays a documented manual flow.
     install_links: list[BridgeInstallLink] = Field(default_factory=list)
+    # What those links do not cover, in the platform's own terms — the kinds of
+    # chat that have to be joined by hand. None when there is nothing to add.
+    install_note: str | None = None
 
 
 class BridgeUpdateRequest(BaseModel):
