@@ -69,19 +69,6 @@ _COMMAND_PREFIXES = ("!", "/")
 # worth saying in the chat and in the logs.
 _INSTALL_PAYLOAD = "switch"
 
-# Admin rights the one-click channel link asks for, and no more. A channel is a
-# broadcast chat where posting is admin-only, so these are what posting and
-# editing actually require.
-#
-# There is deliberately no group equivalent. A bot needs no rights in a group:
-# it can post, and it can delete its own messages, as an ordinary member. The
-# one thing admin would add is exemption from privacy mode — and the same
-# exemption comes from turning Group Privacy off in BotFather, which is one
-# setting once per bot rather than a promotion per group, does not convert a
-# basic group into a supergroup, and does not depend on a chat picker that
-# leaves basic groups out. See docs/bridges/TELEGRAM_SETUP.md.
-_CHANNEL_ADMIN_RIGHTS = "post_messages+edit_messages+delete_messages"
-
 # Telegram will only register a command spelled in these characters, and caps a
 # description at 256. A name it rejects is left out of the menu rather than
 # taking the whole call down.
@@ -452,66 +439,49 @@ class TelegramAdapter(CollaborationAdapter):
                 )
 
     async def install_links(self) -> list[BridgeInstallLink]:
-        """Links that add this bot to a chat with the rights it needs.
+        """The link that adds this bot to a group.
 
-        Telegram's `?startgroup` / `?startchannel` links open a chat picker, so
-        adding the bot is one choice and one confirmation rather than a
-        documented sequence of clicks.
+        `?startgroup` opens a chat picker, so adding the bot is one choice and
+        one confirmation rather than a documented sequence of clicks. It asks
+        for no rights, because the bridge needs none: a bot posts and deletes
+        its own messages in a group as an ordinary member.
 
-        **The group link asks for no rights**, because the bridge needs none: a
-        bot posts and deletes its own messages in a group as an ordinary member.
-        An earlier version added it as an administrator to bypass privacy mode,
-        which cost more than it saved — Telegram builds that picker from groups
-        the person already administers, leaving basic groups out entirely, so
-        for anyone whose groups are all basic it offered nothing to pick and the
-        client opened a chat with the bot instead. Turning Group Privacy off in
-        BotFather buys the same visibility once per bot instead of once per
-        group. A channel is different: posting there is admin-only, so its link
-        asks for what posting needs.
+        **Nothing here uses Telegram's `admin=` parameter, deliberately.** Two
+        earlier versions did — adding the bot to a group as an administrator to
+        bypass privacy mode, and to a channel because a bot can only be in one
+        as an administrator. Both were withdrawn after a client was found that
+        ignores the parameter and opens a chat with the bot instead, which is
+        indistinguishable from a link that does nothing. A group needs no rights
+        anyway, so it loses nothing. A channel cannot be done this way at all,
+        so no link is offered for one and the guide gives the by-hand route:
+        the channel's Administrators screen, which works on every client.
 
         The username is the one the Bot API reports, not the configured one —
         a link built from a name that resolves to some other account opens a
         chat with *it* and looks like the link did nothing.
 
-        The group link is withheld from a bot BotFather has barred from groups,
+        The link is withheld from a bot BotFather has barred from groups,
         because Telegram answers that by opening a chat with the bot too.
         """
-        if not self._bot_username:
+        if not self._bot_username or not self._can_join_groups:
             return []
-        base = f"https://t.me/{self._bot_username}"
-        links = []
-        if self._can_join_groups:
-            links.append(
-                BridgeInstallLink(
-                    key="group",
-                    label="Add to a Telegram group",
-                    description=(
-                        "Pick a group and confirm — the bot needs no permissions "
-                        "there. Switch creates the room as it lands, and the bot "
-                        "says in the chat whether it can see the conversation."
-                    ),
-                    url=f"{base}?startgroup={_INSTALL_PAYLOAD}",
-                )
-            )
-        links.append(
+        return [
             BridgeInstallLink(
-                key="channel",
-                label="Add to a Telegram channel",
+                key="group",
+                label="Add to a Telegram group",
                 description=(
-                    "For broadcast channels only — not groups. Posting to one is "
-                    "admin-only, so Telegram lists just the channels you "
-                    "administer here; if you have none, it opens a chat with the "
-                    "bot and there is nothing to pick."
+                    "Pick a group and confirm — the bot needs no permissions "
+                    "there. Switch creates the room as it lands, and the bot "
+                    "says in the chat whether it can see the conversation. To "
+                    "bridge a broadcast channel instead, add the bot from the "
+                    "channel's Administrators screen; Telegram has no link for "
+                    "that which every client honours."
                 ),
-                # `startchannel` deliberately carries no payload: Telegram
-                # documents the start parameter as group-only and "absent in
-                # channel links", and a channel add sends the bot no `/start`
-                # to read one from. Giving it a value here would look symmetric
-                # with the group link and mean nothing.
-                url=f"{base}?startchannel&admin={_CHANNEL_ADMIN_RIGHTS}",
+                url=(
+                    f"https://t.me/{self._bot_username}?startgroup={_INSTALL_PAYLOAD}"
+                ),
             )
-        )
-        return links
+        ]
 
     def _make_on_update(self) -> Callable[[Any, Any], Coroutine[Any, Any, None]]:
         async def on_update(update: Any, _context: Any) -> None:

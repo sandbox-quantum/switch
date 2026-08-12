@@ -61,23 +61,31 @@ Fields (`TelegramConnectionConfig`):
 
 On success the bridge starts polling.
 
-## 2. Add the bot to a chat, from the dashboard
+## 2. Add the bot to a group, from the dashboard
 
-On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**.
-The icon is shown to admins, and only while the bridge is running — the links
-are built by the live bridge, so a bridge that failed to start offers none.
+On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**
+with a single link: **Add to a Telegram group**. It lists every group you can add
+a member to. Pick one and confirm — the bot needs no permissions there. Switch
+creates the room as the bot lands, and the bot says in the chat whether it can
+see the conversation.
 
-- **Add to a Telegram group** — lists every group you can add a member to. Pick
-  one and confirm; the bot needs no permissions there. Switch creates the room
-  as the bot lands, and the bot says in the chat whether it can see the
-  conversation.
-- **Add to a Telegram channel** — for a broadcast channel, which is not the same
-  thing as a group. Posting to one is admin-only, so this link does ask: **Post
-  Messages**, **Edit Messages** and **Delete Messages**, and nothing beyond them.
-  Telegram builds its picker from the channels **you administer**; with none, it
-  opens a chat with the bot and there is nothing to select. That is Telegram
-  saying "you have no channels", not a broken link — most deployments never need
-  this one.
+The icon is shown to admins, and only while the bridge is running — the link is
+built by the live bridge, so a bridge that failed to start offers none.
+
+There is deliberately **no one-click link for a channel**. Telegram's
+`?startgroup` link needs no special parameter and works everywhere, but adding a
+bot to a channel requires the `admin=` parameter, which not every Telegram
+client implements — the ones that do not simply open a chat with the bot, which
+is indistinguishable from a link that does nothing. Rather than ship a link that
+works for some people, channels are added by hand (below).
+
+## 3. Adding the bot to a broadcast channel
+
+A channel is not a group, and Telegram admits a bot to one as an administrator
+or not at all. In the channel: **Administrators** → **Add Admin** → search for
+the bot → grant **Post Messages**, **Edit Messages** and **Delete Messages**.
+Nothing else is needed, and Switch adopts the channel as a room the moment the
+bot lands.
 
 A bot cannot be added to a chat by Switch, and it cannot add anyone else: people
 join from a Telegram client or an invite link.

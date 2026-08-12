@@ -52,13 +52,16 @@ version of their own to them without also giving them a release of their own.
   rather than its stricter MarkdownV2. See `docs/bridges/TELEGRAM_SETUP.md`.
 - One-click install links for a bridge, offered on the operator dashboard and
   built by the adapter (`install_links`); empty for platforms installed through
-  their own admin UI. Telegram supplies one per chat kind: pick the chat,
-  confirm, done. The group link asks for **no permissions at all** — a bot posts
-  and deletes its own messages in a group as an ordinary member — so adding the
-  bot to a chat no longer means promoting it there by hand. The channel link
-  asks only for what posting to a broadcast channel requires. Setting a Telegram
-  bridge up is now one BotFather setting (Group Privacy off, once per bot,
-  before the bot is added anywhere) and then a link per chat.
+  their own admin UI. Telegram supplies one, for groups: pick the group, confirm,
+  done. It asks for **no permissions at all** — a bot posts and deletes its own
+  messages in a group as an ordinary member — so adding the bot no longer means
+  promoting it by hand. Setting a Telegram bridge up is now one BotFather setting
+  (Group Privacy off, once per bot, before the bot is added anywhere) and then a
+  link per group. Channels are added from their Administrators screen, and get no
+  link: that would need Telegram's `admin=` parameter, which not every client
+  implements, and the ones that do not open a chat with the bot instead — a link
+  that works for some people is worse than a documented step that works for all
+  of them.
 - A bridged chat is told what the bridge can see in it, and told again whenever
   that changes — so promoting the bot confirms itself and retracts the earlier
   warning, and a demotion does not pass unmentioned. Visibility is settled per

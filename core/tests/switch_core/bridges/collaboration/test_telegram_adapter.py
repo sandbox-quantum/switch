@@ -1643,7 +1643,7 @@ def test_groups_disabled_in_botfather_withholds_the_group_link(
         with caplog.at_level(logging.WARNING):
             _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
 
-    assert [link.key for link in _run(adapter.install_links())] == ["channel"]
+    assert _run(adapter.install_links()) == []
     assert "Allow Groups" in caplog.text
 
 
@@ -1658,10 +1658,7 @@ def test_groups_are_assumed_allowed_when_the_bot_does_not_say() -> None:
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
         _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
 
-    assert [link.key for link in _run(adapter.install_links())] == [
-        "group",
-        "channel",
-    ]
+    assert [link.key for link in _run(adapter.install_links())] == ["group"]
 
 
 def test_a_bad_token_fails_the_start_rather_than_running_deaf() -> None:
@@ -1877,34 +1874,6 @@ def test_no_group_link_asks_to_be_an_administrator() -> None:
     for link in _run(adapter.install_links()):
         if link.key.startswith("group"):
             assert "admin=" not in link.url
-
-
-def test_the_channel_install_link_asks_for_what_posting_there_needs() -> None:
-    # A channel is a broadcast chat: posting and editing are admin-only, so it
-    # is the one link that does ask for rights, and they are named as such.
-    adapter = _adapter()
-
-    channel = next(
-        link for link in _run(adapter.install_links()) if link.key == "channel"
-    )
-
-    assert "startchannel" in channel.url
-    rights = channel.url.split("admin=", 1)[1].split("&", 1)[0].split("+")
-    assert set(rights) == {"post_messages", "edit_messages", "delete_messages"}
-
-
-def test_the_channel_link_says_its_picker_may_be_empty() -> None:
-    # Its picker holds only channels the person administers, and most people
-    # have none — Telegram then opens a chat with the bot, which reads as a
-    # broken link unless the dialog has already said what to expect.
-    adapter = _adapter()
-
-    channel = next(
-        link for link in _run(adapter.install_links()) if link.key == "channel"
-    )
-
-    assert "nothing to pick" in channel.description
-    assert "not groups" in channel.description
 
 
 def test_an_install_link_carries_no_credential() -> None:
@@ -2283,8 +2252,10 @@ def test_the_group_link_says_no_permissions_are_needed() -> None:
     assert "no permissions" in group.description
 
 
-def test_the_group_link_goes_when_groups_are_barred() -> None:
+def test_no_link_is_offered_when_groups_are_barred() -> None:
+    # The group link is the only one there is, so a bot BotFather has kept out
+    # of groups has nothing to offer rather than something that cannot work.
     adapter = _adapter()
     adapter._can_join_groups = False
 
-    assert [link.key for link in _run(adapter.install_links())] == ["channel"]
+    assert _run(adapter.install_links()) == []

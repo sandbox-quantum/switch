@@ -37,12 +37,11 @@ provisioned lazily as channels are used. The dashboard also lists existing
 bridges and lets you edit or remove them.
 
 **Adding the app to a chat.** Where the platform can express that as a single
-URL, the bridge's row offers an **Add to a chat** link that picks the chat and
-grants the permissions the bridge needs in one confirmation. Telegram has them
-today, one per chat kind; the other platforms show nothing, and their app is
-installed through the platform's own admin UI as their guide describes. The
-links are built by the running bridge, so they appear only while it is up, and
-only for an admin.
+URL that works everywhere, the bridge's row offers an **Add to a chat** link:
+pick the chat, confirm, done. Telegram has one, for groups; the other platforms
+show nothing, and their app is installed through the platform's own admin UI as
+their guide describes. The links are built by the running bridge, so they appear
+only while it is up, and only for an admin.
 
 ### Registered bridge types
 
