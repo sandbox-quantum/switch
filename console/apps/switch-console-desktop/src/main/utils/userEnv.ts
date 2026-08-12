@@ -2,9 +2,10 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getWindowsEnvValue } from '@switch-console/core/exec';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
-import { getWindowsEnvValue, prependWindowsPathEntry } from './windows-env';
+import { prependWindowsPathEntry } from './windows-env';
 
 /**
  * Keys that must never be overwritten from the shell env capture.

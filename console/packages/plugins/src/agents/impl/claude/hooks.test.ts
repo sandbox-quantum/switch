@@ -28,7 +28,7 @@ type NestedHookEntry = { matcher?: string; hooks: { type: string; command: strin
 describe('buildClaudeHookConfig', () => {
   it('installs the scoped connect_to_room and general activity hooks', async () => {
     const fs = createMemoryFs();
-    await buildClaudeHookConfig().writeHooks(fs, []);
+    await buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' });
 
     const settings = JSON.parse((await fs.read(CLAUDE_SETTINGS_PATH))!) as {
       hooks: Record<string, NestedHookEntry[]>;
@@ -62,7 +62,7 @@ describe('buildClaudeHookConfig', () => {
       permissions: { allow: ['Bash'] },
     });
     const fs = createMemoryFs({ [CLAUDE_SETTINGS_PATH]: existing });
-    await buildClaudeHookConfig().writeHooks(fs, []);
+    await buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' });
 
     const settings = JSON.parse((await fs.read(CLAUDE_SETTINGS_PATH))!) as Record<string, unknown>;
     expect(settings.env).toEqual({ SWITCH_API_TOKEN: 'secret', SWITCH_AGENT_ID: 'agent-1' });
@@ -72,7 +72,9 @@ describe('buildClaudeHookConfig', () => {
 
   it('refuses to install hooks over an unparseable settings file', async () => {
     const fs = createMemoryFs({ [CLAUDE_SETTINGS_PATH]: 'not json {' });
-    await expect(buildClaudeHookConfig().writeHooks(fs, [])).rejects.toThrow(/not valid JSON/);
+    await expect(buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' })).rejects.toThrow(
+      /not valid JSON/
+    );
     expect(await fs.read(CLAUDE_SETTINGS_PATH)).toBe('not json {');
   });
 
@@ -81,7 +83,7 @@ describe('buildClaudeHookConfig', () => {
     fs.read = async () => {
       throw new Error('SSH connection is not available');
     };
-    await expect(buildClaudeHookConfig().writeHooks(fs, [])).rejects.toThrow(
+    await expect(buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' })).rejects.toThrow(
       /SSH connection is not available/
     );
     expect(await fs.exists(CLAUDE_SETTINGS_PATH)).toBe(false);
@@ -164,7 +166,7 @@ describe('buildClaudeHookConfig', () => {
 
   it('leaves matcher-less hooks (Stop) without a matcher field', async () => {
     const fs = createMemoryFs();
-    await buildClaudeHookConfig().writeHooks(fs, []);
+    await buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' });
 
     const settings = JSON.parse((await fs.read(CLAUDE_SETTINGS_PATH))!) as {
       hooks: Record<string, NestedHookEntry[]>;

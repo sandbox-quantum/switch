@@ -1,16 +1,26 @@
 import z from 'zod';
 import { definePluginCapability } from '../../../lib/plugins/capability';
 import type { PluginFs } from '../../runtime/fs';
-import type { CanonicalHookEvent, HookRegistration } from './hooks-types';
+import type { CanonicalHookEvent, HookCommandOptions, HookRegistration } from './hooks-types';
 
 export type { HookRegistration };
-export type { CanonicalHookEvent, HookEvent, NotificationType } from './hooks-types';
+export type {
+  CanonicalHookEvent,
+  HookCommand,
+  HookCommandOptions,
+  HookEvent,
+  NotificationType,
+} from './hooks-types';
 export { HOOK_EVENTS } from './hooks-types';
 
 export type IHooksBehavior = {
   readHooks(fs: PluginFs): Promise<HookRegistration[]>;
-  /** Write hooks and return the root-relative paths written. */
-  writeHooks(fs: PluginFs, hooks: HookRegistration[]): Promise<string[]>;
+  /**
+   * Write hooks for a session that will run on `opts.platform`, and return the
+   * root-relative paths written. The platform is the target host's, which is
+   * not Switch Console's whenever the session is remote.
+   */
+  writeHooks(fs: PluginFs, hooks: HookRegistration[], opts: HookCommandOptions): Promise<string[]>;
   deleteHooks(fs: PluginFs): Promise<void>;
   getHooksInstalled(fs: PluginFs): Promise<boolean>;
   /**

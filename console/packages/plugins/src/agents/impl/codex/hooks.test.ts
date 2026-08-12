@@ -70,7 +70,7 @@ async function runHookCommand(
 /** The `command` strings Switch Console writes into Codex's `hooks.json`, by event. */
 async function installedCommands(): Promise<Record<string, string>> {
   const fs = createMemoryFs();
-  await buildCodexHookConfig().writeHooks(fs, []);
+  await buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' });
   const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
     hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
   };
@@ -220,7 +220,7 @@ describe('buildCodexHookConfig.parseHookEvent', () => {
 describe('buildCodexHookConfig install/read/delete', () => {
   it('installs Stop / PermissionRequest / SessionStart hooks and reports the written path', async () => {
     const fs = createMemoryFs();
-    const paths = await buildCodexHookConfig().writeHooks(fs, []);
+    const paths = await buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' });
 
     expect(paths).toEqual([CODEX_HOOKS_PATH]);
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
@@ -239,7 +239,7 @@ describe('buildCodexHookConfig install/read/delete', () => {
     // Switch Console opens and hands it as SWITCH_CONNECTION_ID, so the server
     // reports the room back and the old `connect_to_room` scrape is gone.
     const fs = createMemoryFs();
-    await buildCodexHookConfig().writeHooks(fs, []);
+    await buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' });
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
       hooks: Record<string, { matcher?: string }[]>;
     };
@@ -268,7 +268,7 @@ describe('buildCodexHookConfig install/read/delete', () => {
     };
 
     const fs = createMemoryFs();
-    await buildCodexHookConfig().writeHooks(fs, []);
+    await buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' });
     const config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
       hooks: Record<string, unknown>;
     };
@@ -291,7 +291,7 @@ describe('buildCodexHookConfig install/read/delete', () => {
     expect(await cfg.getHooksInstalled(fs)).toBe(false);
     expect(await cfg.readHooks(fs)).toEqual([]);
 
-    await cfg.writeHooks(fs, []);
+    await cfg.writeHooks(fs, [], { platform: 'linux' });
 
     expect(await cfg.getHooksInstalled(fs)).toBe(true);
     expect(await cfg.readHooks(fs)).toEqual([
@@ -306,7 +306,7 @@ describe('buildCodexHookConfig install/read/delete', () => {
     });
     const cfg = buildCodexHookConfig();
 
-    await cfg.writeHooks(fs, []);
+    await cfg.writeHooks(fs, [], { platform: 'linux' });
     let config = JSON.parse((await fs.read(CODEX_HOOKS_PATH))!) as {
       hooks: Record<string, unknown[]>;
     };
@@ -327,7 +327,7 @@ describe('buildCodexHookConfig install/read/delete', () => {
     ].join('\n');
     const fs = createMemoryFs({ [CODEX_CONFIG_PATH]: configToml });
 
-    await buildCodexHookConfig().writeHooks(fs, []);
+    await buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' });
 
     const rewritten = (await fs.read(CODEX_CONFIG_PATH))!;
     expect(rewritten).not.toContain('notify');
@@ -340,7 +340,9 @@ describe('buildCodexHookConfig install/read/delete', () => {
     // configured, so a file we cannot parse must stop the install.
     const fs = createMemoryFs({ [CODEX_HOOKS_PATH]: '{ not json' });
 
-    await expect(buildCodexHookConfig().writeHooks(fs, [])).rejects.toThrow(/not valid JSON/);
+    await expect(buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' })).rejects.toThrow(
+      /not valid JSON/
+    );
     expect(await fs.read(CODEX_HOOKS_PATH)).toBe('{ not json');
   });
 
@@ -357,7 +359,9 @@ describe('buildCodexHookConfig install/read/delete', () => {
       throw new Error('transport failure');
     };
 
-    await expect(buildCodexHookConfig().writeHooks(fs, [])).rejects.toThrow('transport failure');
+    await expect(buildCodexHookConfig().writeHooks(fs, [], { platform: 'linux' })).rejects.toThrow(
+      'transport failure'
+    );
   });
 });
 

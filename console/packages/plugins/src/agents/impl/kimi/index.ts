@@ -3,12 +3,20 @@ import type { AgentCommand, CommandContext } from '@switch-console/core/agents/p
 import { buildStandardCommand } from '@switch-console/core/agents/plugins/helpers';
 import { addKimiHooksToConfigText, buildKimiHookConfig } from './hooks';
 
+/**
+ * The inline `--config` value is built from argv, and `CommandContext` does not
+ * say which host the argv will run on, so this path can only assume the
+ * console's platform. A remote Kimi session therefore still gets the console's
+ * hook dialect; the config-file path (`writeHooks`) is the one that knows the
+ * target platform.
+ */
 function injectKimiHooksIntoInlineConfig(args: string[]): string[] {
+  const opts = { platform: process.platform };
   return args.map((arg, index) => {
     if (arg === '--config' && args[index + 1] !== undefined) return arg;
-    if (index > 0 && args[index - 1] === '--config') return addKimiHooksToConfigText(arg);
+    if (index > 0 && args[index - 1] === '--config') return addKimiHooksToConfigText(arg, opts);
     if (arg.startsWith('--config='))
-      return `--config=${addKimiHooksToConfigText(arg.slice('--config='.length))}`;
+      return `--config=${addKimiHooksToConfigText(arg.slice('--config='.length), opts)}`;
     return arg;
   });
 }

@@ -237,7 +237,11 @@ export class InProcessSessionSpawner implements SessionSpawner {
       );
     }
     const root = hooks.scope === 'global' ? homedir() : this.spec.cwd;
-    await plugin.behavior.hooks.writeHooks(createPluginFs(root), []);
+    // The sidecar runs on the machine the session runs on, so its own platform
+    // is the target platform.
+    await plugin.behavior.hooks.writeHooks(createPluginFs(root), [], {
+      platform: process.platform,
+    });
     this.deps.log.info('InProcessSessionSpawner: installed agent hooks', {
       providerId,
       scope: hooks.scope,

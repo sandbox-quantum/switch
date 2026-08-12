@@ -176,6 +176,13 @@
 }
 
 @layer base {
+  /* `:root` carries the light values as well as `.emlight` so the tokens
+     resolve before ThemeProvider's layout effect puts a theme class on
+     <html>. Without it `cssVar()` returns '' during that first paint, and a
+     terminal created in it comes up with an empty theme. `.emdark` matches the
+     same element at equal specificity and is declared later, so it still wins
+     in dark mode. */
+  :root,
   .emlight {
     /* ── Color palette (Radix P3) ──────────────────────────────── */
 
@@ -420,6 +427,33 @@
     --xterm-cursor-accent: var(--foreground-inverse);
     --xterm-selection-bg: color(display-p3 0.004 0.502 0.984 / 0.212);
     --xterm-selection-fg: var(--blue-12);
+
+    /* The 16 ANSI colors xterm resolves SGR 30-37 / 90-97 against. Without
+       them xterm falls back to its built-in Tango palette, which is tuned for
+       a black background: on white, its bright tones are unreadable as text
+       and its black is a near-black block.
+
+       Solarized Light (Ethan Schoonover's published 16-color terminal
+       palette). Colors 7 and 15 are its base2/base3 background tones by
+       design, so an agent that paints body text as bright-white — a
+       dark-terminal assumption — still reads faintly; that is a property of
+       the agent, not of the palette. */
+    --xterm-ansi-black: #073642;
+    --xterm-ansi-red: #dc322f;
+    --xterm-ansi-green: #859900;
+    --xterm-ansi-yellow: #b58900;
+    --xterm-ansi-blue: #268bd2;
+    --xterm-ansi-magenta: #d33682;
+    --xterm-ansi-cyan: #2aa198;
+    --xterm-ansi-white: #eee8d5;
+    --xterm-ansi-bright-black: #002b36;
+    --xterm-ansi-bright-red: #cb4b16;
+    --xterm-ansi-bright-green: #586e75;
+    --xterm-ansi-bright-yellow: #657b83;
+    --xterm-ansi-bright-blue: #839496;
+    --xterm-ansi-bright-magenta: #6c71c4;
+    --xterm-ansi-bright-cyan: #93a1a1;
+    --xterm-ansi-bright-white: #fdf6e3;
 
     --foreground-diff-added: var(--green-9);
     --foreground-diff-modified: var(--amber-9);
@@ -699,6 +733,25 @@
     --xterm-cursor-accent: var(--foreground-inverse);
     --xterm-selection-bg: color(display-p3 0.224 0.557 1 / 0.475);
     --xterm-selection-fg: var(--blue-11);
+
+    /* xterm's own default palette (Tango), spelled out rather than left to the
+       fallback so both themes resolve the same tokens. */
+    --xterm-ansi-black: #2e3436;
+    --xterm-ansi-red: #cc0000;
+    --xterm-ansi-green: #4e9a06;
+    --xterm-ansi-yellow: #c4a000;
+    --xterm-ansi-blue: #3465a4;
+    --xterm-ansi-magenta: #75507b;
+    --xterm-ansi-cyan: #06989a;
+    --xterm-ansi-white: #d3d7cf;
+    --xterm-ansi-bright-black: #555753;
+    --xterm-ansi-bright-red: #ef2929;
+    --xterm-ansi-bright-green: #8ae234;
+    --xterm-ansi-bright-yellow: #fce94f;
+    --xterm-ansi-bright-blue: #729fcf;
+    --xterm-ansi-bright-magenta: #ad7fa8;
+    --xterm-ansi-bright-cyan: #34e2e2;
+    --xterm-ansi-bright-white: #eeeeec;
 
     --foreground-diff-added: var(--green-10);
     --foreground-diff-modified: var(--amber-9);

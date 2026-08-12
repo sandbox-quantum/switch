@@ -85,6 +85,28 @@ describe('LocalExecutionContext', () => {
     );
   });
 
+  it('routes a Windows .cmd shim through cmd.exe instead of failing with EINVAL', async () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
+    execFileMock.mockImplementation((_command, _args, _options, callback) => {
+      callback(null, { stdout: '', stderr: '' });
+    });
+
+    try {
+      await new LocalExecutionContext().exec('D:\\tools\\npm.cmd', ['root', '-g']);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'C:\\Windows\\System32\\cmd.exe',
+      ['/d', '/s', '/c', 'D:\\tools\\npm.cmd root -g'],
+      expect.objectContaining({ windowsVerbatimArguments: true }),
+      expect.any(Function)
+    );
+  });
+
   it('explains when git is missing during streaming local execution', async () => {
     const child = new FakeChildProcess();
     spawnMock.mockReturnValue(child);

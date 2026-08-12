@@ -1,4 +1,4 @@
-import type { PluginFs } from '@switch-console/core/agents/plugins';
+import type { HookCommandOptions, PluginFs } from '@switch-console/core/agents/plugins';
 import type { HookRegistration } from '@switch-console/core/agents/plugins';
 import {
   SWITCHDASH_MARKER,
@@ -27,24 +27,28 @@ export function buildCopilotHookConfig() {
       });
       return installed ? [{ event: 'switchdash', command: SWITCHDASH_MARKER }] : [];
     },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
+    async writeHooks(
+      fs: PluginFs,
+      _hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
       const config = await readJsonConfig(fs, COPILOT_HOOKS_PATH);
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
 
       const stopExisting = Array.isArray(hooks.agentStop) ? hooks.agentStop : [];
       hooks.agentStop = [
         ...filterUserHooks(stopExisting as Record<string, unknown>[]),
-        buildFlatEntry(stopCmd),
+        buildFlatEntry(stopCmd(opts)),
       ];
       const sessionExisting = Array.isArray(hooks.sessionStart) ? hooks.sessionStart : [];
       hooks.sessionStart = [
         ...filterUserHooks(sessionExisting as Record<string, unknown>[]),
-        buildFlatEntry(sessionCmd),
+        buildFlatEntry(sessionCmd(opts)),
       ];
       const permExisting = Array.isArray(hooks.permissionRequest) ? hooks.permissionRequest : [];
       hooks.permissionRequest = [
         ...filterUserHooks(permExisting as Record<string, unknown>[]),
-        buildFlatEntry(permCmd),
+        buildFlatEntry(permCmd(opts)),
       ];
       if (Array.isArray(hooks.notification)) {
         hooks.notification = filterUserHooks(hooks.notification as Record<string, unknown>[]);

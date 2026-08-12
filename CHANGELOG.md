@@ -108,6 +108,10 @@ version of their own to them without also giving them a release of their own.
   alive and was deaf. Adapters now report the change (`CollaborationAdapter`
   gains `set_channel_migration_handler`) and the room is re-pointed, or the
   refusal is logged with the id to re-point it at by hand.
+
+### [0.13.2] - 2026-08-12
+
+#### Fixed
 - `read_context`'s own documentation no longer tells agents to page by passing
   `oldest_timestamp` back as `before`. The first is epoch milliseconds and the
   second is parsed as ISO-8601, so following it raised instead of paging.
@@ -430,6 +434,23 @@ version of their own to them without also giving them a release of their own.
   (CHOO-1686). The reveal ran once, before the room a session belongs to had
   loaded, and never again — so the view routed correctly to a row that stayed
   collapsed. Affects any bridge, not only Telegram.
+
+### [0.22.1] - 2026-08-12
+
+#### Changed
+- Local-server mode now bundles and pulls **switch-core `0.13.2`** (was
+  `0.13.1`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
+  current core release.
+
+#### Fixed
+- Windows builds now actually work — path handling, process spawning, the PTY,
+  executable resolution, and Docker / managed-server invocation are corrected for
+  Windows, so the x64 build introduced in `0.22.0` is functional rather than
+  nominal (#207).
+- Settings is reachable again. A retired Settings tab left in the view registry
+  could be selected and then render nothing, stranding the whole Settings page;
+  the retired tab is now handled and navigation falls back to a valid tab
+  (CHOO-2106).
 - The unread tally injected into a session no longer claims to count "since
   your last read_context". Nothing here can observe a session reading, so the
   tally is cleared per delivered line; it now says so, rather than inviting an
@@ -1108,6 +1129,8 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.3.1] - 2026-08-12
+
 #### Changed
 - The MCP server instructions no longer tell the agent to `read_context` on
   every message event, or to connect before every call. Reading is now
@@ -1184,6 +1207,14 @@ The remote runtime Switch Console deploys to an agent host. Versioned in
 `console/apps/switch-console-desktop/src/sidecar/sidecar-version.ts` and deployed
 by Switch Console rather than published on its own.
 
+### [1.9.1]
+
+#### Changed
+- Windows-compatible path and process handling in the session spawner, matching
+  the desktop app's Windows fixes (#207). Behavior change only — the
+  client↔sidecar wire (ready line, endpoints, on-disk layout) is unchanged, so
+  the major stays at `1`.
+
 ### [1.9.0]
 
 #### Changed
@@ -1227,12 +1258,6 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
-#### Fixed
-- The channel's unread tally now resets when the agent reads the room. The
-  `PostToolUse` matcher never included `read_context`, so the reset the hook
-  already implemented was unreachable and the count only ever climbed from the
-  moment a session connected.
-
 #### Changed
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
   uploads, chats cannot be created by a bot at all (so `create_room` fails there
@@ -1243,6 +1268,16 @@ compatibility signal. History for those is in the git log.
   rest with `read_context`" promise does not hold. The slash-command and
   attachment platform lists now also name Discord, which had been left out of
   both.
+
+### [0.9.1] - 2026-08-12
+
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.1` (was `0.3.0`) — picks up the
+  runtime's conditional-read MCP instructions; the plugin version bumps so
+  installs re-download.
+- Skill: how to write in a room — answer first, plain words, a few sentences, one
+  point per message — and post a one-line heads-up before going quiet for a long
+  task, then return with the result in the same thread (#210).
 - Skill: document the room-document and room-admin tools it had never
   mentioned — `load_internal_documents` (without which an agent cannot read a
   document attached to its own room), `list_references`, the
@@ -1259,6 +1294,12 @@ compatibility signal. History for those is in the git log.
   `oldest_timestamp` straight back as `before`, but the first is epoch
   milliseconds and the second is parsed as an ISO-8601 string, so the call
   raised instead of paging.
+
+#### Fixed
+- The channel's unread tally now resets when the agent reads the room. The
+  `PostToolUse` matcher never included `read_context`, so the reset the hook
+  already implemented was unreachable and the count only ever climbed from the
+  moment a session connected.
 
 ### [0.8.1] - 2026-08-11
 
@@ -1307,6 +1348,16 @@ manifest history.
   rest with `read_context`" promise does not hold. The slash-command and
   attachment platform lists now also name Discord, which had been left out of
   both.
+
+### [0.3.1] - 2026-08-12
+
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.1` (was `0.3.0`) — picks up the
+  runtime's conditional-read MCP instructions; the plugin version bumps so
+  installs re-download.
+- Skill: how to write in a room — answer first, plain words, a few sentences, one
+  point per message — and post a one-line heads-up before going quiet for a long
+  task, then return with the result in the same thread (#210).
 - Skill: document the room-document and room-admin tools it had never
   mentioned — `load_internal_documents` (without which an agent cannot read a
   document attached to its own room), `list_references`, the

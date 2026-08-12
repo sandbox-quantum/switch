@@ -64,7 +64,9 @@ export async function ensureHooksInstalled({
       const scope = hooksDescriptor.scope;
       const root = scope === 'global' ? homedir() : sessionPath;
       const fs = createPluginFs(root);
-      const paths = await plugin.behavior.hooks.writeHooks(fs, []);
+      const paths = await plugin.behavior.hooks.writeHooks(fs, [], {
+        platform: process.platform,
+      });
       // For global-scope hooks the paths are relative to homedir; don't add
       // them to the workspace .gitignore (they live in the user's home).
       writtenPaths = scope === 'global' ? [] : paths;
