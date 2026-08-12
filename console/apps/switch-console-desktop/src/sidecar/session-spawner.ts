@@ -238,7 +238,9 @@ export class InProcessSessionSpawner implements SessionSpawner {
     // the exact failure this method exists to prevent, reached by a different
     // route. Mirrors `ensureHooksInstalled` on the desktop side.
     if (hooks.kind === 'config' && plugin.behavior.hooks) {
-      await plugin.behavior.hooks.writeHooks(fs, []);
+      // The sidecar runs on the machine the session runs on, so its own platform
+      // is the target platform.
+      await plugin.behavior.hooks.writeHooks(fs, [], { platform: process.platform });
     } else if (hooks.kind === 'plugin' && plugin.behavior.plugins) {
       await plugin.behavior.plugins.installPlugin(
         fs,

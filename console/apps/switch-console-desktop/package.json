@@ -1,6 +1,6 @@
 {
   "name": "@switch-console/desktop",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",
@@ -40,7 +40,7 @@
     "package:linux:arm64": "pnpm run build && electron-builder --linux --arm64 --publish never --config electron-builder.config.ts",
     "package:win": "pnpm run build && electron-builder --win --publish never --config electron-builder.config.ts",
     "postinstall": "node --experimental-strip-types scripts/postinstall.ts",
-    "rebuild": "electron-rebuild -f -v 40.7.0 --only=better-sqlite3,node-pty",
+    "rebuild": "electron-rebuild -f --only=better-sqlite3,node-pty",
     "deeplink:reset": "node --experimental-strip-types scripts/reset-deeplink-handler.ts",
     "clean": "rm -rf node_modules dist",
     "reset": "pnpm run clean && pnpm install",

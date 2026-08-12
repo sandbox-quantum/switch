@@ -99,7 +99,7 @@ describe('buildOpencodeHookBehavior', () => {
     const behavior = buildOpencodeHookBehavior();
     const fs = {} as never;
     expect(await behavior.readHooks(fs)).toEqual([]);
-    expect(await behavior.writeHooks(fs, [])).toEqual([]);
+    expect(await behavior.writeHooks(fs, [], { platform: 'linux' })).toEqual([]);
     expect(await behavior.getHooksInstalled(fs)).toBe(false);
     await expect(behavior.deleteHooks(fs)).resolves.toBeUndefined();
   });

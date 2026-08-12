@@ -41,6 +41,7 @@ import { SIDECAR_VERSION } from '../../../../sidecar/sidecar-version';
 import { ensureAgentSidecar, probeAgentSidecar } from './ensure-agent-sidecar';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { createRemoteHomePluginFs } from './remote-home-plugin-fs';
+import { remoteNodePlatform } from './remote-node-platform';
 import { createRemotePluginFs } from './remote-plugin-fs';
 import type { SidecarEndpoint, SidecarHost } from './remote-sidecar-launcher';
 import { resolveAgentExecutable } from './resolve-agent-executable';
@@ -285,7 +286,8 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
 
   /**
    * Install the provider's agent hooks onto the VM, mirroring what
-   * `ensureHooksInstalled` does for local sessions. The remote agent is spawned
+   * `ensureHooksInstalled` does for local sessions — built for the VM's
+   * platform, not the console's. The remote agent is spawned
    * with the `SWITCHDASH_HOOK_*` env vars, but those only matter if its config
    * actually registers the hook commands — otherwise the agent posts no
    * lifecycle events to the sidecar, so its provider session id is never
@@ -307,9 +309,16 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     // nothing installed — no session id captured, and a "working on it" that
     // never clears.
     let install: (() => Promise<unknown>) | null = null;
+    // Null unless a config write actually resolved it: the hook commands are
+    // built for the VM's platform, and a provider whose hooks ride a dropped
+    // plugin never needs it, so it is not worth a round-trip to the host.
+    let resolvedPlatform: NodeJS.Platform | null = null;
     if (hooks.kind === 'config' && plugin.behavior.hooks) {
       const writeHooks = plugin.behavior.hooks.writeHooks;
-      install = () => writeHooks(fs, []);
+      install = async () => {
+        resolvedPlatform = await remoteNodePlatform(this.connectionId, this.ctx);
+        return writeHooks(fs, [], { platform: resolvedPlatform });
+      };
     } else if (hooks.kind === 'plugin' && plugin.behavior.plugins) {
       const installPlugin = plugin.behavior.plugins.installPlugin;
       const scope: PluginScope =
@@ -337,6 +346,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       log.info('SshAgentRuntime: installed remote agent hooks', {
         providerId,
         scope: hooks.scope,
+        platform: resolvedPlatform,
       });
     } catch (error) {
       log.error('SshAgentRuntime: failed to install remote agent hooks', {

@@ -27,4 +27,4 @@ export const SWITCH_MARKETPLACE_SOURCE = 'sandbox-quantum/switch';
  * has got to, which during a release is a version npm does not have yet. A
  * pin has to lag it deliberately, and the lag is the point.
  */
-export const SWITCH_AGENT_RUNTIME_PIN = '@sandboxaq/switch-agent-runtime@0.3.0';
+export const SWITCH_AGENT_RUNTIME_PIN = '@sandboxaq/switch-agent-runtime@0.3.1';

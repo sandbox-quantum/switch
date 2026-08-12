@@ -1,16 +1,30 @@
 import os from 'node:os';
-import type { InstallCommandError } from '@switch-console/core/deps/runtime';
+import type { InstallCommandError, InstallCommandSpec } from '@switch-console/core/deps/runtime';
 import { err, ok, type Result } from '@switch-console/shared';
 import { spawnLocalPty } from '@main/core/pty/local-pty';
 import type { Pty } from '@main/core/pty/pty';
-import { logLocalPtySpawnWarnings, resolveLocalPtySpawn } from '@main/core/pty/pty-spawn-platform';
+import {
+  logLocalPtySpawnWarnings,
+  resolveLocalPtySpawn,
+  type PtyCommandSpec,
+} from '@main/core/pty/pty-spawn-platform';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { log } from '@main/lib/logger';
 import { ensureUserBinDirsInPath } from '@main/utils/userEnv';
 
 export type InstallCommandRunner<TData = void, TError = InstallCommandError> = (
-  command: string
+  command: InstallCommandSpec
 ) => Promise<Result<TData, TError>>;
+
+/**
+ * An argv spec stays argv all the way into the PTY layer, which quotes it for
+ * the target shell. Only a descriptor's own shell line is passed through as one.
+ */
+function toPtyCommand(command: InstallCommandSpec): PtyCommandSpec {
+  return typeof command === 'string'
+    ? { kind: 'shell-line', commandLine: command }
+    : { kind: 'argv', command: command.command, args: command.args };
+}
 
 type ShellProfileResolver = () => Promise<ResolvedShellProfile>;
 
@@ -60,7 +74,7 @@ function waitForInstallPty(pty: Pty): Promise<Result<void, InstallCommandError>>
 }
 
 export async function runLocalInstallCommand(
-  command: string,
+  command: InstallCommandSpec,
   shellProfile: ResolvedShellProfile
 ): Promise<Result<void, InstallCommandError>> {
   const installId = `install:${crypto.randomUUID()}`;
@@ -70,7 +84,7 @@ export async function runLocalInstallCommand(
     intent: {
       kind: 'run-command',
       cwd: os.homedir(),
-      command: { kind: 'shell-line', commandLine: command },
+      command: toPtyCommand(command),
       shellProfile,
     },
   });

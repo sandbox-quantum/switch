@@ -63,6 +63,17 @@ const pwshProfile: ResolvedShellProfile = {
   commandArgs: ['-NoLogo', '-Command'],
 };
 
+const posixProfile: ResolvedShellProfile = {
+  id: 'zsh',
+  resolvedShellId: 'zsh',
+  resolvedFromSystem: true,
+  executable: '/bin/zsh',
+  available: true,
+  family: 'posix',
+  interactiveArgs: ['-il'],
+  commandArgs: ['-c'],
+};
+
 beforeEach(() => {
   mocks.spawnLocalPty.mockReturnValue(createSuccessfulPty());
 });
@@ -136,6 +147,46 @@ describe('runLocalInstallCommand', () => {
         command: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
         args: ['-NoLogo', '-Command', 'npm install -g @openai/codex'],
         cwd: expect.any(String),
+      } satisfies Partial<LocalSpawnOptions>)
+    );
+  });
+
+  it('keeps an argv spec as argv, so a spaced Windows shim path is not split', async () => {
+    setPlatform('win32');
+    delete process.env.SHELL;
+    process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
+
+    const result = await runLocalInstallCommand(
+      { command: 'C:\\Program Files\\nodejs\\npm.cmd', args: ['uninstall', '-g', '@openai/codex'] },
+      cmdProfile
+    );
+
+    expect(result.success).toBe(true);
+    expect(mocks.spawnLocalPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'C:\\Windows\\System32\\cmd.exe',
+        args: [
+          '/d',
+          '/s',
+          '/c',
+          '""C:\\Program Files\\nodejs\\npm.cmd" uninstall -g @openai/codex"',
+        ],
+      } satisfies Partial<LocalSpawnOptions>)
+    );
+  });
+
+  it('quotes an argv spec for the POSIX shell', async () => {
+    setPlatform('darwin');
+
+    const result = await runLocalInstallCommand(
+      { command: '/usr/local/bin/claude', args: ['custom-remove', '--force'] },
+      posixProfile
+    );
+
+    expect(result.success).toBe(true);
+    expect(mocks.spawnLocalPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: ['-c', '/usr/local/bin/claude custom-remove --force'],
       } satisfies Partial<LocalSpawnOptions>)
     );
   });

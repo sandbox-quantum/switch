@@ -60,6 +60,8 @@ export type { AgentIconAsset, AgentIconVariant } from './assets/icon';
 export type { AgentCommand, CommandContext } from './capabilities/prompt';
 export type {
   CanonicalHookEvent,
+  HookCommand,
+  HookCommandOptions,
   HookEvent,
   HookRegistration,
   NotificationType,

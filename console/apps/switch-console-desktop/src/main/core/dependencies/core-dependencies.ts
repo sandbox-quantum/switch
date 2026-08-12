@@ -53,6 +53,7 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
           recommended: true,
         },
       ],
+      windows: [{ method: 'winget', command: 'winget install --id Git.Git', recommended: true }],
     },
   },
   {
@@ -96,6 +97,13 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
           command:
             'set -e; A=$(uname -m); case "$A" in x86_64) A=x64;; aarch64|arm64) A=arm64;; *) echo "unsupported arch $A" >&2; exit 1;; esac; F=$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -oE "node-v22[0-9.]*-linux-$A\\.tar\\.xz" | head -1); curl -fsSL "https://nodejs.org/dist/latest-v22.x/$F" | sudo tar -xJ -C /usr/local --strip-components=1',
           label: 'Official tarball',
+          recommended: true,
+        },
+      ],
+      windows: [
+        {
+          method: 'winget',
+          command: 'winget install --id OpenJS.NodeJS.LTS',
           recommended: true,
         },
       ],
