@@ -1,29 +1,66 @@
 import { execFile } from 'node:child_process';
-import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
+import { resolveExecutable, windowsInstallPath } from '@main/core/utils/resolve-executable';
 import { log } from '@main/lib/logger';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 
 const execFileAsync = promisify(execFile);
 
-function resolveDockerBin(): string {
-  const candidates = [
-    (process.env.DOCKER_PATH || '').trim(),
+function dockerCandidates(env: NodeJS.ProcessEnv): string[] {
+  return [
     '/opt/homebrew/bin/docker',
     '/usr/local/bin/docker',
     '/usr/bin/docker',
     '/Applications/Docker.app/Contents/Resources/bin/docker',
-  ].filter(Boolean) as string[];
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch {}
-  }
-  return 'docker';
+    path.join(os.homedir(), '.rd', 'bin', 'docker'),
+    windowsInstallPath(env, 'ProgramFiles', 'Docker', 'Docker', 'resources', 'bin', 'docker.exe'),
+    windowsInstallPath(
+      env,
+      'LOCALAPPDATA',
+      'Programs',
+      'Docker',
+      'Docker',
+      'resources',
+      'bin',
+      'docker.exe'
+    ),
+    windowsInstallPath(
+      env,
+      'LOCALAPPDATA',
+      'Programs',
+      'Rancher Desktop',
+      'resources',
+      'resources',
+      'win32',
+      'bin',
+      'docker.exe'
+    ),
+  ].filter((candidate): candidate is string => candidate !== null);
 }
 
-/** Resolved path to the Docker CLI. */
-export const DOCKER_EXECUTABLE = resolveDockerBin();
+export function resolveDockerBin(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveExecutable('docker', {
+    overridePath: env.DOCKER_PATH,
+    candidates: dockerCandidates(env),
+    env,
+  });
+}
+
+let resolvedDockerExecutable: string | null = null;
+
+/**
+ * Path to the Docker CLI, memoized only once a real binary is found. A run that
+ * had to fall back to the bare name is not cached, so installing Docker while
+ * the app is open is picked up on the next call instead of after a restart.
+ */
+export function dockerExecutable(): string {
+  if (resolvedDockerExecutable !== null) return resolvedDockerExecutable;
+  const resolved = resolveDockerBin();
+  if (resolved !== 'docker') resolvedDockerExecutable = resolved;
+  return resolved;
+}
 
 /**
  * Classify a failed `docker version` invocation into the DockerAvailability
@@ -37,10 +74,16 @@ export function classifyDockerError(error: unknown): {
 } {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   const message = error instanceof Error ? error.message : String(error);
-  if (code === 'ENOENT') {
+  // EINVAL is what a shell-less spawn of a Windows .cmd/.bat shim raises, and
+  // ENOTDIR what a stale directory component raises: neither is a live daemon.
+  if (code === 'ENOENT' || code === 'EINVAL' || code === 'ENOTDIR') {
     return { reason: 'not-installed', detail: 'The Docker CLI was not found on this system.' };
   }
-  if (/cannot connect to the docker daemon|is the docker daemon running/i.test(message)) {
+  if (
+    /cannot connect to the docker daemon|is the docker daemon running|error during connect|open \/\/\.\/pipe\/|pipe[\\/]docker_engine|the system cannot find the file specified/i.test(
+      message
+    )
+  ) {
     return {
       reason: 'daemon-down',
       detail: 'Docker is installed but the daemon is not running. Start Docker Desktop and retry.',
@@ -58,7 +101,7 @@ export function classifyDockerError(error: unknown): {
 export async function detectDocker(): Promise<DockerAvailability> {
   try {
     const { stdout } = await execFileAsync(
-      DOCKER_EXECUTABLE,
+      dockerExecutable(),
       ['version', '--format', '{{.Server.Version}}'],
       { timeout: 15_000 }
     );

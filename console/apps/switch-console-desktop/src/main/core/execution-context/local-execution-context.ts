@@ -1,7 +1,9 @@
 import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
+import { resolveExecFileSpawn } from '@switch-console/core/exec';
 import {
-  GIT_EXECUTABLE,
+  getGitExecutable,
   isMissingGitExecutableError,
   missingGitExecutableError,
 } from '@main/core/utils/exec';
@@ -34,17 +36,33 @@ export class LocalExecutionContext implements IExecutionContext {
   }
 
   private resolveCommand(command: string): string {
-    return command === 'git' ? GIT_EXECUTABLE : command;
+    return command === 'git' ? getGitExecutable() : command;
+  }
+
+  /**
+   * Rewrites the argv so a Windows `.cmd`/`.bat` shim — how every npm-global CLI
+   * installs there — runs through cmd.exe instead of failing with EINVAL.
+   */
+  private resolveSpawn(command: string, args: string[]) {
+    return resolveExecFileSpawn({
+      command: this.resolveCommand(command),
+      args,
+      platform: process.platform,
+      env: process.env,
+      fileExists: existsSync,
+    });
   }
 
   exec(command: string, args: string[] = [], opts: ExecOptions = {}): Promise<ExecResult> {
     const { timeout, maxBuffer } = opts;
-    return execFileAsync(this.resolveCommand(command), args, {
+    const spawnSpec = this.resolveSpawn(command, args);
+    return execFileAsync(spawnSpec.command, spawnSpec.args, {
       cwd: this.root || undefined,
       env: command === 'git' ? buildNonInteractiveGitEnv() : undefined,
       timeout,
       maxBuffer,
       signal: this._signal(opts.signal),
+      windowsVerbatimArguments: spawnSpec.windowsVerbatimArguments,
     }).catch((error) => {
       if (command === 'git' && isMissingGitExecutableError(error)) {
         throw missingGitExecutableError();
@@ -67,9 +85,11 @@ export class LocalExecutionContext implements IExecutionContext {
         return;
       }
 
-      const child = spawn(this.resolveCommand(command), args, {
+      const spawnSpec = this.resolveSpawn(command, args);
+      const child = spawn(spawnSpec.command, spawnSpec.args, {
         cwd: this.root || undefined,
         env: command === 'git' ? buildNonInteractiveGitEnv() : undefined,
+        windowsVerbatimArguments: spawnSpec.windowsVerbatimArguments,
       });
 
       let settled = false;

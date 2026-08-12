@@ -1,14 +1,48 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
+import { log } from '@main/lib/logger';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LOCAL_SERVER_PROJECT_NAME } from '../constants';
-import { DOCKER_EXECUTABLE, detectDocker } from '../docker';
+import { detectDocker, dockerExecutable } from '../docker';
 import { type LocalServerPorts, pickFreePorts } from '../free-port';
 import { localServerDir } from '../paths';
 import type { ServerHost } from './types';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Windows has no mode bits: `chmod(path, 0o600)` only toggles the read-only
+ * flag, so on its own it would leave the managed server's Postgres and gateway
+ * credentials readable by every account on the machine while looking protected.
+ * Replace the inherited ACL with one that grants the current user alone.
+ *
+ * A failure is logged rather than thrown: the caller has already written the
+ * file, and losing the stack over a hardening step nobody asked for is worse
+ * than a degraded mode that says so out loud.
+ */
+async function restrictWindowsFileToOwner(path: string): Promise<void> {
+  const account = process.env.USERNAME;
+  if (!account) {
+    log.warn('local-switch-server: USERNAME unset; file left with inherited permissions', {
+      path,
+    });
+    return;
+  }
+  try {
+    await execFileAsync('icacls', [path, '/inheritance:r', '/grant:r', `${account}:F`], {
+      timeout: 15_000,
+    });
+  } catch (error) {
+    log.warn('local-switch-server: could not restrict file permissions; it stays world-readable', {
+      path,
+      error: String((error as Error)?.message ?? error),
+    });
+  }
+}
 
 /**
  * The managed stack running on this machine's Docker daemon — the CHOO-1428
@@ -18,7 +52,9 @@ import type { ServerHost } from './types';
  */
 export class LocalServerHost implements ServerHost {
   readonly kind = 'local' as const;
-  readonly dockerBin = DOCKER_EXECUTABLE;
+  get dockerBin(): string {
+    return dockerExecutable();
+  }
   readonly composeProjectName = LOCAL_SERVER_PROJECT_NAME;
   readonly workingDir = localServerDir();
   readonly stateDir = localServerDir();
@@ -30,8 +66,10 @@ export class LocalServerHost implements ServerHost {
     const path = join(this.workingDir, relPath);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, mode !== undefined ? { encoding: 'utf8', mode } : 'utf8');
+    if (mode === undefined) return;
     // writeFile only applies `mode` when creating; enforce it on rewrite too.
-    if (mode !== undefined) await chmod(path, mode);
+    await chmod(path, mode);
+    if (process.platform === 'win32') await restrictWindowsFileToOwner(path);
   }
 
   async readFile(relPath: string): Promise<string | null> {

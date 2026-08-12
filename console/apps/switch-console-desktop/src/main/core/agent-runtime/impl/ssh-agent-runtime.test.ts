@@ -153,10 +153,16 @@ function makeProxy(overrides: Partial<SshClientProxy> = {}): SshClientProxy {
   } as unknown as SshClientProxy;
 }
 
-/** A remote host with an empty home: the home-rooted read probe answers `0`
- *  ("no such file") and every other command exits quietly. */
+/** A remote host with an empty home: `uname -s` reports the Linux VM every
+ *  remote host is, the home-rooted read probe answers `0` ("no such file"),
+ *  and every other command exits quietly. */
 function makeCtx(): ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'] {
-  return { exec: vi.fn(async () => ({ stdout: '0', stderr: '' })) } as never;
+  return {
+    exec: vi.fn(async (command: string) => ({
+      stdout: command === 'uname' ? 'Linux' : '0',
+      stderr: '',
+    })),
+  } as never;
 }
 
 /** A remote filesystem holding `files` (keyed by repo-relative path); anything
@@ -423,6 +429,45 @@ describe('SshAgentRuntime', () => {
       'SessionStart',
       'Stop',
     ]);
+  });
+
+  // The hook command runs on the VM, so it is the VM's shell that has to
+  // understand it. A Windows console that writes its own `cmd.exe /d /c
+  // "... powershell.exe ..."` into a Linux VM's hooks.json loses every event on
+  // that host, and the `|| true` on the POSIX form means nobody ever sees why.
+  it('writes POSIX hook commands onto a Linux VM even from a Windows console', async () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const ctx = makeCtx();
+    vi.mocked(getPlugin).mockImplementation(
+      (id: string) =>
+        ({
+          metadata: { id },
+          capabilities: {
+            hostDependency: { binaryNames: [id] },
+            hooks: { kind: 'config', scope: 'global', supportedEvents: ['stop'] },
+          },
+          behavior: {
+            prompt: { buildCommand: buildCommandMock },
+            hooks: pluginRegistry.get('codex')!.behavior.hooks,
+          },
+        }) as never
+    );
+    mockSpawn([]);
+
+    try {
+      await sshProvider({ ctx, tmux: true }).start(session());
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
+
+    const written = (vi.mocked(ctx.exec).mock.calls as unknown[][])
+      .map((call) => (call[1] as string[]) ?? [])
+      .find((args) => args.includes('.codex/hooks.json') && args[1]?.includes('base64 -d'));
+    const contents = Buffer.from(written!.at(-1)!, 'base64').toString('utf8');
+
+    expect(contents).toContain('curl -sf -X POST');
+    expect(contents).not.toContain('cmd.exe');
   });
 
   // Neither root fits a scope nobody has taught the remote path about, and the

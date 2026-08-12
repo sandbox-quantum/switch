@@ -111,6 +111,16 @@ describe('createInstallMethodDetector', () => {
       expect(result.confidence).toBe('confirmed');
     });
 
+    it('matches a Windows npm root despite backslashes and a trailing separator', async () => {
+      const ctx = makeRootCtx(null, 'C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\');
+      const detector = createInstallMethodDetector(ctx, 'windows');
+      const result = await detector.detect(
+        'C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js'
+      );
+      expect(result.kind).toBe('npm');
+      expect(result.confidence).toBe('confirmed');
+    });
+
     it('returns npm for npm global on brew-managed node (path under brew prefix but not Cellar)', async () => {
       const ctx = makeRootCtx('/opt/homebrew/Cellar', '/opt/homebrew/lib/node_modules');
       const detector = createInstallMethodDetector(ctx, 'macos');

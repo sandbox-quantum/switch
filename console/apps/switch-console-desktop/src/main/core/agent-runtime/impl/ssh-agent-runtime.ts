@@ -37,6 +37,7 @@ import { SIDECAR_VERSION } from '../../../../sidecar/sidecar-version';
 import { ensureAgentSidecar, probeAgentSidecar } from './ensure-agent-sidecar';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { createRemoteHomePluginFs } from './remote-home-plugin-fs';
+import { remoteNodePlatform } from './remote-node-platform';
 import { createRemotePluginFs } from './remote-plugin-fs';
 import type { SidecarEndpoint, SidecarHost } from './remote-sidecar-launcher';
 import { resolveAgentExecutable } from './resolve-agent-executable';
@@ -281,7 +282,8 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
 
   /**
    * Install the provider's agent hooks onto the VM, mirroring what
-   * `ensureHooksInstalled` does for local sessions. The remote agent is spawned
+   * `ensureHooksInstalled` does for local sessions — built for the VM's
+   * platform, not the console's. The remote agent is spawned
    * with the `SWITCHDASH_HOOK_*` env vars, but those only matter if its config
    * actually registers the hook commands — otherwise the agent posts no
    * lifecycle events to the sidecar, so its provider session id is never
@@ -305,6 +307,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     }
     const writeHooks = plugin.behavior.hooks.writeHooks;
     const fs = this.remoteHookFs(hooks.scope);
+    const platform = await remoteNodePlatform(this.connectionId, this.ctx);
     // A global-scope write targets the VM's home, so it is shared by every dir
     // on the host; keying it on the dir would let one write per dir through.
     const scopeKey = hooks.scope === 'global' ? '~' : this.sessionPath;
@@ -312,11 +315,12 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       await dedupeInFlight(
         remoteHookInstallsInFlight,
         `${this.connectionId}::${scopeKey}::${providerId}`,
-        () => writeHooks(fs, [])
+        () => writeHooks(fs, [], { platform })
       );
       log.info('SshAgentRuntime: installed remote agent hooks', {
         providerId,
         scope: hooks.scope,
+        platform,
       });
     } catch (error) {
       log.error('SshAgentRuntime: failed to install remote agent hooks', {

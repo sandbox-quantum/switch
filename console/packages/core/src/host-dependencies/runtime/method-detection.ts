@@ -103,33 +103,40 @@ export function createInstallMethodDetector(
     return npmRootCache;
   }
 
-  function normalizeDir(dir: string): string {
-    return dir.toLowerCase().replace(/\/+$/, '');
+  /**
+   * Case- and separator-insensitive form of a path, without trailing
+   * separators. `npm root -g` on Windows answers with backslashes
+   * (`C:\Users\x\AppData\Roaming\npm\node_modules`), so comparing raw strings
+   * against a '/'-only prefix never matches and npm provenance degrades to a
+   * guess.
+   */
+  function normalizePath(p: string): string {
+    return p.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
   }
 
-  function pathStartsWith(lower: string, dir: string): boolean {
-    const norm = normalizeDir(dir);
-    return lower.startsWith(norm + '/') || lower === norm;
+  function pathStartsWith(candidate: string, dir: string): boolean {
+    const norm = normalizePath(dir);
+    const target = normalizePath(candidate);
+    return target === norm || target.startsWith(norm + '/');
   }
 
   /** Extract a segment of a path that follows a known prefix directory. */
   function extractSegmentAfterPrefix(realPath: string, prefix: string): string | undefined {
-    const norm = normalizeDir(prefix);
-    const lower = realPath.toLowerCase();
-    if (!pathStartsWith(lower, norm)) return undefined;
+    if (!pathStartsWith(realPath, prefix)) return undefined;
+    const norm = normalizePath(prefix);
     // Get the actual casing from the original realPath
-    const rest = realPath.slice(norm.length).replace(/^\/+/, '');
+    const rest = realPath.slice(norm.length).replace(/^[\\/]+/, '');
     // First path segment = formula/cask name
-    return rest.split('/')[0] ?? undefined;
+    return rest.split(/[\\/]/)[0] || undefined;
   }
 
   return {
     async detect(realPath: string): Promise<Provenance> {
-      const lower = realPath.toLowerCase();
+      const lower = normalizePath(realPath);
 
       // 1. Homebrew Cellar (formulas)
       const cellar = await brewCellar();
-      if (cellar && pathStartsWith(lower, cellar)) {
+      if (cellar && pathStartsWith(realPath, cellar)) {
         const managerRef = extractSegmentAfterPrefix(realPath, cellar);
         return { kind: 'homebrew', confidence: 'confirmed', managerRef };
       }
@@ -138,12 +145,12 @@ export function createInstallMethodDetector(
       const prefix = await brewPrefix();
       if (prefix) {
         const caskroom = prefix + '/Caskroom';
-        if (pathStartsWith(lower, caskroom)) {
+        if (pathStartsWith(realPath, caskroom)) {
           const managerRef = extractSegmentAfterPrefix(realPath, caskroom);
           return { kind: 'homebrew', confidence: 'confirmed', managerRef };
         }
         const opt = prefix + '/opt';
-        if (pathStartsWith(lower, opt)) {
+        if (pathStartsWith(realPath, opt)) {
           const managerRef = extractSegmentAfterPrefix(realPath, opt);
           return { kind: 'homebrew', confidence: 'confirmed', managerRef };
         }
@@ -151,7 +158,7 @@ export function createInstallMethodDetector(
 
       // 3. npm global root
       const root = await npmRoot();
-      if (root && pathStartsWith(lower, root)) {
+      if (root && pathStartsWith(realPath, root)) {
         // managerRef: parent dir of node_modules is the package root; use descriptor later
         return { kind: 'npm', confidence: 'confirmed' };
       }

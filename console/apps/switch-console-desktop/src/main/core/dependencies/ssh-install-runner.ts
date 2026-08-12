@@ -1,10 +1,17 @@
-import type { InstallCommandError } from '@switch-console/core/deps/runtime';
+import type { InstallCommandError, InstallCommandSpec } from '@switch-console/core/deps/runtime';
 import { err, ok, type Result } from '@switch-console/shared';
 import { openSsh2Pty } from '@main/core/pty/ssh2-pty';
 import { buildRemoteShellCommand } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { log } from '@main/lib/logger';
+import { quoteShellArg } from '@main/utils/shellEscape';
 import { classifyInstallCommandFailure, type InstallCommandRunner } from './install-runner';
+
+/** Remote hosts are POSIX-only today, so an argv spec is quoted for `sh`. */
+function toRemoteCommandLine(command: InstallCommandSpec): string {
+  if (typeof command === 'string') return command;
+  return [command.command, ...command.args].map(quoteShellArg).join(' ');
+}
 
 /**
  * Runs an install/update command string on a remote host over SSH.
@@ -37,8 +44,9 @@ export function createSshInstallCommandRunner(
   onOutput: (chunk: string) => void
 ): InstallCommandRunner {
   return async (command) => {
+    const commandLine = toRemoteCommandLine(command);
     const profile = await proxy.getRemoteShellProfile();
-    const remoteCommand = buildRemoteShellCommand(profile, command);
+    const remoteCommand = buildRemoteShellCommand(profile, commandLine);
     const installId = `ssh-install:${crypto.randomUUID()}`;
 
     const opened = await openSsh2Pty(proxy, {
@@ -73,7 +81,7 @@ export function createSshInstallCommandRunner(
         stallTimer = setTimeout(() => {
           const output = chunks.join('').trim();
           log.error('[SshDependencyManager] Remote install produced no output; abandoning', {
-            command,
+            command: commandLine,
             output,
           });
           // Kill it rather than leaving it: a stopped install holds the package

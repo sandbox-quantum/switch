@@ -529,7 +529,10 @@ describe('HostDependencyManager update', () => {
 
     await manager.update('claude');
 
-    expect(runInstallCommand).toHaveBeenCalledWith(expect.stringContaining('update'));
+    expect(runInstallCommand).toHaveBeenCalledWith({
+      command: expect.any(String),
+      args: expect.arrayContaining(['update']),
+    });
   });
 });
 
@@ -706,7 +709,10 @@ describe('HostDependencyManager uninstall', () => {
 
     await manager.uninstall('claude-cli-uninstall');
 
-    expect(runInstallCommand).toHaveBeenCalledWith(expect.stringContaining('uninstall'));
+    expect(runInstallCommand).toHaveBeenCalledWith({
+      command: expect.any(String),
+      args: expect.arrayContaining(['uninstall']),
+    });
   });
 
   it('uses buildUninstallCommand hook when provided', async () => {
@@ -731,7 +737,10 @@ describe('HostDependencyManager uninstall', () => {
 
     await manager.uninstall('claude-hook-uninstall');
 
-    expect(runInstallCommand).toHaveBeenCalledWith('/usr/local/bin/claude custom-remove --force');
+    expect(runInstallCommand).toHaveBeenCalledWith({
+      command: '/usr/local/bin/claude',
+      args: ['custom-remove', '--force'],
+    });
   });
 });
 

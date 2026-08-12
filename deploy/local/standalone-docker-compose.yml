@@ -26,6 +26,14 @@
 # recently been published — a different switch-core on every `up`, with nothing
 # to say so. Compose now refuses to start rather than pick a version nobody
 # asked for (CHOO-1865). `.env.example` sets it, and Switch Console writes it.
+#
+# The `:?` messages below read "required, set it in .env" rather than
+# "required - set it in .env" on purpose. Some Compose builds (observed on
+# v2.6.0) mis-tokenize a `${VAR:?msg}` whose msg contains " - " when it follows
+# other `${...}` substitutions in the same value: part of the message is
+# spliced into the image reference instead of the required-variable check
+# firing, and the daemon then rejects the mangled tag. A comma keeps the
+# wording without the trigger.
 
 # What this compose artifact speaks on the `stack-compose` contract, which is
 # what Switch Console's local-server mode pins against (CHOO-1865). The version this
@@ -138,7 +146,7 @@ services:
         condition: service_completed_successfully
 
   switch:
-    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:?required - set it in .env, there is no default}
+    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:?required, set it in .env, there is no default}
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${API_HOST_PORT:-8000}:8000"
     environment:
@@ -165,7 +173,7 @@ services:
         condition: service_started
 
   gateway:
-    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:?required - set it in .env, there is no default}
+    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/gateway:${SWITCH_VERSION:?required, set it in .env, there is no default}
     profiles: ["gateway"]
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${GATEWAY_HOST_PORT:-3000}:3000"
@@ -173,7 +181,7 @@ services:
       - switch
 
   setup:
-    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/setup:${SWITCH_VERSION:?required - set it in .env, there is no default}
+    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/setup:${SWITCH_VERSION:?required, set it in .env, there is no default}
     profiles: ["collab"]
     restart: on-failure
     environment:

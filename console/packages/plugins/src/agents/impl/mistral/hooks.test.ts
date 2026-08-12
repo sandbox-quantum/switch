@@ -45,7 +45,7 @@ command = "curl http://127.0.0.1:$SWITCHDASH_HOOK_PORT/hook"
     const fs = createMemoryFs({ [MISTRAL_CONFIG_PATH]: 'invalid = [' });
     const hooks = buildMistralHookConfig();
 
-    await expect(hooks.writeHooks(fs, [])).rejects.toThrow(
+    await expect(hooks.writeHooks(fs, [], { platform: 'linux' })).rejects.toThrow(
       `Failed to parse ${MISTRAL_CONFIG_PATH}`
     );
     await expect(fs.exists(MISTRAL_HOOKS_PATH)).resolves.toBe(false);

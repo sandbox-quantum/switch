@@ -1,9 +1,11 @@
 import * as toml from 'smol-toml';
 import type { PluginFs } from '../../runtime/fs';
-import type { HookRegistration } from '../capabilities/hooks';
-import { SWITCHDASH_MARKER, filterUserHooks } from './hooks';
-
-export type { HookCommandOptions } from './hooks';
+import type {
+  HookCommand,
+  HookCommandOptions,
+  HookRegistration,
+} from '../capabilities/hooks-types';
+import { SWITCHDASH_MARKER, filterUserHooks, isManagedHookEntry } from './hooks';
 
 // ── JSON config helpers ────────────────────────────────────────────────────
 
@@ -115,7 +117,7 @@ export function mergeMinimalEntries(existing: unknown[], command: string): unkno
 
 // ── Generic hook config builders ────────────────────────────────────────────
 
-type HookSpec = { hookKey: string; command: string; matcher?: string };
+type HookSpec = { hookKey: string; command: HookCommand; matcher?: string };
 type FlatTomlHookConfigOptions = {
   beforeWrite?: (fs: PluginFs) => Promise<void>;
   afterWrite?: (fs: PluginFs) => Promise<string[]>;
@@ -129,14 +131,14 @@ type FlatTomlHookConfigOptions = {
  */
 export function buildFlatTomlHookConfig(
   configPath: string,
-  entries: Record<string, unknown>[],
+  entries: (opts: HookCommandOptions) => Record<string, unknown>[],
   options: FlatTomlHookConfigOptions = {}
 ) {
   const stringifyEntry = options.stringifyEntry ?? JSON.stringify;
   const getHookEntries = (config: Record<string, unknown>) =>
     Array.isArray(config.hooks) ? (config.hooks as Record<string, unknown>[]) : [];
   const hasSwitchConsoleHook = (config: Record<string, unknown>) =>
-    getHookEntries(config).some((entry) => stringifyEntry(entry).includes(SWITCHDASH_MARKER));
+    getHookEntries(config).some((entry) => isManagedHookEntry(stringifyEntry(entry)));
 
   return {
     async readHooks(fs: PluginFs): Promise<HookRegistration[]> {
@@ -145,11 +147,18 @@ export function buildFlatTomlHookConfig(
         ? [{ event: 'switchdash', command: SWITCHDASH_MARKER }]
         : [];
     },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
+    async writeHooks(
+      fs: PluginFs,
+      _hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
       const config = await readTomlConfig(fs, configPath);
       await options.beforeWrite?.(fs);
       const userHooks = filterUserHooks(getHookEntries(config), stringifyEntry);
-      await writeTomlConfig(fs, configPath, { ...config, hooks: [...userHooks, ...entries] });
+      await writeTomlConfig(fs, configPath, {
+        ...config,
+        hooks: [...userHooks, ...entries(opts)],
+      });
       const extraPaths = (await options.afterWrite?.(fs)) ?? [];
       return [configPath, ...extraPaths];
     },
@@ -173,7 +182,8 @@ export function buildFlatTomlHookConfig(
  * the nested format:
  *   `{ hooks: { <Event>: [{ hooks: [{ type: 'command', command }] }] } }`
  *
- * Pass pre-built command strings (from `makeStdinHookCommand`, etc.) in `hookSpecs`.
+ * Pass command builders (from `makeStdinHookCommand`, etc.) in `hookSpecs`; each
+ * is resolved against the platform the session will run on at write time.
  */
 export function buildNestedJsonHookConfig(configPath: string, hookSpecs: HookSpec[]) {
   return {
@@ -182,11 +192,15 @@ export function buildNestedJsonHookConfig(configPath: string, hookSpecs: HookSpe
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       const installed = hookSpecs.some(({ hookKey }) => {
         const entries = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
+        return entries.some((e) => isManagedHookEntry(JSON.stringify(e)));
       });
       return installed ? [{ event: 'switchdash', command: SWITCHDASH_MARKER }] : [];
     },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
+    async writeHooks(
+      fs: PluginFs,
+      _hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
       const config = await readJsonConfigForUpdate(fs, configPath);
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       // Strip previously-installed Switch Console entries once per touched key, THEN
@@ -198,7 +212,10 @@ export function buildNestedJsonHookConfig(configPath: string, hookSpecs: HookSpe
         hooks[hookKey] = filterUserHooks(existing as Record<string, unknown>[]);
       }
       for (const { hookKey, command, matcher } of hookSpecs) {
-        hooks[hookKey] = [...(hooks[hookKey] as unknown[]), buildNestedEntry(command, matcher)];
+        hooks[hookKey] = [
+          ...(hooks[hookKey] as unknown[]),
+          buildNestedEntry(command(opts), matcher),
+        ];
       }
       await writeJsonConfig(fs, configPath, { ...config, hooks });
       return [configPath];
@@ -216,7 +233,7 @@ export function buildNestedJsonHookConfig(configPath: string, hookSpecs: HookSpe
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       return hookSpecs.some(({ hookKey }) => {
         const entries = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
+        return entries.some((e) => isManagedHookEntry(JSON.stringify(e)));
       });
     },
   };
@@ -239,16 +256,20 @@ export function buildFlatJsonHookConfig(
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       const installed = hookSpecs.some(({ hookKey }) => {
         const entries = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
+        return entries.some((e) => isManagedHookEntry(JSON.stringify(e)));
       });
       return installed ? [{ event: 'switchdash', command: SWITCHDASH_MARKER }] : [];
     },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
+    async writeHooks(
+      fs: PluginFs,
+      _hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
       const config = await readJsonConfigForUpdate(fs, configPath);
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       for (const { hookKey, command } of hookSpecs) {
         const existing = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        hooks[hookKey] = mergeFlatEntries(existing, command);
+        hooks[hookKey] = mergeFlatEntries(existing, command(opts));
       }
       await writeJsonConfig(fs, configPath, { ...config, ...extraRoot, hooks });
       return [configPath];
@@ -266,7 +287,7 @@ export function buildFlatJsonHookConfig(
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       return hookSpecs.some(({ hookKey }) => {
         const entries = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
+        return entries.some((e) => isManagedHookEntry(JSON.stringify(e)));
       });
     },
   };
@@ -287,16 +308,20 @@ export function buildMinimalJsonHookConfig(
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       const installed = hookSpecs.some(({ hookKey }) => {
         const entries = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
+        return entries.some((e) => isManagedHookEntry(JSON.stringify(e)));
       });
       return installed ? [{ event: 'switchdash', command: SWITCHDASH_MARKER }] : [];
     },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
+    async writeHooks(
+      fs: PluginFs,
+      _hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
       const config = await readJsonConfigForUpdate(fs, configPath);
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       for (const { hookKey, command } of hookSpecs) {
         const existing = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        hooks[hookKey] = mergeMinimalEntries(existing, command);
+        hooks[hookKey] = mergeMinimalEntries(existing, command(opts));
       }
       await writeJsonConfig(fs, configPath, { ...config, ...extraRoot, hooks });
       return [configPath];
@@ -314,7 +339,7 @@ export function buildMinimalJsonHookConfig(
       const hooks = (config.hooks ?? {}) as Record<string, unknown[]>;
       return hookSpecs.some(({ hookKey }) => {
         const entries = Array.isArray(hooks[hookKey]) ? hooks[hookKey] : [];
-        return entries.some((e) => JSON.stringify(e).includes(SWITCHDASH_MARKER));
+        return entries.some((e) => isManagedHookEntry(JSON.stringify(e)));
       });
     },
   };
