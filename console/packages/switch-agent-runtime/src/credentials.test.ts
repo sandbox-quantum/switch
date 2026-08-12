@@ -153,11 +153,15 @@ describe('normalizeEndpoint', () => {
     // for display, so a differently-cased host must not read as another server.
     expect(normalizeEndpoint('HTTPS://Switch.Example')).toBe('https://switch.example');
     expect(normalizeEndpoint('https://switch.example/')).toBe('https://switch.example');
-    expect(normalizeEndpoint('  https://Switch.Example:8000/  ')).toBe('https://switch.example:8000');
+    expect(normalizeEndpoint('  https://Switch.Example:8000/  ')).toBe(
+      'https://switch.example:8000'
+    );
   });
 
   it('leaves the path alone, which is case-sensitive', () => {
-    expect(normalizeEndpoint('https://Switch.Example/Api/V1')).toBe('https://switch.example/Api/V1');
+    expect(normalizeEndpoint('https://Switch.Example/Api/V1')).toBe(
+      'https://switch.example/Api/V1'
+    );
   });
 
   it('passes through a value with no authority to fold', () => {

@@ -428,9 +428,9 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     // The store's token, against the id the environment named — on the ops call
     // and on everything that follows it.
     expect(calls()).toContain('/agents/uuid-solo/ops Bearer tok-solo');
-    expect(calls().every((c) => c.startsWith('/agents/uuid-solo/') && c.endsWith('Bearer tok-solo'))).toBe(
-      true
-    );
+    expect(
+      calls().every((c) => c.startsWith('/agents/uuid-solo/') && c.endsWith('Bearer tok-solo'))
+    ).toBe(true);
   });
 
   it('binds the agent the environment names, not whichever the store lists first', async () => {
@@ -549,7 +549,12 @@ describe.skipIf(!existsSync(BIN))('the Switch runtime as a host spawns it', () =
     const run = start(
       { SWITCH_API_ENDPOINT: wanted.endpoint, SWITCH_AGENT_ID: 'uuid-dup' },
       (root) => {
-        provision(root, { slug: 'here', agentId: 'uuid-dup', endpoint: wanted.endpoint, token: 'tok-here' });
+        provision(root, {
+          slug: 'here',
+          agentId: 'uuid-dup',
+          endpoint: wanted.endpoint,
+          token: 'tok-here',
+        });
         provision(root, { slug: 'away', agentId: 'uuid-dup', endpoint: other, token: 'tok-away' });
       }
     );

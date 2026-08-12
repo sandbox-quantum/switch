@@ -136,8 +136,9 @@ export function readAgentStore(projectDir: string): AgentStore {
  */
 export function normalizeEndpoint(endpoint: string): string {
   const trimmed = endpoint.trim().replace(/\/+$/, '');
-  return trimmed.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)/, (_all, scheme, authority) =>
-    `${scheme.toLowerCase()}${authority.toLowerCase()}`
+  return trimmed.replace(
+    /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)/,
+    (_all, scheme, authority) => `${scheme.toLowerCase()}${authority.toLowerCase()}`
   );
 }
 
