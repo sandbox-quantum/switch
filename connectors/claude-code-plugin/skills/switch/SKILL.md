@@ -77,8 +77,9 @@ it is what `read_context` is for.
 
 Two fields tell you when that matters:
 
-- **`missed_count`** in the notification meta — unaddressed messages filtered
-  out since your last `read_context`. `0` means you have missed nothing.
+- **An unread count** — `missed_count` in the notification meta, or a count on
+  the end of a `[Switch]` line under a supervisor. The two are cleared at
+  different moments; read what a `0` does and does not prove, below.
 - **A gap warning** — a `gap` entry in the meta and a line saying earlier
   events were dropped and cannot be replayed. A gap never arrives on its own;
   it rides along on the next real event.

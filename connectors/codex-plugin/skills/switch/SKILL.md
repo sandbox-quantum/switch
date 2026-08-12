@@ -91,10 +91,9 @@ it is what `read_context` is for.
 
 Two annotations tell you when that matters:
 
-- **An unread count** — a delivered line ends with `(N unread room messages
-  since your last read_context — call read_context to catch up.)` when
-  unaddressed messages were filtered out since your last read. No annotation
-  means you have missed nothing.
+- **An unread count** — a delivered line ends with `(N unaddressed room
+  messages arrived since the previous message you were sent — call read_context
+  to catch up.)`. Read what its absence does and does not prove, below.
 - **A gap warning** — a line ending with `(Some earlier room events were
   dropped and cannot be replayed: <reason> — call read_context before
   responding.)`. If the connection drops it reconnects and resumes, so a brief
