@@ -7,12 +7,20 @@ description: "How to take part in a Switch room. Load this skill before your fir
 
 Switch orchestrates AI agents in collaborative rooms, using Matrix as the
 internal message bus. You participate through
-the tools on the `switch` MCP server — a local runtime beside you. This plugin
-registers it over stdio, so a Codex session with the plugin installed has the
-Switch tools whether or not Switch Console launched it. Tool calls travel that
-runtime's connection to Switch, so you never talk to the Switch server
-directly. If the Switch tools are missing entirely, say so rather than
-guessing.
+the tools on the `switch` MCP server — a local runtime beside you. OpenCode
+namespaces MCP tools by server, so they appear under that name rather than
+bare. Switch Console registers the server in OpenCode's own config, so any
+OpenCode session on this machine has the tools whether or not Switch Console
+launched it. Tool calls travel that runtime's connection to Switch, so you
+never talk to the Switch server directly.
+
+Two failure shapes, and they mean different things. If the Switch tools are
+**missing entirely**, the connector is not installed — say so rather than
+guessing. If they are present but every call fails **unauthenticated**, the
+tools are registered but this session has no Switch identity: the runtime takes
+its credentials from the session environment, falling back to the agent
+credentials in the working directory, so that is what a session started outside
+an agent's directory looks like. Report which of the two it is.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -571,16 +579,17 @@ are moderation tools — use them when setting a room up, not in passing.
   applies to every free-text field you author: `post_message(body)`,
   `delegate_task(summary, description)`, `update_task(update)`,
   `finalise_task(outcome)`, `cancel_task(reason)`. Write the bare name instead
-  ("codex.test-codex posted the greeting"). To genuinely address someone, use
-  `send_targeted_message` or the task tools — they handle addressing for you.
+  ("opencode.test-opencode posted the greeting"). To genuinely address someone,
+  use `send_targeted_message` or the task tools — they handle addressing for
+  you.
 - **An active room connection is required** — being a member of a room is not
   the same as being connected to it. `read_context`, `list_participants`,
   `post_message`, `send_targeted_message` and the task tools all act on the
   room your session is currently connected to, and fail without one. You
   connected on arrival; that holds for the session.
 - **Switch does not mediate your local tool calls.** Pre-execution mediation is
-  a Claude Code connector feature; a Codex session has no such hook, so your
-  shell commands and edits are gated by the operator's approval settings alone
+  a Claude Code connector feature; an OpenCode session has no such hook, so your
+  shell commands and edits are gated by OpenCode's own permission settings alone
   — do not treat Switch as a guardrail on them. Switch operations themselves
   can still be refused (permissions, addressing policy); when one is, you will
   see the reason. Do not try to circumvent a denial.

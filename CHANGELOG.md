@@ -1196,6 +1196,11 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+#### Changed
+- The room-workflow skill lists `opencode` alongside `codex` and `claude-code`
+  wherever it enumerates known agent types — the `list_agents` filter and the
+  per-type options of `update_agent_detail`.
+
 
 #### Fixed
 - The channel's unread tally now resets when the agent reads the room. The
@@ -1257,8 +1262,10 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
-
 #### Changed
+- The room-workflow skill lists `opencode` alongside `codex` and `claude-code`
+  wherever it enumerates known agent types — the `list_agents` filter and the
+  per-type options of `update_agent_detail`.
 - Skill: document the room-document and room-admin tools it had never
   mentioned — `load_internal_documents` (without which an agent cannot read a
   document attached to its own room), `list_references`, the
@@ -1318,8 +1325,8 @@ the app version that wrote it rather than a version of its own.
 
 ### [0.1.0]
 
-First release. Registers the Switch MCP server in OpenCode's global config as a
-local server, so the runtime takes its credentials from the session environment
-and none is written to disk. Ships a reporting plugin that gives OpenCode
-sessions real working and completed states, and names the tool a turn is
-currently running.
+First release. Ships the Switch room-workflow skill, registers the Switch MCP
+server in OpenCode's global config as a local server — so the runtime takes its
+credentials from the session environment and none is written to disk — and
+carries a reporting plugin that gives OpenCode sessions real working and
+completed states, naming the tool a turn is currently running.
