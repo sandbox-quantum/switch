@@ -358,13 +358,21 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - A Codex agent's model, reasoning effort and instructions can now be changed
-  after the agent is created, from a **Codex configuration** section in its
-  Settings tab. They were previously write-once in the add-agent dialog, with no
-  way to edit them (CHOO-1985). Codex reads the values only when a session
-  starts, so a save applies to the next session; a session that is already
-  running is named in the section, with a Restart that resumes it on the new
-  configuration. Clearing every field removes the agent's launch profile rather
-  than leaving it orphaned.
+  after the agent is created, from the **Advanced configuration** section in its
+  Settings tab — the same section Claude agents already had. They were
+  previously write-once in the add-agent dialog, with no way to edit them
+  (CHOO-1985). Codex reads the values only when a session starts, so a save
+  applies to the next session; a session already running is named in the
+  section, with a Restart that resumes it on the new configuration. Clearing
+  every field removes the agent's launch profile rather than leaving it
+  orphaned.
+
+#### Changed
+- Advanced configuration is one editor for every provider rather than one per
+  storage mechanism. Providers keep these settings in different places — a
+  repo-agent definition for Claude Code, the launch profile for Codex — and the
+  main process now routes the read and the write, so the difference is no longer
+  visible as the shape of the Settings page.
 
 ### [0.22.1] - 2026-08-12
 
