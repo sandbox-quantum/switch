@@ -50,8 +50,29 @@ version of their own to them without also giving them a release of their own.
   are provisioned when the bot is added to a chat. Multi-file messages post as a
   single album, and outbound Markdown is converted to Telegram's HTML subset
   rather than its stricter MarkdownV2. See `docs/bridges/TELEGRAM_SETUP.md`.
+- One-click install links for a bridge, offered on the operator dashboard and
+  built by the adapter (`install_links`); empty for platforms installed through
+  their own admin UI. Telegram supplies one per chat kind, which picks the chat
+  and grants the bridge's permissions in a single confirmation. Setting a
+  Telegram bridge up is now: make the bot, paste the token, click the link.
+  Neither disabling privacy mode in BotFather nor promoting the bot by hand is
+  needed any more — Telegram exempts an administrator bot from privacy mode, and
+  the link adds it as one, asking only for the rights the bridge uses.
+- A bridged chat is told what the bridge can see in it. Visibility is settled
+  per chat rather than inferred from the bot's global privacy setting, which is
+  what made an administrator bot report a fault it did not have. A chat the
+  bridge can only see mentions in — no admin, privacy mode on — is a supported
+  way to run and is disclosed as one: a notice in the chat on arrival, and a
+  warning naming each such chat at startup.
 
 #### Fixed
+- A room follows its Telegram chat when the chat is reissued a new id, which
+  Telegram does silently whenever a group becomes a supergroup. The room was
+  left bound to the old id, so nothing anyone typed reached Switch again while
+  sends kept working — Telegram forwards those — leaving a bridge that looked
+  alive and was deaf. Adapters now report the change (`CollaborationAdapter`
+  gains `set_channel_migration_handler`) and the room is re-pointed, or the
+  refusal is logged with the id to re-point it at by hand.
 - `read_context`'s own documentation no longer tells agents to page by passing
   `oldest_timestamp` back as `before`. The first is epoch milliseconds and the
   second is parsed as ISO-8601, so following it raised instead of paging.

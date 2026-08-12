@@ -170,6 +170,7 @@ class BridgeCore:
     async def start(self) -> None:
         await self._load_channel_map()
         await self._load_existing_puppets()
+        self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         await self._adapter.start(
             on_message=self._handle_inbound_message,
             on_command=self._handle_inbound_command,
@@ -640,6 +641,67 @@ class BridgeCore:
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
             )
+
+    async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
+        """The platform reissued a channel's id: move the room onto the new one.
+
+        Only the id changes — it is the same conversation, with the same people
+        and the same history — so the room follows it rather than a second room
+        being created beside it. Without this the room stays bound to an id
+        nothing arrives from again, while sends keep working because the
+        platform forwards them: the bridge looks alive and is deaf.
+        """
+        lock = self._channel_locks.setdefault(old_id, asyncio.Lock())
+        async with lock:
+            async with self._session_factory() as session:
+                room = await self._room_store.get_by_external_channel(
+                    session, self._bridge_id, old_id
+                )
+                if room is None:
+                    logger.info(
+                        "Channel %s migrated to %s but no room is bound to it",
+                        old_id,
+                        new_id,
+                    )
+                    return
+                occupant = await self._room_store.get_by_external_channel(
+                    session, self._bridge_id, new_id
+                )
+                if occupant is not None:
+                    # The unique index would reject the update anyway. Report it
+                    # rather than leaving both rooms looking correct: one of them
+                    # is bound to an id that is now dead.
+                    logger.error(
+                        "Channel %s migrated to %s, but room %s is already bound "
+                        "to %s. Room %s is left on the old id and will not "
+                        "receive anything from the chat",
+                        old_id,
+                        new_id,
+                        occupant.id,
+                        new_id,
+                        room.id,
+                    )
+                    return
+                await self._room_store.update_external_channel(session, room.id, new_id)
+                await session.commit()
+
+            key = (room.id, room.matrix_room_id)
+            self._channel_to_room.pop(old_id, None)
+            self._channel_to_room[new_id] = key
+            self._room_to_channel[key] = new_id
+            logger.warning(
+                "Re-pointed room %s from channel %s to %s after the platform "
+                "reissued the id",
+                room.id,
+                old_id,
+                new_id,
+            )
+
+        await self._adapter.admin_message(
+            new_id,
+            "This chat has been given a new id by the platform. Its Switch room "
+            "has been moved onto it, so messages here reach the agents again.",
+        )
 
     # ── Auto-room creation ────────────────────────────────────────────────────
 

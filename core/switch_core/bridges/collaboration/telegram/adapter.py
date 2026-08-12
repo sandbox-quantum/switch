@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeInstallLink,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -61,6 +62,26 @@ _ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member"]
 # Switch's own in-room prefix, plus Telegram's native one.
 _COMMAND_PREFIXES = ("!", "/")
 
+# The payload the dashboard's one-click links carry, delivered back to the bot
+# as `/start <payload>` once it has been added. It authorises nothing — anyone
+# able to add a bot to a chat can do so without it — it only distinguishes an
+# install started from Switch from someone adding the bot by hand, which is
+# worth saying in the chat and in the logs.
+_INSTALL_PAYLOAD = "switch"
+
+# Admin rights the one-click links ask for, and no more.
+#
+# In a group, being an administrator at all is the point: Telegram exempts an
+# admin bot from privacy mode, so it sees the conversation without anyone
+# visiting BotFather. `delete_messages` is the single right the bridge uses —
+# a bot may always delete its *own* messages in a group, but only for 48 hours,
+# and a "working on it…" indicator can outlive that.
+#
+# A channel is a broadcast chat where posting is admin-only, so there the
+# rights are what posting and editing actually require.
+_GROUP_ADMIN_RIGHTS = "delete_messages"
+_CHANNEL_ADMIN_RIGHTS = "post_messages+edit_messages+delete_messages"
+
 # Telegram will only register a command spelled in these characters, and caps a
 # description at 256. A name it rejects is left out of the menu rather than
 # taking the whole call down.
@@ -88,8 +109,14 @@ class TelegramAdapter(CollaborationAdapter):
     the message. Inbound arrives by long polling (an outbound connection, no
     public ingress); outbound goes through the Bot API.
 
-    The bot must have privacy mode DISABLED in BotFather, otherwise Telegram
-    only delivers commands and replies and the bridge sees almost no traffic.
+    The bot has to be able to see the conversation, and Telegram offers two
+    routes to that: an administrator bot is exempt from privacy mode and
+    receives everything, or privacy mode is disabled in BotFather for the bot
+    globally. The dashboard's one-click install link takes the first, because
+    it grants the rights in the same confirmation that picks the chat. A bot
+    that is neither runs mention-only — it receives commands, replies to itself
+    and messages that tag it, and nothing else — which is disclosed in the chat
+    rather than left to be deduced from silence.
 
     Chats are adopted, never created: the Bot API gives a bot no way to create a
     group or channel, so ``create_channel`` raises and a chat's Switch room is
@@ -109,6 +136,13 @@ class TelegramAdapter(CollaborationAdapter):
         # people who address by numeric id rather than handle.
         self._user_names: dict[int, str] = {}
         self._username_to_id: dict[str, int] = {}
+        # Whether BotFather's privacy mode is off for this bot, read from getMe
+        # at startup. It is a global setting and says nothing about any one
+        # chat, so it is only half of what _chat_visibility decides.
+        self._privacy_mode_disabled = False
+        # Chats already told what the bridge can and cannot see here, so a
+        # reconnect or a second join does not repeat the notice.
+        self._visibility_announced: set[str] = set()
         # The bot can delete its own messages, so runtime state renders as a
         # persistent message (the base class's _working_msg) rather than the
         # one-shot typing action.
@@ -147,7 +181,10 @@ class TelegramAdapter(CollaborationAdapter):
                 self._bot_username,
                 me.username,
             )
-        self._warn_if_privacy_mode_hides_traffic(me)
+        self._privacy_mode_disabled = bool(
+            getattr(me, "can_read_all_group_messages", False)
+        )
+        self._report_privacy_mode()
         await app.start()
         if app.updater is None:
             raise RuntimeError("Telegram application was built without an updater")
@@ -210,28 +247,172 @@ class TelegramAdapter(CollaborationAdapter):
             return
         logger.warning("Telegram polling error: %s", error)
 
-    @staticmethod
-    def _warn_if_privacy_mode_hides_traffic(me: Any) -> None:
-        """Say so when the bot is configured to see almost nothing.
+    def _report_privacy_mode(self) -> None:
+        """Record what the global privacy setting does and does not settle.
 
         BotFather enables privacy mode by default, and a bot in that state
-        receives only `/`-prefixed messages, replies to itself and service
-        messages — so a bridge starts cleanly, provisions rooms, and then
-        appears to ignore the conversation, with nothing anywhere saying why.
-        getMe reports the setting, so the degradation is announced at startup
-        instead of being left for someone to deduce from an empty channel.
+        receives only `/`-prefixed messages, replies to itself and messages
+        tagging it. That used to be reported here as a fault, but it is not one
+        on its own: Telegram exempts a bot that is an administrator of a chat,
+        so a bridge whose chats were joined through the dashboard's install
+        link sees everything with privacy mode left exactly as BotFather set
+        it. Whether any one chat is readable is therefore a per-chat question,
+        answered by _chat_visibility as chats are joined and audited.
         """
-        if getattr(me, "can_read_all_group_messages", False):
+        if self._privacy_mode_disabled:
+            logger.info(
+                "Telegram privacy mode is disabled for @%s: the bridge sees all "
+                "messages in every chat it is in",
+                self._bot_username,
+            )
+            return
+        logger.info(
+            "Telegram privacy mode is enabled for @%s (BotFather's default): the "
+            "bridge sees the whole conversation only in chats where the bot is an "
+            "administrator, and mentions, replies and commands everywhere else. "
+            "Each chat is checked as it is joined",
+            self._bot_username,
+        )
+
+    async def _chat_visibility(self, channel_id: str) -> str:
+        """What the bridge can actually see in one chat.
+
+        ``"full"`` — every message. ``"mention_only"`` — commands, replies to
+        the bot and messages tagging it, which is Telegram filtering before the
+        update ever reaches us and cannot be worked around in code.
+        ``"unknown"`` — the lookup failed, so nothing is claimed either way.
+
+        Two things grant full visibility and either is enough: the bot is an
+        administrator of this chat, or privacy mode is off for the bot
+        globally. A 1:1 chat is always fully visible — privacy mode has never
+        applied to private chats.
+        """
+        if self._bot is None:
+            return "unknown"
+        try:
+            chat = await self._bot.get_chat(self._chat_id(channel_id))
+        except Exception:
+            logger.debug(
+                "Could not resolve Telegram chat %s while checking visibility",
+                channel_id,
+                exc_info=True,
+            )
+            return "unknown"
+        if self._channel_type_of(chat) == "lobby":
+            return "full"
+        try:
+            member = await self._bot.get_chat_member(
+                chat_id=self._chat_id(channel_id), user_id=self._bot_user_id
+            )
+        except Exception:
+            logger.debug(
+                "Could not read the bot's membership of Telegram chat %s",
+                channel_id,
+                exc_info=True,
+            )
+            return "unknown"
+        status = str(getattr(member, "status", "") or "")
+        if status in ("administrator", "creator"):
+            return "full"
+        return "full" if self._privacy_mode_disabled else "mention_only"
+
+    async def announce_visibility(self, channel_id: str) -> None:
+        """Tell a chat what the bridge can see in it, once.
+
+        A mention-only bridge works — agents are addressed by `@name`, which is
+        one of the few things Telegram does deliver — but it will not follow a
+        conversation nobody tags it in, and the failure is otherwise
+        indistinguishable from agents ignoring people. So it is said in the
+        chat, where whoever just added the bot is looking, along with the one
+        action that fixes it.
+        """
+        if channel_id in self._visibility_announced:
+            return
+        visibility = await self._chat_visibility(channel_id)
+        if visibility == "unknown":
+            return
+        self._visibility_announced.add(channel_id)
+        if visibility == "full":
+            logger.info("Telegram chat %s is fully visible to the bridge", channel_id)
             return
         logger.warning(
-            "Telegram privacy mode is ENABLED for @%s: the bridge will NOT "
-            "receive ordinary group messages, only /commands and replies to "
-            "itself. Agents will look unresponsive. Disable it in BotFather "
-            "(/setprivacy -> select the bot -> Disable), then remove the bot "
-            "from each group and add it back — the setting is only read when "
-            "the bot joins.",
-            me.username,
+            "Telegram chat %s is mention-only: the bot is not an administrator "
+            "there and privacy mode is on, so ordinary messages are never "
+            "delivered to the bridge",
+            channel_id,
         )
+        await self.admin_message(
+            channel_id,
+            "⚠️ <b>I can only see messages that tag me here.</b> Telegram does "
+            "not deliver ordinary group messages to a bot unless the bot is an "
+            "administrator of the chat, so agents will follow anything "
+            f"addressed to <code>@{self._bot_username}</code> or to an agent by "
+            "name, and nothing else.\n\n"
+            "To bridge the whole conversation, make me an administrator of this "
+            "chat — no other permission is needed, and nothing in BotFather has "
+            "to change.",
+        )
+
+    async def ensure_channel_subscriptions(
+        self, channels: list[tuple[str, str]]
+    ) -> None:
+        """Audit what the bridge can see in each chat it is already bridging.
+
+        Telegram needs no subscriptions — long polling delivers everything the
+        bot is entitled to — but this is the one call that arrives on startup
+        holding the bridge's known chats, and a chat can lose visibility
+        between runs: the bot is demoted, or privacy mode is turned back on.
+        Logged rather than posted, so a restart does not repost a notice in
+        every chat.
+        """
+        for channel_id, channel_type in channels:
+            if channel_type == "lobby":
+                continue
+            visibility = await self._chat_visibility(channel_id)
+            if visibility == "mention_only":
+                logger.warning(
+                    "Telegram chat %s is mention-only: the bot is not an "
+                    "administrator there and privacy mode is on. Ordinary "
+                    "messages in it never reach Switch",
+                    channel_id,
+                )
+
+    async def install_links(self) -> list[BridgeInstallLink]:
+        """Links that add this bot to a chat with the rights it needs.
+
+        Telegram's `?startgroup` / `?startchannel` links open a chat picker and
+        the admin-rights confirmation together, so the whole install is one
+        choice and one confirmation — no BotFather visit to disable privacy
+        mode, and no promoting the bot by hand afterwards. `admin=` names the
+        rights the dialog pre-selects; see _GROUP_ADMIN_RIGHTS for why they are
+        the ones asked for.
+        """
+        if not self._bot_username:
+            return []
+        base = f"https://t.me/{self._bot_username}"
+        return [
+            BridgeInstallLink(
+                key="group",
+                label="Add to a Telegram group",
+                description=(
+                    "Pick a group and confirm. The bot joins as an administrator, "
+                    "which is what lets it see the conversation, and Switch "
+                    "creates the room as soon as it lands."
+                ),
+                url=(
+                    f"{base}?startgroup={_INSTALL_PAYLOAD}&admin={_GROUP_ADMIN_RIGHTS}"
+                ),
+            ),
+            BridgeInstallLink(
+                key="channel",
+                label="Add to a Telegram channel",
+                description=(
+                    "For broadcast channels, where posting is admin-only. Pick "
+                    "the channel and confirm."
+                ),
+                url=f"{base}?startchannel&admin={_CHANNEL_ADMIN_RIGHTS}",
+            ),
+        ]
 
     def _make_on_update(self) -> Callable[[Any, Any], Coroutine[Any, Any, None]]:
         async def on_update(update: Any, _context: Any) -> None:
@@ -606,9 +787,10 @@ class TelegramAdapter(CollaborationAdapter):
     ) -> str:
         raise NotImplementedError(
             "Telegram bots cannot create chats — the Bot API has no such call. "
-            f"Create the group or channel for '{name}' in a Telegram client, add "
-            f"@{self._bot_username} to it as an administrator, and Switch will "
-            "adopt it as a room."
+            f"Create the group or channel for '{name}' in a Telegram client, then "
+            f"add @{self._bot_username} to it with the 'Add to a chat' link on "
+            "the bridge in the operator dashboard, and Switch will adopt it as a "
+            "room."
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
@@ -865,18 +1047,22 @@ class TelegramAdapter(CollaborationAdapter):
             return
         if self._on_app_joined is None:
             return
+        channel_id = str(chat.id)
         await self._on_app_joined(
             InboundAppJoin(
-                channel_id=str(chat.id),
+                channel_id=channel_id,
                 channel_type=self._channel_type_of(chat),
                 channel_name=getattr(chat, "title", None),
             )
         )
+        # After provisioning, so the notice cannot arrive before the room it
+        # refers to exists.
+        await self.announce_visibility(channel_id)
 
     async def _handle_message(self, message: Any) -> None:
         chat = message.chat
         chat_id = str(chat.id)
-        if self._report_migration(message, chat_id):
+        if await self._handle_migration(message, chat_id):
             return
         channel_type = self._channel_type_of(chat)
         channel_name = getattr(chat, "title", None)
@@ -913,6 +1099,9 @@ class TelegramAdapter(CollaborationAdapter):
         )
         root_id = self._root_id_of(message)
         message_ref = f"{chat_id}:{message.message_id}"
+
+        if await self._handle_start(content.strip(), chat_id, channel_type):
+            return
 
         parsed = self._parse_command(content.strip())
         if parsed is not None and self._on_command:
@@ -984,45 +1173,56 @@ class TelegramAdapter(CollaborationAdapter):
             return f"{field} in chat {getattr(chat, 'id', '?')}"
         return "no recognised payload"
 
-    @staticmethod
-    def _report_migration(message: Any, chat_id: str) -> bool:
-        """Say so when Telegram has given this chat a new id.
+    async def _handle_migration(self, message: Any, chat_id: str) -> bool:
+        """Follow the chat when Telegram gives it a new id.
 
         A basic group becomes a supergroup the moment it outgrows one — adding
         members, promoting a bot, enabling history — and Telegram issues it a
-        brand new chat id when that happens. The room is still keyed to the old
+        brand new chat id when that happens. The room stays keyed to the old
         one, so inbound stops matching any room while outbound keeps working,
-        because Telegram forwards sends addressed to the old id. That asymmetry
-        is impossible to read from the outside, so it is named here.
+        because Telegram forwards sends addressed to the old id. Nobody can
+        read that asymmetry from the outside, so the room is re-pointed at the
+        new id here rather than left for an operator to notice and repair.
+
+        Telegram announces the change from both sides — `migrate_to_chat_id` on
+        the last message of the old chat, `migrate_from_chat_id` on the first
+        of the new one — and either is enough; the second finds the work done.
 
         Returns True when the message is the migration notice itself and should
         not be bridged.
         """
         migrated_to = getattr(message, "migrate_to_chat_id", None)
         if migrated_to:
-            logger.error(
-                "Telegram chat %s has been upgraded to a supergroup and now has "
-                "the id %s. This room is still bound to the old id, so messages "
-                "from it will no longer match — while replies still arrive, "
-                "because Telegram forwards them. Update the room's external "
-                "channel id to %s.",
-                chat_id,
-                migrated_to,
-                migrated_to,
-            )
+            await self._repoint(chat_id, str(migrated_to))
             return True
         migrated_from = getattr(message, "migrate_from_chat_id", None)
         if migrated_from:
-            logger.warning(
-                "Telegram chat %s is the supergroup that replaced chat %s. If a "
-                "room is still bound to %s, re-point it at %s.",
-                chat_id,
-                migrated_from,
-                migrated_from,
-                chat_id,
-            )
+            await self._repoint(str(migrated_from), chat_id)
             return True
         return False
+
+    async def _repoint(self, old_id: str, new_id: str) -> None:
+        if self._on_channel_migrated is None:
+            logger.error(
+                "Telegram chat %s has been reissued the id %s and nothing is "
+                "installed to follow it. The room is still bound to the old id, "
+                "so messages from the chat no longer reach Switch. Re-point the "
+                "room's external channel id at %s",
+                old_id,
+                new_id,
+                new_id,
+            )
+            return
+        logger.warning(
+            "Telegram chat %s has been upgraded to a supergroup and reissued the "
+            "id %s; re-pointing its room",
+            old_id,
+            new_id,
+        )
+        # The new chat is a different chat as far as Telegram is concerned, so
+        # anything said about the old one no longer holds.
+        self._visibility_announced.discard(old_id)
+        await self._on_channel_migrated(old_id, new_id)
 
     async def _handle_new_members(
         self,
@@ -1053,6 +1253,41 @@ class TelegramAdapter(CollaborationAdapter):
                     channel_name=channel_name,
                 )
             )
+
+    async def _handle_start(
+        self, text: str, chat_id: str, channel_type: ChannelType
+    ) -> bool:
+        """Absorb Telegram's own `/start` handshake, and read its payload.
+
+        Adding a bot through a `?startgroup=<payload>` link makes Telegram send
+        the bot `/start@<bot> <payload>` in the chat it was just added to. That
+        is the platform greeting the bot, not somebody running a Switch
+        command, so it is answered here instead of being dispatched into the
+        room as an unknown one. The payload is what distinguishes an install
+        begun from the dashboard, which is worth recording; it authorises
+        nothing.
+
+        A bare `/start` in a 1:1 chat is left alone — it is how a person opens
+        a conversation with the bot, and swallowing it would leave the DM
+        unbridged until they typed again.
+
+        Returns True when the message was the handshake and must not be
+        bridged.
+        """
+        parsed = self._parse_command(text)
+        if parsed is None or parsed[0] != "start":
+            return False
+        payload = parsed[1]
+        if channel_type == "lobby" and payload != _INSTALL_PAYLOAD:
+            return False
+        if payload == _INSTALL_PAYLOAD:
+            logger.info(
+                "Telegram chat %s was added from a Switch install link", chat_id
+            )
+        else:
+            logger.debug("Ignoring a bare Telegram /start in chat %s", chat_id)
+        await self.announce_visibility(chat_id)
+        return True
 
     @staticmethod
     def _parse_command(text: str) -> tuple[str, str] | None:

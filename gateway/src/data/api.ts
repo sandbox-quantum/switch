@@ -108,6 +108,13 @@ export interface AddressingPolicy {
   rules: AddressingRule[];
 }
 
+export interface BridgeInstallLink {
+  key: string;
+  label: string;
+  description: string;
+  url: string;
+}
+
 export interface BridgeDetail {
   bridge_id: string;
   bridge_type: string;
@@ -116,6 +123,8 @@ export interface BridgeDetail {
   agent_greetings_enabled: boolean;
   room_count: number;
   created_at: string;
+  // Empty for platforms whose app is installed through their own admin UI.
+  install_links?: BridgeInstallLink[];
 }
 
 export interface ExternalUserSummary {

@@ -129,6 +129,11 @@ class _FakeInbound:
             setattr(self, field, value)
 
 
+class _FakeMember:
+    def __init__(self, status: str) -> None:
+        self.status = status
+
+
 class _FakeBot:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
@@ -141,6 +146,9 @@ class _FakeBot:
         self.files: dict[str, _FakeFileHandle] = {}
         self.published_commands: list[Any] = []
         self.chat: _FakeChat = _FakeChat()
+        # What getChatMember reports for the bot itself in `chat`.
+        self.member_status = "administrator"
+        self.get_chat_member_error: Exception | None = None
         self._next_id = 500
         # Set to an exception to make the next send_message raise it once.
         self.send_message_error: Exception | None = None
@@ -193,6 +201,11 @@ class _FakeBot:
 
     async def get_chat(self, chat_id: Any) -> _FakeChat:
         return self.chat
+
+    async def get_chat_member(self, **kwargs: Any) -> _FakeMember:
+        if self.get_chat_member_error is not None:
+            raise self.get_chat_member_error
+        return _FakeMember(self.member_status)
 
     async def get_file(self, file_id: str) -> _FakeFileHandle:
         handle = self.files.get(file_id)
@@ -441,41 +454,57 @@ def test_a_top_level_message_has_no_root() -> None:
 # ── Joins ────────────────────────────────────────────────────────────────────
 
 
-def test_a_group_becoming_a_supergroup_is_reported(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # Telegram reissues the chat id on upgrade. The room stays bound to the old
-    # one, so inbound silently stops matching while outbound keeps working —
-    # Telegram forwards sends to the old id. Unreadable from outside; named here.
+def test_a_group_becoming_a_supergroup_re_points_the_room() -> None:
+    # Telegram reissues the chat id on upgrade. Left alone, the room stays bound
+    # to the old one and inbound silently stops matching while outbound keeps
+    # working — Telegram forwards sends to the old id. So the room follows.
     adapter = _adapter()
     seen: list[InboundMessage] = []
     adapter._on_message = lambda m: _collect(seen, m)
+    moves: list[tuple[str, str]] = []
+    adapter.set_channel_migration_handler(lambda old, new: _collect(moves, (old, new)))
+    notice = _FakeInbound(text=None)
+    notice.migrate_to_chat_id = -1009876543210  # type: ignore[attr-defined]
+
+    _run(adapter._handle_message(notice))
+
+    assert moves == [(str(CHAT_ID), "-1009876543210")]
+    # The notice itself is not conversation.
+    assert seen == []
+
+
+def test_the_replacement_supergroup_re_points_the_room_it_replaced() -> None:
+    # The same change announced from the other side: Telegram puts
+    # migrate_from_chat_id on the first message of the new chat. Either is
+    # enough, and whichever arrives first does the work.
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+    moves: list[tuple[str, str]] = []
+    adapter.set_channel_migration_handler(lambda old, new: _collect(moves, (old, new)))
+    notice = _FakeInbound(text=None)
+    notice.migrate_from_chat_id = -4912345678  # type: ignore[attr-defined]
+
+    _run(adapter._handle_message(notice))
+
+    assert moves == [("-4912345678", str(CHAT_ID))]
+    assert seen == []
+
+
+def test_a_migration_with_nothing_installed_to_follow_it_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Degraded, not silent: without a handler the room cannot be moved, so the
+    # log has to carry the id to re-point it at by hand.
+    adapter = _adapter()
     notice = _FakeInbound(text=None)
     notice.migrate_to_chat_id = -1009876543210  # type: ignore[attr-defined]
 
     with caplog.at_level(logging.ERROR):
         _run(adapter._handle_message(notice))
 
-    assert "upgraded to a supergroup" in caplog.text
     assert "-1009876543210" in caplog.text
-    # The notice itself is not conversation.
-    assert seen == []
-
-
-def test_the_replacement_supergroup_names_the_chat_it_replaced(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    adapter = _adapter()
-    seen: list[InboundMessage] = []
-    adapter._on_message = lambda m: _collect(seen, m)
-    notice = _FakeInbound(text=None)
-    notice.migrate_from_chat_id = -4912345678  # type: ignore[attr-defined]
-
-    with caplog.at_level(logging.WARNING):
-        _run(adapter._handle_message(notice))
-
-    assert "-4912345678" in caplog.text
-    assert seen == []
+    assert "re-point" in caplog.text.lower()
 
 
 def test_an_ordinary_message_is_not_mistaken_for_a_migration() -> None:
@@ -1350,31 +1379,30 @@ def test_polling_installs_the_error_callback() -> None:
     assert "error_callback" in app.updater.polling_kwargs
 
 
-def test_privacy_mode_is_announced_at_startup(
+def test_privacy_mode_on_is_not_reported_as_a_fault(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # BotFather enables it by default, and in that state the bridge starts
-    # cleanly and then appears to ignore the conversation. getMe reports the
-    # setting, so the degradation is disclosed rather than left to be deduced
-    # from an empty channel (CHOO-1686).
+    # BotFather enables it by default and it used to be logged as a warning,
+    # but on its own it is not a fault: Telegram exempts a bot that is an
+    # administrator of a chat, which is what the dashboard's install link
+    # grants. Whether any one chat is readable is a per-chat question.
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
     app = _FakeApplication(can_read_all_group_messages=False)
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
 
-    assert "privacy mode is ENABLED" in caplog.text
-    assert "/setprivacy" in caplog.text
-    # The setting is only read on join, so re-adding is part of the fix.
-    assert "add it back" in caplog.text
-    # Still starts: it is degraded, not broken.
+    assert "administrator" in caplog.text
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    # Still starts, and knows what it read.
+    assert adapter._privacy_mode_disabled is False
     assert app.updater.polling_kwargs is not None
 
 
-def test_no_privacy_warning_when_the_bot_can_see_the_conversation(
+def test_privacy_mode_off_is_recorded_as_seeing_everything(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     adapter = TelegramAdapter(
@@ -1383,10 +1411,11 @@ def test_no_privacy_warning_when_the_bot_can_see_the_conversation(
     app = _FakeApplication(can_read_all_group_messages=True)
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
 
-    assert "privacy mode" not in caplog.text
+    assert adapter._privacy_mode_disabled is True
+    assert "sees all messages" in caplog.text
 
 
 def test_stopping_shuts_the_application_down() -> None:
@@ -1770,3 +1799,255 @@ def test_the_underscore_spelling_is_only_translated_for_slash_commands() -> None
     assert adapter._parse_command("/list_agents") == ("list-agents", "")
     assert adapter._parse_command("!list_agents") == ("list_agents", "")
     assert adapter._parse_command("!list-agents") == ("list-agents", "")
+
+
+# ── Install links ────────────────────────────────────────────────────────────
+
+
+def test_the_group_install_link_adds_the_bot_as_an_administrator() -> None:
+    # The whole point of the link: Telegram exempts an administrator bot from
+    # privacy mode, so the chat picker and the rights grant are one
+    # confirmation and BotFather never has to be visited (CHOO-1686).
+    adapter = _adapter()
+
+    links = {link.key: link for link in _run(adapter.install_links())}
+
+    group = links["group"]
+    assert group.url.startswith(f"https://t.me/{BOT_USERNAME}?startgroup=")
+    assert "admin=" in group.url
+    assert "delete_messages" in group.url
+
+
+def test_the_group_link_asks_for_no_right_the_bridge_does_not_use() -> None:
+    # A permission prompt is only as trustworthy as its contents. The bridge
+    # deletes its own status messages and does nothing else privileged in a
+    # group, so nothing else is requested.
+    adapter = _adapter()
+
+    group = next(link for link in _run(adapter.install_links()) if link.key == "group")
+
+    rights = group.url.split("admin=", 1)[1].split("&", 1)[0]
+    assert rights.split("+") == ["delete_messages"]
+
+
+def test_the_channel_install_link_asks_for_what_posting_there_needs() -> None:
+    # A channel is a broadcast chat: posting and editing are admin-only, so the
+    # rights are wider than a group's and are named as such.
+    adapter = _adapter()
+
+    channel = next(
+        link for link in _run(adapter.install_links()) if link.key == "channel"
+    )
+
+    assert "startchannel" in channel.url
+    rights = channel.url.split("admin=", 1)[1].split("&", 1)[0].split("+")
+    assert set(rights) == {"post_messages", "edit_messages", "delete_messages"}
+
+
+def test_an_install_link_carries_no_credential() -> None:
+    # It is handed to the operator's browser and then to Telegram.
+    adapter = _adapter()
+
+    for link in _run(adapter.install_links()):
+        assert "token" not in link.url
+
+
+# ── What the bridge can see in a chat ────────────────────────────────────────
+
+
+def test_an_administrator_bot_sees_everything_despite_privacy_mode() -> None:
+    # Telegram's own rule: "bot admins always receive all messages". This is
+    # what makes the one-click install enough on its own.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "administrator"
+
+    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "full"
+
+
+def test_a_plain_member_bot_with_privacy_mode_on_is_mention_only() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "mention_only"
+
+
+def test_a_plain_member_bot_with_privacy_mode_off_sees_everything() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = True
+    _bot(adapter).member_status = "member"
+
+    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "full"
+
+
+def test_a_one_to_one_chat_is_always_fully_visible() -> None:
+    # Privacy mode has never applied to private chats.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).chat = _FakeChat(chat_type="private")
+
+    assert _run(adapter._chat_visibility("7")) == "full"
+
+
+def test_visibility_is_unknown_rather_than_guessed_when_the_lookup_fails() -> None:
+    adapter = _adapter()
+    _bot(adapter).get_chat_member_error = TelegramError("no")
+
+    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "unknown"
+
+
+def test_a_mention_only_chat_is_told_so_in_the_chat() -> None:
+    # Otherwise it is indistinguishable from agents ignoring people.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    posted = _bot(adapter).messages[-1]["text"]
+    assert "only see messages that tag me" in posted
+    assert "administrator" in posted
+
+
+def test_a_fully_visible_chat_is_not_told_anything() -> None:
+    adapter = _adapter()
+    _bot(adapter).member_status = "administrator"
+
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    assert _bot(adapter).messages == []
+
+
+def test_the_visibility_notice_is_posted_once() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    assert len(_bot(adapter).messages) == 1
+
+
+def test_an_undetermined_visibility_says_nothing_and_stays_undetermined() -> None:
+    # Claiming either way from a failed lookup would be worse than silence, and
+    # the chat must not be marked as told — the next check should try again.
+    adapter = _adapter()
+    _bot(adapter).get_chat_member_error = TelegramError("no")
+
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    assert _bot(adapter).messages == []
+    assert str(CHAT_ID) not in adapter._visibility_announced
+
+
+def test_startup_audit_warns_for_each_mention_only_chat(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Logged, not posted: a restart must not repost a notice in every chat.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    with caplog.at_level(logging.WARNING):
+        _run(
+            adapter.ensure_channel_subscriptions(
+                [(str(CHAT_ID), "channel_private"), ("7", "lobby")]
+            )
+        )
+
+    assert str(CHAT_ID) in caplog.text
+    assert _bot(adapter).messages == []
+
+
+def test_startup_audit_is_quiet_when_every_chat_is_visible(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    _bot(adapter).member_status = "administrator"
+
+    with caplog.at_level(logging.WARNING):
+        _run(adapter.ensure_channel_subscriptions([(str(CHAT_ID), "channel_private")]))
+
+    assert caplog.text == ""
+
+
+# ── Telegram's own /start handshake ──────────────────────────────────────────
+
+
+def test_the_install_handshake_is_absorbed_rather_than_bridged() -> None:
+    # Adding the bot via ?startgroup=<payload> makes Telegram send the bot
+    # `/start@bot <payload>`. That is the platform greeting the bot, not
+    # somebody running a Switch command.
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    messages: list[InboundMessage] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    adapter._on_message = lambda m: _collect(messages, m)
+    _bot(adapter).member_status = "administrator"
+
+    _run(adapter._handle_message(_FakeInbound(text=f"/start@{BOT_USERNAME} switch")))
+
+    assert commands == []
+    assert messages == []
+
+
+def test_the_install_handshake_reports_where_the_chat_came_from(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    _bot(adapter).member_status = "administrator"
+
+    with caplog.at_level(logging.INFO):
+        _run(adapter._handle_message(_FakeInbound(text="/start switch")))
+
+    assert "install link" in caplog.text
+
+
+def test_the_install_handshake_reports_a_chat_it_cannot_read() -> None:
+    # The one moment the operator is looking at the chat, so a mention-only
+    # install says so there and then.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    _run(adapter._handle_message(_FakeInbound(text="/start switch")))
+
+    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+
+
+def test_a_bare_start_in_a_group_is_absorbed_too() -> None:
+    # A bot added by hand gets one as well, and it is no more a Switch command
+    # there than it is after an install link.
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    _bot(adapter).member_status = "administrator"
+
+    _run(adapter._handle_message(_FakeInbound(text="/start")))
+
+    assert commands == []
+
+
+def test_a_bare_start_in_a_one_to_one_chat_is_left_alone() -> None:
+    # It is how a person opens a conversation with the bot; swallowing it would
+    # leave the DM unbridged until they typed again.
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    private = _FakeChat(chat_id=7, chat_type="private", title=None)
+
+    _run(adapter._handle_message(_FakeInbound(chat=private, text="/start")))
+
+    assert [c.command for c in commands] == ["start"]
+
+
+def test_an_ordinary_command_is_still_dispatched() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(adapter._handle_message(_FakeInbound(text="/list-agents")))
+
+    assert [c.command for c in commands] == ["list-agents"]

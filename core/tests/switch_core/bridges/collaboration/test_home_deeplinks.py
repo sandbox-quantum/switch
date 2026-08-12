@@ -141,3 +141,20 @@ def test_no_home_link_carries_a_credential() -> None:
         assert BOT_TOKEN not in link
         assert ADMIN_PASSWORD not in link
         assert "xapp-" not in link
+
+
+def test_base_adapter_offers_no_install_link() -> None:
+    # Most platforms install their app through their own admin UI, and a link
+    # invented for them would be a link to nowhere.
+    assert _run(CollaborationAdapter.install_links(object())) == []  # type: ignore[arg-type]
+
+
+def test_no_install_link_carries_a_credential() -> None:
+    # Same exposure as a home link: built from a config that also holds bot
+    # tokens, and served by `GET /gateway/collaborations` — then handed to the
+    # operator's browser and on to the platform.
+    for adapter in (_slack(), _discord(), _mattermost(), _teams(), _telegram()):
+        for link in _run(adapter.install_links()):
+            assert BOT_TOKEN not in link.url
+            assert ADMIN_PASSWORD not in link.url
+            assert "xapp-" not in link.url

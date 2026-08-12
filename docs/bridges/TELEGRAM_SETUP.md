@@ -11,13 +11,16 @@ Rooms are **adopted, never created**: the Bot API gives a bot no way to create a
 chat. A chat's Switch room is provisioned when the bot is **added to the group**
 (Telegram does signal this, unlike Discord) or on the first bridged message.
 
+Setup is two steps: make a bot, then click a link. Nothing in BotFather has to
+be reconfigured, and the bot does not have to be promoted by hand.
+
 ## Prerequisites
 
 - A Telegram account, to talk to [@BotFather](https://t.me/BotFather).
-- A Telegram group or channel where you can add and promote a bot.
+- A Telegram group or channel you can add a bot to.
 - The Switch gateway reachable by an admin to onboard the bridge.
 
-## 1. Create the bot
+## 1. Create the bot and onboard the bridge
 
 1. Open [@BotFather](https://t.me/BotFather) in any Telegram client and send
    `/newbot`.
@@ -25,55 +28,11 @@ chat. A chat's Switch room is provisioned when the bot is **added to the group**
    (e.g. `acme_switch_bot`). The username is the `bot_username`.
 3. BotFather replies with the **token** — this is the `bot_token`. It has the
    shape `<bot id>:<hmac>`. Treat it like a password; anyone holding it controls
-   the bot.
-
-## 2. Disable privacy mode
-
-**This is the step that breaks a bridge if you skip it.** By default a Telegram
-bot in a group only receives messages that start with `/`, replies to its own
-messages, and service messages. A bridge that cannot see ordinary conversation
-is useless, so privacy mode must be turned off:
-
-1. Send `/setprivacy` to BotFather.
-2. Pick your bot.
-3. Choose **Disable**.
-
-This is Telegram's equivalent of Discord's Message Content Intent. If agents only
-ever see messages that reply to them directly, this is why.
-
-> Privacy mode is read when the bot **joins** a chat. If the bot was already in a
-> group when you changed the setting, remove it and add it back.
-
-To check the current setting without leaving the terminal:
-
-```bash
-curl -s "https://api.telegram.org/bot<your-token>/getMe" | grep -o '"can_read_all_group_messages":[a-z]*'
-```
-
-`true` means privacy mode is off and the bridge can see the conversation. The
-bridge checks this itself at startup and logs a warning naming the fix when it
-is still on, so a bridge that has quietly gone deaf says so in the logs rather
-than just looking idle.
-
-## 3. Add the bot to a group or channel
-
-Add the bot as you would any member, then **promote it to administrator**. It
-needs:
-
-- **Send Messages** — post agent replies.
-- **Delete Messages** — remove the "working on it…" status message when a turn
-  ends. Without this the indicators accumulate.
-- **Post Messages** / **Edit Messages** — required in channels (broadcast
-  chats), where posting is admin-only.
-
-A bot cannot be added to a chat by Switch, and it cannot add anyone else: people
-join from a Telegram client or an invite link.
-
-## 4. Onboard the bridge in Switch
-
-As a gateway admin, onboard the bridge from the **operator dashboard**:
-**Messaging Apps → Add bridge → Telegram**, give it a display name (e.g. "Acme
-Telegram"), and fill in the fields below.
+   the bot. Do not paste it into a chat, a ticket or a room, and revoke it with
+   BotFather's `/revoke` if you ever do.
+4. As a gateway admin, onboard the bridge from the **operator dashboard**:
+   **Messaging Apps → Register messaging app → Telegram**, give it a display
+   name (e.g. "Acme Telegram"), and fill in the fields below.
 
 Fields (`TelegramConnectionConfig`):
 
@@ -82,9 +41,60 @@ Fields (`TelegramConnectionConfig`):
 | `bot_token` | yes | Bot token from BotFather, shaped `<bot id>:<hmac>`. |
 | `bot_username` | yes | The bot's username, with or without the leading `@`. Used to build `t.me` links and to spot when the bot itself is tagged. |
 
-On success the bridge starts polling. Add the bot to a group and its Switch room
-is created straight away; post a message and agents can be addressed by
-`@mention` as on any other platform.
+On success the bridge starts polling.
+
+## 2. Add the bot to a chat, from the dashboard
+
+On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**
+with two links:
+
+- **Add to a Telegram group** — opens Telegram, asks which group, and adds the
+  bot as an administrator with the one right the bridge uses. One confirmation.
+- **Add to a Telegram channel** — the same for a broadcast channel, which needs
+  the rights that posting and editing there require.
+
+Switch creates the room the moment the bot lands in the chat, and the bot says
+in the chat what it can see.
+
+**Why administrator.** Telegram runs bots in *privacy mode* by default: a
+non-admin bot in a group is only given messages that start with `/`, replies to
+its own messages, and messages that tag it. Telegram exempts a bot that is an
+administrator of the chat, which is what these links grant — so a bridge that
+sees the whole conversation needs no BotFather change at all. (Disabling privacy
+mode globally with `/setprivacy` also works, and the bridge honours it, but then
+the setting is only re-read when the bot **joins**, so the bot must be removed
+from each existing group and added back. The link is the shorter path.)
+
+**Which rights are asked for.** In a group, only **Delete Messages** — a bot may
+always delete its own messages there, but only for 48 hours, and a "working on
+it…" indicator can outlive that. In a channel, **Post Messages**, **Edit
+Messages** and **Delete Messages**, because a channel is a broadcast chat where
+posting is admin-only. Nothing else is requested.
+
+A bot cannot be added to a chat by Switch, and it cannot add anyone else: people
+join from a Telegram client or an invite link.
+
+## Running without administrator: mention-only
+
+A bot that is neither an administrator nor exempted by `/setprivacy` still
+works, in a reduced way Telegram enforces before anything reaches Switch. It
+receives:
+
+- messages that tag it (`@acme_switch_bot`) or tag an agent whose name appears
+  in the same message,
+- replies to its own messages,
+- `/` commands.
+
+It does **not** receive ordinary conversation, so agents will not follow a
+discussion nobody addresses them in. This is a supported way to run — some
+groups would rather not grant a bot admin — and it is disclosed rather than left
+to be discovered: the bot posts a one-off notice in the chat saying it can only
+see messages that tag it, and the bridge logs a warning naming each mention-only
+chat at startup.
+
+To upgrade a chat later, promote the bot to administrator in Telegram's group
+settings, or re-run the dashboard's **Add to a Telegram group** link and pick
+the same group — Telegram combines the new rights with the existing ones.
 
 ## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 
@@ -125,8 +135,12 @@ command, and so does the `!` form:
 - `/invite-agent @agent-name` — typed in full
 - `!invite-agent @agent-name` — Switch's own prefix, works on every platform
 
-The `/` forms matter beyond convenience: if privacy mode is ever left enabled, a
-`/`-prefixed message is the only text the bot receives in a group.
+The `/` forms matter beyond convenience: in a mention-only chat, a `/`-prefixed
+message is one of the few things the bot receives at all.
+
+`/start` is Telegram's own handshake rather than a Switch command — it is what
+the dashboard's install links send once the bot has been added — so the bridge
+answers it itself instead of passing it on as an unknown command.
 
 ## One instance per bot token
 
@@ -160,6 +174,13 @@ anywhere else.
   never upgraded to a supergroup — has no address at all, so no button is
   shown; adding enough members, or setting a public link, converts it and the
   button appears.
+- **A group that becomes a supergroup keeps its room.** Telegram issues a brand
+  new chat id at that moment, and it does it silently — promoting a bot or
+  adding members is enough to trigger it. The bridge follows the change and
+  re-points the room at the new id, then says so in the chat. Before that was
+  automatic the symptom was one-way traffic: sends still arrived, because
+  Telegram forwards them to the new chat, while nothing anyone typed reached
+  Switch again.
 - **Message formatting.** Agent Markdown is converted to the HTML subset Telegram
   accepts (bold, italic, strikethrough, code, pre, links). Telegram's own
   MarkdownV2 is deliberately not used: it requires escaping ordinary punctuation
@@ -185,4 +206,5 @@ anywhere else.
   Telegram DMs are opened by the user. Message the bot first and the conversation
   is picked up.
 - **Creating channels.** Switch cannot provision a Telegram chat. Attempting it
-  fails with an error telling you to create the chat and add the bot.
+  fails with an error telling you to create the chat and add the bot with the
+  dashboard's link.

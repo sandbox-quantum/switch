@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
 from switch_core.bridges.collaboration.models import (
+    BridgeInstallLink,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -43,6 +44,9 @@ class CollaborationAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_channel_migration_handler. Called with (old_id, new_id)
+        # when the platform reissues a channel's id.
+        self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
@@ -437,6 +441,18 @@ class CollaborationAdapter(ABC):
         URL is exposed."""
         return None
 
+    async def install_links(self) -> list[BridgeInstallLink]:
+        """One-click links that add this bridge's app to a chat, if the
+        platform has them.
+
+        Empty by default: on most platforms installation is an app-directory or
+        OAuth flow the operator runs elsewhere, and inventing a link for it
+        would be a link to nowhere. An adapter overrides this only when the
+        platform accepts a URL that both selects the chat and grants the
+        permissions the bridge needs, so the operator does not have to
+        reproduce a permission list by hand."""
+        return []
+
     @abstractmethod
     async def get_channel_type(self, channel_id: str) -> ChannelType: ...
 
@@ -504,3 +520,15 @@ class CollaborationAdapter(ABC):
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
         return None
+
+    def set_channel_migration_handler(
+        self, handler: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls when the platform reissues a
+        channel's id, so the room bound to the old one follows it.
+
+        Stored for every adapter and used by those whose platform does this:
+        Telegram reissues a chat's id when a basic group becomes a supergroup.
+        The symptom without it is one-way traffic — sends still arrive, because
+        the platform forwards them, while nothing inbound matches a room again."""
+        self._on_channel_migrated = handler

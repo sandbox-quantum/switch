@@ -104,5 +104,22 @@ class InboundAppJoin(BaseModel):
     channel_name: str | None = None
 
 
+class BridgeInstallLink(BaseModel):
+    """A link that adds this bridge's app to a channel in one step.
+
+    Some platforms can express the whole install — pick a chat, grant the
+    permissions the bridge needs, confirm — as a single URL, which is strictly
+    better than a documented sequence of clicks an operator performs by hand.
+    Adapters that can build one return it here and the operator dashboard
+    offers it; the rest return nothing and the platform's own admin UI remains
+    the way in.
+    """
+
+    key: str
+    label: str
+    description: str
+    url: str
+
+
 class BridgeConnectionConfig(BaseModel):
     pass

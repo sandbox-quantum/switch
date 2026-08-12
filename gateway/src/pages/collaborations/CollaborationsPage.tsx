@@ -1,5 +1,7 @@
+import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
+import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import {
   Box,
   Button,
@@ -13,6 +15,7 @@ import {
   IconButton,
   Stack,
   Switch,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
@@ -40,6 +43,7 @@ export default function CollaborationsPage() {
   const [deleting, setDeleting] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -116,13 +120,25 @@ export default function CollaborationsPage() {
             {
               field: "actions" as const,
               headerName: "",
-              width: 60,
+              width: 110,
               sortable: false,
               filterable: false,
               renderCell: ({ row }: { row: BridgeRow }) => (
-                <IconButton size="small" onClick={() => setDeleteTarget(row)}>
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
+                <Stack direction="row" spacing={0.5}>
+                  {(row.install_links ?? []).length > 0 && (
+                    <Tooltip title="Add this app to a chat">
+                      <IconButton
+                        size="small"
+                        onClick={() => setInstallTarget(row)}
+                      >
+                        <AddLinkOutlined fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                  <IconButton size="small" onClick={() => setDeleteTarget(row)}>
+                    <DeleteOutline fontSize="small" />
+                  </IconButton>
+                </Stack>
               ),
             },
           ]
@@ -163,6 +179,44 @@ export default function CollaborationsPage() {
         onClose={() => setRegisterOpen(false)}
         onSuccess={() => refetch()}
       />
+
+      <Dialog
+        open={!!installTarget}
+        onClose={() => setInstallTarget(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Add {installTarget?.display_name} to a chat</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Each link opens {titleCase(installTarget?.bridge_type ?? "")}, asks
+            which chat to join, and grants the permissions the bridge needs in
+            the same confirmation. Switch creates the room as soon as the bot
+            lands in the chat.
+          </DialogContentText>
+          <Stack spacing={2}>
+            {(installTarget?.install_links ?? []).map((link) => (
+              <Box key={link.key}>
+                <Button
+                  variant="outlined"
+                  startIcon={<OpenInNewOutlined />}
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  {link.label}
+                </Button>
+                <Typography variant="body2" color="text.secondary" mt={0.5}>
+                  {link.description}
+                </Typography>
+              </Box>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setInstallTarget(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Delete collaboration bridge</DialogTitle>

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from switch_core.addressing import AddressingPolicy
+from switch_core.bridges.collaboration.models import BridgeInstallLink
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -421,6 +422,10 @@ class BridgeDetail(BaseModel):
     # offers no such link. Never carries a credential — only ids that the
     # platform already puts in its own URLs.
     home_url: str | None = None
+    # One-click links that add this bridge's app to a chat, from the live
+    # adapter. Empty when the bridge is not running or the platform has no such
+    # link, in which case installation stays a documented manual flow.
+    install_links: list[BridgeInstallLink] = Field(default_factory=list)
 
 
 class BridgeUpdateRequest(BaseModel):

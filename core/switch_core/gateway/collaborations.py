@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
+from switch_core.bridges.collaboration.models import BridgeInstallLink
 from switch_core.db.models import CollaborationBridge, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -56,6 +57,24 @@ async def _home_url(
         return None
 
 
+async def _install_links(
+    bridge_id: str, collab_lifecycle: CollaborationBridgeLifecycleService
+) -> list[BridgeInstallLink]:
+    """One-click "add the app to a chat" links, built by the live adapter.
+    Empty when the bridge is not running or its platform has none — the same
+    "offer it only when it works" rule as the home link."""
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    if adapter is None:
+        return []
+    try:
+        return await adapter.install_links()
+    except Exception:
+        logger.warning(
+            "Failed to build install links for bridge %s", bridge_id, exc_info=True
+        )
+        return []
+
+
 async def _detail(
     bridge: CollaborationBridge,
     *,
@@ -76,6 +95,7 @@ async def _detail(
         room_count=room_count,
         created_at=str(bridge.created_at),
         home_url=await _home_url(bridge.id, collab_lifecycle),
+        install_links=await _install_links(bridge.id, collab_lifecycle),
     )
 
 
