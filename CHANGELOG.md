@@ -406,6 +406,12 @@ version of their own to them without also giving them a release of their own.
   your last read_context". Nothing here can observe a session reading, so the
   tally is cleared per delivered line; it now says so, rather than inviting an
   agent to read its absence as proof it is caught up.
+- A session that fails to be created no longer marks its agent with a failure
+  badge that cannot be cleared. The failed session exists only in the app — the
+  server rejected the create — and nothing removed it: reloading only adds
+  sessions, deleting one asks the server first and restores it when that fails,
+  and the sidebar never listed it in the first place, so the badge pointed at a
+  session there was no way to reach. It is now dismissed by clicking the badge.
 
 ### [0.22.0] - 2026-08-12
 
