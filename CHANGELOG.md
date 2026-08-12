@@ -1189,21 +1189,30 @@ compatibility signal. History for those is in the git log.
   `PostToolUse` matcher never included `read_context`, so the reset the hook
   already implemented was unreachable and the count only ever climbed from the
   moment a session connected.
+- The `configure` skill read a `401` from the health probe as the wrong server
+  and sent the user off to find a different URL. The bridge authenticates
+  everything but a few public routes, so a path left on the end of an otherwise
+  correct base URL answers 401 rather than 404 — the host was right and only
+  needed stripping back.
 
 #### Changed
 - The `configure` skill is rebuilt on the standalone shape the Codex connector
-  uses: registration and the credential write happen in one command (the API key
-  is returned once), the server URL is probed before anything depends on it, and
-  the skill states which runtime the identity pointer it writes requires. It also
-  writes `permissions.allow` for the connector's tools, which Switch Console
-  always did and a skill-configured install went without — so every room action
-  stopped for an approval prompt.
+  uses: registering and writing the credentials are separate steps that still run
+  as one command (the API key is returned once), the env-var expansion pitfall
+  sits beside the request it applies to rather than after the script that trips
+  on it, the heredoc wrapper is shown rather than described, and the server URL is
+  probed before anything depends on it. It also writes `permissions.allow` for the
+  connector's tools, which Switch Console always did and a skill-configured
+  install went without — so every room action stopped for an approval prompt.
+- The identity pointer's runtime requirement is now a behaviour to check, not a
+  version to match. Naming a version the shipped plugin does not meet had the
+  skill telling every reader to skip the step it had just described.
 - The per-project vs global scope choice is gone. Global wrote the identity
   machine-wide, but credentials are only ever read from the session's working
   directory, so it behaved as per-project with extra steps.
 - Both room-workflow skills list the full set of reasons `switch_unavailable`
-  can be the only tool, and the Claude one now points at the `configure` skill
-  as the remedy for the ones it can fix.
+  can be the only tool, and both now point at the `configure` skill as the remedy
+  for the ones it can fix.
 - Skill: document the room-document and room-admin tools it had never
   mentioned — `load_internal_documents` (without which an agent cannot read a
   document attached to its own room), `list_references`, the
