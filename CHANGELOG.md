@@ -41,6 +41,26 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- The Helm chart can publish the Microsoft Teams bridge listener. The Teams
+  adapter serves Bot Framework activities and Graph change notifications from
+  its own HTTP server on port 3978, separate from the API on 8000, and nothing
+  in the chart exposed it — so a Teams bridge could create channels and post
+  while receiving nothing back. Set `switchCore.teamsBridge.enabled=true` to
+  publish the container and Service port; with `ingress.mode=managed` the two
+  callback paths are routed for you from `ingress.teamsPaths`. Off by default:
+  bridges are created at runtime, so the chart cannot detect one. Installs using
+  `ingress.mode=existing` must add the paths to their own Ingress — see
+  `samples/ingress.example.yaml`.
+
+#### Changed
+- `docs/bridges/TEAMS_SETUP.md` rewritten. It now walks through Azure setup
+  value by value and says where each one comes from, documents the deployment
+  and public-ingress requirements (previously absent), and adds verification and
+  troubleshooting sections keyed to the errors these failures actually produce —
+  starting with the client secret **value** vs secret **ID** mix-up, which
+  surfaces only as an opaque `AADSTS7000215` at the first Graph call.
+
 ### [0.13.1] - 2026-08-11
 
 #### Fixed

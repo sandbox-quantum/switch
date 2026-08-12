@@ -46,6 +46,15 @@ ingress:
     - /oauth
     - /.well-known
     - /health
+  # Path prefixes routed to the Teams bridge listener instead of the FastAPI app,
+  # because that listener is a separate HTTP server on its own port. Rendered
+  # only when switchCore.teamsBridge.enabled — see that value for why it is
+  # opt-in. Graph rejects a subscription whose notification URL does not answer
+  # its validation handshake over valid TLS within 10 seconds, so these must be
+  # publicly reachable, not Tailscale- or VPN-only.
+  teamsPaths:
+    - /api/messages
+    - /api/teams/notifications
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # Two ways to supply secrets:
@@ -113,6 +122,23 @@ switchCore:
   service:
     type: ClusterIP
     port: 8000
+  # Microsoft Teams bridge listener. The Teams adapter runs its own HTTP server
+  # inside switch-core, separate from the FastAPI app on service.port: Bot
+  # Framework activities arrive at /api/messages and Graph change notifications
+  # at /api/teams/notifications. Microsoft calls both from the public internet,
+  # so both must be reachable over HTTPS. Without that the bridge is
+  # outbound-only — it can create channels and post, but receives nothing back
+  # and captures no messages.
+  #
+  # Off by default, and deliberately: Teams bridges are created at runtime in the
+  # gateway, not in Helm values, so the chart cannot tell whether you have one.
+  # Enable this when you configure a Teams bridge, and set that bridge's
+  # public_base_url to the host this is served on.
+  teamsBridge:
+    enabled: false
+    # Listener bind port inside the container; must match the bridge's
+    # listen_port (default 3978). One Teams bridge per port.
+    port: 3978
   # switch-core keeps live Matrix sync sessions in memory, so it MUST run as a
   # single replica — a second replica would double every client and split
   # session state. This is enforced at render time; do not raise it.

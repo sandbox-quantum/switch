@@ -54,6 +54,17 @@ spec:
                 port:
                   number: {{ $.Values.switchCore.service.port }}
           {{- end }}
+          {{- if .Values.switchCore.teamsBridge.enabled }}
+          {{- range $path := .Values.ingress.teamsPaths }}
+          - path: {{ $path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $svcCore }}
+                port:
+                  number: {{ $.Values.switchCore.teamsBridge.port }}
+          {{- end }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:
