@@ -561,9 +561,14 @@ export class RoomConnection {
         annotated = `${annotated}\n${annotation}`;
       }
     }
+    // The tally is cleared per delivered line, not per read: nothing here can
+    // observe the session calling read_context. So it counts what arrived since
+    // the previous line we surfaced, and the wording has to say that — an agent
+    // told "since your last read_context" would read the absence of a count as
+    // proof it was caught up, which this number cannot support.
     let body =
       this.missed > 0
-        ? `${annotated}\n(${this.missed} unread room message${this.missed === 1 ? '' : 's'} since your last read_context — call read_context to catch up.)`
+        ? `${annotated}\n(${this.missed} unaddressed room message${this.missed === 1 ? '' : 's'} arrived since the previous message you were sent — call read_context to catch up.)`
         : annotated;
     this.missed = 0;
     if (this.pendingGapReason !== null) {

@@ -46,6 +46,16 @@ async function runHookCommand(
       });
       child.on('error', reject);
       child.on('close', () => resolve());
+      // The stub `curl` need not read stdin, so the child can exit before this
+      // write lands and close the pipe under it. EPIPE then means "the child
+      // was already done with us", which is not a failure — the assertions run
+      // against the files it wrote. Any other stdin error still fails the test.
+      // `child.on('error')` does not cover the stdin stream, so without this
+      // the rejection is unhandled and Vitest fails the run after every test
+      // has passed.
+      child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'EPIPE') reject(err);
+      });
       child.stdin.end(stdin);
     });
 

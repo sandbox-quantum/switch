@@ -4,9 +4,10 @@ name: Switch Console release
 # repo, so anyone can install it without building from source. The repo is public,
 # so the release assets are too — no token, no ACL.
 #
-# macOS (arm64) is signed + notarized. Linux (x64) builds AppImage, deb and rpm,
-# unsigned. Windows is not built yet (needs an Authenticode / Azure Trusted
-# Signing identity — tracked as a follow-up).
+# macOS (arm64) is signed + notarized. Linux (x64 and arm64) builds AppImage, deb
+# and rpm, unsigned — each arch on a runner of that arch. Windows (x64) builds nsis
+# and msi, also unsigned — there is no Authenticode identity for this app, so
+# SmartScreen warns on first run (CHOO-1468).
 #
 # Trigger by pushing a tag like `switch-console-v1.1.34` (the version after
 # `switch-console-v` MUST match apps/switch-console-desktop/package.json `version`).
@@ -65,13 +66,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#switch-console-v}"
-          notes="Switch Console desktop app $version — macOS arm64 and Linux x64.
+          notes="Switch Console desktop app $version — macOS arm64 and Linux x64 + arm64.
 
           **macOS (arm64):** download the .dmg, open it, drag Switch Console to Applications. Signed and notarized with SandboxAQ's Developer ID — it opens without a Gatekeeper bypass.
 
-          **Linux (x64):** download the .AppImage (\`chmod +x\` then run), the .deb (\`sudo apt install ./<file>.deb\`) or the .rpm (\`sudo dnf install ./<file>.rpm\`). Linux builds are unsigned.
-
-          In-app updates require a GitHub login via the gh CLI (\`gh auth login\`)."
+          **Linux (x64 and arm64):** match your \`dpkg --print-architecture\`. Download the .AppImage (\`chmod +x\` then run), the .deb (\`sudo apt install ./<file>.deb\`) or the .rpm (\`sudo dnf install ./<file>.rpm\`). Linux builds are unsigned."
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Switch Console $version" \
@@ -184,12 +183,26 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build & release (Linux x64)
-    runs-on: ubuntu-latest
+    name: Build & release (Linux ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     # Waits only for the Release to exist, not for the macOS build — the two
     # platform jobs are independent. Linux is unsigned, so no cert secrets.
     needs: create-release
     if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
+    strategy:
+      # One arch must not take the other down with it: an arm64 runner outage
+      # should still ship x64.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            # Native arm64 runner rather than cross-building: `npmRebuild` is
+            # off, so the native modules baked into the package are the ones
+            # `pnpm rebuild` produced on this machine. Cross-building would
+            # emit an arm64 package carrying x64 `.node` files.
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -231,9 +244,9 @@ jobs:
       - name: Build workspace packages + app
         run: pnpm run build
 
-      - name: Package (linux x64, no publish)
+      - name: Package (linux ${{ matrix.arch }}, no publish)
         working-directory: console/apps/switch-console-desktop
-        run: pnpm exec electron-builder --linux --publish never --config electron-builder.config.ts
+        run: pnpm exec electron-builder --linux --${{ matrix.arch }} --publish never --config electron-builder.config.ts
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -242,9 +255,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Attach the Linux installers + the electron-updater channel manifest
-          # (latest-linux.yml) so auto-update works on Linux too.
+          # so auto-update works on Linux too. The glob covers both manifests:
+          # electron-builder names the arm64 one `latest-linux-arm64.yml`, and
+          # each arch's job uploads only its own.
           shopt -s nullglob
-          assets=(release/*.AppImage release/*.deb release/*.rpm release/*.blockmap release/latest-linux.yml)
+          assets=(release/*.AppImage release/*.deb release/*.rpm release/*.blockmap release/latest-linux*.yml)
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
@@ -253,11 +268,95 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: switch-console-linux-x64
+          name: switch-console-linux-${{ matrix.arch }}
           path: |
             console/apps/switch-console-desktop/release/*.AppImage
             console/apps/switch-console-desktop/release/*.deb
             console/apps/switch-console-desktop/release/*.rpm
+          if-no-files-found: error
+
+  build-windows:
+    name: Build & release (Windows x64)
+    runs-on: windows-latest
+    # Waits only for the Release to exist, not for the other platform builds.
+    # Windows is unsigned, so this job takes no secrets — which is also why it is
+    # not gated to `main` the way the macOS job is: it is safe to dispatch from a
+    # branch.
+    needs: create-release
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
+    # windows-latest defaults to pwsh; the scripted steps below are bash.
+    defaults:
+      run:
+        shell: bash
+        working-directory: console
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.5.3
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#switch-console-v}"
+          pkg_version="$(node -p "require('./apps/switch-console-desktop/package.json').version")"
+          echo "tag=$tag_version package.json=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag version ($tag_version) does not match apps/switch-console-desktop/package.json version ($pkg_version). Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules for Electron
+        # better-sqlite3 and node-pty compile from source here, against the MSVC
+        # toolchain preinstalled on the runner.
+        run: pnpm --filter @switch-console/desktop run rebuild
+
+      - name: Build workspace packages + app
+        run: pnpm run build
+
+      - name: Package (windows x64, no publish)
+        working-directory: console/apps/switch-console-desktop
+        run: pnpm exec electron-builder --win --publish never --config electron-builder.config.ts
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: console/apps/switch-console-desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Attach the Windows installers + the electron-updater channel manifest
+          # (latest.yml) and the blockmaps that differentialPackage emits.
+          shopt -s nullglob
+          assets=(release/*.exe release/*.msi release/*.blockmap release/latest.yml)
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Upload build artifacts (dispatch runs, no Release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: switch-console-windows-x64
+          # latest.yml rides along so a dispatch run shows whether the channel
+          # manifest was produced — publish-release refuses to publish a tagged
+          # Release without it, and a dispatch run is where that should surface.
+          path: |
+            console/apps/switch-console-desktop/release/*.exe
+            console/apps/switch-console-desktop/release/*.msi
+            console/apps/switch-console-desktop/release/latest.yml
           if-no-files-found: error
 
   # Flips the draft to a published Release, once — and only once — every platform
@@ -267,7 +366,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [create-release, build-macos, build-linux]
+    needs: [create-release, build-macos, build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/')
     # This job never checks out, so the workflow-level `console` working directory
     # does not exist for it.
@@ -285,7 +384,7 @@ jobs:
           assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
           echo "$assets"
           missing=""
-          for required in latest-mac.yml latest-linux.yml; do
+          for required in latest-mac.yml latest-linux.yml latest-linux-arm64.yml latest.yml; do
             printf '%s\n' "$assets" | grep -qx "$required" || missing="$missing $required"
           done
           if [ -n "$missing" ]; then
