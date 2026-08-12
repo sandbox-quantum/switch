@@ -216,15 +216,19 @@ in one command, then reference it by name in the next.
 >   only as `$SWITCH_REGISTRATION_TOKEN`: `export SWITCH_REGISTRATION_TOKEN=...`
 >   (a leading space keeps it out of history in most shells).
 > - If they would rather continue with the pasted value, say plainly that you are
->   going to use it and that **they should rotate it afterwards** in the gateway's
->   API keys tab. Then pass it in the environment of the one command that runs the
->   registration script — `SWITCH_REGISTRATION_TOKEN=... bash /tmp/register.sh` —
->   rather than `export`ing it into the session. That prefix is safe because the
->   script is a child process reading the variable itself; it is not the inline
->   trap Step 7 warns about, which breaks only when the *same* command also
->   expands `$SWITCH_REGISTRATION_TOKEN` in its own arguments.
+>   going to use it. Every remaining way to get it into the script puts it
+>   somewhere else as well — an assignment prefix
+>   (`SWITCH_REGISTRATION_TOKEN=... bash /tmp/register.sh`) reaches shell history
+>   and process listings, and an `export` reaches every later command in the
+>   session. Prefer the prefix: its exposure ends with that one command, and the
+>   token is being rotated anyway. It is *not* the inline trap Step 7 warns about,
+>   which breaks only when the same command also expands
+>   `$SWITCH_REGISTRATION_TOKEN` in its own arguments — here the script is a child
+>   process that reads the variable itself.
 >
-> Either way, tell them once. A token pasted into a chat window and then used
+> **Either way it must be rotated.** The paste already exposed it, so tell them
+> once, plainly, to revoke it in the gateway's API keys tab when setup is done —
+> whichever branch you took. A token pasted into a chat window and then used
 > without comment is the failure nobody notices until it matters.
 
 ## Step 4 — Agent name and description
@@ -365,7 +369,12 @@ curl -sf -X POST "$ENDPOINT/agents/register-known" \
 isn't. `export` it first, or assign to a shell variable on a preceding line. If
 you see that exact 401, suspect this before blaming the token.
 
-The response is `{"id":"...","api_key":"..."}`.
+The response is `{"id":"...","api_key":"..."}`. Note that `-f` suppresses the
+error body, so this shape cannot satisfy the ladder below on its own — the Step 8
+script captures the status with `-w '%{http_code}'` and keeps the body, which is
+what the ladder is written against. If you do run this shape and it exits
+non-zero, re-run it with `-i` in place of `-sf` to see the status and body before
+deciding anything.
 
 > ⚠️ **Register and write the credentials file in ONE shell command.** This is
 > the single most important instruction in this skill, and getting it wrong is
@@ -528,7 +537,7 @@ which for an agent acting on someone else's message means it simply stops.
 {
   "env": {
     "SWITCH_API_ENDPOINT": "<url from step 2>",
-    "SWITCH_AGENT_ID": "<id from step 7>"
+    "SWITCH_AGENT_ID": "<id printed by step 8>"
   }
 }
 ```
