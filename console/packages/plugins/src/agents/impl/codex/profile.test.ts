@@ -4,6 +4,7 @@ import {
   buildCodexProfileToml,
   CODEX_REASONING_EFFORTS,
   codexLaunchProfile,
+  codexLaunchProfileFields,
   codexProfileName,
   codexProfileRelativePath,
 } from './profile';
@@ -186,5 +187,38 @@ describe('codexProfileName', () => {
     expect(profile.args).toEqual(['--profile', name]);
     expect(profile.files.map((file) => file.relativePath)).toEqual([`.codex/${name}.config.toml`]);
     expect(profile.files[0].content).toContain('developer_instructions = "be terse"');
+  });
+});
+
+describe('codexLaunchProfileFields', () => {
+  it('declares exactly the keys the profile builder consumes', () => {
+    expect(codexLaunchProfileFields().map((field) => field.key)).toEqual([
+      'model',
+      'effort',
+      'instructions',
+    ]);
+  });
+
+  it('offers every reasoning effort the profile accepts, plus an unset default', () => {
+    const effort = codexLaunchProfileFields().find((field) => field.key === 'effort');
+
+    expect(effort?.options?.map((option) => option.value)).toEqual([
+      '',
+      ...CODEX_REASONING_EFFORTS,
+    ]);
+  });
+
+  it('feeds values the builder actually emits, so the form and the TOML cannot drift', () => {
+    const keys = codexLaunchProfileFields().map((field) => field.key);
+    const toml = parseTOML(
+      buildCodexProfileToml({ model: 'm', reasoningEffort: 'high', instructions: 'i' })
+    );
+
+    expect(keys).toContain('model');
+    expect(Object.keys(toml).sort()).toEqual([
+      'developer_instructions',
+      'model',
+      'model_reasoning_effort',
+    ]);
   });
 });

@@ -2,9 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const resolveSessionAgent = vi.fn();
 const loadSessionWithAgent = vi.fn();
-const mapSessionRowToSession = vi.fn(() => ({ id: 'session-1', title: 'A session' }));
-const isAttachableRuntime = vi.fn(() => false);
-const requestAttach = vi.fn(async () => 'attached');
+const mapSessionRowToSession = vi.fn(
+  (_row: unknown, _providerId: unknown, _name: unknown): Record<string, unknown> => ({
+    id: 'session-1',
+    title: 'A session',
+    providerSessionId: 'rollout-abc',
+  })
+);
+const isAttachableRuntime = vi.fn((_runtime: unknown) => false);
+const requestAttach = vi.fn(async (_id: string, _reason: string) => 'attached');
 
 vi.mock('../../locations/utils', () => ({
   resolveSessionAgent: (id: string) => resolveSessionAgent(id),
@@ -13,7 +19,8 @@ vi.mock('../session-join', () => ({
   loadSessionWithAgent: (id: string) => loadSessionWithAgent(id),
 }));
 vi.mock('../utils/utils', () => ({
-  mapSessionRowToSession: (...args: unknown[]) => mapSessionRowToSession(...args),
+  mapSessionRowToSession: (row: unknown, providerId: unknown, name: unknown) =>
+    mapSessionRowToSession(row, providerId, name),
 }));
 vi.mock('@main/core/agent-runtime/attachment/types', () => ({
   isAttachableRuntime: (runtime: unknown) => isAttachableRuntime(runtime),
@@ -44,6 +51,11 @@ describe('restartSessionAgent', () => {
     resolveSessionAgent.mockReset();
     loadSessionWithAgent.mockReset();
     mapSessionRowToSession.mockClear();
+    mapSessionRowToSession.mockReturnValue({
+      id: 'session-1',
+      title: 'A session',
+      providerSessionId: 'rollout-abc',
+    });
     isAttachableRuntime.mockReset();
     isAttachableRuntime.mockReturnValue(false);
     requestAttach.mockClear();
@@ -95,6 +107,18 @@ describe('restartSessionAgent', () => {
     resolveSessionAgent.mockReturnValue(null);
 
     await expect(restartSessionAgent('session-1')).rejects.toThrow(/no running agent/);
+  });
+
+  it('refuses a session that never started a conversation rather than silently starting a new one', async () => {
+    const agent = makeAgent();
+    resolveSessionAgent.mockReturnValue(agent);
+    mapSessionRowToSession.mockReturnValue({ id: 'session-1', title: 'A session' });
+
+    await expect(restartSessionAgent('session-1')).rejects.toThrow(
+      /has not started a conversation/
+    );
+    expect(agent.stop).not.toHaveBeenCalled();
+    expect(agent.start).not.toHaveBeenCalled();
   });
 
   it('throws when the session row is gone', async () => {

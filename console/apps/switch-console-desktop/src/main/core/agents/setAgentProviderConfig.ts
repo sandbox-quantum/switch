@@ -1,6 +1,7 @@
 import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { getAgentLocation, getRemoteAgentLocation } from './agent-location';
+import { getAgentById } from './getAgentById';
 import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { updateAgent } from './updateAgent';
@@ -37,11 +38,17 @@ export type AgentProviderConfigParams = {
  * report a save that only half landed.
  */
 export async function setAgentProviderConfig(params: AgentProviderConfigParams): Promise<void> {
+  // Resolve the location before writing, not after. It is only needed to clear,
+  // but a missing location row would otherwise throw with the change already
+  // committed — telling the caller the save failed when it had not.
+  const existing = await getAgentById(params.agentId);
+  if (!existing) throw new Error(`No agent with id ${params.agentId}`);
+  const location = params.config === null ? await getAgentLocation(existing) : null;
+
   const agent = await updateAgent({ agentId: params.agentId, providerConfig: params.config });
   if (!agent) throw new Error(`No agent with id ${params.agentId}`);
 
-  if (params.config === null) {
-    const location = await getAgentLocation(agent);
+  if (location) {
     await removeAgentLaunchProfile(agent, location, agent.name ?? agent.id);
   }
 

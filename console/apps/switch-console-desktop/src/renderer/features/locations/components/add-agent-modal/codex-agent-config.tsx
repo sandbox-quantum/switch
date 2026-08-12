@@ -1,5 +1,7 @@
+import { useQuery } from '@tanstack/react-query';
 import { ChevronRight } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
@@ -9,12 +11,15 @@ import {
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
-import { CODEX_CONFIG_FIELDS, codexConfigFromForm } from '../codex-config-fields';
+import { codexConfigFromForm } from '../codex-config-fields';
 
 /**
  * Collapsed "Codex configuration" section. Reports the assembled per-agent
  * provider config (or null when nothing is set) so the modal can pass it to
  * `addAgent`, which persists it on the agent and folds it into the launch profile.
+ *
+ * The fields are the same ones the agent's Settings tab edits after creation —
+ * fetched over RPC from the codex plugin, so the two forms cannot drift.
  */
 export function CodexAgentConfig({
   onChange,
@@ -22,15 +27,27 @@ export function CodexAgentConfig({
   onChange: (config: AgentProviderConfig | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState<FormState>(() => emptyForm(CODEX_CONFIG_FIELDS));
+
+  const { data } = useQuery({
+    queryKey: ['agentAdvancedFields', 'codex'],
+    queryFn: () => rpc.agents.advancedFields({ providerId: 'codex' }),
+  });
+  const fields = useMemo(() => data ?? [], [data]);
+
+  const [state, setState] = useState<FormState>({});
+  useEffect(() => {
+    setState(emptyForm(fields));
+  }, [fields]);
 
   useEffect(() => {
-    onChange(codexConfigFromForm(state));
-  }, [state, onChange]);
+    onChange(codexConfigFromForm(fields, state));
+  }, [fields, state, onChange]);
 
   const setField = useCallback((key: string, value: FormValue) => {
     setState((prev) => ({ ...prev, [key]: value }));
   }, []);
+
+  if (fields.length === 0) return null;
 
   return (
     <div className="rounded-md border border-border">
@@ -44,7 +61,7 @@ export function CodexAgentConfig({
       </button>
       {open && (
         <div className="flex flex-col gap-4 border-t border-border px-3 py-3">
-          {CODEX_CONFIG_FIELDS.map((field) => (
+          {fields.map((field) => (
             <Field key={field.key}>
               <FieldLabel htmlFor={`codex-config-${field.key}`}>
                 {field.label} (optional)

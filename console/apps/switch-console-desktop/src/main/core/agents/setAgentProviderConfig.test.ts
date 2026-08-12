@@ -20,7 +20,15 @@ const ensureRemoteWatcher = vi.fn(async (_id: string) => {});
 const removeAgentLaunchProfile = vi.fn(
   async (_agent: unknown, _location: unknown, _slug: string) => {}
 );
+const getAgentById = vi.fn(
+  async (agentId: string): Promise<Record<string, unknown> | undefined> => ({
+    id: agentId,
+    name: 'codex.yak',
+    locationId: 'loc-1',
+  })
+);
 
+vi.mock('./getAgentById', () => ({ getAgentById: (id: string) => getAgentById(id) }));
 vi.mock('./updateAgent', () => ({ updateAgent: (p: unknown) => updateAgent(p) }));
 vi.mock('./agent-location', () => ({
   getAgentLocation: (a: unknown) => getAgentLocation(a),
@@ -44,6 +52,8 @@ const CONFIG: AgentProviderConfig = { version: '1', model: 'gpt-5.6-terra', effo
 describe('setAgentProviderConfig', () => {
   beforeEach(() => {
     updateAgent.mockClear();
+    getAgentById.mockClear();
+    getAgentById.mockResolvedValue({ id: 'agent-1', name: 'codex.yak', locationId: 'loc-1' });
     getAgentLocation.mockClear();
     getRemoteAgentLocation.mockReset();
     listAutoSessionAgentIds.mockReset();
@@ -110,10 +120,22 @@ describe('setAgentProviderConfig', () => {
   });
 
   it('throws when the agent does not exist', async () => {
-    updateAgent.mockResolvedValueOnce(undefined);
+    getAgentById.mockResolvedValueOnce(undefined);
 
     await expect(setAgentProviderConfig({ agentId: 'ghost', config: CONFIG })).rejects.toThrow(
       /No agent with id ghost/
     );
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  it('does not write the row when clearing but the location cannot be resolved', async () => {
+    getAgentLocation.mockRejectedValueOnce(new Error('Location loc-1 not found'));
+
+    await expect(setAgentProviderConfig({ agentId: 'agent-1', config: null })).rejects.toThrow(
+      /Location loc-1 not found/
+    );
+    // Reporting a failed save while the change had already landed is the trap
+    // this ordering exists to avoid.
+    expect(updateAgent).not.toHaveBeenCalled();
   });
 });

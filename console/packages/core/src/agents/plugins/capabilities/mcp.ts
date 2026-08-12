@@ -1,6 +1,7 @@
 import z from 'zod';
 import { definePluginCapability } from '../../../lib/plugins/capability';
 import type { PluginFs } from '../../runtime/fs';
+import type { RepoAgentField } from './repo-agents';
 
 export type McpTransport = 'stdio' | 'http';
 
@@ -73,6 +74,20 @@ export type IMcpBehavior = {
    * a name it is about to drop. Undefined for a provider that writes no profile.
    */
   launchProfilePaths?(params: { slug: string; workingDir: string }): string[];
+  /**
+   * The per-agent fields that feed {@link launchProfile}, declared so the UI can
+   * collect them without knowing the provider.
+   *
+   * This is the launch-profile counterpart of `repoAgents.attributeFields()`:
+   * a provider keeps its per-agent settings either in a repo-agent definition or
+   * in a launch profile, and whichever it is, the same "advanced configuration"
+   * form renders these and the same editor saves them. Declaring them beside the
+   * profile builder that consumes them is what stops the field list and the TOML
+   * it produces drifting apart.
+   *
+   * Undefined for a provider that writes no profile.
+   */
+  launchProfileFields?(): RepoAgentField[];
 };
 
 export type McpServerRegistration = {

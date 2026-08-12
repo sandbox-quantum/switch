@@ -32,6 +32,16 @@ export async function restartSessionAgent(sessionId: string): Promise<void> {
 
   const session = mapSessionRowToSession(loaded.row, loaded.providerId, loaded.name);
 
+  // Without a provider-native session id there is no conversation to resume, and
+  // `resolveAgentSessionCommandArgs` quietly downgrades a Codex resume to a fresh
+  // start. Refuse instead: a session that never launched its agent has nothing
+  // running on the old configuration, and will pick up the new one by itself.
+  if (!session.providerSessionId) {
+    throw new Error(
+      `Session ${sessionId} has not started a conversation yet — its next launch already uses the current configuration.`
+    );
+  }
+
   await agent.stop();
   await agent.start(session, undefined, true);
 
