@@ -52,12 +52,13 @@ version of their own to them without also giving them a release of their own.
   rather than its stricter MarkdownV2. See `docs/bridges/TELEGRAM_SETUP.md`.
 - One-click install links for a bridge, offered on the operator dashboard and
   built by the adapter (`install_links`); empty for platforms installed through
-  their own admin UI. Telegram supplies one per chat kind, which picks the chat
-  and grants the bridge's permissions in a single confirmation. Setting a
-  Telegram bridge up is now: make the bot, paste the token, click the link.
-  Neither disabling privacy mode in BotFather nor promoting the bot by hand is
-  needed any more — Telegram exempts an administrator bot from privacy mode, and
-  the link adds it as one, asking only for the rights the bridge uses.
+  their own admin UI. Telegram supplies one per chat kind: pick the chat,
+  confirm, done. The group link asks for **no permissions at all** — a bot posts
+  and deletes its own messages in a group as an ordinary member — so adding the
+  bot to a chat no longer means promoting it there by hand. The channel link
+  asks only for what posting to a broadcast channel requires. Setting a Telegram
+  bridge up is now one BotFather setting (Group Privacy off, once per bot,
+  before the bot is added anywhere) and then a link per chat.
 - A bridged chat is told what the bridge can see in it, and told again whenever
   that changes — so promoting the bot confirms itself and retracts the earlier
   warning, and a demotion does not pass unmentioned. Visibility is settled per
@@ -81,14 +82,16 @@ version of their own to them without also giving them a release of their own.
   from groups. Telegram answers such a link by opening a chat with the bot, which
   from the outside is indistinguishable from a link that does nothing; the reason
   is logged with the setting to change instead.
-- The admin-granting group link no longer dead-ends on clients that offer no
-  group to pick. Telegram shows that picker only for groups where the person can
-  add or edit admins, and clients disagree about which qualify — a basic group is
-  commonly excluded, since promoting a bot in one converts it to a supergroup —
-  and when none qualify it opens a chat with the bot instead. A second link that
-  every client honours is offered beside it: the bot joins as an ordinary member,
-  says in the chat that it can only see messages tagging it, and promoting it
-  there finishes the install.
+- The group install link no longer asks to be an administrator, which made it
+  unusable for the groups most people have. Telegram builds that picker from
+  groups the person already administers, excluding basic groups — promoting a
+  bot in one converts it to a supergroup — so for anyone whose groups are all
+  basic it offered nothing to pick and Telegram opened a chat with the bot
+  instead, reading as a link that did nothing. Admin was only ever bought for
+  the privacy-mode exemption, and turning Group Privacy off in BotFather buys
+  the same thing once per bot rather than once per group. Promotion remains
+  documented as the repair for a single chat that was added before that setting
+  was changed, and the bot asks for it in the chat when it applies.
 - A room follows its Telegram chat when the chat is reissued a new id, which
   Telegram does silently whenever a group becomes a supergroup. The room was
   left bound to the old id, so nothing anyone typed reached Switch again while

@@ -69,17 +69,17 @@ _COMMAND_PREFIXES = ("!", "/")
 # worth saying in the chat and in the logs.
 _INSTALL_PAYLOAD = "switch"
 
-# Admin rights the one-click links ask for, and no more.
+# Admin rights the one-click channel link asks for, and no more. A channel is a
+# broadcast chat where posting is admin-only, so these are what posting and
+# editing actually require.
 #
-# In a group, being an administrator at all is the point: Telegram exempts an
-# admin bot from privacy mode, so it sees the conversation without anyone
-# visiting BotFather. `delete_messages` is the single right the bridge uses —
-# a bot may always delete its *own* messages in a group, but only for 48 hours,
-# and a "working on it…" indicator can outlive that.
-#
-# A channel is a broadcast chat where posting is admin-only, so there the
-# rights are what posting and editing actually require.
-_GROUP_ADMIN_RIGHTS = "delete_messages"
+# There is deliberately no group equivalent. A bot needs no rights in a group:
+# it can post, and it can delete its own messages, as an ordinary member. The
+# one thing admin would add is exemption from privacy mode — and the same
+# exemption comes from turning Group Privacy off in BotFather, which is one
+# setting once per bot rather than a promotion per group, does not convert a
+# basic group into a supergroup, and does not depend on a chat picker that
+# leaves basic groups out. See docs/bridges/TELEGRAM_SETUP.md.
 _CHANNEL_ADMIN_RIGHTS = "post_messages+edit_messages+delete_messages"
 
 # Telegram will only register a command spelled in these characters, and caps a
@@ -399,15 +399,19 @@ class TelegramAdapter(CollaborationAdapter):
         )
         await self.admin_message(
             channel_id,
-            "⚠️ <b>I can only see messages that tag me here.</b> Telegram does "
-            "not deliver ordinary group messages to a bot unless the bot is an "
-            "administrator of the chat, so agents will follow anything "
-            f"addressed to <code>@{self._bot_username}</code> or to an agent by "
-            "name, and nothing else.\n\n"
-            "To bridge the whole conversation, make me an administrator of this "
-            "chat. Nothing in BotFather has to change, and the only right I use "
-            "is <b>Delete Messages</b> — for clearing my own status messages "
-            "once a turn ends.",
+            "⚠️ <b>I can only see messages that tag me here.</b> Telegram is "
+            "filtering this chat before anything reaches me, so agents will "
+            f"follow whatever is addressed to <code>@{self._bot_username}</code> "
+            "or to an agent by name, and nothing else.\n\n"
+            "<b>To fix it everywhere, once:</b> in @BotFather, "
+            "<code>/mybots</code> → this bot → Bot Settings → Group Privacy → "
+            "<b>Turn off</b>. Telegram reads that when I join a chat, so I have "
+            "to be removed from this one and added back for it to take here — "
+            "but every group you add me to afterwards just works.\n\n"
+            "<b>To fix only this chat, now:</b> make me an administrator of it. "
+            "No particular permission is needed. If Telegram converts the group "
+            "to a supergroup when you do, that is expected — the Switch room "
+            "follows it.",
         )
 
     async def ensure_channel_subscriptions(
@@ -450,31 +454,27 @@ class TelegramAdapter(CollaborationAdapter):
     async def install_links(self) -> list[BridgeInstallLink]:
         """Links that add this bot to a chat with the rights it needs.
 
-        Telegram's `?startgroup` / `?startchannel` links open a chat picker and
-        the admin-rights confirmation together, so the whole install is one
-        choice and one confirmation — no BotFather visit to disable privacy
-        mode, and no promoting the bot by hand afterwards. `admin=` names the
-        rights the dialog pre-selects; see _GROUP_ADMIN_RIGHTS for why they are
-        the ones asked for.
+        Telegram's `?startgroup` / `?startchannel` links open a chat picker, so
+        adding the bot is one choice and one confirmation rather than a
+        documented sequence of clicks.
 
-        **The `admin=` form is not universal**, which is why there are two group
-        links rather than one. Telegram shows that picker only for groups where
-        the person can add or edit admins, and clients differ on which groups
-        qualify — a basic group is commonly left out, because promoting a bot in
-        one converts it to a supergroup. When nothing qualifies, the client
-        falls back to opening a chat with the bot, and a link that lands in a DM
-        reads as a link that did nothing. So the plain form, which every client
-        honours, is offered beside it: it adds the bot as an ordinary member,
-        the bridge says in the chat that it can only see mentions, and promoting
-        it there finishes the job.
+        **The group link asks for no rights**, because the bridge needs none: a
+        bot posts and deletes its own messages in a group as an ordinary member.
+        An earlier version added it as an administrator to bypass privacy mode,
+        which cost more than it saved — Telegram builds that picker from groups
+        the person already administers, leaving basic groups out entirely, so
+        for anyone whose groups are all basic it offered nothing to pick and the
+        client opened a chat with the bot instead. Turning Group Privacy off in
+        BotFather buys the same visibility once per bot instead of once per
+        group. A channel is different: posting there is admin-only, so its link
+        asks for what posting needs.
 
         The username is the one the Bot API reports, not the configured one —
         a link built from a name that resolves to some other account opens a
         chat with *it* and looks like the link did nothing.
 
-        The group links are withheld from a bot BotFather has barred from
-        groups, because Telegram answers those by opening a chat with the bot
-        too.
+        The group link is withheld from a bot BotFather has barred from groups,
+        because Telegram answers that by opening a chat with the bot too.
         """
         if not self._bot_username:
             return []
@@ -486,28 +486,9 @@ class TelegramAdapter(CollaborationAdapter):
                     key="group",
                     label="Add to a Telegram group",
                     description=(
-                        "Pick a group and confirm. The bot joins as an "
-                        "administrator, which is what lets it see the "
-                        "conversation, and Switch creates the room as soon as it "
-                        "lands. If your Telegram offers no chat to pick, use the "
-                        "link below instead — some clients only list groups you "
-                        "already administer."
-                    ),
-                    url=(
-                        f"{base}?startgroup={_INSTALL_PAYLOAD}"
-                        f"&admin={_GROUP_ADMIN_RIGHTS}"
-                    ),
-                )
-            )
-            links.append(
-                BridgeInstallLink(
-                    key="group_member",
-                    label="Add to a group without admin rights",
-                    description=(
-                        "Works on every Telegram client. The bot joins as an "
-                        "ordinary member, so Telegram only shows it messages that "
-                        "tag it — it will say so in the chat, and making it an "
-                        "administrator there bridges the whole conversation."
+                        "Pick a group and confirm — the bot needs no permissions "
+                        "there. Switch creates the room as it lands, and the bot "
+                        "says in the chat whether it can see the conversation."
                     ),
                     url=f"{base}?startgroup={_INSTALL_PAYLOAD}",
                 )

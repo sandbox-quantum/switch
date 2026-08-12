@@ -1660,7 +1660,6 @@ def test_groups_are_assumed_allowed_when_the_bot_does_not_say() -> None:
 
     assert [link.key for link in _run(adapter.install_links())] == [
         "group",
-        "group_member",
         "channel",
     ]
 
@@ -1855,30 +1854,29 @@ def test_the_underscore_spelling_is_only_translated_for_slash_commands() -> None
 # ── Install links ────────────────────────────────────────────────────────────
 
 
-def test_the_group_install_link_adds_the_bot_as_an_administrator() -> None:
-    # The whole point of the link: Telegram exempts an administrator bot from
-    # privacy mode, so the chat picker and the rights grant are one
-    # confirmation and BotFather never has to be visited (CHOO-1686).
+def test_the_group_install_link_asks_for_no_permissions() -> None:
+    # The bridge needs none in a group: a bot posts and deletes its own
+    # messages as an ordinary member. Asking to be an administrator bought
+    # only an exemption from privacy mode, which turning Group Privacy off in
+    # BotFather gives once per bot rather than once per group — and its chat
+    # picker leaves out basic groups entirely (CHOO-1686).
     adapter = _adapter()
 
     links = {link.key: link for link in _run(adapter.install_links())}
 
     group = links["group"]
-    assert group.url.startswith(f"https://t.me/{BOT_USERNAME}?startgroup=")
-    assert "admin=" in group.url
-    assert "delete_messages" in group.url
+    assert group.url == (f"https://t.me/{BOT_USERNAME}?startgroup={_INSTALL_PAYLOAD}")
+    assert "admin=" not in group.url
 
 
-def test_the_group_link_asks_for_no_right_the_bridge_does_not_use() -> None:
-    # A permission prompt is only as trustworthy as its contents. The bridge
-    # deletes its own status messages and does nothing else privileged in a
-    # group, so nothing else is requested.
+def test_no_group_link_asks_to_be_an_administrator() -> None:
+    # A permission prompt is only as trustworthy as its contents, and the
+    # honest count for a group is zero.
     adapter = _adapter()
 
-    group = next(link for link in _run(adapter.install_links()) if link.key == "group")
-
-    rights = group.url.split("admin=", 1)[1].split("&", 1)[0]
-    assert rights.split("+") == ["delete_messages"]
+    for link in _run(adapter.install_links()):
+        if link.key.startswith("group"):
+            assert "admin=" not in link.url
 
 
 def test_the_channel_install_link_asks_for_what_posting_there_needs() -> None:
@@ -2248,34 +2246,30 @@ def test_a_bridge_with_no_bot_username_offers_no_install_link() -> None:
     assert _run(adapter.install_links()) == []
 
 
-def test_a_group_link_without_admin_rights_is_offered_beside_it() -> None:
-    # The `admin=` picker lists only groups the person already administers, and
-    # clients differ on which qualify — when none do, Telegram opens a chat with
-    # the bot and the link reads as broken. The plain form every client honours
-    # is offered as well, and the mention-only notice finishes the job.
+def test_the_group_link_lists_every_group() -> None:
+    # The `admin=` form's picker lists only groups the person already
+    # administers, which excludes a basic group — so it could offer nothing to
+    # pick, and Telegram then opens a chat with the bot, reading as a broken
+    # link. The plain form lists every group the person can add a member to.
     adapter = _adapter()
 
     links = {link.key: link for link in _run(adapter.install_links())}
 
-    assert "group_member" in links
-    assert links["group_member"].url.endswith(f"?startgroup={_INSTALL_PAYLOAD}")
-    assert "admin=" not in links["group_member"].url
+    assert "group" in links
+    assert links["group"].url.endswith(f"?startgroup={_INSTALL_PAYLOAD}")
 
 
-def test_the_fallback_says_what_it_costs() -> None:
-    # An operator picking it has to know it is the reduced mode, not a
-    # different route to the same place.
+def test_the_group_link_says_no_permissions_are_needed() -> None:
+    # The operator is about to confirm a dialog; what it will and will not ask
+    # for is the useful thing to know beforehand.
     adapter = _adapter()
 
-    fallback = next(
-        link for link in _run(adapter.install_links()) if link.key == "group_member"
-    )
+    group = next(link for link in _run(adapter.install_links()) if link.key == "group")
 
-    assert "tag it" in fallback.description
-    assert "administrator" in fallback.description
+    assert "no permissions" in group.description
 
 
-def test_both_group_links_go_when_groups_are_barred() -> None:
+def test_the_group_link_goes_when_groups_are_barred() -> None:
     adapter = _adapter()
     adapter._can_join_groups = False
 

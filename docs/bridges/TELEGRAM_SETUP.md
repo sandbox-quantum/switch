@@ -11,8 +11,8 @@ Rooms are **adopted, never created**: the Bot API gives a bot no way to create a
 chat. A chat's Switch room is provisioned when the bot is **added to the group**
 (Telegram does signal this, unlike Discord) or on the first bridged message.
 
-Setup is two steps: make a bot, then click a link. Nothing in BotFather has to
-be reconfigured, and the bot does not have to be promoted by hand.
+Setup is one BotFather setting, once, and then a link per chat. The bot is never
+promoted, and needs no permissions in a group.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ be reconfigured, and the bot does not have to be promoted by hand.
 - A Telegram group or channel you can add a bot to.
 - The Switch gateway reachable by an admin to onboard the bridge.
 
-## 1. Create the bot and onboard the bridge
+## 1. Create the bot and turn Group Privacy off
 
 1. Open [@BotFather](https://t.me/BotFather) in any Telegram client and send
    `/newbot`.
@@ -30,7 +30,25 @@ be reconfigured, and the bot does not have to be promoted by hand.
    shape `<bot id>:<hmac>`. Treat it like a password; anyone holding it controls
    the bot. Do not paste it into a chat, a ticket or a room, and revoke it with
    BotFather's `/revoke` if you ever do.
-4. As a gateway admin, onboard the bridge from the **operator dashboard**:
+4. **Turn Group Privacy off**, before adding the bot anywhere:
+   `/mybots` → the bot → **Bot Settings** → **Group Privacy** → **Turn off**.
+
+**Why, and why now.** Telegram runs bots in *privacy mode* by default: in a
+group a bot is given only messages that start with `/`, replies to its own
+messages, and messages that tag it. A bridge that cannot see the conversation is
+a bridge in name only. Telegram reads this setting **when the bot joins a chat**,
+so doing it first means every group you add the bot to afterwards just works;
+doing it later means removing the bot from each existing group and adding it
+back.
+
+There is one alternative, and it is worse for most people: a bot that is an
+**administrator** of a chat is exempt from privacy mode whatever the setting
+says. That is a promotion per group instead of a setting per bot, it converts a
+basic group into a supergroup, and Telegram's "add as admin" chat picker leaves
+basic groups out — so it is offered as a repair for a single chat (below), not
+as the way in.
+
+5. As a gateway admin, onboard the bridge from the **operator dashboard**:
    **Messaging Apps → Register messaging app → Telegram**, give it a display
    name (e.g. "Acme Telegram"), and fill in the fields below.
 
@@ -49,53 +67,21 @@ On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**
 The icon is shown to admins, and only while the bridge is running — the links
 are built by the live bridge, so a bridge that failed to start offers none.
 
-- **Add to a Telegram group** — opens Telegram, asks which group, and adds the
-  bot as an administrator with the one right the bridge uses. One confirmation.
-- **Add to a group without admin rights** — the fallback, for when the first
-  offers no group to pick. See below.
-- **Add to a Telegram channel** — for a broadcast channel, which needs the
-  rights that posting and editing there require.
-
-### If the first link offers you no group
-
-Telegram shows the admin-granting picker only for groups where you can add or
-edit admins, and clients disagree about which groups qualify — a **basic group**
-is commonly left out, because promoting a bot in one converts it to a
-supergroup. When nothing qualifies, Telegram opens a chat with the bot instead,
-which looks like a link that did nothing.
-
-Use **Add to a group without admin rights**. It works on every client: the bot
-joins as an ordinary member, tells you in the chat that it can only see messages
-that tag it, and promoting it there — **Delete Messages** is the only right worth
-granting — bridges the whole conversation and gets you a confirmation in the
-chat.
-
-Switch creates the room the moment the bot lands in the chat, and the bot says
-in the chat what it can see.
-
-**Why administrator.** Telegram runs bots in *privacy mode* by default: a
-non-admin bot in a group is only given messages that start with `/`, replies to
-its own messages, and messages that tag it. Telegram exempts a bot that is an
-administrator of the chat, which is what these links grant — so a bridge that
-sees the whole conversation needs no BotFather change at all. (Disabling privacy
-mode globally with `/setprivacy` also works, and the bridge honours it, but then
-the setting is only re-read when the bot **joins**, so the bot must be removed
-from each existing group and added back. The link is the shorter path.)
-
-**Which rights are asked for.** In a group, only **Delete Messages** — a bot may
-always delete its own messages there, but only for 48 hours, and a "working on
-it…" indicator can outlive that. In a channel, **Post Messages**, **Edit
-Messages** and **Delete Messages**, because a channel is a broadcast chat where
-posting is admin-only. Nothing else is requested.
+- **Add to a Telegram group** — lists every group you can add a member to. Pick
+  one and confirm; the bot needs no permissions there. Switch creates the room
+  as the bot lands, and the bot says in the chat whether it can see the
+  conversation.
+- **Add to a Telegram channel** — for a broadcast channel. Posting to one is
+  admin-only, so this link does ask: **Post Messages**, **Edit Messages** and
+  **Delete Messages**, and nothing beyond them.
 
 A bot cannot be added to a chat by Switch, and it cannot add anyone else: people
 join from a Telegram client or an invite link.
 
-## Running without administrator: mention-only
+## Mention-only chats, and how to repair one
 
-A bot that is neither an administrator nor exempted by `/setprivacy` still
-works, in a reduced way Telegram enforces before anything reaches Switch. It
-receives:
+A chat where privacy mode is still in force still works, in a reduced way
+Telegram enforces before anything reaches Switch. The bot receives:
 
 - messages that tag it (`@acme_switch_bot`) or tag an agent whose name appears
   in the same message,
@@ -103,16 +89,22 @@ receives:
 - `/` commands.
 
 It does **not** receive ordinary conversation, so agents will not follow a
-discussion nobody addresses them in. This is a supported way to run — some
-groups would rather not grant a bot admin — and it is disclosed rather than left
-to be discovered: the bot posts a one-off notice in the chat saying it can only
-see messages that tag it, and the bridge logs a warning naming each mention-only
-chat at startup.
+discussion nobody addresses them in. That is a supported way to run — some
+groups would rather the bot saw only what is aimed at it — and it is disclosed
+rather than left to be discovered: the bot posts a notice in the chat saying it
+can only see messages that tag it, and the bridge logs a warning naming each
+such chat at startup.
 
-To upgrade a chat later, promote the bot to administrator in Telegram's group
-settings — **Delete Messages** is the only right worth granting — or re-run the
-dashboard's **Add to a Telegram group** link and pick the same group, which
-grants it for you; Telegram combines the new rights with any existing ones.
+You will land here if the bot was added to the chat **before** Group Privacy was
+turned off, since Telegram reads that setting at join time. Two ways out:
+
+- **Every chat, once** — turn Group Privacy off (step 1), then remove the bot
+  from the affected chat and add it back.
+- **This chat, now** — make the bot an administrator of it. No particular right
+  is needed; admin status alone is the exemption. If the chat is a basic group,
+  Telegram converts it to a supergroup and issues a new chat id at that moment —
+  expected, and nothing to do: the room follows the new id and says so.
+
 Either way the bot confirms in the chat that it can now see the conversation,
 and a demotion is announced the same way.
 
