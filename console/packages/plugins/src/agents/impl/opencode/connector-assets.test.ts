@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { SWITCH_AGENT_RUNTIME_PIN } from '../../../distribution';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
-import { buildOpencodeSwitchConnector, OPENCODE_CONFIG_PATH } from './switch-connector';
+import { OPENCODE_SKILL_CONTENT } from './skill-file';
+import {
+  buildOpencodeSwitchConnector,
+  OPENCODE_CONFIG_PATH,
+  OPENCODE_SKILL_PATH,
+} from './switch-connector';
 
 // …/console/packages/plugins/src/agents/impl/opencode → repo root
 const CONNECTOR_DIR = join(
@@ -35,9 +40,29 @@ function connectorFile(...segments: string[]): string {
  * and shipping the old behaviour would look, in review, exactly like shipping
  * the new one.
  */
+function memoryFs(files: Map<string, string>) {
+  return {
+    read: async (path: string) => files.get(path) ?? null,
+    write: async (path: string, content: string) => void files.set(path, content),
+    delete: async (path: string) => void files.delete(path),
+    exists: async (path: string) => files.has(path),
+    list: async () => [...files.keys()],
+  };
+}
+
+async function install(): Promise<Map<string, string>> {
+  const files = new Map<string, string>();
+  await buildOpencodeSwitchConnector().install(memoryFs(files), { version: '1.0.0' });
+  return files;
+}
+
 describe('opencode connector assets', () => {
   it('embeds the reporting plugin exactly as the connector ships it', () => {
     expect(OPENCODE_PLUGIN_CONTENT).toBe(connectorFile('plugin', 'switch-notifications.js'));
+  });
+
+  it('embeds the room-workflow skill exactly as the connector ships it', () => {
+    expect(OPENCODE_SKILL_CONTENT).toBe(connectorFile('skills', 'switch', 'SKILL.md'));
   });
 
   it('registers the MCP server exactly as the connector declares it', async () => {
@@ -45,22 +70,39 @@ describe('opencode connector assets', () => {
       mcp: Record<string, unknown>;
     };
 
-    const files = new Map<string, string>();
-    await buildOpencodeSwitchConnector().install(
-      {
-        read: async (path) => files.get(path) ?? null,
-        write: async (path, content) => void files.set(path, content),
-        delete: async (path) => void files.delete(path),
-        exists: async (path) => files.has(path),
-        list: async () => [...files.keys()],
-      },
-      { version: '1.0.0' }
-    );
+    const files = await install();
     const written = JSON.parse(files.get(OPENCODE_CONFIG_PATH) ?? '{}') as {
       mcp: Record<string, unknown>;
     };
 
     expect(written.mcp.switch).toEqual(declared.mcp.switch);
+  });
+
+  /**
+   * The tools without the instructions is the failure this guards. Registering
+   * the MCP server is what an install visibly does, and it is easy to call that
+   * the whole job: the session then has forty room tools and nothing telling it
+   * how a room works. Shipping the skill in the connector directory does not
+   * deliver it — OpenCode only reads skills it discovers on disk.
+   */
+  it('writes the skill where OpenCode discovers it', async () => {
+    const files = await install();
+    expect(files.get(OPENCODE_SKILL_PATH)).toBe(OPENCODE_SKILL_CONTENT);
+  });
+
+  it('names the skill directory to match the skill, as OpenCode requires', () => {
+    const declaredName = /^---\n(?:.*\n)*?name:\s*"?([\w-]+)"?\s*$/m.exec(OPENCODE_SKILL_CONTENT);
+    // …/skills/<dir>/SKILL.md — the folder OpenCode derives the skill name from.
+    const directory = OPENCODE_SKILL_PATH.split('/').at(-2);
+
+    expect(declaredName?.[1]).toBe(directory);
+  });
+
+  it('removes the skill on uninstall', async () => {
+    const files = await install();
+    await buildOpencodeSwitchConnector().uninstall(memoryFs(files));
+
+    expect(files.has(OPENCODE_SKILL_PATH)).toBe(false);
   });
 
   it('pins the same agent runtime as the rest of the repo', () => {

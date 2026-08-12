@@ -29,7 +29,7 @@ other two — but there is no marketplace entry, and this directory is not
 registered in `.claude-plugin/marketplace.json`.
 
 Because the app writes the files, it also carries their content: the plugin
-source and the MCP fragment here are embedded in the app at
+source, the skill and the MCP fragment here are embedded in the app at
 `console/packages/plugins/src/agents/impl/opencode/`. **They must not drift** —
 `connector-assets.test.ts` fails if they do. Edit the files here; the test tells
 you what to update.
@@ -38,6 +38,22 @@ An install has no version of its own to report, since nothing fetched it. A
 status read compares the app version that stamped the install against the
 running one, so "update available" means the connector was written by an older
 build of Switch Console.
+
+## The room-workflow skill
+
+`skills/switch/SKILL.md` is written to `~/.config/opencode/skills/switch/`,
+which is one of the locations OpenCode discovers skills from. It is loaded
+on demand: OpenCode advertises the name and description through its native
+`skill` tool, and the agent pulls the body when Switch work starts.
+
+Global, not per-workspace, to match the MCP server it explains — that is
+registered globally, so any OpenCode session on the machine has the Switch
+tools whether or not Switch Console launched it. A skill written into one
+workspace would leave every other session holding the room tools with nothing
+saying how a room works.
+
+The directory name is load-bearing: OpenCode derives the skill name from the
+folder and rejects one whose frontmatter `name` disagrees with it.
 
 ## The Switch MCP server
 

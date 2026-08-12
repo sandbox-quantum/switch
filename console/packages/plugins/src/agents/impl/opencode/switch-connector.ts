@@ -1,5 +1,6 @@
 import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { SWITCH_AGENT_RUNTIME_PIN } from '../../../distribution';
+import { OPENCODE_SKILL_CONTENT } from './skill-file';
 
 /**
  * OpenCode's global config, relative to the home directory. It reads several
@@ -14,6 +15,21 @@ export const OPENCODE_CONFIG_PATH = '.config/opencode/opencode.json';
  * risking a config the agent refuses to start with.
  */
 export const OPENCODE_CONNECTOR_MARKER_PATH = '.config/opencode/switch-connector.json';
+
+/**
+ * The room-workflow skill, in OpenCode's global skill directory.
+ *
+ * Global rather than per-workspace to match the MCP server it explains: that
+ * is registered in the global config, so every OpenCode session on the machine
+ * has the Switch tools whether or not Switch Console launched it. A skill
+ * dropped in a workspace would leave those sessions holding forty room tools
+ * and no instructions for using them.
+ *
+ * The directory name has to be the skill's own name — OpenCode discovers
+ * `skills/<name>/SKILL.md` and rejects a skill whose frontmatter `name`
+ * disagrees with its folder.
+ */
+export const OPENCODE_SKILL_PATH = '.config/opencode/skills/switch/SKILL.md';
 
 /** The key the Switch MCP server is registered under. */
 const SERVER_NAME = 'switch';
@@ -81,11 +97,12 @@ export function buildOpencodeSwitchConnector(): ISwitchSetupFilesBehavior {
       config.$schema ??= 'https://opencode.ai/config.json';
       config.mcp = { ...config.mcp, [SERVER_NAME]: switchServerEntry() };
       await fs.write(OPENCODE_CONFIG_PATH, serialize(config));
+      await fs.write(OPENCODE_SKILL_PATH, OPENCODE_SKILL_CONTENT);
       await fs.write(
         OPENCODE_CONNECTOR_MARKER_PATH,
         `${JSON.stringify({ version, runtime: SWITCH_AGENT_RUNTIME_PIN }, null, 2)}\n`
       );
-      return [OPENCODE_CONFIG_PATH, OPENCODE_CONNECTOR_MARKER_PATH];
+      return [OPENCODE_CONFIG_PATH, OPENCODE_SKILL_PATH, OPENCODE_CONNECTOR_MARKER_PATH];
     },
 
     async uninstall(fs: PluginFs): Promise<void> {
@@ -100,6 +117,7 @@ export function buildOpencodeSwitchConnector(): ISwitchSetupFilesBehavior {
           await fs.write(OPENCODE_CONFIG_PATH, serialize(config));
         }
       }
+      await fs.delete(OPENCODE_SKILL_PATH);
       await fs.delete(OPENCODE_CONNECTOR_MARKER_PATH);
     },
 

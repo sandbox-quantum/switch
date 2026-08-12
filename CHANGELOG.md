@@ -383,7 +383,9 @@ version of their own to them without also giving them a release of their own.
   OpenCode has no plugin marketplace to install a connector from, so Switch
   Console writes one: the Switch MCP server is registered in OpenCode's global
   config as a local server, which lets the runtime inherit its credentials from
-  the session environment rather than having a token written to disk. Install,
+  the session environment rather than having a token written to disk, and the
+  room-workflow skill is written to OpenCode's global skill directory beside
+  it, so a session gets the instructions along with the tools. Install,
   update and uninstall are on the agent's card in Settings → Agents, and on a
   remote host in that host's setup, exactly as for the other agent types.
 
