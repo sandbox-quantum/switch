@@ -64,7 +64,7 @@ export const CodexConfigSettingsSection = observer(function CodexConfigSettingsS
     setForm(savedForm);
   }, [savedForm]);
 
-  const liveSessionIds = useLiveSessionIds(locationId, agentId);
+  const liveSessionIds = liveSessionIdsFor(locationId, agentId);
 
   const save = useMutation({
     mutationFn: () =>
@@ -86,13 +86,26 @@ export const CodexConfigSettingsSection = observer(function CodexConfigSettingsS
     },
   });
 
+  // The Settings page swaps agents in place rather than remounting, so a save
+  // on the previous agent must not leave its restart notice standing over the
+  // next one's fields.
+  const resetSave = save.reset;
+  useEffect(() => {
+    resetSave();
+  }, [agentId, resetSave]);
+
   const restart = useMutation({
     mutationFn: async () => {
       for (const sessionId of liveSessionIds) {
         await rpc.sessions.restartAgent(sessionId);
       }
     },
-    onSuccess: () => toast({ title: 'Session restarted with the new configuration' }),
+    onSuccess: () => {
+      toast({ title: 'Session restarted on the new configuration' });
+      // The running sessions now carry the saved values, so the section has
+      // nothing left to warn about.
+      save.reset();
+    },
     onError: (error) => {
       log.error('Failed to restart session after a Codex configuration change', { agentId, error });
       toast({
@@ -143,14 +156,19 @@ export const CodexConfigSettingsSection = observer(function CodexConfigSettingsS
           </Button>
         </div>
 
-        {liveSessionIds.length > 0 && (
+        {/* Only while there is something a running session has not got: an
+            unsaved edit, or a save it started before. Codex agents commonly have
+            a session up, so showing this whenever one exists would be noise. */}
+        {liveSessionIds.length > 0 && (dirty || save.isSuccess) && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
             <p className="text-xs text-foreground-muted">
-              {liveSessionIds.length} running session
-              {liveSessionIds.length === 1 ? '' : 's'} {liveSessionIds.length === 1 ? 'is' : 'are'}{' '}
-              still on the previous configuration — Codex reads it only when a session starts. It
-              applies to the next session — or use Restart to apply it now (the conversation is
-              resumed).
+              {liveSessionIds.length === 1
+                ? 'A session is running'
+                : `${liveSessionIds.length} sessions are running`}{' '}
+              on the previous configuration — Codex reads this only when a session starts.{' '}
+              {dirty
+                ? 'Save, then Restart to apply it now.'
+                : 'It applies to the next session — or use Restart to apply it now (the conversation is resumed).'}
             </p>
             <Button
               size="sm"
@@ -175,9 +193,10 @@ export const CodexConfigSettingsSection = observer(function CodexConfigSettingsS
 /**
  * The agent's sessions that currently have a running agent process — the ones a
  * configuration change cannot reach without a restart. Read from the session
- * store rather than queried, so it tracks sessions starting and stopping live.
+ * store rather than queried, so it tracks sessions starting and stopping live;
+ * call only from an `observer` component.
  */
-function useLiveSessionIds(locationId: string, agentId: string | undefined): string[] {
+function liveSessionIdsFor(locationId: string, agentId: string | undefined): string[] {
   const manager = getSessionManagerStore(locationId);
   if (!manager || !agentId) return [];
   return [...manager.sessions.values()]

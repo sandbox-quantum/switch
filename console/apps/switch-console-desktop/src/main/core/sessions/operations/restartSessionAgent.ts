@@ -1,3 +1,5 @@
+import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
+import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
 import { resolveSessionAgent } from '../../locations/utils';
 import { loadSessionWithAgent } from '../session-join';
 import { mapSessionRowToSession } from '../utils/utils';
@@ -14,6 +16,12 @@ import { mapSessionRowToSession } from '../utils/utils';
  * keeps its history and picks up the new profile; `codex resume` is specialized
  * by the same profile as a first launch. The session row is untouched — the
  * session stays provisioned throughout and only its agent process is replaced.
+ *
+ * A remote runtime comes back with a terminal open, because `start` spawns one.
+ * The attachment pool caches an attach state per session and is not on this
+ * path, so it is told: restarting a *detached* session would otherwise leave it
+ * reported as detached while a terminal is in fact open. When the runtime is
+ * already attached this only reconciles that cached state.
  */
 export async function restartSessionAgent(sessionId: string): Promise<void> {
   const agent = resolveSessionAgent(sessionId);
@@ -26,4 +34,8 @@ export async function restartSessionAgent(sessionId: string): Promise<void> {
 
   await agent.stop();
   await agent.start(session, undefined, true);
+
+  if (isAttachableRuntime(agent)) {
+    await remoteAttachmentPool.requestAttach(sessionId, 'user');
+  }
 }
