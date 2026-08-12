@@ -57,7 +57,23 @@ export type WrapParams<TId extends ViewId> = Views[TId] extends {
 
 export type GuardResult =
   | { ok: true }
-  | { ok: false; redirect: ViewId; params?: Record<string, unknown> };
+  | {
+      ok: false;
+      redirect: ViewId;
+      params?: Record<string, unknown>;
+      /**
+       * Set when the params themselves are stale — naming something a newer
+       * build retired — rather than the destination merely being unavailable
+       * right now. Stored params are then dropped, so the fallback in
+       * `navigate()` cannot feed them back to the guard on the next attempt and
+       * leave the view permanently unreachable.
+       *
+       * Guards that reject on runtime state must leave this unset: their params
+       * are still good, and a rejection while that state loads would discard
+       * them.
+       */
+      discardParams?: boolean;
+    };
 
 export function setupNavigationGuards(): void {
   for (const [viewId, view] of Object.entries(views) as Array<

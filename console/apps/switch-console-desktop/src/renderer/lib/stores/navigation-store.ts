@@ -37,9 +37,19 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
     return this._guards.get(viewId)?.(params) ?? { ok: true };
   }
 
+  private _clearViewParams(viewId: ViewId): void {
+    if (this.viewParamsStore[viewId] === undefined) return;
+    const next = { ...this.viewParamsStore };
+    delete next[viewId];
+    this.viewParamsStore = next;
+  }
+
   revalidate(): void {
     const result = this._runGuard(this.currentViewId, this.viewParamsStore[this.currentViewId]);
-    if (!result.ok) this._applyNavigation(result.redirect, result.params as WrapParams<ViewId>);
+    if (!result.ok) {
+      if (result.discardParams) this._clearViewParams(this.currentViewId);
+      this._applyNavigation(result.redirect, result.params as WrapParams<ViewId>);
+    }
   }
 
   navigate<T extends ViewId>(viewId: T, params?: WrapParams<T>): void {
@@ -52,6 +62,7 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
     const resolvedParams = params ?? this.viewParamsStore[viewId];
     const guard = this._runGuard(viewId, resolvedParams);
     if (!guard.ok) {
+      if (guard.discardParams && params === undefined) this._clearViewParams(viewId);
       this._applyNavigation(guard.redirect, guard.params as WrapParams<typeof guard.redirect>);
       return;
     }
@@ -105,6 +116,7 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
     // Validate after params are loaded so the guard has full context.
     const guard = this._runGuard(this.currentViewId, this.viewParamsStore[this.currentViewId]);
     if (!guard.ok) {
+      if (guard.discardParams) this._clearViewParams(this.currentViewId);
       this.currentViewId = guard.redirect;
       if (guard.redirect !== 'settings') {
         this.lastNonSettingsView = guard.redirect as NonSettingsViewId;
