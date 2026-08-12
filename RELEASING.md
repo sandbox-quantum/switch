@@ -90,8 +90,9 @@ The desktop app (`console/`) releases on its own tag, `switch-console-v<version>
 `console/apps/switch-console-desktop/package.json` `version` (the workflow verifies
 this and fails on mismatch). Procedure: bump `package.json`, cut the
 `## switch-console` `CHANGELOG.md` section, merge to `main`, tag, push. The workflow
-publishes a **GitHub Release** (macOS arm64 signed + notarized; Linux x64
-AppImage/deb/rpm, unsigned).
+publishes a **GitHub Release** (macOS arm64 signed + notarized; Linux x64 and
+arm64 AppImage/deb/rpm, unsigned — one job per arch, each on a runner of that
+arch).
 
 **Approval gate (required).** The `build-macos` job runs in the GitHub
 `release` environment (required reviewers), which holds the Apple signing /

@@ -21,6 +21,10 @@ export const SWITCH_MARKETPLACE_SOURCE = 'sandbox-quantum/switch';
  * visible reason. `runtime-pin.test.ts` fails when they drift.
  *
  * It must name a version that is *published*: the tag is pushed separately from
- * the merge, so this moves after the tag exists, never ahead of it.
+ * the merge, so this moves after the tag exists, never ahead of it. That is why
+ * it is a literal rather than being derived from the artifact registry the way
+ * the runtime's own `RUNTIME_VERSION` is — the registry says where the runtime
+ * has got to, which during a release is a version npm does not have yet. A
+ * pin has to lag it deliberately, and the lag is the point.
  */
 export const SWITCH_AGENT_RUNTIME_PIN = '@sandboxaq/switch-agent-runtime@0.3.0';

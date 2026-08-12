@@ -54,6 +54,9 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 
+- `read_context`'s own documentation no longer tells agents to page by passing
+  `oldest_timestamp` back as `before`. The first is epoch milliseconds and the
+  second is parsed as ISO-8601, so following it raised instead of paging.
 - The OpenCode server-side connector no longer hangs when the OpenCode server
   raises a tool permission request. The connector's event loop ignored
   `permission.updated`, so no reply was ever sent, the session never went idle,
@@ -397,6 +400,22 @@ version of their own to them without also giving them a release of their own.
   as required. It now selects the only usable type, or the configured default
   agent when that is usable on the machine being targeted, and otherwise leaves
   the choice explicit. The rule no longer depends on how many agent types exist.
+- The unread tally injected into a session no longer claims to count "since
+  your last read_context". Nothing here can observe a session reading, so the
+  tally is cleared per delivered line; it now says so, rather than inviting an
+  agent to read its absence as proof it is caught up.
+
+### [0.22.0] - 2026-08-12
+
+#### Added
+- Linux **arm64** desktop artifacts are now built and published alongside x64 —
+  AppImage, deb, and rpm (#202).
+- **Windows x64** releases are now built and published (unsigned) (CHOO-1468).
+
+#### Changed
+- The Codex session runtime version is now derived from the artifact registry
+  rather than a hand-maintained `SWITCH_AGENT_RUNTIME_VERSION` constant; the
+  constant and its parity test are removed (#198).
 
 ### [0.21.0] - 2026-08-11
 
@@ -1059,6 +1078,14 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+#### Changed
+- The MCP server instructions no longer tell the agent to `read_context` on
+  every message event, or to connect before every call. Reading is now
+  conditional on a signal that the agent is actually behind — an unread count
+  above zero, a gap warning, an unfamiliar thread, a long silence — and the
+  connection is described as holding for the session rather than as a
+  precondition to re-establish per call.
+
 ### [0.3.0] - 2026-08-11
 
 #### Changed
@@ -1170,6 +1197,30 @@ compatibility signal. History for those is in the git log.
 
 ### [Unreleased]
 
+#### Fixed
+- The channel's unread tally now resets when the agent reads the room. The
+  `PostToolUse` matcher never included `read_context`, so the reset the hook
+  already implemented was unreachable and the count only ever climbed from the
+  moment a session connected.
+
+#### Changed
+- Skill: document the room-document and room-admin tools it had never
+  mentioned — `load_internal_documents` (without which an agent cannot read a
+  document attached to its own room), `list_references`, the
+  `create`/`update`/`delete_room_document` trio, `add_users_to_room`, and
+  `archive_room` / `unarchive_room`.
+- The skill is state-aware: it loads once for a session instead of before every
+  tool call, and no longer makes an agent reconnect and re-read the room to say
+  one thing. The `description` still directs the agent to load the skill — a
+  passive rewording stopped it loading at all in live runs — but says to load it
+  once, and drops the 40-name tool inventory; a new "steady state" section says the connection holds for the
+  session; and the unconditional "always read / always connect" instructions
+  are replaced by triggers that fire on an actual signal.
+- Skill: correct the paging instruction. It told agents to pass
+  `oldest_timestamp` straight back as `before`, but the first is epoch
+  milliseconds and the second is parsed as an ISO-8601 string, so the call
+  raised instead of paging.
+
 ### [0.8.1] - 2026-08-11
 
 #### Changed
@@ -1206,6 +1257,28 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
+
+#### Changed
+- Skill: document the room-document and room-admin tools it had never
+  mentioned — `load_internal_documents` (without which an agent cannot read a
+  document attached to its own room), `list_references`, the
+  `create`/`update`/`delete_room_document` trio, `add_users_to_room`, and
+  `archive_room` / `unarchive_room`.
+- The skill is state-aware: it loads once for a session instead of before every
+  tool call, and no longer makes an agent reconnect and re-read the room to say
+  one thing. The `description` is a trigger rather than a 40-name tool
+  inventory — which also keeps it clear of Codex's skill-description budget,
+  which silently truncates an overlong one; a new "steady state" section says
+  the connection holds for the session; and the unconditional "always read /
+  always connect" instructions are replaced by triggers that fire on an actual
+  signal.
+- Skill: an unread count is documented as proof you are behind, but its absence
+  is no longer documented as proof you are current — Switch Console resets the
+  tally on every line it delivers, not when the session reads.
+- Skill: correct the paging instruction. It told agents to pass
+  `oldest_timestamp` straight back as `before`, but the first is epoch
+  milliseconds and the second is parsed as an ISO-8601 string, so the call
+  raised instead of paging.
 
 ### [0.2.3] - 2026-08-11
 
