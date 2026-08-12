@@ -4,14 +4,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
-import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import {
+  type AgentProviderConfig,
+  providerConfigFromAttributes,
+} from '@shared/core/agents/agent-provider-config';
+import {
+  attributesFromForm,
   DefinitionFieldInput,
   emptyForm,
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
-import { codexConfigFromForm } from '../codex-config-fields';
 
 /**
  * Collapsed "Codex configuration" section. Reports the assembled per-agent
@@ -40,7 +43,7 @@ export function CodexAgentConfig({
   }, [fields]);
 
   useEffect(() => {
-    onChange(codexConfigFromForm(fields, state));
+    onChange(providerConfigFromAttributes(attributesFromForm(fields, state)));
   }, [fields, state, onChange]);
 
   const setField = useCallback((key: string, value: FormValue) => {

@@ -357,15 +357,21 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
-- A Codex agent's model, reasoning effort and instructions can now be changed
-  after the agent is created, from the **Advanced configuration** section in its
-  Settings tab — the same section Claude agents already had. They were
-  previously write-once in the add-agent dialog, with no way to edit them
-  (CHOO-1985). Codex reads the values only when a session starts, so a save
-  applies to the next session; a session already running is named in the
-  section, with a Restart that resumes it on the new configuration. Clearing
-  every field removes the agent's launch profile rather than leaving it
-  orphaned.
+- A Codex agent's configuration can now be changed after the agent is created,
+  from the **Advanced configuration** section in its Settings tab — the same
+  section Claude agents already had. Model, reasoning effort and instructions
+  were previously write-once in the add-agent dialog, with no way to edit them
+  (CHOO-1985); **verbosity**, **reasoning summary** and **web search** are newly
+  exposed, and reasoning effort gains `none`. Each option was checked against the
+  Codex binary's own config validation rather than assumed.
+- Leaving one of those fields blank is not the same as choosing its default:
+  blank omits the setting entirely, so your own `~/.codex/config.toml` still
+  decides. That is why the on/off settings offer Default/On/Off rather than a
+  checkbox, which has no way to say "leave it alone".
+- Codex reads these values only when a session starts, so a save applies to the
+  next session. A session already running is named in the section, with a
+  Restart that resumes it on the new configuration. Clearing every field removes
+  the agent's launch profile rather than leaving it orphaned.
 
 #### Changed
 - Advanced configuration is one editor for every provider rather than one per

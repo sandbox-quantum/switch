@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCodexProfileToml,
   CODEX_REASONING_EFFORTS,
+  CODEX_REASONING_SUMMARIES,
+  CODEX_VERBOSITY_LEVELS,
   codexLaunchProfile,
   codexLaunchProfileFields,
   codexProfileName,
@@ -18,7 +20,7 @@ describe('buildCodexProfileToml', () => {
     // ("invalid transport"), taking the session with it.
     const toml = buildCodexProfileToml({
       model: 'gpt-5.6-terra',
-      reasoningEffort: 'high',
+      effort: 'high',
       instructions: 'be terse',
     });
 
@@ -43,7 +45,7 @@ describe('buildCodexProfileToml', () => {
     const parsed = parseTOML(
       buildCodexProfileToml({
         model: 'gpt-5.6-terra',
-        reasoningEffort: 'high',
+        effort: 'high',
         instructions: 'be terse',
       })
     ) as Record<string, unknown>;
@@ -150,7 +152,7 @@ describe('codexLaunchProfile', () => {
   });
 
   it('exposes the stable reasoning-effort levels', () => {
-    expect(CODEX_REASONING_EFFORTS).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(CODEX_REASONING_EFFORTS).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
   });
 });
 
@@ -195,6 +197,9 @@ describe('codexLaunchProfileFields', () => {
     expect(codexLaunchProfileFields().map((field) => field.key)).toEqual([
       'model',
       'effort',
+      'verbosity',
+      'reasoningSummary',
+      'webSearch',
       'instructions',
     ]);
   });
@@ -208,17 +213,44 @@ describe('codexLaunchProfileFields', () => {
     ]);
   });
 
-  it('feeds values the builder actually emits, so the form and the TOML cannot drift', () => {
-    const keys = codexLaunchProfileFields().map((field) => field.key);
-    const toml = parseTOML(
-      buildCodexProfileToml({ model: 'm', reasoningEffort: 'high', instructions: 'i' })
+  it('writes every declared field, so a field cannot be collected and then dropped', () => {
+    const filled = Object.fromEntries(
+      codexLaunchProfileFields().map((field) => [
+        field.key,
+        field.key === 'webSearch' ? 'true' : 'x',
+      ])
     );
 
-    expect(keys).toContain('model');
+    const toml = parseTOML(buildCodexProfileToml(filled));
+
     expect(Object.keys(toml).sort()).toEqual([
       'developer_instructions',
       'model',
       'model_reasoning_effort',
+      'model_reasoning_summary',
+      'model_verbosity',
+      'tools',
     ]);
+    expect((toml.tools as Record<string, unknown>).web_search).toBe(true);
+  });
+
+  it('offers only the verbosity and summary values Codex accepts', () => {
+    const optionsFor = (key: string) =>
+      codexLaunchProfileFields()
+        .find((field) => field.key === key)
+        ?.options?.map((option) => option.value);
+
+    expect(optionsFor('verbosity')).toEqual(['', ...CODEX_VERBOSITY_LEVELS]);
+    expect(optionsFor('reasoningSummary')).toEqual(['', ...CODEX_REASONING_SUMMARIES]);
+  });
+
+  it('turns web search off explicitly, which is not the same as leaving it unset', () => {
+    const off = parseTOML(buildCodexProfileToml({ webSearch: 'false' }));
+    expect((off.tools as Record<string, unknown>).web_search).toBe(false);
+
+    // Unset writes nothing at all, so the user's own config still decides.
+    // An empty profile still stringifies to a newline, which is why the
+    // no-profile check in `codexLaunchProfile` tests the trimmed result.
+    expect(buildCodexProfileToml({ webSearch: '' }).trim()).toBe('');
   });
 });

@@ -25,12 +25,29 @@ export type SwitchLaunchProfile = {
   args: string[];
 };
 
-/** Optional per-agent specialization folded into the launch profile. */
+/**
+ * Optional per-agent specialization folded into the launch profile.
+ *
+ * Every value is a string, and an absent or empty one means "not set" — the
+ * provider's own configuration decides. That matters for the on/off settings:
+ * omitting `webSearch` leaves the user's base config alone, which is not the
+ * same as setting it to `false`.
+ *
+ * The keys are the field keys the provider declares in
+ * {@link IMcpBehavior.launchProfileFields}, so what the form collects and what
+ * the profile writer consumes are the same names end to end.
+ */
 export type SwitchLaunchSpecialization = {
   /** Model id, e.g. a Codex `model` override. */
   model?: string;
-  /** Reasoning-effort id, e.g. a Codex `model_reasoning_effort` override. */
-  reasoningEffort?: string;
+  /** Reasoning-effort id, e.g. a Codex `model_reasoning_effort` value. */
+  effort?: string;
+  /** How much prose the model writes (Codex: `model_verbosity`). */
+  verbosity?: string;
+  /** How much reasoning is summarised back (Codex: `model_reasoning_summary`). */
+  reasoningSummary?: string;
+  /** `"true"` / `"false"` / unset — whether the agent may search the web. */
+  webSearch?: string;
   /** A system-prompt/instructions body, carried in the profile itself (Codex:
    * `developer_instructions`), which adds to the host's own operating
    * instructions rather than replacing them. */

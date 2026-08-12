@@ -1,6 +1,9 @@
 import type { RepoAgentAttributes, RepoAgentField } from '@switch-console/core/agents/plugins';
 import { getPlugin } from '@main/core/providers/plugin-registry';
-import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import {
+  attributesFromProviderConfig,
+  providerConfigFromAttributes,
+} from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
 import { getAgentById } from './getAgentById';
@@ -70,36 +73,4 @@ export async function updateAgentAdvancedConfig(params: {
     agentId: params.agentId,
     config: providerConfigFromAttributes(params.attributes),
   });
-}
-
-/** Whether a change reaches a session that is already running, or only the next
- * one. A launch profile and a repo-agent definition are both read at spawn, so
- * this is true wherever there is advanced configuration at all — it exists so
- * the UI states it rather than leaving the user to discover it. */
-export function advancedConfigAppliesAtLaunch(providerId: AgentProviderId): boolean {
-  return getAgentAdvancedFields(providerId).length > 0;
-}
-
-function attributesFromProviderConfig(config: AgentProviderConfig | null): RepoAgentAttributes {
-  return {
-    model: config?.model ?? '',
-    effort: config?.effort ?? '',
-    instructions: config?.instructions ?? '',
-  };
-}
-
-/**
- * Null when every field is blank: an agent that specializes nothing gets no
- * profile and no `--profile` argv, rather than an empty one.
- */
-function providerConfigFromAttributes(attributes: RepoAgentAttributes): AgentProviderConfig | null {
-  const str = (value: unknown): string | undefined => {
-    const trimmed = typeof value === 'string' ? value.trim() : '';
-    return trimmed ? trimmed : undefined;
-  };
-  const model = str(attributes.model);
-  const effort = str(attributes.effort);
-  const instructions = str(attributes.instructions);
-  if (!model && !effort && !instructions) return null;
-  return { version: '1', model, effort, instructions };
 }
