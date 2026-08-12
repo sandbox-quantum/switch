@@ -18,6 +18,15 @@ export interface SessionTheme {
   override?: ITerminalOptions['theme'];
 }
 
+/**
+ * Read the terminal theme, including the 16 ANSI colors.
+ *
+ * The palette is not optional: xterm falls back to its built-in Tango colors
+ * when a theme omits them, and those are chosen for a black background. Against
+ * the light theme's white `--xterm-bg` that puts near-white text on white and
+ * near-black fills on white, which is most of what makes light mode unreadable
+ * inside a session.
+ */
 export function readXtermCssVars(): ITerminalOptions['theme'] {
   const color = (name: string) => cssColorToHex(cssVar(name));
   return {
@@ -27,6 +36,22 @@ export function readXtermCssVars(): ITerminalOptions['theme'] {
     cursorAccent: color('--xterm-cursor-accent'),
     selectionBackground: color('--xterm-selection-bg'),
     selectionForeground: color('--xterm-selection-fg'),
+    black: color('--xterm-ansi-black'),
+    red: color('--xterm-ansi-red'),
+    green: color('--xterm-ansi-green'),
+    yellow: color('--xterm-ansi-yellow'),
+    blue: color('--xterm-ansi-blue'),
+    magenta: color('--xterm-ansi-magenta'),
+    cyan: color('--xterm-ansi-cyan'),
+    white: color('--xterm-ansi-white'),
+    brightBlack: color('--xterm-ansi-bright-black'),
+    brightRed: color('--xterm-ansi-bright-red'),
+    brightGreen: color('--xterm-ansi-bright-green'),
+    brightYellow: color('--xterm-ansi-bright-yellow'),
+    brightBlue: color('--xterm-ansi-bright-blue'),
+    brightMagenta: color('--xterm-ansi-bright-magenta'),
+    brightCyan: color('--xterm-ansi-bright-cyan'),
+    brightWhite: color('--xterm-ansi-bright-white'),
   };
 }
 

@@ -9,6 +9,13 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
+ * Windows' OpenSSH agent listens on a named pipe, not a Unix socket, so
+ * `statSync().isSocket()` is false for it and the glob fallbacks below (which
+ * split on '/') cannot describe it either.
+ */
+const WINDOWS_OPENSSH_AGENT_PIPE = '\\\\.\\pipe\\openssh-ssh-agent';
+
+/**
  * Common SSH agent socket locations to check as fallback
  */
 const COMMON_SSH_AGENT_LOCATIONS: ReadonlyArray<{ path: string; description: string }> = [
@@ -101,6 +108,10 @@ export function detectSshAuthSock(): string | undefined {
   // Fast path — set by resolveUserEnv() at startup in the common case.
   if (process.env.SSH_AUTH_SOCK) {
     return process.env.SSH_AUTH_SOCK;
+  }
+
+  if (process.platform === 'win32') {
+    return fs.existsSync(WINDOWS_OPENSSH_AGENT_PIPE) ? WINDOWS_OPENSSH_AGENT_PIPE : undefined;
   }
 
   // macOS launchd (fast, no shell spawn)

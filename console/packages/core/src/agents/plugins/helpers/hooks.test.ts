@@ -69,7 +69,7 @@ export async function runHookCommand(
 async function resolveEndpoint(
   env: Record<string, string>
 ): Promise<{ url: string; token: string }> {
-  return runHookCommand(makeStdinHookCommand('notification', { platform: 'linux' }), { env });
+  return runHookCommand(makeStdinHookCommand('notification')({ platform: 'linux' }), { env });
 }
 
 describe('makeStdinHookCommand endpoint resolution', () => {
@@ -144,7 +144,7 @@ describe('makeStdinHookCommand endpoint resolution', () => {
     // one or both — curl's `|| true` swallows the resulting failure.
     const payload = '{"tool_response":{"room_id":"r1","agent_id":"a1"}}';
     const { url, body } = await runHookCommand(
-      makeStdinHookCommand('switch_room_connect', { platform: 'linux' }),
+      makeStdinHookCommand('switch_room_connect')({ platform: 'linux' }),
       {
         env: {
           SWITCHDASH_HOOK_PORT: '5001',
@@ -160,11 +160,74 @@ describe('makeStdinHookCommand endpoint resolution', () => {
   });
 
   it('stays recognisable to filterUserHooks so managed entries are replaced, not duplicated', () => {
-    const command = makeStdinHookCommand('notification', { platform: 'linux' });
+    const command = makeStdinHookCommand('notification')({ platform: 'linux' });
 
     expect(command).toContain(SWITCHDASH_MARKER);
     expect(filterUserHooks([{ command }, { command: 'user-own-hook' }])).toEqual([
       { command: 'user-own-hook' },
     ]);
+  });
+});
+
+/** The PowerShell body a Windows hook command carries, base64 in the file. */
+function decodeWindowsHookScript(command: string): string {
+  const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)/.exec(command)?.[1] ?? '';
+  return Buffer.from(encoded, 'base64').toString('utf16le');
+}
+
+describe('makeStdinHookCommand target platform', () => {
+  // The console's platform is irrelevant: a Windows console installs hooks on a
+  // Linux VM over SFTP, and a `cmd.exe` command there fails on every event —
+  // silently, because agents ignore hook exit codes.
+  it('builds for the platform it is given, not the one it is running on', () => {
+    const build = makeStdinHookCommand('stop');
+
+    expect(build({ platform: 'linux' })).toContain('curl -sf -X POST');
+    expect(build({ platform: 'darwin' })).toContain('curl -sf -X POST');
+    expect(build({ platform: 'win32' })).toContain('powershell.exe -NoProfile');
+  });
+
+  // A host wraps a `command` hook in a shell of its own before running it. When
+  // this carried a `cmd.exe /d /c "…"` layer, that wrapping could eat the double
+  // quotes, leaving cmd.exe to ignore its `/c` argument, open an interactive
+  // prompt and exit 0 — a hook that reported success without running.
+  it('invokes PowerShell directly, with no shell wrapper and nothing quoted', () => {
+    const command = makeStdinHookCommand('stop')({ platform: 'win32' });
+
+    expect(command).not.toContain('cmd.exe');
+    expect(command).not.toContain('"');
+    expect(command.startsWith('powershell.exe ')).toBe(true);
+  });
+
+  it('stays recognisable on Windows, where the marker only exists inside the base64', () => {
+    const command = makeStdinHookCommand('stop')({ platform: 'win32' });
+
+    expect(command).not.toContain(SWITCHDASH_MARKER);
+    expect(decodeWindowsHookScript(command)).toContain(SWITCHDASH_MARKER);
+    expect(filterUserHooks([{ command }, { command: 'user-own-hook' }])).toEqual([
+      { command: 'user-own-hook' },
+    ]);
+  });
+
+  // Without this a Windows session goes permanently silent the first time its
+  // sidecar restarts or rotates its token — the POSIX branch has always
+  // followed the endpoint file, and the two must agree.
+  it('resolves the endpoint file on Windows too, not just the baked-in env', () => {
+    const script = decodeWindowsHookScript(makeStdinHookCommand('stop')({ platform: 'win32' }));
+
+    expect(script).toContain('$env:SWITCHDASH_HOOK_ENDPOINT_FILE');
+    expect(script).toContain('Get-Content -LiteralPath $env:SWITCHDASH_HOOK_ENDPOINT_FILE');
+    expect(script).toContain('-TotalCount 2');
+    // The request must use the resolved values, not the environment directly.
+    expect(script).toContain("-Uri ('http://127.0.0.1:' + $sdPort + '/hook')");
+    expect(script).toContain("'X-Switchdash-Token' = $sdToken");
+  });
+
+  it('still gives up quietly when neither the env nor a file yields an endpoint', () => {
+    const script = decodeWindowsHookScript(makeStdinHookCommand('stop')({ platform: 'win32' }));
+
+    expect(script).toContain(
+      'if (-not $sdPort -or -not $sdToken -or -not $env:SWITCHDASH_PTY_ID) { exit 0 }'
+    );
   });
 });

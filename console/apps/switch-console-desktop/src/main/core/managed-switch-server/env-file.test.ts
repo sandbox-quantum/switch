@@ -75,8 +75,14 @@ describe('buildEnvFile', () => {
     // "Open in Switch Console" redirect was silently disabled on every managed
     // stack) while asserting vars compose never interpolates. A list cannot
     // notice a variable being added to the contract; this can.
+    // Comments are stripped first: they document the interpolation syntax, and
+    // an example in prose is not a variable the stack needs set.
+    const composeBody = composeYaml
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
     const interpolated = new Set(
-      [...composeYaml.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1])
+      [...composeBody.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map((m) => m[1])
     );
     // Nothing is exempt today. An entry here must say why the stack is correct
     // without it — leaving a var unset is a decision, not a default.

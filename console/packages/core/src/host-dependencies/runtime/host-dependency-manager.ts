@@ -25,6 +25,7 @@ import type {
   HostDependency,
   HostDependencySelection,
   InstallCommandError,
+  InstallCommandSpec,
   Installation,
   ProbeResult,
   Provenance,
@@ -33,12 +34,14 @@ import type {
 import { resolveActiveInstallation, resolveSelectedSource } from './types';
 
 /**
- * Runs an install or update command string (e.g. "brew install claude") through the
- * host's shell. Deliberately not part of IExecutionContext: install commands are full
- * shell lines run through the user's shell profile (typically in a PTY), with failures
+ * Runs an install or update command (e.g. "brew install claude") through the
+ * host's shell. Deliberately not part of IExecutionContext: install commands are run
+ * through the user's shell profile (typically in a PTY), with failures
  * classified into InstallCommandError instead of thrown.
  */
-export type InstallCommandRunner = (command: string) => Promise<Result<void, InstallCommandError>>;
+export type InstallCommandRunner = (
+  command: InstallCommandSpec
+) => Promise<Result<void, InstallCommandError>>;
 
 const VERSION_RE = /(\d+\.\d+[\d.]*)/;
 
@@ -766,8 +769,7 @@ export class HostDependencyManager {
         args = plan.args;
       }
 
-      const commandLine = [command, ...args].join(' ');
-      const runResult = await this.runInstallCommand(commandLine);
+      const runResult = await this.runInstallCommand({ command, args });
       if (!runResult.success) return err(runResult.error);
     } else {
       return err({ type: 'no-update-strategy', id });
@@ -848,8 +850,7 @@ export class HostDependencyManager {
         args = plan.args;
       }
 
-      const commandLine = [command, ...args].join(' ');
-      const runResult = await this.runInstallCommand(commandLine);
+      const runResult = await this.runInstallCommand({ command, args });
       if (!runResult.success) return err(runResult.error);
     } else {
       return err({ type: 'no-uninstall-command', id });

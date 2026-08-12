@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, type ReactNode } from 'react';
 import type { GuardResult } from '@renderer/app/view-registry';
 import {
+  resolveSettingsTab,
   SettingsPage,
   type SettingsPageTab,
 } from '@renderer/features/settings/components/SettingsPage';
@@ -15,7 +16,7 @@ const SettingsTabContext = createContext<{
 /** Minimal passthrough — exists so the registry can infer WrapParams<'settings'>. */
 export function SettingsViewWrapper({
   children,
-  tab = 'general',
+  tab,
 }: {
   children: ReactNode;
   tab?: SettingsPageTab;
@@ -28,7 +29,9 @@ export function SettingsViewWrapper({
     [setParams]
   );
   return (
-    <SettingsTabContext.Provider value={{ tab, onTabChange: handleTabChange }}>
+    <SettingsTabContext.Provider
+      value={{ tab: resolveSettingsTab(tab), onTabChange: handleTabChange }}
+    >
       {children}
     </SettingsTabContext.Provider>
   );
@@ -67,13 +70,17 @@ export const settingsView = {
   MainPanel: SettingsMainPanel,
   /**
    * Remote hosts moved out of Settings to their own view (CHOO-1809). A
-   * persisted snapshot from an older build can still name that tab, which would
-   * otherwise render Settings with nothing selected — send it to the new view.
+   * persisted snapshot from an older build can still name that tab, so send it
+   * to the new view once. `discardParams` is what keeps that to once: without
+   * it the stale tab stays in the store, `navigate('settings')` falls back to
+   * it, and every later attempt to open Settings redirects here too.
    */
   canActivate: (params: unknown): GuardResult => {
     const tab =
       typeof params === 'object' && params !== null ? (params as { tab?: unknown }).tab : undefined;
-    if (tab === 'remote-hosts') return { ok: false, redirect: 'remoteHosts' };
+    if (tab === 'remote-hosts') {
+      return { ok: false, redirect: 'remoteHosts', discardParams: true };
+    }
     return { ok: true };
   },
 };

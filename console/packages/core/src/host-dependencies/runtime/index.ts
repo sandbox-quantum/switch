@@ -26,6 +26,7 @@ export {
   type HostDependency,
   type HostDependencySelection,
   type InstallCommandError,
+  type InstallCommandSpec,
   type InstallOverride,
   type Installation,
   type Provenance,

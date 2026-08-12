@@ -1,4 +1,4 @@
-import type { PluginFs } from '@switch-console/core/agents/plugins';
+import type { HookCommandOptions, PluginFs } from '@switch-console/core/agents/plugins';
 import type { HookRegistration } from '@switch-console/core/agents/plugins';
 import {
   SWITCHDASH_MARKER,
@@ -21,11 +21,11 @@ const KIMI_HOOK_SPECS = [
   { hookKey: 'SessionEnd', command: makeStdinHookCommand('stop') },
 ];
 
-function buildKimiHookEntries(existing: unknown[]): unknown[] {
+function buildKimiHookEntries(existing: unknown[], opts: HookCommandOptions): unknown[] {
   const userEntries = filterUserHooks(existing as Record<string, unknown>[]);
   const switchConsoleEntries = KIMI_HOOK_SPECS.map(({ hookKey, command }) => ({
     event: hookKey,
-    command,
+    command: command(opts),
   }));
   return [...userEntries, ...switchConsoleEntries];
 }
@@ -34,11 +34,11 @@ function buildKimiHookEntries(existing: unknown[]): unknown[] {
  * Inject kimi hooks into an inline --config JSON/TOML text string.
  * Used by the kimi buildCommand to patch the --config= flag value on the fly.
  */
-export function addKimiHooksToConfigText(content: string): string {
+export function addKimiHooksToConfigText(content: string, opts: HookCommandOptions): string {
   try {
     const config = JSON.parse(content) as Record<string, unknown>;
     const hooks = Array.isArray(config.hooks) ? config.hooks : [];
-    config.hooks = buildKimiHookEntries(hooks);
+    config.hooks = buildKimiHookEntries(hooks, opts);
     return JSON.stringify(config);
   } catch {
     /* fall through to TOML */
@@ -46,14 +46,18 @@ export function addKimiHooksToConfigText(content: string): string {
   try {
     const config = parseTOML(content) as Record<string, unknown>;
     const hooks = Array.isArray(config.hooks) ? config.hooks : [];
-    config.hooks = buildKimiHookEntries(hooks);
+    config.hooks = buildKimiHookEntries(hooks, opts);
     return stringifyTOML(config);
   } catch {
     return content;
   }
 }
 
-async function writeKimiHookPath(fs: PluginFs, path: string): Promise<boolean> {
+async function writeKimiHookPath(
+  fs: PluginFs,
+  path: string,
+  opts: HookCommandOptions
+): Promise<boolean> {
   const content = await fs.read(path);
   let config: Record<string, unknown> = {};
   if (content) {
@@ -64,7 +68,7 @@ async function writeKimiHookPath(fs: PluginFs, path: string): Promise<boolean> {
     }
   }
   const hooks = Array.isArray(config.hooks) ? config.hooks : [];
-  config.hooks = buildKimiHookEntries(hooks);
+  config.hooks = buildKimiHookEntries(hooks, opts);
   await fs.write(path, stringifyTOML(config));
   return true;
 }
@@ -87,9 +91,13 @@ export function buildKimiHookConfig() {
       }
       return [];
     },
-    async writeHooks(fs: PluginFs, _hooks: HookRegistration[]): Promise<string[]> {
-      await writeKimiHookPath(fs, KIMI_CONFIG_PATH);
-      await writeKimiHookPath(fs, KIMI_LEGACY_CONFIG_PATH);
+    async writeHooks(
+      fs: PluginFs,
+      _hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
+      await writeKimiHookPath(fs, KIMI_CONFIG_PATH, opts);
+      await writeKimiHookPath(fs, KIMI_LEGACY_CONFIG_PATH, opts);
       return [KIMI_CONFIG_PATH, KIMI_LEGACY_CONFIG_PATH];
     },
     async deleteHooks(fs: PluginFs): Promise<void> {
