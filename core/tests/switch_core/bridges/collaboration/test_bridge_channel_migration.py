@@ -73,6 +73,38 @@ def _room(room_id: str = "room-uuid") -> SimpleNamespace:
     return SimpleNamespace(id=room_id, matrix_room_id=f"!{room_id}:switch.local")
 
 
+def test_the_handler_is_installed_before_the_adapter_starts() -> None:
+    # Both halves are tested apart from each other, so without this the line
+    # that connects them could be deleted and every other test would pass —
+    # and the adapter would report a migration into a handler that is None.
+    installed: list[Any] = []
+    started: list[str] = []
+
+    class _Adapter:
+        def set_channel_migration_handler(self, handler: Any) -> None:
+            installed.append(handler)
+
+        async def start(self, **kwargs: Any) -> None:
+            started.append("started")
+            assert installed, "the handler must be installed before start()"
+
+    bridge = _make_bridge({})
+    bridge._adapter = _Adapter()  # type: ignore[assignment]
+
+    async def _noop() -> None:
+        return None
+
+    bridge._load_channel_map = _noop  # type: ignore[assignment,method-assign]
+    bridge._load_existing_puppets = _noop  # type: ignore[assignment,method-assign]
+    bridge._ensure_channel_captures = _noop  # type: ignore[assignment,method-assign]
+    bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
+
+    asyncio.run(BridgeCore.start(bridge))
+
+    assert started == ["started"]
+    assert installed == [bridge._handle_channel_migrated]
+
+
 def test_the_room_moves_onto_the_new_channel_id() -> None:
     room = _room()
     bridge = _make_bridge({OLD_ID: room})

@@ -46,7 +46,9 @@ On success the bridge starts polling.
 ## 2. Add the bot to a chat, from the dashboard
 
 On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**
-with two links:
+with two links. The icon is shown to admins, and only while the bridge is
+running — the links are built by the live bridge, so a bridge that failed to
+start offers none.
 
 - **Add to a Telegram group** — opens Telegram, asks which group, and adds the
   bot as an administrator with the one right the bridge uses. One confirmation.
@@ -93,8 +95,11 @@ see messages that tag it, and the bridge logs a warning naming each mention-only
 chat at startup.
 
 To upgrade a chat later, promote the bot to administrator in Telegram's group
-settings, or re-run the dashboard's **Add to a Telegram group** link and pick
-the same group — Telegram combines the new rights with the existing ones.
+settings — **Delete Messages** is the only right worth granting — or re-run the
+dashboard's **Add to a Telegram group** link and pick the same group, which
+grants it for you; Telegram combines the new rights with any existing ones.
+Either way the bot confirms in the chat that it can now see the conversation,
+and a demotion is announced the same way.
 
 ## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 

@@ -1862,7 +1862,7 @@ def test_an_administrator_bot_sees_everything_despite_privacy_mode() -> None:
     adapter._privacy_mode_disabled = False
     _bot(adapter).member_status = "administrator"
 
-    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "full"
+    assert _run(adapter._chat_visibility(str(CHAT_ID))).status == "full"
 
 
 def test_a_plain_member_bot_with_privacy_mode_on_is_mention_only() -> None:
@@ -1870,7 +1870,7 @@ def test_a_plain_member_bot_with_privacy_mode_on_is_mention_only() -> None:
     adapter._privacy_mode_disabled = False
     _bot(adapter).member_status = "member"
 
-    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "mention_only"
+    assert _run(adapter._chat_visibility(str(CHAT_ID))).status == "mention_only"
 
 
 def test_a_plain_member_bot_with_privacy_mode_off_sees_everything() -> None:
@@ -1878,7 +1878,7 @@ def test_a_plain_member_bot_with_privacy_mode_off_sees_everything() -> None:
     adapter._privacy_mode_disabled = True
     _bot(adapter).member_status = "member"
 
-    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "full"
+    assert _run(adapter._chat_visibility(str(CHAT_ID))).status == "full"
 
 
 def test_a_one_to_one_chat_is_always_fully_visible() -> None:
@@ -1887,14 +1887,14 @@ def test_a_one_to_one_chat_is_always_fully_visible() -> None:
     adapter._privacy_mode_disabled = False
     _bot(adapter).chat = _FakeChat(chat_type="private")
 
-    assert _run(adapter._chat_visibility("7")) == "full"
+    assert _run(adapter._chat_visibility("7")).status == "full"
 
 
 def test_visibility_is_unknown_rather_than_guessed_when_the_lookup_fails() -> None:
     adapter = _adapter()
     _bot(adapter).get_chat_member_error = TelegramError("no")
 
-    assert _run(adapter._chat_visibility(str(CHAT_ID))) == "unknown"
+    assert _run(adapter._chat_visibility(str(CHAT_ID))).status == "unknown"
 
 
 def test_a_mention_only_chat_is_told_so_in_the_chat() -> None:
@@ -2051,3 +2051,147 @@ def test_an_ordinary_command_is_still_dispatched() -> None:
     _run(adapter._handle_message(_FakeInbound(text="/list-agents")))
 
     assert [c.command for c in commands] == ["list-agents"]
+
+
+def test_administrator_status_is_reported_as_the_conclusive_answer() -> None:
+    # The global privacy flag is not conclusive — Telegram only reads it when
+    # the bot joins — so callers that can act on the difference need to know
+    # which of the two settled it.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = True
+    _bot(adapter).member_status = "administrator"
+
+    assert _run(adapter._chat_visibility(str(CHAT_ID))).via_admin is True
+
+
+def test_the_chat_creator_counts_as_an_administrator() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "creator"
+
+    visibility = _run(adapter._chat_visibility(str(CHAT_ID)))
+    assert visibility.status == "full"
+    assert visibility.via_admin is True
+
+
+def test_full_visibility_from_the_global_setting_alone_is_not_conclusive() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = True
+    _bot(adapter).member_status = "member"
+
+    assert _run(adapter._chat_visibility(str(CHAT_ID))).via_admin is False
+
+
+def test_promoting_the_bot_retracts_the_mention_only_warning() -> None:
+    # The documented way to upgrade a chat. Without this the warning stands
+    # forever and nothing confirms the promotion worked.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    _bot(adapter).member_status = "administrator"
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    assert "whole conversation here now" in _bot(adapter).messages[-1]["text"]
+
+
+def test_demoting_the_bot_says_what_was_lost() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "administrator"
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+    assert _bot(adapter).messages == []
+
+    _bot(adapter).member_status = "member"
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+
+
+def test_a_chat_that_was_already_visible_is_not_congratulated() -> None:
+    # Only a change is worth saying. A first look that finds everything in
+    # order stays quiet.
+    adapter = _adapter()
+    _bot(adapter).member_status = "administrator"
+
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+    _run(adapter.announce_visibility(str(CHAT_ID)))
+
+    assert _bot(adapter).messages == []
+
+
+def test_startup_audit_names_a_chat_it_is_taking_on_trust(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Privacy mode off, but the bot is not an admin here: Telegram reads that
+    # setting at join time and no API call says which value this chat got. If
+    # the bot predates the change it is still being filtered, and this is the
+    # only line anywhere that says so.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = True
+    _bot(adapter).member_status = "member"
+
+    with caplog.at_level(logging.INFO):
+        _run(adapter.ensure_channel_subscriptions([(str(CHAT_ID), "channel_private")]))
+
+    assert "add it back" in caplog.text
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_an_administrator_chat_is_audited_without_caveat(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "administrator"
+
+    with caplog.at_level(logging.INFO):
+        _run(adapter.ensure_channel_subscriptions([(str(CHAT_ID), "channel_private")]))
+
+    assert caplog.text == ""
+
+
+def test_being_added_by_hand_still_discloses_a_mention_only_chat() -> None:
+    # The route with no install link behind it, and the one most likely to be
+    # mention-only. The notice must not depend on the /start handshake.
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+    joins: list[Any] = []
+    adapter._on_app_joined = lambda j: _collect(joins, j)
+
+    _run(
+        adapter._handle_my_chat_member(
+            _FakeChatMemberUpdate(_FakeChat(), status="member")
+        )
+    )
+
+    assert [j.channel_id for j in joins] == [str(CHAT_ID)]
+    # After provisioning: a notice about a room that does not exist yet would
+    # point at nothing.
+    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+
+
+def test_a_chat_reissued_a_new_id_is_re_assessed() -> None:
+    # The new id is a different chat as far as Telegram is concerned, so
+    # anything said about the old one no longer holds.
+    adapter = _adapter()
+    adapter._visibility_announced[str(CHAT_ID)] = "mention_only"
+    adapter.set_channel_migration_handler(lambda old, new: _noop_migration())
+
+    _run(adapter._repoint(str(CHAT_ID), "-1009876543210"))
+
+    assert str(CHAT_ID) not in adapter._visibility_announced
+
+
+async def _noop_migration() -> None:
+    return None
+
+
+def test_a_bridge_with_no_bot_username_offers_no_install_link() -> None:
+    # The links are built from it; without one there is nothing to point at.
+    adapter = _adapter()
+    adapter._bot_username = ""
+
+    assert _run(adapter.install_links()) == []

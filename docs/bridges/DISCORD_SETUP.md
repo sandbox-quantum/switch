@@ -63,7 +63,7 @@ the server icon → **Copy Server ID**. This is the `guild_id`.
 ## 5. Onboard the bridge in Switch
 
 As a gateway admin, onboard the bridge from the **operator dashboard**:
-**Messaging Apps → Add bridge → Discord**, give it a display name (e.g. "Acme
+**Messaging Apps → Register messaging app → Discord**, give it a display name (e.g. "Acme
 Discord"), and fill in the fields below.
 
 Fields (`DiscordConnectionConfig`):

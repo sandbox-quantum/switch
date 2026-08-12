@@ -6,7 +6,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
-from typing import Any
+from typing import Any, NamedTuple
 
 from telegram import (
     BotCommand,
@@ -95,6 +95,19 @@ _SUPERGROUP_PREFIX = "-100"
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 
+class _ChatVisibility(NamedTuple):
+    """What the bridge can see in one chat, and how certain that is.
+
+    ``status`` is ``"full"``, ``"mention_only"`` or ``"unknown"``.
+    ``via_admin`` is True only when it was settled by the bot's administrator
+    status *in this chat*, which is the one conclusive answer — see
+    ``_chat_visibility``.
+    """
+
+    status: str
+    via_admin: bool
+
+
 class TelegramConnectionConfig(BridgeConnectionConfig):
     bot_token: str
     bot_username: str
@@ -140,9 +153,9 @@ class TelegramAdapter(CollaborationAdapter):
         # at startup. It is a global setting and says nothing about any one
         # chat, so it is only half of what _chat_visibility decides.
         self._privacy_mode_disabled = False
-        # Chats already told what the bridge can and cannot see here, so a
-        # reconnect or a second join does not repeat the notice.
-        self._visibility_announced: set[str] = set()
+        # chat id -> the visibility last announced in it, so a reconnect or a
+        # second join repeats nothing while a real change is always said.
+        self._visibility_announced: dict[str, str] = {}
         # The bot can delete its own messages, so runtime state renders as a
         # persistent message (the base class's _working_msg) rather than the
         # one-shot typing action.
@@ -274,7 +287,7 @@ class TelegramAdapter(CollaborationAdapter):
             self._bot_username,
         )
 
-    async def _chat_visibility(self, channel_id: str) -> str:
+    async def _chat_visibility(self, channel_id: str) -> _ChatVisibility:
         """What the bridge can actually see in one chat.
 
         ``"full"`` — every message. ``"mention_only"`` — commands, replies to
@@ -282,13 +295,20 @@ class TelegramAdapter(CollaborationAdapter):
         update ever reaches us and cannot be worked around in code.
         ``"unknown"`` — the lookup failed, so nothing is claimed either way.
 
-        Two things grant full visibility and either is enough: the bot is an
-        administrator of this chat, or privacy mode is off for the bot
-        globally. A 1:1 chat is always fully visible — privacy mode has never
-        applied to private chats.
+        Two things grant full visibility: the bot is an administrator of this
+        chat, or privacy mode is off for the bot globally. A 1:1 chat is always
+        fully visible — privacy mode has never applied to private chats.
+
+        ``via_admin`` says which of the two it was, because they are not equally
+        certain. Administrator status is read from this chat and is conclusive.
+        The global setting is not: Telegram only re-reads it when the bot
+        **joins**, so a bot that was already in a chat before privacy mode was
+        disabled is still filtered there, and no Bot API call distinguishes
+        that from a working one. Callers that can act on the difference say so
+        rather than reporting certainty nothing has.
         """
         if self._bot is None:
-            return "unknown"
+            return _ChatVisibility("unknown", via_admin=False)
         try:
             chat = await self._bot.get_chat(self._chat_id(channel_id))
         except Exception:
@@ -297,9 +317,9 @@ class TelegramAdapter(CollaborationAdapter):
                 channel_id,
                 exc_info=True,
             )
-            return "unknown"
+            return _ChatVisibility("unknown", via_admin=False)
         if self._channel_type_of(chat) == "lobby":
-            return "full"
+            return _ChatVisibility("full", via_admin=False)
         try:
             member = await self._bot.get_chat_member(
                 chat_id=self._chat_id(channel_id), user_id=self._bot_user_id
@@ -310,14 +330,16 @@ class TelegramAdapter(CollaborationAdapter):
                 channel_id,
                 exc_info=True,
             )
-            return "unknown"
+            return _ChatVisibility("unknown", via_admin=False)
         status = str(getattr(member, "status", "") or "")
         if status in ("administrator", "creator"):
-            return "full"
-        return "full" if self._privacy_mode_disabled else "mention_only"
+            return _ChatVisibility("full", via_admin=True)
+        if self._privacy_mode_disabled:
+            return _ChatVisibility("full", via_admin=False)
+        return _ChatVisibility("mention_only", via_admin=False)
 
     async def announce_visibility(self, channel_id: str) -> None:
-        """Tell a chat what the bridge can see in it, once.
+        """Tell a chat what the bridge can see in it, when that changes.
 
         A mention-only bridge works — agents are addressed by `@name`, which is
         one of the few things Telegram does deliver — but it will not follow a
@@ -325,15 +347,26 @@ class TelegramAdapter(CollaborationAdapter):
         indistinguishable from agents ignoring people. So it is said in the
         chat, where whoever just added the bot is looking, along with the one
         action that fixes it.
+
+        Said again only when the answer actually changes, so promoting the bot
+        confirms itself and retracts the warning, and demoting it does not go
+        unmentioned — while a reconnect or a second join stays silent.
         """
-        if channel_id in self._visibility_announced:
-            return
         visibility = await self._chat_visibility(channel_id)
-        if visibility == "unknown":
+        if visibility.status == "unknown":
             return
-        self._visibility_announced.add(channel_id)
-        if visibility == "full":
+        previous = self._visibility_announced.get(channel_id)
+        if previous == visibility.status:
+            return
+        self._visibility_announced[channel_id] = visibility.status
+        if visibility.status == "full":
             logger.info("Telegram chat %s is fully visible to the bridge", channel_id)
+            if previous == "mention_only":
+                await self.admin_message(
+                    channel_id,
+                    "✅ <b>I can see the whole conversation here now.</b> Agents "
+                    "will follow this chat without having to be tagged.",
+                )
             return
         logger.warning(
             "Telegram chat %s is mention-only: the bot is not an administrator "
@@ -349,8 +382,9 @@ class TelegramAdapter(CollaborationAdapter):
             f"addressed to <code>@{self._bot_username}</code> or to an agent by "
             "name, and nothing else.\n\n"
             "To bridge the whole conversation, make me an administrator of this "
-            "chat — no other permission is needed, and nothing in BotFather has "
-            "to change.",
+            "chat. Nothing in BotFather has to change, and the only right I use "
+            "is <b>Delete Messages</b> — for clearing my own status messages "
+            "once a turn ends.",
         )
 
     async def ensure_channel_subscriptions(
@@ -369,11 +403,24 @@ class TelegramAdapter(CollaborationAdapter):
             if channel_type == "lobby":
                 continue
             visibility = await self._chat_visibility(channel_id)
-            if visibility == "mention_only":
+            if visibility.status == "mention_only":
                 logger.warning(
                     "Telegram chat %s is mention-only: the bot is not an "
                     "administrator there and privacy mode is on. Ordinary "
                     "messages in it never reach Switch",
+                    channel_id,
+                )
+            elif visibility.status == "full" and not visibility.via_admin:
+                # Taken on trust: Telegram reads the global privacy setting
+                # when the bot joins, and nothing in the Bot API reports which
+                # value was read for this chat. A bot that was already here
+                # before privacy mode was disabled is still being filtered, and
+                # this line is the only place that says so.
+                logger.info(
+                    "Telegram chat %s is assumed fully visible because privacy "
+                    "mode is off for the bot; if messages from it never arrive, "
+                    "the bot was in the chat before that was changed — remove "
+                    "it and add it back, or make it an administrator",
                     channel_id,
                 )
 
@@ -410,6 +457,11 @@ class TelegramAdapter(CollaborationAdapter):
                     "For broadcast channels, where posting is admin-only. Pick "
                     "the channel and confirm."
                 ),
+                # `startchannel` deliberately carries no payload: Telegram
+                # documents the start parameter as group-only and "absent in
+                # channel links", and a channel add sends the bot no `/start`
+                # to read one from. Giving it a value here would look symmetric
+                # with the group link and mean nothing.
                 url=f"{base}?startchannel&admin={_CHANNEL_ADMIN_RIGHTS}",
             ),
         ]
@@ -1038,23 +1090,27 @@ class TelegramAdapter(CollaborationAdapter):
     async def _handle_my_chat_member(self, event: Any) -> None:
         """The bot's own membership changed. Being added is Telegram's
         equivalent of Slack's "app added to channel", and is what provisions the
-        chat's room — Discord has no such signal and has to wait for a message."""
+        chat's room — Discord has no such signal and has to wait for a message.
+
+        Promotion and demotion arrive here too, and they change what the bridge
+        can see, so this is also where that is re-checked: being promoted is the
+        documented way to turn a mention-only chat into a full one, and nothing
+        else would ever retract the warning that said so."""
         new_status = getattr(getattr(event, "new_chat_member", None), "status", None)
         if new_status not in ("member", "administrator"):
             return
         chat = getattr(event, "chat", None)
         if chat is None or self._channel_type_of(chat) == "lobby":
             return
-        if self._on_app_joined is None:
-            return
         channel_id = str(chat.id)
-        await self._on_app_joined(
-            InboundAppJoin(
-                channel_id=channel_id,
-                channel_type=self._channel_type_of(chat),
-                channel_name=getattr(chat, "title", None),
+        if self._on_app_joined is not None:
+            await self._on_app_joined(
+                InboundAppJoin(
+                    channel_id=channel_id,
+                    channel_type=self._channel_type_of(chat),
+                    channel_name=getattr(chat, "title", None),
+                )
             )
-        )
         # After provisioning, so the notice cannot arrive before the room it
         # refers to exists.
         await self.announce_visibility(channel_id)
@@ -1221,7 +1277,7 @@ class TelegramAdapter(CollaborationAdapter):
         )
         # The new chat is a different chat as far as Telegram is concerned, so
         # anything said about the old one no longer holds.
-        self._visibility_announced.discard(old_id)
+        self._visibility_announced.pop(old_id, None)
         await self._on_channel_migrated(old_id, new_id)
 
     async def _handle_new_members(
@@ -1270,6 +1326,11 @@ class TelegramAdapter(CollaborationAdapter):
         A bare `/start` in a 1:1 chat is left alone — it is how a person opens
         a conversation with the bot, and swallowing it would leave the DM
         unbridged until they typed again.
+
+        Only groups reach this at all. A channel add sends no `/start` — the
+        start parameter is group-only — and a channel post has no sender, so it
+        is dropped before here; a channel's visibility is announced from the
+        membership event instead.
 
         Returns True when the message was the handshake and must not be
         bridged.

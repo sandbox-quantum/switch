@@ -268,7 +268,10 @@ themselves.
 On Discord the same registry is also published as native slash commands
 ([`bridges/collaboration/discord/slash.py`](../core/switch_core/bridges/collaboration/discord/slash.py)):
 a slash invocation is reassembled into the positional form the `!` handlers
-already parse, so both entry points reach one implementation.
+already parse, so both entry points reach one implementation. Telegram
+publishes the same registry to its command menu, where `/` is the platform's
+own convention and a `/`-prefixed message is one of the few things a bot is
+delivered without being an administrator of the chat.
 
 ### 4.5 Room provisioning & lifecycle
 

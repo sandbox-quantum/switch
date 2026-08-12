@@ -58,12 +58,18 @@ version of their own to them without also giving them a release of their own.
   Neither disabling privacy mode in BotFather nor promoting the bot by hand is
   needed any more — Telegram exempts an administrator bot from privacy mode, and
   the link adds it as one, asking only for the rights the bridge uses.
-- A bridged chat is told what the bridge can see in it. Visibility is settled
-  per chat rather than inferred from the bot's global privacy setting, which is
-  what made an administrator bot report a fault it did not have. A chat the
-  bridge can only see mentions in — no admin, privacy mode on — is a supported
-  way to run and is disclosed as one: a notice in the chat on arrival, and a
-  warning naming each such chat at startup.
+- A bridged chat is told what the bridge can see in it, and told again whenever
+  that changes — so promoting the bot confirms itself and retracts the earlier
+  warning, and a demotion does not pass unmentioned. Visibility is settled per
+  chat rather than inferred from the bot's global privacy setting, which is what
+  made an administrator bot report a fault it did not have. A chat the bridge can
+  only see mentions in — no admin, privacy mode on — is a supported way to run
+  and is disclosed as one: a notice in the chat, and a warning naming each such
+  chat at startup. Where the answer rests on the global setting rather than on
+  admin status it is taken on trust and logged as such: Telegram reads that
+  setting when the bot joins and no API call reports which value a given chat
+  got, so a bot that predates the change is still filtered and only a re-add or a
+  promotion fixes it.
 
 #### Fixed
 - A room follows its Telegram chat when the chat is reissued a new id, which
@@ -1202,8 +1208,12 @@ compatibility signal. History for those is in the git log.
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
   uploads, chats cannot be created by a bot at all (so `create_room` fails there
   for every channel type), forum topics thread natively, and formatting has no
-  tables and a 4096-character cap (CHOO-1686). The slash-command and attachment
-  platform lists now also name Discord, which had been left out of both.
+  tables and a 4096-character cap (CHOO-1686). It also warns that a Telegram
+  room may be mention-only, where unaddressed talk never reaches Switch at all
+  and `read_context` cannot recover it — the one place the skill's "pull the
+  rest with `read_context`" promise does not hold. The slash-command and
+  attachment platform lists now also name Discord, which had been left out of
+  both.
 - Skill: document the room-document and room-admin tools it had never
   mentioned — `load_internal_documents` (without which an agent cannot read a
   document attached to its own room), `list_references`, the
@@ -1262,8 +1272,12 @@ manifest history.
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
   uploads, chats cannot be created by a bot at all (so `create_room` fails there
   for every channel type), forum topics thread natively, and formatting has no
-  tables and a 4096-character cap (CHOO-1686). The slash-command and attachment
-  platform lists now also name Discord, which had been left out of both.
+  tables and a 4096-character cap (CHOO-1686). It also warns that a Telegram
+  room may be mention-only, where unaddressed talk never reaches Switch at all
+  and `read_context` cannot recover it — the one place the skill's "pull the
+  rest with `read_context`" promise does not hold. The slash-command and
+  attachment platform lists now also name Discord, which had been left out of
+  both.
 - Skill: document the room-document and room-admin tools it had never
   mentioned — `load_internal_documents` (without which an agent cannot read a
   document attached to its own room), `list_references`, the

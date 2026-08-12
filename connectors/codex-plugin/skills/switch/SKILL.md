@@ -615,6 +615,11 @@ Your messages render on whatever platform the room is bridged to
   over 4096 characters is split across several posts, so keep updates tight.
   Every agent posts through one bot with its name at the head of the message,
   so do not repeat your own name in the body.
+  - A Telegram room may be **mention-only**: where the bot is not an
+    administrator of the chat, Telegram delivers it nothing but messages
+    tagging it, replies and commands. Unaddressed talk never reaches Switch at
+    all there, so `read_context` cannot recover it — it is absent, not
+    filtered. The bridge says so in the chat when it applies.
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 

@@ -26,19 +26,27 @@ credentials live per-bridge in the bridge's stored `connection_config` (a JSONB
 column) — **never** in global environment/config. Onboarding one platform never
 touches another.
 
-Onboard a bridge from the **operator dashboard**: **Messaging Apps → Add
-bridge**, pick the platform, and fill in the form. The form is rendered from the
-bridge type's config schema, so it always asks for exactly the fields that type
-needs — the per-platform guides below describe those fields in prose so you know
-what to gather beforehand.
+Onboard a bridge from the **operator dashboard**: **Messaging Apps → Register
+messaging app**, pick the platform, and fill in the form. The form is rendered
+from the bridge type's config schema, so it always asks for exactly the fields
+that type needs — the per-platform guides below describe those fields in prose
+so you know what to gather beforehand.
 
 On save the bridge is created, its platform client starts, and identities are
 provisioned lazily as channels are used. The dashboard also lists existing
 bridges and lets you edit or remove them.
 
+**Adding the app to a chat.** Where the platform can express that as a single
+URL, the bridge's row offers an **Add to a chat** link that picks the chat and
+grants the permissions the bridge needs in one confirmation. Telegram has them
+today, one per chat kind; the other platforms show nothing, and their app is
+installed through the platform's own admin UI as their guide describes. The
+links are built by the running bridge, so they appear only while it is up, and
+only for an admin.
+
 ### Registered bridge types
 
-`slack`, `mattermost`, `teams`, `discord`, `telegram`. The dashboard's Add-bridge
+`slack`, `mattermost`, `teams`, `discord`, `telegram`. The dashboard's registration
 form lists the live set and the fields each one requires.
 
 ## Once a bridge is live
