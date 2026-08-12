@@ -127,11 +127,16 @@ const config: Configuration = {
     // space-free name avoids that and matches `desktopName` above.
     executableName: APP_NAME_LOWER,
     syncDesktopName: true,
-    target: [
-      { target: 'AppImage', arch: ['x64'] },
-      { target: 'deb', arch: ['x64'] },
-      { target: 'rpm', arch: ['x64'] },
-    ],
+    // No `arch` here on purpose: electron-builder then builds the HOST arch,
+    // or whichever `--x64` / `--arm64` the caller passes. Naming both arches
+    // in the target entries instead makes every invocation build both and
+    // ignore the flag — which is not merely slow. `npmRebuild: false` means
+    // the native modules (better-sqlite3, node-pty, @parcel/watcher) are
+    // whatever the earlier `pnpm rebuild` produced for the host, copied into
+    // every package unchanged, so the non-host arch comes out installable,
+    // launchable, and dead on the first require of a wrong-arch `.node`. The
+    // release workflow builds each arch on a runner of that arch.
+    target: ['AppImage', 'deb', 'rpm'],
   },
   // deb/rpm package names must be lowercase and space-free, so they are pinned
   // rather than derived from the display name (same as the canary channel).
@@ -141,18 +146,28 @@ const config: Configuration = {
   rpm: {
     packageName: APP_NAME_LOWER,
   },
+  // Windows ships UNSIGNED: there is no Authenticode identity for this app
+  // (CHOO-1468), so SmartScreen warns on first run.
+  //
+  // There is deliberately no `azureSignOptions` key. electron-builder chooses its
+  // signing backend from that key's presence alone, never checking for
+  // credentials, so setting it commits the build to Azure Trusted Signing: a
+  // PowerShell call that fails on any non-Windows host and, without credentials,
+  // on Windows too. Its absence selects the signtool backend, which finds no
+  // certificate and skips signing rather than failing.
+  //
+  // Its absence also keeps `publisherName` out of app-update.yml, which is what
+  // makes auto-update work here: electron-updater verifies an installer's
+  // Authenticode signature only when app-update.yml names a publisher, so an
+  // unsigned build that named one would reject every update it downloaded.
+  //
+  // Adding signing therefore means adding both an identity and this key together.
   win: {
     icon: 'src/assets/images/switch-console/app-icon-beta.png',
     target: [
       { target: 'nsis', arch: ['x64'] },
       { target: 'msi', arch: ['x64'] },
     ],
-    azureSignOptions: {
-      publisherName: 'General Action, Inc.',
-      endpoint: 'https://eus.codesigning.azure.net/',
-      certificateProfileName: 'switch-console-public',
-      codeSigningAccountName: 'switch-console',
-    },
   },
   msi: {
     oneClick: false,

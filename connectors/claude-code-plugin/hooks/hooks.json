@@ -15,7 +15,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Edit|Write|NotebookEdit|Agent|mcp__.*__connect_to_room|mcp__.*__assume_role|mcp__.*__release_role",
+        "matcher": "Bash|Edit|Write|NotebookEdit|Agent|mcp__.*__connect_to_room|mcp__.*__read_context|mcp__.*__assume_role|mcp__.*__release_role",
         "hooks": [
           {
             "type": "command",

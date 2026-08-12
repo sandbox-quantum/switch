@@ -367,3 +367,38 @@ def test_handlers_do_nothing_when_credentials_cannot_be_resolved(
     # reason is on stderr rather than nowhere.
     assert captured.out == ""
     assert "NOT running" in captured.err
+
+
+def test_reading_the_room_still_clears_the_unread_tally_without_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The reset goes to the local runtime, not to Switch, so it must not be
+    gated on credentials the way mediation is.
+
+    An agent whose mediation cannot run still reads its room; leaving the tally
+    climbing would keep telling it it is behind when it is not.
+    """
+    plugin_data = tmp_path / "plugin-data"
+    plugin_data.mkdir()
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+    hook = load_hook(monkeypatch, tmp_path)
+    (plugin_data / "session_s1.json").write_text(
+        json.dumps({"room_id": "!room:switch.local", "agent_id": "uuid-nobody"})
+    )
+
+    notified: list[str] = []
+    monkeypatch.setattr(
+        hook, "_notify_channel", lambda path, body: notified.append(path)
+    )
+
+    hook.handle_post_tool_use(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "mcp__plugin_switch-connector_switch__read_context",
+            "tool_input": {},
+            "tool_response": {},
+            "session_id": "s1",
+        }
+    )
+
+    assert notified == ["/read-context"]

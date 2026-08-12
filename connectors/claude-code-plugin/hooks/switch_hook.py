@@ -377,8 +377,6 @@ def handle_post_tool_use(event: dict) -> None:
     state = _load_state(event["session_id"])
     if state is None:
         return
-    if not _has_credentials(state["agent_id"]):
-        return
 
     agent_id = state["agent_id"]
     room_id = state["room_id"]
@@ -389,10 +387,15 @@ def handle_post_tool_use(event: dict) -> None:
     request_id = str(uuid.uuid4())
 
     # Reading context means the agent caught up on room history, so clear the
-    # channel's missed-message tally. read_context still flows through the
-    # normal reporting/mediation below — this only piggybacks the reset signal.
+    # channel's missed-message tally. This goes to the runtime on localhost and
+    # needs no Switch credentials, so it happens before the check below — an
+    # agent whose mediation cannot run still reads its room, and leaving the
+    # tally climbing would tell it it is behind when it is not.
     if tool_name.endswith("read_context"):
         _notify_channel("/read-context", {})
+
+    if not _has_credentials(agent_id):
+        return
 
     try:
         _api_call(

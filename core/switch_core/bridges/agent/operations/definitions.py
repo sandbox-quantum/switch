@@ -571,9 +571,11 @@ async def read_context(
 
     **`truncated` matters.** It is True when older history exists that this
     call did not reach — you are looking at a partial conversation. Widen
-    `limit`, or page backwards with `before` set to `oldest_timestamp`, before
-    concluding you have the full picture. It is deliberately conservative: a
-    read that ends exactly on `limit` reports truncated even if nothing older
+    `limit`, or page backwards with `before`, before concluding you have the
+    full picture. `oldest_timestamp` marks where to resume, but it is epoch
+    milliseconds while `before` is parsed as ISO-8601: convert it rather than
+    passing it straight back. `truncated` is deliberately conservative: a read
+    that ends exactly on `limit` reports truncated even if nothing older
     exists.
 
     `attachments` is a (usually empty) list of files on the message, each
