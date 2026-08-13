@@ -124,6 +124,21 @@ export const browserSettingsSchema = z
 export const resourceMonitorSettingsSchema = z.object({ enabled: z.boolean() });
 
 /**
+ * Whether the user lets the app send anonymous usage data, and when they were
+ * asked.
+ *
+ * `askedAt` is null until the user has answered the first-run prompt, and is
+ * what distinguishes "hasn't been asked yet" from "was asked and left it on".
+ * Nothing may be sent while it is null, however `enabled` reads — see
+ * `isTelemetryAllowed` in `@main/core/telemetry/consent`, which is the only
+ * supported way to read this setting before emitting.
+ */
+export const telemetrySettingsSchema = z.object({
+  enabled: z.boolean(),
+  askedAt: z.number().nullable(),
+});
+
+/**
  * How many sessions on one remote host keep a live terminal at once.
  *
  * Every session on a host shares a single SSH transport, and an attached
@@ -158,6 +173,7 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   resourceMonitor: resourceMonitorSettingsSchema,
   changesViewMode: changesViewModeSchema,
   remote: remoteSettingsSchema,
+  telemetry: telemetrySettingsSchema,
 } as const;
 
 export const appSettingsSchema = z.object({
@@ -176,4 +192,5 @@ export const appSettingsSchema = z.object({
   resourceMonitor: resourceMonitorSettingsSchema,
   changesViewMode: changesViewModeSchema,
   remote: remoteSettingsSchema,
+  telemetry: telemetrySettingsSchema,
 });

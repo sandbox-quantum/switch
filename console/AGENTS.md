@@ -383,10 +383,26 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- The app ships no telemetry or analytics; do not add tracking or phone-home behavior.
-  Logs are local-only: they leave the machine solely when the user attaches them to a
-  feedback report, via `getDiagnosticLogAttachment()`. Do not add any other path that
-  transmits log content.
+- The app sends no telemetry or analytics today, and nothing may start sending without
+  going through the consent gate below. Logs are local-only: they leave the machine
+  solely when the user attaches them to a feedback report, via
+  `getDiagnosticLogAttachment()`. Do not add any other path that transmits log content.
+- **Telemetry consent is a gate, not a preference.** Anything that would send usage data
+  must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
+  emission and send nothing when it returns false. Do not read `telemetry.enabled` from
+  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
+  cache the answer across a send, since the user can revoke it at any time.
+- **What telemetry may contain, if it is ever built.** The consent toggle defaults to *on*,
+  which is only defensible for data that is not personal, so the payload is limited to
+  anonymous counters: feature-usage counts, error and crash counts, app version, operating
+  system. It must carry **no identifier of any kind** — no install id, machine id, user id,
+  or any other value that distinguishes one install from another — and no prompts, code,
+  file paths, or agent/room/project/server names. Adding an identifier makes the data
+  pseudonymous personal data under GDPR/nFADP, at which point an opt-out default is no
+  longer valid and the default has to flip to off. That is a decision for the product
+  owner, not a code change: if you need per-install numbers, raise it rather than adding
+  a field. The user-facing wording of this promise lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.

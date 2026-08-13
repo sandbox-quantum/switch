@@ -76,6 +76,10 @@ export const SETTINGS_DEFAULTS = {
     staged: 'flat' as const,
     pr: 'flat' as const,
   },
+  telemetry: {
+    enabled: true,
+    askedAt: null,
+  },
 } satisfies SettingsDefaultsMap;
 
 export function getDefaultForKey<K extends AppSettingsKey>(key: K): AppSettings[K] {

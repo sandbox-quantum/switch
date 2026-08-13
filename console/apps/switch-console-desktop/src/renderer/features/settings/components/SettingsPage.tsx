@@ -18,6 +18,7 @@ import {
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
 import SidebarMetadataSettingsCard from './SidebarMetadataSettingsCard';
+import TelemetrySettingsCard from './TelemetrySettingsCard';
 import TerminalSettingsCard from './TerminalSettingsCard';
 import ThemeCard from './ThemeCard';
 import { UpdateCard } from './UpdateCard';
@@ -51,6 +52,7 @@ function GeneralSettingsPage() {
       <IncludeIssueContextByDefaultRow />
       <EnableTmuxRow />
       <NotificationSettingsCard />
+      <TelemetrySettingsCard />
     </div>
   );
 }
