@@ -336,6 +336,23 @@ set -eu
 mkdir -p .switch/agents
 printf '*\n' > .switch/agents/.gitignore
 
+# This file is keyed by name alone, so a directory shared with another Switch
+# setup — a Switch Console install, or an earlier run of this skill against a
+# different server — can already have one under this name. Writing over it
+# destroys a token that was returned once and exists nowhere else, and the
+# displaced agent's sessions then authenticate as this one. A different endpoint
+# is what makes it someone else's: the same server would have refused the name
+# at registration.
+creds=".switch/agents/$NAME.json"
+if [ -f "$creds" ]; then
+  owner=$(jq -r '.env.SWITCH_API_ENDPOINT // empty' "$creds" 2>/dev/null || true)
+  if [ -n "$owner" ] && [ "${owner%/}" != "${ENDPOINT%/}" ]; then
+    printf '%s already holds credentials for the Switch server at %s.\n' "$creds" "$owner" >&2
+    printf 'Refusing to overwrite them. Choose a different agent name, or a different directory.\n' >&2
+    exit 1
+  fi
+fi
+
 resp=$(mktemp)
 http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
@@ -359,8 +376,15 @@ rm -f "$resp"
 ```
 
 The token goes from the response straight into the file without ever being
-echoed or held in a variable that a later command would need. The resulting
-file is the same shape Switch Console writes:
+echoed or held in a variable that a later command would need.
+
+The guard runs **before** the registration, not just before the write: refusing
+afterwards would leave an agent on the server whose key nobody holds. If it
+fires, tell the user which server already owns that name here and let them
+choose — a different name, or a different directory. Do not delete the file and
+retry.
+
+The resulting file is the same shape Switch Console writes:
 
 ```json
 {

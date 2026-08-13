@@ -11,6 +11,7 @@ import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-con
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { basenameFromAnyPath } from '@shared/path-name';
+import { foreignCredentialsOwner } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -54,6 +55,7 @@ export type AddAgentResult =
   | { kind: 'created'; agent: Agent }
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
+  | { kind: 'credentials-conflict'; endpoint: string }
   | { kind: 'invalid-name'; message: string }
   | { kind: 'error'; message: string };
 
@@ -85,6 +87,20 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   if (existingLocation && (await agentNameTaken(existingLocation.id, params.name, null))) {
     return { kind: 'name-conflict' };
   }
+
+  // And the check above only sees agents THIS install manages. A second Switch
+  // Console on the same host, pointed at a different Switch server, has its own
+  // database and its own agents in this same directory — so the only thing that
+  // knows about its agent is the credentials file it left here (CHOO-1960).
+  // Refuse before minting: the writer refuses too, but by then this agent's
+  // token has been minted and is unrecoverable.
+  const foreignEndpoint = await foreignCredentialsOwner(
+    params.sshHost,
+    params.dir,
+    params.name,
+    server.apiUrl
+  );
+  if (foreignEndpoint !== null) return { kind: 'credentials-conflict', endpoint: foreignEndpoint };
 
   const registered = await registerAgentIdentity(server, {
     name: params.name,

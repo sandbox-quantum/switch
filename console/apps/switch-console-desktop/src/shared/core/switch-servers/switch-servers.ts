@@ -684,12 +684,25 @@ export type ProvisionRemoteAgentParams = {
  * message the modal can act on (re-login, rename) rather than a raw throw. The
  * minted API token is written to disk by the main process and never returned.
  */
-export type ProvisionAgentResult =
-  | { kind: 'created'; agentId: string }
+/**
+ * The recoverable ways minting an identity on the gateway can fail. Separate
+ * from {@link ProvisionAgentResult} because provisioning can also fail for
+ * reasons the gateway never sees — the working directory, so far — and a caller
+ * handling a registration result should not have to consider those.
+ */
+export type RegisterIdentityFailure =
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
   | { kind: 'invalid-name'; message: string }
   | { kind: 'error'; message: string };
+
+export type ProvisionAgentResult =
+  | { kind: 'created'; agentId: string }
+  /** The working directory already holds credentials for this name belonging to
+   * the Switch deployment at `endpoint` — another install's agent. Refused
+   * before minting, so nothing was created. */
+  | { kind: 'credentials-conflict'; endpoint: string }
+  | RegisterIdentityFailure;
 
 /**
  * Parameters for creating a room on a server from inside Switch Console

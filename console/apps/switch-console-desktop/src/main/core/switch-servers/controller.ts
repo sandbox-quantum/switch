@@ -1,4 +1,5 @@
 import type { Result } from '@switch-console/shared';
+import { foreignCredentialsOwner } from '@main/core/agents/agent-credentials-slot';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
 import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
 import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
@@ -473,6 +474,9 @@ export const switchServersController = createRPCController({
   provisionAgent: async (params: ProvisionAgentParams): Promise<ProvisionAgentResult> => {
     const server = await requireServer(params.serverId);
 
+    const conflict = await foreignCredentialsOwner(null, params.dir, params.name, server.apiUrl);
+    if (conflict !== null) return { kind: 'credentials-conflict', endpoint: conflict };
+
     const registered = await registerAgentIdentity(server, {
       name: params.name,
       description: params.description,
@@ -520,6 +524,14 @@ export const switchServersController = createRPCController({
     params: ProvisionRemoteAgentParams
   ): Promise<ProvisionAgentResult> => {
     const server = await requireServer(params.serverId);
+
+    const conflict = await foreignCredentialsOwner(
+      params.sshHost,
+      params.remoteRepoDir,
+      params.name,
+      server.apiUrl
+    );
+    if (conflict !== null) return { kind: 'credentials-conflict', endpoint: conflict };
 
     const registered = await registerAgentIdentity(server, {
       name: params.name,
