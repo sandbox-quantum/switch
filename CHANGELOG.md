@@ -44,10 +44,12 @@ version of their own to them without also giving them a release of their own.
 #### Added
 - Telegram collaboration bridge, at parity with Slack, Mattermost and Discord
   (CHOO-1686). A single bot backs every agent — Telegram has no per-message
-  identity override — so an agent is named at the head of its messages. Inbound
-  arrives by long polling, so no public ingress is needed. Chats cannot be
-  created by a bot, so `create_channel` fails with an actionable error and rooms
-  are provisioned when the bot is added to a chat. Multi-file messages post as a
+  identity override — so an agent is named at the head of its messages, beside a
+  stable colour derived from that name, which is the closest thing to a
+  per-agent avatar Telegram allows. Inbound arrives by long polling, so no
+  public ingress is needed. Chats cannot be created by a bot, so a Telegram
+  connection declares that up front and rooms are provisioned when the bot is
+  added to a chat. Multi-file messages post as a
   single album, and outbound Markdown is converted to Telegram's HTML subset
   rather than its stricter MarkdownV2. See `docs/bridges/TELEGRAM_SETUP.md`.
 - One-click install links for a bridge, offered on the operator dashboard and
@@ -77,7 +79,49 @@ version of their own to them without also giving them a release of their own.
   got, so a bot that predates the change is still filtered and only a re-add or a
   promotion fixes it.
 
+- Whether a messaging-app connection may create channels is now declared rather
+  than discovered by failing, in two parts: what the platform can do at all
+  (Telegram cannot — the Bot API has no call for it) and what an operator
+  permits this connection to do, set when the app is registered and changeable
+  afterwards. The second can only narrow the first. A deployment can therefore
+  withhold channel creation from Slack or Teams as well, for a bot that holds no
+  such permission or an organisation that would rather channels were made by
+  people. The answer reaches everyone who acts on it: the room forms in the
+  dashboard and Switch Console stop offering the option and say which reason
+  applies, `list_bridges` carries `can_create_channels` so an agent can choose a
+  bridge that works, and a refused create is a `400` naming what to do instead.
+
 #### Fixed
+- Creating a room on a bridge that cannot make channels returned "Internal
+  Server Error". The adapter's explanation — make the chat on the platform, add
+  the app, Switch adopts it — was thrown away at four of the six doors into room
+  creation, because `NotImplementedError` subclasses `RuntimeError` and every
+  caller catches only `ValueError`. It is now a `ValueError` subclass, so the
+  message survives to the caller as a 4xx. Opening a DM is governed the same way.
+- Telegram admin notices reached the chat as Markdown source, `**` and backticks
+  included. They are written in Switch Markdown like every other body but were
+  handed to the API without the conversion, and everything goes out with
+  parse_mode HTML. Two notices were also written with single-asterisk emphasis,
+  which no platform's converter recognises — Slack bolded them by accident and
+  Telegram italicised them.
+- The "Open in Switch Console" link on Telegram no longer disappears, and can no
+  longer take its message with it. It is a `switchdash://` URL and Telegram
+  renders only `http(s)`/`tg:`: the client dropped the link and kept the label,
+  or the API rejected the whole message. An unsupported scheme is now posted as
+  tap-to-copy text, and the bridge warns at startup when a platform that only
+  renders web links is running without `GATEWAY_PUBLIC_URL` — which is what
+  makes the link real, in the Telegram app and on Telegram Web alike.
+- A Telegram message Telegram rejects is retried unformatted whatever the
+  reason. The retry only fired when the error contained "parse", so a rejection
+  worded any other way — "unsupported URL protocol" among them — lost the entire
+  message to a single log line.
+- The no-agents notice advertises `/invite_agent` on Telegram, the only spelling
+  Telegram will register and therefore the only one its command menu offers. It
+  named the hyphenated form, which the client will not autocomplete. All three
+  forms are now listed.
+- The Telegram brand icon renders correctly in Switch Console's dark theme. The
+  plane was a hole punched through the disc rather than a white shape, so it
+  showed the background through it and came out black.
 - Bridge row action icons line up down the column again. A row carries one icon
   or two depending on whether its platform offers an install link, and the pair
   was not anchored to the same edge as the single, so the delete buttons sat at
