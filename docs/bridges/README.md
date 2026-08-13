@@ -54,9 +54,8 @@ form lists the live set and the fields each one requires.
   either when the bot is added to it (Slack, Mattermost, Teams, Telegram) or
   lazily on the first bridged message (Discord — it has no "app added to channel"
   signal). Existing Switch rooms can also be bound to a channel at room-creation
-  time. Telegram is the one platform where Switch cannot create the channel
-  itself: the Bot API has no such call, so chats are made in a Telegram client
-  and adopted.
+  time. See **Channel creation** below for the other direction — Switch making
+  the channel — which not every connection can or may do.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
   address it; unaddressed chatter is bridged as context. In-room commands (e.g.
   `!invite-agent`) work on every platform. Slack, Discord and Telegram
@@ -65,10 +64,36 @@ form lists the live set and the fields each one requires.
   automatically per guild on Discord, and accepted alongside `!` on Telegram,
   where `/` is the platform's own convention.
 - **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
-  their runtime status. Platforms that only linkify `http(s)` (notably Discord and
+  their runtime status. Platforms that only render `http(s)` links (Discord and
   Telegram) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable
-  `https://<switch-api-host>/deeplink/session?…` redirect. See the Discord or
-  Telegram guide.
+  `https://<switch-api-host>/deeplink/session?…` redirect; the bridge logs a
+  warning at startup when one of those platforms is running without it. Unset,
+  the address is posted as tap-to-copy text rather than as a link the platform
+  would silently discard. See the Discord or Telegram guide.
+
+### Channel creation
+
+Creating a Switch room normally creates the channel to go with it. Whether a
+connection will do that has two halves, and both must be true:
+
+- **Can the platform?** A fixed fact about the platform, not a setting.
+  Telegram is the one that cannot: the Bot API has no call to create a chat, so
+  a Telegram chat is always made in a Telegram client and adopted. Every other
+  platform can.
+- **May this connection?** A per-connection switch, set when you register a
+  messaging app and changeable afterwards on its row in **Messaging Apps**.
+  It defaults on. Turn it off where the bot holds no such permission on the
+  platform, or where channels are meant to be made by people rather than
+  appearing from Switch. It can only ever narrow the first half — a connection
+  cannot be granted an ability its platform does not have, and trying is
+  refused rather than stored.
+
+The answer reaches everyone who acts on it. The dashboard and Switch Console do
+not offer "create a new channel" for a connection that will not, and say which
+of the two reasons applies. `list_bridges` carries `can_create_channels`, so an
+agent can pick a bridge that works rather than discovering it by failing. And a
+create that is refused is a `400` explaining what to do instead — make the
+channel on the platform, add the app to it, and Switch adopts it as a room.
 
 ## Deployment knobs
 

@@ -11,8 +11,8 @@ Rooms are **adopted, never created**: the Bot API gives a bot no way to create a
 chat. A chat's Switch room is provisioned when the bot is **added to the group**
 (Telegram does signal this, unlike Discord) or on the first bridged message.
 
-Setup is one BotFather setting, once, and then a link per chat. The bot is never
-promoted, and needs no permissions in a group.
+Setup is one BotFather setting, once, and then adding the bot to each chat. The
+bot is never promoted, and needs no permissions in a group.
 
 ## Prerequisites
 
@@ -61,13 +61,44 @@ Fields (`TelegramConnectionConfig`):
 
 On success the bridge starts polling.
 
-## 2. Add the bot to a group, from the dashboard
+## 2. Link a chat to Switch — from Telegram
+
+**This is the normal way, and it needs nothing from Switch.** In any Telegram
+client:
+
+1. Create a group, or open one you already have.
+2. Add the bot to it like any other member: the group's title → **Add Members**
+   → search for `@acme_switch_bot` → confirm.
+3. That is the whole of it. Telegram tells the bridge it was added, Switch
+   creates a room for the chat, and the bot posts in the group saying whether
+   it can see the conversation. The room appears in the dashboard and in
+   Switch Console on its own.
+
+The bot needs **no permissions and no admin status** in a group. It is a
+member, like anyone else.
+
+A room made this way is a room like any other — add agents to it with
+`!invite-agent @agent-name` in the chat (see [Slash commands](#slash-commands)
+for the `/` forms), or from the dashboard.
+
+**Nothing is created from the Switch side.** Switch cannot make a Telegram
+chat — the Bot API has no call for it — so the chat always exists first and
+Switch adopts it. That is recorded against the connection rather than left to
+be discovered: a Telegram connection reports that it cannot create channels,
+the room forms in the dashboard and Switch Console do not offer the option, and
+an agent calling `create_room` on it is told the same in the error rather than
+getting a failure it cannot interpret. See
+[Channel creation](README.md#channel-creation) for the setting that carries
+this, which applies to every platform.
+
+## 3. Or add the bot from the dashboard
+
+The same thing, one click, when you would rather start from Switch.
 
 On the bridge's row in **Messaging Apps**, the link icon opens **Add to a chat**
 with a single link: **Add to a Telegram group**. It lists every group you can add
-a member to. Pick one and confirm — the bot needs no permissions there. Switch
-creates the room as the bot lands, and the bot says in the chat whether it can
-see the conversation.
+a member to. Pick one and confirm — again, no permissions. Switch creates the
+room as the bot lands.
 
 The icon is shown to admins, and only while the bridge is running — the link is
 built by the live bridge, so a bridge that failed to start offers none.
@@ -79,7 +110,7 @@ client implements — the ones that do not simply open a chat with the bot, whic
 is indistinguishable from a link that does nothing. Rather than ship a link that
 works for some people, channels are added by hand (below).
 
-## 3. Adding the bot to a broadcast channel
+## 4. Adding the bot to a broadcast channel
 
 A channel is not a group, and Telegram admits a bot to one as an administrator
 or not at all. In the channel: **Administrators** → **Add Admin** → search for
@@ -122,8 +153,19 @@ and a demotion is announced the same way.
 
 ## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 
-Telegram only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
-renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
+**Set this one.** On Telegram it is what makes the "Open in Switch Console"
+link a link at all, not a refinement — the bridge logs a warning at startup
+when it is missing.
+
+Telegram renders only `http(s)` and `tg:` URLs. A `switchdash://session?…`
+deeplink is neither, and Telegram does not ignore it politely: depending on the
+client it drops the link and leaves the words behind, or the API rejects the
+whole message. So without this set, the bridge does not offer Telegram a link
+it cannot render — it posts the address as a tap-to-copy code span instead,
+which works but is not a link. With it set, the link is a real one and opens
+Switch Console from the Telegram app and from Telegram Web alike.
+
+Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
 API's public origin — scheme + host only, **no path** — the same host Switch Console
 reports as its `server` (distinct from the operator UI):
 
@@ -136,8 +178,8 @@ When set, Switch rewrites the deeplink to a clickable
 `https://<switch-api-host>/deeplink/session?…` redirect (a `302` back to the
 `switchdash://` scheme) at runtime-state ingestion — so both the bridged
 working/awaiting-input status message **and** the `!status` command surface a
-clickable link. When unset, the raw `switchdash://` link is posted as before
-(disclosed fallback).
+clickable link. When unset, the address is posted as a code span — visible and
+tap-to-copy, and disclosed as the fallback it is.
 
 The value is validated at startup: it must be scheme + host only. A URL carrying
 a path is rejected, because the redirect is served at `/deeplink/session` on the
@@ -155,8 +197,11 @@ Telegram will not accept a hyphen in a registered command, so the hyphenated
 names are published in their underscore spelling. Both resolve to the same
 command, and so does the `!` form:
 
-- `/invite_agent @agent-name` — as offered by the menu
-- `/invite-agent @agent-name` — typed in full
+- `/invite_agent @agent-name` — as offered by the menu, and the form the bot
+  advertises in a room with no agents in it: it is the only one Telegram will
+  autocomplete or render as a tappable command
+- `/invite-agent @agent-name` — typed in full; accepted, but Telegram's client
+  tokenises the command as `/invite` and will not offer it
 - `!invite-agent @agent-name` — Switch's own prefix, works on every platform
 
 The `/` forms matter beyond convenience: in a mention-only chat, a `/`-prefixed
@@ -229,6 +274,7 @@ anywhere else.
 - **DMs.** A 1:1 chat with the bot is bridged, but Switch cannot start one —
   Telegram DMs are opened by the user. Message the bot first and the conversation
   is picked up.
-- **Creating channels.** Switch cannot provision a Telegram chat. Attempting it
-  fails with an error telling you to create the chat and add the bot with the
-  dashboard's link.
+- **Creating channels.** Switch cannot provision a Telegram chat, and says so
+  before you try: the connection reports that it cannot create channels, so the
+  room forms omit the option and `list_bridges` tells an agent the same. Calling
+  it anyway is a `400` naming the chat to make and the bot to add, not a 500.

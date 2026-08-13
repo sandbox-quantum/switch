@@ -112,7 +112,8 @@ bridge fixes it.
 ## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 
 Discord only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
-renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
+renders as plain text; the bridge logs a warning at startup when it is running
+without this set. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
 API's public origin — scheme + host only, **no path** — the same host Switch Console
 reports as its `server` (distinct from the operator UI):
 
