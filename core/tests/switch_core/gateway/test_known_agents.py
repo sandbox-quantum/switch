@@ -8,6 +8,8 @@ from switch_core.gateway.known_agents import (
     ClaudeCodeOptions,
     CodexKnownAgent,
     CodexOptions,
+    OpenCodeKnownAgent,
+    OpenCodeOptions,
     known_agent_for,
 )
 
@@ -373,6 +375,140 @@ class TestCodexKnownAgent:
         spec, options = result
         assert spec is CodexKnownAgent
         assert isinstance(options, CodexOptions)
+        assert options.auto_session is True
+        assert options.repo_dir == "/tmp/r"
+
+
+class TestOpenCodeKnownAgent:
+    def test_registered_under_opencode_key(self) -> None:
+        assert KNOWN_AGENTS.get("opencode") is OpenCodeKnownAgent
+        assert OpenCodeKnownAgent.connector_type == "OpenCode CLI"
+
+    def test_default_profile_is_session_addressable(self) -> None:
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
+        assert profile.connection_model == "session_addressable"
+
+    def test_auto_session_sets_auto_session_model(self) -> None:
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions(auto_session=True))
+        assert profile.connection_model == "auto_session"
+
+    def test_no_tool_call_mediation_or_reporting(self) -> None:
+        # OpenCode's connector reports activity to Switch Console over the local
+        # hook port to drive session status; none of it reaches Switch as
+        # reported events, and nothing gates a tool call before it runs.
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
+        assert profile.pre_invocation_mediation == []
+        assert profile.post_invocation_mediation == []
+        assert profile.event_reporting == []
+
+    def test_can_delegate_and_accept_tasks(self) -> None:
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
+        assert profile.task_protocol.can_delegate is True
+        assert profile.task_protocol.can_accept is True
+
+    def test_commands_are_session_dependent(self) -> None:
+        # Must stay in step with `BY_PROVIDER.opencode` in Switch Console's
+        # `main/core/switch-rooms/session-control.ts`; declaring a command here
+        # that Switch Console cannot execute yields a worse message than
+        # "unsupported".
+        caps = OpenCodeKnownAgent.build_profile(OpenCodeOptions()).command_capabilities
+        assert caps.reset == "session_dependent"
+        assert caps.compact == "session_dependent"
+        assert caps.interrupt == "session_dependent"
+
+    def test_prompt_is_passed_as_a_flag_not_a_positional(self) -> None:
+        # OpenCode reads its first positional as the project directory, so a bare
+        # `opencode "connect to switch room hub"` asks it to open a directory of
+        # that name. The prompt must go through --prompt.
+        opts = OpenCodeOptions(repo_dir="/Users/x/repo")
+        msg = OpenCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert (
+            'cd "/Users/x/repo" && opencode --prompt "connect to switch room hub"'
+            in msg
+        )
+        assert 'opencode "connect' not in msg
+
+    def test_start_session_instructions_emit_opencode_only(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/Users/x/repo")
+        msg = OpenCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert "claude" not in msg
+        assert "codex" not in msg
+        assert "--dangerously-load-development-channels" not in msg
+        assert "auto-starts one when I'm addressed" not in msg
+        assert "start OpenCode manually" in msg
+
+    def test_repo_dir_with_spaces_stays_quoted(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/Users/alice/my project")
+        msg = OpenCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert 'cd "/Users/alice/my project" && opencode' in msg
+
+    def test_assume_role_is_folded_into_the_prompt(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/r")
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", assume_role="reviewer"
+        )
+        assert msg is not None
+        assert (
+            '--prompt "connect to switch room ops and assume the role reviewer"' in msg
+        )
+
+    def test_blank_repo_dir_uses_placeholder(self) -> None:
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            OpenCodeOptions(repo_dir=""), _agent({}), "triage"
+        )
+        assert msg is not None
+        assert 'cd "<opencode-dir>"' in msg
+
+    def test_no_repo_dir_uses_placeholder(self) -> None:
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            OpenCodeOptions(repo_dir=None), _agent({}), "triage"
+        )
+        assert msg is not None
+        assert 'cd "<opencode-dir>"' in msg
+
+    def test_blank_notify_user_produces_no_mention(self) -> None:
+        opts = OpenCodeOptions(notify_user="")
+        msg = OpenCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert not msg.startswith("@")
+
+    def test_notify_user_is_mentioned(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/x", notify_user="cmcd")
+        msg = OpenCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        assert msg is not None
+        assert msg.startswith("@cmcd")
+
+    def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
+        # Switch Console sends channels_enabled for every provider, so registration
+        # must still accept it — but OpenCode has no channel, so it is not a
+        # field. The gateway renders the options form from this schema; a
+        # declared field would be an interactive control that changes nothing.
+        assert (
+            "channels_enabled" not in OpenCodeOptions.model_json_schema()["properties"]
+        )
+
+        opts = OpenCodeOptions.model_validate({"channels_enabled": False})
+        assert "channels_enabled" not in opts.model_dump()
+        assert (
+            OpenCodeKnownAgent.build_profile(opts).connection_model
+            == "session_addressable"
+        )
+
+    def test_known_agent_for_round_trips_opencode(self) -> None:
+        agent = _agent(
+            {
+                "known_agent_type": "opencode",
+                "known_agent_options": {"auto_session": True, "repo_dir": "/tmp/r"},
+            }
+        )
+        result = known_agent_for(agent)
+        assert result is not None
+        spec, options = result
+        assert spec is OpenCodeKnownAgent
+        assert isinstance(options, OpenCodeOptions)
         assert options.auto_session is True
         assert options.repo_dir == "/tmp/r"
 

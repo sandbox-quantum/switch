@@ -155,6 +155,24 @@ describe('InProcessSessionSpawner.launch', () => {
     expect(await readFile(join(CWD, '.claude/settings.local.json'), 'utf8')).toContain('hooks');
   });
 
+  // A provider can deliver its hooks as a dropped plugin rather than a config
+  // file. That path used to be rejected here, so an OpenCode session started on
+  // a VM came up with nothing installed and reported neither its session id nor
+  // that it had stopped — the same failure as a missing hook config, reached a
+  // different way.
+  it("installs a plugin-delivered provider's hooks under the session's working dir", async () => {
+    const { spawner, calls } = makeSpawner({ spec: { ...SPEC, providerId: 'opencode' } });
+
+    await spawner.launch('room-x');
+
+    const dropped = await readFile(
+      join(CWD, '.opencode/plugins/switchdash-notifications.js'),
+      'utf8'
+    );
+    expect(dropped).toContain('SwitchdashNotifications');
+    expect(calls.find((c) => c.args[0] === 'new-session')).toBeDefined();
+  });
+
   // Neither root fits a scope this path has not been taught, and a session
   // spawned with no hooks looks fine right up until nobody can tell it is done.
   it('refuses to spawn a session whose hook scope has no root here', async () => {

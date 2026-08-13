@@ -146,16 +146,40 @@ async def test_every_registered_tool_is_indexed(tool_names: set[str]) -> None:
         )
 
 
-def test_both_skills_index_the_same_tools() -> None:
-    """The two connectors' tool indexes must not drift apart.
+def test_every_connector_ships_a_skill() -> None:
+    """Each connector documents the room workflow for its own host.
+
+    A connector added without one leaves its agents with the Switch tools and
+    no instructions for using them — which looks like a badly behaved agent
+    rather than a missing file.
+    """
+    connectors = {
+        path.name
+        for path in (Path(__file__).parents[5] / "connectors").iterdir()
+        if path.is_dir()
+    }
+    with_skills = {skill.parents[2].name for skill in SKILLS}
+    assert connectors == with_skills, (
+        f"connectors without a skill: {sorted(connectors - with_skills)}"
+    )
+
+
+def test_all_skills_index_the_same_tools() -> None:
+    """The connectors' tool indexes must not drift apart.
 
     They are host-specific documents but the tool surface behind them is one
     surface, and a tool added to one skill's index is silently absent from the
-    other's.
+    others'.
     """
-    assert len(SKILLS) == 2, f"expected two connector skills, found {SKILLS}"
-    first, second = (_indexed_tools(skill) for skill in SKILLS)
-    assert first == second
+    assert len(SKILLS) >= 2, f"expected several connector skills, found {SKILLS}"
+    indexes = {skill: _indexed_tools(skill) for skill in SKILLS}
+    reference, expected = next(iter(indexes.items()))
+    for skill, indexed in indexes.items():
+        assert indexed == expected, (
+            f"{skill}'s tool index differs from {reference}'s: "
+            f"only in {skill}: {sorted(set(indexed) - set(expected))}, "
+            f"only in {reference}: {sorted(set(expected) - set(indexed))}"
+        )
 
 
 async def test_skill_indexed_tools_are_registered(tool_names: set[str]) -> None:

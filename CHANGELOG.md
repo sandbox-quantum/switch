@@ -26,8 +26,11 @@ leaves its contracts alone.
 - **sidecar** — the remote runtime Switch Console deploys to an agent host
   (`dash/apps/switch-console-desktop/src/sidecar/`). Versioned in
   `sidecar-version.ts` and deployed by Switch Console, not published separately.
-- **switch-connector** / **switch-connector-codex** — the two connector plugins
-  (`connectors/`), versioned in their respective plugin manifests.
+- **switch-connector** / **switch-connector-codex** / **switch-connector-opencode**
+  — the three connectors (`connectors/`), versioned in their respective
+  manifests. The first two are installed from the plugin marketplace; the
+  OpenCode one is written by Switch Console, which has no marketplace to install
+  from, so its version identifies the source rather than an install.
 
 Three things are **not** separately versioned, and ship under the switch-core
 release so a single tag pins the whole stack: the **operator dashboard**
@@ -90,6 +93,11 @@ version of their own to them without also giving them a release of their own.
   dashboard and Switch Console stop offering the option and say which reason
   applies, `list_bridges` carries `can_create_channels` so an agent can choose a
   bridge that works, and a refused create is a `400` naming what to do instead.
+- `opencode` is a registerable known agent type, alongside `claude-code` and
+  `codex`. It carries its own option set — auto-session, working directory and
+  notify-user — rather than borrowing another type's, and the start-session
+  command it shows in a room passes the prompt as a flag, since OpenCode reads
+  its first positional argument as a directory to open.
 
 #### Fixed
 - Creating a room on a bridge that cannot make channels returned "Internal
@@ -152,6 +160,21 @@ version of their own to them without also giving them a release of their own.
   alive and was deaf. Adapters now report the change (`CollaborationAdapter`
   gains `set_channel_migration_handler`) and the room is re-pointed, or the
   refusal is logged with the id to re-point it at by hand.
+- The OpenCode server-side connector no longer hangs when the OpenCode server
+  raises a tool permission request. The connector's event loop ignored
+  `permission.updated`, so no reply was ever sent, the session never went idle,
+  and the response stream blocked forever. Permission requests are now answered
+  automatically — this connector reports tool calls after the fact and performs
+  no pre-invocation mediation, so there is nothing for a prompt to gate.
+- The Mattermost bridge no longer litters a channel with "(message deleted)"
+  placeholders while an agent works. Mattermost's web client shows that
+  placeholder for any message removed while it is on screen — a permanent
+  delete looks no different to it, and no server setting turns it off — so the
+  agent's status line is now retired by editing it into a "✓ Done · 2m14s"
+  marker rather than being deleted, and it no longer moves down the channel to
+  follow the conversation (each move was a delete of its own). The marker
+  carries nothing else: it stays in the channel permanently, so it is kept to
+  the fact that the turn finished and how long it took.
 
 ### [0.13.2] - 2026-08-12
 
@@ -472,12 +495,80 @@ version of their own to them without also giving them a release of their own.
 - Telegram brand icon, platform label and setup-guide link, so Telegram-bridged
   rooms show the "open channel" button and the attach form links the right guide
   (CHOO-1686). Telegram bot tokens are also redacted from the diagnostic logs.
+- **OpenCode is now a supported Switch agent type**, locally and on remote
+  hosts. An OpenCode session can be onboarded as a Switch agent, join rooms,
+  take injected prompts, and be reset, compacted or interrupted from a room.
+  It reports working and completed rather than sitting on "awaiting input" for
+  its whole life, and names the tool it is running on the bridged message.
+
+  OpenCode has no plugin marketplace to install a connector from, so Switch
+  Console writes one: the Switch MCP server is registered in OpenCode's global
+  config as a local server, which lets the runtime inherit its credentials from
+  the session environment rather than having a token written to disk, and the
+  room-workflow skill is written to OpenCode's global skill directory beside
+  it, so a session gets the instructions along with the tools. Install,
+  update and uninstall are on the agent's card in Settings → Agents, and on a
+  remote host in that host's setup, exactly as for the other agent types.
+
+  OpenCode agents previously registered as Claude Code, so an operator asked to
+  start one by hand was told to run `claude`. They now register as themselves.
+- A Codex agent's configuration can now be changed after the agent is created,
+  from the **Advanced configuration** section in its Settings tab — the same
+  section Claude agents already had. Model, reasoning effort and instructions
+  were previously write-once in the add-agent dialog, with no way to edit them
+  (CHOO-1985); **verbosity**, **reasoning summary** and **web search** are newly
+  exposed, and reasoning effort gains `none`. Each option was checked against the
+  Codex binary's own config validation rather than assumed.
+- Leaving one of those fields blank is not the same as choosing its default:
+  blank omits the setting entirely, so your own `~/.codex/config.toml` still
+  decides. That is why the on/off settings offer Default/On/Off rather than a
+  checkbox, which has no way to say "leave it alone".
+- Codex reads these values only when a session starts, so a save applies to the
+  next session. A session already running is named in the section, with a
+  Restart that resumes it on the new configuration. Clearing every field removes
+  the agent's launch profile rather than leaving it orphaned.
+
+#### Changed
+- Advanced configuration is one editor for every provider rather than one per
+  storage mechanism. Providers keep these settings in different places — a
+  repo-agent definition for Claude Code, the launch profile for Codex — and the
+  main process now routes the read and the write, so the difference is no longer
+  visible as the shape of the Settings page.
 
 #### Fixed
 - Opening a room from a deeplink expands the sidebar groups hiding it
   (CHOO-1686). The reveal ran once, before the room a session belongs to had
   loaded, and never again — so the view routed correctly to a row that stayed
   collapsed. Affects any bridge, not only Telegram.
+- Add Agent no longer stalls with an unset agent type once more than one Switch
+  connector is installed. The form auto-selected a type only when exactly one
+  was available, so a second connector left it blank — and since the directory
+  scan, the onboard-existing list and every submit button are gated on a chosen
+  type, the rest of the dialog stayed inert behind a control that did not read
+  as required. It now selects the only usable type, or the configured default
+  agent when that is usable on the machine being targeted, and otherwise leaves
+  the choice explicit. The rule no longer depends on how many agent types exist.
+- The unread tally injected into a session no longer claims to count "since
+  your last read_context". Nothing here can observe a session reading, so the
+  tally is cleared per delivered line; it now says so, rather than inviting an
+  agent to read its absence as proof it is caught up.
+- The OpenCode icon no longer dwarfs the other agent icons. Its artwork is
+  full-bleed and 4:5 where the others are glyphs on a square, and it carried its
+  own `width`/`height` — which an inline SVG applies in preference to the size
+  of the box it sits in. It is now square, unsized, and inset to the margin the
+  others have.
+- A file-based Switch connector reports the version its own directory declares
+  rather than the app's. The OpenCode connector is versioned and released as its
+  own artifact, so a card reading `0.22.0` beside two connectors reading `0.9.1`
+  and `0.3.1` named nothing the connector declares. It also means an app release
+  that leaves the connector alone no longer offers an update that would rewrite
+  identical bytes.
+- A session that fails to be created no longer marks its agent with a failure
+  badge that cannot be cleared. The failed session exists only in the app — the
+  server rejected the create — and nothing removed it: reloading only adds
+  sessions, deleting one asks the server first and restores it when that fails,
+  and the sidebar never listed it in the first place, so the badge pointed at a
+  session there was no way to reach. It is now dismissed by clicking the badge.
 
 ### [0.22.1] - 2026-08-12
 
@@ -495,10 +586,6 @@ version of their own to them without also giving them a release of their own.
   could be selected and then render nothing, stranding the whole Settings page;
   the retired tab is now handled and navigation falls back to a valid tab
   (CHOO-2106).
-- The unread tally injected into a session no longer claims to count "since
-  your last read_context". Nothing here can observe a session reading, so the
-  tally is cleared per delivered line; it now says so, rather than inviting an
-  agent to read its absence as proof it is caught up.
 
 ### [0.22.0] - 2026-08-12
 
@@ -1301,6 +1388,11 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+#### Changed
+- The room-workflow skill lists `opencode` alongside `codex` and `claude-code`
+  wherever it enumerates known agent types — the `list_agents` filter and the
+  per-type options of `update_agent_detail`.
+
 
 #### Changed
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
@@ -1392,6 +1484,19 @@ manifest history.
   rest with `read_context`" promise does not hold. The slash-command and
   attachment platform lists now also name Discord, which had been left out of
   both.
+- The room-workflow skill lists `opencode` alongside `codex` and `claude-code`
+  wherever it enumerates known agent types — the `list_agents` filter and the
+  per-type options of `update_agent_detail`.
+
+### [0.3.2] - 2026-08-12
+
+#### Added
+- A `configure` skill: the standalone setup path. Registers this Codex instance
+  as a Switch agent and writes `.switch/agents/<name>.json` in the working
+  directory, so `codex` reaches Switch with no Switch Console involved
+  (CHOO-1936). It writes no MCP config — the plugin's `.mcp.json` stays the
+  single server definition and the runtime resolves its own identity from the
+  store (`switch-agent-runtime` 0.2.0+).
 
 ### [0.3.1] - 2026-08-12
 
@@ -1445,3 +1550,24 @@ manifest history.
 
 Releases before this changelog existed are in the git log and in the plugin
 manifest history.
+
+---
+
+## switch-connector-opencode
+
+`connectors/opencode-plugin/`. Version lives in `package.json`.
+
+Unlike the other two connectors, nothing installs this one from a marketplace —
+OpenCode has none. Switch Console writes its files directly, so the version is
+for humans reading a diff rather than for an installer, and an install reports
+the app version that wrote it rather than a version of its own.
+
+### [Unreleased]
+
+### [0.1.0]
+
+First release. Ships the Switch room-workflow skill, registers the Switch MCP
+server in OpenCode's global config as a local server — so the runtime takes its
+credentials from the session environment and none is written to disk — and
+carries a reporting plugin that gives OpenCode sessions real working and
+completed states, naming the tool a turn is currently running.

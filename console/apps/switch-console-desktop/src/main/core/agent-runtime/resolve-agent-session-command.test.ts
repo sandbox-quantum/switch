@@ -98,6 +98,45 @@ describe('resolveAgentSessionCommandArgs', () => {
     expect(result.args).toContain(session.id);
   });
 
+  it('uses the stored OpenCode session id when resuming', () => {
+    expect(
+      resolveAgentSessionCommandArgs(
+        makeSession({ providerId: 'opencode', providerSessionId: 'ses_abc123' }),
+        true
+      )
+    ).toEqual({ sessionId: 'ses_abc123', isResuming: true });
+  });
+
+  // Without this, resume falls through to OpenCode's `--continue`, which
+  // reattaches to whatever ran last in that directory — for a Switch agent,
+  // very possibly a conversation belonging to someone else.
+  it('starts fresh instead of continuing the last OpenCode session', () => {
+    expect(resolveAgentSessionCommandArgs(makeSession({ providerId: 'opencode' }), true)).toEqual({
+      sessionId: 'session-1',
+      isResuming: false,
+    });
+  });
+
+  it('builds an OpenCode resume command from the stored provider session id', () => {
+    const session = makeSession({
+      id: '6fac6620-9fa8-4604-b7e0-1fe361589104',
+      providerId: 'opencode',
+      providerSessionId: 'ses_abc123',
+    });
+    const spawnPlan = resolveAgentSessionCommandArgs(session, true);
+    const result = pluginRegistry.get('opencode')!.behavior.prompt!.buildCommand({
+      cli: 'opencode',
+      autoApprove: false,
+      model: '',
+      sessionId: spawnPlan.sessionId,
+      providerSessionId: session.providerSessionId ?? undefined,
+      isResuming: spawnPlan.isResuming,
+    });
+
+    expect(result.command).toBe('opencode');
+    expect(result.args).toEqual(['--session', 'ses_abc123']);
+  });
+
   it('builds a Codex replacement resume command from the stored provider session id', () => {
     const session = makeSession({
       id: '6fac6620-9fa8-4604-b7e0-1fe361589104',

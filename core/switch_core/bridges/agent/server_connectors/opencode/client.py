@@ -68,6 +68,20 @@ class OpenCodeClient:
         )
         resp.raise_for_status()
 
+    async def respond_permission(
+        self, session_id: str, permission_id: str, response: str
+    ) -> None:
+        """Respond to a permission request raised by the OpenCode server.
+
+        `response` is one of "once", "always", or "reject". Without a reply
+        the server pauses the session indefinitely waiting for approval.
+        """
+        resp = await self._http.post(
+            f"/session/{session_id}/permissions/{permission_id}",
+            json={"response": response},
+        )
+        resp.raise_for_status()
+
     @asynccontextmanager
     async def subscribe_events(self) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
         """Subscribe to the SSE event stream. Yields parsed events."""

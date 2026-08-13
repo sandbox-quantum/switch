@@ -1,4 +1,8 @@
-import type { PluginFs, SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
+import type {
+  PluginFs,
+  PluginScope,
+  SwitchLaunchSpecialization,
+} from '@switch-console/core/agents/plugins';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { resolveAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
@@ -298,16 +302,38 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     const plugin = getPlugin(providerId);
     const hooks = plugin.capabilities.hooks;
     if (hooks.kind === 'none') return;
-    if (hooks.kind !== 'config' || !plugin.behavior.hooks) {
+
+    const fs = this.remoteHookFs(hooks.scope);
+    // Both delivery mechanisms, not just config files. A provider whose hooks
+    // ride a dropped plugin (OpenCode) would otherwise run on the host with
+    // nothing installed — no session id captured, and a "working on it" that
+    // never clears.
+    let install: (() => Promise<unknown>) | null = null;
+    // Null unless a config write actually resolved it: the hook commands are
+    // built for the VM's platform, and a provider whose hooks ride a dropped
+    // plugin never needs it, so it is not worth a round-trip to the host.
+    let resolvedPlatform: NodeJS.Platform | null = null;
+    if (hooks.kind === 'config' && plugin.behavior.hooks) {
+      const writeHooks = plugin.behavior.hooks.writeHooks;
+      install = async () => {
+        resolvedPlatform = await remoteNodePlatform(this.connectionId, this.ctx);
+        return writeHooks(fs, [], { platform: resolvedPlatform });
+      };
+    } else if (hooks.kind === 'plugin' && plugin.behavior.plugins) {
+      const installPlugin = plugin.behavior.plugins.installPlugin;
+      const scope: PluginScope =
+        hooks.scope === 'global'
+          ? { kind: 'global' }
+          : { kind: 'workspace', path: this.sessionPath };
+      install = () => installPlugin(fs, scope);
+    }
+    if (!install) {
       log.error('SshAgentRuntime: provider hooks cannot be installed on a remote host', {
         providerId,
         kind: hooks.kind,
       });
       return;
     }
-    const writeHooks = plugin.behavior.hooks.writeHooks;
-    const fs = this.remoteHookFs(hooks.scope);
-    const platform = await remoteNodePlatform(this.connectionId, this.ctx);
     // A global-scope write targets the VM's home, so it is shared by every dir
     // on the host; keying it on the dir would let one write per dir through.
     const scopeKey = hooks.scope === 'global' ? '~' : this.sessionPath;
@@ -315,12 +341,12 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       await dedupeInFlight(
         remoteHookInstallsInFlight,
         `${this.connectionId}::${scopeKey}::${providerId}`,
-        () => writeHooks(fs, [], { platform })
+        install
       );
       log.info('SshAgentRuntime: installed remote agent hooks', {
         providerId,
         scope: hooks.scope,
-        platform,
+        platform: resolvedPlatform,
       });
     } catch (error) {
       log.error('SshAgentRuntime: failed to install remote agent hooks', {
