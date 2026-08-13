@@ -577,9 +577,14 @@ version of their own to them without also giving them a release of their own.
   Its instructions are added to OpenCode's own, the way an `AGENTS.md` is,
   rather than replacing them.
 
+- **You can pick a model instead of remembering it.** Switch Console asks the
+  machine an OpenCode agent runs on which models it offers and lists them as you
+  type, grouped by provider and annotated with the reasoning variants each
+  accepts. Typing something not on the list still works — it is a shortcut, not
+  a restriction.
+
 - **The model and reasoning fields check themselves against the agent's own
-  host.** Switch Console asks the machine an OpenCode agent runs on which models
-  it offers, so a model name that host does not have is flagged as you type, and
+  host.** A model name that host does not have is flagged as you type, and
   the reasoning variant becomes a menu of what the chosen model actually
   accepts — greyed out, with a reason, for a model that has none, as local
   models generally do. Both were places OpenCode would otherwise accept a value
