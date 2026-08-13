@@ -64,6 +64,16 @@ export default function CollaborationsPage() {
     [refetch],
   );
 
+  const handleToggleChannelCreation = useCallback(
+    async (bridgeId: string, enabled: boolean) => {
+      setSavingId(bridgeId);
+      await updateBridge(bridgeId, { channel_creation_enabled: enabled });
+      setSavingId(null);
+      refetch();
+    },
+    [refetch],
+  );
+
   const columns = useMemo<GridColDef<BridgeRow>[]>(
     () => [
       {
@@ -108,6 +118,32 @@ export default function CollaborationsPage() {
             }
           />
         ),
+      },
+      {
+        field: "channel_creation_enabled",
+        headerName: "Channel creation",
+        width: 160,
+        sortable: false,
+        renderCell: ({ row }: { row: BridgeRow }) => {
+          const control = (
+            <Switch
+              size="small"
+              checked={row.channel_creation_supported && row.channel_creation_enabled}
+              disabled={
+                !isAdmin || savingId === row.bridge_id || !row.channel_creation_supported
+              }
+              onChange={(e) =>
+                handleToggleChannelCreation(row.bridge_id, e.target.checked)
+              }
+            />
+          );
+          if (row.channel_creation_supported) return control;
+          return (
+            <Tooltip title={`${row.display_name} cannot create channels from Switch.`}>
+              <span>{control}</span>
+            </Tooltip>
+          );
+        },
       },
       {
         field: "created_at",
@@ -155,7 +191,7 @@ export default function CollaborationsPage() {
           ]
         : []),
     ],
-    [isAdmin, savingId, handleToggleGreetings],
+    [isAdmin, savingId, handleToggleGreetings, handleToggleChannelCreation],
   );
 
   const rows = useMemo<BridgeRow[]>(
