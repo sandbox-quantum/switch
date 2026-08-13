@@ -24,6 +24,11 @@ CHAT_ID = -1001234567890
 BOT_USER_ID = 42
 BOT_USERNAME = "acme_switch_bot"
 
+# The mark "scout" hashes to. Written out rather than computed, so a change to
+# the palette or the hash shows up here as a diff instead of passing silently —
+# an agent's mark changing is a visible change to everyone reading the chat.
+SCOUT_MARK = "🟡"
+
 
 def _run(coro: Any) -> Any:
     loop = asyncio.new_event_loop()
@@ -771,7 +776,7 @@ def test_an_agents_name_leads_a_single_line_message() -> None:
     ref = _run(adapter.send_message(str(CHAT_ID), "scout", "on it"))
 
     sent = _bot(adapter).messages[0]
-    assert sent["text"] == "<b>scout</b>: on it"
+    assert sent["text"] == f"{SCOUT_MARK} <b>scout</b>: on it"
     assert sent["chat_id"] == CHAT_ID
     assert ref == f"{CHAT_ID}:501"
 
@@ -781,7 +786,10 @@ def test_an_agents_name_sits_above_a_multi_line_message() -> None:
 
     _run(adapter.send_message(str(CHAT_ID), "scout", "line one\nline two"))
 
-    assert _bot(adapter).messages[0]["text"] == "<b>scout</b>\nline one\nline two"
+    assert (
+        _bot(adapter).messages[0]["text"]
+        == f"{SCOUT_MARK} <b>scout</b>\nline one\nline two"
+    )
 
 
 def test_a_threaded_reply_is_anchored_to_its_root() -> None:
@@ -835,14 +843,41 @@ def test_markup_telegram_rejects_is_resent_as_plain_text() -> None:
     assert ref is not None
 
 
-def test_a_non_formatting_failure_is_not_retried() -> None:
+def test_any_rejection_is_retried_unformatted_rather_than_dropped() -> None:
+    # The retry used to be conditioned on the word "parse" appearing in
+    # Telegram's error. It refuses markup under other wordings too — an
+    # unsupported URL protocol in a link is one, and says nothing about parsing
+    # — and those lost the entire message to a single log line. One extra call
+    # in the cases that were failing anyway is the cheaper mistake.
     adapter = _adapter()
-    _bot(adapter).send_message_error = BadRequest("chat not found")
+    _bot(adapter).send_message_error = BadRequest("unsupported URL protocol")
 
     ref = _run(adapter.send_message(str(CHAT_ID), "scout", "hello"))
 
+    sent = _bot(adapter).messages
+    assert len(sent) == 1
+    assert "parse_mode" not in sent[0]
+    assert ref is not None
+
+
+def test_a_rejection_that_survives_the_retry_gives_up_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+
+    async def always_refuse(**_kwargs: Any) -> Any:
+        raise BadRequest("chat not found")
+
+    bot.send_message = always_refuse  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.ERROR):
+        ref = _run(adapter.send_message(str(CHAT_ID), "scout", "hello"))
+
     assert ref is None
-    assert _bot(adapter).messages == []
+    # A message that could not be delivered at all is an error in the log, not
+    # a silent return.
+    assert any("chat not found" in r.getMessage() for r in caplog.records)
 
 
 def test_an_admin_notice_carries_no_agent_name() -> None:
@@ -851,6 +886,35 @@ def test_an_admin_notice_carries_no_agent_name() -> None:
     _run(adapter.admin_message(str(CHAT_ID), "scout is not in this room"))
 
     assert _bot(adapter).messages[0]["text"] == "scout is not in this room"
+
+
+def test_an_admin_notice_is_converted_from_markdown_like_any_other_body() -> None:
+    # These notices are written in Switch Markdown, same as an agent's message,
+    # and go out with parse_mode HTML. Skipping the conversion put the raw `**`
+    # and backticks in front of whoever had just added the bot.
+    adapter = _adapter()
+
+    _run(
+        adapter.admin_message(
+            str(CHAT_ID), "**To add an agent**, type `!invite-agent @name`"
+        )
+    )
+
+    text = _bot(adapter).messages[0]["text"]
+    assert text == ("<b>To add an agent</b>, type <code>!invite-agent @name</code>")
+    assert "**" not in text
+    assert "`" not in text
+
+
+def test_two_agents_get_different_marks_and_keep_them() -> None:
+    # Telegram gives a bot no per-message avatar, so a stable mark is the only
+    # thing a reader can learn to recognise. It must not move between restarts,
+    # which rules out the salted built-in hash.
+    first = TelegramAdapter._attribute("scout", "hello")
+    second = TelegramAdapter._attribute("ranger", "hello")
+
+    assert first.split()[0] != second.split()[0]
+    assert TelegramAdapter._attribute("scout", "again").startswith(first.split()[0])
 
 
 def test_editing_a_message_targets_its_chat_and_id() -> None:
@@ -925,7 +989,7 @@ def test_an_image_is_sent_as_a_photo_so_it_previews() -> None:
     )
 
     assert _bot(adapter).documents == []
-    assert _bot(adapter).photos[0]["caption"] == "<b>scout</b>: the chart"
+    assert _bot(adapter).photos[0]["caption"] == f"{SCOUT_MARK} <b>scout</b>: the chart"
 
 
 def test_a_non_image_is_sent_as_a_document_so_its_bytes_survive() -> None:
@@ -939,7 +1003,7 @@ def test_a_non_image_is_sent_as_a_document_so_its_bytes_survive() -> None:
 
     doc = _bot(adapter).documents[0]
     assert doc["filename"] == "report.csv"
-    assert doc["caption"] == "<b>scout</b>"
+    assert doc["caption"] == f"{SCOUT_MARK} <b>scout</b>"
 
 
 def test_an_image_too_big_to_preview_is_sent_as_a_document() -> None:
@@ -1009,7 +1073,7 @@ def test_several_images_arrive_as_one_album() -> None:
     album = _bot(adapter).albums[0]
     assert len(album["media"]) == 2
     # Only the first item's caption shows for the album as a whole.
-    assert album["media"][0].caption == "<b>scout</b>: two charts"
+    assert album["media"][0].caption == f"{SCOUT_MARK} <b>scout</b>: two charts"
     assert album["media"][1].caption is None
     assert _bot(adapter).photos == []
 
@@ -1049,7 +1113,7 @@ def test_a_single_file_batch_is_just_an_attachment() -> None:
     _run(adapter.send_attachments(str(CHAT_ID), "scout", files, "one"))
 
     assert _bot(adapter).albums == []
-    assert _bot(adapter).photos[0]["caption"] == "<b>scout</b>: one"
+    assert _bot(adapter).photos[0]["caption"] == f"{SCOUT_MARK} <b>scout</b>: one"
 
 
 def test_a_rejected_album_still_delivers_the_files() -> None:
@@ -1208,6 +1272,48 @@ def test_a_url_is_escaped_once_not_twice() -> None:
     rendered = adapter.translate_outbound("[x](https://e.com?a=1&b=2)")
 
     assert rendered == '<a href="https://e.com?a=1&amp;b=2">x</a>'
+
+
+def test_a_deeplink_telegram_cannot_render_becomes_copyable_text() -> None:
+    # "Open in Switch Console" is a `switchdash://` URL. Telegram linkifies only
+    # http(s)/tg, and an anchor carrying anything else is either rejected — which
+    # cost the whole message — or stripped by the client, leaving a label with no
+    # address behind it. Neither is acceptable, so the address stays visible.
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound(
+        "([Open in Switch Console](switchdash://session?server=https%3A%2F%2Fs&agent=a))"
+    )
+
+    assert "<a href" not in rendered
+    assert (
+        rendered == "(Open in Switch Console: <code>switchdash://session"
+        "?server=https%3A%2F%2Fs&amp;agent=a</code>)"
+    )
+
+
+def test_an_https_deeplink_is_still_a_real_link() -> None:
+    # With GATEWAY_PUBLIC_URL set, the deeplink is rewritten to the https
+    # redirect before it reaches the adapter — and that one must stay clickable.
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound(
+        "([Open in Switch Console](https://api.acme.test/deeplink/session?agent=a))"
+    )
+
+    assert rendered == (
+        '(<a href="https://api.acme.test/deeplink/session?agent=a">'
+        "Open in Switch Console</a>)"
+    )
+
+
+def test_a_tg_link_is_left_clickable() -> None:
+    # Telegram's own scheme is one it renders, so it must not be downgraded.
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound("[chat](tg://resolve?domain=acme)")
+
+    assert rendered == '<a href="tg://resolve?domain=acme">chat</a>'
 
 
 def test_a_table_is_left_as_written() -> None:

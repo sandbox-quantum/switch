@@ -7,7 +7,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 import discord
 from discord import app_commands
@@ -65,6 +65,10 @@ class DiscordAdapter(CollaborationAdapter):
     Switch room is created by the bridge core on the first bridged message
     rather than eagerly for the whole guild.
     """
+
+    # Discord linkifies only http(s), so the `switchdash://` deeplink needs the
+    # https redirect (`GATEWAY_PUBLIC_URL`) to be clickable here.
+    renders_custom_url_schemes: ClassVar[bool] = False
 
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()

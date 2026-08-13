@@ -91,7 +91,7 @@ def _no_agents_notice(slash_hint: str | None) -> str:
     return (
         "👋 I've linked this channel to a new Switch room, but there are no agents "
         "in it yet — so no one is here to respond to messages.\n\n"
-        "*To add an agent*, invite one by name (swap in the agent you want):\n"
+        "**To add an agent**, invite one by name (swap in the agent you want):\n"
         f"{invites}\n\n"
         "Once an agent is in the room, @-mention it here and it'll pick up the "
         "conversation."
@@ -294,7 +294,7 @@ class BridgeCore:
         content = (
             f"👋 You tagged {app_mention} directly — I'm not linked to an agent "
             "in this channel yet.\n\n"
-            f"*Agents you can tag directly:*\n{agent_list}"
+            f"**Agents you can tag directly:**\n{agent_list}"
         )
         # The `!set-alias` shortcut only makes sense when the bot handle is a
         # valid alias token. Some platforms (e.g. Teams) use a bot id containing
@@ -306,7 +306,7 @@ class BridgeCore:
             pass
         else:
             content += (
-                "\n\n*To make me an agent's entry point*, copy the line below and "
+                "\n\n**To make me an agent's entry point**, copy the line below and "
                 "swap in the agent's name — after that, tagging me here routes to "
                 f"that agent:\n!set-alias @agent_name {app_mention}"
             )

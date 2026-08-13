@@ -153,8 +153,16 @@ def test_each_adapter_advertises_a_syntax_it_actually_accepts() -> None:
     # Telegram passes a command's whole tail through as text, so the argument is
     # spelled exactly as in the `!` form — no named fields.
     assert telegram_hint is not None
-    assert "`/invite-agent @agent-name`" in telegram_hint
     assert "Telegram slash command" in telegram_hint
+    # The underscore spelling leads, because it is the only one Telegram will
+    # register and therefore the only one its menu offers. Advertising the
+    # hyphenated form first sent people to the one spelling the client will not
+    # autocomplete.
+    assert "`/invite_agent @agent-name`" in telegram_hint
+    assert telegram_hint.index("/invite_agent") < telegram_hint.index("/invite-agent")
+    # Both are still named, since the hyphenated form is what every other
+    # platform and the docs use, and Telegram does accept it when typed.
+    assert "`/invite-agent`" in telegram_hint
 
 
 async def test_auto_create_with_agents_posts_no_notice() -> None:

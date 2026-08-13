@@ -181,6 +181,20 @@ class CollaborationBridgeLifecycleService:
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
+        if (
+            not adapter_cls.renders_custom_url_schemes
+            and not self._config.gateway_public_url
+        ):
+            logger.warning(
+                "GATEWAY_PUBLIC_URL is not set and %s only renders http(s) links, "
+                "so the 'Open in Switch Console' deeplink cannot be clickable on "
+                "bridge %s — it is posted as copyable text instead. Set "
+                "GATEWAY_PUBLIC_URL to the Switch API's public origin (scheme + "
+                "host, no path) to turn it into a real link",
+                bridge.type,
+                bridge_id,
+            )
+
         async with self._session_factory() as session:
             bridge_client_record = await self._client_store.get(
                 session, bridge.client_id

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import logging
 import re
@@ -82,6 +83,30 @@ _SUPERGROUP_PREFIX = "-100"
 
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
+# The URL schemes Telegram will actually turn into a link. An `<a>` carrying
+# anything else is not rendered as written: the API rejects the message with
+# "unsupported URL protocol", or the client keeps the label and drops the link,
+# and which of the two you get is not ours to decide. A `switchdash://` deeplink
+# is exactly that case, so it is rendered as copyable text instead of an anchor
+# that may quietly vanish along with the message around it.
+_LINKABLE_SCHEMES = ("http://", "https://", "tg://")
+
+# The palette agent marks are drawn from. Solid colour circles, because they
+# stay legible at the size Telegram renders an emoji inline and carry no meaning
+# of their own to be misread — a mark says "same speaker as before", nothing
+# more. Eight is enough to make neighbouring agents in one chat almost always
+# differ without the colours becoming hard to tell apart.
+_AGENT_MARKERS = (
+    "\U0001f535",
+    "\U0001f7e2",
+    "\U0001f7e3",
+    "\U0001f7e0",
+    "\U0001f534",
+    "\U0001f7e1",
+    "\U0001f7e4",
+    "\u26ab",
+)
+
 
 class _ChatVisibility(NamedTuple):
     """What the bridge can see in one chat, and how certain that is.
@@ -128,6 +153,7 @@ class TelegramAdapter(CollaborationAdapter):
     """
 
     supports_channel_creation: ClassVar[bool] = False
+    renders_custom_url_schemes: ClassVar[bool] = False
 
     def __init__(self, *, config: TelegramConnectionConfig) -> None:
         super().__init__()
@@ -380,7 +406,7 @@ class TelegramAdapter(CollaborationAdapter):
             if previous == "mention_only":
                 await self.admin_message(
                     channel_id,
-                    "✅ <b>I can see the whole conversation here now.</b> Agents "
+                    "✅ **I can see the whole conversation here now.** Agents "
                     "will follow this chat without having to be tagged.",
                 )
             return
@@ -392,16 +418,16 @@ class TelegramAdapter(CollaborationAdapter):
         )
         await self.admin_message(
             channel_id,
-            "⚠️ <b>I can only see messages that tag me here.</b> Telegram is "
+            "⚠️ **I can only see messages that tag me here.** Telegram is "
             "filtering this chat before anything reaches me, so agents will "
-            f"follow whatever is addressed to <code>@{self._bot_username}</code> "
+            f"follow whatever is addressed to `@{self._bot_username}` "
             "or to an agent by name, and nothing else.\n\n"
-            "<b>To fix it everywhere, once:</b> in @BotFather, "
-            "<code>/mybots</code> → this bot → Bot Settings → Group Privacy → "
-            "<b>Turn off</b>. Telegram reads that when I join a chat, so I have "
+            "**To fix it everywhere, once:** in @BotFather, "
+            "`/mybots` → this bot → Bot Settings → Group Privacy → "
+            "**Turn off**. Telegram reads that when I join a chat, so I have "
             "to be removed from this one and added back for it to take here — "
             "but every group you add me to afterwards just works.\n\n"
-            "<b>To fix only this chat, now:</b> make me an administrator of it. "
+            "**To fix only this chat, now:** make me an administrator of it. "
             "No particular permission is needed. If Telegram converts the group "
             "to a supergroup when you do, that is expected — the Switch room "
             "follows it.",
@@ -709,7 +735,18 @@ class TelegramAdapter(CollaborationAdapter):
     def slash_invite_hint(self) -> str:
         # Telegram hands a command's whole tail through as message text, so the
         # invocation reads exactly like the `!` form.
-        return "`/invite-agent @agent-name` — the Telegram slash command"
+        #
+        # The underscore spelling leads because it is the only one Telegram
+        # itself will offer: a registered command may not contain a hyphen, so
+        # `/invite_agent` is what the command menu autocompletes and what the
+        # client renders as a tappable command. The hyphenated form is still
+        # accepted — `_parse_command` translates it back — and is named so that
+        # someone copying it from the docs or from another platform is not left
+        # thinking they typed it wrong.
+        return (
+            "`/invite_agent @agent-name` — the Telegram slash command, as the "
+            "menu offers it (`/invite-agent` works too)"
+        )
 
     async def admin_message(
         self,
@@ -721,7 +758,15 @@ class TelegramAdapter(CollaborationAdapter):
     ) -> str | None:
         # Admin/system notices post unattributed, so they read as the bridge
         # speaking rather than as one of the agents.
-        return await self._send_text(channel_id, content, thread_root_id)
+        #
+        # They arrive as Switch Markdown, like every other body, and have to be
+        # converted the same way: everything here goes out with parse_mode HTML,
+        # so an unconverted notice reaches the chat with its `**` and backticks
+        # showing. Platforms with a Markdown-ish native format got away with
+        # skipping this; Telegram does not.
+        return await self._send_text(
+            channel_id, self.translate_outbound(content), thread_root_id
+        )
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -743,12 +788,10 @@ class TelegramAdapter(CollaborationAdapter):
             # An edit that changes nothing is reported as an error; it is not one.
             if "not modified" in str(e).lower():
                 return
-            if "parse" not in str(e).lower():
-                logger.error("Failed to update Telegram message %s: %s", message_ref, e)
-                return
-            # Same disclosed fallback as a send: markup Telegram will not accept
-            # must not cost the edit entirely, or a status message stays stale
-            # for good with nothing on screen saying why.
+            # Same disclosed fallback as a send, and for the same reason it is
+            # not conditioned on the word "parse": markup Telegram will not
+            # accept must not cost the edit entirely, or a status message stays
+            # stale for good with nothing on screen saying why.
             logger.warning(
                 "Telegram rejected the formatting of an edit to %s (%s) — "
                 "resending it unformatted",
@@ -1070,8 +1113,17 @@ class TelegramAdapter(CollaborationAdapter):
         # target, nesting an anchor inside an anchor. Telegram rejects that, and
         # a rejected caption or edit has no plain-text retry to fall back on.
         def _link(match: re.Match[str]) -> str:
-            href = match.group(2).replace('"', "&quot;")
-            return _stash(f'<a href="{href}">{match.group(1)}</a>')
+            label, href = match.group(1), match.group(2)
+            # Already HTML-escaped by the pass above, so only the quote needs
+            # handling here — escaping again would double up the entities.
+            if not href.lower().startswith(_LINKABLE_SCHEMES):
+                # Disclosed degradation: the address stays in the message as a
+                # code span, which Telegram makes tap-to-copy, rather than
+                # being swallowed with the anchor.
+                shown = _stash(f"<code>{href}</code>")
+                return f"{label}: {shown}" if label else shown
+            attr = href.replace('"', "&quot;")
+            return _stash(f'<a href="{attr}">{label}</a>')
 
         text = self._LINK_RE.sub(_link, text)
         text = self._MENTION_RE.sub(self._render_mention, text)
@@ -1590,12 +1642,38 @@ class TelegramAdapter(CollaborationAdapter):
         return parts[0], parts[1]
 
     @staticmethod
-    def _attribute(sender_name: str, content: str) -> str:
-        """Put the agent's name at the head of the body.
+    def _agent_marker(sender_name: str) -> str:
+        """A stable coloured mark for one agent.
+
+        Telegram gives a bot no per-message name or avatar, so every agent
+        arrives under the same app identity and a bold name was the only thing
+        telling them apart — which reads as one speaker once a few of them are
+        talking. A mark that is always the same for the same agent gives a
+        reader something to recognise at a glance, the way an avatar would.
+
+        Derived from the name rather than configured, so it needs no state and
+        no migration and cannot disagree between two bridges. `blake2b` and not
+        `hash()`: the built-in is salted per process, so it would hand the same
+        agent a different colour after every restart.
+
+        Deliberately not a provider logo. The server only distinguishes
+        `claude-code` from `codex`, and Switch Console registers every other
+        provider — Gemini, Cursor, the rest — as `claude-code`; a logo drawn
+        from that would confidently label most agents wrongly.
+        """
+        digest = hashlib.blake2b(sender_name.encode("utf-8"), digest_size=8).digest()
+        return _AGENT_MARKERS[digest[0] % len(_AGENT_MARKERS)]
+
+    @classmethod
+    def _attribute(cls, sender_name: str, content: str) -> str:
+        """Put the agent's mark and name at the head of the body.
 
         This is the whole of Telegram's per-message identity: one bot posts for
         every agent, so without the name a reader cannot tell them apart."""
-        name = f"<b>{html.escape(sender_name, quote=False)}</b>"
+        name = (
+            f"{cls._agent_marker(sender_name)} "
+            f"<b>{html.escape(sender_name, quote=False)}</b>"
+        )
         if not content:
             return name
         return f"{name}\n{content}" if "\n" in content else f"{name}: {content}"
@@ -1694,16 +1772,16 @@ class TelegramAdapter(CollaborationAdapter):
             )
             return self._ref(sent)
         except BadRequest as e:
-            if "parse" not in str(e).lower():
-                logger.error(
-                    "Failed to send message to Telegram chat %s: %s", channel_id, e
-                )
-                return None
-            # Malformed markup would otherwise lose the message entirely; resend
-            # it as plain text and say so rather than dropping it.
+            # Any rejection gets the plain-text retry, not only the ones whose
+            # text says "parse". Telegram refuses markup under several different
+            # messages — an unsupported URL protocol in an anchor is one, and it
+            # says nothing about parsing — and matching on the wording meant
+            # those lost the whole message to a single log line. Retrying
+            # stripped costs one call in the cases that were failing anyway, and
+            # a message that arrives unformatted beats one that never arrives.
             logger.warning(
-                "Telegram rejected the formatting of a message to chat %s (%s) — "
-                "resending it unformatted",
+                "Telegram rejected a message to chat %s (%s) — resending it "
+                "unformatted",
                 channel_id,
                 e,
             )

@@ -48,6 +48,16 @@ class CollaborationAdapter(ABC):
     #: exactly those moments.
     supports_channel_creation: ClassVar[bool] = True
 
+    #: Whether this platform renders a link whose scheme is not http(s).
+    #:
+    #: False for platforms that linkify only the web schemes. It matters
+    #: because the "Open in Switch Console" deeplink is a `switchdash://` URL:
+    #: where this is False that link cannot work as written, and the deployment
+    #: needs `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to the https
+    #: redirect. Declared here so the lifecycle can say so once at startup
+    #: instead of each bridge discovering it in its own way.
+    renders_custom_url_schemes: ClassVar[bool] = True
+
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
