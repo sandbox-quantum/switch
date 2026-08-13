@@ -7,6 +7,7 @@ import {
 } from '@switch-console/core/agents/plugins/helpers';
 import { buildOpencodeHookBehavior } from './hooks';
 import { icon } from './icon';
+import { opencodeLaunchProfileModels } from './models';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 import {
   opencodeLaunchProfile,
@@ -136,6 +137,11 @@ export const provider = registerPluginBehavior(plugin, {
     launchProfile: opencodeLaunchProfile,
     launchProfilePaths: opencodeProfilePaths,
     launchProfileFields: opencodeLaunchProfileFields,
+    // A variant is whatever the chosen model declares, so the only correct list
+    // is the one the installed OpenCode reports. Asking also lets a typed model
+    // be checked, which matters because OpenCode accepts an unknown one in
+    // silence and only fails when the agent tries to answer.
+    launchProfileModels: opencodeLaunchProfileModels,
   },
   plugins: createFileDropPlugin({
     relativePath: OPENCODE_PLUGIN_PATH,

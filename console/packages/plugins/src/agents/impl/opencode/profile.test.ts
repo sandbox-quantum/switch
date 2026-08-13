@@ -29,6 +29,7 @@ describe('opencodeLaunchProfileFields', () => {
       'topP',
       'maxSteps',
       'webSearch',
+      'smallModel',
       'instructions',
     ]);
   });
@@ -42,16 +43,56 @@ describe('opencodeLaunchProfileFields', () => {
     expect(keys).not.toContain('effort');
   });
 
-  it('leaves reasoning variant as free text, not a fixed list', () => {
+  it('declares no fixed list of reasoning variants, because there is not one', () => {
     // The accepted values come from the chosen model's own capabilities, so any
-    // list hardcoded here would be wrong for most models.
+    // list hardcoded here would be wrong for most models — and flatly empty for
+    // every local one.
     const variant = opencodeLaunchProfileFields().find((field) => field.key === 'variant')!;
-    expect(variant.type).toBe('text');
     expect(variant.options).toBeUndefined();
+  });
+
+  it('binds the variant to the model above, so the choices follow it', () => {
+    const variant = opencodeLaunchProfileFields().find((field) => field.key === 'variant')!;
+    expect(variant.catalogue).toEqual({ kind: 'model-variant', modelField: 'model' });
+  });
+
+  it('binds both model fields to the host catalogue, so a typo can be caught', () => {
+    // OpenCode accepts a model it does not have without complaint and only fails
+    // when the agent tries to answer, so the check has to happen here.
+    for (const key of ['model', 'smallModel']) {
+      const field = opencodeLaunchProfileFields().find((f) => f.key === key)!;
+      expect(field.catalogue).toEqual({ kind: 'model' });
+    }
+  });
+
+  it('names a field the variant can follow', () => {
+    // The renderer resolves the binding by key, so a rename that missed one side
+    // would silently leave the variant with no choices.
+    const fields = opencodeLaunchProfileFields();
+    const variant = fields.find((field) => field.key === 'variant')!;
+    const bound = variant.catalogue as { kind: string; modelField: string };
+    expect(fields.some((field) => field.key === bound.modelField)).toBe(true);
   });
 });
 
 describe('buildOpencodeConfig', () => {
+  it('writes the utility model at the config root, where OpenCode reads it', () => {
+    // OpenCode has no per-agent utility model, so this is the one setting that
+    // applies to the session rather than to the agent. The config file is
+    // per-agent, so writing it at the root is still per-agent.
+    const config = parse(buildOpencodeConfig({ smallModel: 'ollama/gemma4:latest' }, null)!);
+
+    expect(config.small_model).toBe('ollama/gemma4:latest');
+    expect(config.agent).toBeUndefined();
+  });
+
+  it('keeps the utility model out of the agent object', () => {
+    const config = parse(buildOpencodeConfig({ model: 'ollama/a', smallModel: 'ollama/b' }, null)!);
+
+    expect(config.agent.build).toEqual({ model: 'ollama/a' });
+    expect(config.small_model).toBe('ollama/b');
+  });
+
   it('writes settings onto the default agent, which needs no --agent to select', () => {
     const config = parse(
       buildOpencodeConfig({ model: 'anthropic/claude-sonnet-4-5', variant: 'high' }, null)!

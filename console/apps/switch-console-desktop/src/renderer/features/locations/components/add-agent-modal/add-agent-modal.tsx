@@ -928,6 +928,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
             <LaunchProfileConfig
               providerId={pickState.providerId}
+              sshHost={discoverSshHost}
+              dir={discoverDir}
               onChange={onLaunchProfileConfigChange}
             />
           </>
@@ -998,6 +1000,8 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
             <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
             <LaunchProfileConfig
               providerId={pickState.providerId}
+              sshHost={discoverSshHost}
+              dir={discoverDir}
               onChange={onLaunchProfileConfigChange}
             />
           </>

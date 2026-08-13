@@ -85,14 +85,19 @@ export function DefinitionFieldInput({
   field,
   value,
   onChange,
+  disabled,
 }: {
   field: RepoAgentField;
   value: FormValue;
   onChange: (value: FormValue) => void;
+  /** Nothing to choose — the caller explains why beside the field. */
+  disabled?: boolean;
 }) {
   const id = `agent-definition-${field.key}`;
   if (field.type === 'boolean') {
-    return <Switch id={id} checked={value === true} onCheckedChange={onChange} />;
+    return (
+      <Switch id={id} checked={value === true} onCheckedChange={onChange} disabled={disabled} />
+    );
   }
   if (field.type === 'textarea') {
     return (
@@ -101,6 +106,7 @@ export function DefinitionFieldInput({
         value={String(value)}
         rows={5}
         placeholder={field.placeholder}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
       />
     );
@@ -114,6 +120,7 @@ export function DefinitionFieldInput({
     return (
       <Select
         value={selected}
+        disabled={disabled}
         onValueChange={(next) => onChange(next === UNSET ? '' : (next ?? ''))}
       >
         <SelectTrigger id={id}>
@@ -135,6 +142,7 @@ export function DefinitionFieldInput({
       type={field.type === 'number' ? 'number' : 'text'}
       value={String(value)}
       placeholder={field.placeholder}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
     />
   );

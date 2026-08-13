@@ -1,0 +1,50 @@
+ollama/gemma4:latest
+{
+  "id": "gemma4:latest",
+  "api": {
+    "id": "gemma4:latest",
+    "npm": "@ai-sdk/openai-compatible",
+    "url": ""
+  },
+  "status": "active",
+  "name": "gemma4",
+  "providerID": "ollama",
+  "capabilities": {
+    "temperature": false,
+    "reasoning": false,
+    "attachment": false,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "cost": {
+    "input": 0,
+    "output": 0,
+    "cache": {
+      "read": 0,
+      "write": 0
+    }
+  },
+  "options": {},
+  "limit": {
+    "context": 0,
+    "output": 0
+  },
+  "headers": {},
+  "family": "",
+  "release_date": "",
+  "variants": {}
+}

@@ -12,6 +12,7 @@ import {
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
+import { getAgentModelCatalogue } from './agent-model-catalogue';
 import { assignAgentServer } from './assignAgentServer';
 import {
   attachConfiguredAgents,
@@ -54,6 +55,13 @@ export const agentsController = createRPCController({
     Promise.resolve(getAgentAdvancedFields(params.providerId)),
   advancedSurface: (params: { providerId: AgentProviderId }) =>
     Promise.resolve(getAgentAdvancedSurface(params.providerId)),
+  /**
+   * The models the agent's own host offers, for the advanced-configuration
+   * fields that declare a catalogue binding. Reports why it could not be read
+   * rather than throwing: the form degrades to plain text and says so.
+   */
+  modelCatalogue: (params: { providerId: AgentProviderId; sshHost: string | null; dir: string }) =>
+    getAgentModelCatalogue(params),
   readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),
   updateAdvancedConfig: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentAdvancedConfig(params),

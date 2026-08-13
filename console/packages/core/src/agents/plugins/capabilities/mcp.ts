@@ -94,6 +94,34 @@ export function resolveLaunchProfileEnv(
  */
 export type SwitchLaunchSpecialization = Record<string, string | undefined>;
 
+/**
+ * A model the host offers, and the reasoning variants that model accepts.
+ *
+ * `id` is written the way the provider's model field is typed (OpenCode:
+ * `provider/model`), so a typed value can be compared to the catalogue without
+ * either side reformatting.
+ *
+ * `variants` is empty for a model with no reasoning control — every local model
+ * seen so far, which is exactly the case the form needs to know about: an empty
+ * list means the variant field has nothing to offer and should say so rather
+ * than accept a value that will be ignored.
+ */
+export type LaunchProfileModel = {
+  id: string;
+  variants: string[];
+};
+
+/**
+ * Run a command on the host an agent runs on — the local machine or a remote
+ * one — and return its stdout. Passed in rather than imported so a provider's
+ * catalogue lookup works the same on both, and so it can be driven directly in a
+ * test.
+ */
+export type LaunchProfileHostExec = (
+  command: string,
+  args: string[]
+) => Promise<{ stdout: string }>;
+
 export type IMcpBehavior = {
   readServers(fs: PluginFs): Promise<McpServerRegistration[]>;
   writeServers(fs: PluginFs, servers: McpServerRegistration[]): Promise<void>;
@@ -147,6 +175,23 @@ export type IMcpBehavior = {
    * Undefined for a provider that writes no profile.
    */
   launchProfileFields?(): RepoAgentField[];
+  /**
+   * The models this host offers for {@link launchProfileFields}'s model field,
+   * with the reasoning variants each accepts.
+   *
+   * Optional, and the form works without it: a provider that does not implement
+   * this gets a plain text model field, which is where both providers started.
+   * Implementing it turns that field into one the app can check what was typed
+   * against, and lets a variant field offer the values the *chosen model*
+   * actually takes — which for OpenCode is the only correct answer, since the
+   * list differs per model and an unrecognised one is ignored in silence.
+   *
+   * Throwing is meaningful: it means the host could not be asked (the CLI is not
+   * installed there, the connection failed). The caller says so and falls back
+   * to plain text rather than reporting that the host offers no models, which
+   * would flag every valid model as wrong.
+   */
+  launchProfileModels?(exec: LaunchProfileHostExec): Promise<LaunchProfileModel[]>;
 };
 
 export type McpServerRegistration = {

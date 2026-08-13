@@ -83,15 +83,18 @@ const DENY = 'deny';
  * One declaration serves the form and the writer, so a new setting is one entry
  * here rather than a field list and a writer that can disagree.
  *
- * `path` is a dotted path within the agent's own object (`agent.build.…`), or is
- * absent for a setting handled specially (`instructions`, which is a file rather
- * than a value). Everything is collected as a string or a number, and blank
- * means the key is omitted so the user's own `opencode.json` decides — which is
- * not the same as writing a default-looking value over it.
+ * `path` is a dotted path, absent for a setting handled specially
+ * (`instructions`, which is a file rather than a value). `scope` says what it is
+ * relative to: the agent's own object (`agent.build.…`) for most, or the config
+ * root for the few OpenCode keys that have no per-agent form. Everything is
+ * collected as a string or a number, and blank means the key is omitted so the
+ * user's own `opencode.json` decides — which is not the same as writing a
+ * default-looking value over it.
  */
 type OpencodeSetting = {
   field: RepoAgentField;
   path?: string;
+  scope?: 'agent' | 'config';
   toValue?: (raw: string) => unknown;
 };
 
@@ -115,7 +118,8 @@ const OPENCODE_SETTINGS: OpencodeSetting[] = [
       label: 'Model',
       type: 'text',
       placeholder: 'e.g. anthropic/claude-sonnet-4-5 — blank uses the OpenCode default',
-      help: 'Overrides the model for this agent only. Format is provider/model; `opencode models` lists what your providers offer.',
+      help: 'Overrides the model for this agent only, as provider/model. Includes a local model: define the provider once in your OpenCode config and an agent can run against it.',
+      catalogue: { kind: 'model' },
     },
     path: 'model',
   },
@@ -125,7 +129,8 @@ const OPENCODE_SETTINGS: OpencodeSetting[] = [
       label: 'Reasoning variant',
       type: 'text',
       placeholder: 'e.g. high — blank uses the model default',
-      help: "OpenCode's reasoning-effort control. The accepted values come from the chosen model rather than a fixed list, so check `opencode models` — a name the model does not define is ignored without an error.",
+      help: "OpenCode's reasoning-effort control. Which values a model takes is the model's own business, so the choices follow the model above; most local models have none.",
+      catalogue: { kind: 'model-variant', modelField: 'model' },
     },
     path: 'variant',
   },
@@ -182,6 +187,21 @@ const OPENCODE_SETTINGS: OpencodeSetting[] = [
   },
   {
     field: {
+      key: 'smallModel',
+      label: 'Utility model',
+      type: 'text',
+      placeholder: 'e.g. ollama/gemma4:latest — blank uses your OpenCode default',
+      help: 'The cheaper model OpenCode uses for background work like naming the conversation. Worth setting to match the model above when the point is to keep everything on one machine — otherwise that background work goes wherever your own config sends it.',
+      catalogue: { kind: 'model' },
+    },
+    path: 'small_model',
+    // Top-level: OpenCode has no per-agent utility model, so this is the one
+    // setting here that applies to the session rather than to the agent. The
+    // config file is per-agent, so writing it at the root is still per-agent.
+    scope: 'config',
+  },
+  {
+    field: {
       key: 'instructions',
       label: 'Instructions',
       type: 'textarea',
@@ -231,6 +251,7 @@ export function buildOpencodeConfig(
   instructionsPath: string | null
 ): string | null {
   const agent: Record<string, unknown> = {};
+  const config: Record<string, unknown> = {};
 
   // Driven off OpenCode's own settings rather than the collected keys, so a value
   // stored under a key OpenCode does not declare is left out rather than written.
@@ -243,10 +264,9 @@ export function buildOpencodeConfig(
 
     const value = setting.toValue ? setting.toValue(raw.trim()) : raw.trim();
     if (value === undefined) continue;
-    assign(agent, setting.path, value);
+    assign(setting.scope === 'config' ? config : agent, setting.path, value);
   }
 
-  const config: Record<string, unknown> = {};
   if (instructionsPath) config.instructions = [instructionsPath];
   if (Object.keys(agent).length > 0) config.agent = { [OPENCODE_TARGET_AGENT]: agent };
   if (Object.keys(config).length === 0) return null;

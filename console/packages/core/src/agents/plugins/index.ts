@@ -72,6 +72,8 @@ export type { IHostDependencyBehavior } from '../../host-dependencies/capability
 export type { IHooksBehavior } from './capabilities/hooks';
 export type {
   IMcpBehavior,
+  LaunchProfileHostExec,
+  LaunchProfileModel,
   McpServerRegistration,
   SwitchLaunchProfile,
   SwitchLaunchProfileFile,
@@ -96,6 +98,7 @@ export type {
   RepoAgentAttributeValue,
   RepoAgentDefinition,
   RepoAgentField,
+  RepoAgentFieldCatalogue,
   RepoAgentFieldOption,
   RepoAgentFieldType,
   RepoAgentsDescriptor,

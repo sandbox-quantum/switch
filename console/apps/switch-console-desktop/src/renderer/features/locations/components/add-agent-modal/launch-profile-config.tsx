@@ -16,6 +16,11 @@ import {
   type FormState,
   type FormValue,
 } from '../agent-definition-fields';
+import {
+  fieldCatalogueState,
+  fieldWithCatalogue,
+  type ModelCatalogueResult,
+} from '../agent-model-catalogue';
 
 /**
  * Collapsed "Advanced configuration" section for a provider that keeps its
@@ -30,9 +35,14 @@ import {
  */
 export function LaunchProfileConfig({
   providerId,
+  sshHost,
+  dir,
   onChange,
 }: {
   providerId: AgentProviderId | null;
+  /** The host the agent will run on: its SSH alias, or null for this machine. */
+  sshHost: string | null;
+  dir: string;
   onChange: (config: AgentProviderConfig | null) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -43,6 +53,19 @@ export function LaunchProfileConfig({
     enabled: !!providerId,
   });
   const fields = useMemo(() => data ?? [], [data]);
+
+  // The models that host offers, for the fields bound to it. Asked of the host
+  // the agent will run on, since that is what decides the answer — and only once
+  // a directory has been chosen, because before that there is no host to ask.
+  const { data: catalogue } = useQuery({
+    queryKey: ['agent-model-catalogue', providerId, sshHost ?? 'local', dir],
+    queryFn: (): Promise<ModelCatalogueResult> =>
+      providerId && dir.trim()
+        ? rpc.agents.modelCatalogue({ providerId, sshHost, dir })
+        : Promise.resolve({ kind: 'unavailable', reason: 'No host to ask yet.' }),
+    enabled: !!providerId && dir.trim().length > 0,
+    staleTime: 60_000,
+  });
 
   const [state, setState] = useState<FormState>({});
   useEffect(() => {
@@ -75,21 +98,37 @@ export function LaunchProfileConfig({
       </button>
       {open && (
         <div className="flex flex-col gap-4 border-t border-border px-3 py-3">
-          {fields.map((field) => (
-            <Field key={field.key}>
-              <FieldLabel htmlFor={`launch-profile-${field.key}`}>
-                {field.label} (optional)
-              </FieldLabel>
-              <DefinitionFieldInput
-                field={field}
-                value={state[field.key] ?? ''}
-                onChange={(value) => setField(field.key, value)}
-              />
-              {field.help && (
-                <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
-              )}
-            </Field>
-          ))}
+          {fields.map((field) => {
+            const catalogueState = fieldCatalogueState(field, state, catalogue);
+            const rendered = fieldWithCatalogue(field, catalogueState);
+            return (
+              <Field key={field.key}>
+                <FieldLabel htmlFor={`launch-profile-${field.key}`}>
+                  {field.label} (optional)
+                </FieldLabel>
+                <DefinitionFieldInput
+                  field={rendered}
+                  value={state[field.key] ?? ''}
+                  disabled={catalogueState.disabled}
+                  onChange={(value) => setField(field.key, value)}
+                />
+                {field.help && (
+                  <FieldDescription className="text-foreground-muted">
+                    {field.help}
+                  </FieldDescription>
+                )}
+                {catalogueState.note && (
+                  <FieldDescription
+                    className={
+                      catalogueState.warning ? 'text-foreground-warning' : 'text-foreground-muted'
+                    }
+                  >
+                    {catalogueState.note}
+                  </FieldDescription>
+                )}
+              </Field>
+            );
+          })}
         </div>
       )}
     </div>

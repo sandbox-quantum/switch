@@ -11,6 +11,11 @@ import {
   type FormState,
   type FormValue,
 } from '@renderer/features/locations/components/agent-definition-fields';
+import {
+  fieldCatalogueState,
+  fieldWithCatalogue,
+  type ModelCatalogueResult,
+} from '@renderer/features/locations/components/agent-model-catalogue';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -63,6 +68,25 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     queryFn: () =>
       providerId ? rpc.agents.advancedSurface({ providerId }) : Promise.resolve('none' as const),
     enabled: !!providerId,
+  });
+
+  const { data: locations } = useQuery({
+    queryKey: ['locations'],
+    queryFn: () => rpc.locations.getLocations(),
+  });
+  const location = (locations ?? []).find((l) => l.id === locationId);
+
+  // What the agent's own host offers, for the fields bound to it. Fetched per
+  // host rather than per keystroke: it shells out to the provider CLI, over SSH
+  // for a remote agent.
+  const { data: catalogue } = useQuery({
+    queryKey: ['agent-model-catalogue', providerId, location?.sshHost ?? 'local', location?.dir],
+    queryFn: (): Promise<ModelCatalogueResult> =>
+      providerId && location
+        ? rpc.agents.modelCatalogue({ providerId, sshHost: location.sshHost, dir: location.dir })
+        : Promise.resolve({ kind: 'unavailable', reason: 'No host to ask.' }),
+    enabled: !!providerId && !!location && editable,
+    staleTime: 60_000,
   });
 
   const { data: current } = useQuery({
@@ -178,22 +202,36 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
         The agent&apos;s model, reasoning effort, tools, and system prompt. The agent name is fixed.
       </FieldDescription>
       <div className="flex flex-col gap-4 rounded-md border border-border px-3 py-3">
-        {fields.map((field) => (
-          <Field key={field.key}>
-            <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
-              {field.label}
-              {field.required || field.type === 'boolean' ? '' : ' (optional)'}
-            </FieldLabel>
-            <DefinitionFieldInput
-              field={field}
-              value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
-              onChange={(value) => setField(field.key, value)}
-            />
-            {field.help && (
-              <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
-            )}
-          </Field>
-        ))}
+        {fields.map((field) => {
+          const catalogueState = fieldCatalogueState(field, form, catalogue);
+          const rendered = fieldWithCatalogue(field, catalogueState);
+          return (
+            <Field key={field.key}>
+              <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
+                {field.label}
+                {field.required || field.type === 'boolean' ? '' : ' (optional)'}
+              </FieldLabel>
+              <DefinitionFieldInput
+                field={rendered}
+                value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
+                disabled={catalogueState.disabled}
+                onChange={(value) => setField(field.key, value)}
+              />
+              {field.help && (
+                <FieldDescription className="text-foreground-muted">{field.help}</FieldDescription>
+              )}
+              {catalogueState.note && (
+                <FieldDescription
+                  className={
+                    catalogueState.warning ? 'text-foreground-warning' : 'text-foreground-muted'
+                  }
+                >
+                  {catalogueState.note}
+                </FieldDescription>
+              )}
+            </Field>
+          );
+        })}
         <div className="flex justify-end">
           <Button
             type="button"
