@@ -80,14 +80,6 @@ class MattermostAdapter(CollaborationAdapter):
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
 
-        # Mattermost's ordinary delete leaves a "(message deleted)" tombstone,
-        # so the runtime indicator (base class `_working_msg`) is never soft
-        # deleted — it is hard deleted where the server permits it, and
-        # otherwise edited in place to a terminal marker when the turn ends.
-        # Channels where the hard delete has been found unavailable, so the
-        # operator is warned once rather than on every message.
-        self._no_hard_delete_warned: set[str] = set()
-
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
         # channel id -> channel name (URL slug), for building channel deeplinks.
@@ -451,18 +443,24 @@ class MattermostAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
     ) -> None:
-        """Surface runtime state as a posted message that is never *soft*
-        deleted — Mattermost's soft delete leaves a "(message deleted)"
-        tombstone.
+        """Surface runtime state as a posted message that is **never deleted**.
+
+        Mattermost's web client replaces any message deleted while it is on
+        screen with a "(message deleted)" placeholder, and only drops that on
+        reload. It does so however the message was removed — a permanent delete
+        looks the same to it as a soft one — so a status line that appears and
+        vanishes each turn leaves a trail of placeholders behind it. There is no
+        server setting that turns this off. The only way not to provoke it is
+        not to delete: every status message here is retired by editing it in
+        place.
 
         - ``working`` → post "working on it…" as the agent (in-thread when the
           trigger was threaded); it stays up across intermediate replies and
           through ``awaiting-input``.
-        - ``idle`` (where ``completed`` collapses) → hard-delete the working
-          message and any pings so they vanish cleanly, falling back to an
-          in-place edit when permanent deletion is unavailable.
+        - ``idle`` (where ``completed`` collapses) → edit the working message
+          into a "done" marker, and resolve any pings the same way.
         - ``awaiting-input`` → leave the working message up; post a separate
-          operator ping (tracked for removal when the turn ends).
+          operator ping (tracked for resolution when the turn ends).
         """
         key = (channel_id, agent_name)
         if state == "working":
@@ -479,7 +477,10 @@ class MattermostAdapter(CollaborationAdapter):
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
                 self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                    message_ref=ref,
+                    body=body,
+                    thread_root_id=thread_root_id,
+                    started_at=time.monotonic(),
                 )
         elif state == "awaiting-input":
             ref = await self._ping_operator(
@@ -492,106 +493,47 @@ class MattermostAdapter(CollaborationAdapter):
             await self._clear_input_pings(channel_id, agent_name)
 
     async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
-        """Remove the tracked operator pings when the turn ends.
+        """Resolve the tracked operator pings when the turn ends.
 
-        Same tombstone-avoidance as the working message: hard-delete when
-        permitted, otherwise edit the ping to a terminal marker."""
+        Edited rather than removed, for the same reason as the working message:
+        a delete would leave a placeholder in every client that had the ping on
+        screen — which, for a ping, is precisely the people it was aimed at."""
         for post_id in self._input_pings.pop((channel_id, agent_name), []):
-            if await self._permanent_delete(post_id):
-                continue
             await self._patch_post_as(
-                agent_name, post_id, self.translate_outbound("✓ input received")
+                agent_name, post_id, self.translate_outbound("✓ Input received")
             )
 
     async def _reposition_runtime_state(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
     ) -> None:
-        """Move the indicator only when Mattermost will truly delete the old one.
+        """Leave the indicator where it was first posted.
 
-        This inverts the base class's post-then-delete order. Mattermost can only
-        remove a post without leaving a "(message deleted)" tombstone when the
-        server permits a hard delete (v10.2+, ``EnableAPIPostDeletion``, and a
-        system-admin account). Reposting first and discovering the delete is
-        unavailable would strand a dead marker in the channel on *every*
-        message, so the delete is attempted first and the move is abandoned —
-        loudly — when it fails.
+        Moving it means removing it from where it is, and any removal shows as
+        "(message deleted)" to everyone currently looking at the channel — once
+        per move, so an active conversation accumulates them fastest. The
+        indicator is pinned to the point the turn began instead: less precise
+        about where the agent is up to, but it costs the reader nothing.
         """
-        key = (channel_id, agent_name)
-        live = self._working_msg.get(key)
-        if live is None:
-            return
-
-        if not await self._permanent_delete(live.message_ref):
-            if channel_id not in self._no_hard_delete_warned:
-                self._no_hard_delete_warned.add(channel_id)
-                logger.warning(
-                    "Cannot move the runtime indicator in Mattermost channel %s: "
-                    "hard delete is unavailable, so the indicator would leave a "
-                    "marker behind each time it moved. It will stay where it was "
-                    "first posted. Requires Mattermost v10.2+ with "
-                    "ServiceSettings.EnableAPIPostDeletion and a system-admin "
-                    "account.",
-                    channel_id,
-                )
-            return
-
-        ref = await self.send_message(channel_id, agent_name, live.body, thread_root_id)
-        if ref is None:
-            # The old post is already gone, so there is nothing to fall back to.
-            self._working_msg.pop(key, None)
-            logger.error(
-                "Removed the runtime indicator for %s in %s but could not repost "
-                "it; the channel now shows no indicator for this turn",
-                agent_name,
-                channel_id,
-            )
-            return
-
-        self._working_msg[key] = replace(
-            live, message_ref=ref, thread_root_id=thread_root_id
-        )
+        return
 
     async def _dispose_working(self, channel_id: str, agent_name: str) -> None:
-        """Remove the live "working on it…" message when the turn ends.
+        """Retire the live "working on it…" message when the turn ends.
 
-        Prefers a true hard delete (``?permanent=true``) so the message vanishes
-        with no trace. That is gated on Mattermost ≥ v10.2 with
-        ``ServiceSettings.EnableAPIPostDeletion`` enabled and a system-admin
-        account, so when it is unavailable we fall back to editing the message
-        in place — never a soft delete, which would leave a tombstone."""
+        Edited into a terminal marker rather than removed — see
+        ``_apply_runtime_state`` for why nothing here is ever deleted. Kept to
+        the bare fact that the turn finished and how long it took: this line
+        stays in the channel for good, so it earns its place by being small.
+        The session link belongs on the live indicator, where it is still
+        actionable, not on the record of a turn that is over."""
         live = self._working_msg.pop((channel_id, agent_name), None)
         if live is None:
             return
-        if await self._permanent_delete(live.message_ref):
-            return
+        elapsed = _format_elapsed(time.monotonic() - live.started_at)
         await self._patch_post_as(
-            agent_name, live.message_ref, self.translate_outbound("✓ done")
+            agent_name,
+            live.message_ref,
+            self.translate_outbound(f"✓ Done · {elapsed}"),
         )
-
-    async def _permanent_delete(self, post_id: str) -> bool:
-        """Hard-delete a post via the admin (system-admin) driver.
-
-        Returns True on success; False on any failure (older server, config
-        disabled, insufficient permissions) so the caller can fall back to an
-        in-place edit rather than leave a tombstone."""
-        driver = self._admin_driver
-        loop = self._main_loop
-        if driver is None or loop is None:
-            return False
-
-        def _do() -> bool:
-            driver.client.delete(f"/posts/{post_id}", params={"permanent": "true"})
-            return True
-
-        try:
-            return await loop.run_in_executor(None, _do)
-        except Exception as e:
-            logger.debug(
-                "Permanent delete unavailable for post %s (%s); editing instead",
-                post_id,
-                e,
-            )
-            return False
 
     async def _patch_post_as(self, agent_name: str, post_id: str, content: str) -> None:
         driver = self._bot_drivers.get(agent_name) or self._admin_driver
@@ -1402,3 +1344,20 @@ class MattermostAdapter(CollaborationAdapter):
         except Exception:
             pass
         return None
+
+
+def _format_elapsed(seconds: float) -> str:
+    """How long a turn took, for the marker its status line becomes.
+
+    Rounded to whole seconds and written the way a reader skims it — "8s",
+    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
+    second turns report "0s" instead of an empty string.
+    """
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"

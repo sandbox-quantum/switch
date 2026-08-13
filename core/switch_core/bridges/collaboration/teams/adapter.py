@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -565,7 +566,10 @@ class TeamsAdapter(CollaborationAdapter):
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
                 self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                    message_ref=ref,
+                    body=body,
+                    thread_root_id=thread_root_id,
+                    started_at=time.monotonic(),
                 )
         elif state == "awaiting-input":
             ref = await self._ping_operator(

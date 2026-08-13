@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '@shared/core/sessions/sessions';
 import { SessionManagerStore } from './session-manager';
-import { createUnprovisionedSession } from './session-store';
+import { createUnprovisionedSession, createUnregisteredSession } from './session-store';
 
 type MockViewModel = {
   initialize: ReturnType<typeof vi.fn>;
@@ -168,6 +168,78 @@ describe('SessionManagerStore archive lifecycle', () => {
     expect(store.state).toBe('provisioned');
     expect(store.viewModel).toBe(mocks.viewModels[1]);
     expect(mocks.viewModels[1].initialize).toHaveBeenCalledOnce();
+
+    manager.dispose();
+  });
+});
+
+describe('SessionManagerStore discardFailedCreations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.viewModels.length = 0;
+    mocks.getLocationManagerStore.mockReturnValue({ mountLocation: mocks.mountLocation });
+    mocks.getSessions.mockResolvedValue([]);
+    mocks.mountLocation.mockResolvedValue(undefined);
+  });
+
+  function makeFailedCreation(manager: SessionManagerStore, id: string) {
+    const store = createUnregisteredSession('location-1', {
+      id,
+      title: 'Failed session',
+      status: 'in_progress',
+      lastInteractedAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      statusChangedAt: '2026-01-01T00:00:00.000Z',
+      isPinned: false,
+    });
+    store.phase = 'create-error';
+    store.errorMessage = 'remote host cannot reach the Switch endpoint';
+    manager.sessions.set(id, store);
+    return store;
+  }
+
+  // The server rejected the create, so there is nothing there to delete. The
+  // mocked rpc.sessions has no deleteSessions at all — reaching for the server
+  // would throw, so this passing is what proves the discard stays local.
+  it('drops a session whose creation failed, without going to the server', () => {
+    const manager = makeSessionManager();
+    makeFailedCreation(manager, 'session-failed');
+
+    manager.discardFailedCreations();
+
+    expect(manager.sessions.has('session-failed')).toBe(false);
+    expect(mocks.agentRelease).toHaveBeenCalledWith('session-failed');
+
+    manager.dispose();
+  });
+
+  // A provision error belongs to a session the server did register, so it is
+  // listed in the sidebar and its own view offers a retry. Discarding it would
+  // hide a session that still exists.
+  it('leaves a provision error alone', () => {
+    const manager = makeSessionManager();
+    const session = makeSession({ id: 'session-provisioned' });
+    const store = createUnprovisionedSession('location-1', session);
+    store.phase = 'provision-error';
+    manager.sessions.set(session.id, store);
+
+    manager.discardFailedCreations();
+
+    expect(manager.sessions.has('session-provisioned')).toBe(true);
+    expect(mocks.agentRelease).not.toHaveBeenCalled();
+
+    manager.dispose();
+  });
+
+  it('is a no-op when nothing failed to be created', () => {
+    const manager = makeSessionManager();
+    const session = makeSession({ id: 'session-healthy' });
+    manager.sessions.set(session.id, createUnprovisionedSession('location-1', session));
+
+    manager.discardFailedCreations();
+
+    expect(manager.sessions.has('session-healthy')).toBe(true);
+    expect(mocks.agentRelease).not.toHaveBeenCalled();
 
     manager.dispose();
   });

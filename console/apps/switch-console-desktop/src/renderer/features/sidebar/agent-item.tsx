@@ -16,7 +16,11 @@ import {
 } from '@renderer/features/locations/stores/location-selectors';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
-import { hasSessionError } from '@renderer/features/sessions/stores/session-selectors';
+import {
+  getSessionManagerStore,
+  hasDiscardableSessionError,
+  hasSessionError,
+} from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useToast } from '@renderer/lib/hooks/use-toast';
@@ -156,14 +160,36 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                     Shared with the room-grouped rows so the two trees cannot
                     disagree about the same agent (CHOO-1682/1809). */}
                 <HostTroubleIndicator sshHost={sshHost} agentId={agent.providerId ?? null} />
-                {locationViewKind(location) === 'ready' && hasSessionError(agent.locationId) && (
-                  <Tooltip>
-                    <TooltipTrigger>
-                      <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-                    </TooltipTrigger>
-                    <TooltipContent>A session failed to connect</TooltipContent>
-                  </Tooltip>
-                )}
+                {locationViewKind(location) === 'ready' &&
+                  hasSessionError(agent.locationId) &&
+                  (hasDiscardableSessionError(agent.locationId) ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <SidebarItemMiniButton
+                            type="button"
+                            aria-label={`Dismiss failed session for ${label}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              getSessionManagerStore(agent.locationId)?.discardFailedCreations();
+                            }}
+                          >
+                            <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                          </SidebarItemMiniButton>
+                        }
+                      />
+                      <TooltipContent>
+                        A session failed to connect — click to dismiss
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
+                      </TooltipTrigger>
+                      <TooltipContent>A session failed to connect</TooltipContent>
+                    </Tooltip>
+                  ))}
               </span>
             </SidebarMenuAction>
           </div>

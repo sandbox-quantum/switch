@@ -223,13 +223,6 @@ export class InProcessSessionSpawner implements SessionSpawner {
     const plugin = getPlugin(providerId);
     const hooks = plugin.capabilities.hooks;
     if (hooks.kind === 'none') return;
-    if (hooks.kind !== 'config' || !plugin.behavior.hooks) {
-      this.deps.log.error('InProcessSessionSpawner: provider hooks cannot be installed here', {
-        providerId,
-        kind: hooks.kind,
-      });
-      return;
-    }
     if (hooks.scope !== 'global' && hooks.scope !== 'workspace') {
       throw new Error(
         `InProcessSessionSpawner: no hook root for scope '${String(hooks.scope)}' — the session ` +
@@ -237,13 +230,33 @@ export class InProcessSessionSpawner implements SessionSpawner {
       );
     }
     const root = hooks.scope === 'global' ? homedir() : this.spec.cwd;
-    // The sidecar runs on the machine the session runs on, so its own platform
-    // is the target platform.
-    await plugin.behavior.hooks.writeHooks(createPluginFs(root), [], {
-      platform: process.platform,
-    });
+    const fs = createPluginFs(root);
+
+    // Both delivery mechanisms have to be handled here, not just config files.
+    // A provider whose hooks ride a dropped plugin (OpenCode) would otherwise
+    // launch on a VM with nothing installed and never report that it stopped —
+    // the exact failure this method exists to prevent, reached by a different
+    // route. Mirrors `ensureHooksInstalled` on the desktop side.
+    if (hooks.kind === 'config' && plugin.behavior.hooks) {
+      // The sidecar runs on the machine the session runs on, so its own platform
+      // is the target platform.
+      await plugin.behavior.hooks.writeHooks(fs, [], { platform: process.platform });
+    } else if (hooks.kind === 'plugin' && plugin.behavior.plugins) {
+      await plugin.behavior.plugins.installPlugin(
+        fs,
+        hooks.scope === 'global' ? { kind: 'global' } : { kind: 'workspace', path: root }
+      );
+    } else {
+      this.deps.log.error('InProcessSessionSpawner: provider hooks cannot be installed here', {
+        providerId,
+        kind: hooks.kind,
+      });
+      return;
+    }
+
     this.deps.log.info('InProcessSessionSpawner: installed agent hooks', {
       providerId,
+      kind: hooks.kind,
       scope: hooks.scope,
     });
   }

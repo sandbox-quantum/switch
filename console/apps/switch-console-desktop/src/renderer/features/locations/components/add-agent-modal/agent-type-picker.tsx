@@ -1,5 +1,6 @@
 import { CircleAlert } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
@@ -13,15 +14,18 @@ import {
 } from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { autoSelectedAgentType } from './agent-type-auto-selection';
 
 /**
  * Picks the agent type for a new Switch agent. Only agent types that are both
  * Switch-supported and have their connector plugin installed (i.e. actually
  * usable) are offered; if none qualify, the user is pointed at the per-agent
- * Switch setup. Auto-selection is deliberately limited to the case where
- * exactly one type is offered — there is nothing to choose, so the click is
- * pure friction. With several connectors installed the user picks explicitly:
- * pre-selecting one of them would silently decide which agent gets onboarded.
+ * Switch setup.
+ *
+ * Everything past this picker is gated on a chosen type — the directory scan,
+ * the onboard-existing list and every submit button — so leaving it unset
+ * strands the rest of the form behind a control the user may not read as
+ * required. `autoSelectedAgentType` decides when the pick can be made for them.
  */
 export function AgentTypePicker({
   value,
@@ -34,6 +38,7 @@ export function AgentTypePicker({
 }) {
   const { data: availability, isPending } = useAgentTypeAvailability(sshHost);
   const { data: agents } = useAgents();
+  const { value: defaultAgent } = useAppSettingsKey('defaultAgent');
 
   // Every known type, each with the agent registry's name and icon plus the
   // verdict from the machine being targeted. Types the registry does not know
@@ -52,8 +57,12 @@ export function AgentTypePicker({
     // Only ever auto-select something that can actually be used. Picking a
     // greyed-out type on the user's behalf would put them straight into the
     // refusal the greying exists to prevent.
-    if (selectable.length === 1) onChange(selectable[0].agent.id as AgentProviderId);
-  }, [value, selectable, onChange]);
+    const picked = autoSelectedAgentType(
+      selectable.map((o) => o.agent.id as AgentProviderId),
+      defaultAgent
+    );
+    if (picked) onChange(picked);
+  }, [value, selectable, onChange, defaultAgent]);
 
   // Nothing usable is a real dead end and still needs saying — but the list
   // below now shows *which* types exist and what each is missing, so this is

@@ -40,7 +40,7 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
       (agentPayloads ?? [])
         // Only Switch-supported agent types are shown for now; the others aren't
         // usable in Switch yet, so surfacing them here would be misleading.
-        .filter((a) => a.capabilities.switchSetup.kind === 'cli')
+        .filter((a) => a.capabilities.switchSetup.kind !== 'none')
         .filter((a) => !normalizedQuery || a.name.toLowerCase().includes(normalizedQuery))
         .sort((a, b) => a.name.localeCompare(b.name)),
     [agentPayloads, normalizedQuery]

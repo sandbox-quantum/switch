@@ -27,11 +27,17 @@ class LiveRuntimeIndicator:
     reposted verbatim, in the same thread, when it is moved to follow newer
     traffic — a move has no access to the ``detail``/``deeplink_url`` the body
     was originally rendered from.
+
+    ``started_at`` is a ``time.monotonic()`` reading from when the turn's
+    indicator first went up, for adapters that report how long the turn took
+    once it ends. Monotonic because it measures an elapsed span, which a clock
+    adjustment must not distort.
     """
 
     message_ref: str
     body: str
     thread_root_id: str | None
+    started_at: float
 
 
 class CollaborationAdapter(ABC):

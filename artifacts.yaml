@@ -135,6 +135,14 @@ artifacts:
     version: 0.3.2
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
 
+  switch-connector-opencode:
+    description: >-
+      The OpenCode connector. Unlike the other two it is written by Switch
+      Console rather than installed from the marketplace, because OpenCode has
+      no plugin marketplace to install it from.
+    version: 0.1.0
+    declared_in: connectors/opencode-plugin/package.json
+
 contracts:
   agent-protocol:
     description: >-

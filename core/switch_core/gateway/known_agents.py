@@ -420,9 +420,136 @@ class CodexKnownAgent(KnownAgent):
         )
 
 
+class OpenCodeOptions(KnownAgentOptions):
+    auto_session: bool = False
+    """When True, the operator's connector (Switch Console) watches every room this
+    agent belongs to and auto-spawns an OpenCode session — connected to the room
+    and wired to the agent's identity — the moment the agent is addressed in a
+    room where it has no live session. The registered profile becomes
+    `auto_session`. Like Codex, OpenCode has no connector channel of its own;
+    Switch Console delivers inbound room messages by injecting them into the
+    session's terminal."""
+
+    repo_dir: str | None = None
+    """Absolute path to the directory the operator runs OpenCode from. Used to
+    generate a ready-to-paste `cd <repo_dir> && opencode --prompt "connect to
+    switch room …"` command shown when the agent is addressed with no live
+    session. None → an `<opencode-dir>` placeholder is shown instead."""
+
+    notify_user: str | None = None
+    """Username (on the room's bridged platform) to `@`-mention in the
+    unavailable-session message so the operator gets a notification. Bare name,
+    no leading `@`. None → post without a mention."""
+
+    # No `channels_enabled`, for the same reason as Codex: Switch Console sends it
+    # for every provider, but OpenCode has no connector channel for it to act on.
+
+    @field_validator("repo_dir", "notify_user", mode="before")
+    @classmethod
+    def _blank_string_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+
+class OpenCodeKnownAgent(KnownAgent):
+    connector_type = "OpenCode CLI"
+    options_schema = OpenCodeOptions
+    tools = [
+        ToolSpec(name="Bash", description="Executes shell commands"),
+        ToolSpec(name="Edit", description="Edits existing files"),
+        ToolSpec(name="Write", description="Writes new files"),
+        ToolSpec(name="Read", description="Reads file contents"),
+        ToolSpec(name="Grep", description="Searches file contents"),
+        ToolSpec(name="Glob", description="Finds files by pattern"),
+        ToolSpec(name="List", description="Lists directory contents"),
+        ToolSpec(name="WebFetch", description="Fetches web pages"),
+        ToolSpec(name="Task", description="Spawns a sub-agent"),
+    ]
+    models: ClassVar[list[ModelSpec]] = []
+
+    @classmethod
+    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
+        assert isinstance(options, OpenCodeOptions)
+        return IntegrationProfile(
+            connection_model=(
+                "auto_session" if options.auto_session else "session_addressable"
+            ),
+            message_exchange=True,
+            # OpenCode's connector reports session and tool activity to Switch
+            # Console over its local hook port, which drives the session's status
+            # in the app. None of it reaches Switch as reported events, and
+            # nothing mediates a tool call before it runs, so both stay empty —
+            # the same position as Codex, and unlike Claude Code.
+            pre_invocation_mediation=[],
+            post_invocation_mediation=[],
+            event_reporting=[],
+            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
+            # A TUI, so reset / compact / interrupt only work while Switch Console
+            # is driving the session and can write to it. A standalone `opencode`
+            # cannot be controlled, so all three resolve per live session via
+            # AgentRuntimeState.
+            command_capabilities=CommandCapabilities(
+                reset="session_dependent",
+                compact="session_dependent",
+                interrupt="session_dependent",
+            ),
+        )
+
+    @classmethod
+    def start_session_instructions(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        """Build the room-facing onboarding message for an OpenCode agent.
+
+        The prompt goes through `--prompt`, never as a positional argument:
+        OpenCode reads its first positional as the project directory, so a bare
+        `opencode "connect to switch room …"` is a request to open a directory of
+        that name rather than a prompt.
+        """
+        assert isinstance(options, OpenCodeOptions)
+        dir_token = options.repo_dir if options.repo_dir else "<opencode-dir>"
+        prompt = f"connect to switch room {room_name}"
+        if assume_role:
+            prompt += f" and assume the role {assume_role}"
+        cmd = f'cd "{dir_token}" && opencode --prompt "{prompt}"'
+
+        prefix = f"@{options.notify_user}\n\n" if options.notify_user else ""
+        if connected_not_live:
+            opening = (
+                "I have a session connected to this room, but it isn't reporting "
+                "as live, so I'm not receiving messages. Relaunch it, or start a "
+                "fresh session, with:"
+            )
+        elif other_room_names:
+            where = ", ".join(f"**{name}**" for name in other_room_names)
+            opening = (
+                f"I don't have a session connected to this room right now, but I "
+                f"do have other session(s) connected to {where}. Either ask me in "
+                "one of those rooms to come here, or start a new session connected "
+                "to this room — my operator should run:"
+            )
+        else:
+            opening = (
+                "I don't have a session connected to this room. To set up a new "
+                "session connected to this room, my operator should run:"
+            )
+        return (
+            f"{prefix}{opening}\n\n```\n{cmd}\n```\n\n(or start OpenCode manually "
+            "and ask me to connect to the room.)"
+        )
+
+
 KNOWN_AGENTS: dict[str, type[KnownAgent]] = {
     "claude-code": ClaudeCodeKnownAgent,
     "codex": CodexKnownAgent,
+    "opencode": OpenCodeKnownAgent,
 }
 
 

@@ -30,6 +30,7 @@ ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "compose": "0.13.2",
     "switch-connector": "0.9.1",
     "switch-connector-codex": "0.3.2",
+    "switch-connector-opencode": "0.1.0",
 }
 
 CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
