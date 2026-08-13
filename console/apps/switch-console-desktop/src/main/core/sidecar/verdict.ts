@@ -2,6 +2,14 @@ import type { SidecarRunStatus } from '@main/core/agent-runtime/impl/remote-side
 import type { SidecarVerdict } from '@shared/events/sidecarEvents';
 import { compareSidecarVersions } from '../../../sidecar/sidecar-version';
 
+/** What this client ships, and who it is — the other half of the comparison. */
+export interface SidecarClientBuild {
+  hash: string;
+  version: string;
+  /** This install's deployer identity (see `deployer-identity.ts`). */
+  deployerId: string;
+}
+
 /**
  * Turn a raw host status + this client's build into the client-vs-host verdict.
  *
@@ -13,15 +21,21 @@ import { compareSidecarVersions } from '../../../sidecar/sidecar-version';
  * upgrade, matching what the launcher will actually do with it. Offering
  * "Update" there would invite a downgrade, and on a host two installs share it
  * is an invitation each of them accepts in turn (CHOO-1937).
+ *
+ * The same is true one step further down, where version ordering has run out:
+ * a same-version build another install deployed is not an upgrade either, and
+ * offering one is how two dev builds trade the sidecar back and forth. Must stay
+ * in step with `decideExisting` in the launcher — a verdict the deploy policy
+ * disagrees with is an Update button that silently does nothing.
  */
-export function verdictFor(
-  status: SidecarRunStatus,
-  clientHash: string,
-  clientVersion: string
-): SidecarVerdict {
+export function verdictFor(status: SidecarRunStatus, client: SidecarClientBuild): SidecarVerdict {
   if (!status.running) return 'not-running';
   if (!status.compatible) return 'incompatible';
-  if (status.hash === clientHash) return 'up-to-date';
-  if (compareSidecarVersions(status.version, clientVersion) > 0) return 'newer-on-host';
+  if (status.hash === client.hash) return 'up-to-date';
+  const order = compareSidecarVersions(status.version, client.version);
+  if (order > 0) return 'newer-on-host';
+  if (order === 0 && status.deployerId !== null && status.deployerId !== client.deployerId) {
+    return 'other-install';
+  }
   return status.liveSessions > 0 ? 'upgrade-pending' : 'upgrade-available';
 }

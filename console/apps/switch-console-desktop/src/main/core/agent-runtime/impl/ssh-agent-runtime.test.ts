@@ -83,6 +83,12 @@ vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: vi.fn(async () => ({ autoApprove: false })),
 }));
 
+// Same reason: this install's deployer identity is persisted in the DB, and the
+// sidecar launch path reads it to stamp whatever sidecar it starts.
+vi.mock('@main/core/sidecar/deployer-identity', () => ({
+  deployerIdentity: vi.fn(async () => 'install-under-test'),
+}));
+
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: vi.fn(defaultGetPlugin),
 }));

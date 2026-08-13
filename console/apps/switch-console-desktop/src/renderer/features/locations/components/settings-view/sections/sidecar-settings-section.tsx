@@ -1,5 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, Power, RefreshCw, XCircle } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  Power,
+  RefreshCw,
+  Users,
+  XCircle,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { events, rpc } from '@renderer/lib/ipc';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -27,6 +35,19 @@ function shortHash(hash: string | null): string {
   return hash ? hash.slice(0, SHORT_HASH) : '—';
 }
 
+/**
+ * Who deployed the sidecar that is running, in the operator's terms.
+ *
+ * The id itself is meaningless on its own, so it is shown only for the case
+ * where two of them are being told apart — and then abbreviated, as a handle to
+ * match against the other machine's, not as something to read.
+ */
+function deployedByLabel(status: AgentSidecarStatus): string {
+  if (!status.deployedBy) return 'unknown (deployed before installs were identified)';
+  if (status.deployedBy === status.clientDeployerId) return 'this install';
+  return `another install (${shortHash(status.deployedBy)})`;
+}
+
 const VERDICT_DISPLAY: Record<
   SidecarVerdict,
   {
@@ -39,9 +60,19 @@ const VERDICT_DISPLAY: Record<
   'upgrade-available': { label: 'Update available', variant: 'default', icon: RefreshCw },
   'upgrade-pending': { label: 'Update pending', variant: 'outline', icon: AlertTriangle },
   'newer-on-host': { label: 'Newer on host', variant: 'secondary', icon: CheckCircle2 },
+  'other-install': { label: "Another install's build", variant: 'secondary', icon: Users },
   incompatible: { label: 'Incompatible', variant: 'destructive', icon: AlertTriangle },
   'not-running': { label: 'Not running', variant: 'outline', icon: XCircle },
 };
+
+/**
+ * Verdicts where Update has nothing to do, so the button is disabled rather than
+ * offering an action the deploy policy will decline. `other-install` is one of
+ * them: this build is not an upgrade over another install's build of the same
+ * release, and offering it to both installs is the tug-of-war itself. Restart
+ * remains the deliberate way to take the sidecar over.
+ */
+const NOTHING_TO_UPDATE = new Set<SidecarVerdict>(['up-to-date', 'incompatible', 'other-install']);
 
 export function SidecarSettingsSection({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient();
@@ -105,7 +136,7 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || data.verdict === 'up-to-date' || data.verdict === 'incompatible'}
+              disabled={busy || NOTHING_TO_UPDATE.has(data.verdict)}
               onClick={() => upgrade.mutate()}
             >
               {upgrade.isPending ? (
@@ -137,6 +168,15 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               Stop
             </Button>
           </div>
+
+          {data.verdict === 'other-install' && (
+            <p className="text-xs text-foreground-muted">
+              Another Switch Console install on this host deployed the running sidecar, from the
+              same release as yours. Neither build is newer, so this one leaves it alone rather than
+              the two of you replacing it in turn. Use Restart to run your build instead — the other
+              install will then leave yours alone.
+            </p>
+          )}
 
           {data.verdict === 'upgrade-pending' && (
             <p className="text-xs text-foreground-muted">
@@ -180,6 +220,7 @@ function VersionRows({ status }: { status: AgentSidecarStatus }) {
             : 'not running'
         }
       />
+      {status.running && <Row label="Deployed by" value={deployedByLabel(status)} />}
       <Row label="Live sessions" value={String(status.liveSessions)} />
       <Row label="Host" value={status.sshHost} />
       <Row label="Working dir" value={status.repoDir} mono />

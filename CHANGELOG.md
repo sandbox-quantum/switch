@@ -387,6 +387,22 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- Two Switch Console installs sharing an agent host no longer trade the sidecar
+  back and forth when they are on the *same* release but carry different builds
+  — the everyday case for dev builds, and the half of the shared-host problem
+  that version ordering could not reach. Each install now mints a deployer
+  identity and stamps it on whatever sidecar it deploys, so an install can tell
+  its own build from another's without relying on the version string. When the
+  versions are equal and the builds differ, the install that got there first
+  keeps the sidecar.
+- The agent's Settings tab says so: the sidecar reads **Another install's
+  build**, names who deployed the running one, and offers Restart — a
+  deliberate takeover — instead of an Update that both sides would keep
+  clicking at each other. Replacement is otherwise unchanged: an older sidecar
+  is still replaced whoever deployed it, and a rebuild of your own is still
+  picked up.
+
 ### [0.23.0] - 2026-08-14
 
 #### Added
@@ -1253,6 +1269,16 @@ reconstructed here: an invented history reads exactly like a real one.
 The remote runtime Switch Console deploys to an agent host. Versioned in
 `console/apps/switch-console-desktop/src/sidecar/sidecar-version.ts` and deployed
 by Switch Console rather than published on its own.
+
+### [Unreleased]
+
+#### Added
+- The ready file carries a `deployer` field: the identity of the Switch Console
+  install that started this sidecar, echoed from the environment it was
+  launched with. It is the one thing on the host that says *whose* build is
+  running — the content hash says only which. Purely additive, so no contract
+  revision moves: an older client ignores the field, and a client reading a
+  sidecar that omits it must treat that as unknown rather than as its own.
 
 ### [1.9.2]
 

@@ -1,6 +1,7 @@
 import type { SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
 import { generateAgentLaunchSpec } from '@main/core/agents/generate-agent-launch-spec';
 import type { IExecutionContext } from '@main/core/execution-context/types';
+import { deployerIdentity } from '@main/core/sidecar/deployer-identity';
 import { log } from '@main/lib/logger';
 import {
   agentSidecarTmuxName,
@@ -37,6 +38,7 @@ export interface AgentSidecarParams {
 }
 
 async function buildLauncher(params: AgentSidecarParams): Promise<RemoteSidecarLauncher> {
+  const deployerId = await deployerIdentity();
   const launchSpec = await generateAgentLaunchSpec({
     providerId: params.providerId,
     remoteRepoDir: params.repoDir,
@@ -57,6 +59,7 @@ async function buildLauncher(params: AgentSidecarParams): Promise<RemoteSidecarL
       deeplinkScheme: params.deeplinkScheme,
       launchSpec,
       credsSlug: params.credsSlug,
+      deployerId,
     },
     // Bound once here so every line the launcher writes names the agent it is
     // acting for. Sidecar work runs off watchers rather than an RPC call, so
@@ -96,17 +99,18 @@ export async function probeAgentSidecar(
 /**
  * Read-only status of an agent's sidecar for the UI (running? which build/
  * protocol/epoch/pid? how many live sessions?), plus this client's own bundle
- * hash so the caller can render the client-vs-host verdict. Never launches.
+ * hash and deployer identity so the caller can render the client-vs-host
+ * verdict. Never launches.
  */
 export async function readAgentSidecarStatus(
   params: AgentSidecarParams
-): Promise<{ status: SidecarRunStatus; clientHash: string }> {
+): Promise<{ status: SidecarRunStatus; clientHash: string; clientDeployerId: string }> {
   const launcher = await buildLauncher(params);
   const [status, clientHash] = await Promise.all([
     launcher.readStatus(),
     launcher.localBundleHash(),
   ]);
-  return { status, clientHash };
+  return { status, clientHash, clientDeployerId: launcher.localDeployerId() };
 }
 
 /**
