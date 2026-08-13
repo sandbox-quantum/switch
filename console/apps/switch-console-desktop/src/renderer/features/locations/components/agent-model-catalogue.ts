@@ -13,6 +13,12 @@ export type ModelCatalogueResult =
 export type FieldCatalogueState = {
   /** Replaces the field's own options when the catalogue supplies them. */
   options?: { value: string; label: string }[];
+  /**
+   * Models to offer as you type. Suggestions rather than options: the field
+   * stays free text, because the catalogue is a snapshot and a model may be
+   * about to exist.
+   */
+  suggestions?: LaunchProfileModel[];
   /** Nothing can be chosen — shown disabled with `note` as the reason. */
   disabled?: boolean;
   /** Something the user should read: why a value looks wrong, or why we can't tell. */
@@ -58,10 +64,14 @@ export function fieldCatalogueState(
 }
 
 function modelFieldState(value: string, models: LaunchProfileModel[]): FieldCatalogueState {
-  if (!value) return {};
-  if (models.some((model) => model.id === value)) return {};
+  // Offered whatever the current value is, so the list is a way to discover what
+  // this host has rather than only a check on what was typed.
+  const suggestions = { suggestions: models };
+  if (!value) return suggestions;
+  if (models.some((model) => model.id === value)) return suggestions;
 
   return {
+    ...suggestions,
     warning: true,
     note: `This host doesn't currently offer "${value}". It'll be saved anyway — check the name, or add the model to your OpenCode config first.`,
   };

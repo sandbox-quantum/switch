@@ -110,6 +110,7 @@ export function LaunchProfileConfig({
                   field={rendered}
                   value={state[field.key] ?? ''}
                   disabled={catalogueState.disabled}
+                  suggestions={catalogueState.suggestions}
                   onChange={(value) => setField(field.key, value)}
                 />
                 {field.help && (

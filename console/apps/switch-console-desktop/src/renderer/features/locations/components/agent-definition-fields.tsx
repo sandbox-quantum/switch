@@ -1,4 +1,5 @@
 import type {
+  LaunchProfileModel,
   RepoAgentAttributes,
   RepoAgentAttributeValue,
   RepoAgentField,
@@ -13,6 +14,7 @@ import {
 } from '@renderer/lib/ui/select';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
+import { ModelCombobox } from './model-combobox';
 
 /** Sentinel for a select's "unset" choice (an empty string is not a valid item). */
 const UNSET = '__unset__';
@@ -86,14 +88,32 @@ export function DefinitionFieldInput({
   value,
   onChange,
   disabled,
+  suggestions,
 }: {
   field: RepoAgentField;
   value: FormValue;
   onChange: (value: FormValue) => void;
   /** Nothing to choose — the caller explains why beside the field. */
   disabled?: boolean;
+  /**
+   * Models the host offers. Renders the field as a combobox: typing filters
+   * them, picking one fills the box, and anything else is still accepted.
+   */
+  suggestions?: LaunchProfileModel[];
 }) {
   const id = `agent-definition-${field.key}`;
+  if (suggestions) {
+    return (
+      <ModelCombobox
+        id={id}
+        value={String(value)}
+        models={suggestions}
+        placeholder={field.placeholder}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    );
+  }
   if (field.type === 'boolean') {
     return (
       <Switch id={id} checked={value === true} onCheckedChange={onChange} disabled={disabled} />

@@ -215,6 +215,7 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
                 field={rendered}
                 value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
                 disabled={catalogueState.disabled}
+                suggestions={catalogueState.suggestions}
                 onChange={(value) => setField(field.key, value)}
               />
               {field.help && (

@@ -41,9 +41,20 @@ describe('fieldCatalogueState', () => {
 
   describe('the model field', () => {
     it('accepts a model the host offers without comment', () => {
-      expect(fieldCatalogueState(modelField, { model: 'ollama/gemma4:latest' }, CATALOGUE)).toEqual(
-        {}
-      );
+      const state = fieldCatalogueState(modelField, { model: 'ollama/gemma4:latest' }, CATALOGUE);
+
+      expect(state.note).toBeUndefined();
+      expect(state.warning).toBeFalsy();
+    });
+
+    it('offers the host’s models whatever is currently typed', () => {
+      // The list is a way to discover what this host has, not only a check on
+      // what was typed, so it is offered for a valid, blank or unknown value.
+      for (const model of ['ollama/gemma4:latest', '', 'ollama/typo']) {
+        expect(fieldCatalogueState(modelField, { model }, CATALOGUE).suggestions).toEqual(
+          CATALOGUE.kind === 'available' ? CATALOGUE.models : []
+        );
+      }
     });
 
     it('warns about a model the host does not offer, and still allows it', () => {
@@ -57,7 +68,10 @@ describe('fieldCatalogueState', () => {
     });
 
     it('says nothing about a blank model, which means the host default', () => {
-      expect(fieldCatalogueState(modelField, { model: '  ' }, CATALOGUE)).toEqual({});
+      const state = fieldCatalogueState(modelField, { model: '  ' }, CATALOGUE);
+
+      expect(state.note).toBeUndefined();
+      expect(state.warning).toBeFalsy();
     });
   });
 
@@ -119,6 +133,12 @@ describe('fieldCatalogueState', () => {
 
       expect(state.note).toContain('Ran out of coffee.');
       expect(state.warning).toBeFalsy();
+    });
+
+    it('offers no suggestions, so the field stays a plain box', () => {
+      expect(
+        fieldCatalogueState(modelField, { model: 'x' }, unavailable).suggestions
+      ).toBeUndefined();
     });
 
     it('leaves the field usable, with the type its provider declared', () => {
