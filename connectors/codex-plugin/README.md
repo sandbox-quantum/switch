@@ -1,11 +1,15 @@
 # switch-connector (Codex)
 
-The Codex build of the Switch connector plugin. It ships the **Switch
-room-workflow skill** (`skills/switch/SKILL.md`) — the room workflow,
-interaction modes, thread semantics, task protocol, room roles, and
-moderation tools an agent needs in order to participate in a Switch room
-correctly — and the **Switch MCP server** that provides the tools the skill
-describes.
+The Codex build of the Switch connector plugin. It ships the **Switch MCP
+server** that provides the Switch tools, plus two skills:
+
+- **`skills/switch/SKILL.md`** — the room workflow, interaction modes, thread
+  semantics, task protocol, room roles, and moderation tools an agent needs in
+  order to participate in a Switch room correctly.
+- **`skills/configure/SKILL.md`** — the **standalone setup path**: register
+  this Codex instance as a Switch agent and give the bundled server the
+  credentials it needs, so `codex` connects to Switch with no Switch Console
+  involved. See "Standalone setup" below.
 
 Manifest: `.codex-plugin/plugin.json`. Registered in the repo marketplace
 (`.claude-plugin/marketplace.json`) as `switch-connector-codex`.
@@ -113,6 +117,62 @@ A profile does *not* replace a same-named server in the user's base
 the pre-profile design declares a `url`, which merges with a `command` entry
 into a server that is both, and Codex then refuses to load the config at all.
 Switch Console removes such an entry.
+
+## Standalone setup (no Switch Console)
+
+The `configure` skill covers the case Switch Console does not: a user who installs
+this plugin and wants `codex` to reach Switch from a plain terminal. It
+registers the agent against the bridge (`POST /agents/register-known` with
+`agent_type: "codex"`) and writes the credentials to
+`.switch/agents/<name>.json` in the working directory.
+
+**It writes no MCP config at all.** The plugin's `.mcp.json` is the single
+server definition; the skill supplies only the *identity*. Since
+`switch-agent-runtime` 0.2.0 the runtime resolves that itself — environment
+first (Switch Console's path, untouched), otherwise the local agent store read from
+the session's working directory.
+
+That division matters, because the obvious alternative is actively harmful.
+Supplying credentials through a second `mcp_servers.switch` entry does not work:
+measured against codex-cli 0.146.0, a config-file entry **replaces** a
+plugin-provided server rather than merging with it per key, dropping
+`default_tools_approval_mode: approve` — which leaves the agent unable to post —
+along with `startup_timeout_sec`. An entry with no transport of its own is
+rejected outright as `invalid transport`, taking every Codex session on the
+machine with it. There is no way to layer credentials onto a plugin-provided
+server, which is precisely why the runtime learned to find them itself.
+
+### What standalone does and does not get
+
+Works: the full Switch tool surface (including `send_attachment` /
+`download_attachment` — neither is gated on which process owns the connection),
+room participation, tasks, roles, moderation, and the offline run command.
+
+Does not: **inbound events are not pushed into the session.** Switch Console reads
+the session's event connection and injects `[Switch] …` lines into its pane;
+standalone, nothing does. The runtime opens its own connection (no
+`SWITCH_CONNECTION_ID` is set, which is correct — that names a connection a
+supervisor has already opened to share), but the session is pull-based: it calls
+`read_context` to catch up rather than being notified. Also absent:
+`auto_session` spawning, and per-agent model / reasoning-effort / instruction
+overrides.
+
+### Identity is per working directory
+
+The store is read from the session's working directory, so a different directory
+with its own `.switch/agents/` is a different agent. Two consequences worth
+knowing:
+
+- `repo_dir` should be the directory the credentials were written into. The
+  offline run command Switch posts is a bare
+  `cd "<repo_dir>" && codex "connect to switch room <name>"`, so if the two
+  disagree the pasted command starts Codex where the store isn't.
+- Several agents in one directory is supported: the runtime leaves the identity
+  open and the session binds one with `select_agent`. Agents spanning **several
+  Switch servers** is not — startup refuses, because the catalog is fetched
+  before the handshake and picking a server arbitrarily would bootstrap a tool
+  surface from a deployment the agent may not belong to. `SWITCH_API_ENDPOINT`
+  disambiguates.
 
 ## What the registered runtime gives a Codex session
 

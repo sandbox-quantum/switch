@@ -356,6 +356,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- A Codex agent's configuration can now be changed after the agent is created,
+  from the **Advanced configuration** section in its Settings tab — the same
+  section Claude agents already had. Model, reasoning effort and instructions
+  were previously write-once in the add-agent dialog, with no way to edit them
+  (CHOO-1985); **verbosity**, **reasoning summary** and **web search** are newly
+  exposed, and reasoning effort gains `none`. Each option was checked against the
+  Codex binary's own config validation rather than assumed.
+- Leaving one of those fields blank is not the same as choosing its default:
+  blank omits the setting entirely, so your own `~/.codex/config.toml` still
+  decides. That is why the on/off settings offer Default/On/Off rather than a
+  checkbox, which has no way to say "leave it alone".
+- Codex reads these values only when a session starts, so a save applies to the
+  next session. A session already running is named in the section, with a
+  Restart that resumes it on the new configuration. Clearing every field removes
+  the agent's launch profile rather than leaving it orphaned.
+
+#### Changed
+- Advanced configuration is one editor for every provider rather than one per
+  storage mechanism. Providers keep these settings in different places — a
+  repo-agent definition for Claude Code, the launch profile for Codex — and the
+  main process now routes the read and the write, so the difference is no longer
+  visible as the shape of the Settings page.
+
 ### [0.22.1] - 2026-08-12
 
 #### Changed
@@ -1313,9 +1337,18 @@ manifest history.
   The runtime is shared, so the identity failures added there apply here too;
   three of the six were missing.
 - Skill: point at the `configure` skill as the remedy for the causes it can fix,
-  rather than saying the state is unfixable from inside the session. Written on
-  the basis that the Codex `configure` skill (#129) lands; that PR does not touch
-  this file, so the two do not conflict.
+  rather than saying the state is unfixable from inside the session — the Codex
+  `configure` skill shipped in 0.3.2, so the remedy now exists on both hosts.
+
+### [0.3.2] - 2026-08-12
+
+#### Added
+- A `configure` skill: the standalone setup path. Registers this Codex instance
+  as a Switch agent and writes `.switch/agents/<name>.json` in the working
+  directory, so `codex` reaches Switch with no Switch Console involved
+  (CHOO-1936). It writes no MCP config — the plugin's `.mcp.json` stays the
+  single server definition and the runtime resolves its own identity from the
+  store (`switch-agent-runtime` 0.2.0+).
 
 ### [0.3.1] - 2026-08-12
 

@@ -9,7 +9,7 @@ import type { HostDependencyDescriptor, InstallOption } from '@switch-console/co
 import { SWITCH_MARKETPLACE_SOURCE } from '../../../distribution';
 import { buildCodexHookConfig, CODEX_HOOK_TRUST_FLAG } from './hooks';
 import { icon } from './icon';
-import { codexLaunchProfile, codexProfilePaths } from './profile';
+import { codexLaunchProfile, codexLaunchProfileFields, codexProfilePaths } from './profile';
 
 const CODEX_WINDOWS_INSTALL_SCRIPT =
   'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"';
@@ -154,5 +154,6 @@ export const provider = registerPluginBehavior(plugin, {
     // Switch Console's.
     launchProfile: codexLaunchProfile,
     launchProfilePaths: codexProfilePaths,
+    launchProfileFields: codexLaunchProfileFields,
   },
 });

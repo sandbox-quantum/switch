@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
-import { AgentDefinitionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-definition-settings-section';
+import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
 import { AutoSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-session-settings-section';
 import {
@@ -42,7 +42,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
       <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />
       <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
       <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
-      <AgentDefinitionSettingsSection locationId={locationId} agentId={agentId} />
+      <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );
 });

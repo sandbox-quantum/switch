@@ -105,7 +105,10 @@ each ships its own copy of the Switch room-workflow skill at
   Switch Console imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.
 - `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
-  skill plus its own MCP config, declared as `"mcpServers": "./.mcp.json"`, so a
+  room-workflow skill, a **`configure`** skill (the standalone setup path — it
+  registers the agent and supplies the bundled server's credentials so Codex
+  reaches Switch with no Switch Console involved), and its own MCP config,
+  declared as `"mcpServers": "./.mcp.json"`, so a
   Codex session gets the Switch tools from the plugin alone. Codex does not
   expand `${VAR}` in a bundled config, so the server names its variables under
   `env_vars` and Codex forwards them **by name** from its own environment — no
