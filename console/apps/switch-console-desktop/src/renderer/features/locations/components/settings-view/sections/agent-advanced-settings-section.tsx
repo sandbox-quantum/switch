@@ -55,6 +55,16 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   });
   const fields = useMemo(() => advancedFields(allFields ?? []), [allFields]);
 
+  // Where the provider keeps these settings, which decides whether a running
+  // session can be brought onto them. Asked of the provider rather than inferred
+  // from its id.
+  const { data: surface } = useQuery({
+    queryKey: ['agentAdvancedSurface', providerId],
+    queryFn: () =>
+      providerId ? rpc.agents.advancedSurface({ providerId }) : Promise.resolve('none' as const),
+    enabled: !!providerId,
+  });
+
   const { data: current } = useQuery({
     queryKey: ['agent-advanced-config', agentId],
     queryFn: () => (agentId ? rpc.agents.readAdvancedConfig({ agentId }) : Promise.resolve(null)),
@@ -153,11 +163,12 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const setField = (key: string, value: FormValue) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  // Only Codex is offered a restart here. Its profile is provably read once, at
-  // spawn, and its resume is verified to carry the new profile. Claude reads its
-  // definition at launch too and very likely wants the same treatment, but that
-  // is a change to Claude's behaviour and is being raised on its own.
-  const restartable = providerId === 'codex';
+  // A launch profile is read once, when the session starts, so a change cannot
+  // reach a running session without one — and a resume carries the new profile,
+  // which is what makes the restart safe to offer. A repo-agent definition
+  // (Claude) reads at launch too and very likely wants the same treatment, but
+  // that is a change to Claude's behaviour and is being raised on its own.
+  const restartable = surface === 'launch-profile';
   const showStaleNotice = restartable && staleSessionIds.length > 0 && (dirty || save.isSuccess);
 
   return (
@@ -200,7 +211,7 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
               {staleSessionIds.length === 1
                 ? 'A session is running'
                 : `${staleSessionIds.length} sessions are running`}{' '}
-              on the previous configuration — Codex reads this only when a session starts.{' '}
+              on the previous configuration — it is read only when a session starts.{' '}
               {dirty
                 ? 'Save, then Restart to apply it now.'
                 : 'It applies to the next session — or use Restart to apply it now (the conversation is resumed).'}

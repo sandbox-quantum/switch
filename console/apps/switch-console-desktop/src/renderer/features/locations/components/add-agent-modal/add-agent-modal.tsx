@@ -54,7 +54,7 @@ import {
 import { basenameFromAnyPath } from '@shared/path-name';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
-import { CodexAgentConfig } from './codex-agent-config';
+import { LaunchProfileConfig } from './launch-profile-config';
 import { ConfigureAgentPanel } from './configure-agent-panel';
 import { PickExistingPanel } from './content';
 import { useConfigureAgentForm, usePickMode } from './modes';
@@ -189,11 +189,12 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     advancedAttributesRef.current = attributes;
   }, []);
 
-  // Per-agent Codex config (model / effort / instructions), held in a ref for
-  // the same reason. Null when the user left the Codex section untouched.
-  const codexConfigRef = useRef<AgentProviderConfig | null>(null);
-  const onCodexConfigChange = useCallback((config: AgentProviderConfig | null) => {
-    codexConfigRef.current = config;
+  // Per-agent launch-profile config (model, and whatever else the provider
+  // exposes), held in a ref for the same reason. Null when the user left the
+  // section untouched, or when the provider has no launch profile at all.
+  const launchProfileConfigRef = useRef<AgentProviderConfig | null>(null);
+  const onLaunchProfileConfigChange = useCallback((config: AgentProviderConfig | null) => {
+    launchProfileConfigRef.current = config;
   }, []);
 
   const shouldCheckPathStatus = !isRemoteRun && pickState.path.trim().length > 0;
@@ -620,7 +621,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,
-        providerConfig: codexConfigRef.current,
+        providerConfig: launchProfileConfigRef.current,
       });
       if (result.kind !== 'created') {
         reportProvisionError(result);
@@ -925,9 +926,10 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
               onAddServer={() => showAddServerModal({})}
             />
             <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
-            {pickState.providerId === 'codex' && (
-              <CodexAgentConfig onChange={onCodexConfigChange} />
-            )}
+            <LaunchProfileConfig
+              providerId={pickState.providerId}
+              onChange={onLaunchProfileConfigChange}
+            />
           </>
         )}
         {canDetailAgent && switchAgent && (
@@ -994,9 +996,10 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
               onAddServer={() => showAddServerModal({})}
             />
             <AgentAdvancedConfig providerId={pickState.providerId} onChange={onAdvancedChange} />
-            {pickState.providerId === 'codex' && (
-              <CodexAgentConfig onChange={onCodexConfigChange} />
-            )}
+            <LaunchProfileConfig
+              providerId={pickState.providerId}
+              onChange={onLaunchProfileConfigChange}
+            />
           </>
         )}
       </DialogContentArea>

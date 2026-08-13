@@ -8,6 +8,7 @@ import {
   type AgentProviderConfig,
   providerConfigFromAttributes,
 } from '@shared/core/agents/agent-provider-config';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
   attributesFromForm,
   DefinitionFieldInput,
@@ -17,23 +18,29 @@ import {
 } from '../agent-definition-fields';
 
 /**
- * Collapsed "Codex configuration" section. Reports the assembled per-agent
- * provider config (or null when nothing is set) so the modal can pass it to
- * `addAgent`, which persists it on the agent and folds it into the launch profile.
+ * Collapsed "Advanced configuration" section for a provider that keeps its
+ * per-agent settings in a launch profile (Codex, OpenCode). Reports the assembled
+ * per-agent provider config (or null when nothing is set) so the modal can pass
+ * it to `addAgent`, which persists it on the agent and folds it into the profile.
  *
  * The fields are the same ones the agent's Settings tab edits after creation —
- * fetched over RPC from the codex plugin, so the two forms cannot drift.
+ * fetched over RPC from the provider's own plugin, so the two forms cannot drift,
+ * and the section renders nothing for a provider that declares none. That empty
+ * field list is the gate: no caller needs to know which providers have one.
  */
-export function CodexAgentConfig({
+export function LaunchProfileConfig({
+  providerId,
   onChange,
 }: {
+  providerId: AgentProviderId | null;
   onChange: (config: AgentProviderConfig | null) => void;
 }) {
   const [open, setOpen] = useState(false);
 
   const { data } = useQuery({
-    queryKey: ['agentAdvancedFields', 'codex'],
-    queryFn: () => rpc.agents.advancedFields({ providerId: 'codex' }),
+    queryKey: ['agentAdvancedFields', providerId],
+    queryFn: () => (providerId ? rpc.agents.advancedFields({ providerId }) : Promise.resolve([])),
+    enabled: !!providerId,
   });
   const fields = useMemo(() => data ?? [], [data]);
 
@@ -43,14 +50,16 @@ export function CodexAgentConfig({
   }, [fields]);
 
   useEffect(() => {
-    onChange(providerConfigFromAttributes(attributesFromForm(fields, state)));
-  }, [fields, state, onChange]);
+    onChange(
+      providerId ? providerConfigFromAttributes(providerId, attributesFromForm(fields, state)) : null
+    );
+  }, [providerId, fields, state, onChange]);
 
   const setField = useCallback((key: string, value: FormValue) => {
     setState((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  if (fields.length === 0) return null;
+  if (!providerId || fields.length === 0) return null;
 
   return (
     <div className="rounded-md border border-border">
@@ -60,13 +69,13 @@ export function CodexAgentConfig({
         onClick={() => setOpen((v) => !v)}
       >
         <ChevronRight className={cn('h-4 w-4 transition-transform', open && 'rotate-90')} />
-        Codex configuration
+        Advanced configuration
       </button>
       {open && (
         <div className="flex flex-col gap-4 border-t border-border px-3 py-3">
           {fields.map((field) => (
             <Field key={field.key}>
-              <FieldLabel htmlFor={`codex-config-${field.key}`}>
+              <FieldLabel htmlFor={`launch-profile-${field.key}`}>
                 {field.label} (optional)
               </FieldLabel>
               <DefinitionFieldInput

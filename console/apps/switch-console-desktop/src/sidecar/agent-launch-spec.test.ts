@@ -28,7 +28,7 @@ describe('materializeAgentCommand', () => {
     const cmd = materializeAgentCommand(spec(), {
       sessionId: 'session-9',
       initialPrompt: 'connect to switch room room-x',
-      extraEnv: {},
+      extraEnv: {}, homeDir: '/home/agent',
     });
     expect(cmd.command).toBe('/usr/bin/claude');
     expect(cmd.args).toEqual([
@@ -43,7 +43,7 @@ describe('materializeAgentCommand', () => {
     const cmd = materializeAgentCommand(spec({ env: { BASE: '1', SHARED: 'base' } }), {
       sessionId: 'c',
       initialPrompt: 'p',
-      extraEnv: { SHARED: 'override', HOOK: 'x' },
+      extraEnv: { SHARED: 'override', HOOK: 'x' }, homeDir: '/home/agent',
     });
     expect(cmd.env).toEqual({ BASE: '1', SHARED: 'override', HOOK: 'x' });
   });
@@ -58,7 +58,7 @@ describe('materializeAgentCommand', () => {
       {
         sessionId: 'c',
         initialPrompt: 'connect to switch room room-x',
-        extraEnv: {},
+        extraEnv: {}, homeDir: '/home/agent',
       }
     );
 
@@ -70,7 +70,7 @@ describe('materializeAgentCommand', () => {
       materializeAgentCommand(spec({ args: ['--session-id', SESSION_ID_PLACEHOLDER] }), {
         sessionId: 'c',
         initialPrompt: 'p',
-        extraEnv: {},
+        extraEnv: {}, homeDir: '/home/agent',
       })
     ).toThrow(INITIAL_PROMPT_PLACEHOLDER);
   });
@@ -82,7 +82,7 @@ describe('materializeAgentCommand', () => {
         {
           sessionId: 's1',
           initialPrompt: 'p',
-          extraEnv: {},
+          extraEnv: {}, homeDir: '/home/agent',
         }
       )
     ).toThrow(/unsubstituted placeholder/);

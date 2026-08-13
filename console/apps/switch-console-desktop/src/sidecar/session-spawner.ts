@@ -9,7 +9,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
 import { asPtyProviderId, makePtyId } from '@shared/core/pty/ptyId';
-import { type AgentLaunchSpec, materializeAgentCommand } from './agent-launch-spec';
+import { type AgentLaunchSpec, HOME_PLACEHOLDER, materializeAgentCommand } from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
 import type { SessionSpawner, WatcherLogger } from './notification-watcher';
 import { makeAgentTmuxSessionName } from './vm-tmux';
@@ -182,6 +182,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
       sessionId,
       initialPrompt: `connect to switch room ${roomId}`,
       extraEnv: hookEnv,
+      homeDir: homedir(),
     });
 
     await this.writeLaunchFiles();
@@ -204,7 +205,10 @@ export class InProcessSessionSpawner implements SessionSpawner {
     for (const file of this.spec.launchFiles ?? []) {
       const absPath = join(homedir(), file.homeRelativePath);
       await mkdir(dirname(absPath), { recursive: true });
-      await atomicWriteFile(absPath, file.content);
+      // A baked file may name a sibling by absolute path (OpenCode's config
+      // points at its instructions file), which Switch Console could not write
+      // without knowing this VM's home.
+      await atomicWriteFile(absPath, file.content.split(HOME_PLACEHOLDER).join(homedir()));
     }
   }
 

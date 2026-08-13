@@ -52,6 +52,20 @@ export const SESSION_ID_PLACEHOLDER = '__SWITCHDASH_SESSION_ID__';
 /** Argv token Switch Console emits in place of the fresh session's initial prompt. */
 export const INITIAL_PROMPT_PLACEHOLDER = '__SWITCHDASH_INITIAL_PROMPT__';
 
+/**
+ * Token a launch profile's env writes in place of the agent's home directory.
+ *
+ * A profile's files are home-relative, but a host that names its config through
+ * the environment (OpenCode: `OPENCODE_CONFIG`) needs an absolute path, and
+ * Switch Console bakes the spec without knowing the VM's home — the sidecar
+ * resolves that when it writes {@link AgentLaunchSpec.launchFiles}.
+ *
+ * Declared here rather than imported because the sidecar is a standalone bundle
+ * with no dependency on the plugin packages. `LAUNCH_PROFILE_HOME_PLACEHOLDER` in
+ * `@switch-console/core` is the copy plugins emit, and a test pins the two equal.
+ */
+export const HOME_PLACEHOLDER = '__SWITCHDASH_HOME__';
+
 /** Shared prefix of every launch-spec placeholder, used to catch leftovers. */
 const PLACEHOLDER_PREFIX = '__SWITCHDASH_';
 
@@ -89,6 +103,8 @@ export function materializeAgentCommand(
     sessionId: string;
     initialPrompt: string;
     extraEnv: Record<string, string>;
+    /** The VM's home directory, for env naming a baked launch file by absolute path. */
+    homeDir: string;
   }
 ): MaterializedAgentCommand {
   const substitutions: Record<string, string> = {
@@ -107,5 +123,25 @@ export function materializeAgentCommand(
     throw new Error(`agent launch spec has an unsubstituted placeholder in argv: ${unresolved}`);
   }
 
-  return { command: spec.command, args, env: { ...spec.env, ...params.extraEnv } };
+  // A launch profile's env may name one of the files the sidecar writes under
+  // the home directory. Switch Console bakes the spec without knowing the VM's
+  // home, so the path arrives with the home placeholder in it and is completed
+  // here, where `launchFiles` are written.
+  const env = Object.fromEntries(
+    Object.entries({ ...spec.env, ...params.extraEnv }).map(([key, value]) => [
+      key,
+      value.split(HOME_PLACEHOLDER).join(params.homeDir),
+    ])
+  );
+
+  const unresolvedEnv = Object.entries(env).find(([, value]) =>
+    value.includes(PLACEHOLDER_PREFIX)
+  );
+  if (unresolvedEnv !== undefined) {
+    throw new Error(
+      `agent launch spec has an unsubstituted placeholder in env ${unresolvedEnv[0]}: ${unresolvedEnv[1]}`
+    );
+  }
+
+  return { command: spec.command, args, env };
 }

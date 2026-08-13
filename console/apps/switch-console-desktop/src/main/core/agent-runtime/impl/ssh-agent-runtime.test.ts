@@ -340,7 +340,7 @@ describe('SshAgentRuntime', () => {
     vi.mocked(getAgentById).mockResolvedValueOnce({
       autoApprove: false,
       name: 'codex-hoot',
-      providerConfig: { model: 'gpt-5.6-terra' },
+      providerConfig: { version: '2', providerId: 'codex', values: { model: 'gpt-5.6-terra' } },
     } as never);
     mockSpawn([]);
 

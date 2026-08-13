@@ -104,7 +104,7 @@ describe('codexLaunchProfile', () => {
     const profile = codexLaunchProfile({
       slug: 'codex-hoot',
       workingDir: WD,
-      model: 'gpt-5.6-terra',
+      values: { model: 'gpt-5.6-terra' },
     });
     expect(profile).not.toBeNull();
     expect(profile!.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
@@ -127,7 +127,7 @@ describe('codexLaunchProfile', () => {
     const profile = codexLaunchProfile({
       slug: 'codex-hoot',
       workingDir: WD,
-      instructions,
+      values: { instructions },
     })!;
 
     expect(profile.files).toHaveLength(1);
@@ -139,7 +139,11 @@ describe('codexLaunchProfile', () => {
   });
 
   it('returns a profile for specialization alone', () => {
-    const profile = codexLaunchProfile({ slug: 'a', workingDir: WD, model: 'gpt-5.6-terra' });
+    const profile = codexLaunchProfile({
+      slug: 'a',
+      workingDir: WD,
+      values: { model: 'gpt-5.6-terra' },
+    });
     expect(profile).not.toBeNull();
     expect(profile!.files[0].content).toContain('model = "gpt-5.6-terra"');
     expect(profile!.files[0].content).not.toContain('mcp_servers');
@@ -148,7 +152,7 @@ describe('codexLaunchProfile', () => {
   it('returns null when there is nothing to specialize, rather than an empty profile', () => {
     // An agent on the defaults needs no file. Writing an empty one would still
     // put `--profile <name>` on the command line, pointing at nothing.
-    expect(codexLaunchProfile({ slug: 'a', workingDir: WD })).toBeNull();
+    expect(codexLaunchProfile({ slug: 'a', workingDir: WD, values: {} })).toBeNull();
   });
 
   it('exposes the stable reasoning-effort levels', () => {
@@ -182,7 +186,7 @@ describe('codexProfileName', () => {
     const profile = codexLaunchProfile({
       slug,
       workingDir: WD,
-      instructions: 'be terse',
+      values: { instructions: 'be terse' },
     })!;
     const name = codexProfileName(slug, WD);
 

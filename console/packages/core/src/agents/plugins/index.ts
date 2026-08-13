@@ -77,6 +77,11 @@ export type {
   SwitchLaunchProfileFile,
   SwitchLaunchSpecialization,
 } from './capabilities/mcp';
+export {
+  LAUNCH_PROFILE_HOME_PLACEHOLDER,
+  resolveLaunchProfileEnv,
+  resolveLaunchProfileHome,
+} from './capabilities/mcp';
 export type { IPlugins, PluginScope } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
 export {

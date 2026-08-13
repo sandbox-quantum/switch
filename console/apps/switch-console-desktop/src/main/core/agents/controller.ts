@@ -7,6 +7,7 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
 import {
   getAgentAdvancedFields,
+  getAgentAdvancedSurface,
   readAgentAdvancedConfig,
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
@@ -51,6 +52,8 @@ export const agentsController = createRPCController({
    */
   advancedFields: (params: { providerId: AgentProviderId }) =>
     Promise.resolve(getAgentAdvancedFields(params.providerId)),
+  advancedSurface: (params: { providerId: AgentProviderId }) =>
+    Promise.resolve(getAgentAdvancedSurface(params.providerId)),
   readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),
   updateAdvancedConfig: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentAdvancedConfig(params),
