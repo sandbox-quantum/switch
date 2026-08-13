@@ -358,9 +358,14 @@ none of it is needed to take part in a conversation.
 ### Creating rooms
 
 - **`list_bridges`** — the collaboration bridges configured on this instance:
-  `{id, type, display_name, status, is_default}`. Only `status == "active"`
-  bridges are usable. `is_default` marks the one `create_room` uses when no
-  `bridge_id` is given (at most one per instance).
+  `{id, type, display_name, status, is_default, can_create_channels}`. Only
+  `status == "active"` bridges are usable. `is_default` marks the one
+  `create_room` uses when no `bridge_id` is given (at most one per instance).
+  `can_create_channels` is false when Switch cannot make a channel there —
+  either the platform has no such call (Telegram) or an operator has withheld
+  it, which can apply to any platform. Creating a room on one of those fails,
+  so read it before offering: the chat is made on the platform, the Switch app
+  added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
   `agent_names`. Commonly used: `bridge_id`, `internal_only`, `channel_type`
   (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
@@ -372,7 +377,8 @@ none of it is needed to take part in a conversation.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the
   `!invite-agent @agent-name` command (also the `/invite-agent` slash command
-  on bridged Slack, Discord and Telegram channels).
+  on bridged Slack, Discord and Telegram channels; Telegram registers it as
+  `/invite_agent`, since it will not accept a hyphen in a command).
 - **`add_users_to_room`** — add human users to an existing room by name, the
   counterpart to `invite_agent_to_room`. Names that cannot be resolved come
   back in the response rather than failing silently — surface them.
@@ -419,7 +425,9 @@ agents to coordinate."
 
 1. Call `list_bridges`.
 2. Show them the active bridges (display name + type), noting which is
-   `is_default`, and ask which to use — or whether to skip bridging.
+   `is_default`, and ask which to use — or whether to skip bridging. Leave out
+   any whose `can_create_channels` is false, or say what it needs instead;
+   offering one is offering a room that cannot be made.
 3. Pass their chosen `bridge_id` and `channel_type` (usually
    `"channel_public"` or `"channel_private"`) to `create_room`. Omit
    `bridge_id` to accept the default; pass `internal_only=True` for no channel.
@@ -447,6 +455,10 @@ For a private 1:1 between one agent and one human, create a room with
   Switch adopts the chat. Telegram bots cannot create chats at all, so
   `create_room` fails on a Telegram bridge for *every* channel type, not just
   `direct`; the chat is made in a Telegram client and the bot added to it.
+  `list_bridges` reports this as `can_create_channels: false`, so check there
+  before offering to make a room rather than finding out from the failure —
+  and note an operator can withhold channel creation from any platform, so a
+  false answer is not Telegram-specific.
 
 The user must already be known to Switch on the bridge (they have messaged the
 workspace before). If not, creation fails loudly with `no user '<name>' is
