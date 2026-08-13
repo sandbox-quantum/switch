@@ -95,7 +95,11 @@ export const plugin = definePlugin(
     // OpenCode has no plugin marketplace to install a connector from — its
     // `plugin` subcommand installs one npm module and has no list, remove or
     // version verb — so Switch Console writes the connector's files itself.
-    switchSetup: { kind: 'files', connectorName: 'Switch connector' },
+    switchSetup: {
+      kind: 'files',
+      connectorName: 'Switch connector',
+      artifact: 'switch-connector-opencode',
+    },
   },
   { icon }
 );

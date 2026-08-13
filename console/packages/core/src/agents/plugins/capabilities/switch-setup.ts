@@ -108,6 +108,15 @@ export const switchSetupCapability = definePluginCapability<ISwitchSetupBehavior
        * name it, so the descriptor carries the label.
        */
       connectorName: z.string(),
+      /**
+       * The artifact in the registry whose version identifies this connector —
+       * the same version its own directory declares, so the card reads like the
+       * marketplace connectors' cards rather than reporting the app's version
+       * for a component that is versioned separately. It is also what "update
+       * available" compares, so a release that leaves the connector alone no
+       * longer offers an update that would change nothing.
+       */
+      artifact: z.string(),
     }),
     z.object({ kind: z.literal('none') }),
   ])

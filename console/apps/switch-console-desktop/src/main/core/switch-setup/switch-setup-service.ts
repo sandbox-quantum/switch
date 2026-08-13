@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
-import { app } from 'electron';
+import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
@@ -46,12 +46,17 @@ const EXEC_TIMEOUT_MS = 120_000;
 
 /**
  * The version stamped into a file-based connector install, and the one it is
- * compared against. It ships inside the app, so the app's version is what
- * identifies it. Read lazily: `app` is unavailable in the sidecar and in unit
- * tests that never touch this path.
+ * compared against.
+ *
+ * The connector's own artifact version, not the app's: it is versioned in its
+ * own directory and listed in the registry beside the marketplace connectors,
+ * so reporting the app's version here would put a number on the card that
+ * matches nothing the connector declares. Keying "update available" on it also
+ * means an app release that does not touch the connector no longer offers an
+ * update that would rewrite the same bytes.
  */
-function appVersion(): string {
-  return app?.getVersion() ?? '0.0.0';
+function connectorVersion(artifact: string): string {
+  return artifactVersion(artifact as ArtifactName);
 }
 
 /** A CLI failure with no stderr still needs to say something. */
@@ -110,7 +115,11 @@ class SwitchSetupService {
         `Agent '${agentId}' declares a file-based Switch connector but implements no behavior for it.`
       );
     }
-    return { files, homeFs: createPluginFs(homedir()) };
+    return {
+      files,
+      homeFs: createPluginFs(homedir()),
+      version: connectorVersion(plugin.capabilities.switchSetup.artifact),
+    };
   }
 
   /** Returns the `cli` descriptor + agent binary, or null when unsupported/unresolvable. */
@@ -231,15 +240,16 @@ class SwitchSetupService {
   }
 
   /**
-   * Status of a file-based connector. There is no catalog to consult: what the
-   * running app ships is the latest there is, so an install written by an older
-   * build is what "update available" means here.
+   * Status of a file-based connector. There is no catalog to consult: the
+   * connector ships inside the app, so the version its own directory declares
+   * is the latest there is, and an install stamped with an older one is what
+   * "update available" means here.
    */
   private async filesStatus(agentId: string): Promise<SwitchSetupStatus> {
     const resolved = this.resolveFiles(agentId);
     if (!resolved) return unsupported(agentId);
     const installedVersion = await resolved.files.installedVersion(resolved.homeFs);
-    const latestVersion = appVersion();
+    const latestVersion = resolved.version;
     return {
       agentId,
       supported: true,
@@ -353,13 +363,17 @@ class SwitchSetupService {
   /** Install, update and uninstall for a file-based connector. */
   private async runFiles(
     agentId: string,
-    action: (files: ISwitchSetupFilesBehavior, homeFs: PluginFs) => Promise<unknown>
+    action: (
+      files: ISwitchSetupFilesBehavior,
+      homeFs: PluginFs,
+      version: string
+    ) => Promise<unknown>
   ): Promise<SwitchSetupResult> {
     const resolved = this.resolveFiles(agentId);
     if (!resolved)
       return { success: false, message: 'Switch setup is not supported for this agent.' };
     try {
-      await action(resolved.files, resolved.homeFs);
+      await action(resolved.files, resolved.homeFs, resolved.version);
       return { success: true };
     } catch (err) {
       log.error('switch-setup: file-based connector operation failed', { agentId, err });
@@ -369,7 +383,7 @@ class SwitchSetupService {
 
   async install(agentId: string): Promise<SwitchSetupResult> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.runFiles(agentId, (files, fs) => files.install(fs, { version: appVersion() }));
+      return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);
     if (!resolved)
@@ -405,7 +419,7 @@ class SwitchSetupService {
     // Installing a file-based connector overwrites in place, so update is the
     // same operation — there is no removed-but-not-reinstalled window.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.runFiles(agentId, (files, fs) => files.install(fs, { version: appVersion() }));
+      return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);
     if (!resolved)

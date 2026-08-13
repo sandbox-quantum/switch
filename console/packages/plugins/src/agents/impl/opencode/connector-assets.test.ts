@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { SWITCH_AGENT_RUNTIME_PIN } from '../../../distribution';
+import { icon } from './icon';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
 import { OPENCODE_SKILL_CONTENT } from './skill-file';
 import {
@@ -116,5 +117,26 @@ describe('opencode connector assets', () => {
     };
     expect(manifest.name).toBe('switch-connector-opencode');
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
+// The mark is full-bleed and 4:5, so authored as-is it both overflowed the icon
+// box — an inline SVG's own width/height win over the wrapper's size — and read
+// far heavier than the glyph icons beside it.
+describe('opencode icon', () => {
+  const svg = icon.variants[0];
+
+  it('is square and carries no intrinsic size, so the icon box decides how big it is', () => {
+    for (const variant of [svg?.light, svg?.dark]) {
+      expect(variant).toBeDefined();
+      expect(variant).toContain('viewBox="0 0 24 24"');
+      expect(variant).not.toMatch(/<svg[^>]*\swidth=/);
+      expect(variant).not.toMatch(/<svg[^>]*\sheight=/);
+    }
+  });
+
+  it('insets the mark rather than filling the box edge to edge', () => {
+    expect(svg?.light).toMatch(/translate\(/);
+    expect(svg?.dark).toMatch(/translate\(/);
   });
 });

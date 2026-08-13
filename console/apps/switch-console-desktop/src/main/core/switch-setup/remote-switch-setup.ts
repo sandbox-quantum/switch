@@ -1,6 +1,6 @@
 import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
-import { app } from 'electron';
+import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { createRemoteHomePluginFs } from '@main/core/agent-runtime/impl/remote-home-plugin-fs';
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
@@ -18,12 +18,16 @@ const EXEC_TIMEOUT_MS = 120_000;
 const COMMAND_NOT_FOUND = 127;
 
 /**
- * The version stamped into a file-based connector install. It ships inside the
- * app, so the app's version identifies it — on a remote host as locally. Read
- * lazily: `app` is absent outside the desktop process.
+ * The version stamped into a file-based connector install — the connector's own
+ * artifact version, on a remote host exactly as locally, so the two report the
+ * same number for the same connector.
  */
-function appVersion(): string {
-  return app?.getVersion() ?? '0.0.0';
+function connectorVersion(agentId: string): string {
+  const descriptor = getPlugin(agentId).capabilities.switchSetup;
+  if (descriptor.kind !== 'files') {
+    throw new Error(`Agent '${agentId}' has no file-based Switch connector to version.`);
+  }
+  return artifactVersion(descriptor.artifact as ArtifactName);
 }
 
 type RunResult = { code: number; stdout: string; stderr: string };
@@ -258,8 +262,9 @@ export class RemoteSwitchSetupService {
 
   /**
    * Status of a file-based connector on this host. Its content ships inside the
-   * app, so the app's version is the latest there is and an install stamped by
-   * an older build is what "update available" means.
+   * app, so the version the connector's own directory declares is the latest
+   * there is, and an install stamped with an older one is what "update
+   * available" means.
    */
   private async filesStatus(agentId: string, version: string): Promise<SwitchSetupStatus> {
     const resolved = this.resolveFiles(agentId);
@@ -295,7 +300,7 @@ export class RemoteSwitchSetupService {
 
   async getStatus(agentId: string): Promise<SwitchSetupStatus> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.filesStatus(agentId, appVersion());
+      return this.filesStatus(agentId, connectorVersion(agentId));
     }
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
@@ -334,7 +339,7 @@ export class RemoteSwitchSetupService {
   async checkForUpdates(agentId: string): Promise<SwitchSetupStatus> {
     // A file-based connector ships inside the app: nothing to refresh.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.filesStatus(agentId, appVersion());
+      return this.filesStatus(agentId, connectorVersion(agentId));
     }
     const resolved = await this.resolve(agentId);
     if (!resolved) return unsupported(agentId);
@@ -357,7 +362,7 @@ export class RemoteSwitchSetupService {
 
   async install(agentId: string): Promise<SwitchSetupResult> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const version = appVersion();
+      const version = connectorVersion(agentId);
       return this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);
@@ -384,7 +389,7 @@ export class RemoteSwitchSetupService {
     // Installing overwrites in place, so update is the same operation — there
     // is no removed-but-not-reinstalled window to report on.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const version = appVersion();
+      const version = connectorVersion(agentId);
       return this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
     }
     const resolved = await this.resolve(agentId);

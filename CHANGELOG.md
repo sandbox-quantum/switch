@@ -410,6 +410,17 @@ version of their own to them without also giving them a release of their own.
   your last read_context". Nothing here can observe a session reading, so the
   tally is cleared per delivered line; it now says so, rather than inviting an
   agent to read its absence as proof it is caught up.
+- The OpenCode icon no longer dwarfs the other agent icons. Its artwork is
+  full-bleed and 4:5 where the others are glyphs on a square, and it carried its
+  own `width`/`height` — which an inline SVG applies in preference to the size
+  of the box it sits in. It is now square, unsized, and inset to the margin the
+  others have.
+- A file-based Switch connector reports the version its own directory declares
+  rather than the app's. The OpenCode connector is versioned and released as its
+  own artifact, so a card reading `0.22.0` beside two connectors reading `0.9.1`
+  and `0.3.1` named nothing the connector declares. It also means an app release
+  that leaves the connector alone no longer offers an update that would rewrite
+  identical bytes.
 - A session that fails to be created no longer marks its agent with a failure
   badge that cannot be cleared. The failed session exists only in the app — the
   server rejected the create — and nothing removed it: reloading only adds
