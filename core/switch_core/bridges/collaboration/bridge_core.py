@@ -1092,21 +1092,28 @@ class BridgeCore:
             event_content, channel_id
         )
 
-        content = self._adapter.translate_outbound(event.body)
         if admin_marker is not None:
             message_type = (
                 admin_marker.get("type") if isinstance(admin_marker, dict) else None
             )
+            # Raw, not translated: `admin_message` renders its own body, the
+            # same way the notices posted directly through it do. Translating
+            # here as well ran the body through twice, and the second pass
+            # escapes the markup the first one produced — a command reply
+            # arrived showing its own `<b>` tags.
             message_ref = await self._adapter.admin_message(
                 channel_id,
-                content,
+                event.body,
                 thread_root_ref,
                 message_type=message_type,
             )
         else:
             assert sender_name is not None  # guarded above
             message_ref = await self._adapter.send_message(
-                channel_id, sender_name, content, thread_root_id=thread_root_ref
+                channel_id,
+                sender_name,
+                self._adapter.translate_outbound(event.body),
+                thread_root_id=thread_root_ref,
             )
 
         if message_ref is not None:

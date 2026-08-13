@@ -140,9 +140,20 @@ class CollaborationAdapter(ABC):
         can special-case rendering per platform; adapters that don't simply
         render the default `content`. The default implementation posts via
         `send_message` under the bridge display name; adapters whose platform
-        has a distinct bot identity should override to use it."""
+        has a distinct bot identity should override to use it.
+
+        **`content` is Switch Markdown, and this method renders it.** Unlike
+        `send_message`, whose caller translates, every caller here passes an
+        unrendered body — the notices in `bridge_core`, the adapters' own
+        notices, and the relayed admin events alike. An override must therefore
+        run `translate_outbound` itself. Splitting that responsibility between
+        callers is what once sent a body through the conversion twice, and the
+        second pass escapes the markup the first one produced."""
         return await self.send_message(
-            channel_id, self._bridge_display_name(), content, thread_root_id
+            channel_id,
+            self._bridge_display_name(),
+            self.translate_outbound(content),
+            thread_root_id,
         )
 
     def _bridge_display_name(self) -> str:

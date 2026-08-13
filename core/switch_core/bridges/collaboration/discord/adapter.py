@@ -460,6 +460,10 @@ class DiscordAdapter(CollaborationAdapter):
         *,
         message_type: str | None = None,
     ) -> str | None:
+        # Renders its own body: every caller of `admin_message` passes Switch
+        # Markdown, so the conversion belongs here rather than at each of
+        # them — one of them forgetting is how a notice reached a chat with
+        # its markup showing.
         # Admin/system messages post as the bot application itself — no
         # webhook username override — so they read as the platform speaking,
         # not an agent.
@@ -481,7 +485,7 @@ class DiscordAdapter(CollaborationAdapter):
             return None
 
         return await self._send_chunked(
-            content,
+            self.translate_outbound(content),
             lambda part: target.send(part, suppress_embeds=True),
             where=f"channel {channel_id}",
         )

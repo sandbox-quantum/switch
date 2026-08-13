@@ -163,7 +163,13 @@ class MattermostAdapter(CollaborationAdapter):
         In a normal channel it goes out as the dedicated Switch Admin bot. A
         1:1 DM channel cannot admit a third bot, so there it falls back to the
         agent bot that owns the DM, lightly marked so it reads as a system
-        notice rather than the agent's own voice."""
+        notice rather than the agent's own voice.
+
+        Renders its own body: every caller passes Switch Markdown, so the
+        conversion belongs here rather than at each of them — one of them
+        forgetting is how a notice reached a channel with its markup showing.
+        """
+        content = self.translate_outbound(content)
         loop = self._main_loop
         if loop is None:
             logger.error("Cannot post admin message: event loop not initialized")

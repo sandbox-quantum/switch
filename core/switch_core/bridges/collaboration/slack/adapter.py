@@ -160,7 +160,7 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=content,
+                text=self.translate_outbound(content),
                 username=sender_name,
                 icon_url=self._get_agent_icon(sender_name),
                 thread_ts=thread_ts,
@@ -188,6 +188,10 @@ class SlackAdapter(CollaborationAdapter):
         *,
         message_type: str | None = None,
     ) -> str | None:
+        # Renders its own body: every caller of `admin_message` passes Switch
+        # Markdown, so the conversion belongs here rather than at each of
+        # them — one of them forgetting is how a notice reached a chat with
+        # its markup showing.
         # On Slack an admin/system message renders as the Switch app itself —
         # no per-message username/icon override — so it reads as the platform
         # speaking, not an agent. message_type is available for future
