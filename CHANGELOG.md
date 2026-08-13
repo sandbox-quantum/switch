@@ -1320,6 +1320,17 @@ compatibility signal. History for those is in the git log.
   everything but a few public routes, so a path left on the end of an otherwise
   correct base URL answers 401 rather than 404 — the host was right and only
   needed stripping back.
+- The `configure` skill no longer overwrites a credentials file that belongs to
+  another Switch setup. Its script writes `.switch/agents/<name>.json` by name
+  alone and truncated whatever was there, which in a directory shared with a
+  Switch Console install (or an earlier run against a different server) destroyed
+  a token that is issued once and stored nowhere else. It now stops before
+  registering if that file names a different Switch server, and reports which —
+  the same guard `CHOO-1960` gives the Codex skill and Switch Console's own write
+  paths. The subagent step gets it too, over
+  `.claude/switch-subagents/<name>.settings.json`: that path is Claude-only, so
+  it was outside that sweep, and it is checked across the whole batch before the
+  bulk registration, since refusing afterwards would strand every agent in it.
 
 #### Changed
 - The `configure` skill is rebuilt on the standalone shape the Codex connector

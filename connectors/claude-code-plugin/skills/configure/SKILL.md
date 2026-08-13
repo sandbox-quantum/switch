@@ -458,6 +458,23 @@ set -eu
 mkdir -p .switch/agents
 printf '*\n' > .switch/agents/.gitignore
 
+# This file is keyed by name alone, so a directory shared with another Switch
+# setup — a Switch Console install, or an earlier run of this skill against a
+# different server — can already have one under this name. Writing over it
+# destroys a token that was returned once and exists nowhere else, and the
+# displaced agent's sessions then authenticate as this one. A different endpoint
+# is what makes it someone else's: the same server would have refused the name
+# at registration.
+creds=".switch/agents/$NAME.json"
+if [ -f "$creds" ]; then
+  owner=$(jq -r '.env.SWITCH_API_ENDPOINT // empty' "$creds" 2>/dev/null || true)
+  if [ -n "$owner" ] && [ "${owner%/}" != "${ENDPOINT%/}" ]; then
+    printf '%s already holds credentials for the Switch server at %s.\n' "$creds" "$owner" >&2
+    printf 'Refusing to overwrite them. Choose a different agent name, or a different directory.\n' >&2
+    exit 1
+  fi
+fi
+
 resp=$(mktemp)
 http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
@@ -484,8 +501,15 @@ rm -f "$resp"
 ```
 
 The token goes from the response straight into the file without ever being
-echoed or held in a variable that a later command would need. The resulting file
-is the same shape Switch Console writes:
+echoed or held in a variable that a later command would need.
+
+The guard runs **before** the registration, not just before the write: refusing
+afterwards would leave an agent on the server whose key nobody holds. If it
+fires, tell the user which server already owns that name here and let them
+choose — a different name, or a different directory. Do not delete the file and
+retry.
+
+The resulting file is the same shape Switch Console writes:
 
 ```json
 {
@@ -673,6 +697,26 @@ set -eu
 mkdir -p .claude/switch-subagents
 printf '*\n' > .claude/switch-subagents/.gitignore
 
+# The same collision as Step 8, once per subagent: these files are keyed by the
+# subagent's name alone. Check the whole batch before registering — a refusal
+# after the bulk call would leave every agent in it on the server with a key
+# nobody holds, not just the one that clashed.
+conflicts=""
+for sub in $(printf '%s' "$SUBS_JSON" | jq -r '.[].subagent_name'); do
+  sub_creds=".claude/switch-subagents/$sub.settings.json"
+  [ -f "$sub_creds" ] || continue
+  sub_owner=$(jq -r '.env.SWITCH_API_ENDPOINT // empty' "$sub_creds" 2>/dev/null || true)
+  if [ -n "$sub_owner" ] && [ "${sub_owner%/}" != "${ENDPOINT%/}" ]; then
+    conflicts="$conflicts
+  $sub_creds (Switch server at $sub_owner)"
+  fi
+done
+if [ -n "$conflicts" ]; then
+  printf 'These files already hold credentials for a different Switch server:%s\n' "$conflicts" >&2
+  printf 'Refusing to overwrite them. Deselect those subagents, or use a different directory.\n' >&2
+  exit 1
+fi
+
 resp=$(mktemp)
 http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known-bulk" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
@@ -697,6 +741,11 @@ jq -r --arg ep "$ENDPOINT" '.results[]
 jq -r '.results[] | "registered " + .name + " (" + .id + ")"' "$resp"
 rm -f "$resp"
 ```
+
+The guard reports the **whole** batch rather than stopping at the first clash, so
+the user deselects once instead of rediscovering the problem one subagent at a
+time. As in Step 8, it runs before the request, and the answer is a different
+name or a different directory — not deleting the files.
 
 **Responses:** `404 Parent agent not found` — `PARENT_AGENT_ID` is wrong or
 empty (see above). `400 No subagents provided` — `SUBS_JSON` was an empty array.
