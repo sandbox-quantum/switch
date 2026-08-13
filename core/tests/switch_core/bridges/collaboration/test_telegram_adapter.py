@@ -1307,13 +1307,22 @@ def test_an_https_deeplink_is_still_a_real_link() -> None:
     )
 
 
-def test_a_tg_link_is_left_clickable() -> None:
-    # Telegram's own scheme is one it renders, so it must not be downgraded.
+@pytest.mark.parametrize(
+    "url",
+    [
+        "tg://resolve?domain=acme",
+        "mailto:ops@acme.test",
+        "http://acme.test",
+    ],
+)
+def test_a_scheme_telegram_renders_is_left_clickable(url: str) -> None:
+    # Only a scheme Telegram will not render gets downgraded. Narrowing this
+    # further would turn working links into code spans.
     adapter = _adapter()
 
-    rendered = adapter.translate_outbound("[chat](tg://resolve?domain=acme)")
+    rendered = adapter.translate_outbound(f"[go]({url})")
 
-    assert rendered == '<a href="tg://resolve?domain=acme">chat</a>'
+    assert rendered == f'<a href="{url}">go</a>'
 
 
 def test_a_table_is_left_as_written() -> None:

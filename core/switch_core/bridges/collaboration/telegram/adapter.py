@@ -89,7 +89,7 @@ _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 # and which of the two you get is not ours to decide. A `switchdash://` deeplink
 # is exactly that case, so it is rendered as copyable text instead of an anchor
 # that may quietly vanish along with the message around it.
-_LINKABLE_SCHEMES = ("http://", "https://", "tg://")
+_LINKABLE_SCHEMES = ("http://", "https://", "tg://", "mailto:")
 
 # The palette agent marks are drawn from. Solid colour circles, because they
 # stay legible at the size Telegram renders an emoji inline and carry no meaning
