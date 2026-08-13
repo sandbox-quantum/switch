@@ -9,7 +9,11 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { quoteShellArg } from '@main/utils/shellEscape';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
 import { asPtyProviderId, makePtyId } from '@shared/core/pty/ptyId';
-import { type AgentLaunchSpec, HOME_PLACEHOLDER, materializeAgentCommand } from './agent-launch-spec';
+import {
+  type AgentLaunchSpec,
+  HOME_PLACEHOLDER,
+  materializeAgentCommand,
+} from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
 import type { SessionSpawner, WatcherLogger } from './notification-watcher';
 import { makeAgentTmuxSessionName } from './vm-tmux';

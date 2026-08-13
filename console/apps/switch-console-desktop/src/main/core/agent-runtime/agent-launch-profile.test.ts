@@ -202,7 +202,7 @@ describe('prepareAgentLaunchProfile', () => {
     expect(fs.files.size).toBe(0);
   });
 
-  it('resolves the home placeholder in a profile\'s env and file content', async () => {
+  it("resolves the home placeholder in a profile's env and file content", async () => {
     // OpenCode names its config by absolute path in `OPENCODE_CONFIG`, and that
     // config names its instructions file the same way. Neither can be formed by
     // the pure profile builder, so both arrive with the placeholder in them.

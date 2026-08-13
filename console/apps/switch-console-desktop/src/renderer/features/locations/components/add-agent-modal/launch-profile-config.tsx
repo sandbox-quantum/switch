@@ -51,7 +51,9 @@ export function LaunchProfileConfig({
 
   useEffect(() => {
     onChange(
-      providerId ? providerConfigFromAttributes(providerId, attributesFromForm(fields, state)) : null
+      providerId
+        ? providerConfigFromAttributes(providerId, attributesFromForm(fields, state))
+        : null
     );
   }, [providerId, fields, state, onChange]);
 

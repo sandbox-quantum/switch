@@ -243,7 +243,8 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
       {
         sessionId: 's1',
         initialPrompt: 'connect to switch room room-x',
-        extraEnv: {}, homeDir: '/home/agent',
+        extraEnv: {},
+        homeDir: '/home/agent',
       }
     );
 
@@ -267,7 +268,8 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
       {
         sessionId: 's1',
         initialPrompt: 'p',
-        extraEnv: {}, homeDir: '/home/agent',
+        extraEnv: {},
+        homeDir: '/home/agent',
       }
     );
 

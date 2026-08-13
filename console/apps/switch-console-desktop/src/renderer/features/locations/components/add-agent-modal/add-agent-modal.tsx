@@ -54,9 +54,9 @@ import {
 import { basenameFromAnyPath } from '@shared/path-name';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
-import { LaunchProfileConfig } from './launch-profile-config';
 import { ConfigureAgentPanel } from './configure-agent-panel';
 import { PickExistingPanel } from './content';
+import { LaunchProfileConfig } from './launch-profile-config';
 import { useConfigureAgentForm, usePickMode } from './modes';
 import {
   type AdoptKind,

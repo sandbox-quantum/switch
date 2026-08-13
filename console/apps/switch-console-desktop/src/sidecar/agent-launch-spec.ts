@@ -134,9 +134,7 @@ export function materializeAgentCommand(
     ])
   );
 
-  const unresolvedEnv = Object.entries(env).find(([, value]) =>
-    value.includes(PLACEHOLDER_PREFIX)
-  );
+  const unresolvedEnv = Object.entries(env).find(([, value]) => value.includes(PLACEHOLDER_PREFIX));
   if (unresolvedEnv !== undefined) {
     throw new Error(
       `agent launch spec has an unsubstituted placeholder in env ${unresolvedEnv[0]}: ${unresolvedEnv[1]}`

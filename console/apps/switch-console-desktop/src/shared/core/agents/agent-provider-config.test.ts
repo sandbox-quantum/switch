@@ -92,7 +92,9 @@ describe('toSwitchSpecialization', () => {
   it('returns undefined when nothing is set or the config is absent', () => {
     expect(toSwitchSpecialization(null)).toBeUndefined();
     expect(toSwitchSpecialization(undefined)).toBeUndefined();
-    expect(toSwitchSpecialization({ version: '2', providerId: 'codex', values: {} })).toBeUndefined();
+    expect(
+      toSwitchSpecialization({ version: '2', providerId: 'codex', values: {} })
+    ).toBeUndefined();
     expect(
       toSwitchSpecialization({ version: '2', providerId: 'codex', values: { model: '   ' } })
     ).toBeUndefined();
