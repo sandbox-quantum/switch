@@ -12,6 +12,7 @@ from typing import Any, ClassVar, NamedTuple
 
 from telegram import (
     BotCommand,
+    ForceReply,
     InputMediaDocument,
     InputMediaPhoto,
     LinkPreviewOptions,
@@ -22,7 +23,7 @@ from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import BadRequest, Conflict, TelegramError
 from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
-from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME
+from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -179,6 +180,11 @@ class TelegramAdapter(CollaborationAdapter):
         # chat id -> the visibility last announced in it, so a reconnect or a
         # second join repeats nothing while a real change is always said.
         self._visibility_announced: dict[str, str] = {}
+        # (chat id, our prompt's message id) -> the command that prompt is
+        # waiting on an argument for. Bounded like _seen_ids: an unanswered
+        # prompt is abandoned rather than remembered forever.
+        self._awaiting_args: OrderedDict[tuple[str, int], str] = OrderedDict()
+        self._awaiting_args_max = 200
         # The bot can delete its own messages, so runtime state renders as a
         # persistent message (the base class's _working_msg) rather than the
         # one-shot typing action.
@@ -1251,9 +1257,32 @@ class TelegramAdapter(CollaborationAdapter):
         if await self._handle_start(content.strip(), chat_id, channel_type):
             return
 
+        # A reply to one of our "what should I use?" prompts carries the
+        # argument the command was missing. Resolved before anything else, so
+        # the answer is not bridged into the room as an ordinary message.
+        answered = self._take_awaited_command(message)
+        if answered is not None and self._on_command:
+            await self._on_command(
+                InboundCommand(
+                    channel_id=chat_id,
+                    channel_type=channel_type,
+                    sender_id=str(author.id),
+                    sender_name=username,
+                    command=answered,
+                    args=content.strip(),
+                    message_ref=message_ref,
+                    root_id=root_id,
+                    channel_name=channel_name,
+                )
+            )
+            return
+
         parsed = self._parse_command(content.strip())
         if parsed is not None and self._on_command:
             name, args = parsed
+            if not args and self._missing_argument(name) is not None:
+                await self._prompt_for_argument(chat_id, name, message.message_id)
+                return
             await self._on_command(
                 InboundCommand(
                     channel_id=chat_id,
@@ -1441,6 +1470,84 @@ class TelegramAdapter(CollaborationAdapter):
             logger.debug("Ignoring a bare Telegram /start in chat %s", chat_id)
         await self.announce_visibility(chat_id)
         return True
+
+    @staticmethod
+    def _missing_argument(name: str) -> CommandArg | None:
+        """The first required argument of `name`, or None if it takes none.
+
+        Telegram's command menu **sends** a command the instant it is tapped —
+        there is no way to have the client put it in the composer for the user
+        to finish, and no API to say a command takes arguments. So a command
+        that needs one always arrives bare from the menu, and answering with
+        its usage line is a dead end: the only way out is to type the whole
+        thing by hand, which is what the menu was for.
+        """
+        command = COMMANDS_BY_NAME.get(name)
+        if command is None:
+            return None
+        return next((arg for arg in command.args_spec if arg.required), None)
+
+    async def _prompt_for_argument(
+        self, channel_id: str, name: str, replying_to: int
+    ) -> None:
+        """Ask for the argument a bare command did not carry, and remember that
+        we did, so the answer can be run as the command.
+
+        `ForceReply` opens the composer already replying to the prompt, which
+        makes answering one tap rather than a retyped command. `selective` aims
+        it at the person who ran the command, so a busy group is not forced to
+        reply on their behalf. It also survives a mention-only chat: a reply to
+        the bot is one of the few things Telegram still delivers there.
+        """
+        arg = self._missing_argument(name)
+        if arg is None:
+            return
+        body = self.translate_outbound(
+            f"`/{name.replace('-', '_')}` needs one more thing — "
+            f"{arg.description[0].lower() + arg.description[1:]}.\n\n"
+            "Reply to this message with it."
+        )
+        try:
+            sent = await self._require_bot().send_message(
+                chat_id=self._chat_id(channel_id),
+                text=body,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=_NO_PREVIEW,
+                reply_parameters=ReplyParameters(
+                    message_id=replying_to, allow_sending_without_reply=True
+                ),
+                reply_markup=ForceReply(
+                    selective=True, input_field_placeholder=arg.name
+                ),
+            )
+        except TelegramError as e:
+            # Falling back to running the command bare would answer with its
+            # usage line, which is the dead end this exists to avoid — so say
+            # what happened rather than pretending the prompt went out.
+            logger.error(
+                "Could not ask for the %s argument of /%s in chat %s: %s",
+                arg.name,
+                name,
+                channel_id,
+                e,
+            )
+            return
+        self._awaiting_args[(channel_id, int(sent.message_id))] = name
+        if len(self._awaiting_args) > self._awaiting_args_max:
+            self._awaiting_args.popitem(last=False)
+
+    def _take_awaited_command(self, message: Any) -> str | None:
+        """The command this message answers, if it replies to a prompt of ours.
+
+        One shot: a second reply to the same prompt is an ordinary message, so
+        a conversation that happens to continue under it is not swallowed as
+        repeated command invocations.
+        """
+        replied = getattr(message, "reply_to_message", None)
+        if replied is None:
+            return None
+        key = (str(message.chat.id), int(replied.message_id))
+        return self._awaiting_args.pop(key, None)
 
     @staticmethod
     def _parse_command(text: str) -> tuple[str, str] | None:

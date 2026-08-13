@@ -2387,3 +2387,108 @@ def test_the_install_note_gives_the_route_a_channel_has_to_take() -> None:
     assert note is not None
     assert "Administrators" in note
     assert "Post Messages" in note
+
+
+# ── Commands tapped from Telegram's menu ─────────────────────────────────────
+#
+# Telegram sends a command the instant it is tapped in the `/` list, with no
+# chance to type an argument and no way for a bot to say one is needed. So
+# `/invite_agent` from the menu arrives bare, and answering with its usage line
+# leaves the one route out being to retype the whole thing by hand.
+
+
+def test_a_bare_command_that_needs_an_argument_asks_for_it() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(adapter._handle_message(_FakeInbound(text="/invite_agent")))
+
+    # Not dispatched: running it bare only produces the usage line.
+    assert commands == []
+    sent = _bot(adapter).messages[0]
+    assert "needs one more thing" in sent["text"]
+    # ForceReply is what makes answering a tap rather than a retyped command,
+    # and `selective` keeps it aimed at whoever ran it in a busy group.
+    assert sent["reply_markup"].force_reply is True
+    assert sent["reply_markup"].selective is True
+    # Anchored to their message, which is what `selective` targets.
+    assert sent["reply_parameters"].message_id == 11
+
+
+def test_the_reply_to_that_prompt_runs_the_command() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    messages: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(messages, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="/invite_agent")))
+    prompt_id = _bot(adapter).messages[0]["chat_id"], 501
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=12,
+                text="@scout",
+                reply_to_message=_FakeInbound(message_id=prompt_id[1]),
+            )
+        )
+    )
+
+    assert [(c.command, c.args) for c in commands] == [("invite-agent", "@scout")]
+    # The answer is the argument, not something to relay into the room.
+    assert messages == []
+
+
+def test_a_second_reply_to_the_same_prompt_is_an_ordinary_message() -> None:
+    # One shot, so a conversation that carries on under the prompt is not
+    # swallowed as repeated invocations.
+    adapter = _adapter()
+    adapter._on_command = lambda c: _collect([], c)
+    messages: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(messages, m)
+
+    _run(adapter._handle_message(_FakeInbound(text="/invite_agent")))
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=12,
+                text="@scout",
+                reply_to_message=_FakeInbound(message_id=501),
+            )
+        )
+    )
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=13,
+                text="thanks",
+                reply_to_message=_FakeInbound(message_id=501),
+            )
+        )
+    )
+
+    assert [m.content for m in messages] == ["thanks"]
+
+
+def test_a_bare_command_that_needs_nothing_still_runs() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(adapter._handle_message(_FakeInbound(text="/list_agents")))
+
+    assert [c.command for c in commands] == ["list-agents"]
+    assert _bot(adapter).messages == []
+
+
+def test_a_command_given_its_argument_is_not_interrupted() -> None:
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+
+    _run(adapter._handle_message(_FakeInbound(text="/invite_agent @scout")))
+
+    assert [(c.command, c.args) for c in commands] == [("invite-agent", "@scout")]
+    assert _bot(adapter).messages == []

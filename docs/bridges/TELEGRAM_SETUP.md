@@ -207,6 +207,29 @@ command, and so does the `!` form:
 The `/` forms matter beyond convenience: in a mention-only chat, a `/`-prefixed
 message is one of the few things the bot receives at all.
 
+### Commands that take an argument
+
+Telegram **sends** a command the instant you tap it in the `/` list — it does
+not put it in the composer for you to finish, and the Bot API has no way to
+declare that a command takes an argument. So tapping `/invite_agent` sends it
+bare.
+
+Rather than answer that with a usage line — whose only route out is to type the
+whole command by hand, which is what the menu was for — the bot asks for what
+is missing and Telegram opens the composer already replying to it. Answer with
+the agent's name alone and the command runs:
+
+> **/invite_agent** needs one more thing — the registered agent to add to this
+> room.
+> Reply to this message with it.
+
+Typing the command with its argument in one go skips the prompt entirely. The
+prompt is one-shot, so a conversation that carries on under it is treated as
+ordinary chat rather than more arguments.
+
+This also works in a mention-only chat: a reply to the bot is one of the few
+things Telegram delivers there.
+
 `/start` is Telegram's own handshake rather than a Switch command — it is what
 the dashboard's install links send once the bot has been added — so the bridge
 answers it itself instead of passing it on as an unknown command.

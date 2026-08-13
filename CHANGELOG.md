@@ -123,6 +123,15 @@ version of their own to them without also giving them a release of their own.
   reason. The retry only fired when the error contained "parse", so a rejection
   worded any other way — "unsupported URL protocol" among them — lost the entire
   message to a single log line.
+- A Telegram command that needs an argument is usable from the `/` menu.
+  Telegram sends a command the instant it is tapped, with no chance to type one
+  and no way for a bot to declare that one is wanted, so `/invite_agent` always
+  arrived bare — and answering with its usage line left retyping the whole
+  command by hand as the only way through, which is what the menu was for. The
+  bot now asks for what is missing, with Telegram's own reply prompt so the
+  composer opens ready, and runs the command when you answer. Giving the
+  argument up front skips it; the prompt is one-shot, so talk that continues
+  under it stays ordinary chat.
 - The no-agents notice advertises `/invite_agent` on Telegram, the only spelling
   Telegram will register and therefore the only one its command menu offers. It
   named the hyphenated form, which the client will not autocomplete. All three

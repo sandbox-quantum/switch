@@ -378,7 +378,9 @@ none of it is needed to take part in a conversation.
   name. Humans and agents can do the same from inside a room with the
   `!invite-agent @agent-name` command (also the `/invite-agent` slash command
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
-  `/invite_agent`, since it will not accept a hyphen in a command).
+  `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
+  a command tapped from the `/` menu is sent immediately with no argument, so
+  the bot asks for the one it needs and runs when you reply with it.
 - **`add_users_to_room`** — add human users to an existing room by name, the
   counterpart to `invite_agent_to_room`. Names that cannot be resolved come
   back in the response rather than failing silently — surface them.
