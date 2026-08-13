@@ -97,6 +97,49 @@ def test_get_config_schema_unknown_type_raises() -> None:
         service.get_config_schema("does-not-exist")
 
 
+# ── Channel-creation capability ──────────────────────────────────────────────
+
+
+def test_only_telegram_cannot_create_channels() -> None:
+    # A platform fact, not a preference. Telegram's Bot API has no call to make
+    # a chat; every other platform Switch bridges to does.
+    assert TelegramAdapter.supports_channel_creation is False
+    for adapter in (SlackAdapter, MattermostAdapter, DiscordAdapter, TeamsAdapter):
+        assert adapter.supports_channel_creation is True
+
+
+def test_capability_is_answerable_without_a_running_bridge() -> None:
+    # Read from the registered class, not a live adapter, because the operator
+    # needs the answer while registering a connection and while one is stopped.
+    service = _service()
+    service.register_adapter("telegram", TelegramAdapter, TelegramConnectionConfig)
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+
+    assert service.supports_channel_creation("telegram") is False
+    assert service.supports_channel_creation("slack") is True
+
+
+def test_an_unregistered_type_is_not_reported_as_incapable() -> None:
+    # Registration rejects an unknown type by name, which is a better error than
+    # a capability claim about a platform Switch does not have.
+    assert _service().supports_channel_creation("does-not-exist") is True
+
+
+async def test_registering_telegram_cannot_grant_channel_creation() -> None:
+    # The operator switch only ever narrows the platform's ceiling. Storing
+    # "allowed" here would be a claim the connection could never honour.
+    service = _service()
+    service.register_adapter("telegram", TelegramAdapter, TelegramConnectionConfig)
+
+    with pytest.raises(ValueError, match="cannot create channels"):
+        await service.register(
+            bridge_type="telegram",
+            display_name="Acme Telegram",
+            connection_config={"bot_token": "t", "bot_username": "b"},
+            channel_creation_enabled=True,
+        )
+
+
 def test_teams_adapter_registers_with_expected_required_fields() -> None:
     service = _service()
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)

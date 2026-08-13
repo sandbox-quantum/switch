@@ -900,6 +900,7 @@ class RoomService:
         )
 
         if external_channel_id is None:
+            await self._require_channel_creation(bridge_id)
             external_channel_id = await new_bridge.adapter.create_channel(
                 room.name,
                 room.description,
