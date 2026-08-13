@@ -132,7 +132,7 @@ artifacts:
 
   switch-connector-codex:
     description: The Codex connector plugin.
-    version: 0.3.1
+    version: 0.3.2
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
 
   switch-connector-opencode:

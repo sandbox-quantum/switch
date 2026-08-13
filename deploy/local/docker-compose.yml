@@ -59,10 +59,6 @@ services:
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
-      # Lets the bridge hard-delete (permanent=true) an agent's transient
-      # "working on it…" status post instead of soft-deleting it, which would
-      # leave a "(message deleted)" tombstone. Requires Mattermost >= v10.2.
-      MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       # Both of these exist for Switch Console's embedded room view (CHOO-1674):
       # the onboarding checklist opens a modal over a dimmed page inside the

@@ -5,6 +5,11 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
+import {
+  getAgentAdvancedFields,
+  readAgentAdvancedConfig,
+  updateAgentAdvancedConfig,
+} from './agent-advanced-config';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
 import { assignAgentServer } from './assignAgentServer';
 import {
@@ -28,6 +33,7 @@ import {
   setAgentAutoSession,
   type AgentAutoSessionParams,
 } from './setAgentAutoSession';
+import { setAgentProviderConfig, type AgentProviderConfigParams } from './setAgentProviderConfig';
 import { updateAgent, type UpdateAgentParams } from './updateAgent';
 
 export const agentsController = createRPCController({
@@ -38,6 +44,16 @@ export const agentsController = createRPCController({
   readAgentDefinition: (params: { agentId: string }) => readAgentDefinition(params.agentId),
   updateAgentDefinition: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentDefinition(params),
+  /**
+   * The per-agent advanced configuration, wherever the provider keeps it —
+   * a repo-agent definition (Claude) or a launch profile (Codex). One form,
+   * one editor; see `agent-advanced-config.ts`.
+   */
+  advancedFields: (params: { providerId: AgentProviderId }) =>
+    Promise.resolve(getAgentAdvancedFields(params.providerId)),
+  readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),
+  updateAdvancedConfig: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
+    updateAgentAdvancedConfig(params),
   onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   onboardLocationAgents: (params: OnboardLocationParams) => onboardLocationAgents(params),
   discoverLocationAgents: (params: {
@@ -62,6 +78,8 @@ export const agentsController = createRPCController({
     setAgentAutoSession(params),
   setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
     setAgentAutoApprove(params),
+  setAgentProviderConfig: (params: AgentProviderConfigParams): Promise<void> =>
+    setAgentProviderConfig(params),
   getAgentAutoSession: (params: { agentId: string }): Promise<boolean> =>
     getAgentAutoSession(params),
 });

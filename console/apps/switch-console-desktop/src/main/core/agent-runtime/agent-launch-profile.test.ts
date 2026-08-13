@@ -89,7 +89,7 @@ describe('resolveAgentLaunchProfile', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
       workingDir: WD,
-      specialization: { model: 'gpt-5.6-terra', reasoningEffort: 'high', instructions: 'be terse' },
+      specialization: { model: 'gpt-5.6-terra', effort: 'high', instructions: 'be terse' },
     })!;
     expect(profile.files).toHaveLength(1);
     expect(profile.files[0].content).toContain('model = "gpt-5.6-terra"');

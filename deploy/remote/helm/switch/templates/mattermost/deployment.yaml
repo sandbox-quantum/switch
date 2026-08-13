@@ -51,11 +51,6 @@ spec:
               value: "true"
             - name: MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS
               value: "true"
-            # Lets the bridge hard-delete (permanent=true) an agent's transient
-            # "working on it…" status post instead of soft-deleting it, which
-            # would leave a "(message deleted)" tombstone. Requires MM >= v10.2.
-            - name: MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION
-              value: "true"
             - name: MM_TEAMSETTINGS_ENABLEOPENSERVER
               value: "true"
             # For Switch Console's embedded room view (CHOO-1674): suppress the
