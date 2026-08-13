@@ -26,6 +26,7 @@ export async function createBridgeOnServer(
       displayName: params.displayName,
       connectionConfig: params.connectionConfig,
       setAsDefault: params.setAsDefault,
+      channelCreationEnabled: params.channelCreationEnabled,
     });
     return { kind: 'created', bridge };
   } catch (cause) {
@@ -34,6 +35,9 @@ export async function createBridgeOnServer(
       // Registering a bridge is admin-only. A non-admin cannot fix this by
       // editing the form, so it is not a validation failure.
       if (cause.kind === 'http' && cause.status === 403) return { kind: 'forbidden' };
+      // Also where a `true` for a platform that cannot create channels lands
+      // (400, naming the platform) — same "fix the form" shape as any other
+      // rejected argument, so it is not its own case.
       if (cause.kind === 'http' && (cause.status === 400 || cause.status === 422)) {
         return { kind: 'invalid', message: cause.detail ?? cause.message };
       }

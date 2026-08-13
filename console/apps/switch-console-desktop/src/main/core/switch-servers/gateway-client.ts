@@ -527,6 +527,38 @@ export async function fetchRoomGroups(server: SwitchServer): Promise<RemoteRoomG
   return json.map((g) => ({ id: g.id, name: g.name }));
 }
 
+/** The gateway `BridgeDetail` wire shape, as returned by list, create, and
+ * update. One shape and one mapper for all three, so a field cannot reach one
+ * endpoint's response and miss another. */
+type BridgeJson = {
+  bridge_id: string;
+  bridge_type: string;
+  display_name: string;
+  status: string;
+  is_default?: boolean;
+  home_url?: string | null;
+  // Both absent on a server predating the capability — defaulting each to
+  // true reproduces how every bridge behaved before it existed: any platform
+  // could be asked to create a channel, and none had it withheld.
+  channel_creation_supported?: boolean;
+  channel_creation_enabled?: boolean;
+};
+
+function mapBridge(b: BridgeJson): RemoteBridge {
+  const channelCreationSupported = b.channel_creation_supported ?? true;
+  const channelCreationEnabled = b.channel_creation_enabled ?? true;
+  return {
+    id: b.bridge_id,
+    type: b.bridge_type,
+    displayName: b.display_name,
+    status: b.status,
+    isDefault: b.is_default ?? false,
+    homeUrl: b.home_url ?? null,
+    channelCreationSupported,
+    canCreateChannels: channelCreationSupported && channelCreationEnabled,
+  };
+}
+
 /**
  * List the collaboration bridges configured on a server (`GET /collaborations`).
  * Returns every bridge regardless of status — callers that need a usable one
@@ -535,22 +567,8 @@ export async function fetchRoomGroups(server: SwitchServer): Promise<RemoteRoomG
  */
 export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]> {
   const res = await gatewayFetch(server, '/collaborations', { authenticated: true });
-  const json = (await res.json()) as Array<{
-    bridge_id: string;
-    bridge_type: string;
-    display_name: string;
-    status: string;
-    is_default?: boolean;
-    home_url?: string | null;
-  }>;
-  return json.map((b) => ({
-    id: b.bridge_id,
-    type: b.bridge_type,
-    displayName: b.display_name,
-    status: b.status,
-    isDefault: b.is_default ?? false,
-    homeUrl: b.home_url ?? null,
-  }));
+  const json = (await res.json()) as BridgeJson[];
+  return json.map(mapBridge);
 }
 
 /** Field names that hold a credential and must be masked on input. Mirrors the
@@ -601,8 +619,15 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
   const json = (await res.json()) as Array<{
     key: string;
     config_schema: BridgeConfigSchema;
+    channel_creation_supported?: boolean;
   }>;
-  return json.map((t) => ({ key: t.key, fields: toConfigFields(t.config_schema ?? {}) }));
+  return json.map((t) => ({
+    key: t.key,
+    fields: toConfigFields(t.config_schema ?? {}),
+    // Absent on a server predating the capability — every platform could be
+    // registered to create channels before it existed, so default true.
+    channelCreationSupported: t.channel_creation_supported ?? true,
+  }));
 }
 
 /**
@@ -625,6 +650,7 @@ export async function createBridge(
     displayName: string;
     connectionConfig: Record<string, string>;
     setAsDefault: boolean;
+    channelCreationEnabled: boolean;
   }
 ): Promise<RemoteBridge> {
   const res = await gatewayFetch(server, '/collaborations', {
@@ -635,24 +661,34 @@ export async function createBridge(
       display_name: params.displayName,
       connection_config: params.connectionConfig,
       set_as_default: params.setAsDefault,
+      channel_creation_enabled: params.channelCreationEnabled,
     },
   });
-  const b = (await res.json()) as {
-    bridge_id: string;
-    bridge_type: string;
-    display_name: string;
-    status: string;
-    is_default?: boolean;
-    home_url?: string | null;
-  };
-  return {
-    id: b.bridge_id,
-    type: b.bridge_type,
-    displayName: b.display_name,
-    status: b.status,
-    isDefault: b.is_default ?? false,
-    homeUrl: b.home_url ?? null,
-  };
+  return mapBridge((await res.json()) as BridgeJson);
+}
+
+/**
+ * Edit an existing bridge's operator-controlled switches
+ * (admin-only `PATCH /collaborations/{id}`). Only fields present in `params`
+ * are sent, so an unset one is left unchanged rather than reset — the gateway
+ * treats the request the same way.
+ *
+ * Posting `channelCreationEnabled: true` for a platform whose adapter cannot
+ * create channels at all returns 400 with a message naming the platform;
+ * callers map that like any other rejected edit rather than a bridge-specific
+ * case.
+ */
+export async function updateBridge(
+  server: SwitchServer,
+  bridgeId: string,
+  params: { channelCreationEnabled?: boolean }
+): Promise<RemoteBridge> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}`, {
+    authenticated: true,
+    method: 'PATCH',
+    body: { channel_creation_enabled: params.channelCreationEnabled },
+  });
+  return mapBridge((await res.json()) as BridgeJson);
 }
 
 /**

@@ -26,7 +26,8 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
-const { createRoom, fetchBridges, fetchMe, registerKnownAgent } = await import('./gateway-client');
+const { createRoom, fetchBridges, fetchMe, registerKnownAgent, updateBridge } =
+  await import('./gateway-client');
 
 const SERVER = {
   id: 'srv-1',
@@ -322,6 +323,8 @@ describe('room creation', () => {
           status: 'active',
           is_default: true,
           home_url: 'mattermost://chat.example.com/switch',
+          channel_creation_supported: true,
+          channel_creation_enabled: true,
         },
         { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Slack', status: 'stopped' },
       ]) as never
@@ -335,6 +338,8 @@ describe('room creation', () => {
         status: 'active',
         isDefault: true,
         homeUrl: 'mattermost://chat.example.com/switch',
+        channelCreationSupported: true,
+        canCreateChannels: true,
       },
       {
         id: 'b2',
@@ -343,8 +348,44 @@ describe('room creation', () => {
         status: 'stopped',
         isDefault: false,
         homeUrl: null,
+        // Both fields post-date the pinned switch-core too, defaulting the
+        // same way home_url does: absent reads as the pre-capability world,
+        // where every bridge could create a channel.
+        channelCreationSupported: true,
+        canCreateChannels: true,
       },
     ]);
+  });
+
+  it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'telegram',
+          display_name: 'Telegram',
+          status: 'active',
+          channel_creation_supported: false,
+          channel_creation_enabled: true,
+        },
+        {
+          bridge_id: 'b2',
+          bridge_type: 'slack',
+          display_name: 'Slack',
+          status: 'active',
+          channel_creation_supported: true,
+          channel_creation_enabled: false,
+        },
+      ]) as never
+    );
+
+    const [telegram, slack] = await fetchBridges(SERVER);
+
+    // Telegram: the platform ceiling is the binding constraint, regardless of
+    // what an operator's switch says.
+    expect(telegram).toMatchObject({ channelCreationSupported: false, canCreateChannels: false });
+    // Slack: the platform can, but the operator withheld it from this connection.
+    expect(slack).toMatchObject({ channelCreationSupported: true, canCreateChannels: false });
   });
 
   it('always names a bridge and a channel type, never the internal-only escape hatch', async () => {
@@ -464,5 +505,57 @@ describe('registerKnownAgent', () => {
       options: { channels_enabled: true, repo_dir: '/repo' },
       overwrite: false,
     });
+  });
+});
+
+describe('updateBridge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('PATCHes only the field given, leaving an unset one out of the body', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        bridge_id: 'b1',
+        bridge_type: 'slack',
+        display_name: 'Slack',
+        status: 'active',
+        channel_creation_supported: true,
+        channel_creation_enabled: false,
+      }) as never
+    );
+
+    const bridge = await updateBridge(SERVER, 'b1', { channelCreationEnabled: false });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ channel_creation_enabled: false });
+    expect(bridge).toMatchObject({ canCreateChannels: false, channelCreationSupported: true });
+  });
+
+  it('sends no field at all when nothing changed', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        bridge_id: 'b1',
+        bridge_type: 'slack',
+        display_name: 'Slack',
+        status: 'active',
+      }) as never
+    );
+
+    await updateBridge(SERVER, 'b1', {});
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({});
   });
 });

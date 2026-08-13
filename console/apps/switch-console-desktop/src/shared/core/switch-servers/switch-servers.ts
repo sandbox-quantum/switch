@@ -250,6 +250,22 @@ export type RemoteBridge = {
    * absence as "no action to offer", not as an error.
    */
   homeUrl: string | null;
+  /**
+   * Whether the platform this connection runs on can create a channel at all
+   * (e.g. false for Telegram — the Bot API has no such call). Fixed per
+   * platform; not something an operator can change. Defaults to true for a
+   * server predating the field, matching how every bridge behaved before the
+   * capability existed.
+   */
+  channelCreationSupported: boolean;
+  /**
+   * Whether this connection may actually be used to create a channel —
+   * `channelCreationSupported` ANDed with the operator's own switch for this
+   * connection. This is the one callers creating a room should read;
+   * `channelCreationSupported` exists only to explain *why* when this is
+   * false (a platform ceiling vs. an operator's choice).
+   */
+  canCreateChannels: boolean;
 };
 
 /**
@@ -298,6 +314,10 @@ export type RemoteBridgeType = {
   /** Platform key (`slack`, `mattermost`, …). */
   key: string;
   fields: BridgeConfigField[];
+  /** Whether this platform can create channels at all — read from the
+   * adapter class, so it is answerable before any connection of this type
+   * exists, which is exactly when the attach form needs it. */
+  channelCreationSupported: boolean;
 };
 
 /**
@@ -316,6 +336,11 @@ export type CreateBridgeParams = {
   connectionConfig: Record<string, string>;
   /** Make this the bridge new rooms land on when none is named. */
   setAsDefault: boolean;
+  /** Whether this connection may create channels on the platform. The
+   * gateway defaults this to true when omitted, but Switch Console always
+   * states it explicitly, forced off for a platform that cannot create
+   * channels at all — registering `true` there returns 400. */
+  channelCreationEnabled: boolean;
 };
 
 /**
@@ -331,6 +356,28 @@ export type CreateBridgeResult =
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
   /** The server rejected the credentials or the config shape (400/422). */
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * Parameters for editing an existing bridge's operator-controlled switches
+ * (`PATCH /collaborations/{id}`). Only `channelCreationEnabled` is wired up
+ * today; leave a field unset to leave it unchanged, matching the gateway's
+ * own partial-update contract.
+ */
+export type UpdateBridgeParams = {
+  serverId: string;
+  bridgeId: string;
+  channelCreationEnabled?: boolean;
+};
+
+/** Outcome of editing a bridge. Mirrors {@link CreateBridgeResult}'s recoverable
+ * cases: editing is admin-only like registering, so a non-admin gets the same
+ * `forbidden` rather than a validation error. */
+export type UpdateBridgeResult =
+  | { kind: 'updated'; bridge: RemoteBridge }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
   | { kind: 'invalid'; message: string }
   | { kind: 'error'; message: string };
 

@@ -76,16 +76,26 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     enabled: !!serverId,
   });
 
-  // Only a running bridge can back a new room. Keeping the inactive ones out of
-  // the picker (rather than letting the create call fail) means the one thing
-  // shown is the one thing that works — and "no bridges" is stated outright.
-  const bridges = (bridgesQuery.data ?? []).filter((b) => b.status === 'active');
+  // Only a running bridge can back a new room, and creating a room here means
+  // creating a channel on it — a bridge withheld from that (an operator's
+  // switch, or a platform like Telegram that has no such call at all) is just
+  // as unusable for this form. Keeping both kinds out of the picker (rather
+  // than letting the create call fail) means the one thing shown is the one
+  // thing that works — and each reason for an empty list is stated outright,
+  // rather than collapsed into one generic "no bridges".
+  const allBridges = bridgesQuery.data ?? [];
+  const activeBridges = allBridges.filter((b) => b.status === 'active');
+  const bridges = activeBridges.filter((b) => b.canCreateChannels);
   const selectedBridge =
     bridges.find((b) => b.id === bridgeId) ??
     bridges.find((b) => b.isDefault) ??
     bridges[0] ??
     null;
-  const noBridges = !bridgesQuery.isLoading && bridges.length === 0;
+  const loaded = !bridgesQuery.isLoading;
+  const noBridgesAtAll = loaded && allBridges.length === 0;
+  const noneRunning = loaded && allBridges.length > 0 && activeBridges.length === 0;
+  const noneCanCreateChannels = loaded && activeBridges.length > 0 && bridges.length === 0;
+  const noUsableBridge = noBridgesAtAll || noneRunning || noneCanCreateChannels;
 
   const trimmedName = name.trim();
   const trimmedDescription = description.trim();
@@ -185,7 +195,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             <Select
               value={selectedBridge?.id ?? ''}
               onValueChange={(next) => setBridgeId(next ?? null)}
-              disabled={bridgesQuery.isLoading || noBridges}
+              disabled={bridgesQuery.isLoading || noUsableBridge}
             >
               <SelectTrigger>
                 {/* Resolve the label ourselves: the trigger shows the raw value
@@ -204,10 +214,24 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                 ))}
               </SelectContent>
             </Select>
-            {noBridges && (
+            {noBridgesAtAll && (
               <p className="text-destructive mt-1 text-xs">
                 This server has no messaging app connected, so a room created here would be
                 unreachable. Connect one first.
+              </p>
+            )}
+            {noneRunning && (
+              <p className="text-destructive mt-1 text-xs">
+                This server's messaging apps are not running, so a room created here would be
+                unreachable. Start one, or connect another.
+              </p>
+            )}
+            {noneCanCreateChannels && (
+              <p className="text-destructive mt-1 text-xs">
+                None of the running messaging apps can create a channel from Switch — for example, a
+                Telegram bot can't create chats on its own. Make the chat directly in the messaging
+                app instead (for Telegram, create the group and add the bot to it) and it becomes a
+                room here once it exists.
               </p>
             )}
             {bridgesQuery.isError && (
