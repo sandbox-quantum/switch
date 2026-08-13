@@ -560,6 +560,26 @@ version of their own to them without also giving them a release of their own.
   "Connector update" rather than "Update available". That one is worth acting
   on, and the two used to share a badge that could not say which was behind.
 
+### [Unreleased]
+
+#### Added
+
+- **An OpenCode agent can be configured like a Codex one.** Its model,
+  reasoning variant, temperature, top-p, step limit, web search and
+  instructions can be set when the agent is created and changed afterwards from
+  its Settings tab, and a change applies to the next session — or to a running
+  one with Restart, which resumes the conversation.
+
+  OpenCode's settings are not Codex's, so the per-agent configuration an agent
+  stores is now keyed by what its own provider offers rather than by a fixed
+  list. Existing Codex agents keep their settings; nothing needs re-entering.
+
+  Two OpenCode behaviours are worth knowing. Its reasoning variant is a plain
+  text field rather than a menu, because the values a model accepts come from
+  that model rather than from a fixed list — and a name the model does not
+  define is ignored silently rather than reported. Its instructions are added
+  to OpenCode's own, the way an `AGENTS.md` is, rather than replacing them.
+
 ### [0.23.0] - 2026-08-14
 
 #### Added
