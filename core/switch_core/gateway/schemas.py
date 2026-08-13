@@ -429,15 +429,30 @@ class BridgeDetail(BaseModel):
     # What those links do not cover, in the platform's own terms — the kinds of
     # chat that have to be joined by hand. None when there is nothing to add.
     install_note: str | None = None
+    # Whether the platform can create a channel from Switch at all, and whether
+    # an operator permits this connection to. The two are separate so a UI can
+    # tell "your organisation turned this off" (changeable here) from "Telegram
+    # has no such call" (not changeable anywhere) — the first is a disabled
+    # switch you can flip, the second a disabled switch with a reason.
+    channel_creation_supported: bool = True
+    channel_creation_enabled: bool = True
 
 
 class BridgeUpdateRequest(BaseModel):
-    agent_greetings_enabled: bool
+    # Both optional so a caller can change one without restating the other; a
+    # request that sets neither changes nothing rather than silently resetting
+    # a field it did not mention.
+    agent_greetings_enabled: bool | None = None
+    channel_creation_enabled: bool | None = None
 
 
 class BridgeTypeInfo(BaseModel):
     key: str
     config_schema: dict[str, Any]
+    # Whether this platform can create channels at all. Read from the adapter
+    # class, so it is answerable before any connection of this type exists —
+    # which is exactly when the registration form needs it.
+    channel_creation_supported: bool = True
 
 
 class BridgeCreateRequest(BaseModel):
@@ -448,6 +463,10 @@ class BridgeCreateRequest(BaseModel):
     # Set by the headless standalone bootstrap so a fresh deployment bridges
     # rooms out of the box.
     set_as_default: bool = False
+    # Whether this connection may create channels on the platform. Defaults on
+    # to keep existing callers behaving as they did; registration rejects it
+    # for a platform that cannot, rather than storing a claim it cannot honour.
+    channel_creation_enabled: bool = True
 
 
 class ExternalUserSummary(BaseModel):

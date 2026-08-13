@@ -1963,6 +1963,13 @@ class ProtocolService:
                 "display_name": b.display_name,
                 "status": b.status,
                 "is_default": b.is_default,
+                # The platform's ceiling and the operator's switch, ANDed: an
+                # agent asking "can I make a room here?" wants one answer, and
+                # gets it before spending a create_room call to find out.
+                "can_create_channels": (
+                    b.channel_creation_enabled
+                    and self.collab_lifecycle.supports_channel_creation(b.type)
+                ),
             }
             for b in bridges
         ]

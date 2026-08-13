@@ -6,7 +6,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 from telegram import (
     BotCommand,
@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeInstallLink,
+    ChannelCreationUnsupported,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -110,18 +111,23 @@ class TelegramAdapter(CollaborationAdapter):
     public ingress); outbound goes through the Bot API.
 
     The bot has to be able to see the conversation, and Telegram offers two
-    routes to that: an administrator bot is exempt from privacy mode and
-    receives everything, or privacy mode is disabled in BotFather for the bot
-    globally. The dashboard's one-click install link takes the first, because
-    it grants the rights in the same confirmation that picks the chat. A bot
-    that is neither runs mention-only — it receives commands, replies to itself
-    and messages that tag it, and nothing else — which is disclosed in the chat
-    rather than left to be deduced from silence.
+    routes to that: privacy mode is disabled in BotFather for the bot globally,
+    or the bot is an administrator of the chat, which exempts it whatever the
+    setting says. Setup takes the first — one setting per bot rather than a
+    promotion per group — and the dashboard's install link therefore asks for
+    no rights at all; admin is offered only as the repair for a chat the bot
+    joined before the setting was changed. A bot that is neither runs
+    mention-only — it receives commands, replies to itself and messages that
+    tag it, and nothing else — which is disclosed in the chat rather than left
+    to be deduced from silence.
 
     Chats are adopted, never created: the Bot API gives a bot no way to create a
-    group or channel, so ``create_channel`` raises and a chat's Switch room is
-    provisioned when the bot is added to it or on its first bridged message.
+    group or channel, so ``supports_channel_creation`` is False and a chat's
+    Switch room is provisioned when the bot is added to it or on its first
+    bridged message.
     """
+
+    supports_channel_creation: ClassVar[bool] = False
 
     def __init__(self, *, config: TelegramConnectionConfig) -> None:
         super().__init__()
@@ -867,12 +873,12 @@ class TelegramAdapter(CollaborationAdapter):
         *,
         channel_type: ChannelType = "channel_public",
     ) -> str:
-        raise NotImplementedError(
+        raise ChannelCreationUnsupported(
             "Telegram bots cannot create chats — the Bot API has no such call. "
-            f"Create the group or channel for '{name}' in a Telegram client, then "
-            f"add @{self._bot_username} to it with the 'Add to a chat' link on "
-            "the bridge in the operator dashboard, and Switch will adopt it as a "
-            "room."
+            f"Create the group for '{name}' in a Telegram client and add "
+            f"@{self._bot_username} to it — from the group itself, or with the "
+            "'Add to a chat' link on the bridge in the operator dashboard — and "
+            "Switch adopts it as a room as the bot lands."
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:

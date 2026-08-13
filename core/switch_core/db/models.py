@@ -498,6 +498,16 @@ class CollaborationBridge(Base):
     agent_greetings_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default="true", nullable=False
     )
+    # Whether an operator permits this connection to create channels on the
+    # platform. Only ever narrows what the platform allows: a bridge whose
+    # adapter reports `supports_channel_creation = False` cannot be granted it
+    # by setting this true, so the effective answer is the two ANDed together.
+    # Kept per connection rather than per type because withholding it is a
+    # deployment's decision — the bot may hold no such permission, or the
+    # organisation may not want rooms appearing from Switch.
+    channel_creation_enabled: Mapped[bool] = mapped_column(
+        Boolean, server_default="true", nullable=False
+    )
     # The bridge new rooms land on when no bridge is named. At most one row may
     # be true; the partial unique index below is what actually enforces that,
     # so concurrent writers cannot produce two defaults.

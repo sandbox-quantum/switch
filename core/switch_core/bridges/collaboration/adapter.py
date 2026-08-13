@@ -5,9 +5,11 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import ClassVar
 
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
+    ChannelCreationUnsupported,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -36,6 +38,16 @@ class LiveRuntimeIndicator:
 
 
 class CollaborationAdapter(ABC):
+    #: Whether this platform can create a channel from Switch at all.
+    #:
+    #: A ceiling, not a preference: an operator may withhold channel creation
+    #: from a connection whose platform allows it, but cannot grant it to one
+    #: that does not. Declared on the class rather than resolved from a running
+    #: bridge so the answer is available before a connection is registered and
+    #: while it is stopped — the operator asks "can this platform do it?" at
+    #: exactly those moments.
+    supports_channel_creation: ClassVar[bool] = True
+
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
@@ -415,7 +427,7 @@ class CollaborationAdapter(ABC):
         Used for outbound-created DM rooms (`channel_type="direct"`). Platforms
         where DMs can only be initiated by the user — and so cannot be created
         from Switch — raise instead of pretending to succeed."""
-        raise NotImplementedError(
+        raise ChannelCreationUnsupported(
             f"{type(self).__name__} cannot create DM channels — on this platform "
             "DMs are initiated by the user from the messaging client"
         )

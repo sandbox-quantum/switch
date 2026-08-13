@@ -114,6 +114,10 @@ async def _detail(
         home_url=await _home_url(bridge.id, collab_lifecycle),
         install_links=await _install_links(bridge.id, collab_lifecycle),
         install_note=await _install_note(bridge.id, collab_lifecycle),
+        channel_creation_supported=collab_lifecycle.supports_channel_creation(
+            bridge.type
+        ),
+        channel_creation_enabled=bridge.channel_creation_enabled,
     )
 
 
@@ -128,6 +132,7 @@ async def list_bridge_types(
         BridgeTypeInfo(
             key=t,
             config_schema=collab_lifecycle.get_config_schema(t),
+            channel_creation_supported=collab_lifecycle.supports_channel_creation(t),
         )
         for t in collab_lifecycle.get_registered_types()
     ]
@@ -151,6 +156,7 @@ async def create_bridge(
             bridge_type=req.bridge_type,
             display_name=req.display_name,
             connection_config=dict(req.connection_config),
+            channel_creation_enabled=req.channel_creation_enabled,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -234,9 +240,27 @@ async def update_bridge(
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
 
-    bridge = await bridge_store.set_agent_greetings_enabled(
-        session, bridge_id, payload.agent_greetings_enabled
-    )
+    if (
+        payload.channel_creation_enabled
+        and not collab_lifecycle.supports_channel_creation(bridge.type)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{bridge.type} cannot create channels from Switch, so this "
+                "connection cannot be allowed to. Create the chat on the "
+                "platform and add the bot to it; Switch adopts it as a room."
+            ),
+        )
+
+    if payload.agent_greetings_enabled is not None:
+        bridge = await bridge_store.set_agent_greetings_enabled(
+            session, bridge_id, payload.agent_greetings_enabled
+        )
+    if payload.channel_creation_enabled is not None:
+        bridge = await bridge_store.set_channel_creation_enabled(
+            session, bridge_id, payload.channel_creation_enabled
+        )
     await session.commit()
     rooms = await room_store.get_by_bridge(session, bridge_id)
     return await _detail(

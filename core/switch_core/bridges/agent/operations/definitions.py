@@ -1356,10 +1356,17 @@ async def list_bridges() -> list[dict[str, Any]]:
     the list to the user and let them choose, rather than guessing.
 
     Returns:
-        List of `{id, type, display_name, status, is_default}` dicts. Only
-        `status` == "active" bridges are usable for new rooms; others are
-        shown for context. `is_default` marks the bridge that `create_room`
-        uses when no `bridge_id` is given (at most one).
+        List of `{id, type, display_name, status, is_default,
+        can_create_channels}` dicts. Only `status` == "active" bridges are
+        usable for new rooms; others are shown for context. `is_default`
+        marks the bridge that `create_room` uses when no `bridge_id` is given
+        (at most one).
+
+        `can_create_channels` is false when Switch cannot make a channel on
+        that bridge — either the platform has no such call (Telegram) or an
+        operator has withheld it. Creating a room on one of those fails, so
+        offer an existing channel instead: the chat is made on the platform,
+        the Switch app is added to it, and the room is adopted from that.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()

@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
@@ -62,7 +63,9 @@ def _adapter(chat: _FakeChat | None = None) -> TelegramAdapter:
     "channel_type", ["channel_public", "channel_private", "group", "direct"]
 )
 def test_creating_a_chat_is_refused_for_every_type(channel_type: Any) -> None:
-    with pytest.raises(NotImplementedError) as excinfo:
+    # ChannelCreationUnsupported is a ValueError, which is what turns this into
+    # a 400 carrying the message rather than an opaque 500.
+    with pytest.raises(ChannelCreationUnsupported) as excinfo:
         _run(_adapter().create_channel("Team room", "topic", channel_type=channel_type))
 
     # The error is read by an operator, so it has to say what to do instead.
@@ -73,7 +76,7 @@ def test_creating_a_chat_is_refused_for_every_type(channel_type: Any) -> None:
 
 
 def test_creating_a_dm_is_refused_because_the_user_starts_it() -> None:
-    with pytest.raises(NotImplementedError, match="initiated by the user"):
+    with pytest.raises(ChannelCreationUnsupported, match="initiated by the user"):
         _run(
             _adapter().create_dm_channel(
                 agent_name="scout", user_name="alice", user_external_id="7"

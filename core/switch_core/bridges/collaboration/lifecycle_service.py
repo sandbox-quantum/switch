@@ -81,6 +81,20 @@ class CollaborationBridgeLifecycleService:
         bridge = self._bridges.get(bridge_id)
         return bridge.adapter if bridge is not None else None
 
+    def supports_channel_creation(self, bridge_type: str) -> bool:
+        """Whether this platform can create a channel from Switch at all.
+
+        Answered from the registered adapter *class*, so it holds for a bridge
+        that is stopped and for a type nobody has registered a connection for
+        yet — both moments where an operator needs the answer. An unknown type
+        is reported as capable: the registration that follows rejects it by
+        name, which is a better error than a capability claim about a platform
+        Switch does not have."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return True
+        return adapter_cls.supports_channel_creation
+
     def get_config_schema(self, bridge_type: str) -> dict[str, object]:
         config_cls = self._config_registry.get(bridge_type)
         if config_cls is None:
@@ -104,11 +118,19 @@ class CollaborationBridgeLifecycleService:
         bridge_type: str,
         display_name: str,
         connection_config: dict[str, object],
+        channel_creation_enabled: bool,
     ) -> CollaborationBridge:
         adapter_cls = self._adapter_registry.get(bridge_type)
         config_cls = self._config_registry.get(bridge_type)
         if adapter_cls is None or config_cls is None:
             raise ValueError(f"Unknown bridge type: {bridge_type}")
+
+        if channel_creation_enabled and not adapter_cls.supports_channel_creation:
+            raise ValueError(
+                f"{bridge_type} cannot create channels from Switch, so this "
+                "connection cannot be allowed to. Create the chat on the "
+                "platform and add the bot to it; Switch adopts it as a room."
+            )
 
         config_cls.model_validate(connection_config)
 
@@ -125,6 +147,7 @@ class CollaborationBridgeLifecycleService:
             connection_config=connection_config,  # type: ignore[arg-type]
             client_id=bridge_client_record.id,
             status="active",
+            channel_creation_enabled=channel_creation_enabled,
         )
         async with self._session_factory() as session:
             await self._bridge_store.create(session, bridge)
