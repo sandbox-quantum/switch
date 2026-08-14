@@ -502,6 +502,45 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+
+- **An OpenCode agent can be configured like a Codex one.** Its model,
+  reasoning variant, temperature, top-p, step limit, web search and
+  instructions can be set when the agent is created and changed afterwards from
+  its Settings tab, and a change applies to the next session — or to a running
+  one with Restart, which resumes the conversation.
+
+  OpenCode's settings are not Codex's, so the per-agent configuration an agent
+  stores is now keyed by what its own provider offers rather than by a fixed
+  list. Existing Codex agents keep their settings; nothing needs re-entering.
+
+  Its instructions are added to OpenCode's own, the way an `AGENTS.md` is,
+  rather than replacing them.
+
+- **You can pick a model instead of remembering it.** Switch Console asks the
+  machine an OpenCode agent runs on which models it offers and lists them as you
+  type, grouped by provider and annotated with the reasoning variants each
+  accepts. Typing something not on the list still works — it is a shortcut, not
+  a restriction.
+
+- **The model and reasoning fields check themselves against the agent's own
+  host.** A model name that host does not have is flagged as you type, and
+  the reasoning variant becomes a menu of what the chosen model actually
+  accepts — greyed out, with a reason, for a model that has none, as local
+  models generally do. Both were places OpenCode would otherwise accept a value
+  and silently never apply it.
+
+  The check warns rather than blocks, since the list is a snapshot and a model
+  can appear a moment later. If the host cannot be reached, or OpenCode is not
+  installed on it, the fields say so and go back to plain text rather than
+  flagging everything as wrong.
+
+  An OpenCode agent can also be pointed at a **local model** — define the
+  provider once in your OpenCode config and set the agent's model to it. The new
+  utility-model setting is worth setting too if the point is to keep everything
+  on one machine: it is what OpenCode uses for background work like naming a
+  conversation, which otherwise goes wherever your own config sends it.
+
 #### Fixed
 - Two Switch Console installs sharing an agent host no longer trade the sidecar
   back and forth when they are on the *same* release but carry different builds
@@ -559,47 +598,6 @@ version of their own to them without also giving them a release of their own.
 - The Switch connector's own updates keep their badge and gain a name —
   "Connector update" rather than "Update available". That one is worth acting
   on, and the two used to share a badge that could not say which was behind.
-
-### [Unreleased]
-
-#### Added
-
-- **An OpenCode agent can be configured like a Codex one.** Its model,
-  reasoning variant, temperature, top-p, step limit, web search and
-  instructions can be set when the agent is created and changed afterwards from
-  its Settings tab, and a change applies to the next session — or to a running
-  one with Restart, which resumes the conversation.
-
-  OpenCode's settings are not Codex's, so the per-agent configuration an agent
-  stores is now keyed by what its own provider offers rather than by a fixed
-  list. Existing Codex agents keep their settings; nothing needs re-entering.
-
-  Its instructions are added to OpenCode's own, the way an `AGENTS.md` is,
-  rather than replacing them.
-
-- **You can pick a model instead of remembering it.** Switch Console asks the
-  machine an OpenCode agent runs on which models it offers and lists them as you
-  type, grouped by provider and annotated with the reasoning variants each
-  accepts. Typing something not on the list still works — it is a shortcut, not
-  a restriction.
-
-- **The model and reasoning fields check themselves against the agent's own
-  host.** A model name that host does not have is flagged as you type, and
-  the reasoning variant becomes a menu of what the chosen model actually
-  accepts — greyed out, with a reason, for a model that has none, as local
-  models generally do. Both were places OpenCode would otherwise accept a value
-  and silently never apply it.
-
-  The check warns rather than blocks, since the list is a snapshot and a model
-  can appear a moment later. If the host cannot be reached, or OpenCode is not
-  installed on it, the fields say so and go back to plain text rather than
-  flagging everything as wrong.
-
-  An OpenCode agent can also be pointed at a **local model** — define the
-  provider once in your OpenCode config and set the agent's model to it. The new
-  utility-model setting is worth setting too if the point is to keep everything
-  on one machine: it is what OpenCode uses for background work like naming a
-  conversation, which otherwise goes wherever your own config sends it.
 
 ### [0.23.0] - 2026-08-14
 
