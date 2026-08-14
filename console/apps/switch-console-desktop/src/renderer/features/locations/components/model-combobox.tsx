@@ -1,5 +1,5 @@
 import type { LaunchProfileModel } from '@switch-console/core/agents/plugins';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Combobox,
   ComboboxCollection,
@@ -56,6 +56,7 @@ export function ModelCombobox({
     () => new Map(models.map((model) => [model.id, model.variants])),
     [models]
   );
+  const [open, setOpen] = useState(false);
 
   return (
     <Combobox
@@ -63,8 +64,17 @@ export function ModelCombobox({
       // The typed text is the value: picking an item fills the box, and what is
       // in the box is what gets saved, listed or not.
       inputValue={value}
-      onInputValueChange={(next: string) => onChange(next)}
+      onInputValueChange={(next: string) => {
+        onChange(next);
+        // Typing has to open the list, and does not on its own here: the input
+        // value is controlled, so the combobox treats the change as programmatic
+        // rather than as someone typing, and stays shut. Without this the list
+        // only ever appeared via the chevron.
+        setOpen(true);
+      }}
       onValueChange={(next: string | null) => onChange(next ?? '')}
+      open={open}
+      onOpenChange={setOpen}
       openOnInputClick
     >
       <ComboboxInput id={id} placeholder={placeholder} disabled={disabled} />

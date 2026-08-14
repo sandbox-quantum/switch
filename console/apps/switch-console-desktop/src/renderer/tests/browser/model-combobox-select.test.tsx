@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,15 +36,57 @@ afterEach(async () => {
   root = null;
 });
 
+/**
+ * A harness that actually re-renders on change.
+ *
+ * The field is controlled, so a test that records changes without feeding them
+ * back leaves the input showing its initial value and the combobox reacting to
+ * a value the user never sees. That harness reported the list as broken when it
+ * was not, and would equally have hidden a real break.
+ */
+function Harness({ onChange, initial }: { onChange: (value: string) => void; initial: string }) {
+  const [value, setValue] = useState(initial);
+  return (
+    <ModelCombobox
+      id="model"
+      value={value}
+      models={MODELS}
+      onChange={(next) => {
+        setValue(next);
+        onChange(next);
+      }}
+    />
+  );
+}
+
 async function renderCombobox(onChange: (value: string) => void, value = '') {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(<ModelCombobox id="model" value={value} models={MODELS} onChange={onChange} />);
+    root!.render(<Harness onChange={onChange} initial={value} />);
   });
   return container;
 }
+
+/** Type into the field the way a person does, as one controlled change. */
+async function typeInto(host: HTMLElement, text: string) {
+  const input = host.querySelector('input')!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value'
+    )!.set!;
+    setter.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  return input;
+}
+
+const shownItems = () =>
+  Array.from(document.querySelectorAll('[data-slot="combobox-item"]')).map(
+    (node) => node.textContent ?? ''
+  );
 
 /**
  * Open the popup the way a user does, and return its rendered options.
@@ -105,5 +147,26 @@ describe('picking a model from the list', () => {
     const flash = items.find((item) => item.textContent?.includes('google/gemini-2.5-flash'));
     expect(flash?.textContent).toContain('high');
     expect(flash?.textContent).toContain('max');
+  });
+});
+
+describe('typing in the model field', () => {
+  it('opens the list and narrows it to what matches', async () => {
+    // This did not work: the field is controlled, so the combobox read a typed
+    // change as programmatic and stayed shut. The list was reachable only via
+    // the chevron, which is not where anyone looks.
+    const host = await renderCombobox(() => {});
+    const input = await typeInto(host, 'oll');
+
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+    expect(shownItems()).toEqual(['ollama/gemma4:latest']);
+  });
+
+  it('keeps what was typed, even with nothing to match it', async () => {
+    const host = await renderCombobox(() => {});
+    const input = await typeInto(host, 'ollama/not-pulled-yet');
+
+    expect(input.value).toBe('ollama/not-pulled-yet');
+    expect(shownItems()).toEqual([]);
   });
 });
