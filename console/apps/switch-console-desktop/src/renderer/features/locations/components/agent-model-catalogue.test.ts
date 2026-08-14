@@ -67,6 +67,22 @@ describe('fieldCatalogueState', () => {
       expect(state.disabled).toBeFalsy();
     });
 
+    it('stays quiet while a name is still being typed', () => {
+      // The field is checked on every keystroke. Warning as soon as the value
+      // stops matching would put a warning under the box for most of the time
+      // the user spends typing a perfectly good name.
+      for (const partial of ['g', 'google/', 'google/gemini-2.5-fl']) {
+        const state = fieldCatalogueState(modelField, { model: partial }, CATALOGUE);
+        expect(state.warning).toBeFalsy();
+        expect(state.note).toBeUndefined();
+      }
+    });
+
+    it('warns once the name can no longer become a real one', () => {
+      const state = fieldCatalogueState(modelField, { model: 'google/gemini-9' }, CATALOGUE);
+      expect(state.warning).toBe(true);
+    });
+
     it('says nothing about a blank model, which means the host default', () => {
       const state = fieldCatalogueState(modelField, { model: '  ' }, CATALOGUE);
 

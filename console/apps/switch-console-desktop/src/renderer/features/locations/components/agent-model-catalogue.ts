@@ -70,6 +70,11 @@ function modelFieldState(value: string, models: LaunchProfileModel[]): FieldCata
   if (!value) return suggestions;
   if (models.some((model) => model.id === value)) return suggestions;
 
+  // Half-typed is not wrong. The field is checked on every keystroke, so warning
+  // the moment the value stops matching would put a warning under the box for
+  // most of the time the user spends typing a name that is perfectly good.
+  if (models.some((model) => model.id.startsWith(value))) return suggestions;
+
   return {
     ...suggestions,
     warning: true,
