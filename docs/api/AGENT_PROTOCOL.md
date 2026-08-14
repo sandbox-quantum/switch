@@ -61,8 +61,8 @@ than be told.
   memory). This design assumes one process and notes the seams where that
   assumption is load-bearing.
 - Replacing MCP. MCP remains the agent's tool surface.
-- AG-UI (CHOO-1685), which is being worked separately. This design should not
-  make it harder to land; it does not attempt it.
+- AG-UI (CHOO-1685), which is worked separately in `AG_UI.md`. This design
+  should not make it harder to land; it does not attempt it.
 
 ---
 
@@ -931,8 +931,11 @@ versions must be updated when the agent-facing contract changes.
 - **CHOO-1810** — two notification builders. §2.3 shipped, but this is **not**
   closed: both builders still exist, and `GET /agents/{id}/notifications` is
   still a live route.
-- **CHOO-1685** — AG-UI. Being worked separately rather than here; the event
-  envelope is versioned and additive so it stays landable.
+- **CHOO-1685** — AG-UI. Specified in `AG_UI.md`: framework-built agents join
+  over the AG-UI protocol with Switch as the *client*, dialling out to an agent
+  that is an HTTP server. It is an additional door onto the operations registry
+  (§7), not a change to this protocol — the event envelope stays versioned and
+  additive.
 - **CHOO-1101 / CHOO-1366 / CHOO-1811** — bugs caused by the polling model.
   Useful as tests of whether this design makes them impossible rather than
   merely fixed.

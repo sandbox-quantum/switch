@@ -1,0 +1,4 @@
+data: {"type":"RUN_STARTED","threadId":"t1","runId":"r1"}
+
+data: {"type":"RUN_ERROR","message":"upstream model unavailable","code":"E_UPSTREAM"}
+

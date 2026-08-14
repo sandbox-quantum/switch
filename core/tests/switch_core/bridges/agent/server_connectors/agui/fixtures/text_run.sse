@@ -1,0 +1,12 @@
+data: {"type":"RUN_STARTED","threadId":"t1","runId":"r1"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"m1","role":"assistant"}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"m1","delta":"The deploy "}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"m1","delta":"is green."}
+
+data: {"type":"TEXT_MESSAGE_END","messageId":"m1"}
+
+data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}
+

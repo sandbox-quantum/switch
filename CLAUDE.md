@@ -233,6 +233,9 @@ exist:
 - `docs/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
   event stream, room slots, failure handling). Authoritative where it and
   `ARCHITECTURE.md` overlap
+- `docs/api/AG_UI.md` — framework-built agents (LangGraph, Google ADK, …) over
+  the AG-UI protocol, with Switch as the client dialling out. Records why AG-UI
+  was chosen over A2A and what it gets wrong
 - `docs/bridges/` — collaboration bridge setup: `README.md` plus one page each
   for Slack, Mattermost, Discord, Teams, and Telegram
 

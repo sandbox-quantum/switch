@@ -1,0 +1,12 @@
+data: {"type":"RUN_STARTED","threadId":"t1","runId":"r1"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"a126ecc9-90c1-4028-8f93-2d1ae9103471","role":"assistant"}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"a126ecc9-90c1-4028-8f93-2d1ae9103471","delta":"The deploy is green."}
+
+data: {"type":"TEXT_MESSAGE_END","messageId":"a126ecc9-90c1-4028-8f93-2d1ae9103471"}
+
+data: {"type":"STATE_SNAPSHOT","snapshot":{"_ag_ui_thread_id":"t1","_ag_ui_app_name":"probe","_ag_ui_user_id":"u1"}}
+
+data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}
+

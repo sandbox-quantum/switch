@@ -1,0 +1,18 @@
+data: {"type":"RUN_STARTED","threadId":"t1","runId":"r1"}
+
+data: {"type":"STEP_STARTED","stepName":"retrieve"}
+
+data: {"type":"STATE_SNAPSHOT","snapshot":{"visited":["a"]}}
+
+data: {"type":"STATE_DELTA","delta":[{"op":"add","path":"/visited/-","value":"b"}]}
+
+data: {"type":"STEP_FINISHED","stepName":"retrieve"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"m1","role":"assistant"}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"m1","delta":"Looked at a and b."}
+
+data: {"type":"TEXT_MESSAGE_END","messageId":"m1"}
+
+data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}
+

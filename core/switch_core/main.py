@@ -23,6 +23,10 @@ from switch_core.bridges.agent.protocol.connections import (
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.request_tracker import RequestTracker
+from switch_core.bridges.agent.server_connectors.agui.connector import (
+    AgUiConnectionConfig,
+    AgUiConnector,
+)
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -354,6 +358,9 @@ async def run() -> None:
     )
     connector_lifecycle.register_connector_type(
         "opencode", OpenCodeConnector, OpenCodeConnectionConfig
+    )
+    connector_lifecycle.register_connector_type(
+        "agui", AgUiConnector, AgUiConnectionConfig
     )
 
     # ── Gateway app ───────────────────────────────────────────────────────────

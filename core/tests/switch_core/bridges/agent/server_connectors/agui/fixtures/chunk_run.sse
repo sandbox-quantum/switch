@@ -1,0 +1,10 @@
+data: {"type":"RUN_STARTED","threadId":"t1","runId":"r1"}
+
+data: {"type":"TEXT_MESSAGE_CHUNK","messageId":"m1","role":"assistant","delta":"Chunked "}
+
+data: {"type":"TEXT_MESSAGE_CHUNK","delta":"output "}
+
+data: {"type":"TEXT_MESSAGE_CHUNK","delta":"works."}
+
+data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}
+

@@ -1,0 +1,12 @@
+data: {"type":"RUN_STARTED","threadId":"t1","runId":"r1"}
+
+data: {"type":"TOOL_CALL_START","toolCallId":"c1","toolCallName":"post_message"}
+
+data: {"type":"TOOL_CALL_ARGS","toolCallId":"c1","delta":"{\"body\":"}
+
+data: {"type":"TOOL_CALL_ARGS","toolCallId":"c1","delta":"\"done\"}"}
+
+data: {"type":"TOOL_CALL_END","toolCallId":"c1"}
+
+data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}
+
