@@ -24,6 +24,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.engagements_yaml import EngagementYamlService
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 
@@ -88,6 +89,17 @@ def get_room_yaml_service() -> RoomYamlService:
         bridge_store=_state["bridge_store"],
         external_user_store=_state["external_user_store"],
         room_role_store=protocol.room_role_store,
+        session_factory=_state["session_factory"],
+    )
+
+
+def get_engagement_yaml_service() -> EngagementYamlService:
+    return EngagementYamlService(
+        room_yaml=get_room_yaml_service(),
+        room_group_store=_state["room_group_store"],
+        resource_service=_state["resource_service"],
+        agent_store=_state["agent_store"],
+        bridge_store=_state["bridge_store"],
         session_factory=_state["session_factory"],
     )
 

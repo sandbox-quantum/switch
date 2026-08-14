@@ -107,6 +107,28 @@ test *args:
 test-integration *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/integration -m integration {{ args }}
 
+# ── Provision a multi-room engagement from a YAML preset ──────────────────────
+# Logs into the gateway with the admin credentials from .env, then POSTs the
+# engagement spec (a room group + rooms + links) to the engagements endpoint.
+# Override the target with SWITCH_GATEWAY_URL (default
+# http://localhost:${API_HOST_PORT}/gateway). See deploy/engagements/README.md.
+provision-engagement file:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base="${SWITCH_GATEWAY_URL:-http://localhost:${API_HOST_PORT:-8000}/gateway}"
+    jar="$(mktemp)"
+    trap 'rm -f "$jar"' EXIT
+    echo "→ Logging in to $base as ${GATEWAY_ADMIN_EMAIL}"
+    curl -fsS -c "$jar" -X POST "$base/auth/login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"email\":\"${GATEWAY_ADMIN_EMAIL}\",\"password\":\"${GATEWAY_ADMIN_PASSWORD}\"}" \
+        >/dev/null
+    echo "→ Provisioning engagement from {{ file }}"
+    curl -fsS -b "$jar" -X POST "$base/engagements/from-yaml" \
+        -H 'Content-Type: application/x-yaml' \
+        --data-binary "@{{ file }}"
+    echo
+
 # ── Gateway UI ─────────────────────────────────────────────────────────────────
 gateway-install:
     cd gateway && npm install

@@ -1,0 +1,238 @@
+# Engagement preset — "FlintAI Optimize and Prove" (CHOO-1177)
+#
+# A reusable room-network template for an engineering team.
+# It provisions one room group holding three hubs — Workforce, Feature, Bug —
+# that together run the lifecycle:
+#
+#   discuss goals -> design doc -> Jira epic -> per-task room+branch+PR
+#                 -> human review on GitHub -> team merge into main
+#
+# The Workforce Hub is where a manager agent discusses the work, co-authors a
+# design doc, and breaks it into a Jira epic, then delegates each item to the
+# Feature or Bug Hub. Those hubs spin out a dedicated child room + branch per
+# item at runtime (child rooms are NOT part of this preset — the manager
+# creates them as work arrives).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# BEFORE PROVISIONING — fill in the roster and adjust these placeholders:
+#   • `bridge:` — set to your Slack bridge's display name (see `list_bridges`).
+#   • references `value.urls` — point at the team's real GitHub repo and Jira
+#     project.
+#   • the manager agent name (`claude-code.flint-manager`) — register this agent
+#     first (see deploy/engagements/README.md), or rename to an existing one.
+#   • ROSTER — under each hub, add one worker agent + one Slack user per team
+#     member (marked "ROSTER" below). Agents must be registered first; the
+#     provisioner fails loud on unknown agent/bridge names before creating
+#     anything.
+# ─────────────────────────────────────────────────────────────────────────────
+
+engagement:
+  group:
+    name: "FlintAI Optimize and Prove"
+    description: >-
+      Engagement room network for a team. A workforce hub that plans and
+      delegates, plus feature and bug hubs that spin out per-task rooms and
+      branches for implementation, review, and merge.
+
+  rooms:
+    # ── Workforce Hub ────────────────────────────────────────────────────────
+    - key: workforce
+      name: "Workforce Hub — FlintAI Optimize and Prove"
+      description: >-
+        Planning + coordination hub. Where work is discussed, scoped into a
+        design doc, broken into a Jira epic, and delegated out to the feature
+        and bug hubs.
+      bridge: "Slack"
+      instructions: |
+        This is the Workforce Hub for the "FlintAI Optimize and Prove"
+        engagement — the front door for a piece of work and the team's
+        coordination point.
+
+        Flow for the manager agent:
+        1. Discuss freely with the human(s) to agree what needs to be done and
+           the list of goals.
+        2. Assume the `design` role to read the PRD and the discussion and
+           co-author a design doc (stored as a room document here) that sets the
+           technical direction. Get human sign-off on the design before
+           planning.
+        3. Assume the `planner` role to turn the agreed design into a Jira epic
+           + itemized tasks (using your Jira tool), then delegate each item:
+           decide whether it is a feature or a bug, route it to the Feature Hub
+           or Bug Hub, and have a dedicated child room + branch spun out for it
+           with a worker assigned.
+        4. Track status here and report merges back as they land. Keep the human
+           steering at every gate — do not skip ahead without agreement.
+
+        Address humans with targeted messages. Post plans and status at the room
+        root so the work reads top-to-bottom.
+      roles:
+        - name: design
+          exclusive: true
+          instructions: >-
+            Design role. Read the PRD and the room discussion, then work with
+            the human to produce and maintain a design doc (a room document in
+            this hub) that sets the technical direction. Do not write code or
+            create Jira items — your output is an agreed, written design the team
+            signs off on before planning begins.
+        - name: planner
+          exclusive: true
+          instructions: >-
+            Planner role. Turn the agreed design doc into a Jira epic and an
+            itemized task list using your Jira tool. For each item, decide
+            feature vs bug, route it to the Feature or Bug Hub, and delegate it
+            to a worker with a dedicated child room + branch. Track status and
+            keep the human informed. Do not implement tasks yourself.
+      aliases:
+        claude-code.flint-manager: manager
+      join_event_listeners:
+        - claude-code.flint-manager
+      agents:
+        - claude-code.flint-manager
+        # ROSTER: (optional) add worker agents here if you want them present in
+        # the workforce hub for planning visibility. Users go under `users`.
+      users: []
+        # ROSTER: add each team member's Slack username, e.g.
+        # - steven
+      references:
+        - type: github
+          name: "GitHub repo — FlintAI Optimize and Prove"
+          description: "The repository the team develops in."
+          instructions: >-
+            Open PRs against this repo and coordinate reviews here. Worker
+            agents need gh/git access granted in their session to push branches
+            and open PRs.
+          value:
+            urls:
+              - "https://github.com/your-org/your-repo"
+        - type: jira
+          name: "Jira project — FlintAI Optimize and Prove"
+          description: "The Jira project/epic the planner manages."
+          instructions: >-
+            The planner creates the epic + task items here. Requires a Jira tool
+            (e.g. the Atlassian MCP) configured in the manager agent's session.
+          value:
+            urls:
+              - "https://your-org.atlassian.net/browse/FLINT"
+
+    # ── Feature Hub ──────────────────────────────────────────────────────────
+    - key: feature
+      name: "Feature Hub — FlintAI Optimize and Prove"
+      description: >-
+        Home for feature development. Spins out a dedicated room + feature
+        branch per feature task; workers implement and open PRs; the reviewer
+        reviews on GitHub and the team merges.
+      bridge: "Slack"
+      instructions: |
+        This is the Feature Hub for the "FlintAI Optimize and Prove"
+        engagement. It turns each feature task delegated from the Workforce Hub
+        into a dedicated room + feature branch and drives it to merge.
+
+        For each delegated feature item:
+        1. Create a child room and a branch named `feature-request/<slug>`; add
+           the assigned worker agent and the reviewing human, and attach the
+           GitHub repo reference.
+        2. The worker implements the item on the branch and opens a PR against
+           `main`.
+        3. The reviewer reviews on GitHub and pings the worker in the child room
+           to address comments; the worker pushes fixes to the same PR.
+        4. Once the reviewer approves, invite the rest of the team to review and
+           merge into `main`.
+        5. On merge, archive the child room and report the merge back to the
+           Workforce Hub.
+
+        Workers implement and open PRs but never merge. Address humans with
+        targeted messages.
+      roles:
+        - name: worker
+          exclusive: false
+          instructions: >-
+            Worker role. Implement a single assigned task on its branch, open a
+            PR against main, and respond to review comments by pushing fixes to
+            the same PR. Report progress in your room. Do not merge — the
+            reviewing human approves and the team merges.
+      aliases:
+        claude-code.flint-manager: manager
+      join_event_listeners:
+        - claude-code.flint-manager
+      agents:
+        - claude-code.flint-manager
+        # ROSTER: add one worker agent per team member, e.g.
+        # - claude-code.flint-steven
+      users: []
+        # ROSTER: add each team member's Slack username, e.g.
+        # - steven
+      references:
+        - type: github
+          name: "GitHub repo — FlintAI Optimize and Prove (feature)"
+          description: "The repository feature work targets."
+          instructions: >-
+            Feature branches (`feature-request/<slug>`) and their PRs target
+            this repo.
+          value:
+            urls:
+              - "https://github.com/your-org/your-repo"
+
+    # ── Bug Hub ──────────────────────────────────────────────────────────────
+    - key: bug
+      name: "Bug Hub — FlintAI Optimize and Prove"
+      description: >-
+        Home for bug fixes. Spins out a dedicated room + bug-fix branch per bug;
+        workers implement and open PRs; the reviewer reviews on GitHub and the
+        team merges.
+      bridge: "Slack"
+      instructions: |
+        This is the Bug Hub for the "FlintAI Optimize and Prove" engagement. It
+        turns each bug delegated from the Workforce Hub into a dedicated room +
+        bug-fix branch and drives it to merge.
+
+        For each delegated bug:
+        1. Create a child room and a branch named `bug-fix/<slug>`; add the
+           assigned worker agent and the reviewing human, and attach the GitHub
+           repo reference.
+        2. The worker fixes the bug on the branch and opens a PR against `main`.
+        3. The reviewer reviews on GitHub and pings the worker in the child room
+           to address comments; the worker pushes fixes to the same PR.
+        4. Once the reviewer approves, invite the rest of the team to review and
+           merge into `main`.
+        5. On merge, archive the child room and report the merge back to the
+           Workforce Hub.
+
+        Workers implement and open PRs but never merge. Address humans with
+        targeted messages.
+      roles:
+        - name: worker
+          exclusive: false
+          instructions: >-
+            Worker role. Implement a single assigned bug fix on its branch, open
+            a PR against main, and respond to review comments by pushing fixes to
+            the same PR. Report progress in your room. Do not merge — the
+            reviewing human approves and the team merges.
+      aliases:
+        claude-code.flint-manager: manager
+      join_event_listeners:
+        - claude-code.flint-manager
+      agents:
+        - claude-code.flint-manager
+        # ROSTER: add one worker agent per team member, e.g.
+        # - claude-code.flint-steven
+      users: []
+        # ROSTER: add each team member's Slack username, e.g.
+        # - steven
+      references:
+        - type: github
+          name: "GitHub repo — FlintAI Optimize and Prove (bug)"
+          description: "The repository bug fixes target."
+          instructions: >-
+            Bug-fix branches (`bug-fix/<slug>`) and their PRs target this repo.
+          value:
+            urls:
+              - "https://github.com/your-org/your-repo"
+
+  # ── Hub topology ────────────────────────────────────────────────────────────
+  # The workforce hub points at the two execution hubs; each execution hub
+  # points back at the workforce hub.
+  links:
+    - { from: workforce, to: feature, label: "feature work" }
+    - { from: workforce, to: bug, label: "bug work" }
+    - { from: feature, to: workforce, label: "workforce hub" }
+    - { from: bug, to: workforce, label: "workforce hub" }

@@ -183,6 +183,31 @@ class RoomYamlService:
     async def provision(
         self, spec: RoomSpec, *, user_id: str, is_admin: bool
     ) -> ProvisionResult:
+        """Provision a single standalone room (no group / listeners / aliases)."""
+        return await self.provision_room(
+            spec,
+            user_id=user_id,
+            is_admin=is_admin,
+            group_id=None,
+            join_event_listeners=None,
+            aliases=None,
+        )
+
+    async def provision_room(
+        self,
+        spec: RoomSpec,
+        *,
+        user_id: str,
+        is_admin: bool,
+        group_id: str | None,
+        join_event_listeners: list[str] | None,
+        aliases: dict[str, str] | None,
+    ) -> ProvisionResult:
+        """Provision one room from a spec, optionally filed under a group with
+        join-event listeners and agent aliases. This is the reusable per-room
+        primitive the engagement provisioner builds on; ``provision`` is the
+        standalone single-room wrapper. Cross-room links are attached by the
+        caller after all rooms exist (target ids do not exist until then)."""
         bridge_id = await self._resolve_bridge_id(spec.bridge)
         if spec.users and bridge_id is None:
             raise ValueError(
@@ -210,6 +235,9 @@ class RoomYamlService:
             write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
+            group_id=group_id,
+            join_event_listeners=join_event_listeners,
+            aliases=aliases,
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
