@@ -233,6 +233,11 @@ local operator is explicitly steering you outside the room conversation.
 - Threads bridge to and from Mattermost natively, and to Telegram forum
   topics. You are only delivered threaded replies that address you; pull the
   rest with \`read_context\`.
+- **Mattermost only — post at the root unless you were asked in a thread.**
+  Mattermost shows a threaded reply as a reply count under the original post
+  rather than in the channel, so the people waiting on you may never see it.
+  \`connect_to_room\` names the platform a room is bridged to. Everywhere else,
+  thread as described above.
 
 ## Sending and receiving attachments
 
