@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
   ServerConnectionStatus,
@@ -91,7 +92,7 @@ export class SwitchServersStore {
       await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not load your Switch servers.');
     } finally {
       runInAction(() => {
         this.loadingServers = false;
@@ -234,7 +235,7 @@ export class SwitchServersStore {
       await this.refreshStatus(created.id);
       return created;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not add the server.');
       return null;
     }
   }
@@ -254,7 +255,7 @@ export class SwitchServersStore {
       });
       return result;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not save the server.');
       return null;
     }
   }
@@ -269,7 +270,7 @@ export class SwitchServersStore {
       });
       return true;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not rename the server.');
       return false;
     }
   }
@@ -296,7 +297,7 @@ export class SwitchServersStore {
         }
       }
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not shut down the server’s stack, so it was not deleted.');
       return false;
     }
     await this.removeServer(serverId);
@@ -321,7 +322,7 @@ export class SwitchServersStore {
       });
       await this.ensureActiveServer();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not remove the server.');
     }
   }
 
@@ -333,7 +334,7 @@ export class SwitchServersStore {
         this.activeServerId = serverId;
       });
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not switch to that server.');
     }
   }
 
@@ -372,7 +373,7 @@ export class SwitchServersStore {
       await rpc.switchServers.logout(serverId);
       await this.refreshStatus(serverId);
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not sign out of the server.');
     }
   }
 
@@ -382,9 +383,15 @@ export class SwitchServersStore {
     });
   }
 
-  private setError(cause: unknown): void {
+  /**
+   * `error` is rendered directly in banners and modals, so it goes through the
+   * shared boundary rather than carrying whatever was thrown. The fallback is
+   * per-action: the store knows which request failed, and the failure itself
+   * usually does not.
+   */
+  private setError(cause: unknown, fallback: string): void {
     runInAction(() => {
-      this.error = cause instanceof Error ? cause.message : String(cause);
+      this.error = failureText(cause, fallback);
     });
   }
 }

@@ -13,6 +13,7 @@ import { type LocationRuntimeFactoryResult } from '@main/core/locations/location
 import { preflightRemoteSession } from '@main/core/sessions/remote-session-preflight';
 import { appSettingsService } from '@main/core/settings/settings-service';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { resolveLocalAutomationShellWithSystemFallback } from '@main/core/terminal-shell/resolver';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
@@ -255,6 +256,7 @@ export async function buildAgentRuntime(
       host: transport.host,
       workDir: transport.dir,
       credsRelPaths: opts.credsRelPaths,
+      isAuthSuspended: () => sshConnectionManager.isAuthSuspended(transport.connectionId),
     });
     // Remote sessions always run under tmux — it persists the agent's PTY and
     // is the pane the sidecar injects into and reattaches to.

@@ -248,6 +248,18 @@ export class SshConnectionManager extends EventEmitter {
     return this.records.get(id)?.proxy.isConnected ?? false;
   }
 
+  /**
+   * True when the connection is down because authentication was rejected.
+   *
+   * Distinct from every other down state, because it is the one the reconnect
+   * loop deliberately does not run for: a rejected credential never becomes
+   * accepted by waiting. Anything explaining the outage to a user has to know
+   * the difference, or it will promise a recovery that is not coming.
+   */
+  isAuthSuspended(id: string): boolean {
+    return this.records.get(id)?.state === 'suspended';
+  }
+
   /** IDs of all tracked connections (connected, reconnecting, or suspended). */
   getConnectionIds(): string[] {
     return Array.from(this.records.keys());
