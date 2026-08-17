@@ -174,6 +174,12 @@ ENDPOINT="https://switch.example"   # the value confirmed above, no trailing sla
 curl -s -w '\n%{http_code}\n' --max-time 10 "$ENDPOINT/health"
 ```
 
+**Both halves of the first bullet matter.** A gateway serves a single-page app on
+every path, so it answers `/health` with `200` and an HTML page — measured on a
+real deployment. A check that reads only the status code passes it and sends you
+on to fail at registration, which is the exact waste this probe exists to
+prevent.
+
 - **`{"status":"ok"}` and `200`** — this is the agent bridge. Continue.
 - **`401`** — right host, **wrong path**: a path was left on the end. The bridge
   authenticates everything except a few public routes, `/health` among them, so a
@@ -194,10 +200,10 @@ on that host, so it cannot tell you the base URL is right — measured on a live
 deployment.
 
 Do not skip this because the user sounded confident. Getting the URL wrong is the
-single most likely way this skill wastes someone's time: Step 8 registers with
-`curl -s` under `set -eu`, so an unreachable host there fails with no message at
-all, several steps after the user handed over a token — this probe is what turns
-that into something they can act on.
+single most likely way this skill wastes someone's time: the mistake would
+otherwise surface at Step 8, several steps after the user handed over a token,
+and a wrong-but-reachable host fails there in ways that read as a bad token
+rather than a bad URL.
 
 ## Step 3 — Registration token
 
@@ -372,10 +378,13 @@ curl -sf -X POST "$ENDPOINT/agents/register-known" \
 `SWITCH_REGISTRATION_TOKEN=... curl ...` while also referencing
 `$SWITCH_REGISTRATION_TOKEN` in it. The shell expands the variable against the
 *parent* environment *before* the inline assignment applies, so you send
-`Authorization: Bearer ` (empty), curl drops the header, and the bridge answers
-`401 Missing or invalid Authorization header` — which looks like a bad token but
-isn't. `export` it first, or assign to a shell variable on a preceding line. If
-you see that exact 401, suspect this before blaming the token.
+`Authorization: Bearer ` with nothing after it. The header is still well-formed,
+so the bridge gets past its "missing header" check, finds no key matching the
+empty token, and answers **`401 Invalid credentials`** — the same response a
+genuinely wrong or expired token gets. There is nothing in the reply to tell the
+two apart, so on any 401 rule this out first: `export` the token, or assign it to
+a shell variable on a preceding line, and try again before concluding the token
+is bad.
 
 The response is `{"id":"...","api_key":"..."}`. Note that `-f` suppresses the
 error body, so this shape cannot satisfy the ladder below on its own — the Step 8
@@ -484,7 +493,12 @@ if [ -f "$creds" ]; then
 fi
 
 resp=$(mktemp)
-http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
+trap 'rm -f "$resp"' EXIT
+
+# -S so curl reports why it failed, and --max-time so it fails at all: with -s
+# alone a refused connection or a hung host kills the script under `set -eu`
+# with no output whatsoever, and the status check below never runs.
+http_status=$(curl -sS --max-time 30 -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
@@ -496,7 +510,7 @@ http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/reg
          overwrite:false}')")
 
 if [ "$http_status" != "200" ]; then
-  printf 'registration failed (%s): ' "$http_status"; cat "$resp"; rm -f "$resp"; exit 1
+  printf 'registration failed (%s): ' "$http_status"; cat "$resp"; exit 1
 fi
 
 jq --arg ep "$ENDPOINT" \
@@ -720,7 +734,12 @@ if [ -n "$conflicts" ]; then
 fi
 
 resp=$(mktemp)
-http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known-bulk" \
+trap 'rm -f "$resp"' EXIT
+
+# -S so curl reports why it failed, and --max-time so it fails at all: with -s
+# alone a refused connection or a hung host kills the script under `set -eu`
+# with no output whatsoever, and the status check below never runs.
+http_status=$(curl -sS --max-time 30 -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known-bulk" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(jq -nc --arg parent "$PARENT_AGENT_ID" --argjson subs "$SUBS_JSON" \
@@ -728,7 +747,7 @@ http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/reg
          options:{}, subagents:$subs, overwrite:false}')")
 
 if [ "$http_status" != "200" ]; then
-  printf 'bulk registration failed (%s): ' "$http_status"; cat "$resp"; rm -f "$resp"; exit 1
+  printf 'bulk registration failed (%s): ' "$http_status"; cat "$resp"; exit 1
 fi
 
 jq -r --arg ep "$ENDPOINT" '.results[]
