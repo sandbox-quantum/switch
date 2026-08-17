@@ -647,6 +647,13 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 
+- A directory configured by the connector's `configure` skill is recognised as
+  an agent again. Detection read the identity only out of
+  `.claude/settings.local.json`, which the skill deliberately no longer writes
+  into — writing two of the three `SWITCH_*` values there is what broke
+  standalone sessions. It now falls back to the credentials store, and names no
+  agent when the store holds several, since choosing between them is
+  `select_agent`'s job and not detection's.
 - Two Switch Console installs sharing a host no longer destroy each other's
   agents. Per-agent credentials live at `.switch/agents/<name>.json`, keyed by
   name alone, and each install's uniqueness check only sees its own database —
@@ -2014,6 +2021,19 @@ compatibility signal. History for those is in the git log.
   everything but a few public routes, so a path left on the end of an otherwise
   correct base URL answers 401 rather than 404 — the host was right and only
   needed stripping back.
+- The hook resolves an identity the same way the runtime does in three more
+  cases, each of which let a session run while its governance quietly did not.
+  It folds endpoint case, as the runtime does, so a differently-cased host no
+  longer binds in one and matches nothing in the other. It refuses a partly
+  unexpanded `${SWITCH_*}` environment instead of completing it from disk. And
+  it refuses a token that is missing either of the other two, rather than
+  substituting a different credential from the store while the session itself
+  refuses to start — a test had asserted that substitution as correct.
+- A failed mediation check says so. Any error reaching the bridge — a revoked
+  token, an unreachable server, a timeout — was swallowed and the tool call
+  proceeded with nothing printed, which is indistinguishable from approval. The
+  call still proceeds, because a bridge outage must not wedge a session, but it
+  now says on stderr that it was not checked.
 - The `configure` skill no longer overwrites a credentials file that belongs to
   another Switch setup. Its script writes `.switch/agents/<name>.json` by name
   alone and truncated whatever was there, which in a directory shared with a

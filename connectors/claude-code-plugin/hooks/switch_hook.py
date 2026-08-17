@@ -56,6 +56,25 @@ def _normalize_endpoint(endpoint: str) -> str:
     )
 
 
+_IDENTITY_VARS = ("SWITCH_API_ENDPOINT", "SWITCH_API_TOKEN", "SWITCH_AGENT_ID")
+
+
+def _partially_unresolved() -> list[str]:
+    """`SWITCH_*` names left as a literal `${...}` while others expanded.
+
+    Mirrors `partiallyUnresolved()` in the runtime's `bin.ts`. A substitution
+    step that did not finish is not the same as a value deliberately omitted,
+    and completing the rest from the store would authenticate as whatever is on
+    disk without saying so. All three unexpanded is the host's ordinary
+    pre-expansion spawn and is not this case.
+    """
+    raw = [(n, os.environ.get(n, "")) for n in _IDENTITY_VARS]
+    unresolved = [n for n, v in raw if _looks_unresolved(v)]
+    resolved = [n for n, v in raw if v != "" and not _looks_unresolved(v)]
+    return unresolved if unresolved and resolved else []
+
+
+UNRESOLVED = _partially_unresolved()
 API_ENDPOINT = _normalize_endpoint(_env_value("SWITCH_API_ENDPOINT"))
 API_TOKEN = _env_value("SWITCH_API_TOKEN")
 ENV_AGENT_ID = _env_value("SWITCH_AGENT_ID")
@@ -153,6 +172,19 @@ def _credentials(agent_id: str = "") -> tuple[str, str]:
 
 
 def _resolve_credentials(agent_id: str) -> tuple[str, str]:
+    # A substitution that did not finish is not a deliberate omission, and the
+    # runtime refuses it rather than filling the gap from disk. Resolving here
+    # where the runtime refused would mediate a session that has no identity.
+    if UNRESOLVED:
+        return "", ""
+
+    # A token in the environment that is missing either of the others is a broken
+    # config, and the runtime refuses it outright rather than completing it from
+    # the store. Falling back here would mediate with a credential nobody asked
+    # for, while the session itself is refusing to start.
+    if API_TOKEN and not (API_ENDPOINT and ENV_AGENT_ID):
+        return "", ""
+
     # A complete environment wins: it is what Switch Console injects per session,
     # and it is chosen for that session deliberately. "Complete" must mean the
     # same three values the runtime requires — the two resolve the same directory
@@ -199,6 +231,34 @@ def _has_credentials(agent_id: str) -> bool:
     # Which of these it is decides the fix, so name it rather than reporting
     # every case as "missing credentials" and sending the reader after a token
     # that may be sitting right there.
+    if UNRESOLVED:
+        names = " and ".join(UNRESOLVED)
+        why = (
+            f"{names} {'are' if len(UNRESOLVED) > 1 else 'is'} still a literal ${{...}} while other "
+            "SWITCH_* variables expanded, so a substitution step did not finish. "
+            f"Fix the expansion, or unset {names} to use the agent store deliberately"
+        )
+        print(f"[switch_hook] {why}", file=sys.stderr)
+        print(
+            "[switch_hook] mediation and event reporting are NOT running for this session",
+            file=sys.stderr,
+        )
+        return False
+
+    if API_TOKEN and not (API_ENDPOINT and ENV_AGENT_ID):
+        why = (
+            "SWITCH_API_TOKEN is set but "
+            f"{'SWITCH_API_ENDPOINT' if not API_ENDPOINT else 'SWITCH_AGENT_ID'} is not. "
+            "A token needs all three, and the runtime refuses this too — set the "
+            "missing one, or unset SWITCH_API_TOKEN to use the agent store"
+        )
+        print(f"[switch_hook] {why}", file=sys.stderr)
+        print(
+            "[switch_hook] mediation and event reporting are NOT running for this session",
+            file=sys.stderr,
+        )
+        return False
+
     claiming = [a for a in _read_agent_store() if a["agent_id"] == agent_id]
     if len(claiming) > 1:
         why = f"{len(claiming)} entries in {AGENTS_DIR} claim agent {agent_id}, so which token is current is unknowable — leave exactly one"
@@ -365,7 +425,16 @@ def handle_pre_tool_use(event: dict) -> None:
             body,
             state["agent_id"],
         )
-    except Exception:
+    except Exception as exc:
+        # The call is allowed to proceed — a bridge that is down or slow must not
+        # wedge the session. But it proceeds UNMEDIATED, and that has to be said:
+        # a revoked token or an unreachable server looks exactly like approval
+        # otherwise, which is the silence this hook exists to end.
+        print(
+            f"[switch_hook] mediation check failed ({type(exc).__name__}: {exc}); "
+            "this tool call is proceeding WITHOUT being checked by Switch",
+            file=sys.stderr,
+        )
         return
 
     verdict = resp.get("verdict", "proceed")

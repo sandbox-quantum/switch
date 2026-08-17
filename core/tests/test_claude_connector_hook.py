@@ -99,6 +99,12 @@ def test_environment_without_an_agent_id_is_not_complete(
 
     Short-circuiting on endpoint+token alone would mediate as whatever that token
     belongs to while the runtime refused the same environment outright.
+
+    Nor may it fall through to the store. This test used to assert exactly that,
+    under the heading of matching the runtime — but the runtime *refuses* a token
+    that names nobody rather than completing it from disk, so resolving here
+    meant mediating with a credential the session never bound while the session
+    itself served nothing but `switch_unavailable`.
     """
     provision(tmp_path, "solo", agent_id="uuid-solo", token="tok-store")
     hook = load_hook(
@@ -108,8 +114,7 @@ def test_environment_without_an_agent_id_is_not_complete(
         SWITCH_API_TOKEN="tok-env",
     )
 
-    # Falls through to the store and resolves the one agent actually there.
-    assert hook._credentials("uuid-solo") == ("https://switch.example", "tok-store")
+    assert hook._credentials("uuid-solo") == ("", "")
 
 
 def test_single_store_entry_resolves_with_no_environment(
@@ -280,8 +285,12 @@ def test_unexpanded_placeholders_are_not_credentials(
 
     Taken literally, `${SWITCH_API_ENDPOINT}` becomes the base of every URL the
     hook builds — so each call raises, gets swallowed, and mediation stops with
-    no signal at all, which is the bug this fallback exists to remove. The
-    runtime guards the same case; see `bin.handshake.test.ts`.
+    no signal at all, which is the bug this fallback exists to remove.
+
+    The runtime treats all-three-unexpanded the same way, in `resolveIdentity`.
+    It has no test of its own for it — the runtime suite covers the handshake,
+    not this — so do not read this docstring as evidence the pair is checked on
+    both sides.
     """
     provision(tmp_path, "solo", agent_id="uuid-solo", token="tok-store")
     hook = load_hook(
@@ -341,6 +350,79 @@ def test_endpoint_case_does_not_decide_whether_mediation_runs(
     )
 
     assert hook._credentials("uuid-solo") == ("https://switch.example.com", "tok-solo")
+
+
+def test_a_partly_expanded_environment_refuses_like_the_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Some `${...}` left literal while others expanded means a substitution did
+    not finish. The runtime refuses rather than completing from disk; if the hook
+    completed it anyway, the session would serve `switch_unavailable` while its
+    tool calls were mediated with a token nobody chose.
+    """
+    provision(
+        tmp_path,
+        "solo",
+        agent_id="uuid-solo",
+        endpoint="https://switch.example",
+        token="tok-store",
+    )
+    hook = load_hook(
+        monkeypatch,
+        tmp_path,
+        SWITCH_API_ENDPOINT="https://switch.example",
+        SWITCH_AGENT_ID="uuid-solo",
+        SWITCH_API_TOKEN="${SWITCH_API_TOKEN}",
+    )
+
+    assert hook._credentials("uuid-solo") == ("", "")
+
+
+def test_all_three_unexpanded_is_the_ordinary_pre_expansion_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Not the partial case: nothing expanded, so nothing half-finished. The
+    store is the deliberate answer here, as it is in the runtime."""
+    provision(
+        tmp_path,
+        "solo",
+        agent_id="uuid-solo",
+        endpoint="https://switch.example",
+        token="tok-store",
+    )
+    hook = load_hook(
+        monkeypatch,
+        tmp_path,
+        SWITCH_API_ENDPOINT="${SWITCH_API_ENDPOINT}",
+        SWITCH_AGENT_ID="${SWITCH_AGENT_ID}",
+        SWITCH_API_TOKEN="${SWITCH_API_TOKEN}",
+    )
+
+    assert hook._credentials("uuid-solo") == ("https://switch.example", "tok-store")
+
+
+def test_a_token_without_the_others_refuses_instead_of_using_the_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The runtime refuses a token that names nobody. The hook must not quietly
+    substitute a different credential from disk while the session is refusing to
+    start — that is mediating as one agent while acting as none.
+    """
+    provision(
+        tmp_path,
+        "solo",
+        agent_id="uuid-solo",
+        endpoint="https://switch.example",
+        token="tok-store",
+    )
+    hook = load_hook(
+        monkeypatch,
+        tmp_path,
+        SWITCH_API_ENDPOINT="https://switch.example",
+        SWITCH_API_TOKEN="tok-env",
+    )
+
+    assert hook._credentials("uuid-solo") == ("", "")
 
 
 def test_it_says_why_it_cannot_mediate(
