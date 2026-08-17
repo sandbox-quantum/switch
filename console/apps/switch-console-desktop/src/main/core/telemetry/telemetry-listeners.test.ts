@@ -242,6 +242,53 @@ describe('a session that outlived a restart', () => {
   });
 });
 
+describe('a session that dies before we know what it was', () => {
+  // A session is created with its agent already running, so these handlers can
+  // genuinely interleave. `emit` awaits each handler to completion, so the race
+  // has to be built deliberately rather than hoped for.
+  it('is not reported as starting after it has already ended', async () => {
+    let releaseLookup = () => {};
+    vi.mocked(getAgentById).mockReturnValue(
+      new Promise((resolve) => {
+        releaseLookup = () => resolve({ id: 'agent', locationId: 'loc' } as never);
+      }) as never
+    );
+    onLocation('local');
+
+    const created = emit('sessionService', 'session:created', {
+      id: 's-fast-crash',
+      agentId: 'agent',
+      providerId: 'claude',
+    });
+    await emit('sessionHooks', 'session:agent-exited', {
+      sessionId: 's-fast-crash',
+      decision: 'failed',
+    });
+    releaseLookup();
+    await created;
+
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith('session_ended', {
+      agent_type: 'unknown',
+      location: 'unknown',
+      outcome: 'failed',
+    });
+  });
+
+  it('leaves nothing behind when it ends twice', async () => {
+    // The second ending reports nothing, but it must still clear the entry —
+    // otherwise the map keeps it for the life of the process.
+    onLocation('local');
+    await startSession('s-double');
+    await emit('sessionService', 'session:archived', 's-double');
+    vi.mocked(trackEvent).mockClear();
+
+    await emit('sessionHooks', 'session:deleted', 's-double');
+
+    expect(trackEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe('the memory of what has ended', () => {
   it('does not grow without limit', async () => {
     // A long-running app ends a lot of sessions; the set only exists to

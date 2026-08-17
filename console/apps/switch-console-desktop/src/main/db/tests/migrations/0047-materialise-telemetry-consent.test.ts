@@ -98,6 +98,35 @@ describe('migration 0047: materialise telemetry consent', () => {
     expect(stored('telemetry')).toEqual({ enabled: true, askedAt: 1_700_000_000_000 });
   });
 
+  it('leaves an explicit null alone rather than reading it as absent', () => {
+    // Unreachable through the app's own writes, and worth pinning anyway: the
+    // obvious `json_extract(...) IS NULL` test cannot tell this from a missing
+    // key, and would answer on the user's behalf.
+    db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?)`).run(
+      'telemetry',
+      '{"enabled": null, "askedAt": 1700000000000}'
+    );
+
+    applyMigration();
+
+    expect(stored('telemetry').enabled).toBeNull();
+  });
+
+  it('steps over a row that is not JSON instead of failing the whole migration', () => {
+    // Migrations run in one transaction and a failure stops the app starting,
+    // so an unreadable settings row must cost only its own repair.
+    db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?)`).run('telemetry', 'not json');
+
+    expect(() => applyMigration()).not.toThrow();
+    expect(
+      (
+        db.prepare(`SELECT value FROM app_settings WHERE key = 'telemetry'`).get() as {
+          value: string;
+        }
+      ).value
+    ).toBe('not json');
+  });
+
   it('does not answer for someone who was never asked', () => {
     // No `askedAt` means the prompt is still to come, and the gate refuses
     // until it has been. Inventing an agreement here would skip it entirely.

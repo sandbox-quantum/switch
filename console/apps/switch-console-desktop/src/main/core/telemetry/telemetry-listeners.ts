@@ -58,11 +58,13 @@ function rememberEnded(sessionId: string): void {
 }
 
 function endSession(sessionId: string, outcome: TelemetryEventMap['session_ended']['outcome']) {
+  const shape = liveSessions.get(sessionId) ?? UNKNOWN_SESSION;
+  // Forget it either way. A second ending reports nothing, but it must still
+  // clear the entry, or a session that ends twice stays in the map for good.
+  liveSessions.delete(sessionId);
+
   if (endedSessions.has(sessionId)) return;
   rememberEnded(sessionId);
-
-  const shape = liveSessions.get(sessionId) ?? UNKNOWN_SESSION;
-  liveSessions.delete(sessionId);
   trackEvent('session_ended', { ...shape, outcome });
 }
 
@@ -73,17 +75,28 @@ function endSession(sessionId: string, outcome: TelemetryEventMap['session_ended
  * so this run never sees it start. Recording it here is what stops its eventual
  * end being filed under `unknown` — which, since restoring live sessions is
  * routine, would otherwise be most of the ends the app ever reports.
+ *
+ * Provisioning also happens right after a create, and again on every re-open,
+ * so the guard below usually skips the reads. Usually, not always: a create and
+ * its provision run concurrently, so this occasionally repeats work the created
+ * handler is doing. Two cheap reads on a path that is already opening a
+ * terminal, in exchange for not having to care about the ordering.
  */
 async function rememberSession(sessionId: string, locationId: string): Promise<void> {
-  if (liveSessions.has(sessionId)) return;
+  if (liveSessions.has(sessionId) || endedSessions.has(sessionId)) return;
 
   const session = await getSession(sessionId);
   if (!session) return;
 
-  liveSessions.set(sessionId, {
+  const shape: SessionShape = {
     agent_type: agentTypeOf(session.providerId),
     location: await locationKindOf(locationId),
-  });
+  };
+
+  // Checked again after the reads, for the same reason as in the created
+  // handler: the session may have ended while they were in flight.
+  if (endedSessions.has(sessionId)) return;
+  liveSessions.set(sessionId, shape);
 }
 
 /**
@@ -109,6 +122,13 @@ export function registerTelemetryListeners(): void {
       agent_type: agentTypeOf(session.providerId),
       location: agent ? await locationKindOf(agent.locationId) : 'unknown',
     };
+
+    // A session is created with its agent already running, so one that dies
+    // immediately can be reported as ended while this handler is still working
+    // out what it was. Reporting the start now would place it after its own
+    // end, and would put back an entry nothing will ever remove.
+    if (endedSessions.has(session.id)) return;
+
     liveSessions.set(session.id, shape);
     trackEvent('session_started', shape);
   });

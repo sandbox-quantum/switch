@@ -70,14 +70,25 @@ describe('the consent gate', () => {
   });
 });
 
-// Each reason is reported once per process, so these assert the first
-// occurrence of theirs and must not be split into more cases of the same reason.
 describe('a build that cannot send', () => {
+  /**
+   * A reason is reported once per process, and the service is a module
+   * singleton — so each of these takes a fresh one rather than depending on
+   * which test ran first. Sharing it made two of these pass only in
+   * declaration order, and fail under a shuffled run.
+   */
+  async function freshService() {
+    vi.resetModules();
+    const module = await import('./telemetry-service');
+    return module.telemetryService;
+  }
+
   it('makes no request when there is no API key, and says so', async () => {
     delete process.env.MAIN_VITE_AMPLITUDE_API_KEY;
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+    const service = await freshService();
 
-    await telemetryService.track('app_launched', {});
+    await service.track('app_launched', {});
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(isTelemetryAllowed).not.toHaveBeenCalled();
@@ -88,21 +99,22 @@ describe('a build that cannot send', () => {
   });
 
   it('says it once, however many events are dropped', async () => {
-    // The reason above has already been reported by the test before this one —
-    // which is the point: a silent build explains itself once, not per event.
     delete process.env.MAIN_VITE_AMPLITUDE_API_KEY;
+    const service = await freshService();
 
-    await telemetryService.track('app_launched', {});
-    await telemetryService.track('app_launched', {});
+    await service.track('app_launched', {});
+    await service.track('app_launched', {});
+    await service.track('app_launched', {});
 
-    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledTimes(1);
   });
 
   it('makes no request from a dev run that has not opted in', async () => {
     delete process.env.SWITCHDASH_TELEMETRY_DEV;
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+    const service = await freshService();
 
-    await telemetryService.track('app_launched', {});
+    await service.track('app_launched', {});
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledWith(
@@ -125,14 +137,25 @@ describe('the payload', () => {
     expect(event).not.toHaveProperty('user_id');
   });
 
-  it("declines Amplitude's location lookup and sends no location fields", async () => {
+  it("declines Amplitude's location lookup", async () => {
+    // That no location field is sent is covered by pinning the whole set of
+    // keys below, rather than by listing fields nothing could produce.
     await telemetryService.track('app_launched', {});
 
-    const event = sentEvent();
-    expect(event.ip).toBe('0.0.0.0');
-    for (const field of ['country', 'region', 'city', 'dma', 'location_lat', 'location_lng']) {
-      expect(event).not.toHaveProperty(field);
-    }
+    expect(sentEvent().ip).toBe('0.0.0.0');
+  });
+
+  it('stamps the event when it happened, not after the reads that describe it', async () => {
+    // The gate and the install id are both awaited between the two, and on a
+    // first send the install id is a write. Taking the time afterwards would
+    // date every event by however long its own bookkeeping took.
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValueOnce(1_000).mockReturnValue(9_000);
+
+    await telemetryService.track('app_launched', {});
+
+    expect(sentEvent().time).toBe(1_000);
+    now.mockRestore();
   });
 
   it('carries the event, the build, the app version and the OS', async () => {

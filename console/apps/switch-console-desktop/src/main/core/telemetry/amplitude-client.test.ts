@@ -143,9 +143,10 @@ describe('sending it', () => {
     await expect(postAmplitudeEvent({}, CONFIG)).rejects.toMatchObject({ code: 'timeout' });
   });
 
-  it('really does time a request out', async () => {
-    // Pins the assumption the branch above is written against, against the
-    // runtime rather than against a hand-made error.
+  it('is written against what this runtime actually names a timeout', async () => {
+    // The test above hands the branch an error it made up. This one checks the
+    // name it made up is the one Node really produces — otherwise both agree
+    // with each other and neither agrees with production.
     const signal = AbortSignal.timeout(1);
     const aborted = new Promise<Error>((resolve) =>
       signal.addEventListener('abort', () => resolve(signal.reason as Error))

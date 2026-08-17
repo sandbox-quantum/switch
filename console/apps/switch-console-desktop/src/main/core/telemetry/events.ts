@@ -34,9 +34,16 @@ export type TelemetryAgentType = AgentProviderId | 'unknown';
  * and it is far easier to add an event than to take one away once dashboards
  * depend on it.
  */
+/**
+ * An event with no properties of its own. `Record<never, never>` rather than
+ * `Record<string, never>`, whose `keyof` is `string` — which claims every
+ * property name, including the ambient ones the emitter adds.
+ */
+type NoProperties = Record<never, never>;
+
 export type TelemetryEventMap = {
   /** The app started. Its interesting fields are the ambient ones. */
-  app_launched: Record<string, never>;
+  app_launched: NoProperties;
   agent_created: {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
@@ -84,3 +91,16 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   server_added: ['server_kind'],
   connector_installed: ['agent_type', 'target', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
+
+/** Which events, if any, declare a property the emitter also adds. */
+type EventsDeclaringAmbientProperty = {
+  [K in TelemetryEventName]: 'build' extends keyof TelemetryEventMap[K] ? K : never;
+}[TelemetryEventName];
+
+/**
+ * `build` is added to every payload by the emitter, and added last, so an event
+ * declaring one of its own would have it silently overwritten. This fails to
+ * compile rather than letting that happen quietly.
+ */
+const _buildIsReserved: [EventsDeclaringAmbientProperty] extends [never] ? true : never = true;
+void _buildIsReserved;
