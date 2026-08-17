@@ -5,8 +5,10 @@ import { createRemoteHomePluginFs } from '@main/core/agent-runtime/impl/remote-h
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
+import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
 import { cliRulesFor, type SwitchSetupCliRules } from './switch-setup-cli-dialect';
 import type { SwitchSetupResult, SwitchSetupStatus } from './switch-setup-service';
@@ -361,6 +363,18 @@ export class RemoteSwitchSetupService {
   }
 
   async install(agentId: string): Promise<SwitchSetupResult> {
+    const result = await this.runInstall(agentId);
+    if (isValidProviderId(agentId)) {
+      trackEvent('connector_installed', {
+        agent_type: agentId,
+        target: 'remote',
+        outcome: result.success ? 'success' : 'failure',
+      });
+    }
+    return result;
+  }
+
+  private async runInstall(agentId: string): Promise<SwitchSetupResult> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
       const version = connectorVersion(agentId);
       return this.runFiles(agentId, (files, fs) => files.install(fs, { version }));

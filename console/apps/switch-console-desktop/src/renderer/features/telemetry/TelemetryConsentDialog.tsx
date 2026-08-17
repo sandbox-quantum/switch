@@ -50,13 +50,13 @@ function DisclosureList({
  *
  * Rendered only when the user has never answered it, and not dismissible: the
  * answer is recorded by `askedAt`, so closing it without choosing would leave
- * the app asking again on every launch. Declining is a first-class option, not
- * a hidden one — the toggle starts on, matching the default, and the user can
- * turn it off before continuing.
+ * the app asking again on every launch. The toggle starts off, matching the
+ * default: what is sent carries a random per-install id, so sharing has to be
+ * something the user turns on rather than something they failed to turn off.
  */
 export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void }) {
   const { value, updateAsync } = useAppSettingsKey('telemetry');
-  const [enabled, setEnabled] = useState(value?.enabled ?? true);
+  const [enabled, setEnabled] = useState(value?.enabled ?? false);
   const [saving, setSaving] = useState(false);
 
   const confirm = useCallback(() => {
@@ -97,7 +97,7 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
           />
           <div className="mt-1 flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
             <label htmlFor="telemetry-consent-switch" className="text-sm text-foreground">
-              Share anonymous usage data
+              Share usage data
             </label>
             <Switch
               id="telemetry-consent-switch"

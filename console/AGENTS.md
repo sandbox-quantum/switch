@@ -394,27 +394,39 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- The app sends no telemetry or analytics today, and nothing may start sending without
-  going through the consent gate below. Logs are local-only and no code path transmits
-  them off the machine. Do not add one. `getDiagnosticLogAttachment()` builds a redacted
-  export and is the only function intended to ever feed such a path; anything that ships
-  log content must go through it rather than reading the log itself.
+- The app sends a small, fixed set of product events to Amplitude, and nothing else.
+  Logs are local-only and no code path transmits them off the machine. Do not add one.
+  `getDiagnosticLogAttachment()` builds a redacted export and is the only function
+  intended to ever feed such a path; anything that ships log content must go through it
+  rather than reading the log itself, and no log content may enter a telemetry payload.
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
   emission and send nothing when it returns false. Do not read `telemetry.enabled` from
   settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
-  cache the answer across a send, since the user can revoke it at any time.
-- **What telemetry may contain, if it is ever built.** The consent toggle defaults to *on*,
-  which is only defensible for data that is not personal, so the payload is limited to
-  anonymous counters: feature-usage counts, error and crash counts, app version, operating
-  system. It must carry **no identifier of any kind** — no install id, machine id, user id,
-  or any other value that distinguishes one install from another — and no prompts, code,
-  file paths, or agent/room/project/server names. Adding an identifier makes the data
-  pseudonymous personal data under GDPR/nFADP, at which point an opt-out default is no
-  longer valid and the default has to flip to off. That is a decision for the product
-  owner, not a code change: if you need per-install numbers, raise it rather than adding
-  a field. The user-facing wording of this promise lives in
-  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step.
+  cache the answer across a send, since the user can revoke it at any time. Consent off
+  means **no request is made at all**, not a request whose result is discarded.
+- **The toggle defaults to off.** The payload carries a random per-install id, which makes
+  it pseudonymous personal data under GDPR/nFADP; an opt-out default does not cover that.
+  Flipping the default back to on is a product decision that requires the id to go first,
+  not a code change.
+- **What a telemetry payload may contain.** Add an event only by adding it to the closed
+  catalogue in `src/main/core/telemetry/events.ts`, whose property types are literal
+  unions and numbers — nothing free-text can reach a payload through it, by construction.
+  Permitted: which of the catalogued things happened, agent type, local-vs-remote,
+  success-vs-failure, app version, operating system, and the random install id. Never:
+  prompts, code, file paths, working directories, error messages or stack traces (use an
+  enumerated code), machine or user names, IP or MAC addresses, email or sign-in, and no
+  agent, room, project, location or server names or ids. Widening this is a consent
+  decision — the user-facing wording lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step with it.
+- **Telemetry never affects the user.** It is fire-and-forget with a short timeout and no
+  retry: a send that fails is logged with an `errorCode` and dropped. It must never block,
+  delay or fail an operation, and must never surface in the UI. It is off in a dev build
+  and inert without a build-time API key, both of which are logged once so a build that
+  is not reporting says why.
+- **The sidecar sends nothing.** It runs headless on a user's VM with no consent prompt
+  and no access to this setting, so sessions it starts are not counted. Do not "fix" that
+  by having it report; the gate is not reachable from there.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.
@@ -618,8 +630,18 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, and
-  `SWITCHDASH_FAKE_UPDATE`.
+  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`,
+  `SWITCHDASH_FAKE_UPDATE`, `SWITCHDASH_TELEMETRY_DEV`, and
+  `SWITCHDASH_TELEMETRY_ENDPOINT`.
+- Telemetry in dev: a dev build sends nothing, so the emitter cannot be exercised by
+  `pnpm run dev` alone. `SWITCHDASH_TELEMETRY_DEV=1` opts a dev run in, and
+  `SWITCHDASH_TELEMETRY_ENDPOINT` redirects it at a local listener so what is actually
+  sent can be read off the wire rather than off the code. Both are dev-only and cannot
+  activate in a packaged build. The API key is separate and comes from the build:
+  `MAIN_VITE_AMPLITUDE_API_KEY`, statically replaced into the main bundle only, absent by
+  default, and inert when absent. Example:
+  `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009
+  MAIN_VITE_AMPLITUDE_API_KEY=local pnpm run dev`.
 - **A hook command is built for the machine the session runs on, not for the one
   building it.** `writeHooks(fs, hooks, { platform })` takes the target
   platform: `process.platform` locally and in the sidecar, the VM's `uname -s`

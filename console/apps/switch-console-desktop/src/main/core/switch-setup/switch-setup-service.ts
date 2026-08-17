@@ -5,8 +5,10 @@ import type { ISwitchSetupFilesBehavior, PluginFs } from '@switch-console/core/a
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
 import { type ArtifactName, artifactVersion } from '@switch-console/shared';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
+import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentTypeAvailability } from '@shared/core/switch-setup/agent-type-availability';
 import { createPluginFs } from '../providers/plugin-fs';
 import { getPlugin, listPlugins } from '../providers/plugin-registry';
@@ -382,6 +384,18 @@ class SwitchSetupService {
   }
 
   async install(agentId: string): Promise<SwitchSetupResult> {
+    const result = await this.runInstall(agentId);
+    if (isValidProviderId(agentId)) {
+      trackEvent('connector_installed', {
+        agent_type: agentId,
+        target: 'local',
+        outcome: result.success ? 'success' : 'failure',
+      });
+    }
+    return result;
+  }
+
+  private async runInstall(agentId: string): Promise<SwitchSetupResult> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
       return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
     }

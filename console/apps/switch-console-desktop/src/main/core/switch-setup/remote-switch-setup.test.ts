@@ -6,7 +6,11 @@ const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
   listPlugins: vi.fn(),
   ensureSshConnected: vi.fn(),
+  trackEvent: vi.fn(),
 }));
+
+// Reaches the settings store, and through it the database, at import time.
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: mocks.trackEvent }));
 
 vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
   SshExecutionContext: class {

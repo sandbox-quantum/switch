@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
   listPlugins: vi.fn(),
   readFile: vi.fn(),
+  trackEvent: vi.fn(),
 }));
 
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
@@ -13,6 +14,9 @@ vi.mock('@main/core/execution-context/local-execution-context', () => ({
     exec = mocks.exec;
   },
 }));
+
+// Reaches the settings store, and through it the database, at import time.
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: mocks.trackEvent }));
 
 vi.mock('@switch-console/core/deps/runtime', () => ({
   resolveCommandPath: mocks.resolveCommandPath,

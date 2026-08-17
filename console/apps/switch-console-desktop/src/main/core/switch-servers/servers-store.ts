@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
 import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema';
 import {
@@ -155,6 +156,11 @@ export async function ensureManagedServer(
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
+  // Only the insert: this function also runs on every restart of a stack that
+  // already exists, and that is not a server being added.
+  trackEvent('server_added', {
+    server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
+  });
   return mapRow(row);
 }
 
@@ -178,6 +184,7 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
+  trackEvent('server_added', { server_kind: 'external' });
   return mapRow(row);
 }
 
