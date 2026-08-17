@@ -401,11 +401,17 @@ pnpm run lint
     export scrub. Never read the raw log file from outside `file-logger.ts`.
 - **An agent's Switch API token lives in exactly one file:**
   `<working dir>/.switch/agents/<slug>.json`, beside a generated `.gitignore`
-  containing `*`. `.claude/settings.local.json` carries the endpoint and agent
-  id only — it is Claude Code's own file, read by every session in the
-  directory, and does not need the credential. Do not add a token back to it:
-  two copies is how one goes stale and authenticates as the wrong agent.
-  - **That file is a pointer, and Claude Code makes it a live one.** Its `env`
+  containing `*`. For the agents **Switch Console** manages it also writes
+  `.claude/settings.local.json` carrying the endpoint and agent id only — Claude
+  Code's own file, read by every session in the directory, which does not need
+  the credential. Do not add a token back to it: two copies is how one goes stale
+  and authenticates as the wrong agent.
+  - **That write is Switch Console's alone.** The connector's `configure` skill
+    deliberately writes no `SWITCH_*` into any settings file — a directory it
+    sets up carries the store and nothing else, which is the resolution path that
+    works on every runtime. Do not "restore" the env block there to match this
+    layout; the skill strips it on sight.
+  - **Where Switch Console does write it, Claude Code makes it live.** Its `env`
     block becomes real process environment for everything a session spawns, the
     Switch runtime and the connector's hooks included — so the agent id in it
     decides who a hand-started session is, and an id naming no entry under

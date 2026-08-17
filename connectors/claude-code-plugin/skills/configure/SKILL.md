@@ -38,18 +38,20 @@ Two things read that identity, and they read it the same way:
 2. **Otherwise the local agent store**, `.switch/agents/*.json`, read from the
    **session's working directory**. That is what this skill writes.
 
-**Those are the only two modes, and there is nothing in between.** A `SWITCH_*`
-environment that is partly set — say an endpoint and an id but no token — is
-neither, and the runtime refuses it rather than guessing: authenticating as the
-wrong agent is worse than not starting. It does not fall back to the store in
-that state, because a half-set environment is as likely to be a broken
-substitution as a deliberate choice.
+**Those are the two modes to aim for. A half-set environment is neither, and
+what happens to it depends on the runtime you have.** Older runtimes — including
+the one most installs are pinned to — refuse any partial `SWITCH_*` outright and
+serve nothing but `switch_unavailable`, with a perfectly good store on disk
+beside them. Newer ones recover some cases: an agent id with no token is read as
+a pointer into the store, and an endpoint alone narrows it to one server. A
+*token* missing either of the others always refuses, on every version.
 
-**So this skill writes the store and nothing else.** It never puts a `SWITCH_*`
-variable into a settings file, a wrapper script or a shell profile. That is not a
-style preference — it is the difference between mode two and the state that
-refuses. Every session it configures starts with none of the three set, finds the
-store, and reads all three from there.
+**So this skill writes the store and nothing else, and does not rely on that
+recovery.** It never puts a `SWITCH_*` variable into a settings file, a wrapper
+script or a shell profile. Mode two works identically on every runtime that reads
+the store at all; the half-set state works on some and not others, which is not
+something to build a setup path on. Every session this skill configures starts
+with none of the three set and reads all three from the store.
 
 **Identity is per working directory**, not per machine. A different directory
 with its own `.switch/agents/` is a different agent, and several entries in one
@@ -100,6 +102,13 @@ already configured and don't need this skill, or those variables are leaking in
 from somewhere (a Switch Console-spawned terminal exports them) and Claude Code
 must be started from a shell without them for the store to be used at all.
 
+**If only one or two are set, say so and stop.** That is the state this whole
+skill exists to avoid, and it is the case the loop above is really looking for:
+whatever you write to the store afterwards, the session inherits the half-set
+environment and may never read it. Find what exports them — a shell profile, a
+wrapper script, a parent process — and have the user start from a shell with none
+of the three before continuing.
+
 Finally, check the settings files, which is where an older setup put things:
 
 - Project-local: `.claude/settings.local.json` (in the current working
@@ -108,11 +117,11 @@ Finally, check the settings files, which is where an older setup put things:
 
 **Any `SWITCH_*` name under `env` in either file has to go.** Claude Code turns
 that block into real environment variables, so a leftover `SWITCH_AGENT_ID` or
-`SWITCH_API_ENDPOINT` puts every session in this directory into the
-half-configured state the runtime refuses — no Switch tools at all, whatever this
-skill writes afterwards. An earlier version of this skill wrote those two keys
-deliberately; if you find them, that is where they came from. Remove them and say
-you have.
+`SWITCH_API_ENDPOINT` puts every session in this directory into the half-set
+state — which on the runtime most installs are pinned to means no Switch tools at
+all, whatever this skill writes afterwards. An earlier version of this skill
+wrote those two keys deliberately, and Switch Console writes them for its own
+agents; either is where they came from. Remove them and say you have.
 
 **A `SWITCH_API_TOKEN` there is worse.** It completes the environment, which beats
 the store outright, so the session runs as that token's agent no matter what is in
@@ -133,9 +142,11 @@ If entries exist for **different Switch servers**, say so plainly: the runtime
 **refuses to bind an identity** in that case, because the operation catalog is
 fetched before the handshake and picking a server arbitrarily would bootstrap a
 tool surface from a deployment the agent may not belong to. It still starts, and
-serves one tool that explains the problem. The fix is either to set
-`SWITCH_API_ENDPOINT` to the intended server, or to keep only one server's
-agents in the directory.
+serves one tool that explains the problem. **Fix it by keeping only one server's
+agents in the directory.** Setting `SWITCH_API_ENDPOINT` alone also narrows the
+store on newer runtimes, but it is a half-set environment — on the runtime most
+installs are pinned to that refuses outright, so it trades one failure for
+another.
 
 The same is true of two entries claiming the **same** agent id: the runtime
 cannot tell which token is current, so it refuses rather than guessing. Leave
@@ -556,10 +567,11 @@ which for an agent acting on someone else's message means it simply stops.
 >
 > Claude Code turns that block into real environment variables for everything it
 > spawns, the Switch runtime included. Naming two of the three values there puts
-> the runtime in the half-configured state it refuses outright — see the two modes
-> at the top — and the session gets no Switch tools at all, with the token sitting
-> unread in the store the whole time. An earlier version of this skill wrote
-> exactly that and broke every standalone install it touched.
+> the runtime in the half-set state — see the top of this skill — which on the
+> runtime most installs are pinned to means the session gets no Switch tools at
+> all, with the token sitting unread in the store the whole time. An earlier
+> version of this skill wrote exactly that and broke every standalone install it
+> touched.
 >
 > The store already carries the endpoint and the id. Nothing needs to repeat them.
 
@@ -599,7 +611,7 @@ participate in rooms under its own identity.
 
 Reach this step either as the tail of a successful registration, or directly from
 Step 1 when the directory is already configured and the user just wants to add
-subagents (parent = the existing `SWITCH_AGENT_ID`).
+subagents (the parent is the agent already in the store — see 11c).
 
 Either way the install must be `channels_enabled = true` — a `session_passive`
 install can't drive a `--agent` session interactively anyway. It is always
@@ -658,6 +670,15 @@ file is the source, in both cases.
 parent's recorded `channels_enabled` and `repo_dir` and applies them as the base
 for every subagent, so you do not need to pass them. Set a key in `options` only
 to deliberately *override* an inherited value.
+
+**Define every variable in this script too**, as Step 8 does — it opens `set -eu`
+and aborts on the first unset one. `PARENT_AGENT_ID` as above; `SUBS_JSON` from
+the block below; `ENDPOINT` and `SWITCH_REGISTRATION_TOKEN` as in Steps 2 and 3.
+**Those last two matter most when you arrived here straight from Step 1**, having
+skipped Steps 2–10: nothing has set them in this run, so read the endpoint out of
+the same store entry you took the parent id from, and ask the user for a fresh
+registration token. Do not assume either survived from an earlier session — each
+command is its own shell.
 
 `SUBS_JSON` is a JSON array of the selected subagents, built with `jq` rather
 than by hand so descriptions containing quotes survive:
@@ -815,16 +836,18 @@ on an Anthropic-subscription install, which is what Step 5 was deciding.
   usable environment and no usable store entry. Check you started Claude Code
   from the directory holding `.switch/agents/`, and that the entry parses as JSON
   with an endpoint, token and agent id.
-- **It says the `SWITCH_*` environment is incomplete, and names two of the three**
-  — something is setting them. Almost always an `env` block in
+- **It reports an incomplete `SWITCH_*` environment** — something is setting some
+  of the three. The exact wording varies by runtime version; what matters is that
+  the environment is half-set. Almost always an `env` block in
   `.claude/settings.local.json` or `~/.claude/settings.json`, left by an older
   version of this skill or written by Switch Console. **This is the single most
   common way standalone breaks.** Remove every `SWITCH_*` key from both files and
   restart; the store supplies all three on its own. Check the shell too
   (`env | grep SWITCH`) — a Switch Console-spawned terminal exports them.
 - **Startup refuses, naming several servers** — the store spans more than one
-  Switch deployment. Set `SWITCH_API_ENDPOINT` to the one you meant, or keep only
-  that server's agents in the directory.
+  Switch deployment. Keep only that server's agents in the directory — setting
+  `SWITCH_API_ENDPOINT` alone half-sets the environment, which older runtimes
+  refuse.
 - **Tools refuse and name a list of agents** — several agents in one directory and
   no identity bound yet. Call `select_agent` with one of the names first.
 - **Rooms work but nothing is mediated** — the hooks resolve credentials the same

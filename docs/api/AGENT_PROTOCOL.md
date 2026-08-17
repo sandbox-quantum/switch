@@ -716,11 +716,17 @@ claiming one id, and a token missing its endpoint or agent id all degrade rather
 than resolve, because binding an identity nobody named is worse than not
 starting.
 
-That matters because a host settings file is a live part of the environment: the
-Claude Code connector's `.claude/settings.local.json` names the directory's
-agent and deliberately keeps the token out, and Claude Code exports that block
-into every process it spawns. Treating such an environment as merely incomplete
-stranded exactly the standalone sessions the store exists to serve.
+That matters because a host settings file is a live part of the environment.
+Switch Console writes `.claude/settings.local.json` for the agents it manages,
+naming the directory's agent and deliberately keeping the token out, and Claude
+Code exports that block into every process it spawns. Treating such an
+environment as merely incomplete stranded any session started by hand in one of
+those directories.
+
+The connector's `configure` skill does **not** write that block — it writes the
+agent store alone, so a directory it sets up presents no `SWITCH_*` at all and
+takes the store path outright. The resolution above is what covers the Switch
+Console-managed case; it is not how the standalone path is meant to work.
 
 Planned second mode off the same code: *daemon* (long-lived, `scope: all`,
 `spawn_capable`) alongside today's *session* mode (child of the agent,

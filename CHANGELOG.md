@@ -1804,25 +1804,17 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
-### [0.3.1] - 2026-08-12
-
-#### Changed
-- The MCP server instructions no longer tell the agent to `read_context` on
-  every message event, or to connect before every call. Reading is now
-  conditional on a signal that the agent is actually behind — an unread count
-  above zero, a gap warning, an unfamiliar thread, a long silence — and the
-  connection is described as holding for the session rather than as a
-  precondition to re-establish per call.
-
 #### Fixed
 - An environment naming an agent but carrying no token now resolves against the
   local agent store instead of refusing to start. Any partial `SWITCH_*`
   environment was treated as a broken config, but that is the exact shape a host
   settings file produces when the credential is deliberately kept out of the
   working tree — and Claude Code exports its settings `env` block into the
-  process, MCP subprocesses included. Every hand-started Claude Code session set
-  up by the connector's `configure` skill therefore degraded to
-  `switch_unavailable` with a perfectly good store on disk beside it.
+  process, MCP subprocesses included. Switch Console writes exactly that shape for its own
+  agents, so a session started by hand in a directory it set up degraded to
+  `switch_unavailable` with a perfectly good store on disk beside it. The
+  `configure` skill used to write it too; it no longer does, so this is a safety
+  net for the Switch Console case rather than how the standalone path works.
 
   The agent id makes the lookup exact, so nothing is guessed: an id that matches
   no store entry, one belonging to a different server, or one claimed by two
@@ -1838,6 +1830,16 @@ The Switch protocol client and MCP runtime
 - `normalizeEndpoint` folds scheme and host case. It went from grouping
   endpoints for display to gating whether an identity binds, and a
   differently-cased host is the same server.
+
+### [0.3.1] - 2026-08-12
+
+#### Changed
+- The MCP server instructions no longer tell the agent to `read_context` on
+  every message event, or to connect before every call. Reading is now
+  conditional on a signal that the agent is actually behind — an unread count
+  above zero, a gap warning, an unfamiliar thread, a long silence — and the
+  connection is described as holding for the session rather than as a
+  precondition to re-establish per call.
 
 ### [0.3.0] - 2026-08-11
 

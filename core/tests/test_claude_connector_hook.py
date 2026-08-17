@@ -319,6 +319,30 @@ def test_endpoint_breaks_a_tie_between_entries_sharing_an_id(
     assert hook._credentials("uuid-dup") == ("https://a.example", "tok-here")
 
 
+def test_endpoint_case_does_not_decide_whether_mediation_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Scheme and host fold, exactly as `normalizeEndpoint` does in the runtime.
+
+    The two readers must agree on this or the failure is invisible: the runtime
+    folds, binds the agent and the session works, while the hook compares raw
+    strings, matches nothing, and skips every mediation check. A session that
+    runs ungoverned looks identical to one that is governed.
+    """
+    provision(
+        tmp_path,
+        "solo",
+        agent_id="uuid-solo",
+        endpoint="https://Switch.Example.COM",
+        token="tok-solo",
+    )
+    hook = load_hook(
+        monkeypatch, tmp_path, SWITCH_API_ENDPOINT="https://switch.example.com"
+    )
+
+    assert hook._credentials("uuid-solo") == ("https://switch.example.com", "tok-solo")
+
+
 def test_it_says_why_it_cannot_mediate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

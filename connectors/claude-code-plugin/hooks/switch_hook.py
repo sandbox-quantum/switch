@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -37,7 +38,25 @@ def _env_value(name: str) -> str:
     return "" if _looks_unresolved(raw) else raw.strip()
 
 
-API_ENDPOINT = _env_value("SWITCH_API_ENDPOINT").rstrip("/")
+def _normalize_endpoint(endpoint: str) -> str:
+    """Fold the parts of a URL that are defined to be case-insensitive.
+
+    Scheme and host fold; the path does not, because it is case-sensitive and
+    folding it would call two different resources the same. This decides whether
+    the hook resolves the same agent the runtime bound, so it must match
+    `normalizeEndpoint` in the runtime's `credentials.ts` exactly — where they
+    disagree, a session authenticates as one agent and is mediated as another,
+    or is not mediated at all.
+    """
+    trimmed = endpoint.strip().rstrip("/")
+    return re.sub(
+        r"^([a-zA-Z][a-zA-Z0-9+.\-]*://)([^/?#]*)",
+        lambda m: m.group(1).lower() + m.group(2).lower(),
+        trimmed,
+    )
+
+
+API_ENDPOINT = _normalize_endpoint(_env_value("SWITCH_API_ENDPOINT"))
 API_TOKEN = _env_value("SWITCH_API_TOKEN")
 ENV_AGENT_ID = _env_value("SWITCH_AGENT_ID")
 PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA", "")
@@ -98,11 +117,9 @@ def _read_agent_store() -> list[dict]:
                 "agent_id": str(
                     data.get("agent_id") or env.get("SWITCH_AGENT_ID") or ""
                 ).strip(),
-                "endpoint": str(
-                    data.get("endpoint") or env.get("SWITCH_API_ENDPOINT") or ""
-                )
-                .strip()
-                .rstrip("/"),
+                "endpoint": _normalize_endpoint(
+                    str(data.get("endpoint") or env.get("SWITCH_API_ENDPOINT") or "")
+                ),
                 "token": str(
                     data.get("token") or env.get("SWITCH_API_TOKEN") or ""
                 ).strip(),
