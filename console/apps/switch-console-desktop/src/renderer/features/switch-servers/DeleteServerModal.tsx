@@ -58,7 +58,7 @@ export const DeleteServerModal = observer(function DeleteServerModal({
     if (ok) {
       onSuccess();
     } else {
-      setError(switchServersStore.error ?? 'Failed to delete server.');
+      setError(switchServersStore.errorText ?? 'Could not delete the server.');
       setIsDeleting(false);
     }
   }, [server, typeConfirmed, serverId, onSuccess]);

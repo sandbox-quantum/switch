@@ -696,7 +696,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
         trimmedApi
       );
       if (!result) {
-        setError(switchServersStore.error ?? 'Could not save the server.');
+        setError(switchServersStore.errorText ?? 'Could not save the server.');
         setSubmitting(false);
         return;
       }
@@ -708,7 +708,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
     } else {
       const saved = await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
       if (!saved) {
-        setError(switchServersStore.error ?? 'Could not add the server.');
+        setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
         return;
       }

@@ -1,6 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
   ServerConnectionStatus,
@@ -40,10 +40,19 @@ export class SwitchServersStore {
   loadingServers = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
+  /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
+  /** Diagnostics for the same failure, rendered under `error` rather than in it. */
+  errorDetail: string | null = null;
 
   constructor() {
     makeAutoObservable(this);
+  }
+
+  /** Headline and detail as one string, for the modals that have a single slot. */
+  get errorText(): string | null {
+    if (!this.error) return null;
+    return this.errorDetail ? `${this.error} (${this.errorDetail})` : this.error;
   }
 
   /** Whether this server is managed on a host the reachability manager has
@@ -79,6 +88,7 @@ export class SwitchServersStore {
     runInAction(() => {
       this.loadingServers = true;
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       const [servers, activeServerId] = await Promise.all([
@@ -344,6 +354,7 @@ export class SwitchServersStore {
     if (!result.success) {
       runInAction(() => {
         this.error = result.error.message;
+        this.errorDetail = null;
       });
       return false;
     }
@@ -359,6 +370,7 @@ export class SwitchServersStore {
       if (result.error.kind !== 'cancelled') {
         runInAction(() => {
           this.error = result.error.message;
+          this.errorDetail = null;
         });
       }
       return false;
@@ -380,6 +392,7 @@ export class SwitchServersStore {
   private clearError(): void {
     runInAction(() => {
       this.error = null;
+      this.errorDetail = null;
     });
   }
 
@@ -390,8 +403,10 @@ export class SwitchServersStore {
    * usually does not.
    */
   private setError(cause: unknown, fallback: string): void {
+    const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
-      this.error = failureText(cause, fallback);
+      this.error = headline;
+      this.errorDetail = detail;
     });
   }
 }

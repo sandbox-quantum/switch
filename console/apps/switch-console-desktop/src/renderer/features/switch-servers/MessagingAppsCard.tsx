@@ -15,6 +15,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -246,17 +247,19 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
 
       {identitiesError !== null && (
         <p className="text-destructive mt-2 text-xs">
-          Could not load your linked accounts:{' '}
-          {identitiesError instanceof Error ? identitiesError.message : String(identitiesError)}
+          {failureText(
+            identitiesError,
+            'Could not load which messaging accounts are linked to you, so this list may be incomplete.'
+          )}
         </p>
       )}
 
       {bridgesQuery.isError ? (
         <p className="text-destructive mt-3 text-xs">
-          Could not load messaging apps:{' '}
-          {bridgesQuery.error instanceof Error
-            ? bridgesQuery.error.message
-            : String(bridgesQuery.error)}
+          {failureText(
+            bridgesQuery.error,
+            'Could not load this server’s messaging apps. Re-check the server, or reload the page.'
+          )}
         </p>
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">

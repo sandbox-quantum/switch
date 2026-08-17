@@ -220,8 +220,31 @@ describe('OpenInMenu', () => {
 
     expect(mocks.updateOpenIn).toHaveBeenCalledWith({ default: 'cursor' });
     expect(mocks.toast).toHaveBeenCalledWith({
-      title: 'Open in Cursor failed',
+      title: 'Could not open this folder in Cursor',
       description: 'Cursor is unavailable',
+      variant: 'destructive',
+    });
+  });
+
+  it('says what to check when the launch fails with no reason given', async () => {
+    mocks.openIn.mockResolvedValueOnce({ success: false });
+
+    await act(async () => {
+      root.render(React.createElement(OpenInMenu, { path: 'C:/repo' }));
+    });
+
+    await act(async () => {
+      container
+        .querySelector('[data-testid="open-in-option-cursor"]')!
+        .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // "Application not available." named no application and suggested nothing.
+    expect(mocks.toast).toHaveBeenCalledWith({
+      title: 'Could not open this folder in Cursor',
+      description: 'Cursor may not be installed, or its command-line launcher may not be on PATH.',
       variant: 'destructive',
     });
   });

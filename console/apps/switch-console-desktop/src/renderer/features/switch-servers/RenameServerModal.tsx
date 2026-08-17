@@ -43,7 +43,7 @@ export const RenameServerModal = observer(function RenameServerModal({
     if (ok) {
       onSuccess();
     } else {
-      setError(switchServersStore.error ?? 'Failed to rename server.');
+      setError(switchServersStore.errorText ?? 'Could not rename the server.');
       setIsSubmitting(false);
     }
   }, [isValid, serverId, trimmed, onSuccess]);
