@@ -38,22 +38,18 @@ Two things read that identity, and they read it the same way:
 2. **Otherwise the local agent store**, `.switch/agents/*.json`, read from the
    **session's working directory**. That is what this skill writes.
 
-A partial environment is a *pointer*, not a fallback, and only in one direction:
-an agent id with **no token** names the store entry to take the token from. An id
-matching nothing there is still an error — the alternative is authenticating as
-an agent nobody asked for. A **token** with either of the others missing is an
-error too, because guessing where to send a credential is a different order of
-risk from guessing which one to send. An endpoint alone only narrows the store to
-one server.
+**Those are the only two modes, and there is nothing in between.** A `SWITCH_*`
+environment that is partly set — say an endpoint and an id but no token — is
+neither, and the runtime refuses it rather than guessing: authenticating as the
+wrong agent is worse than not starting. It does not fall back to the store in
+that state, because a half-set environment is as likely to be a broken
+substitution as a deliberate choice.
 
-**Step 9b depends on that pointer, and an older runtime does not have it** — it
-treats *any* partial `SWITCH_*` environment as a hard error, so the pointer leaves
-every session in the directory serving nothing but `switch_unavailable`. Check the
-behaviour rather than the version number: after Step 9b, start a session in the
-directory and ask it to `list_rooms`. If the only tool offered is
-`switch_unavailable` and it reports a partial environment, the pinned runtime
-predates the pointer — drop the `SWITCH_AGENT_ID` line from Step 9b and rely on
-the store alone, which works on any runtime that reads it at all.
+**So this skill writes the store and nothing else.** It never puts a `SWITCH_*`
+variable into a settings file, a wrapper script or a shell profile. That is not a
+style preference — it is the difference between mode two and the state that
+refuses. Every session it configures starts with none of the three set, finds the
+store, and reads all three from there.
 
 **Identity is per working directory**, not per machine. A different directory
 with its own `.switch/agents/` is a different agent, and several entries in one
@@ -110,17 +106,21 @@ Finally, check the settings files, which is where an older setup put things:
   directory; do not create it yet)
 - User-global: `~/.claude/settings.json`
 
-If either has an `env.SWITCH_AGENT_ID`, this directory (or this machine) was
-configured before. Report which file and which agent, and offer the same
-keep / reconfigure choice.
+**Any `SWITCH_*` name under `env` in either file has to go.** Claude Code turns
+that block into real environment variables, so a leftover `SWITCH_AGENT_ID` or
+`SWITCH_API_ENDPOINT` puts every session in this directory into the
+half-configured state the runtime refuses — no Switch tools at all, whatever this
+skill writes afterwards. An earlier version of this skill wrote those two keys
+deliberately; if you find them, that is where they came from. Remove them and say
+you have.
 
-**Check both for `env.SWITCH_API_TOKEN` too.** A correctly configured agent has
-none in either file — but one left by an older setup makes the environment
-complete, which beats the store outright, so the session runs as that token's
-agent no matter what this skill writes afterwards. If you find one, say so: it
-has to go (Step 9b), and because it has been sitting in a settings file it
-should be treated as exposed and rotated. Use `AskUserQuestion`, and offer a third option when
-`.claude/agents/*.md` subagents exist:
+**A `SWITCH_API_TOKEN` there is worse.** It completes the environment, which beats
+the store outright, so the session runs as that token's agent no matter what is in
+`.switch/agents/`. Remove it too, and because it has been sitting in a settings
+file treat it as exposed and tell the user to rotate it.
+
+Report which file held what before changing anything. Then use `AskUserQuestion`,
+and offer a third option when `.claude/agents/*.md` subagents exist:
 
 - **Keep it** — stop the skill.
 - **Add subagents** — keep the existing main agent and jump straight to
@@ -528,15 +528,14 @@ plainly rather than leaving the user to find it.
 No MCP config is touched. The plugin's `.mcp.json` already declares the server,
 and the runtime reads this file itself.
 
-## Step 9 — Settings: auto-approve the tools, and name the agent
+## Step 9 — Settings: auto-approve the tools
 
 Read `.claude/settings.local.json` (create with `{}` if absent), merge, and write
 the whole file back. Use `Read` → parse → `Write`; do not edit it with a regex.
 JSON formatting and adjacent keys matter, and a bad merge breaks unrelated Claude
 Code config. Preserve every key the user already has.
 
-**9a — auto-approve the Switch tools.** Union this into `permissions.allow` so
-the connector's tools never prompt:
+Union this into `permissions.allow` so the connector's tools never prompt:
 
 ```json
 {
@@ -551,41 +550,26 @@ connector ships in its own MCP config, and it is the same rule Switch Console
 writes. Without it the agent is interrupted for approval on every room action,
 which for an agent acting on someone else's message means it simply stops.
 
-**9b — name the agent for this directory.** Merge into the top-level `env`:
+> ⚠️ **`permissions` is the only thing this step writes. Do not add an `env`
+> block.** Not `SWITCH_AGENT_ID`, not `SWITCH_API_ENDPOINT`, not any other
+> `SWITCH_*` name, in this file or in `~/.claude/settings.json`.
+>
+> Claude Code turns that block into real environment variables for everything it
+> spawns, the Switch runtime included. Naming two of the three values there puts
+> the runtime in the half-configured state it refuses outright — see the two modes
+> at the top — and the session gets no Switch tools at all, with the token sitting
+> unread in the store the whole time. An earlier version of this skill wrote
+> exactly that and broke every standalone install it touched.
+>
+> The store already carries the endpoint and the id. Nothing needs to repeat them.
 
-```json
-{
-  "env": {
-    "SWITCH_API_ENDPOINT": "<url from step 2>",
-    "SWITCH_AGENT_ID": "<id printed by step 8>"
-  }
-}
-```
-
-**Do not put `SWITCH_API_TOKEN` here — in this file or the user-global one.** An
-API token belongs in exactly two places: `.switch/agents/<name>.json`, and for
-subagents `.claude/switch-subagents/<name>.settings.json`. Nowhere else, ever. If
-either settings file already has one from an older setup, remove it. This matters more than it
-looks: a leftover token in `~/.claude/settings.json` combines with the endpoint
-and id here to make a *complete* environment, which outranks the store
-entirely — so the session silently runs as whatever that old token belongs to
-and nothing you write below is ever read. Check both files and strip it from
-both.
-
-This block is a *pointer*, not a credential: it says which agent this directory
-is, and the runtime takes the token for that id from the store.
-
-**It pins the identity; it does not suggest one.** When it names an agent, the
-session binds that agent at startup and `select_agent` is not offered at all —
-so in a directory holding several agents this decides, rather than defaulting.
-Leave it out if you want the choice made per session instead.
-
-Claude Code exports this block into the environment of everything it spawns, the
-Switch runtime and the connector's hooks included, so it is load-bearing rather
-than decorative — and getting it wrong is not cosmetic. An id here that names no
-entry in `.switch/agents/` leaves every session in this directory with no Switch
-tools but `switch_unavailable`, which reports the mismatch. Keep the two in step:
-if you rewrite one, rewrite the other.
+**A token in a settings file is the same failure, and worse.** An API token
+belongs in exactly two places: `.switch/agents/<name>.json`, and for subagents
+`.claude/switch-subagents/<name>.settings.json`. Nowhere else, ever. If either
+settings file has one from an older setup, strip it and treat it as exposed —
+combined with an endpoint and an id it forms a *complete* environment, which
+outranks the store entirely, so the session silently runs as whatever agent that
+token belongs to.
 
 ## Step 10 — Confirm
 
@@ -661,13 +645,14 @@ so send only the bare `subagent_name` and `description`.
 explicitly, from whichever of these applies:
 
 - You registered the main agent earlier **in this run** — use the id Step 8
-  printed. **Do not use `$SWITCH_AGENT_ID` here.** Step 9b wrote it to the
-  settings file, and Claude Code only exports that at session start, so within
-  this run the variable is still empty — you would send `parent_agent_id: ""`
-  and get `404 Parent agent not found`.
-- You came here from Step 1 on an already-configured directory — use the id you
-  read out of the settings file (or `$SWITCH_AGENT_ID`, which a restarted
-  session does have).
+  printed.
+- You came here from Step 1 on an already-configured directory — read the id out
+  of that directory's `.switch/agents/<name>.json`.
+
+**Do not use `$SWITCH_AGENT_ID` for this.** In a correctly configured standalone
+directory it is unset by design — that is the whole point of the store — so you
+would send `parent_agent_id: ""` and get `404 Parent agent not found`. The store
+file is the source, in both cases.
 
 **Subagents inherit the parent's settings automatically.** The server reads the
 parent's recorded `channels_enabled` and `repo_dir` and applies them as the base
@@ -768,9 +753,11 @@ the offline-session command points `--settings` at:
 These carry **per-subagent API tokens**, which is why the `.gitignore` goes in
 before the request rather than after.
 
-Note this is a *complete* identity, unlike the main agent's Step 9b pointer — a
-`--settings` launch replaces the session's identity outright rather than naming
-an entry in the store, so all three values have to be present here.
+Note this file carries a *complete* identity — all three values — and that is
+correct here rather than a contradiction of Step 9. A `--settings` launch replaces
+the session's environment outright, so this is mode one: everything set, nothing
+half-set. What Step 9 forbids is naming *some* of the three in a settings file
+that applies to every session in the directory.
 
 This is also the one Claude-specific credential location Switch Console has
 since moved on from: it writes subagent credentials to `.switch/agents/` like
@@ -828,10 +815,13 @@ on an Anthropic-subscription install, which is what Step 5 was deciding.
   usable environment and no usable store entry. Check you started Claude Code
   from the directory holding `.switch/agents/`, and that the entry parses as JSON
   with an endpoint, token and agent id.
-- **It names an agent id and says nothing in the store matches** —
-  `.claude/settings.local.json` names an agent that `.switch/agents/` does not
-  hold. The two are out of step: fix whichever is stale, or clear the
-  `SWITCH_AGENT_ID` from the settings file to let the store decide.
+- **It says the `SWITCH_*` environment is incomplete, and names two of the three**
+  — something is setting them. Almost always an `env` block in
+  `.claude/settings.local.json` or `~/.claude/settings.json`, left by an older
+  version of this skill or written by Switch Console. **This is the single most
+  common way standalone breaks.** Remove every `SWITCH_*` key from both files and
+  restart; the store supplies all three on its own. Check the shell too
+  (`env | grep SWITCH`) — a Switch Console-spawned terminal exports them.
 - **Startup refuses, naming several servers** — the store spans more than one
   Switch deployment. Set `SWITCH_API_ENDPOINT` to the one you meant, or keep only
   that server's agents in the directory.
@@ -840,7 +830,7 @@ on an Anthropic-subscription install, which is what Step 5 was deciding.
 - **Rooms work but nothing is mediated** — the hooks resolve credentials the same
   way the runtime does; if they cannot, they say so on stderr. Run with
   `SWITCH_HOOK_DEBUG=1` to see which source they found.
-- **Every room action asks for approval** — Step 9a did not land. Check
+- **Every room action asks for approval** — Step 9 did not land. Check
   `permissions.allow` in `.claude/settings.local.json`.
 - **Tools missing entirely** — the plugin is not installed or not enabled
   (`/plugin` lists what is), or its pinned runtime is too old to read the store.
