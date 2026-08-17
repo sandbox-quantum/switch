@@ -49,11 +49,7 @@ SidebarGroupContent.displayName = 'SidebarGroupContent';
 
 export const SidebarFooter = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn('mt-auto flex flex-col border-t px-3 py-3', className)}
-      {...props}
-    />
+    <div ref={ref} className={cn('mt-auto flex flex-col px-3 py-3', className)} {...props} />
   )
 );
 SidebarFooter.displayName = 'SidebarFooter';
@@ -80,8 +76,11 @@ export const SidebarItemMiniButton = React.forwardRef<
 ));
 SidebarItemMiniButton.displayName = 'SidebarItemMiniButton';
 
+// Selection and hover are the translucent `--sel` pair rather than an opaque
+// fill, so a row tints the material under it instead of cutting an opaque
+// patch through the window's vibrancy.
 const sidebarMenuItemClass =
-  'flex w-full font-normal h-8 text-foreground-tertiary-muted rounded-lg items-center hover:bg-background-tertiary-1 hover:text-foreground-tertiary gap-2 px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 data-[active=true]:bg-background-tertiary-2 data-[active=true]:text-foreground-tertiary';
+  'flex w-full cursor-pointer font-normal text-foreground-tertiary-muted rounded-lg items-center hover:bg-[var(--sel-soft)] hover:text-foreground-tertiary gap-[9px] px-[9px] py-[6px] text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 data-[active=true]:bg-[var(--sel)] data-[active=true]:font-medium data-[active=true]:text-foreground';
 
 interface SidebarMenuButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   isActive?: boolean;

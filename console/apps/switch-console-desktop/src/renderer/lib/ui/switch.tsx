@@ -14,6 +14,10 @@ function Switch({
       data-size={size}
       className={cn(
         'peer group/switch relative inline-flex shrink-0 items-center rounded-full border border-border-1 transition-all outline-none after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=default]:h-[18.4px] data-[size=default]:w-[32px] data-[size=sm]:h-[14px] data-[size=sm]:w-[24px] dark:aria-invalid:ring-destructive/40 data-checked:bg-background-neutral data-unchecked:bg-background data-disabled:cursor-not-allowed data-disabled:opacity-50',
+        // Hovering has to show the switch can be moved. Written as explicit
+        // selectors so a disabled one stays inert rather than inviting a click
+        // it will refuse.
+        '[&[data-unchecked]:not([data-disabled]):hover]:border-border-1 [&[data-unchecked]:not([data-disabled]):hover]:bg-background-1 [&[data-checked]:not([data-disabled]):hover]:bg-background-neutral/85',
         className
       )}
       onKeyDown={(e) => {

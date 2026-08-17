@@ -8,7 +8,6 @@ let settings: NotificationSettings = {
   enabled: true,
   sound: true,
   customSoundPath: '',
-  osNotifications: true,
   soundFocusMode: 'always',
 };
 const customAudioCache = new Map<string, string>();

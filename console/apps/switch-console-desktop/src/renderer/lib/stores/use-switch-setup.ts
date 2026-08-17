@@ -7,6 +7,12 @@ function switchSetupQueryKey(agentId: string) {
   return ['switch-setup', agentId] as const;
 }
 
+/** Deliberately not under `switchSetupQueryKey`: this answers for every agent
+ *  type at once, so it belongs to no single one of them. */
+function agentTypeAvailabilityQueryKey(sshHost: string | undefined) {
+  return ['switch-setup', 'agent-type-availability', sshHost ?? 'local'] as const;
+}
+
 /**
  * Every Switch-capable agent type, each carrying whether it can be onboarded
  * here and — when it cannot — why. Drives the onboarding agent-type picker,
@@ -19,7 +25,7 @@ function switchSetupQueryKey(agentId: string) {
  */
 export function useAgentTypeAvailability(sshHost?: string) {
   return useQuery({
-    queryKey: ['switch-setup', 'agent-type-availability', sshHost ?? 'local'] as const,
+    queryKey: agentTypeAvailabilityQueryKey(sshHost),
     queryFn: () =>
       sshHost
         ? rpc.switchSetup.listAgentTypeAvailabilityRemote(sshHost)
@@ -43,7 +49,21 @@ export function useSwitchSetup(agentId: string) {
     staleTime: 30_000,
   });
 
-  const invalidate = () => void qc.invalidateQueries({ queryKey });
+  /**
+   * Installing or removing a connector changes two answers: this agent type's
+   * own status, and the roster of types that can be onboarded at all.
+   *
+   * The roster is cached under its own key, so the per-agent invalidation did
+   * not reach it. The onboarding checklist reads the roster to decide whether
+   * the agent-providers step is done — and it locks every later step behind the
+   * first unfinished one. Installing a connector therefore left the step
+   * unticked and the rest of onboarding greyed out until something else
+   * happened to refetch.
+   */
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey });
+    void qc.invalidateQueries({ queryKey: ['switch-setup', 'agent-type-availability'] });
+  };
 
   const checkForUpdates = useMutation({
     mutationFn: () => rpc.switchSetup.checkForUpdates(agentId),

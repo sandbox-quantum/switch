@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import User
+from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     get_current_user,
@@ -16,10 +18,17 @@ from switch_core.gateway.auth import (
     set_session_cookie,
     verify_password,
 )
-from switch_core.gateway.dependencies import get_config, get_session, get_user_store
+from switch_core.gateway.dependencies import (
+    get_bridge_store,
+    get_config,
+    get_external_user_store,
+    get_session,
+    get_user_store,
+)
 from switch_core.gateway.schemas import (
     AuthConfigResponse,
     CreateUserRequest,
+    LinkedIdentity,
     LoginRequest,
     ServerDeclaration,
     SessionUserResponse,
@@ -133,6 +142,38 @@ async def me(
     user: Annotated[User, Depends(get_current_user)],
 ) -> SessionUserResponse:
     return _session_response(user)
+
+
+@router.get("/auth/me/identities")
+async def my_identities(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[LinkedIdentity]:
+    """The messaging-app accounts this user has claimed (CHOO-2137).
+
+    An owner-only agent is only reachable by its owner over a bridge that
+    appears in this list, so Switch Console reads it to warn when an agent has
+    been sealed on a platform where its owner cannot be recognised.
+    """
+    identities = await external_user_store.get_by_user(session, user.id)
+    linked: list[LinkedIdentity] = []
+    for identity in identities:
+        bridge = await bridge_store.get(session, identity.bridge_id)
+        if bridge is None:
+            continue
+        linked.append(
+            LinkedIdentity(
+                id=identity.id,
+                bridge_id=identity.bridge_id,
+                bridge_display_name=bridge.display_name,
+                bridge_type=bridge.type,
+                external_user_id=identity.external_user_id,
+                external_username=identity.external_username,
+            )
+        )
+    return linked
 
 
 @router.get("/users")

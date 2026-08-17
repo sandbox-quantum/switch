@@ -290,6 +290,18 @@ class RoomStore:
         )
         return result.scalar_one_or_none()
 
+    async def update_external_channel(
+        self, session: AsyncSession, room_id: str, external_channel_id: str
+    ) -> None:
+        """Re-point a bridged room at a new external channel id, keeping its
+        bridge and channel type. For a platform that reissues a channel's id
+        under the room (Telegram, when a group becomes a supergroup)."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        room.external_channel_id = external_channel_id
+        await session.flush()
+
     async def update_protection_config(
         self, session: AsyncSession, room_id: str, config: dict[str, object]
     ) -> None:

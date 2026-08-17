@@ -2,7 +2,6 @@ import type { Button as ButtonPrimitive } from '@base-ui/react/button';
 import { useHotkey } from '@tanstack/react-hotkeys';
 import type { VariantProps } from 'class-variance-authority';
 import { useRef } from 'react';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
   getEffectiveHotkey,
   getHotkeyRegistration,
@@ -14,10 +13,9 @@ type ConfirmButtonProps = ButtonPrimitive.Props & VariantProps<typeof buttonVari
 
 export function ConfirmButton({ disabled, children, ...props }: ConfirmButtonProps) {
   const ref = useRef<HTMLButtonElement>(null);
-  const { value: keyboard } = useAppSettingsKey('keyboard');
-  const confirmHotkey = getEffectiveHotkey('confirm', keyboard);
+  const confirmHotkey = getEffectiveHotkey('confirm');
 
-  useHotkey(getHotkeyRegistration('confirm', keyboard), () => ref.current?.click(), {
+  useHotkey(getHotkeyRegistration('confirm'), () => ref.current?.click(), {
     enabled: !disabled && confirmHotkey !== null,
   });
 

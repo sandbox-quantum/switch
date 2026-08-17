@@ -8,7 +8,7 @@ export function PageHeader({
   sticky = false,
 }: {
   title: string;
-  description?: string;
+  description?: React.ReactNode;
   children?: React.ReactNode;
   /**
    * Navigation out of this page, rendered above the title at the top left.

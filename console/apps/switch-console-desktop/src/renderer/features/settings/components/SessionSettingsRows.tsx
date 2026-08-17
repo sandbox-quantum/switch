@@ -1,32 +1,10 @@
-import { Info } from 'lucide-react';
 import React from 'react';
 import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { Switch } from '@renderer/lib/ui/switch';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+import { InfoTooltip } from './InfoTooltip';
 import { ResetToDefaultButton } from './ResetToDefaultButton';
 import { SettingRow } from './SettingRow';
-
-function InfoTooltip({ label, content }: { label: string; content: React.ReactNode }) {
-  return (
-    <TooltipProvider delay={150}>
-      <Tooltip>
-        <TooltipTrigger>
-          <button
-            type="button"
-            className="text-muted-foreground inline-flex h-4 w-4 items-center justify-center hover:text-foreground"
-            aria-label={label}
-          >
-            <Info className="h-3.5 w-3.5" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-xs text-xs">
-          {content}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
 
 export const AutoGenerateSessionNamesRow: React.FC = () => {
   const sessionSettings = useSessionSettings();
@@ -88,32 +66,6 @@ export const AutoTrustWorktreesRow: React.FC = () => {
   );
 };
 
-export const CreateBranchAndWorktreeRow: React.FC = () => {
-  const sessionSettings = useSessionSettings();
-
-  return (
-    <SettingRow
-      title="Create branch and worktree by default"
-      description="Start new From Branch sessions in a dedicated session branch and worktree unless changed in the session modal."
-      control={
-        <>
-          <ResetToDefaultButton
-            visible={sessionSettings.isFieldOverridden('createBranchAndWorktree')}
-            defaultLabel="on"
-            onReset={sessionSettings.resetCreateBranchAndWorktree}
-            disabled={sessionSettings.loading || sessionSettings.saving}
-          />
-          <Switch
-            checked={sessionSettings.createBranchAndWorktree}
-            disabled={sessionSettings.loading || sessionSettings.saving}
-            onCheckedChange={sessionSettings.updateCreateBranchAndWorktree}
-          />
-        </>
-      }
-    />
-  );
-};
-
 export const PreserveSessionNameCapitalizationRow: React.FC = () => {
   const sessionSettings = useSessionSettings();
 
@@ -133,32 +85,6 @@ export const PreserveSessionNameCapitalizationRow: React.FC = () => {
             checked={sessionSettings.preserveNameCapitalization}
             disabled={sessionSettings.loading || sessionSettings.saving}
             onCheckedChange={sessionSettings.updatePreserveNameCapitalization}
-          />
-        </>
-      }
-    />
-  );
-};
-
-export const IncludeIssueContextByDefaultRow: React.FC = () => {
-  const sessionSettings = useSessionSettings();
-
-  return (
-    <SettingRow
-      title="Include issue context by default"
-      description="Add the selected issue to the initial agent prompt when creating a session from an issue."
-      control={
-        <>
-          <ResetToDefaultButton
-            visible={sessionSettings.isFieldOverridden('includeIssueContextByDefault')}
-            defaultLabel="on"
-            onReset={sessionSettings.resetIncludeIssueContextByDefault}
-            disabled={sessionSettings.loading || sessionSettings.saving}
-          />
-          <Switch
-            checked={sessionSettings.includeIssueContextByDefault}
-            disabled={sessionSettings.loading || sessionSettings.saving}
-            onCheckedChange={sessionSettings.updateIncludeIssueContextByDefault}
           />
         </>
       }

@@ -117,7 +117,7 @@ def test_a_finished_turn_retires_the_indicator_in_place() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "chan-1", "worker", "idle", notify_user=None, thread_root_id=None
+            "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )
 
@@ -140,7 +140,7 @@ def test_the_done_marker_carries_no_session_link() -> None:
             "chan-1",
             "worker",
             "idle",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
             deeplink_url="https://switch.example/session/1",
         )
@@ -157,7 +157,7 @@ def test_an_operator_ping_is_resolved_rather_than_removed() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "chan-1", "worker", "idle", notify_user=None, thread_root_id=None
+            "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )
 
@@ -183,12 +183,12 @@ def test_a_turn_posts_one_status_line_and_deletes_nothing() -> None:
                 "chan-1",
                 "worker",
                 "working",
-                notify_user=None,
+                mention_handle=None,
                 thread_root_id=None,
                 detail=detail,
             )
         await adapter.apply_runtime_state(
-            "chan-1", "worker", "idle", notify_user=None, thread_root_id=None
+            "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
 
     _run(turn())
@@ -209,7 +209,7 @@ def test_idle_without_an_indicator_does_nothing() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "chan-1", "worker", "idle", notify_user=None, thread_root_id=None
+            "chan-1", "worker", "idle", mention_handle=None, thread_root_id=None
         )
     )
 

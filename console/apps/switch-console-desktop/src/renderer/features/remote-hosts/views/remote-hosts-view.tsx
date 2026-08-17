@@ -15,11 +15,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Plus, Server, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
-import type { ViewDefinition } from '@renderer/app/view-registry';
+import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import { Label } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
@@ -32,6 +33,9 @@ import { hostReachabilityStore } from '../host-reachability-store';
 import { useAllHostSetupPlans } from '../setup/use-host-setup';
 
 export const REMOTE_HOSTS_QUERY_KEY = ['remote-hosts'];
+
+/** Same destination as the Docs tab in Settings, until a cloud-hosting page exists to point at. */
+const CLOUD_HOSTING_DOC_URL = 'https://github.com/sandbox-quantum/switch';
 
 type HostFilter = 'all' | 'ready' | 'attention';
 
@@ -93,7 +97,7 @@ const HostRow = observer(function HostRow({
   );
 });
 
-export const RemoteHostsMainPanel = observer(function RemoteHostsMainPanel() {
+export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage() {
   const queryClient = useQueryClient();
   const { navigate } = useNavigate();
   const [filter, setFilter] = useState<HostFilter>('all');
@@ -152,90 +156,102 @@ export const RemoteHostsMainPanel = observer(function RemoteHostsMainPanel() {
       </div>
     ));
 
-  // Same reason as the host page: the workspace's main panel is a fixed
-  // `overflow-hidden` box, so the list has to own its own scrolling or it clips
-  // once there are more hosts than fit.
+  // Scrolling and width belong to the settings shell this now sits in, so the
+  // list contributes neither.
   return (
-    <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="space-y-4 px-8 pb-10">
-        <PageHeader
-          sticky
-          title="Remote hosts"
-          description="SSH hosts that can run agents. Each host has its own page for setup and for the agent types installed on it."
-        >
-          <div className="flex items-center justify-between gap-2">
-            <ToggleGroup
-              multiple={false}
-              value={[filter]}
-              onValueChange={([value]) => {
-                if (value) setFilter(value as HostFilter);
-              }}
-            >
-              <ToggleGroupItem value="all">All</ToggleGroupItem>
-              <ToggleGroupItem value="ready">Ready</ToggleGroupItem>
-              <ToggleGroupItem value="attention">Needs setup</ToggleGroupItem>
-            </ToggleGroup>
-            <Button
-              size="sm"
-              variant="outline"
+    <div className="space-y-4 pb-10">
+      <PageHeader
+        sticky
+        title="Remote hosts"
+        description={
+          <>
+            Host your agents on any SSH devices, allowing your team to work with them 24/7. Check
+            out this{' '}
+            <button
+              type="button"
+              className="cursor-pointer underline underline-offset-2 hover:text-foreground"
               onClick={() =>
-                void showAddHost({
-                  onboarded: sshHosts,
-                  onAdded: (sshHost) => {
-                    invalidate();
-                    openHost(sshHost);
-                  },
-                })
+                void openExternalUrl(CLOUD_HOSTING_DOC_URL, 'Could not open the documentation')
               }
             >
-              <Plus className="size-4" /> Add host
-            </Button>
-          </div>
-        </PageHeader>
+              doc for cloud hosting ↗︎
+            </button>
+            .
+          </>
+        }
+      >
+        <div className="flex items-center justify-between gap-2">
+          <ToggleGroup
+            multiple={false}
+            value={[filter]}
+            onValueChange={([value]) => {
+              if (value) setFilter(value as HostFilter);
+            }}
+          >
+            <ToggleGroupItem value="all">All</ToggleGroupItem>
+            <ToggleGroupItem value="ready">Ready</ToggleGroupItem>
+            <ToggleGroupItem value="attention">Needs setup</ToggleGroupItem>
+          </ToggleGroup>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              void showAddHost({
+                onboarded: sshHosts,
+                onAdded: (sshHost) => {
+                  invalidate();
+                  openHost(sshHost);
+                },
+              })
+            }
+          >
+            <Plus className="size-4" /> Add host
+          </Button>
+        </div>
+      </PageHeader>
 
-        {isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-foreground-muted">
-            <Spinner /> Loading hosts…
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-foreground-muted">
+          <Spinner /> Loading hosts…
+        </div>
+      ) : list.length === 0 ? (
+        <p className="text-sm text-foreground-muted">
+          No remote hosts yet. Add one above to get started.
+        </p>
+      ) : filter === 'ready' ? (
+        ready.length > 0 ? (
+          <div>
+            <SectionLabel count={ready.length}>Ready</SectionLabel>
+            {renderRows(ready)}
           </div>
-        ) : list.length === 0 ? (
-          <p className="text-sm text-foreground-muted">
-            No remote hosts yet. Add one above to get started.
-          </p>
-        ) : filter === 'ready' ? (
-          ready.length > 0 ? (
-            <div>
-              <SectionLabel count={ready.length}>Ready</SectionLabel>
-              {renderRows(ready)}
-            </div>
-          ) : (
-            <p className="text-sm text-foreground-muted">No host is ready yet.</p>
-          )
-        ) : filter === 'attention' ? (
-          attention.length > 0 ? (
-            <div>
+        ) : (
+          <p className="text-sm text-foreground-muted">No host is ready yet.</p>
+        )
+      ) : filter === 'attention' ? (
+        attention.length > 0 ? (
+          <div>
+            <SectionLabel count={attention.length}>Needs setup</SectionLabel>
+            {renderRows(attention)}
+          </div>
+        ) : (
+          <p className="text-sm text-foreground-muted">Every host is ready.</p>
+        )
+      ) : (
+        <div className="flex flex-col">
+          {attention.length > 0 && (
+            <section>
               <SectionLabel count={attention.length}>Needs setup</SectionLabel>
               {renderRows(attention)}
-            </div>
-          ) : (
-            <p className="text-sm text-foreground-muted">Every host is ready.</p>
-          )
-        ) : (
-          <div className="flex flex-col">
-            {attention.length > 0 && (
-              <section>
-                <SectionLabel count={attention.length}>Needs setup</SectionLabel>
-                {renderRows(attention)}
-              </section>
-            )}
-            {ready.length > 0 && (
-              <section className="pt-2">
-                <SectionLabel count={ready.length}>Ready</SectionLabel>
-                {renderRows(ready)}
-              </section>
-            )}
-          </div>
-        )}
-      </div>
+            </section>
+          )}
+          {ready.length > 0 && (
+            <section className="pt-2">
+              <SectionLabel count={ready.length}>Ready</SectionLabel>
+              {renderRows(ready)}
+            </section>
+          )}
+        </div>
+      )}
     </div>
   );
 });
@@ -300,6 +316,18 @@ function RemoveHostButton({
   );
 }
 
+/**
+ * Remote hosts are a tab of Settings, not a view of their own. This entry
+ * survives only to catch persisted snapshots and older navigation that still
+ * name the standalone view, and send them to the tab. `discardParams` stops the
+ * stale entry being fed back on the next attempt.
+ */
 export const remoteHostsView = {
-  MainPanel: RemoteHostsMainPanel,
+  MainPanel: RemoteHostsSettingsPage,
+  canActivate: (): GuardResult => ({
+    ok: false,
+    redirect: 'settings',
+    params: { tab: 'remote-hosts' },
+    discardParams: true,
+  }),
 } satisfies ViewDefinition;

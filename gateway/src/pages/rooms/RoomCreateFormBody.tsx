@@ -24,7 +24,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { type RoomRoleSpec, createRoom } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
@@ -64,6 +64,34 @@ export default function RoomCreateFormBody() {
   const [error, setError] = useState<string | null>(null);
 
   const hasBridge = !!bridgeId;
+
+  const selectedBridge = useMemo(
+    () => (bridges ?? []).find((b) => b.bridge_id === bridgeId),
+    [bridges, bridgeId],
+  );
+
+  // True when this connection cannot be used to create a new channel, either
+  // because the platform has no such capability or because an admin has
+  // turned it off for this connection.
+  const channelCreationBlocked =
+    !!selectedBridge &&
+    !(selectedBridge.channel_creation_supported && selectedBridge.channel_creation_enabled);
+
+  const channelCreationBlockedReason = useMemo(() => {
+    if (!selectedBridge || !channelCreationBlocked) return null;
+    if (!selectedBridge.channel_creation_supported) {
+      return `${selectedBridge.display_name} cannot create channels from Switch. Create the channel on the platform, then add the app to it.`;
+    }
+    return "Channel creation is turned off for this connection. An admin can turn it on in Messaging Apps.";
+  }, [selectedBridge, channelCreationBlocked]);
+
+  // If the user had "Create new channel" selected and then picks a bridge
+  // that can't do that, flip the selection rather than leaving it invalid.
+  useEffect(() => {
+    if (channelCreationBlocked && channelSource === "new") {
+      setChannelSource("existing");
+    }
+  }, [channelCreationBlocked, channelSource]);
 
   const addRole = useCallback(
     () => setRoles((rs) => [...rs, { name: "", instructions: "", exclusive: false }]),
@@ -330,6 +358,7 @@ export default function RoomCreateFormBody() {
               value="new"
               control={<Radio size="small" />}
               label="Create new channel"
+              disabled={channelCreationBlocked}
             />
             <FormControlLabel
               value="existing"
@@ -337,6 +366,12 @@ export default function RoomCreateFormBody() {
               label="Use existing channel"
             />
           </RadioGroup>
+
+          {channelCreationBlockedReason && (
+            <Alert severity="info" variant="outlined">
+              {channelCreationBlockedReason}
+            </Alert>
+          )}
 
           {channelSource === "existing" ? (
             <TextField

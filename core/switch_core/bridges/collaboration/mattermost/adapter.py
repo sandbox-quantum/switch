@@ -18,6 +18,7 @@ import requests as sync_requests
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import NoAccessTokenProvided
 
+from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -27,6 +28,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     ChannelType,
+    DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -36,6 +38,11 @@ from switch_core.bridges.collaboration.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Ceiling on a bot icon Switch downloads before re-uploading it to Mattermost.
+# Generously above any real avatar; it exists so a hostile or broken URL cannot
+# stream unbounded data into memory.
+_MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
@@ -163,7 +170,13 @@ class MattermostAdapter(CollaborationAdapter):
         In a normal channel it goes out as the dedicated Switch Admin bot. A
         1:1 DM channel cannot admit a third bot, so there it falls back to the
         agent bot that owns the DM, lightly marked so it reads as a system
-        notice rather than the agent's own voice."""
+        notice rather than the agent's own voice.
+
+        Renders its own body: every caller passes Switch Markdown, so the
+        conversion belongs here rather than at each of them — one of them
+        forgetting is how a notice reached a channel with its markup showing.
+        """
+        content = self.translate_outbound(content)
         loop = self._main_loop
         if loop is None:
             logger.error("Cannot post admin message: event loop not initialized")
@@ -438,7 +451,7 @@ class MattermostAdapter(CollaborationAdapter):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
@@ -484,7 +497,7 @@ class MattermostAdapter(CollaborationAdapter):
                 )
         elif state == "awaiting-input":
             ref = await self._ping_operator(
-                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -957,18 +970,37 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Bot icons ────────────────────────────────────────────────────────────
 
+    def default_agent_icon(self, agent_name: str) -> str:
+        # Mattermost uploads the image itself rather than passing a link on, so
+        # the response has to be a PNG it can accept.
+        return default_icon_url(agent_name, image_format="png")
+
     async def _set_bot_icon(self, bot_id: str, agent_name: str) -> None:
         if not self._admin_driver or not self._main_loop:
             logger.error("[BOT-ICON] skipping %s: no driver or loop", agent_name)
             return
         driver = self._admin_driver
         try:
-            url = f"https://ui-avatars.com/api/?name={agent_name}&background=random&size=128&format=png"
+            url = await self.agent_icon_url(agent_name)
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
+            # This is the one place Switch dereferences an agent's icon URL
+            # rather than handing it to a platform, so the fetch is bounded:
+            # redirects off (a permitted host could otherwise bounce us to an
+            # internal one, which validation at write time cannot foresee) and
+            # a size ceiling so a hostile response cannot be read unbounded.
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                resp = await client.get(url, timeout=10.0)
                 resp.raise_for_status()
                 image_bytes = resp.content
+            if len(image_bytes) > _MAX_BOT_ICON_BYTES:
+                logger.error(
+                    "[BOT-ICON] icon for %s is %d bytes, over the %d limit — "
+                    "leaving the current icon in place",
+                    agent_name,
+                    len(image_bytes),
+                    _MAX_BOT_ICON_BYTES,
+                )
+                return
             logger.debug(
                 "[BOT-ICON] fetched %d bytes for %s", len(image_bytes), agent_name
             )
@@ -1254,6 +1286,48 @@ class MattermostAdapter(CollaborationAdapter):
             )
         )
         self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """Find team members via Mattermost's own user search.
+
+        Scoped to the bridge's team, and bots are dropped — a bot is not a
+        person who can own an agent.
+        """
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError("Mattermost adapter is not started")
+
+        term = query.strip()
+        if not term:
+            return []
+
+        driver = self._admin_driver
+        try:
+            found = await self._main_loop.run_in_executor(
+                None,
+                driver.users.search_users,
+                {"term": term, "team_id": self._team_id, "allow_inactive": False},
+            )
+        except Exception as e:
+            raise RuntimeError(f"Mattermost user directory lookup failed: {e}") from e
+
+        results: list[DirectoryUser] = []
+        for user in found or []:
+            if user.get("is_bot"):
+                continue
+            username = user.get("username", "") or ""
+            first = user.get("first_name", "") or ""
+            last = user.get("last_name", "") or ""
+            full_name = " ".join(part for part in (first, last) if part)
+            results.append(
+                DirectoryUser(
+                    external_user_id=str(user.get("id")),
+                    username=username,
+                    display_name=(user.get("nickname") or full_name or username),
+                    email=user.get("email") or None,
+                )
+            )
+        results.sort(key=lambda u: u.display_name.lower())
+        return results
 
     @staticmethod
     def _to_channel_type(mm_type: str) -> ChannelType:

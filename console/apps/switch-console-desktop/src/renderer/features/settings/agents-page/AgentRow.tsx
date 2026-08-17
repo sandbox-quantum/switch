@@ -1,5 +1,4 @@
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { getAgentUpdateActionState } from '@renderer/lib/components/agent-selector/agent-install';
 import type { AgentPayload } from '@shared/core/providers/agent-payload';
 import { AgentRowStatus } from './AgentRowStatus';
 
@@ -7,16 +6,6 @@ export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: ()
   const isInstalled = agent.status === 'available';
   const isClickable = !!onClick;
   const Tag = isClickable ? 'button' : 'div';
-
-  const updates = agent.capabilities.hostDependency.updates;
-  const updateStrategyKind = updates.kind === 'supported' ? updates.update.kind : 'none';
-  const updateState = getAgentUpdateActionState({
-    updateAvailable: agent.updateAvailable,
-    updateStrategyKind,
-    version: agent.version,
-    latestVersion: agent.latestVersion,
-    isUpdating: false,
-  });
 
   return (
     <Tag
@@ -34,7 +23,6 @@ export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: ()
               agentId={agent.id}
               supportsSwitch={agent.capabilities.switchSetup.kind !== 'none'}
               cliInstalled={isInstalled}
-              cliUpdateAvailable={!!updateState.render}
             />
           </div>
         </div>

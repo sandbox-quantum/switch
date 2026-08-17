@@ -1,26 +1,21 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
 
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 
 
-def agent_icon_url(agent_name: str) -> str:
-    """A stable generated avatar for an agent, matching the Slack adapter's
-    scheme so the same agent looks the same across bridged platforms."""
-    name = quote(agent_name.replace("_", "+"))
-    return f"https://ui-avatars.com/api/?name={name}&background=random&size=128"
-
-
-def agent_message_card(agent_name: str, body: str) -> dict[str, Any]:
+def agent_message_card(agent_name: str, body: str, icon_url: str) -> dict[str, Any]:
     """An Adaptive Card that labels a message with the sending agent's identity.
 
     Teams has a single bot identity and no per-message username override (unlike
     Slack), so each Switch agent is presented as a card whose header carries the
     agent's avatar + name, with the message body beneath. ``body`` should already
     be run through ``translate_outbound`` (Adaptive Card TextBlocks render a
-    markdown subset: bold, italic, links, lists)."""
+    markdown subset: bold, italic, links, lists).
+
+    ``icon_url`` is resolved by the caller — the agent's own icon or the shared
+    default — because looking it up is async and this builder is not."""
     return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
@@ -39,7 +34,7 @@ def agent_message_card(agent_name: str, body: str) -> dict[str, Any]:
                         "items": [
                             {
                                 "type": "Image",
-                                "url": agent_icon_url(agent_name),
+                                "url": icon_url,
                                 "size": "Small",
                                 "style": "Person",
                                 "altText": agent_name,

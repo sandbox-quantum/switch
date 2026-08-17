@@ -2101,6 +2101,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-telegram-bot"
+version = "21.11.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/74/3ebdc3ee2c323b4577fcc57542f71aa064ac9dac154af0c2f5805e1b9fbd/python_telegram_bot-21.11.1.tar.gz", hash = "sha256:2abda5202f27a838f35e8140e5292af0f4f8fad6c2e5123b2defadd5f4e8ca02", size = 442624, upload-time = "2025-03-01T11:46:54.735Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/3b/8f6372e580ba4514335873f64924eb80b80c3d3f8359c2bb2e07bb6d01b9/python_telegram_bot-21.11.1-py3-none-any.whl", hash = "sha256:17f933a7a0569f519d9b672e06d71c29ab3688f1ec575ba59a3ca37922481113", size = 676058, upload-time = "2025-03-01T11:46:52.001Z" },
+]
+
+[[package]]
 name = "pywin32"
 version = "311"
 source = { registry = "https://pypi.org/simple" }
@@ -2433,7 +2445,7 @@ wheels = [
 
 [[package]]
 name = "switch-core"
-version = "0.13.2"
+version = "0.17.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -2453,6 +2465,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
+    { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "slack-sdk" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -2488,6 +2501,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "pydantic-settings", specifier = ">=2.14.2,<3.0" },
     { name = "pyjwt", specifier = ">=2.9,<3" },
+    { name = "python-telegram-bot", specifier = ">=21,<22" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "slack-sdk", specifier = ">=3.41.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },

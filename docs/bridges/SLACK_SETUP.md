@@ -146,7 +146,7 @@ Regardless of how you created the app:
 ## 3. Onboard the bridge in Switch
 
 As a gateway admin, onboard the bridge from the **operator dashboard**:
-**Messaging Apps → Add bridge → Slack**, give it a display name (e.g. "Acme
+**Messaging Apps → Register messaging app → Slack**, give it a display name (e.g. "Acme
 Slack"), and fill in the fields below.
 
 Fields (`SlackConnectionConfig`):

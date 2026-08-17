@@ -144,6 +144,11 @@ class ConnectorCore:
                 models=agent.models,
                 metadata={"server_connector_id": self._connector_id},
                 overwrite=True,
+                # A server-side connector agent is a service the deployment
+                # offers everyone, not one person's assistant; it is owned by
+                # whoever holds the registration token only in the bookkeeping
+                # sense. Owner-only would make it answer to that account alone.
+                owner_only=False,
             )
         except Exception:
             logger.exception(

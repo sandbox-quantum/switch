@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 export function SidebarSpace() {
   const { isLeftOpen, setCollapsed } = useWorkspaceLayoutContext();
   return (
-    <div className="flex h-10 w-full items-center justify-end gap-2 px-2 [-webkit-app-region:drag]">
+    <div className="flex h-11 w-full items-center justify-end gap-2 px-2 [-webkit-app-region:drag]">
       <NavButtons />
       <Tooltip>
         <TooltipTrigger>

@@ -1,6 +1,5 @@
 import { useHotkey } from '@tanstack/react-hotkeys';
 import { observer } from 'mobx-react-lite';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
   APP_SHORTCUTS,
   getEffectiveHotkey,
@@ -15,15 +14,13 @@ import { commandRegistry } from './registry';
  * as commands come and go from the registry.
  */
 function SingleKeyBinder({ shortcutKey }: { shortcutKey: ShortcutSettingsKey }) {
-  const { value: keyboard } = useAppSettingsKey('keyboard');
-
   useHotkey(
-    getHotkeyRegistration(shortcutKey, keyboard),
+    getHotkeyRegistration(shortcutKey),
     () => {
       commandRegistry.dispatch(shortcutKey);
     },
     {
-      enabled: getEffectiveHotkey(shortcutKey, keyboard) !== null,
+      enabled: getEffectiveHotkey(shortcutKey) !== null,
     }
   );
 

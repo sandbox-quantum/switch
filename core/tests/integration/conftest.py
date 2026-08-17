@@ -40,6 +40,7 @@ from testcontainers.postgres import PostgresContainer
 
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
+from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
@@ -278,6 +279,10 @@ class Harness:
             integration_profile=_PROFILE,
             owner_id=self.owner_id,
             overwrite=True,
+            # Harness agents address each other; the owner-only default would
+            # block every agent-to-agent message. Tests that exercise scoped
+            # addressing set a policy explicitly.
+            owner_only=False,
         )
         self._registered.append(result.agent_id)
         return result
@@ -427,6 +432,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     # Per-test in-memory wiring: a fresh EventBuffer / client registry so queued
     # events and client registrations never leak across tests.
     event_buffer = EventBuffer()
+    connections = ConnectionRegistry()
     request_tracker = RequestTracker()
     resource_request_tracker = ResourceRequestTracker()
     collab_lifecycle = _NoBridges()
@@ -455,8 +461,10 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         reference_store=session_env.reference_store,
         agent_session_store=session_env.agent_session_store,
         room_role_store=session_env.room_role_store,
+        external_user_store=session_env.external_user_store,
         request_tracker=request_tracker,
         resource_request_tracker=resource_request_tracker,
+        connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
     client_factory.register("user", ClientBase)
@@ -476,6 +484,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         agent_store=session_env.agent_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
+        collab_bridge_store=session_env.bridge_store,
         resource_service=resource_service,
         session_factory=session_factory,
     )
@@ -497,6 +506,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         bridge_store=session_env.bridge_store,
         session_factory=session_factory,
         config=config,
+        connections=connections,
     )
 
     h = Harness(

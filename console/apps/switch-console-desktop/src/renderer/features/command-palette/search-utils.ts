@@ -122,3 +122,28 @@ export function matchHosts(
     })
   );
 }
+
+/**
+ * Splits results into the sections the palette shows them under.
+ *
+ * The palette used to render indexed results ungrouped, after the room/server/
+ * host groups. A cmdk heading belongs to a group, and an item outside one is a
+ * sibling appended after the last group — so agents and sessions read as though
+ * they were more servers. Every result now belongs to a section.
+ *
+ * Keyed by every kind rather than the three the index emits today, so a kind it
+ * starts emitting lands in the section that already names it instead of
+ * silently vanishing.
+ */
+export function sectionResults(items: SearchItem[]): Record<SearchItemKind, SearchItem[]> {
+  const sections: Record<SearchItemKind, SearchItem[]> = {
+    agent: [],
+    session: [],
+    command: [],
+    room: [],
+    server: [],
+    host: [],
+  };
+  for (const entry of items) sections[entry.kind].push(entry);
+  return sections;
+}

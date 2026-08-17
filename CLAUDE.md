@@ -22,7 +22,7 @@ history — a later commit cannot take it back. Keep internal detail out of it:
 
 ## Project Overview
 
-Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost).
+Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
 
 The target architecture is documented in `docs/`.
 
@@ -80,7 +80,7 @@ just test -k "test_name"         # run specific test
 - `clients/` — Matrix clients (agent, user, resource manager, observe)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors)
-  - `collaboration/` — Collaboration Bridge (Slack, Mattermost adapters)
+  - `collaboration/` — Collaboration Bridge (Slack, Mattermost, Discord, Teams, Telegram adapters)
   - `observe/` — Observe Bridge (event sinks)
   - `resource/` — Resource Bridge (platform resource management)
 - `protect/` — Protection pipeline (checks, protect bridge, API)
@@ -234,7 +234,7 @@ exist:
   event stream, room slots, failure handling). Authoritative where it and
   `ARCHITECTURE.md` overlap
 - `docs/bridges/` — collaboration bridge setup: `README.md` plus one page each
-  for Slack, Mattermost, Discord, and Teams
+  for Slack, Mattermost, Discord, Teams, and Telegram
 
 There is no separate schema, room-design, HTTP-API or MCP-surface document. Read
 those from the code: `core/switch_core/db/models.py` for the schema,

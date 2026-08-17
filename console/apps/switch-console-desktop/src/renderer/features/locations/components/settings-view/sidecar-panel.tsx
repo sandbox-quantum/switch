@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { SidecarSettingsSection } from '@renderer/features/locations/components/settings-view/sections/sidecar-settings-section';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -37,8 +38,9 @@ export const SidecarPanel = observer(function SidecarPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <section className="flex flex-col gap-4">
+      <SectionLabel>Sidecar</SectionLabel>
       <SidecarSettingsSection agentId={agent.id} />
-    </div>
+    </section>
   );
 });

@@ -138,6 +138,42 @@ describe('PtySessionRegistry', () => {
     expect(registry.getLastSize('session-1')).toEqual({ cols: 120, rows: 50 });
   });
 
+  it('remembers a resize that arrives before the PTY exists', () => {
+    const registry = new PtySessionRegistry();
+
+    const resized = registry.resize('session-1', 203, 51);
+
+    expect(resized).toBe(false);
+    expect(registry.getLastSize('session-1')).toEqual({ cols: 203, rows: 51 });
+  });
+
+  // The ordering an actual remote attach produces, taken from the logs: the
+  // spawn size is read (nothing recorded yet), the renderer mounts mid-attach
+  // and reports twice while there is still no pty, and only then does the pty
+  // register. Every resize misses, and the session sat at its 80x24 spawn size
+  // until the pane moved (CHOO-2066).
+  it('applies a size reported before the PTY registered once it does', () => {
+    const registry = new PtySessionRegistry();
+    const pty = fakePty();
+
+    expect(registry.getLastSize('session-1')).toBeUndefined();
+    registry.resize('session-1', 105, 34);
+    registry.resize('session-1', 105, 34);
+
+    registry.register('session-1', pty);
+
+    expect(pty.resize).toHaveBeenCalledWith(105, 34);
+  });
+
+  it('leaves a PTY at its spawn size when nothing was reported', () => {
+    const registry = new PtySessionRegistry();
+    const pty = fakePty();
+
+    registry.register('session-1', pty);
+
+    expect(pty.resize).not.toHaveBeenCalled();
+  });
+
   it('clears last observed size when preserving output after exit', () => {
     const registry = new PtySessionRegistry();
     const pty = fakePty();

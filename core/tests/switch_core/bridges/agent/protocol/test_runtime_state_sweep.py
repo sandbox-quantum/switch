@@ -72,11 +72,13 @@ def _service(
 
 
 async def _an_agent(*_a: Any, **_kw: Any) -> Any:
-    return SimpleNamespace(id=AGENT, name="agent", integration_profile={}, metadata_={})
+    return SimpleNamespace(
+        id=AGENT, name="agent", integration_profile={}, metadata_={}, owner_id=None
+    )
 
 
 async def _a_room(*_a: Any, **_kw: Any) -> Any:
-    return SimpleNamespace(id=ROOM, matrix_room_id="!m:server")
+    return SimpleNamespace(id=ROOM, matrix_room_id="!m:server", bridge_id=None)
 
 
 def _session_factory() -> Any:

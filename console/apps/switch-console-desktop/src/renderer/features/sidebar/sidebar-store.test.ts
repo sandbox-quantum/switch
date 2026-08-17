@@ -201,6 +201,41 @@ describe('SidebarStore grouping', () => {
     expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(true);
   });
 
+  it('closes the branches Collapse all names', () => {
+    // The regression this guards: collapseAll used to clear expandedLocationIds
+    // and expandedRoomKeys, which no tree has read since the sidebar was
+    // regrouped around agents and rooms — so the button moved nothing on screen.
+    const store = new SidebarStore(locationManager([]));
+
+    store.collapseAll([agentExpandKey('agent-1'), agentExpandKey('agent-2')]);
+
+    expect(store.isGroupExpanded(agentExpandKey('agent-1'))).toBe(false);
+    expect(store.isGroupExpanded(agentExpandKey('agent-2'))).toBe(false);
+  });
+
+  it('leaves branches Collapse all was not given open', () => {
+    // The caller passes only the grouping on screen, so collapsing in one view
+    // must not rearrange the other one behind the user's back.
+    const store = new SidebarStore(locationManager([]));
+
+    store.collapseAll([agentExpandKey('agent-1')]);
+
+    expect(store.isGroupExpanded(roomViewGroupKey('room-1'))).toBe(true);
+  });
+
+  it('leaves a nested group as the user left it when its parent collapses', () => {
+    // Reopening an agent should show the rooms under it the way they were, not
+    // a tree flattened by a button pressed at the top level.
+    const store = new SidebarStore(locationManager([]));
+    store.toggleGroupExpanded(agentRoomGroupKey('agent-1', 'room-1'));
+
+    store.collapseAll([agentExpandKey('agent-1')]);
+    store.toggleGroupExpanded(agentExpandKey('agent-1'));
+
+    expect(store.isGroupExpanded(agentExpandKey('agent-1'))).toBe(true);
+    expect(store.isGroupExpanded(agentRoomGroupKey('agent-1', 'room-1'))).toBe(false);
+  });
+
   it('collapses one agent-under-room without collapsing the same agent elsewhere', () => {
     // An agent in two rooms is two rows in two places, not one row drawn twice.
     // Keyed by agent alone they collapsed and highlighted together.

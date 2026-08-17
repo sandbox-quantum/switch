@@ -1,0 +1,126 @@
+google/gemini-2.5-flash
+{
+  "id": "gemini-2.5-flash",
+  "providerID": "google",
+  "name": "Gemini 2.5 Flash",
+  "family": "gemini-flash",
+  "api": {
+    "id": "gemini-2.5-flash",
+    "url": "",
+    "npm": "@ai-sdk/google"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 0.3,
+    "output": 2.5,
+    "cache": {
+      "read": 0.03,
+      "write": 0
+    }
+  },
+  "limit": {
+    "context": 1048576,
+    "output": 65536
+  },
+  "capabilities": {
+    "temperature": true,
+    "reasoning": true,
+    "attachment": true,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": true,
+      "image": true,
+      "video": true,
+      "pdf": true
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "release_date": "2025-06-17",
+  "variants": {
+    "high": {
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 12288
+      }
+    },
+    "max": {
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 24576
+      }
+    }
+  }
+}
+google/gemini-2.5-flash-lite
+{
+  "id": "gemini-2.5-flash-lite",
+  "providerID": "google",
+  "name": "Gemini 2.5 Flash-Lite",
+  "family": "gemini-flash-lite",
+  "api": {
+    "id": "gemini-2.5-flash-lite",
+    "url": "",
+    "npm": "@ai-sdk/google"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 0.1,
+    "output": 0.4,
+    "cache": {
+      "read": 0.01,
+      "write": 0
+    }
+  },
+  "limit": {
+    "context": 1048576,
+    "output": 65536
+  },
+  "capabilities": {
+    "temperature": true,
+    "reasoning": true,
+    "attachment": true,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": true,
+      "image": true,
+      "video": true,
+      "pdf": true
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "release_date": "2025-06-17",
+  "variants": {
+    "high": {
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 12288
+      }
+    },
+    "max": {
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 24576
+      }
+    }
+  }
+}

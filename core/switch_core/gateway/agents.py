@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.agent_icon import InvalidIconUrl, normalise_icon_url
 from switch_core.authz import Principal, require_manage
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentOptionsNotEditable,
@@ -44,6 +45,7 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
     UpdateAddressingPolicyRequest,
+    UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
@@ -158,6 +160,7 @@ async def register_known_agent(
         result = await protocol.register_agent(
             name=req.name,
             description=req.description,
+            icon_url=req.icon_url,
             connector_type=spec.connector_type,
             integration_profile=integration_profile,
             tools=spec.tools,
@@ -169,6 +172,7 @@ async def register_known_agent(
     except AgentExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
+        # Covers InvalidIconUrl, which subclasses ValueError.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return RegisterAgentResponse(
@@ -192,8 +196,8 @@ async def register_known_subagents(
     endpoint: the signed-in user must own the parent. Each child's Switch name
     is derived as ``<parent-name>.<subagent_name>``; a name clash fails the whole
     batch up front rather than leaving a partial set registered. Subagents
-    inherit the parent's `channels_enabled` / `repo_dir` / `notify_user` unless
-    overridden in `options`.
+    inherit the parent's `channels_enabled` / `repo_dir` unless overridden in
+    `options`.
     """
     spec = KNOWN_AGENTS.get(req.agent_type)
     if spec is None:
@@ -337,6 +341,59 @@ async def update_agent_options(
     return await build_agent_summary(session, agent_store, agent, owner_name)
 
 
+@router.put("/{agent_id}/icon")
+async def update_agent_icon(
+    agent_id: str,
+    req: UpdateAgentIconRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> AgentSummary:
+    """Set, change, or clear an agent's icon (CHOO-2171).
+
+    ``icon_url: null`` clears it, leaving the agent with no icon so the caller
+    renders its own fallback. Only the agent's owner (or an admin) may change
+    it. Unlike options, this applies to every agent regardless of how it was
+    registered.
+
+    The URL must be an absolute https address that is not the local machine or
+    a private network — Switch dereferences it when a bridge needs the image
+    as bytes, so an unconstrained URL would be a request made on the caller's
+    behalf from inside our network. A rejected URL returns 400 rather than
+    being stored and failing later at render time.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    try:
+        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change its icon.",
+        )
+
+    try:
+        icon_url = normalise_icon_url(req.icon_url)
+    except InvalidIconUrl as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await agent_store.update(session, agent_id, icon_url=icon_url)
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info(
+        "%s agent %s icon by user %s",
+        "Cleared" if icon_url is None else "Set",
+        agent.name,
+        user.name,
+    )
+
+    owner_name = user.name if agent.owner_id == user.id else None
+    return await build_agent_summary(session, agent_store, agent, owner_name)
+
+
 @router.post("/register-other")
 async def register_other_agent(
     req: RegisterOtherAgentRequest,
@@ -358,6 +415,7 @@ async def register_other_agent(
         result = await protocol.register_agent(
             name=req.name,
             description=req.description,
+            icon_url=req.icon_url,
             connector_type="external",
             integration_profile=default_profile,
             owner_id=user.id,
@@ -366,6 +424,7 @@ async def register_other_agent(
     except AgentExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
+        # Covers InvalidIconUrl, which subclasses ValueError.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return RegisterAgentResponse(

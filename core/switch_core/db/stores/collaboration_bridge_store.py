@@ -76,6 +76,16 @@ class CollaborationBridgeStore:
         await session.flush()
         return bridge
 
+    async def set_channel_creation_enabled(
+        self, session: AsyncSession, bridge_id: str, enabled: bool
+    ) -> CollaborationBridge:
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        bridge.channel_creation_enabled = enabled
+        await session.flush()
+        return bridge
+
     async def set_service_url(
         self, session: AsyncSession, bridge_id: str, service_url: str
     ) -> None:

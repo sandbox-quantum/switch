@@ -384,17 +384,19 @@ pnpm run lint
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
 - The app ships no telemetry or analytics; do not add tracking or phone-home behavior.
-  Logs are local-only: they leave the machine solely when the user attaches them to a
-  feedback report, via `getDiagnosticLogAttachment()`. Do not add any other path that
-  transmits log content.
+  Logs are local-only and no code path transmits them off the machine. Do not add one.
+  `getDiagnosticLogAttachment()` builds a redacted export and is the only function
+  intended to ever feed such a path; anything that ships log content must go through it
+  rather than reading the log itself.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.
   - **Personal data** (home directories, IP and MAC addresses, emails) is deliberately
     *retained* in the local log file — it is what makes a user's own log debuggable —
     and is redacted by `redactDiagnosticLog()` in `getDiagnosticLogAttachment()`, the
-    single point at which content leaves the machine. Do not "fix" the local file by
-    scrubbing it on write; that reinstates the problem this split exists to solve.
+    single point at which content is prepared to leave the machine. Do not "fix" the
+    local file by scrubbing it on write; that reinstates the problem this split exists
+    to solve.
   - Anything contributed via `registerDiagnosticSection()` passes through the same
     export scrub. Never read the raw log file from outside `file-logger.ts`.
 - **An agent's Switch API token lives in exactly one file:**

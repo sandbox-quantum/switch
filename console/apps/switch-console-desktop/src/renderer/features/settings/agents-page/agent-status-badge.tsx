@@ -13,8 +13,16 @@ export function SwitchSetupRequiredBadge() {
   return <StatusBadge tone="warning">Switch setup required</StatusBadge>;
 }
 
-export function UpdateAvailableBadge() {
-  return <StatusBadge tone="warning">Update available</StatusBadge>;
+/**
+ * The Switch connector is behind the version this build ships.
+ *
+ * Named for the connector rather than "Update available": the agent's own CLI
+ * can also be out of date, and that is between the user and their CLI. This one
+ * is ours, it is what lets the agent speak to Switch at all, and it is worth
+ * acting on — so it says which thing it means.
+ */
+export function ConnectorUpdateBadge() {
+  return <StatusBadge tone="warning">Connector update</StatusBadge>;
 }
 
 export function RecommendedBadge() {

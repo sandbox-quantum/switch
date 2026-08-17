@@ -3,7 +3,6 @@ import os from 'node:os';
 import { app } from 'electron';
 import pidusage from 'pidusage';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
-import { appSettingsService } from '@main/core/settings/settings-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { parsePtySessionId } from '@shared/core/pty/ptySessionId';
@@ -241,15 +240,10 @@ export function setResourceMonitorOpen(
     openSubscriptions.delete(subscriptionId);
     latestSequenceByClient.delete(clientId);
   }
-  void reconcileResourceSampler();
+  reconcileResourceSampler();
 }
 
-export async function reconcileResourceSampler(): Promise<void> {
-  try {
-    const { enabled } = await appSettingsService.get('resourceMonitor');
-    if (enabled && openSubscriptions.size > 0) startResourceSampler();
-    else stopResourceSampler();
-  } catch (err) {
-    log.warn('resource-sampler: failed to read settings', err);
-  }
+export function reconcileResourceSampler(): void {
+  if (openSubscriptions.size > 0) startResourceSampler();
+  else stopResourceSampler();
 }

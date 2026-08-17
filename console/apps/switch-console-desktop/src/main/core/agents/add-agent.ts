@@ -6,10 +6,12 @@ import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
+import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { basenameFromAnyPath } from '@shared/path-name';
+import { foreignCredentialsOwner } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -34,6 +36,9 @@ export type AddAgentParams = {
   /** The registered Switch server to mint the identity on. */
   serverId: string;
   description: string;
+  /** The icon picked in the create form. Null means the form offered no
+   * choice, and the agent is registered with the avatar its name generates. */
+  iconUrl: string | null;
   autoSession: boolean;
   autoApprove: boolean;
   /** Provider-specific definition attributes (model, effort, tools, prompt, …),
@@ -50,6 +55,7 @@ export type AddAgentResult =
   | { kind: 'created'; agent: Agent }
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
+  | { kind: 'credentials-conflict'; endpoint: string }
   | { kind: 'invalid-name'; message: string }
   | { kind: 'error'; message: string };
 
@@ -82,12 +88,27 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
     return { kind: 'name-conflict' };
   }
 
+  // And the check above only sees agents THIS install manages. A second Switch
+  // Console on the same host, pointed at a different Switch server, has its own
+  // database and its own agents in this same directory — so the only thing that
+  // knows about its agent is the credentials file it left here (CHOO-1960).
+  // Refuse before minting: the writer refuses too, but by then this agent's
+  // token has been minted and is unrecoverable.
+  const foreignEndpoint = await foreignCredentialsOwner(
+    params.sshHost,
+    params.dir,
+    params.name,
+    server.apiUrl
+  );
+  if (foreignEndpoint !== null) return { kind: 'credentials-conflict', endpoint: foreignEndpoint };
+
   const registered = await registerAgentIdentity(server, {
     name: params.name,
     description: params.description,
     repoDir: params.dir,
     autoSession: params.autoSession,
     agentType: knownAgentTypeForProvider(params.providerId),
+    iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
   });
   if (registered.kind !== 'created') return registered;
 

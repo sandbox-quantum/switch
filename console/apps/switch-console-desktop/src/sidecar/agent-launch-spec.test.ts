@@ -1,6 +1,8 @@
+import { LAUNCH_PROFILE_HOME_PLACEHOLDER } from '@switch-console/core/agents/plugins';
 import { describe, expect, it } from 'vitest';
 import {
   type AgentLaunchSpec,
+  HOME_PLACEHOLDER,
   INITIAL_PROMPT_PLACEHOLDER,
   materializeAgentCommand,
   SESSION_ID_PLACEHOLDER,
@@ -29,6 +31,7 @@ describe('materializeAgentCommand', () => {
       sessionId: 'session-9',
       initialPrompt: 'connect to switch room room-x',
       extraEnv: {},
+      homeDir: '/home/agent',
     });
     expect(cmd.command).toBe('/usr/bin/claude');
     expect(cmd.args).toEqual([
@@ -44,6 +47,7 @@ describe('materializeAgentCommand', () => {
       sessionId: 'c',
       initialPrompt: 'p',
       extraEnv: { SHARED: 'override', HOOK: 'x' },
+      homeDir: '/home/agent',
     });
     expect(cmd.env).toEqual({ BASE: '1', SHARED: 'override', HOOK: 'x' });
   });
@@ -59,6 +63,7 @@ describe('materializeAgentCommand', () => {
         sessionId: 'c',
         initialPrompt: 'connect to switch room room-x',
         extraEnv: {},
+        homeDir: '/home/agent',
       }
     );
 
@@ -71,6 +76,7 @@ describe('materializeAgentCommand', () => {
         sessionId: 'c',
         initialPrompt: 'p',
         extraEnv: {},
+        homeDir: '/home/agent',
       })
     ).toThrow(INITIAL_PROMPT_PLACEHOLDER);
   });
@@ -83,8 +89,44 @@ describe('materializeAgentCommand', () => {
           sessionId: 's1',
           initialPrompt: 'p',
           extraEnv: {},
+          homeDir: '/home/agent',
         }
       )
     ).toThrow(/unsubstituted placeholder/);
+  });
+});
+
+describe('HOME_PLACEHOLDER', () => {
+  it('is the same token the plugin packages emit', () => {
+    // The sidecar is a standalone bundle and deliberately imports nothing from
+    // the plugin packages, so the token it substitutes is a second declaration
+    // of the one plugins write. If they drift, a remote OpenCode session gets a
+    // config path that was never completed.
+    expect(HOME_PLACEHOLDER).toBe(LAUNCH_PROFILE_HOME_PLACEHOLDER);
+  });
+
+  it('resolves a profile env value naming a baked launch file', () => {
+    const cmd = materializeAgentCommand(
+      spec({ env: { OPENCODE_CONFIG: `${HOME_PLACEHOLDER}/.config/opencode/switch/a.json` } }),
+      {
+        sessionId: 's',
+        initialPrompt: 'p',
+        extraEnv: {},
+        homeDir: '/home/agent',
+      }
+    );
+
+    expect(cmd.env.OPENCODE_CONFIG).toBe('/home/agent/.config/opencode/switch/a.json');
+  });
+
+  it('fails the spawn rather than passing an unsubstituted placeholder to the agent', () => {
+    expect(() =>
+      materializeAgentCommand(spec({ env: { SOMETHING: '__SWITCHDASH_UNKNOWN__/x' } }), {
+        sessionId: 's',
+        initialPrompt: 'p',
+        extraEnv: {},
+        homeDir: '/home/agent',
+      })
+    ).toThrow(/unsubstituted placeholder in env SOMETHING/);
   });
 });

@@ -29,7 +29,7 @@ import {
 import { cn } from '@renderer/utils/utils';
 
 const TONE_TRIGGER_STYLES: Record<UpdateTone, string> = {
-  neutral: 'text-foreground-passive hover:text-foreground',
+  neutral: 'text-[var(--fg-passive)] hover:text-foreground',
   info: 'border border-border-info bg-background-info text-foreground-info hover:bg-background-info-hover',
   success:
     'border border-border-success bg-background-success text-foreground-success hover:bg-background-success-hover',

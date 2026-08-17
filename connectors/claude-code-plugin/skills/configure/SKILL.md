@@ -299,7 +299,7 @@ non-interactively or with auto-mode flags that suppress questions, still ask.
 
 The answer is passed as `options.channels_enabled` in the register payload.
 
-## Step 6 — Repository directory and notify user
+## Step 6 — Repository directory
 
 Switch shows room participants a paste-ready command when the agent is addressed
 with no live session. It is built from what you record here and in Step 5, so it
@@ -326,15 +326,12 @@ has no identity.
 Ask whether to record it, defaulting to the current working directory. Validate
 that it is absolute (`startswith("/")`) and exists (`test -d`).
 
-Then ask whether to record `notify_user` — a handle to `@`-mention on the
-bridged platform so the operator gets a push notification. Explain: *"Use the
-exact handle they have on the room's bridged platform (Slack / Mattermost), or
-their Switch user name for unbridged rooms — often NOT the local username. If it
-doesn't match a real bridge user the mention silently does nothing."* Ask for the
-bare handle, no leading `@`, and do not default to `$USER`.
+Omit the key entirely if the user opts out — leave it out rather than passing an
+empty string, so the schema default applies.
 
-Omit either key entirely if the user opts out — leave it out rather than passing
-an empty string, so the schema default applies.
+**There is no `notify_user` to record.** Pinging the operator is now driven by
+the agent's *owner*, linked to a messaging account, rather than a free-text
+handle nobody validated. Do not ask for one and do not send the key.
 
 **Do not set `auto_session`.** It means "Switch Console watches rooms and
 auto-spawns a session"; with no Switch Console there is nothing to do the
@@ -343,8 +340,9 @@ spawning, so setting it advertises a capability that does not exist.
 ## Step 7 — Register
 
 `POST /agents/register-known` with the registration token in the header. It looks
-up the `claude-code` known-agent spec and returns the agent's `id` and `api_key`.
-Do not inline the token — command lines reach shell history and process listings:
+up the `claude-code` known-agent spec, derives the integration profile from
+`options.channels_enabled`, and returns the agent's `id` and `api_key`. Do not
+inline the token — command lines reach shell history and process listings:
 
 ```bash
 curl -sf -X POST "$ENDPOINT/agents/register-known" \
@@ -352,11 +350,10 @@ curl -sf -X POST "$ENDPOINT/agents/register-known" \
   -H "Content-Type: application/json" \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
        --argjson channels "$CHANNELS_ENABLED" \
-       --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+       --arg repo_dir "$REPO_DIR" \
        '{agent_type:"claude-code", name:$name, description:$desc,
          options:({channels_enabled:$channels}
-                  + (if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)
-                  + (if $notify_user == "" then {} else {notify_user:$notify_user} end)),
+                  + (if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)),
          overwrite:false}')"
 ```
 
@@ -446,8 +443,8 @@ registration happens:
 - `ENDPOINT` — from Step 2. `NAME`, `DESC` — from Step 4.
 - `CHANNELS_ENABLED` — from Step 5, the bare JSON literal `true` or `false`
   (passed with `--argjson`, not `--arg`).
-- `REPO_DIR`, `NOTIFY_USER` — from Step 6. **Set them to the empty string** when
-  the user opted out; leaving them unset trips `set -u`.
+- `REPO_DIR` — from Step 6. **Set it to the empty string** when the user opted
+  out; leaving it unset trips `set -u`.
 - `SWITCH_REGISTRATION_TOKEN` — from Step 3, already exported into the
   environment. Do not assign it inside the script; that puts it in the file.
 
@@ -481,11 +478,10 @@ http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/reg
   -H "Content-Type: application/json" \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
        --argjson channels "$CHANNELS_ENABLED" \
-       --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+       --arg repo_dir "$REPO_DIR" \
        '{agent_type:"claude-code", name:$name, description:$desc,
          options:({channels_enabled:$channels}
-                  + (if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)
-                  + (if $notify_user == "" then {} else {notify_user:$notify_user} end)),
+                  + (if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)),
          overwrite:false}')")
 
 if [ "$http_status" != "200" ]; then
@@ -674,9 +670,9 @@ explicitly, from whichever of these applies:
   session does have).
 
 **Subagents inherit the parent's settings automatically.** The server reads the
-parent's recorded `channels_enabled`, `repo_dir` and `notify_user` and applies
-them as the base for every subagent, so you do not need to pass them. Set a key
-in `options` only to deliberately *override* an inherited value.
+parent's recorded `channels_enabled` and `repo_dir` and applies them as the base
+for every subagent, so you do not need to pass them. Set a key in `options` only
+to deliberately *override* an inherited value.
 
 `SUBS_JSON` is a JSON array of the selected subagents, built with `jq` rather
 than by hand so descriptions containing quotes survive:

@@ -34,6 +34,25 @@ export function getAgentAdvancedFields(providerId: AgentProviderId): RepoAgentFi
   return behavior.mcp?.launchProfileFields?.() ?? [];
 }
 
+/** Where a provider keeps its per-agent settings. */
+export type AgentAdvancedSurface = 'definition' | 'launch-profile' | 'none';
+
+/**
+ * Which of the two surfaces a provider uses, for a caller that has to treat them
+ * differently — the renderer offers a restart only for a launch profile, which is
+ * read once at spawn and so cannot reach a session already running.
+ *
+ * Reported rather than inferred from the provider id: that check was `=== 'codex'`
+ * for as long as Codex was the only provider with a profile, and silently
+ * excluded the next one.
+ */
+export function getAgentAdvancedSurface(providerId: AgentProviderId): AgentAdvancedSurface {
+  const behavior = getPlugin(providerId).behavior;
+  if (behavior.repoAgents?.attributeFields()) return 'definition';
+  if (behavior.mcp?.launchProfileFields) return 'launch-profile';
+  return 'none';
+}
+
 /**
  * Current values for the form, or null when there is nothing stored yet — the
  * caller renders an empty form in that case.
@@ -71,6 +90,6 @@ export async function updateAgentAdvancedConfig(params: {
   }
   return setAgentProviderConfig({
     agentId: params.agentId,
-    config: providerConfigFromAttributes(params.attributes),
+    config: providerConfigFromAttributes(agent.providerId, params.attributes),
   });
 }

@@ -107,7 +107,10 @@ export function SortableBranch({
 }) {
   const { setNodeRef, style, listeners } = useSortableRow(id);
   return (
-    <div ref={setNodeRef} style={style}>
+    // The 2px gap is the same at every level, including between a branch's
+    // header and its children: an extra step around groups would read as
+    // stacked blocks rather than one tree.
+    <div ref={setNodeRef} style={style} className="flex flex-col gap-[2px]">
       <div {...listeners}>{header}</div>
       {children}
     </div>

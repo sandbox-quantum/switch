@@ -52,6 +52,43 @@ function activeRowIn(scroller: HTMLElement): HTMLElement | null {
   return rows[0] ?? null;
 }
 
+/** The effects one reveal attempt needs, injected so the rule below can be
+ * exercised without a DOM or a layout. */
+export interface RevealAttemptIO {
+  /** Re-derive the selection and open whatever is hiding it. */
+  reveal: () => void;
+  /** Whether a row is mid-drag, in which case the viewport is left alone. */
+  dragging: () => boolean;
+  /** The active row's edges, or null when it is not rendered yet. */
+  findRow: () => Edges | null;
+  /** The scroll container's edges. */
+  scroller: () => Edges;
+  scrollBy: (delta: number) => void;
+}
+
+/**
+ * One attempt at showing the selected row: open whatever hides it, then bring
+ * it into view. True once the row exists and has been settled.
+ *
+ * Revealing is repeated on every attempt rather than done once up front. The
+ * room a session belongs to may still be loading when the selection changes —
+ * a deeplink scopes to another server and navigates in the same breath — and a
+ * reveal computed before that arrives knows of no room to open, so it opens
+ * nothing and the row stays hidden for good. Reveals are idempotent, so
+ * repeating one costs nothing once it has taken effect.
+ */
+export function attemptRevealSelection(io: RevealAttemptIO): boolean {
+  io.reveal();
+  if (io.dragging()) return false;
+  const row = io.findRow();
+  if (!row) return false;
+  const delta = scrollDeltaFor(io.scroller(), row);
+  // Instant, never smooth: a glide under a held pointer travels far enough to
+  // cross the drag activation distance and turn a click into a drag.
+  if (delta !== 0) io.scrollBy(delta);
+  return true;
+}
+
 export function useScrollSelectionIntoView(scrollerRef: RefObject<HTMLElement | null>): void {
   // Read in render so the sidebar re-renders — and this effect re-runs — the
   // moment the selection changes, wherever it was changed from.
@@ -62,19 +99,21 @@ export function useScrollSelectionIntoView(scrollerRef: RefObject<HTMLElement | 
     const scroller = scrollerRef.current;
     if (!scroller || settledKey.current === selectionKey) return;
 
-    const selection = currentSidebarSelection();
-    if (selection) sidebarStore.revealSelection(selection);
-
     const bringIntoView = (): boolean => {
-      if (isSidebarRowDragging()) return false;
-      const row = activeRowIn(scroller);
-      if (!row) return false;
-      settledKey.current = selectionKey;
-      const delta = scrollDeltaFor(scroller.getBoundingClientRect(), row.getBoundingClientRect());
-      // Instant, never smooth: a glide under a held pointer travels far enough
-      // to cross the drag activation distance and turn a click into a drag.
-      if (delta !== 0) scroller.scrollTop += delta;
-      return true;
+      const settled = attemptRevealSelection({
+        reveal: () => {
+          const selection = currentSidebarSelection();
+          if (selection) sidebarStore.revealSelection(selection);
+        },
+        dragging: isSidebarRowDragging,
+        findRow: () => activeRowIn(scroller)?.getBoundingClientRect() ?? null,
+        scroller: () => scroller.getBoundingClientRect(),
+        scrollBy: (delta) => {
+          scroller.scrollTop += delta;
+        },
+      });
+      if (settled) settledKey.current = selectionKey;
+      return settled;
     };
 
     if (bringIntoView()) return;

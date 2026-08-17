@@ -6,6 +6,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
@@ -105,6 +106,27 @@ function useRoomMemberAgents(roomId: string | undefined): {
   return { agents, serverId, loading: membersQuery.isLoading || !agentsStore.loaded };
 }
 
+/**
+ * Every agent on the active server, for the case where the caller named none.
+ *
+ * Scoped to the active server because that is the workspace on screen: the
+ * sidebar, its tree and this dialog are all showing one server, and offering
+ * agents from another would start a session outside the thing being looked at.
+ */
+function useAllServerAgents(enabled: boolean): { agents: Agent[]; loading: boolean } {
+  useEffect(() => {
+    if (enabled) void agentsStore.load();
+  }, [enabled]);
+
+  const serverId = switchServersStore.activeServerId;
+  const agents = [...agentsStore.byLocation.values()]
+    .flat()
+    .filter((a) => a.serverId === serverId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return { agents, loading: !agentsStore.loaded };
+}
+
 export const CreateSessionModal = observer(function CreateSessionModal({
   locationId,
   agentName,
@@ -136,6 +158,12 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   // the room), in which case the picker just shows that agent, still switchable.
   const roomFirst = !!roomId;
   const roomMembers = useRoomMemberAgents(roomId);
+  // Opened from the sidebar's own New Session row, which names neither an agent
+  // nor a room. A session is owned by an agent, so one has to be chosen here;
+  // falling back to the most recent location would start the session as
+  // whichever agent happened to be last, with nothing on screen saying which.
+  const agentFirstNeedsPick = !roomId && !agentName && !locationId;
+  const pickableAgents = useAllServerAgents(agentFirstNeedsPick);
   const presetAgent =
     roomMembers.agents.find(
       (a) => a.name === agentName && (!locationId || a.locationId === locationId)
@@ -144,11 +172,19 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   // formality, and the user still sees which agent it resolved to.
   const effectiveAgent =
     pickedAgent ?? presetAgent ?? (roomMembers.agents.length === 1 ? roomMembers.agents[0] : null);
-  const selectedLocationId = roomFirst ? effectiveAgent?.locationId : defaultLocationId;
+  const selectedLocationId = roomFirst
+    ? effectiveAgent?.locationId
+    : agentFirstNeedsPick
+      ? pickedAgent?.locationId
+      : defaultLocationId;
   // Every Switch Console agent is its own Switch identity, so a session is always
   // owned by a named agent row (CHOO-1440) — the picked agent's name plays the
   // same part here as the `agentName` an agent row passes in.
-  const effectiveAgentName = roomFirst ? effectiveAgent?.name : agentName;
+  const effectiveAgentName = roomFirst
+    ? effectiveAgent?.name
+    : agentFirstNeedsPick
+      ? pickedAgent?.name
+      : agentName;
 
   // A session belongs to an agent; resolve the location's agent up front so we
   // can offer the rooms it belongs to.
@@ -279,6 +315,60 @@ export const CreateSessionModal = observer(function CreateSessionModal({
       </DialogHeader>
       <DialogContentArea>
         <div className="flex w-full flex-col gap-5">
+          {agentFirstNeedsPick && (
+            <Field>
+              <FieldLabel>Agent</FieldLabel>
+              <Combobox
+                items={pickableAgents.agents}
+                value={pickedAgent}
+                onValueChange={(next: Agent | null) => setPickedAgent(next)}
+                isItemEqualToValue={(a: Agent, b: Agent) => a.id === b.id}
+                filter={(item: Agent, query) =>
+                  item.name.toLowerCase().includes(query.toLowerCase())
+                }
+                autoHighlight
+              >
+                <ComboboxTrigger
+                  disabled={pickableAgents.loading || pickableAgents.agents.length === 0}
+                  className={cn(
+                    'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
+                    (pickableAgents.loading || pickableAgents.agents.length === 0) &&
+                      'cursor-not-allowed opacity-60'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'flex-1 truncate text-left',
+                      !pickedAgent && 'text-foreground-muted'
+                    )}
+                  >
+                    {pickedAgent
+                      ? pickedAgent.name
+                      : pickableAgents.loading
+                        ? 'Loading agents…'
+                        : 'Choose an agent'}
+                  </span>
+                  <ChevronDown className="size-3.5 shrink-0 text-foreground-muted" />
+                </ComboboxTrigger>
+                <ComboboxContent className="min-w-(--anchor-width)">
+                  <ComboboxInput showTrigger={false} placeholder="Search agents…" />
+                  <ComboboxList>
+                    {(item: Agent) => (
+                      <ComboboxItem key={item.id} value={item}>
+                        <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                  <ComboboxEmpty>No agents found</ComboboxEmpty>
+                </ComboboxContent>
+              </Combobox>
+              {!pickableAgents.loading && pickableAgents.agents.length === 0 && (
+                <p className="mt-1 text-xs text-foreground-muted">
+                  This server has no agents yet. Add one first, then start a session for it.
+                </p>
+              )}
+            </Field>
+          )}
           {roomFirst && (
             <Field>
               <FieldLabel>Agent</FieldLabel>

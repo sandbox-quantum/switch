@@ -108,14 +108,31 @@ export interface AddressingPolicy {
   rules: AddressingRule[];
 }
 
+export interface BridgeInstallLink {
+  key: string;
+  label: string;
+  description: string;
+  url: string;
+}
+
 export interface BridgeDetail {
   bridge_id: string;
   bridge_type: string;
   display_name: string;
   status: string;
   agent_greetings_enabled: boolean;
+  // Whether the platform can create channels at all. Fixed per platform —
+  // not something an operator can change.
+  channel_creation_supported: boolean;
+  // Whether this operator has allowed this connection to create channels.
+  // Only meaningful when channel_creation_supported is true.
+  channel_creation_enabled: boolean;
   room_count: number;
   created_at: string;
+  // Empty for platforms whose app is installed through their own admin UI.
+  install_links?: BridgeInstallLink[];
+  // What those links do not cover — chats that have to be joined by hand.
+  install_note?: string | null;
 }
 
 export interface ExternalUserSummary {
@@ -711,6 +728,8 @@ export async function deleteApiKey(keyId: string): Promise<boolean> {
 export interface BridgeTypeInfo {
   key: string;
   config_schema: ConnectorTypeConfigSchema;
+  // Whether this platform can create channels at all. Fixed per platform.
+  channel_creation_supported: boolean;
 }
 
 export async function fetchBridges(): Promise<BridgeDetail[] | null> {
@@ -725,6 +744,9 @@ export async function createBridge(
   bridgeType: string,
   displayName: string,
   connectionConfig: Record<string, unknown>,
+  // Defaults to true on the backend when omitted. Posting true for a platform
+  // that doesn't support channel creation returns 400.
+  channelCreationEnabled?: boolean,
 ): Promise<BridgeDetail> {
   const res = await fetch(`${BASE}/collaborations`, {
     method: "POST",
@@ -734,6 +756,7 @@ export async function createBridge(
       bridge_type: bridgeType,
       display_name: displayName,
       connection_config: connectionConfig,
+      channel_creation_enabled: channelCreationEnabled,
     }),
   });
   if (!res.ok) {
@@ -776,9 +799,14 @@ export async function deleteBridge(bridgeId: string): Promise<boolean> {
   return res?.ok ?? false;
 }
 
+export interface BridgeUpdateInput {
+  agent_greetings_enabled?: boolean;
+  channel_creation_enabled?: boolean;
+}
+
 export async function updateBridge(
   bridgeId: string,
-  update: { agent_greetings_enabled: boolean },
+  update: BridgeUpdateInput,
 ): Promise<BridgeDetail | null> {
   return fetchJson<BridgeDetail>(`/collaborations/${bridgeId}`, {
     method: "PATCH",

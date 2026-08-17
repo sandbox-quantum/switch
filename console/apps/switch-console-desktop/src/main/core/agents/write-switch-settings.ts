@@ -6,6 +6,7 @@ import {
 } from '@switch-console/core/agents/plugins';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
+import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
 import {
   agentSettingsRelativePath,
   SWITCH_AGENTS_GITIGNORE_RELATIVE,
@@ -297,6 +298,92 @@ export async function writeAgentNeutralSettings(
 }
 
 /**
+ * The Switch deployment an existing per-agent credentials file belongs to, when
+ * that is a DIFFERENT deployment from the one about to be written — otherwise
+ * null (no file, not a provisioned agent, or the same deployment).
+ *
+ * The endpoint is the discriminator because the gateway's name check is global
+ * per deployment: two Switch Console installs can only mint the same agent name
+ * when they point at different servers, and every credentials file already
+ * carries its endpoint. Same server, same name is this install rewriting its own
+ * agent (or replacing one deleted on the server) and is left alone.
+ *
+ * Compared with {@link sameApiEndpoint}, the same match the import path uses to
+ * decide which server a discovered agent belongs to — the two have to agree, or
+ * an agent that cannot be imported here could still be overwritten here.
+ *
+ * Pure: takes the existing file text (or null when absent/unreadable).
+ */
+export function foreignCredentialsEndpoint(
+  existingRaw: string | null,
+  apiEndpoint: string
+): string | null {
+  if (existingRaw === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(existingRaw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+  const env = (parsed as Record<string, unknown>).env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return null;
+
+  const existingEndpoint = (env as Record<string, unknown>).SWITCH_API_ENDPOINT;
+  if (typeof existingEndpoint !== 'string' || existingEndpoint.trim() === '') return null;
+
+  return sameApiEndpoint(existingEndpoint, apiEndpoint) ? null : existingEndpoint;
+}
+
+/**
+ * The credentials file for this agent name is already another Switch
+ * deployment's. Writing would merge this install's identity over it, leaving one
+ * file that carries the new identity and the old file's other keys — so the
+ * displaced agent's sessions authenticate as this one instead of failing, and
+ * its API token, minted once, is gone.
+ */
+export class ForeignAgentCredentialsError extends Error {
+  readonly slug: string;
+  readonly relPath: string;
+  readonly existingEndpoint: string;
+  readonly incomingEndpoint: string;
+
+  constructor(params: {
+    slug: string;
+    relPath: string;
+    existingEndpoint: string;
+    incomingEndpoint: string;
+  }) {
+    super(
+      `${params.relPath} in this directory belongs to the Switch server at ${params.existingEndpoint}, but this agent is on ${params.incomingEndpoint}. Writing it would overwrite that agent's identity and destroy its API token, which cannot be recovered. Use a different agent name, or a different working directory.`
+    );
+    this.name = 'ForeignAgentCredentialsError';
+    this.slug = params.slug;
+    this.relPath = params.relPath;
+    this.existingEndpoint = params.existingEndpoint;
+    this.incomingEndpoint = params.incomingEndpoint;
+  }
+}
+
+/**
+ * Read the per-agent credentials slot for `slug` and report the Switch
+ * deployment it already belongs to, when that is a different one. Callers use
+ * this BEFORE minting an identity, so a collision is refused without leaving an
+ * orphaned agent (and an unrecoverable token) behind on the server; the writer
+ * below re-checks, so a path that skips this one still cannot clobber.
+ */
+export async function foreignCredentialsOwnerFs(
+  workspaceFs: PluginFs,
+  slug: string,
+  apiEndpoint: string
+): Promise<string | null> {
+  const existingRaw = await workspaceFs.read(agentSettingsRelativePath(slug));
+  return foreignCredentialsEndpoint(existingRaw, apiEndpoint);
+}
+
+/**
  * Write an agent's provider-neutral per-agent Switch credentials over a
  * {@link PluginFs} (local disk or a remote repo dir via SFTP), keyed by `slug`
  * (the agent name) — the authoritative identity Switch Console injects at launch
@@ -304,17 +391,33 @@ export async function writeAgentNeutralSettings(
  * provider and every transport; providers with repo-agent definitions (Claude)
  * layer their definition on top.
  *
- * The `.gitignore` is written first: it is what keeps `SWITCH_API_TOKEN` out of
- * version control, so it must already be in place before the token reaches disk.
+ * Being the single writer is what makes it the place to refuse a slot that is
+ * another deployment's: every create path funnels through here, so none of them
+ * can overwrite one (CHOO-1960). It throws {@link ForeignAgentCredentialsError}
+ * rather than writing.
+ *
+ * The `.gitignore` is written before the credentials: it is what keeps
+ * `SWITCH_API_TOKEN` out of version control, so it must already be in place
+ * before the token reaches disk.
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
   params: { slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
+  const relPath = agentSettingsRelativePath(params.slug);
+  const existingRaw = await workspaceFs.read(relPath);
+  const existingEndpoint = foreignCredentialsEndpoint(existingRaw, params.apiEndpoint);
+  if (existingEndpoint !== null) {
+    throw new ForeignAgentCredentialsError({
+      slug: params.slug,
+      relPath,
+      existingEndpoint,
+      incomingEndpoint: params.apiEndpoint,
+    });
+  }
+
   if (!(await workspaceFs.exists(SWITCH_AGENTS_GITIGNORE_RELATIVE))) {
     await workspaceFs.write(SWITCH_AGENTS_GITIGNORE_RELATIVE, '*\n');
   }
-  const relPath = agentSettingsRelativePath(params.slug);
-  const merged = mergeAgentCredentials(await workspaceFs.read(relPath), params);
-  await workspaceFs.write(relPath, merged);
+  await workspaceFs.write(relPath, mergeAgentCredentials(existingRaw, params));
 }

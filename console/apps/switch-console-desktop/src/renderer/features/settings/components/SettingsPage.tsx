@@ -1,23 +1,18 @@
 import React, { useCallback } from 'react';
+import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
-import HiddenToolsSettingsCard from './HiddenToolsSettingsCard';
-import InterfaceSettingsCard from './InterfaceSettingsCard';
-import KeyboardSettingsCard from './KeyboardSettingsCard';
 import NotificationSettingsCard from './NotificationSettingsCard';
+import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import RemoteAttachmentSettingsCard from './RemoteAttachmentSettingsCard';
-import ResourceMonitorSettingsCard from './ResourceMonitorSettingsCard';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
-  CreateBranchAndWorktreeRow,
   EnableTmuxRow,
-  IncludeIssueContextByDefaultRow,
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
-import SidebarMetadataSettingsCard from './SidebarMetadataSettingsCard';
 import TerminalSettingsCard from './TerminalSettingsCard';
 import ThemeCard from './ThemeCard';
 import { UpdateCard } from './UpdateCard';
@@ -29,6 +24,7 @@ export type SettingsPageTab =
   | 'connections'
   | 'browser'
   | 'interface'
+  | 'remote-hosts'
   | 'docs';
 
 // ---------------------------------------------------------------------------
@@ -46,11 +42,10 @@ function GeneralSettingsPage() {
       <UpdateCard />
       <AutoGenerateSessionNamesRow />
       <AutoTrustWorktreesRow />
-      <CreateBranchAndWorktreeRow />
       <PreserveSessionNameCapitalizationRow />
-      <IncludeIssueContextByDefaultRow />
       <EnableTmuxRow />
       <NotificationSettingsCard />
+      <OnboardingChecklistRow />
     </div>
   );
 }
@@ -65,18 +60,7 @@ function InterfaceSettingsPage() {
       />
       <ThemeCard />
       <TerminalSettingsCard />
-      <SidebarMetadataSettingsCard />
-      <ResourceMonitorSettingsCard />
       <RemoteAttachmentSettingsCard />
-      <InterfaceSettingsCard />
-      <div className="flex flex-col gap-3">
-        <h3 className="text-sm font-normal text-foreground">Keyboard shortcuts</h3>
-        <KeyboardSettingsCard />
-      </div>
-      <div className="flex flex-col gap-3">
-        <h3 className="text-sm font-normal text-foreground">Tools</h3>
-        <HiddenToolsSettingsCard />
-      </div>
     </div>
   );
 }
@@ -93,6 +77,7 @@ const TAB_CONTENT: Partial<Record<SettingsPageTab, () => React.ReactNode>> = {
   general: () => <GeneralSettingsPage />,
   'clis-models': () => <AgentsSettingsPage />,
   interface: () => <InterfaceSettingsPage />,
+  'remote-hosts': () => <RemoteHostsSettingsPage />,
 };
 
 /**
@@ -127,7 +112,8 @@ export function SettingsPage({
   }> = [
     // Switch Console v0 hides Account, Integrations, Connections (SSH), and Browser tabs.
     { id: 'general', label: 'General' },
-    { id: 'clis-models', label: 'Agents' },
+    { id: 'clis-models', label: 'Agent providers' },
+    { id: 'remote-hosts', label: 'Remote hosts' },
     { id: 'interface', label: 'Interface' },
     { id: 'docs', label: 'Docs', isExternal: true },
   ];

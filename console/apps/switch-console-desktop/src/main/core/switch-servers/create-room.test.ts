@@ -107,6 +107,40 @@ describe('createRoomOnServer', () => {
     });
   });
 
+  it('reports a withheld channel-creation switch as invalid, not as a stopped bridge', async () => {
+    // Neither wording below contains "bridge", so `isBridgeFailure` must not
+    // match — the bridge itself is fine, the operator withheld the capability.
+    fetchMock.mockResolvedValue(
+      response(400, {
+        detail:
+          "Creating channels is turned off for the 'Mattermost' connection. Create the " +
+          'channel on the platform and add the Switch app to it — Switch adopts it as a ' +
+          'room — or ask an administrator to allow channel creation for this connection.',
+      })
+    );
+
+    await expect(createRoomOnServer(SERVER, PARAMS)).resolves.toEqual({
+      kind: 'invalid',
+      message:
+        "Creating channels is turned off for the 'Mattermost' connection. Create the " +
+        'channel on the platform and add the Switch app to it — Switch adopts it as a ' +
+        'room — or ask an administrator to allow channel creation for this connection.',
+    });
+  });
+
+  it('reports a platform that cannot create channels at all as invalid, not as a stopped bridge', async () => {
+    fetchMock.mockResolvedValue(
+      response(400, {
+        detail:
+          'Telegram bots cannot create chats — the Bot API has no such call. Create the ' +
+          "group for 'design-review' in a Telegram client and add @switch_bot to it, and " +
+          'Switch adopts it as a room as the bot lands.',
+      })
+    );
+
+    await expect(createRoomOnServer(SERVER, PARAMS)).resolves.toMatchObject({ kind: 'invalid' });
+  });
+
   it('surfaces an unreachable gateway rather than failing silently', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 

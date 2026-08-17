@@ -91,7 +91,7 @@ def _no_agents_notice(slash_hint: str | None) -> str:
     return (
         "👋 I've linked this channel to a new Switch room, but there are no agents "
         "in it yet — so no one is here to respond to messages.\n\n"
-        "*To add an agent*, invite one by name (swap in the agent you want):\n"
+        "**To add an agent**, invite one by name (swap in the agent you want):\n"
         f"{invites}\n\n"
         "Once an agent is in the room, @-mention it here and it'll pick up the "
         "conversation."
@@ -170,6 +170,8 @@ class BridgeCore:
     async def start(self) -> None:
         await self._load_channel_map()
         await self._load_existing_puppets()
+        self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
+        self._adapter.set_agent_icon_resolver(self._agent_icon_url)
         await self._adapter.start(
             on_message=self._handle_inbound_message,
             on_command=self._handle_inbound_command,
@@ -254,6 +256,18 @@ class BridgeCore:
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
+    async def _agent_icon_url(self, agent_name: str) -> str | None:
+        """An agent's own icon URL, or None if it has not been given one.
+
+        Installed on the adapter as its icon resolver; None sends the adapter
+        to its existing default. A name matching no agent — an alias, or a bot
+        the platform reports that Switch does not own — also yields None rather
+        than an error, since the caller only wants to know whether to override.
+        """
+        async with self._session_factory() as session:
+            agent = await self._agent_store.get_by_name(session, agent_name)
+        return agent.icon_url if agent else None
+
     async def _is_registered_agent(self, name: str) -> bool:
         """Whether `name` is a registered Switch agent. Switch creates each
         bridge bot with username == agent name, so a bridged agent's bot
@@ -293,7 +307,7 @@ class BridgeCore:
         content = (
             f"👋 You tagged {app_mention} directly — I'm not linked to an agent "
             "in this channel yet.\n\n"
-            f"*Agents you can tag directly:*\n{agent_list}"
+            f"**Agents you can tag directly:**\n{agent_list}"
         )
         # The `!set-alias` shortcut only makes sense when the bot handle is a
         # valid alias token. Some platforms (e.g. Teams) use a bot id containing
@@ -305,7 +319,7 @@ class BridgeCore:
             pass
         else:
             content += (
-                "\n\n*To make me an agent's entry point*, copy the line below and "
+                "\n\n**To make me an agent's entry point**, copy the line below and "
                 "swap in the agent's name — after that, tagging me here routes to "
                 f"that agent:\n!set-alias @agent_name {app_mention}"
             )
@@ -641,6 +655,67 @@ class BridgeCore:
                 channel_name=join.channel_name,
             )
 
+    async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
+        """The platform reissued a channel's id: move the room onto the new one.
+
+        Only the id changes — it is the same conversation, with the same people
+        and the same history — so the room follows it rather than a second room
+        being created beside it. Without this the room stays bound to an id
+        nothing arrives from again, while sends keep working because the
+        platform forwards them: the bridge looks alive and is deaf.
+        """
+        lock = self._channel_locks.setdefault(old_id, asyncio.Lock())
+        async with lock:
+            async with self._session_factory() as session:
+                room = await self._room_store.get_by_external_channel(
+                    session, self._bridge_id, old_id
+                )
+                if room is None:
+                    logger.info(
+                        "Channel %s migrated to %s but no room is bound to it",
+                        old_id,
+                        new_id,
+                    )
+                    return
+                occupant = await self._room_store.get_by_external_channel(
+                    session, self._bridge_id, new_id
+                )
+                if occupant is not None:
+                    # The unique index would reject the update anyway. Report it
+                    # rather than leaving both rooms looking correct: one of them
+                    # is bound to an id that is now dead.
+                    logger.error(
+                        "Channel %s migrated to %s, but room %s is already bound "
+                        "to %s. Room %s is left on the old id and will not "
+                        "receive anything from the chat",
+                        old_id,
+                        new_id,
+                        occupant.id,
+                        new_id,
+                        room.id,
+                    )
+                    return
+                await self._room_store.update_external_channel(session, room.id, new_id)
+                await session.commit()
+
+            key = (room.id, room.matrix_room_id)
+            self._channel_to_room.pop(old_id, None)
+            self._channel_to_room[new_id] = key
+            self._room_to_channel[key] = new_id
+            logger.warning(
+                "Re-pointed room %s from channel %s to %s after the platform "
+                "reissued the id",
+                room.id,
+                old_id,
+                new_id,
+            )
+
+        await self._adapter.admin_message(
+            new_id,
+            "This chat has been given a new id by the platform. Its Switch room "
+            "has been moved onto it, so messages here reach the agents again.",
+        )
+
     # ── Auto-room creation ────────────────────────────────────────────────────
 
     async def _adopt_existing_room(self, channel_id: str) -> tuple[str, str] | None:
@@ -916,6 +991,39 @@ class BridgeCore:
 
     # ── Puppet lifecycle ─────────────────────────────────────────────────────
 
+    async def ensure_external_user(
+        self, *, external_user_id: str, external_username: str
+    ) -> ExternalUser:
+        """Get-or-create the `ExternalUser` record for a platform identity,
+        without waiting for that person to speak.
+
+        The inbound path creates these lazily on first message, which leaves
+        nobody to claim for a workspace that has only just been connected.
+        Claiming an identity (CHOO-2137) needs the record to exist up front, so
+        this provisions the same puppet the inbound path would have.
+        """
+        async with self._session_factory() as session:
+            existing = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+        if existing is not None:
+            return existing
+
+        client_id = self._user_puppets.get(external_user_id)
+        if client_id is None:
+            client_id = await self._create_puppet(external_user_id, external_username)
+
+        async with self._session_factory() as session:
+            created = await self._external_user_store.get_by_client_id(
+                session, client_id
+            )
+        if created is None:
+            raise RuntimeError(
+                f"Puppet for external user {external_user_id} on bridge "
+                f"{self._bridge_id} was created without an ExternalUser record"
+            )
+        return created
+
     async def _create_puppet(
         self, external_user_id: str, external_username: str
     ) -> str:
@@ -1030,21 +1138,28 @@ class BridgeCore:
             event_content, channel_id
         )
 
-        content = self._adapter.translate_outbound(event.body)
         if admin_marker is not None:
             message_type = (
                 admin_marker.get("type") if isinstance(admin_marker, dict) else None
             )
+            # Raw, not translated: `admin_message` renders its own body, the
+            # same way the notices posted directly through it do. Translating
+            # here as well ran the body through twice, and the second pass
+            # escapes the markup the first one produced — a command reply
+            # arrived showing its own `<b>` tags.
             message_ref = await self._adapter.admin_message(
                 channel_id,
-                content,
+                event.body,
                 thread_root_ref,
                 message_type=message_type,
             )
         else:
             assert sender_name is not None  # guarded above
             message_ref = await self._adapter.send_message(
-                channel_id, sender_name, content, thread_root_id=thread_root_ref
+                channel_id,
+                sender_name,
+                self._adapter.translate_outbound(event.body),
+                thread_root_id=thread_root_ref,
             )
 
         if message_ref is not None:
@@ -1360,7 +1475,7 @@ class BridgeCore:
             channel_id,
             event.agent_name,
             event.state,
-            notify_user=event.notify_user,
+            mention_handle=event.mention_handle,
             thread_root_id=thread_root_ref,
             deeplink_url=event.deeplink_url,
             detail=event.detail,

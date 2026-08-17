@@ -7,7 +7,17 @@ import type {
 
 /** The gateway reports an unknown bridge id and a configured-but-stopped bridge
  * with the same 400, differing only in wording. Both mean "you cannot bridge to
- * that right now", which is the one failure the user can act on directly. */
+ * that right now", which is the one failure the user can act on directly.
+ *
+ * A room that cannot be created because the chosen bridge cannot make a
+ * channel (withheld by the operator, or the platform never supports it) is a
+ * different failure — the bridge itself is fine — so it falls through to
+ * `invalid` below rather than matching here. Both of those messages name the
+ * platform or connection, never the word "bridge", so this regex does not
+ * need to exclude them explicitly; `CreateRoomModal` already keeps
+ * channel-incapable bridges out of the picker, so a live user only hits this
+ * path in the race between loading the list and an operator's edit landing.
+ */
 function isBridgeFailure(detail: string): boolean {
   return /bridge/i.test(detail) && /not running|unavailable|not found/i.test(detail);
 }

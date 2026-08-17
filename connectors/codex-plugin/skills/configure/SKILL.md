@@ -208,7 +208,7 @@ Default: `Codex running in <repo-name-or-hostname>`.
 > equivalent, so the bulk endpoint would mint indistinguishable children. Do not
 > call it.
 
-## Step 5 — Repository directory and notify user
+## Step 5 — Repository directory
 
 Switch shows room participants a paste-ready command when the agent is
 addressed with no live session:
@@ -226,14 +226,7 @@ session has no identity.
 Ask whether to record it, defaulting to the current working directory. Validate
 that it is absolute (`startswith("/")`) and exists (`test -d`).
 
-Then ask whether to record `notify_user` — a handle to `@`-mention on the
-bridged platform so the operator gets a push notification. Explain: *"Use the
-exact handle they have on the room's bridged platform (Slack / Mattermost), or
-their Switch user name for unbridged rooms — often NOT the local username. If it
-doesn't match a real bridge user the mention silently does nothing."* Ask for
-the bare handle, no leading `@`, and do not default to `$USER`.
-
-Omit either key entirely if the user opts out — leave it out rather than passing
+Omit the key entirely if the user opts out — leave it out rather than passing
 an empty string, so the schema default applies.
 
 **Do not set `auto_session`.** It means "Switch Console watches rooms and auto-spawns
@@ -252,10 +245,9 @@ curl -sf -X POST "$ENDPOINT/agents/register-known" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
-       --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+       --arg repo_dir "$REPO_DIR" \
        '{agent_type:"codex", name:$name, description:$desc,
-         options:((if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)
-                  + (if $notify_user == "" then {} else {notify_user:$notify_user} end)),
+         options:(if $repo_dir == "" then {} else {repo_dir:$repo_dir} end),
          overwrite:false}')"
 ```
 
@@ -334,24 +326,41 @@ there.
 >
 > The quoted heredoc (`<<'SCRIPT'`) is what keeps the body intact.
 
-`ENDPOINT`, `NAME`, `DESC`, `REPO_DIR`, `NOTIFY_USER` and
-`SWITCH_REGISTRATION_TOKEN` must be exported in the environment the script runs
-in. `REPO_DIR` and `NOTIFY_USER` may be empty strings — the server normalises a
-blank to "unset", so there is no need to build the payload conditionally.
+`ENDPOINT`, `NAME`, `DESC`, `REPO_DIR` and `SWITCH_REGISTRATION_TOKEN` must be
+exported in the environment the script runs in. `REPO_DIR` may be an empty
+string — the server normalises a blank to "unset", so there is no need to build
+the payload conditionally.
 
 ```bash
 set -eu
 mkdir -p .switch/agents
 printf '*\n' > .switch/agents/.gitignore
 
+# This file is keyed by name alone, so a directory shared with another Switch
+# setup — a Switch Console install, or an earlier run of this skill against a
+# different server — can already have one under this name. Writing over it
+# destroys a token that was returned once and exists nowhere else, and the
+# displaced agent's sessions then authenticate as this one. A different endpoint
+# is what makes it someone else's: the same server would have refused the name
+# at registration.
+creds=".switch/agents/$NAME.json"
+if [ -f "$creds" ]; then
+  owner=$(jq -r '.env.SWITCH_API_ENDPOINT // empty' "$creds" 2>/dev/null || true)
+  if [ -n "$owner" ] && [ "${owner%/}" != "${ENDPOINT%/}" ]; then
+    printf '%s already holds credentials for the Switch server at %s.\n' "$creds" "$owner" >&2
+    printf 'Refusing to overwrite them. Choose a different agent name, or a different directory.\n' >&2
+    exit 1
+  fi
+fi
+
 resp=$(mktemp)
 http_status=$(curl -s -o "$resp" -w '%{http_code}' -X POST "$ENDPOINT/agents/register-known" \
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
-         --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+         --arg repo_dir "$REPO_DIR" \
          '{agent_type:"codex", name:$name, description:$desc,
-           options:{repo_dir:$repo_dir, notify_user:$notify_user},
+           options:{repo_dir:$repo_dir},
            overwrite:false}')")
 
 if [ "$http_status" != "200" ]; then
@@ -367,8 +376,15 @@ rm -f "$resp"
 ```
 
 The token goes from the response straight into the file without ever being
-echoed or held in a variable that a later command would need. The resulting
-file is the same shape Switch Console writes:
+echoed or held in a variable that a later command would need.
+
+The guard runs **before** the registration, not just before the write: refusing
+afterwards would leave an agent on the server whose key nobody holds. If it
+fires, tell the user which server already owns that name here and let them
+choose — a different name, or a different directory. Do not delete the file and
+retry.
+
+The resulting file is the same shape Switch Console writes:
 
 ```json
 {

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from switch_core.addressing import AddressingPolicy
+from switch_core.bridges.collaboration.models import BridgeInstallLink
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -213,6 +214,10 @@ class AgentSummary(BaseModel):
     id: str
     name: str
     description: str
+    # Absolute https URL of the agent's icon, or null when none is set. Null is
+    # not an error: the caller renders its own fallback rather than Switch
+    # inventing a default, so the fallback can change without a data migration.
+    icon_url: str | None = None
     connector_type: str
     connection_model: str | None
     tool_count: int
@@ -230,6 +235,12 @@ class AgentSummary(BaseModel):
     # they let the UI render an "edit options" form against the spec's schema.
     known_agent_type: str | None = None
     known_agent_options: dict[str, Any] | None = None
+    # Scoped agent-addressing permissions. null → open (anyone may address the
+    # agent); otherwise the allow-list that governs who can. On the summary,
+    # not just the detail, so a caller can tell which of someone's agents are
+    # owner-restricted without fetching each one — the console warns about
+    # exactly that, and per-agent reads would make it a request storm.
+    addressing_policy: AddressingPolicy | None = None
 
 
 class AgentToolSummary(BaseModel):
@@ -286,9 +297,6 @@ class AgentDetail(AgentSummary):
     rooms: list[AgentRoomMembership]
     sessions: list[AgentSessionDetail]
     children: list[AgentSummary]
-    # Scoped agent-addressing permissions (CHOO-1585). null → open (anyone may
-    # address the agent); otherwise the allow-list that governs who can.
-    addressing_policy: AddressingPolicy | None = None
 
 
 class UpdateAddressingPolicyRequest(BaseModel):
@@ -297,6 +305,17 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentIconRequest(BaseModel):
+    """Set (or clear) an agent's icon.
+
+    ``icon_url: null`` clears it — the agent falls back to whatever default the
+    caller renders. The field is required rather than defaulted so that
+    clearing an icon is always something the client said, never something it
+    forgot to send."""
+
+    icon_url: str | None
 
 
 class KnownAgentType(BaseModel):
@@ -310,6 +329,10 @@ class RegisterKnownAgentRequest(BaseModel):
     agent_type: str
     name: str
     description: str
+    # Optional at registration: an agent may be given its icon later, and a
+    # re-registration that omits it keeps whatever icon the agent already has
+    # rather than clearing it.
+    icon_url: str | None = None
     options: dict[str, Any] = {}
     overwrite: bool = False
 
@@ -332,8 +355,8 @@ class RegisterKnownSubagentsRequest(BaseModel):
     Session-authed counterpart of the agent-bridge `register-known-bulk`
     endpoint: the caller must own the parent. `options` is the shared base
     applied to every subagent (the per-subagent `subagent_name` is merged on
-    top); when omitted, each subagent inherits the parent's `channels_enabled`,
-    `repo_dir`, and `notify_user`.
+    top); when omitted, each subagent inherits the parent's `channels_enabled`
+    and `repo_dir`.
     """
 
     agent_type: str
@@ -369,6 +392,7 @@ class UpdateAgentOptionsRequest(BaseModel):
 class RegisterOtherAgentRequest(BaseModel):
     name: str
     description: str
+    icon_url: str | None = None
     overwrite: bool = False
 
 
@@ -421,15 +445,47 @@ class BridgeDetail(BaseModel):
     # offers no such link. Never carries a credential — only ids that the
     # platform already puts in its own URLs.
     home_url: str | None = None
+    # One-click links that add this bridge's app to a chat, from the live
+    # adapter. Empty when the bridge is not running or the platform has no such
+    # link, in which case installation stays a documented manual flow.
+    install_links: list[BridgeInstallLink] = Field(default_factory=list)
+    # What those links do not cover, in the platform's own terms — the kinds of
+    # chat that have to be joined by hand. None when there is nothing to add.
+    install_note: str | None = None
+    # Whether the platform can create a channel from Switch at all, and whether
+    # an operator permits this connection to. The two are separate so a UI can
+    # tell "your organisation turned this off" (changeable here) from "Telegram
+    # has no such call" (not changeable anywhere) — the first is a disabled
+    # switch you can flip, the second a disabled switch with a reason.
+    channel_creation_supported: bool = True
+    channel_creation_enabled: bool = True
+    # Whether the platform has a user directory Switch can search. False where
+    # the only people Switch can name are those who have spoken to it, which
+    # makes "pick yourself from the directory" an empty list on a connection
+    # nobody has used yet — a question worth not asking rather than asking
+    # badly.
+    directory_search_supported: bool = True
 
 
 class BridgeUpdateRequest(BaseModel):
-    agent_greetings_enabled: bool
+    # Both optional so a caller can change one without restating the other; a
+    # request that sets neither changes nothing rather than silently resetting
+    # a field it did not mention.
+    agent_greetings_enabled: bool | None = None
+    channel_creation_enabled: bool | None = None
 
 
 class BridgeTypeInfo(BaseModel):
     key: str
     config_schema: dict[str, Any]
+    # Whether this platform can create channels at all. Read from the adapter
+    # class, so it is answerable before any connection of this type exists —
+    # which is exactly when the registration form needs it.
+    channel_creation_supported: bool = True
+    # Likewise for its user directory: read here because the connect flow has
+    # to decide whether to offer the "which account is you" step for a
+    # connection that does not exist yet.
+    directory_search_supported: bool = True
 
 
 class BridgeCreateRequest(BaseModel):
@@ -440,11 +496,84 @@ class BridgeCreateRequest(BaseModel):
     # Set by the headless standalone bootstrap so a fresh deployment bridges
     # rooms out of the box.
     set_as_default: bool = False
+    # Whether this connection may create channels on the platform. Defaults on
+    # to keep existing callers behaving as they did; registration rejects it
+    # for a platform that cannot, rather than storing a claim it cannot honour.
+    channel_creation_enabled: bool = True
+
+
+class IdentityClaimant(BaseModel):
+    """A Switch user who says a platform account is theirs."""
+
+    user_id: str
+    user_name: str
 
 
 class ExternalUserSummary(BaseModel):
     id: str
     bridge_id: str
+    external_user_id: str
+    external_username: str
+    # Everyone who has claimed this platform account. A list, not one user:
+    # claiming is not exclusive, so an account shared by several Switch users
+    # satisfies an owner rule for any of them.
+    claimed_by: list[IdentityClaimant] = []
+
+
+class DirectoryUserSummary(BaseModel):
+    """Someone found in the messaging platform's own directory, and whether
+    Switch already knows them."""
+
+    external_user_id: str
+    username: str
+    display_name: str
+    email: str | None = None
+    # Set when this person has already spoken on the bridge and so has an
+    # ExternalUser row; claiming reuses it rather than creating a duplicate.
+    known_external_user_id: str | None = None
+    # Who has already claimed this account. Shown so a picker can say the
+    # account is spoken for, not to stop anyone else claiming it too.
+    claimed_by: list[IdentityClaimant] = []
+
+
+class DirectorySearchResponse(BaseModel):
+    """Who a search turned up, and which of the two possible sources answered.
+
+    `source` is not decoration. A platform whose directory cannot be searched
+    falls back to the accounts Switch has already seen, which is a genuinely
+    narrower answer: someone who has never spoken is absent from it, and a
+    caller that presented it as a whole-workspace search would be telling the
+    user that person does not exist. `note` carries the platform's own
+    explanation, for showing alongside the results rather than instead of them.
+    """
+
+    source: Literal["directory", "known"]
+    note: str | None = None
+    users: list[DirectoryUserSummary] = []
+
+
+class ClaimIdentityRequest(BaseModel):
+    """Claim a platform identity for a Switch user.
+
+    `external_user_id` is the platform's own id (a Slack `U…`, a Mattermost
+    user id), not an `ExternalUser.id` — that row may not exist yet for
+    someone who has never posted, and is created on demand.
+    """
+
+    external_user_id: str
+    username: str
+    # Omitted means "claim it for me"; only an admin may claim on behalf of
+    # someone else.
+    user_id: str | None = None
+
+
+class LinkedIdentity(BaseModel):
+    """One platform identity claimed by a Switch user."""
+
+    id: str
+    bridge_id: str
+    bridge_display_name: str
+    bridge_type: str
     external_user_id: str
     external_username: str
 

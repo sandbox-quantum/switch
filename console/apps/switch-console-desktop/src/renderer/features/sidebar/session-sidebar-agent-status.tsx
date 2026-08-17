@@ -1,20 +1,18 @@
 import { observer } from 'mobx-react-lite';
 import { AgentStatusIndicator } from '@renderer/features/sessions/components/agent-status-indicator';
-import { CLISpinner } from '@renderer/features/sessions/components/cliSpinner';
 import { sessionAgentStatus } from '@renderer/features/sessions/stores/session-selectors';
 import { type SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { useDelayedBoolean } from '@renderer/lib/hooks/use-delay-boolean';
-import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { RelativeTime } from '@renderer/lib/ui/relative-time';
+import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { getSortInstant, sortKindFor } from './sidebar-store';
 
 /**
- * Sidebar trailing slot: spinner while bootstrapping, the live agent status
- * indicator while an agent is active (non-idle), otherwise the relative
- * timestamp. The whole metadata cluster is right-aligned by the parent, so
- * the slot just hugs its content — no fixed width to avoid an empty gap
- * between the timestamp and the line-changes / PR icon to its left.
+ * Sidebar trailing slot: a spinner while the session is being created, the
+ * status dot while its agent is working, and nothing at all otherwise. A row
+ * that is not doing anything says nothing here.
+ *
+ * The width is fixed so a spinner appearing does not shorten the title beside
+ * it, and the parent right-aligns the cluster.
  */
 function Slot({ children }: { children: React.ReactNode }) {
   return <span className="flex w-[3ch] shrink-0 items-center justify-end">{children}</span>;
@@ -22,10 +20,8 @@ function Slot({ children }: { children: React.ReactNode }) {
 
 export const SessionSidebarTrailingSlot = observer(function SessionSidebarTrailingSlot({
   session,
-  showTimestamp,
 }: {
   session: SessionStore;
-  showTimestamp: boolean;
 }) {
   const delayedIsBootstrapping = useDelayedBoolean(session.isBootstrapping, 500);
 
@@ -35,7 +31,7 @@ export const SessionSidebarTrailingSlot = observer(function SessionSidebarTraili
         <Tooltip>
           <TooltipTrigger>
             <span className="flex size-6 items-center justify-center">
-              <CLISpinner variant="2" />
+              <Spinner className="size-3.5 text-foreground-muted" />
             </span>
           </TooltipTrigger>
           <TooltipContent>Creating session…</TooltipContent>
@@ -44,28 +40,15 @@ export const SessionSidebarTrailingSlot = observer(function SessionSidebarTraili
     );
   }
 
-  // Show the agent status indicator for any active/unseen state; fall back to timestamp for null (idle).
-  const status = sessionAgentStatus(session);
-  if (status !== null) {
+  // Only a working agent draws here. The other non-idle states render nothing,
+  // so testing for "not idle" would fill the slot with an empty indicator.
+  if (sessionAgentStatus(session) === 'working') {
     return (
       <Slot>
-        <AgentStatusIndicator status={status} />
+        <AgentStatusIndicator status="working" />
       </Slot>
     );
   }
 
-  if (!showTimestamp) return null;
-
-  const instant = getSortInstant(session, sortKindFor(sidebarStore.sessionSortBy));
-  if (!instant) return null;
-
-  return (
-    <Slot>
-      <RelativeTime
-        value={instant}
-        className="font-mono text-xs text-foreground-passive tabular-nums"
-        compact
-      />
-    </Slot>
-  );
+  return null;
 });

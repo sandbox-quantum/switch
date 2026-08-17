@@ -40,6 +40,16 @@ export class PtySessionRegistry {
 
     this.ptyMap.set(sessionId, pty);
 
+    // Apply a size that arrived while this pty was still being created.
+    //
+    // A remote session opens its terminal over SSH, and the renderer mounts and
+    // measures its pane partway through: the measurement lands after the spawn
+    // size was read and before there is a pty to resize. Without this the pty
+    // keeps the size it was spawned with — 80x24 in a pane twice that — until
+    // something moves the pane, which is why switching away and back fixed it.
+    const desiredSize = this.lastSizes.get(sessionId);
+    if (desiredSize) pty.resize(desiredSize.cols, desiredSize.rows);
+
     let buffer = '';
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -157,10 +167,23 @@ export class PtySessionRegistry {
     return this.metadata.get(sessionId);
   }
 
+  /**
+   * Record the dimensions the renderer measured and apply them to the pty.
+   *
+   * The size is remembered whether or not a pty is live, because for a remote
+   * session it routinely is not: its terminal is opened asynchronously by the
+   * attachment pool, long after the renderer measured its pane and reported.
+   * The renderer reports once and then only on an actual pane change, so a size
+   * dropped here is not sent again — the attach falls back to 80x24 and stays
+   * there. Keeping it means the attach spawns at the size the pane already has.
+   *
+   * The return value still reports only whether a live pty was resized, so a
+   * remembered size cannot be mistaken for one that reached a process.
+   */
   resize(sessionId: string, cols: number, rows: number): boolean {
+    this.lastSizes.set(sessionId, { cols, rows });
     const pty = this.ptyMap.get(sessionId);
     if (!pty) return false;
-    this.lastSizes.set(sessionId, { cols, rows });
     pty.resize(cols, rows);
     return true;
   }

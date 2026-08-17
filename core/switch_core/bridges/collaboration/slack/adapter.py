@@ -7,6 +7,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from typing import Any
 
 import httpx
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     ChannelType,
+    DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -32,6 +34,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.slack.avatar import on_slack_background
 
 logger = logging.getLogger(__name__)
 
@@ -125,13 +128,6 @@ class SlackAdapter(CollaborationAdapter):
         self._web_client = None
         logger.info("Slack adapter stopped")
 
-    # ── Agent icon ───────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _get_agent_icon(agent_name: str) -> str:
-        name = agent_name.replace("_", "+")
-        return f"https://ui-avatars.com/api/?name={name}&background=random&size=128"
-
     # ── Messaging ────────────────────────────────────────────────────────────
 
     async def send_message(
@@ -160,9 +156,9 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=content,
+                text=self.translate_outbound(content),
                 username=sender_name,
-                icon_url=self._get_agent_icon(sender_name),
+                icon_url=await self.agent_icon_url(sender_name),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -174,6 +170,12 @@ class SlackAdapter(CollaborationAdapter):
                 "Failed to send message to Slack channel %s: %s", channel_id, e
             )
             return None
+
+    async def agent_icon_url(self, agent_name: str) -> str:
+        # Overridden for Slack alone: it flattens a transparent avatar onto
+        # white. Wrapping the resolver rather than each call site keeps every
+        # place that posts as an agent on the same background.
+        return on_slack_background(await super().agent_icon_url(agent_name))
 
     def slash_invite_hint(self) -> str:
         # Slack passes a slash command's whole tail through as free text, so the
@@ -188,6 +190,10 @@ class SlackAdapter(CollaborationAdapter):
         *,
         message_type: str | None = None,
     ) -> str | None:
+        # Renders its own body: every caller of `admin_message` passes Switch
+        # Markdown, so the conversion belongs here rather than at each of
+        # them — one of them forgetting is how a notice reached a chat with
+        # its markup showing.
         # On Slack an admin/system message renders as the Switch app itself —
         # no per-message username/icon override — so it reads as the platform
         # speaking, not an agent. message_type is available for future
@@ -427,7 +433,7 @@ class SlackAdapter(CollaborationAdapter):
                     channel=channel_id,
                     text="_thinking..._",
                     username=sender_name,
-                    icon_url=self._get_agent_icon(sender_name),
+                    icon_url=await self.agent_icon_url(sender_name),
                     thread_ts=thread_ts,
                 )
                 ts = result.get("ts")
@@ -457,7 +463,7 @@ class SlackAdapter(CollaborationAdapter):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
@@ -500,7 +506,7 @@ class SlackAdapter(CollaborationAdapter):
         elif state == "awaiting-input":
             # Leave the working indicator up; add a ping and track it.
             ref = await self._ping_operator(
-                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -1113,6 +1119,67 @@ class SlackAdapter(CollaborationAdapter):
                         parts.append(str(body))
 
         return "\n".join(p.strip() for p in parts if str(p).strip())
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """Find workspace members by handle, real name or email.
+
+        Slack has no server-side user search, so this pages `users.list` and
+        filters locally. Deactivated accounts and bots are dropped — a bot is
+        not a person who can own an agent. `email` is only present when the
+        app holds the `users:read.email` scope; without it the field is simply
+        absent rather than the search failing.
+        """
+        if not self._web_client:
+            raise RuntimeError("Slack adapter is not started")
+
+        needle = query.strip().lower()
+        if not needle:
+            return []
+
+        matches: list[DirectoryUser] = []
+        cursor: str | None = None
+        while True:
+            try:
+                result = await self._web_client.users_list(
+                    limit=200, cursor=cursor or None
+                )
+            except SlackApiError as e:
+                raise RuntimeError(f"Slack user directory lookup failed: {e}") from e
+
+            members: list[dict[str, Any]] = result.get("members") or []
+            for member in members:
+                if member.get("deleted") or member.get("is_bot"):
+                    continue
+                if member.get("id") == "USLACKBOT":
+                    continue
+                profile: dict[str, Any] = member.get("profile") or {}
+                handle = member.get("name", "") or ""
+                real_name = profile.get("real_name", "") or member.get("real_name", "")
+                display_name = profile.get("display_name", "") or real_name or handle
+                email = profile.get("email") or None
+                haystack = " ".join(
+                    part.lower()
+                    for part in (handle, real_name, display_name, email or "")
+                    if part
+                )
+                if needle not in haystack:
+                    continue
+                matches.append(
+                    DirectoryUser(
+                        external_user_id=str(member.get("id")),
+                        username=handle or str(member.get("id")),
+                        display_name=display_name or handle,
+                        email=email,
+                    )
+                )
+
+            metadata: dict[str, Any] = result.get("response_metadata") or {}
+            cursor = metadata.get("next_cursor")
+            if not cursor:
+                break
+
+        matches.sort(key=lambda u: u.display_name.lower())
+        return matches
 
     async def _resolve_user_name(self, slack_user_id: str) -> SlackUser:
         cached = self._user_cache.get(slack_user_id)

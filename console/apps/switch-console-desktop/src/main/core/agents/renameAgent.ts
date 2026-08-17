@@ -1,3 +1,4 @@
+import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { type Result, err, ok } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
 import {
@@ -5,6 +6,7 @@ import {
   killSidecarSession,
 } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import { log } from '@main/lib/logger';
@@ -19,6 +21,7 @@ import { ensureRemoteWatcher } from './remote-watcher';
 import { removeAgentLaunchProfile } from './remove-launch-profile';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 import { mapAgentRowToAgent } from './utils';
+import { foreignCredentialsEndpoint } from './write-switch-settings';
 
 /**
  * Tear down the remote sidecar the agent ran under its previous name, then bring
@@ -52,6 +55,59 @@ async function moveSidecarToNewName(previous: Agent, renamed: Agent): Promise<vo
 }
 
 /**
+ * The Switch deployment that owns the credentials already sitting at the new
+ * name, when it is a different one from the agent being renamed — otherwise
+ * null. `credsRaw` is the agent's own credentials file, which names its server.
+ *
+ * A file with no readable credentials in it is not treated as an owner: the
+ * rename merges nothing, and an unparseable leftover is not an identity anyone
+ * is using.
+ */
+async function foreignCredentialsOwnerForMove(
+  workspaceFs: PluginFs,
+  credsRaw: string,
+  to: string
+): Promise<string | null> {
+  const source = parseSwitchAgentCredentials(credsRaw, log);
+  if (!source) return null;
+  return foreignCredentialsEndpoint(
+    await workspaceFs.read(agentSettingsRelativePath(to)),
+    source.apiEndpoint
+  );
+}
+
+/**
+ * Check, before the rename is committed, whether the new name's credentials slot
+ * in the agent's directory is already another Switch deployment's — a second
+ * Switch Console install's agent, which `agentNameTaken` cannot see because it
+ * queries this install's database (CHOO-1960).
+ *
+ * A directory that cannot be read yields null: nothing can be written there
+ * either, so the move that follows fails in the log rather than overwriting
+ * anything.
+ */
+async function foreignCredentialsAtNewName(agent: Agent, to: string): Promise<string | null> {
+  if ((agent.name ?? agent.id) === to) return null;
+  try {
+    const location = await getAgentLocation(agent);
+    const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
+    try {
+      const creds = await ctx.fs.read(agentSettingsRelativePath(agent.name ?? agent.id));
+      return creds === null ? null : await foreignCredentialsOwnerForMove(ctx.fs, creds, to);
+    } finally {
+      ctx.close();
+    }
+  } catch (error) {
+    log.warn('renameAgent: could not check the new name for another install of Switch Console', {
+      agentId: agent.id,
+      to,
+      error: String(error),
+    });
+    return null;
+  }
+}
+
+/**
  * Move the agent's on-disk state to its new name.
  *
  * Everything Switch Console writes per agent is keyed by the agent's `name` — the
@@ -79,7 +135,21 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
     const ctx = await resolveWorkspaceFsFor(location.sshHost, location.dir);
     try {
       const creds = await ctx.fs.read(agentSettingsRelativePath(from));
-      if (creds !== null) await ctx.fs.write(agentSettingsRelativePath(to), creds);
+      if (creds !== null) {
+        // The destination slot is checked again here, after the pre-rename check
+        // in `renameAgent`, because this is the write that would do the damage:
+        // it clobbers rather than merges, so another install's token would be
+        // gone with no trace. Throwing lands in the catch below, which leaves
+        // the agent on its old name — recoverable — rather than destroying a
+        // credential (CHOO-1960).
+        const owner = await foreignCredentialsOwnerForMove(ctx.fs, creds, to);
+        if (owner !== null) {
+          throw new Error(
+            `${agentSettingsRelativePath(to)} belongs to the Switch server at ${owner}; refusing to overwrite another install's credentials`
+          );
+        }
+        await ctx.fs.write(agentSettingsRelativePath(to), creds);
+      }
 
       const behavior = getPlugin(previous.providerId).behavior.repoAgents;
       const definition = behavior ? await behavior.readDefinition(ctx.fs, from) : null;
@@ -108,7 +178,12 @@ async function moveProvisionedFiles(previous: Agent, renamed: Agent): Promise<vo
   }
 }
 
-export type RenameAgentError = { type: 'agent-not-found' } | { type: 'name-taken'; name: string };
+export type RenameAgentError =
+  | { type: 'agent-not-found' }
+  | { type: 'name-taken'; name: string }
+  /** The new name's credentials file in this directory is another Switch
+   * deployment's — see {@link foreignCredentialsAtNewName}. Nothing was renamed. */
+  | { type: 'credentials-conflict'; name: string; endpoint: string };
 
 /**
  * Rename an agent and move the on-disk state keyed by its old name.
@@ -126,6 +201,15 @@ export async function renameAgent(
 
   if (await agentNameTaken(previous.locationId, params.newName, previous.id)) {
     return err({ type: 'name-taken', name: params.newName });
+  }
+
+  const foreignEndpoint = await foreignCredentialsAtNewName(previous, params.newName);
+  if (foreignEndpoint !== null) {
+    return err({
+      type: 'credentials-conflict',
+      name: params.newName,
+      endpoint: foreignEndpoint,
+    });
   }
 
   const [row] = await db

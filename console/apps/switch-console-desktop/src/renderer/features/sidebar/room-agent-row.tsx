@@ -3,12 +3,14 @@ import { observer } from 'mobx-react-lite';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -37,10 +39,14 @@ import { depthIndent, roomAgentGroupKey } from './sidebar-store';
 export const RoomAgentRow = observer(function RoomAgentRow({
   agent,
   roomId,
+  hasSessions,
   depth,
 }: {
   agent: Agent;
   roomId: string;
+  /** Whether this agent has sessions in this room. No sessions, no expand
+   * control — the row would unfold into nothing. */
+  hasSessions: boolean;
   depth: number;
 }) {
   const { navigate } = useNavigate();
@@ -52,6 +58,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
   // This is a Switch room's member list, so the Switch identity is what matters
   // — and that is the stored name: it is what was registered on the server.
   const label = agent.name || 'Unnamed agent';
+  const iconUrl = useAgentIconUrl(agent.serverId, agent.switchAgentId);
 
   const expandKey = roomAgentGroupKey(roomId, agent.id);
   const expanded = sidebarStore.isGroupExpanded(expandKey);
@@ -69,9 +76,6 @@ export const RoomAgentRow = observer(function RoomAgentRow({
     params?.roomId === roomId;
 
   if (!location) return null;
-
-  const iconClass =
-    'absolute h-4 w-4 opacity-100 transition-opacity duration-150 group-hover/row:opacity-0';
 
   const removeFromRoom = () => {
     const serverId = switchRoomsStore.roomServerId(roomId);
@@ -94,41 +98,37 @@ export const RoomAgentRow = observer(function RoomAgentRow({
     <ContextMenu>
       <ContextMenuTrigger>
         <SidebarMenuRow
-          className="group/row flex h-8 justify-between px-1"
-          style={depthIndent(depth)}
+          className="group/row flex justify-between"
           data-active={isActive || undefined}
           isActive={isActive}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            sidebarStore.ensureGroupExpanded(expandKey);
-            navigate('location', { locationId: agent.locationId, agentName: agent.name, roomId });
-          }}
+          onClick={() =>
+            navigate('location', { locationId: agent.locationId, agentName: agent.name, roomId })
+          }
         >
-          <div className="flex min-w-0 flex-1 items-center gap-1">
-            <SidebarItemMiniButton
-              type="button"
-              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-              className="relative"
-              onClick={(e) => {
-                e.stopPropagation();
-                sidebarStore.toggleGroupExpanded(expandKey);
-              }}
-            >
-              {agent.providerId ? (
-                <AgentIcon id={agent.providerId} size={16} className={iconClass} />
-              ) : (
-                <Bot className={iconClass} />
-              )}
-              <ChevronRight
-                className={cn(
-                  'absolute h-4 w-4 opacity-0 transition-all duration-150 group-hover/row:opacity-100',
-                  expanded && 'rotate-90'
-                )}
+          {/* Indent on the content, not the row, so the highlight still spans
+              the sidebar's full width at every depth. */}
+          <div className="flex min-w-0 flex-1 items-center gap-[9px]" style={depthIndent(depth)}>
+            <span className="flex size-[18px] shrink-0 items-center justify-center">
+              <AgentAvatar
+                name={label}
+                iconUrl={iconUrl}
+                size={21}
+                className="-mx-[1.5px] bg-transparent"
               />
-            </SidebarItemMiniButton>
+            </span>
             <SidebarMenuAction aria-label={`Open agent ${label}`} className="truncate select-none">
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate">{label}</span>
+                {/* Mirrors the agent-grouped row: the same agent must not carry
+                    a different amount of information depending on how the
+                    sidebar happens to be grouped. */}
+                {!sidebarStore.hideProviderMark &&
+                  (agent.providerId ? (
+                    <AgentIcon id={agent.providerId} size={12} className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <Bot className="h-3 w-3 shrink-0 text-foreground-muted" />
+                  ))}
                 {/* Same agent, same host problem — this row used to show
                     nothing, so whether you saw it depended on which grouping
                     the sidebar happened to be in. */}
@@ -162,6 +162,22 @@ export const RoomAgentRow = observer(function RoomAgentRow({
             />
             <TooltipContent>New session in this room</TooltipContent>
           </Tooltip>
+          {hasSessions && (
+            <SidebarItemMiniButton
+              type="button"
+              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+              aria-expanded={expanded}
+              className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 focus-visible:opacity-100"
+              onClick={(e) => {
+                e.stopPropagation();
+                sidebarStore.toggleGroupExpanded(expandKey);
+              }}
+            >
+              <ChevronRight
+                className={cn('h-4 w-4 transition-transform duration-150', expanded && 'rotate-90')}
+              />
+            </SidebarItemMiniButton>
+          )}
         </SidebarMenuRow>
       </ContextMenuTrigger>
       <ContextMenuContent>

@@ -13,6 +13,9 @@ import { defineEvent } from '@shared/lib/ipc/events';
  * - `newer-on-host` — a newer Switch Console deployed the running sidecar. There is
  *   nothing to offer: replacing it would be a downgrade, and on a shared host
  *   two installs doing that to each other never converges.
+ * - `other-install` — another Switch Console install deployed a different build of
+ *   the SAME release. Neither build is the upgrade, so this one yields and the
+ *   first deployer keeps it; Restart takes it over deliberately.
  * - `incompatible` — the host runs a protocol this client cannot speak; it must
  *   be replaced before this client can use it.
  */
@@ -22,6 +25,7 @@ export type SidecarVerdict =
   | 'upgrade-available'
   | 'upgrade-pending'
   | 'newer-on-host'
+  | 'other-install'
   | 'incompatible';
 
 /** Full per-agent sidecar status for the UI. */
@@ -33,9 +37,15 @@ export interface AgentSidecarStatus {
    * exact build fingerprint (what actually decides "is an upgrade available"). */
   clientHash: string;
   clientVersion: string;
+  /** This install's deployer identity — what `deployedBy` is compared against. */
+  clientDeployerId: string;
   /** What the host reports running (null when nothing is up). */
   deployedHash: string | null;
   deployedVersion: string | null;
+  /** The install that deployed the running sidecar. Null when nothing is up, or
+   * when it was deployed before installs identified themselves — unknown, which
+   * is not the same as this one. */
+  deployedBy: string | null;
   epoch: number | null;
   pid: number | null;
   liveSessions: number;

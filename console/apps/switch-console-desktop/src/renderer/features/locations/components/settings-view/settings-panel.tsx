@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
 import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
 import { AutoApproveSettingsSection } from '@renderer/features/locations/components/settings-view/sections/auto-approve-settings-section';
@@ -38,10 +39,13 @@ export const SettingsPanel = observer(function SettingsPanel() {
   const agentId = agent?.id;
 
   return (
-    <div className="flex flex-col gap-6">
-      <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />
-      <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
-      <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
+    <div className="flex flex-col gap-10">
+      <section className="flex flex-col gap-6">
+        <SectionLabel>General</SectionLabel>
+        <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />
+        <AutoApproveSettingsSection locationId={locationId} agentId={agentId} />
+        <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
+      </section>
       <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );

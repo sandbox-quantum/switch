@@ -89,7 +89,7 @@ def _refresh(adapter: SlackAdapter, detail: str) -> Any:
         CHANNEL,
         AGENT,
         "working",
-        notify_user=None,
+        mention_handle=None,
         thread_root_id=None,
         detail=detail,
     )
@@ -180,7 +180,7 @@ async def test_the_turn_end_clear_removes_everything() -> None:
         CHANNEL,
         AGENT,
         "idle",
-        notify_user=None,
+        mention_handle=None,
         thread_root_id=None,
     )
 

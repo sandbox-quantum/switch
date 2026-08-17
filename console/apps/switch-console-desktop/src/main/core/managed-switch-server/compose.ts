@@ -11,9 +11,10 @@ function profileArgs(): string[] {
 
 /** Base args that scope every invocation to the managed project + env file.
  * Relative file names resolve against the host working dir (the ctx root). */
-function baseArgs(host: ServerHost): string[] {
+function baseArgs(host: ServerHost, globalFlags: string[]): string[] {
   return [
     'compose',
+    ...globalFlags,
     '-f',
     COMPOSE_FILE_NAME,
     '--env-file',
@@ -46,9 +47,16 @@ async function runCompose(host: ServerHost, args: string[], timeout: number): Pr
  */
 export function composeUp(host: ServerHost, onLog: (line: string) => void): Promise<void> {
   log.info(`local-switch-server: docker compose up (${host.label})`);
-  return host.streamCommand(host.dockerBin, [...baseArgs(host), 'up', '-d'], onLog, {
-    timeoutMs: COMPOSE_TIMEOUT_MS,
-  });
+  // Compose already falls back to plain, line-per-event output when it is not
+  // attached to a TTY, which is how we always run it — so this pins the
+  // behaviour we depend on rather than changing it. `--progress` belongs to
+  // `compose`, not to `up`; after the subcommand it exits with "unknown flag".
+  return host.streamCommand(
+    host.dockerBin,
+    [...baseArgs(host, ['--progress', 'plain']), 'up', '-d'],
+    onLog,
+    { timeoutMs: COMPOSE_TIMEOUT_MS }
+  );
 }
 
 /** Stop and remove the stack's containers. `removeVolumes` also destroys the
@@ -57,7 +65,7 @@ export async function composeDown(host: ServerHost, removeVolumes: boolean): Pro
   log.info(`local-switch-server: docker compose down${removeVolumes ? ' -v' : ''} (${host.label})`);
   await runCompose(
     host,
-    [...baseArgs(host), 'down', ...(removeVolumes ? ['-v'] : [])],
+    [...baseArgs(host, []), 'down', ...(removeVolumes ? ['-v'] : [])],
     5 * 60 * 1000
   );
 }
@@ -67,7 +75,7 @@ export async function runningServices(host: ServerHost): Promise<string[]> {
   try {
     const stdout = await runCompose(
       host,
-      [...baseArgs(host), 'ps', '--status', 'running', '--services'],
+      [...baseArgs(host, []), 'ps', '--status', 'running', '--services'],
       60_000
     );
     return stdout
@@ -97,7 +105,7 @@ export async function isStackRunning(host: ServerHost): Promise<boolean> {
 export async function runningImages(host: ServerHost): Promise<Map<string, string>> {
   const stdout = await runCompose(
     host,
-    [...baseArgs(host), 'ps', '--status', 'running', '--format', 'json'],
+    [...baseArgs(host, []), 'ps', '--status', 'running', '--format', 'json'],
     60_000
   );
   const images = new Map<string, string>();

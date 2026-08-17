@@ -20,7 +20,64 @@ export type OptionItem = { id: string; label: string };
 
 type DimKey = 'rooms' | 'room_groups' | 'users' | 'agents';
 
-const EMPTY_RULE: AddressingRule = { rooms: '*', room_groups: '*', users: '*', agents: '*' };
+const EMPTY_RULE: AddressingRule = {
+  rooms: '*',
+  room_groups: '*',
+  users: '*',
+  agents: '*',
+  owner: false,
+  owner_agents: false,
+};
+
+/**
+ * The two symbolic subjects, as ids that sit in the Users and Agents pickers
+ * beside real ones.
+ *
+ * They are booleans on the rule, not members of those lists — but to the person
+ * filling the form they answer the same question ("who counts as a sender
+ * here?"), so they are offered in the same place and mapped on the way in and
+ * out. That also keeps them composable: "me and Alice" is one rule, which a
+ * separate checkbox made possible but a separate dropdown mode would not.
+ *
+ * The `@` prefix is what keeps them from colliding with a real id — the picker
+ * accepts free text, and neither Switch ids nor platform handles start with one
+ * here.
+ */
+const ME = '@me';
+const MY_AGENTS = '@my-agents';
+
+const ME_OPTION: OptionItem = { id: ME, label: 'Me (the agent’s owner)' };
+const MY_AGENTS_OPTION: OptionItem = { id: MY_AGENTS, label: 'My agents (anyone I own)' };
+
+/** The Users dimension as the picker sees it: the owner reads as one more
+ * entry in the list. `Any` already includes them, so it stays `*`. */
+function usersOf(rule: AddressingRule): AddressingDimension {
+  if (rule.users === '*') return '*';
+  return rule.owner === true ? [ME, ...rule.users] : rule.users;
+}
+
+function agentsOf(rule: AddressingRule): AddressingDimension {
+  if (rule.agents === '*') return '*';
+  return rule.owner_agents === true ? [MY_AGENTS, ...rule.agents] : rule.agents;
+}
+
+/** Split a picked Users list back into stored ids and the symbolic flag. Any
+ * and None both clear the flag: "anyone" already covers the owner, and "none"
+ * means no human at all — leaving it set would contradict the choice just
+ * made. */
+function withUsers(rule: AddressingRule, next: AddressingDimension): AddressingRule {
+  if (next === '*') return { ...rule, users: '*', owner: false };
+  return { ...rule, users: next.filter((id) => id !== ME), owner: next.includes(ME) };
+}
+
+function withAgents(rule: AddressingRule, next: AddressingDimension): AddressingRule {
+  if (next === '*') return { ...rule, agents: '*', owner_agents: false };
+  return {
+    ...rule,
+    agents: next.filter((id) => id !== MY_AGENTS),
+    owner_agents: next.includes(MY_AGENTS),
+  };
+}
 
 /** A "Specific" dimension with an empty list matches nobody. */
 function matchesNobody(dim: AddressingDimension): boolean {
@@ -31,14 +88,16 @@ function matchesNobody(dim: AddressingDimension): boolean {
  * Why a rule can never match (so it would silently never apply), or null when it
  * is effective. A context dimension (rooms / room groups) that matches nobody
  * kills the rule outright; the sender is dead only when BOTH users and agents
- * match nobody (an empty list on just one kind is the intentional "none").
+ * match nobody, symbolic entries included (an empty list on just one kind is
+ * the intentional "none", and owner-only is the whole point of the default
+ * policy).
  */
 function deadRuleReason(rule: AddressingRule): string | null {
   if (matchesNobody(rule.rooms)) return 'Rooms is Specific but empty — this rule never applies.';
   if (matchesNobody(rule.room_groups)) {
     return 'Room groups is Specific but empty — this rule never applies.';
   }
-  if (matchesNobody(rule.users) && matchesNobody(rule.agents)) {
+  if (matchesNobody(usersOf(rule)) && matchesNobody(agentsOf(rule))) {
     return 'Both Users and Agents are empty — no sender can match, so this rule never applies.';
   }
   return null;
@@ -51,10 +110,11 @@ export function policyHasDeadRule(policy: AddressingPolicy | null): boolean {
 }
 
 /**
- * Controlled editor for an agent's scoped addressing policy (CHOO-1585). A null
- * value means "open" (anyone may address the agent); a policy value restricts to
- * senders matching a rule. Option lists (rooms / room groups / users / agents)
- * are supplied by the parent so this component stays presentational and reusable
+ * Controlled editor for the rule list of an agent's scoped addressing policy
+ * (CHOO-1585). Rendered only behind the "Custom rules" choice in
+ * {@link AddressingPolicyControl}, which owns the open/restricted decision and
+ * the owner warning. Option lists (rooms / room groups / users / agents) are
+ * supplied by the parent so this component stays presentational and reusable
  * across the settings page and the creation modal.
  */
 export function AddressingPolicyEditor({
@@ -66,16 +126,15 @@ export function AddressingPolicyEditor({
   agents,
   disabled = false,
 }: {
-  value: AddressingPolicy | null;
-  onChange: (next: AddressingPolicy | null) => void;
+  value: AddressingPolicy;
+  onChange: (next: AddressingPolicy) => void;
   rooms: OptionItem[];
   roomGroups: OptionItem[];
   users: OptionItem[];
   agents: OptionItem[];
   disabled?: boolean;
 }) {
-  const restricted = value !== null;
-  const rules = value?.rules ?? [];
+  const rules = value.rules;
   // Which rule (by index) is currently open for editing. Loaded rules start
   // collapsed (shown as a read-only summary); a freshly added rule opens for
   // editing. Only one rule is edited at a time.
@@ -84,8 +143,10 @@ export function AddressingPolicyEditor({
   const optionsFor = (key: DimKey): OptionItem[] => {
     if (key === 'rooms') return rooms;
     if (key === 'room_groups') return roomGroups;
-    if (key === 'users') return users;
-    return agents;
+    // The symbolic entry leads its list: it is the one most rules want, and it
+    // is the only entry that stays correct as people and agents come and go.
+    if (key === 'users') return [ME_OPTION, ...users];
+    return [MY_AGENTS_OPTION, ...agents];
   };
 
   const setRules = (next: AddressingRule[]) => onChange({ rules: next });
@@ -105,121 +166,98 @@ export function AddressingPolicyEditor({
 
   return (
     <div className="flex flex-col gap-3">
-      <Select
-        value={restricted ? 'restricted' : 'open'}
-        onValueChange={(next) => onChange(next === 'restricted' ? { rules } : null)}
-        disabled={disabled}
-      >
-        <SelectTrigger className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="open">Open — anyone in the room can address it</SelectItem>
-          <SelectItem value="restricted">Restricted — only matching rules</SelectItem>
-        </SelectContent>
-      </Select>
-
-      {restricted && (
-        <div className="flex flex-col gap-3">
-          {rules.length === 0 && (
-            <p className="text-destructive text-xs">
-              No rules — a restricted policy with no rules means nobody can address this agent. Add
-              a rule or switch back to Open.
-            </p>
-          )}
-          {rules.map((rule, index) =>
-            index === editingIndex ? (
-              <div
-                key={index}
-                className="border-primary/50 flex flex-col gap-2 rounded-md border bg-background-2/40 p-2"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Editing rule {index + 1}</span>
-                  {!disabled && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => removeRule(index)}
-                      aria-label="Remove rule"
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  )}
-                </div>
-                <DimensionRow
-                  label="Rooms"
-                  value={rule.rooms}
-                  options={optionsFor('rooms')}
-                  allowNone={false}
-                  disabled={disabled}
-                  onChange={(rooms) => updateRule(index, { ...rule, rooms })}
-                />
-                <DimensionRow
-                  label="Room groups"
-                  value={rule.room_groups}
-                  options={optionsFor('room_groups')}
-                  allowNone={false}
-                  disabled={disabled}
-                  onChange={(room_groups) => updateRule(index, { ...rule, room_groups })}
-                />
-                <DimensionRow
-                  label="Users"
-                  value={rule.users}
-                  options={optionsFor('users')}
-                  allowNone
-                  disabled={disabled}
-                  onChange={(users) => updateRule(index, { ...rule, users })}
-                />
-                <DimensionRow
-                  label="Agents"
-                  value={rule.agents}
-                  options={optionsFor('agents')}
-                  allowNone
-                  disabled={disabled}
-                  onChange={(agents) => updateRule(index, { ...rule, agents })}
-                />
-                {deadRuleReason(rule) !== null && (
-                  <p className="text-destructive text-xs">{deadRuleReason(rule)}</p>
-                )}
-                {!disabled && (
-                  <div className="flex justify-end">
-                    <Button
-                      size="sm"
-                      disabled={deadRuleReason(rule) !== null}
-                      onClick={() => setEditingIndex(null)}
-                    >
-                      Apply rule
-                    </Button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <RuleSummary
-                key={index}
-                index={index}
-                rule={rule}
-                rooms={rooms}
-                roomGroups={roomGroups}
-                users={users}
-                agents={agents}
-                disabled={disabled}
-                onEdit={() => setEditingIndex(index)}
-                onRemove={() => removeRule(index)}
-              />
-            )
-          )}
-          {!disabled && (
-            <div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={editingIndex !== null}
-                onClick={addRule}
-              >
-                Add rule
-              </Button>
+      {rules.length === 0 && (
+        <p className="text-xs text-foreground-muted">
+          No rules — a policy with no rules restricts nothing, so anyone in the agent&apos;s rooms
+          can address it. Add a rule, or choose “Anyone” above.
+        </p>
+      )}
+      {rules.map((rule, index) =>
+        index === editingIndex ? (
+          <div
+            key={index}
+            className="border-primary/50 flex flex-col gap-2 rounded-md border bg-background-2/40 p-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Editing rule {index + 1}</span>
+              {!disabled && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => removeRule(index)}
+                  aria-label="Remove rule"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              )}
             </div>
-          )}
+            <DimensionRow
+              label="Rooms"
+              value={rule.rooms}
+              options={optionsFor('rooms')}
+              allowNone={false}
+              disabled={disabled}
+              onChange={(rooms) => updateRule(index, { ...rule, rooms })}
+            />
+            <DimensionRow
+              label="Room groups"
+              value={rule.room_groups}
+              options={optionsFor('room_groups')}
+              allowNone={false}
+              disabled={disabled}
+              onChange={(room_groups) => updateRule(index, { ...rule, room_groups })}
+            />
+            <DimensionRow
+              label="Users"
+              value={usersOf(rule)}
+              options={optionsFor('users')}
+              allowNone
+              disabled={disabled}
+              onChange={(users) => updateRule(index, withUsers(rule, users))}
+            />
+            <DimensionRow
+              label="Agents"
+              value={agentsOf(rule)}
+              options={optionsFor('agents')}
+              allowNone
+              disabled={disabled}
+              onChange={(agents) => updateRule(index, withAgents(rule, agents))}
+            />
+            {deadRuleReason(rule) !== null && (
+              <p className="text-destructive text-xs">{deadRuleReason(rule)}</p>
+            )}
+            {!disabled && (
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  disabled={deadRuleReason(rule) !== null}
+                  onClick={() => setEditingIndex(null)}
+                >
+                  Apply rule
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <RuleSummary
+            key={index}
+            index={index}
+            rule={rule}
+            rooms={rooms}
+            roomGroups={roomGroups}
+            users={users}
+            agents={agents}
+            disabled={disabled}
+            onEdit={() => setEditingIndex(index)}
+            onRemove={() => removeRule(index)}
+          />
+        )
+      )}
+      {!disabled && (
+        <div>
+          <Button variant="outline" size="sm" disabled={editingIndex !== null} onClick={addRule}>
+            Add rule
+          </Button>
         </div>
       )}
     </div>
@@ -270,10 +308,12 @@ function RuleSummary({
             {dimLabel(rule.room_groups, roomGroups)}
           </span>
           <span>
-            <span className="font-medium">Users:</span> {dimLabel(rule.users, users)}
+            <span className="font-medium">Users:</span>{' '}
+            {dimLabel(usersOf(rule), [ME_OPTION, ...users])}
           </span>
           <span>
-            <span className="font-medium">Agents:</span> {dimLabel(rule.agents, agents)}
+            <span className="font-medium">Agents:</span>{' '}
+            {dimLabel(agentsOf(rule), [MY_AGENTS_OPTION, ...agents])}
           </span>
         </div>
         {dead !== null && <span className="text-destructive text-xs">{dead}</span>}
@@ -293,6 +333,14 @@ function RuleSummary({
 }
 
 type DimMode = 'any' | 'specific' | 'none';
+
+// A Base UI select trigger renders the stored value unless it is given
+// something else, so the labels have to be readable from both ends.
+const DIM_MODE_LABELS: Record<DimMode, string> = {
+  any: 'Any',
+  specific: 'Specific',
+  none: 'None',
+};
 
 function initialMode(value: AddressingDimension, allowNone: boolean): DimMode {
   if (value === '*') return 'any';
@@ -365,12 +413,12 @@ function DimensionRow({
         <span className="w-24 text-xs font-medium text-foreground-muted">{label}</span>
         <Select value={mode} onValueChange={(m) => changeMode(m as DimMode)} disabled={disabled}>
           <SelectTrigger className="h-7 w-32">
-            <SelectValue />
+            <SelectValue>{DIM_MODE_LABELS[mode]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="any">Any</SelectItem>
-            <SelectItem value="specific">Specific</SelectItem>
-            {allowNone && <SelectItem value="none">None</SelectItem>}
+            <SelectItem value="any">{DIM_MODE_LABELS.any}</SelectItem>
+            <SelectItem value="specific">{DIM_MODE_LABELS.specific}</SelectItem>
+            {allowNone && <SelectItem value="none">{DIM_MODE_LABELS.none}</SelectItem>}
           </SelectContent>
         </Select>
         {mode === 'specific' && ids.length > 0 && (

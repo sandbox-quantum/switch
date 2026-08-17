@@ -709,6 +709,12 @@ async def send_targeted_message(
         message until they reconnect). User targets are omitted — their
         reachability is the collaboration bridge's concern. A role with no live
         holder contributes no entries.
+
+        `not_permitted` is the one status that is not about reachability: that
+        agent's addressing policy does not admit you. The message is still
+        sent, and it will answer in the room saying it cannot act on it — so
+        read its reply rather than treating this as a failed send. Reaching it
+        another way is a matter for whoever owns it, not for a retry.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -1356,10 +1362,17 @@ async def list_bridges() -> list[dict[str, Any]]:
     the list to the user and let them choose, rather than guessing.
 
     Returns:
-        List of `{id, type, display_name, status, is_default}` dicts. Only
-        `status` == "active" bridges are usable for new rooms; others are
-        shown for context. `is_default` marks the bridge that `create_room`
-        uses when no `bridge_id` is given (at most one).
+        List of `{id, type, display_name, status, is_default,
+        can_create_channels}` dicts. Only `status` == "active" bridges are
+        usable for new rooms; others are shown for context. `is_default`
+        marks the bridge that `create_room` uses when no `bridge_id` is given
+        (at most one).
+
+        `can_create_channels` is false when Switch cannot make a channel on
+        that bridge — either the platform has no such call (Telegram) or an
+        operator has withheld it. Creating a room on one of those fails, so
+        offer an existing channel instead: the chat is made on the platform,
+        the Switch app is added to it, and the room is adopted from that.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
@@ -1538,9 +1551,10 @@ async def list_agents(
 
     Returns:
         A list of agent summaries (sorted by name), each
-        {id, name, description, connector_type, connection_model,
+        {id, name, description, icon_url, connector_type, connection_model,
         tool_count, model_count, owner_id, owner_name, oauth_client_id,
         created_at, parent_agent_id, known_agent_type, known_agent_options}.
+        `icon_url` is null when the agent has no icon set.
         Use `get_agent_detail` for the full detail of one agent.
     """
     agent_id = get_agent_id()
@@ -1562,11 +1576,12 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
             `list_all_rooms`/`get_room_detail`).
 
     Returns:
-        {id, name, description, connector_type, connection_model,
+        {id, name, description, icon_url, connector_type, connection_model,
         tool_count, model_count, owner_id, owner_name, oauth_client_id,
         created_at, parent_agent_id, known_agent_type, known_agent_options,
         agent_type, integration_profile, tools, models, rooms, sessions,
         children}.
+        `icon_url` is null when the agent has no icon set.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
@@ -1592,7 +1607,7 @@ async def update_agent_detail(
         - `options`: a PARTIAL map of the agent's known-agent options to
           change — only the keys you pass are updated; the rest are left as-is.
           For a claude-code agent the options are `repo_dir` (the working
-          directory), `channels_enabled`, `notify_user`, and `subagent_name`.
+          directory), `channels_enabled`, and `subagent_name`.
           The merged options are validated against the agent type's schema and
           its integration profile is rebuilt to match.
         - `parent_agent_id`: set the agent's parent (e.g. to make it a subagent

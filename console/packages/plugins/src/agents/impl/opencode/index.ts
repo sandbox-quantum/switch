@@ -7,7 +7,13 @@ import {
 } from '@switch-console/core/agents/plugins/helpers';
 import { buildOpencodeHookBehavior } from './hooks';
 import { icon } from './icon';
+import { opencodeLaunchProfileModels } from './models';
 import { OPENCODE_PLUGIN_CONTENT } from './plugin-file';
+import {
+  opencodeLaunchProfile,
+  opencodeLaunchProfileFields,
+  opencodeProfilePaths,
+} from './profile';
 import { buildOpencodeSwitchConnector } from './switch-connector';
 
 const OPENCODE_PLUGIN_PATH = '.opencode/plugins/switchdash-notifications.js';
@@ -120,7 +126,23 @@ export const provider = registerPluginBehavior(plugin, {
   sessions: { validateSessionId },
   hooks: buildOpencodeHookBehavior(),
   switchSetup: { files: buildOpencodeSwitchConnector() },
-  mcp: opencodeMcpAdapter(),
+  mcp: {
+    ...opencodeMcpAdapter(),
+    // The profile carries per-agent model / variant / sampling / instructions in
+    // a config file under `~/.config/opencode/switch`, loaded with
+    // `OPENCODE_CONFIG` because OpenCode has no flag that would load it. It
+    // registers no MCP server: the global config the connector writes does that,
+    // for every OpenCode session rather than only Switch Console's, and
+    // OpenCode merges the two.
+    launchProfile: opencodeLaunchProfile,
+    launchProfilePaths: opencodeProfilePaths,
+    launchProfileFields: opencodeLaunchProfileFields,
+    // A variant is whatever the chosen model declares, so the only correct list
+    // is the one the installed OpenCode reports. Asking also lets a typed model
+    // be checked, which matters because OpenCode accepts an unknown one in
+    // silence and only fails when the agent tries to answer.
+    launchProfileModels: opencodeLaunchProfileModels,
+  },
   plugins: createFileDropPlugin({
     relativePath: OPENCODE_PLUGIN_PATH,
     content: OPENCODE_PLUGIN_CONTENT,

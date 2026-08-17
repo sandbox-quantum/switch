@@ -700,6 +700,17 @@ export function isValidProviderSessionId(providerId: string, providerSessionId: 
   return true;
 }
 
+/**
+ * What a provider is called in the interface — "Claude Code", not the `claude`
+ * we key it by. An id this build does not know is returned as it stands: it
+ * came from a real agent row, and showing it is more use than showing nothing.
+ */
+export function providerDisplayName(id: string | null | undefined): string | null {
+  if (!id) return null;
+  if (!isValidProviderId(id)) return id;
+  return PROVIDER_MAP.get(id)?.name ?? id;
+}
+
 export function getDescriptionForProvider(id: AgentProviderId): string | null {
   return PROVIDER_MAP.get(id)?.description ?? null;
 }

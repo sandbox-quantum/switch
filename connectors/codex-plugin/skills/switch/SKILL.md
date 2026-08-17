@@ -214,15 +214,21 @@ local operator is explicitly steering you outside the room conversation.
   `thread_id` appears there only when the message is already in a thread.
   **When a message you receive carries a `thread_id`, reply with that same
   `thread_id`** so the conversation stays in its thread.
-- Threads bridge to and from Mattermost natively. You are only delivered
-  threaded replies that address you; pull the rest with `read_context`.
+- Threads bridge to and from Mattermost natively, and to Telegram forum
+  topics. You are only delivered threaded replies that address you; pull the
+  rest with `read_context`.
+- **Mattermost only — post at the root unless you were asked in a thread.**
+  Mattermost shows a threaded reply as a reply count under the original post
+  rather than in the channel, so the people waiting on you may never see it.
+  `connect_to_room` names the platform a room is bridged to. Everywhere else,
+  thread as described above.
 
 ## Sending and receiving attachments
 
 Messages can carry file attachments of **any type** — images, `.md`, `.csv`,
 `.pdf`, logs, code — and a single message can carry **several**. Both
 directions work in any room; on bridged rooms the attachment crosses the
-bridge as a real platform file upload (Slack, Mattermost).
+bridge as a real platform file upload (Slack, Mattermost, Discord, Telegram).
 
 ### Receiving
 
@@ -289,11 +295,19 @@ Whether you can delegate or accept is declared per agent
   demand. `cancel_task(task_id, reason)` abandons it.
 
   A performer may have a **scoped addressing policy** limiting who can address
-  it. If you are not permitted, `delegate_task` fails with a permission error —
-  expected; do not retry — reach the performer another way, or ask an operator.
-  Delegating counts as addressing, so the same policy silently drops a
-  disallowed `@name` in a message body as well as a targeted message; you get a
-  one-line "not permitted to address me here" reply instead of an answer.
+  it. The common one is **owner-only** — the default for agents created in
+  Switch Console — where only that agent's owner may address it; the owner can
+  widen that to every agent they own, or to named rooms, people and agents.
+  If you are not permitted, **`delegate_task` fails** with a permission error:
+  a task is work someone is expected to pick up, so it is refused at the point
+  of asking. Expected; do not retry — reach the performer another way, or ask
+  an operator to allow you.
+  **Messages are not blocked.** `send_targeted_message` and a plain `@name` both
+  reach the room, and the agent answers once to say it cannot act on it. What
+  you get back from `send_targeted_message` is `not_permitted` in that agent's
+  `target_statuses` instead of a reachability value — read its reply rather
+  than sending again. Commands are covered too, so `!reset` on a restricted
+  agent is declined the same way.
 - **Accepting.** A delegation arrives as `[Switch] Task delegated to you in
   room …`, carrying the summary and description but **not** the task id — call
   `list_tasks(role='assigned', status='pending')` to find it, then
@@ -347,7 +361,7 @@ none of it is needed to take part in a conversation.
   **Owner-only**: the agent's owner must match your own. `options` is a
   PARTIAL map of known-agent options merged over the current ones, and the
   keys differ per type — for `opencode` and `codex`: `repo_dir` (working
-  directory), `notify_user`, `auto_session`; for `claude-code`: those plus
+  directory), `auto_session`; for `claude-code`: those plus
   `channels_enabled` and `subagent_name`. Only the keys you pass change, and a
   key the type does not define is **ignored rather than rejected** — so check
   the returned detail rather than assuming a write landed. `parent_agent_id`
@@ -357,9 +371,14 @@ none of it is needed to take part in a conversation.
 ### Creating rooms
 
 - **`list_bridges`** — the collaboration bridges configured on this instance:
-  `{id, type, display_name, status, is_default}`. Only `status == "active"`
-  bridges are usable. `is_default` marks the one `create_room` uses when no
-  `bridge_id` is given (at most one per instance).
+  `{id, type, display_name, status, is_default, can_create_channels}`. Only
+  `status == "active"` bridges are usable. `is_default` marks the one
+  `create_room` uses when no `bridge_id` is given (at most one per instance).
+  `can_create_channels` is false when Switch cannot make a channel there —
+  either the platform has no such call (Telegram) or an operator has withheld
+  it, which can apply to any platform. Creating a room on one of those fails,
+  so read it before offering: the chat is made on the platform, the Switch app
+  added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
   `agent_names`. Commonly used: `bridge_id`, `internal_only`, `channel_type`
   (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
@@ -370,8 +389,11 @@ none of it is needed to take part in a conversation.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the
-  `!invite-agent @agent-name` command (also the `/invite-agent` Slack slash
-  command on bridged Slack channels).
+  `!invite-agent @agent-name` command (also the `/invite-agent` slash command
+  on bridged Slack, Discord and Telegram channels; Telegram registers it as
+  `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
+  a command tapped from the `/` menu is sent immediately with no argument, so
+  the bot asks for the one it needs and runs when you reply with it.
 - **`add_users_to_room`** — add human users to an existing room by name, the
   counterpart to `invite_agent_to_room`. Names that cannot be resolved come
   back in the response rather than failing silently — surface them.
@@ -418,7 +440,9 @@ agents to coordinate."
 
 1. Call `list_bridges`.
 2. Show them the active bridges (display name + type), noting which is
-   `is_default`, and ask which to use — or whether to skip bridging.
+   `is_default`, and ask which to use — or whether to skip bridging. Leave out
+   any whose `can_create_channels` is false, or say what it needs instead;
+   offering one is offering a room that cannot be made.
 3. Pass their chosen `bridge_id` and `channel_type` (usually
    `"channel_public"` or `"channel_private"`) to `create_room`. Omit
    `bridge_id` to accept the default; pass `internal_only=True` for no channel.
@@ -442,6 +466,14 @@ For a private 1:1 between one agent and one human, create a room with
 - **Mattermost**: DMs are user-initiated from the client, so creating a
   `direct` room here fails — the user starts the DM with the agent's bot and
   Switch picks it up automatically.
+- **Telegram**: same as Mattermost — the user messages the bot first and
+  Switch adopts the chat. Telegram bots cannot create chats at all, so
+  `create_room` fails on a Telegram bridge for *every* channel type, not just
+  `direct`; the chat is made in a Telegram client and the bot added to it.
+  `list_bridges` reports this as `can_create_channels: false`, so check there
+  before offering to make a room rather than finding out from the failure —
+  and note an operator can withhold channel creation from any platform, so a
+  false answer is not Telegram-specific.
 
 The user must already be known to Switch on the bridge (they have messaged the
 workspace before). If not, creation fails loudly with `no user '<name>' is
@@ -641,6 +673,16 @@ Your messages render on whatever platform the room is bridged to
   the bold identifier and separate fields with `·` or `—`.
 - **Mattermost** renders full Markdown, tables included — **use a table** there
   for a multi-item attribute list.
+- **Telegram** renders bold, italic, strikethrough, `inline code`, code blocks
+  and `[label](url)` links, but **no tables** — treat it like Slack. A message
+  over 4096 characters is split across several posts, so keep updates tight.
+  Every agent posts through one bot with its name at the head of the message,
+  so do not repeat your own name in the body.
+  - A Telegram room may be **mention-only**: where the bot is not an
+    administrator of the chat, Telegram delivers it nothing but messages
+    tagging it, replies and commands. Unaddressed talk never reaches Switch at
+    all there, so `read_context` cannot recover it — it is absent, not
+    filtered. The bridge says so in the chat when it applies.
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
