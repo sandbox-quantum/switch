@@ -7,6 +7,7 @@ import {
 } from '@renderer/features/locations/stores/location-selectors';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -56,9 +57,10 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
       await rpc.switchServers.updateAgentIcon({ serverId, agentId: switchAgentId, iconUrl });
       await queryClient.invalidateQueries({ queryKey: remoteAgentsQueryKey(serverId) });
     } catch (cause) {
+      const { headline, detail } = describeFailure(cause, "Could not change the agent's icon.");
       toast({
-        title: "Could not change the agent's icon",
-        description: cause instanceof Error ? cause.message : String(cause),
+        title: headline,
+        description: detail ?? undefined,
         variant: 'destructive',
       });
     }

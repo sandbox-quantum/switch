@@ -12,12 +12,19 @@ type Toast = {
   variant?: 'default' | 'destructive';
   action?: ToastAction;
   icon?: ReactNode;
+  /**
+   * Identifies the condition rather than the occurrence. Two toasts sharing an
+   * id replace each other, so a failure that recurs on a timer says its piece
+   * once instead of stacking up a wall of the same sentence.
+   */
+  id?: string;
 };
 
-function toast({ title, description, variant, action, icon }: Toast) {
+function toast({ title, description, variant, action, icon, id }: Toast) {
   const options = {
     description,
     icon,
+    ...(id && { id }),
     ...(action && { action: { label: action.label, onClick: action.onClick } }),
   };
 

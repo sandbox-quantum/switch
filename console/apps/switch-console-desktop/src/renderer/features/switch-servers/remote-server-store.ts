@@ -1,6 +1,7 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
   DockerAvailability,
@@ -43,7 +44,10 @@ export class RemoteServerStore {
   private readonly logsByHost = new Map<string, string[]>();
   private readonly dockerByHost = new Map<string, DockerAvailability>();
   private readonly busyHosts = new Set<string>();
+  /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
+  /** Diagnostics for the same failure, rendered under `error` rather than in it. */
+  errorDetail: string | null = null;
 
   private off: (() => void) | null = null;
   private offLog: (() => void) | null = null;
@@ -53,6 +57,12 @@ export class RemoteServerStore {
 
   constructor() {
     makeAutoObservable(this, { pendingByHost: false, flushTimer: false });
+  }
+
+  /** Headline and detail as one string, for the modals that have a single slot. */
+  get errorText(): string | null {
+    if (!this.error) return null;
+    return this.errorDetail ? `${this.error} (${this.errorDetail})` : this.error;
   }
 
   private queueLine(sshHost: string, line: string): void {
@@ -140,7 +150,7 @@ export class RemoteServerStore {
         for (const status of statuses) this.statuses.set(status.sshHost, status);
       });
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not read the server statuses.');
     }
   }
 
@@ -160,7 +170,7 @@ export class RemoteServerStore {
       const docker = await rpc.remoteSwitchServer.detectDocker(sshHost);
       runInAction(() => this.dockerByHost.set(sshHost, docker));
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not check Docker availability.');
     }
   }
 
@@ -168,6 +178,7 @@ export class RemoteServerStore {
     runInAction(() => {
       this.busyHosts.add(sshHost);
       this.error = null;
+      this.errorDetail = null;
       this.logsByHost.set(sshHost, []);
     });
     try {
@@ -193,7 +204,7 @@ export class RemoteServerStore {
         await switchServersStore.init();
       }
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not start the server.');
     } finally {
       runInAction(() => this.busyHosts.delete(sshHost));
     }
@@ -203,11 +214,12 @@ export class RemoteServerStore {
     runInAction(() => {
       this.busyHosts.add(sshHost);
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       await rpc.remoteSwitchServer.stop(sshHost);
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not stop the server.');
     } finally {
       runInAction(() => this.busyHosts.delete(sshHost));
     }
@@ -217,6 +229,7 @@ export class RemoteServerStore {
     runInAction(() => {
       this.busyHosts.add(sshHost);
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       // The reset deletes the stack's agents itself — their server-side
@@ -226,15 +239,23 @@ export class RemoteServerStore {
       await agentsStore.load();
       await switchServersStore.init();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not reset the server.');
     } finally {
       runInAction(() => this.busyHosts.delete(sshHost));
     }
   }
 
-  private setError(cause: unknown): void {
+  /**
+   * `error` is rendered directly in banners, so it goes through the shared
+   * boundary rather than carrying whatever was thrown. The fallback is
+   * per-action: the store knows which request failed, and the failure itself
+   * usually does not.
+   */
+  private setError(cause: unknown, fallback: string): void {
+    const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
-      this.error = cause instanceof Error ? cause.message : String(cause);
+      this.error = headline;
+      this.errorDetail = detail;
     });
   }
 }

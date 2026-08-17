@@ -9,6 +9,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -162,7 +163,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
 
       onSuccess({ roomId: result.room.id });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not create the room.'));
     } finally {
       setIsSubmitting(false);
       setCloseGuard(false);
@@ -241,7 +242,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             )}
             {bridgesQuery.isError && (
               <p className="text-destructive text-xs">
-                Could not load messaging apps: {errorText(bridgesQuery.error)}
+                {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
               </p>
             )}
           </section>
@@ -514,17 +515,13 @@ function handleOf(identity: LinkedIdentity): string {
   return username.startsWith('@') ? username : `@${username}`;
 }
 
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
 /** Turn a failed create into something the user can act on. */
 function messageFor(result: { kind: string; message?: string }): string {
   switch (result.kind) {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'bridge-unavailable':
-      return `The messaging app is not available: ${result.message ?? 'unknown reason'}`;
+      return result.message ?? 'The messaging app is not available.';
     default:
       return result.message ?? 'Could not create the room.';
   }

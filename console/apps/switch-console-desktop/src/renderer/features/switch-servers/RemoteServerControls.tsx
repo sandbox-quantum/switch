@@ -110,8 +110,8 @@ export const RemoteServerControls = observer(function RemoteServerControls({
 
         {store.error && !dockerUnavailable && (
           <Alert variant="destructive">
-            <AlertTitle>Something went wrong</AlertTitle>
-            <AlertDescription>{store.error}</AlertDescription>
+            <AlertTitle>{store.error}</AlertTitle>
+            {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
         )}
 

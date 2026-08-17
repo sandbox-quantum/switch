@@ -374,7 +374,9 @@ describe('agent memberships', () => {
     ]);
 
     expect(store.roomsFor('srv-a', 'agent-1')).toBeUndefined();
-    expect(store.errorFor('srv-a', 'agent-1')).toBe('nope');
+    expect(store.errorFor('srv-a', 'agent-1')).toBe(
+      'Could not load the rooms this agent belongs to. (nope)'
+    );
     expect(store.roomsFor('srv-a', 'agent-2')?.[0].roomId).toBe('room-b');
   });
 });

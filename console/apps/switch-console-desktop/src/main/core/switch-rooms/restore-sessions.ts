@@ -5,6 +5,7 @@ import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
+import { problemDetail, reportProblem } from '@main/lib/report-problem';
 import { switchRoomService } from './switch-room-service';
 
 /**
@@ -73,6 +74,14 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
             locationId: loaded.locationId,
             error: opened.error,
           });
+          // The session was connected to a room when the app last closed and is
+          // not coming back. Nothing on screen would have said so: the agent
+          // just stops answering in that room after a restart.
+          reportProblem({
+            key: `restore-session:location-unavailable:${sessionId}`,
+            headline: `A session that was connected to a Switch room could not be restored, because ${location.name} could not be opened. Nobody is answering in that room until it is started again.`,
+            detail: problemDetail(opened.error),
+          });
           continue;
         }
       }
@@ -88,6 +97,12 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
       log.warn('restoreSwitchRoomSessions: failed to launch room-connected session', {
         sessionId,
         error: String(error),
+      });
+      reportProblem({
+        key: `restore-session:launch-failed:${sessionId}`,
+        headline:
+          'A session that was connected to a Switch room could not be restarted, so nobody is answering in that room. Start it again from its agent.',
+        detail: problemDetail(error),
       });
     }
   }

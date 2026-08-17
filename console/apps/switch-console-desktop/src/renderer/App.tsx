@@ -1,5 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { AppMenuEvents } from './app/app-menu-events';
+import { UserFacingProblems } from './app/user-facing-problems';
 import { Workspace } from './app/workspace';
 import { SessionFocusReporter } from './features/sessions/session-focus-reporter-mount';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
@@ -21,6 +22,7 @@ function AppContent() {
             <AppMenuEvents />
             <SessionFocusReporter />
             <SessionDeeplinkListener />
+            <UserFacingProblems />
             <RightSidebarProvider>
               <ThemeProvider>
                 <ModalRenderer />

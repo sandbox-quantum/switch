@@ -5,6 +5,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
@@ -88,7 +89,7 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
       await switchRoomsStore.refreshRoomState();
       onSuccess();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not add the agents to this room.'));
     } finally {
       setIsSubmitting(false);
       setCloseGuard(false);

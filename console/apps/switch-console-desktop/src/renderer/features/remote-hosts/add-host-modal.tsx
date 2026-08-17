@@ -10,6 +10,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -142,7 +143,9 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
           </Field>
 
           {mutation.isError && (
-            <p className="text-destructive text-xs">{(mutation.error as Error).message}</p>
+            <p className="text-destructive text-xs">
+              {failureText(mutation.error, 'Could not add the host.')}
+            </p>
           )}
         </FieldGroup>
       </DialogContentArea>

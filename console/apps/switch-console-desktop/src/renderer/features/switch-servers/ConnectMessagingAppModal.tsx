@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useMemo, useState } from 'react';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -130,7 +131,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
         directorySearchSupported: selectedType.directorySearchSupported,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not connect the messaging app.'));
     } finally {
       setIsSubmitting(false);
       setCloseGuard(false);
@@ -193,7 +194,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
             </Select>
             {typesQuery.isError && (
               <p className="text-destructive mt-1 text-xs">
-                Could not load the available messaging apps: {errorText(typesQuery.error)}
+                {failureText(typesQuery.error, 'Could not load the available messaging apps.')}
               </p>
             )}
           </Field>
@@ -313,10 +314,6 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     </>
   );
 });
-
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 /** Turn a failed attach into something the user can act on. */
 function messageFor(result: Exclude<CreateBridgeResult, { kind: 'created' }>): string {

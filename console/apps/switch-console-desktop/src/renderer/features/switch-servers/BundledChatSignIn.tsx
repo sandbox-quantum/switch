@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Check, Copy, ExternalLink, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
@@ -156,10 +157,7 @@ export function BundledChatSignIn({
               <Spinner className="size-3.5" />
             ) : signInQuery.isError ? (
               <p className="text-destructive text-xs">
-                Could not read the sign-in details:{' '}
-                {signInQuery.error instanceof Error
-                  ? signInQuery.error.message
-                  : String(signInQuery.error)}
+                {failureText(signInQuery.error, 'Could not read the sign-in details.')}
               </p>
             ) : signIn?.kind === 'unavailable' ? (
               <p className="text-xs text-foreground-muted">{signIn.reason}</p>

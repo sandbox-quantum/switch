@@ -2,6 +2,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -88,7 +89,7 @@ export const RenameSessionModal = observer(function RenameSessionModal({
       }
       onSuccess();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to rename session');
+      setError(failureText(e, 'Could not rename the session.'));
       setIsSubmitting(false);
     }
   }, [isValid, sessionManager, sessionId, normalizedName, onSuccess]);

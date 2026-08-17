@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -49,7 +50,7 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
       await switchRoomsStore.deleteRoom(serverId, roomId);
       onSuccess();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not delete the room.'));
       setIsDeleting(false);
     } finally {
       setCloseGuard(false);

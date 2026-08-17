@@ -8,6 +8,7 @@ import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { runWithLogContext } from '@main/lib/log-context';
 import { noteAgentName, noteSessionTitle } from '@main/lib/log-name-cache';
 import { log } from '@main/lib/logger';
+import { problemDetail, reportProblem } from '@main/lib/report-problem';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import { PtyInjectionSink } from './injection-sink';
@@ -134,6 +135,13 @@ class SwitchNotificationPoller {
             roomId,
             error: String(error),
           });
+          // The session stays up and looks connected; what it has lost is the
+          // room, so nothing addressed to it will ever arrive.
+          reportProblem({
+            key: `room-poller:claim-failed:${ctx.sessionId}`,
+            headline: `This session could not rejoin ${roomName ?? 'its Switch room'}, so messages sent to it there will not reach it. Reconnect it to the room from the session.`,
+            detail: problemDetail(error),
+          });
         });
         return;
       }
@@ -143,6 +151,11 @@ class SwitchNotificationPoller {
       log.warn('SwitchNotificationPoller: failed to start poller', {
         sessionId: ctx.sessionId,
         error: String(error),
+      });
+      reportProblem({
+        key: `room-poller:start-failed:${ctx.sessionId}`,
+        headline: `This session is not receiving messages from ${roomName ?? 'its Switch room'}. It will look connected but will not answer anyone there.`,
+        detail: problemDetail(error),
       });
     });
   }
@@ -209,6 +222,11 @@ class SwitchNotificationPoller {
         'SwitchNotificationPoller: missing Switch credentials (SWITCH_API_TOKEN/ENDPOINT/AGENT_ID) — cannot poll room',
         { sessionId: ctx.sessionId, dir: rootPath, roomId, slug }
       );
+      reportProblem({
+        key: `room-poller:no-creds:${ctx.sessionId}`,
+        headline: `${slug} has no Switch credentials on this machine, so its session cannot receive room messages. Re-run the connector's configure step for it.`,
+        detail: `Looked in ${rootPath}`,
+      });
       return null;
     }
 

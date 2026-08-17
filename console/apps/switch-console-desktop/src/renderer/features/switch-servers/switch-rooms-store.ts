@@ -1,4 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
   RemoteAgentRoom,
@@ -306,7 +307,7 @@ export class SwitchRoomsStore {
           runInAction(() => {
             this.roomListErrors.set(
               server.id,
-              cause instanceof Error ? cause.message : String(cause)
+              failureText(cause, `Could not load the rooms on ${server.name}.`)
             );
           });
         }
@@ -479,7 +480,7 @@ export class SwitchRoomsStore {
       return rooms;
     } catch (cause) {
       runInAction(() => {
-        this.errors.set(k, cause instanceof Error ? cause.message : String(cause));
+        this.errors.set(k, failureText(cause, 'Could not load the rooms this agent belongs to.'));
       });
       return null;
     } finally {

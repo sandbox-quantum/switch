@@ -72,11 +72,7 @@ function createAppCommandProvider(): CommandProvider {
         execute() {
           void toggleAppTheme().then((result) => {
             if (result.success) return;
-            toast({
-              title: 'Theme not changed',
-              description: result.error.message,
-              variant: 'destructive',
-            });
+            toast({ title: result.error.message, variant: 'destructive' });
           });
         },
       });

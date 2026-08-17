@@ -38,6 +38,11 @@ vi.mock('./auto-session-store', () => ({
   setAutoSessionAgent: vi.fn(),
 }));
 vi.mock('./switch-credentials', () => ({ readSwitchAgentCredentials: vi.fn() }));
+const reportProblem = vi.fn();
+vi.mock('@main/lib/report-problem', () => ({
+  reportProblem: (...args: unknown[]) => reportProblem(...args),
+  problemDetail: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+}));
 
 const { autoSessionWatcher } = await import('./auto-session-watcher');
 
@@ -69,6 +74,7 @@ describe('AutoSessionWatcher.handleNotification', () => {
     getAgentById.mockReset();
     getAgentById.mockResolvedValue({ id: 'local-1', autoApprove: false });
     createSession.mockResolvedValue({ success: true, data: { session: { id: 'new' } } });
+    reportProblem.mockReset();
   });
 
   it('spawns a session when no live session is attending the room', async () => {
@@ -207,6 +213,30 @@ describe('AutoSessionWatcher.handleNotification', () => {
       handle(watcher, 'room-x');
       await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
     });
+  });
+
+  it('tells the operator when it gives up, not only the room', async () => {
+    // The notice it posts into the room says the operator may need to start a
+    // session by hand — and until this existed, the operator was the one
+    // person never told. A room nobody is answering in looked, locally, fine.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, text: async () => '' }));
+    vi.stubGlobal('fetch', fetchMock);
+    createSession.mockRejectedValue(new Error('no runtime available'));
+    const watcher = fakeWatcher();
+
+    handle(watcher, 'room-x');
+    await vi.runAllTimersAsync();
+
+    expect(reportProblem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: expect.stringContaining('auto-session:spawn-failed'),
+        headline: expect.stringContaining('could not be started'),
+        detail: 'no runtime available',
+      })
+    );
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('declares the room for the session it is about to create', async () => {

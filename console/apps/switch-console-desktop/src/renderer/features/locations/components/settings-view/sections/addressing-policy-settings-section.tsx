@@ -7,6 +7,7 @@ import {
   policyHasDeadRule,
 } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { log } from '@renderer/utils/logger';
@@ -115,7 +116,7 @@ function AddressingPolicyRow({
       setError(null);
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save policy');
+      setError(failureText(err, 'Could not save the addressing policy.'));
       log.error('Failed to update addressing policy', { agentId, error: err });
     },
   });

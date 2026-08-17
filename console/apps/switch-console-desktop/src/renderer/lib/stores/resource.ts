@@ -5,6 +5,7 @@ import {
   onBecomeUnobserved,
   runInAction,
 } from 'mobx';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 
 export type ResourceStrategy<T, TEventData = void> =
   | { kind: 'demand' }
@@ -143,7 +144,7 @@ export class Resource<T, TEventData = void> {
       })
       .catch((e: unknown) => {
         runInAction(() => {
-          this.error = e instanceof Error ? e.message : String(e);
+          this.error = failureText(e, 'Could not read this host’s resource usage.');
           this.loading = this._reloadQueued;
         });
       })

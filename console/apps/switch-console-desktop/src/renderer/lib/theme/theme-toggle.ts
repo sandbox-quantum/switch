@@ -8,13 +8,14 @@ import {
   setAppSettingsValueInCache,
   updateAppSettingsRequest,
 } from '@renderer/features/settings/app-settings-client';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import type { Theme } from '@shared/core/app-settings';
 import { getNextTheme } from './theme-toggle-model';
 
 export type ToggleThemeError = { message: string };
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return failureText(error, 'Could not change the theme.');
 }
 
 export async function toggleAppTheme(): Promise<Result<NonNullable<Theme>, ToggleThemeError>> {

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { rpc } from '@renderer/lib/ipc';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
@@ -94,7 +95,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
       refreshIdentities();
       onClaimed(result.identity);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not link this account.'));
     } finally {
       setClaiming(null);
       setCloseGuard(false);
@@ -119,7 +120,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
       refreshIdentities();
       await queryClient.invalidateQueries({ queryKey: ['bridge-directory', serverId, bridgeId] });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not unlink this account.'));
     } finally {
       setReleasing(null);
       setCloseGuard(false);
@@ -209,8 +210,7 @@ function DirectoryResults({
   if (fetchError) {
     return (
       <p className="text-destructive text-xs">
-        Could not search the directory:{' '}
-        {fetchError instanceof Error ? fetchError.message : String(fetchError)}
+        {failureText(fetchError, 'Could not search the directory.')}
       </p>
     );
   }

@@ -7,6 +7,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -157,8 +158,9 @@ const AgentCard = observer(function AgentCard({
                       void toastPromise(rpc.agents.resetRemoteAgent({ agentId: agent.id }), {
                         loading: `Resetting ${label}…`,
                         success: `${label} was reset`,
-                        error: (error) =>
-                          `Failed to reset agent: ${error instanceof Error ? error.message : String(error)}`,
+                        error: (error) => {
+                          return resetAgentErrorText(error);
+                        },
                       });
                     },
                   })

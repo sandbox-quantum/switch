@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -50,9 +51,10 @@ export function useConfirmDeleteAgent() {
             onDeleted?.();
           } catch (error) {
             log.error('Failed to remove agent', { agentId: resolvedAgentId, error });
+            const { headline, detail } = describeFailure(error, 'Could not remove the agent.');
             toast({
-              title: 'Failed to remove agent',
-              description: error instanceof Error ? error.message : String(error),
+              title: headline,
+              description: detail ?? undefined,
               variant: 'destructive',
             });
           }

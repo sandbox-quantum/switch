@@ -162,9 +162,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       }
       await queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] });
     } catch (cause) {
-      setToggleError(
-        `Could not update ${bridge.displayName}: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
+      setToggleError(failureText(cause, `Could not update ${bridge.displayName}.`));
     } finally {
       setSavingBridgeId(null);
     }
@@ -366,7 +364,7 @@ export function MessagingAppRow({
       });
       onReleased();
     } catch (cause) {
-      setReleaseError(cause instanceof Error ? cause.message : String(cause));
+      setReleaseError(failureText(cause, 'Could not unlink this account.'));
     } finally {
       setReleasing(false);
     }

@@ -10,6 +10,7 @@ import {
 import { getLocationById } from '@main/core/locations/store';
 import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
+import { problemDetail, reportProblem } from '@main/lib/report-problem';
 import {
   listAutoSessionAgentIds,
   listAutoSessionSubagents,
@@ -197,6 +198,14 @@ class AutoSessionWatcher {
       log.warn('AutoSessionWatcher: no local dir for agent; cannot read credentials', {
         localAgentId,
       });
+      // Auto-start is switched on for this agent and is not going to run. Left
+      // to the log, the agent simply never answers and the user has no reason
+      // to suspect the setting rather than the room.
+      reportProblem({
+        key: `auto-session:no-dir:${localAgentId}`,
+        headline: `Auto-start is on for ${agent?.name ?? 'an agent'}, but it has no local directory, so no session can be started for it.`,
+        detail: null,
+      });
       return;
     }
     // Read the agent's own identity from its provider-neutral per-agent file so
@@ -210,6 +219,11 @@ class AutoSessionWatcher {
       log.warn('AutoSessionWatcher: missing Switch credentials; cannot watch', {
         localAgentId,
         dir: rootPath,
+      });
+      reportProblem({
+        key: `auto-session:no-creds:${localAgentId}`,
+        headline: `Auto-start is on for ${agent?.name ?? 'an agent'}, but its Switch credentials are missing, so it will not answer when someone addresses it. Re-run the connector's configure step for this agent.`,
+        detail: `Looked in ${rootPath}`,
       });
       return;
     }
@@ -246,6 +260,11 @@ class AutoSessionWatcher {
       log.warn('AutoSessionWatcher: missing subagent credentials; cannot watch', {
         parentAgentId,
         name,
+      });
+      reportProblem({
+        key: `auto-session:no-subagent-creds:${parentAgentId}:${name}`,
+        headline: `Auto-start is on for the subagent "${name}", but its Switch credentials are missing, so it will not answer when someone addresses it.`,
+        detail: `Looked in ${rootPath}`,
       });
       return;
     }
@@ -524,6 +543,13 @@ class AutoSessionWatcher {
       localAgentId: watcher.localAgentId,
       roomId,
       error: lastError,
+    });
+    // The room is told, and the notice it gets points at the operator — who,
+    // until this call existed, was the one person not told.
+    reportProblem({
+      key: `auto-session:spawn-failed:${watcher.key}:${roomId}`,
+      headline: `${watcher.agentName ?? 'An agent'} was addressed in a Switch room but its session could not be started, so nobody is answering there. Start a session for it by hand.`,
+      detail: problemDetail(lastError),
     });
     await postRoomMessage(
       watcher.creds,

@@ -6,6 +6,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -68,10 +69,14 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
   }
 
   if (query.isError) {
+    const settingsReadFailure = describeFailure(
+      query.error,
+      'Could not read this room’s settings.'
+    );
     return (
       <PanelNotice
-        title="Couldn’t read this room’s settings"
-        detail={errorText(query.error)}
+        title={settingsReadFailure.headline}
+        detail={settingsReadFailure.detail ?? undefined}
         action={
           <Button variant="outline" size="sm" onClick={() => void query.refetch()}>
             <RefreshCw className="size-3" />
@@ -206,7 +211,7 @@ function GeneralSection({ serverId, room }: { serverId: string; room: RemoteRoom
       queryClient.setQueryData(roomDetailKey(serverId, room.id), updated);
       setState({ phase: 'saved' });
     } catch (cause) {
-      setState({ phase: 'failed', message: errorText(cause) });
+      setState({ phase: 'failed', message: failureText(cause, 'Could not save the change.') });
     }
   }
 
@@ -423,7 +428,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
       });
       await onAdded();
     } catch (cause) {
-      setError(errorText(cause));
+      setError(failureText(cause, 'Could not add the agent to this room.'));
     } finally {
       setBusyId(null);
     }
@@ -573,8 +578,4 @@ function agentKindFor(
   const providerId = localAgentFor(switchAgentId, serverId)?.providerId ?? null;
   const knownType = remoteById.get(switchAgentId)?.knownAgentType ?? null;
   return providerDisplayName(providerId) ?? providerDisplayName(knownType) ?? 'agent';
-}
-
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }

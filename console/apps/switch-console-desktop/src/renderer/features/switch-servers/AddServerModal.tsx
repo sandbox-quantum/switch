@@ -351,8 +351,8 @@ const LocalSetupStep = observer(function LocalSetupStep({
 
         {store.error && !dockerUnavailable && !running && (
           <Alert variant="destructive">
-            <AlertTitle>Setup failed</AlertTitle>
-            <AlertDescription>{store.error}</AlertDescription>
+            <AlertTitle>{store.error}</AlertTitle>
+            {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
         )}
 
@@ -584,8 +584,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
 
             {store.error && !dockerUnavailable && !running && (
               <Alert variant="destructive">
-                <AlertTitle>Setup failed</AlertTitle>
-                <AlertDescription>{store.error}</AlertDescription>
+                <AlertTitle>{store.error}</AlertTitle>
+                {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
               </Alert>
             )}
 

@@ -23,6 +23,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -190,22 +191,22 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
           */}
             {installStep.isError && (
               <p className="text-destructive text-xs">
-                Could not install: {(installStep.error as Error).message}
+                {failureText(installStep.error, 'Could not install.')}
               </p>
             )}
             {updateStep.isError && (
               <p className="text-destructive text-xs">
-                Could not update: {(updateStep.error as Error).message}
+                {failureText(updateStep.error, 'Could not update.')}
               </p>
             )}
             {recheck.isError && (
               <p className="text-destructive text-xs">
-                Could not check this host: {(recheck.error as Error).message}
+                {failureText(recheck.error, 'Could not check this host.')}
               </p>
             )}
             {prepare.isError && (
               <p className="text-destructive text-xs">
-                Could not work out what this host needs: {(prepare.error as Error).message}
+                {failureText(prepare.error, 'Could not work out what this host needs.')}
               </p>
             )}
 
