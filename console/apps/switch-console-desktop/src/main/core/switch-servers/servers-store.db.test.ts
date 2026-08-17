@@ -29,8 +29,16 @@ vi.mock('@main/core/secrets/encrypted-app-secrets-store', () => ({
   },
 }));
 
+const telemetryMocks = vi.hoisted(() => ({
+  trackEvent: vi.fn(),
+}));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({
+  trackEvent: telemetryMocks.trackEvent,
+}));
+
 // Imported after the mocks so the module binds to the mocked db + secrets store.
-const { ensureManagedServer, removeServer, renameServer } = await import('./servers-store');
+const { addServer, ensureManagedServer, removeServer, renameServer } =
+  await import('./servers-store');
 
 describe('servers-store: rename & delete', () => {
   let fixture: Awaited<ReturnType<typeof openFixture>>;
@@ -40,6 +48,7 @@ describe('servers-store: rename & delete', () => {
     mocks.db = fixture.db;
     fixture.sqlite.pragma('foreign_keys = OFF');
     secretMocks.deleteSecret.mockReset();
+    telemetryMocks.trackEvent.mockReset();
   });
 
   afterEach(() => {
@@ -103,6 +112,73 @@ describe('servers-store: rename & delete', () => {
       expect(restarted.name).toBe('My box');
       expect(restarted.gatewayUrl).toBe('http://localhost:9090');
       expect(restarted.apiUrl).toBe('http://localhost:9091');
+    });
+  });
+
+  describe('ensureManagedServer telemetry', () => {
+    it('reports a new local managed server once', async () => {
+      await ensureManagedServer(
+        {
+          name: 'Local Switch server',
+          gatewayUrl: 'http://localhost:8080',
+          apiUrl: 'http://localhost:8081',
+        },
+        { kind: 'local' }
+      );
+
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
+        server_kind: 'local',
+      });
+    });
+
+    it('reports a new remote managed server with the remote_managed kind', async () => {
+      await ensureManagedServer(
+        {
+          name: 'Remote Switch server',
+          gatewayUrl: 'http://localhost:8080',
+          apiUrl: 'http://localhost:8081',
+        },
+        { kind: 'remote', sshHost: 'host-a' }
+      );
+
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
+        server_kind: 'remote_managed',
+      });
+    });
+
+    it('reports nothing when a managed server restarts (updates the existing row)', async () => {
+      const ref = { kind: 'local' } as const;
+      const params = {
+        name: 'Local Switch server',
+        gatewayUrl: 'http://localhost:8080',
+        apiUrl: 'http://localhost:8081',
+      };
+      await ensureManagedServer(params, ref);
+      telemetryMocks.trackEvent.mockClear();
+
+      await ensureManagedServer(
+        { ...params, gatewayUrl: 'http://localhost:9090', apiUrl: 'http://localhost:9091' },
+        ref
+      );
+
+      expect(telemetryMocks.trackEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('addServer telemetry', () => {
+    it('reports an externally-hosted server', async () => {
+      await addServer({
+        name: 'External server',
+        gatewayUrl: 'https://gw.example.com',
+        apiUrl: 'https://api.example.com',
+      });
+
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
+        server_kind: 'external',
+      });
     });
   });
 

@@ -395,6 +395,64 @@ describe('RemoteSwitchSetupService.update', () => {
   });
 });
 
+describe('RemoteSwitchSetupService.install', () => {
+  it('installs the plugin and reports success', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('codex');
+
+    expect(result.success).toBe(true);
+    expect(calls()).toContain(`plugin add ${CODEX_REF}`);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'success',
+    });
+  });
+
+  it('reports failure when the install command exits non-zero', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin add ${CODEX_REF}`) {
+        return Promise.reject(
+          Object.assign(new Error('exit 1'), { code: 1, stderr: 'no write access' })
+        );
+      }
+      return codexExecImpl('sandbox-quantum/switch')('codex', args);
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('codex');
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe('no write access');
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+    });
+  });
+
+  it('reports nothing when the agent type has no Switch setup to attempt', async () => {
+    mocks.getPlugin.mockReturnValue({
+      metadata: { id: 'no-switch-agent' },
+      capabilities: {
+        switchSetup: { kind: 'none' },
+        hostDependency: { binaryNames: ['nosw'] },
+      },
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('no-switch-agent');
+
+    expect(result).toEqual({
+      success: false,
+      message: 'Switch setup is not supported for this agent.',
+    });
+    expect(mocks.trackEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe('RemoteSwitchSetupService.checkForUpdates', () => {
   it('leaves a marketplace already pointing at the expected source alone', async () => {
     mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));

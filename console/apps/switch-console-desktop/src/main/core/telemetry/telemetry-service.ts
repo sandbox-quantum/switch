@@ -36,6 +36,10 @@ class TelemetryService {
       return;
     }
 
+    // Before the gate, which reads the database: the event happened now, not
+    // whenever the reads that describe it finish.
+    const time = Date.now();
+
     if (!(await isTelemetryAllowed())) return;
 
     const event = buildAmplitudeEvent(name, properties, {
@@ -44,7 +48,7 @@ class TelemetryService {
       osName: OS_NAMES[process.platform] ?? 'Other',
       osVersion: release(),
       build: resolution.config.build,
-      time: Date.now(),
+      time,
       insertId: randomUUID(),
     });
 

@@ -12,6 +12,7 @@ export const TELEMETRY_SUMMARY =
 
 export const TELEMETRY_SHARED = [
   'Which features are used, and how often',
+  'Which coding agents you use, and whether they run here or on a remote host',
   'Whether sessions end normally or fail',
   'App version and operating system',
   'A random id for this install, so one copy of the app can be told from another',
@@ -19,7 +20,7 @@ export const TELEMETRY_SHARED = [
 
 export const TELEMETRY_NEVER_SHARED = [
   'Your name, email address, or sign-in',
-  'Anything read off your machine — its name, user account, or network address',
+  'Your machine, its user account, or your location',
   'Your prompts, code, files, or file paths',
   'Agent, room, project, or server names',
 ];

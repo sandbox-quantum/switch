@@ -1,15 +1,35 @@
 import type { TelemetryConfig } from './config';
-import type { TelemetryEventMap, TelemetryEventName } from './events';
+import {
+  TELEMETRY_EVENT_PROPERTIES,
+  type TelemetryEventMap,
+  type TelemetryEventName,
+} from './events';
 
 const SEND_TIMEOUT_MS = 5_000;
 
 /**
- * Suppresses Amplitude's reverse lookup of a location from the IP the request
- * arrived on. Amplitude geolocates the sender unless the payload names an
- * address, so naming an unroutable one is how the lookup is declined. It does
+ * Sent in place of whatever the HTTP client would otherwise volunteer.
+ *
+ * Amplitude parses the user agent of a request into device and OS properties of
+ * the event, so leaving it to the runtime would put a field on every event that
+ * this file does not account for — and the point of sending by hand is that
+ * everything sent is visible here.
+ */
+const USER_AGENT = 'switch-console';
+
+/**
+ * Sent so that Amplitude resolves a location from a reserved address rather
+ * than from the one the request arrived on, which it geolocates by default into
+ * country, region, city and DMA properties of the event.
+ *
+ * Know what this is and is not. Amplitude documents no sentinel value for
+ * declining the lookup — their supported route is to have IP and location
+ * dropped at ingestion, which is a support request, not a payload field. This
+ * works because no geolocation database resolves a reserved address, so the
+ * lookup finds nothing; it is a convention, not a guarantee, and it should be
+ * confirmed against really ingested events rather than assumed. It also does
  * not hide the source address from Amplitude at the network level — nothing
- * sent from the user's own machine can — it stops the address becoming a
- * recorded property of the user.
+ * sent from the user's own machine can.
  */
 const UNROUTABLE_IP = '0.0.0.0';
 
@@ -36,6 +56,25 @@ export type TelemetryContext = {
   insertId: string;
 };
 
+/**
+ * Keep only the properties the catalogue names for this event.
+ *
+ * The types make an unexpected property a compile error at every call site that
+ * passes an object literal — but not through a spread, which is how a field
+ * added to some internal shape for an unrelated reason could otherwise arrive
+ * in a payload. This is where that stops being a convention.
+ */
+function allowedProperties<K extends TelemetryEventName>(
+  name: K,
+  properties: TelemetryEventMap[K]
+): Record<string, unknown> {
+  const allowed: Record<string, unknown> = {};
+  for (const key of TELEMETRY_EVENT_PROPERTIES[name]) {
+    allowed[key] = (properties as Record<string, unknown>)[key];
+  }
+  return allowed;
+}
+
 export function buildAmplitudeEvent<K extends TelemetryEventName>(
   name: K,
   properties: TelemetryEventMap[K],
@@ -53,7 +92,7 @@ export function buildAmplitudeEvent<K extends TelemetryEventName>(
     os_version: context.osVersion,
     platform: 'Electron',
     ip: UNROUTABLE_IP,
-    event_properties: { ...properties, build: context.build },
+    event_properties: { ...allowedProperties(name, properties), build: context.build },
   };
 }
 
@@ -77,7 +116,7 @@ export async function postAmplitudeEvent(
   try {
     response = await fetch(config.endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
       body: JSON.stringify({ api_key: config.apiKey, events: [event] }),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });

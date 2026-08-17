@@ -1,31 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { handlers } = vi.hoisted(() => ({
-  handlers: new Map<string, (...args: never[]) => void>(),
+/**
+ * The two buses are kept apart here on purpose.
+ *
+ * `sessionService` and `sessionHooks` both carry an event called
+ * `session:deleted`, and they fire on different paths — the second is how a
+ * session pruned from its remote host is reported. Collapsing them into one map
+ * of handlers, as an obvious test double would, makes a subscription to only
+ * one of them look identical to a subscription to both.
+ */
+const { buses } = vi.hoisted(() => {
+  type Handler = (...args: never[]) => void | Promise<void>;
+  const make = () => {
+    const handlers = new Map<string, Handler>();
+    return {
+      on: (name: string, handler: Handler) => handlers.set(name, handler),
+      handlers,
+    };
+  };
+  return { buses: { agents: make(), sessionService: make(), sessionHooks: make() } };
+});
+
+vi.mock('@main/core/agents/agent-events', () => ({ agentEvents: { on: buses.agents.on } }));
+vi.mock('@main/core/sessions/session-service', () => ({
+  sessionService: { on: buses.sessionService.on },
 }));
-
-function register(name: string, handler: (...args: never[]) => void) {
-  handlers.set(name, handler);
-}
-
-vi.mock('@main/core/agents/agent-events', () => ({ agentEvents: { on: register } }));
-vi.mock('@main/core/sessions/session-service', () => ({ sessionService: { on: register } }));
-vi.mock('@main/core/sessions/session-hooks', () => ({ sessionHooks: { on: register } }));
+vi.mock('@main/core/sessions/session-hooks', () => ({
+  sessionHooks: { on: buses.sessionHooks.on },
+}));
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: vi.fn() }));
 vi.mock('@main/core/locations/store', () => ({ getLocationById: vi.fn() }));
+vi.mock('@main/core/sessions/operations/getSession', () => ({ getSession: vi.fn() }));
 vi.mock('./telemetry-service', () => ({ trackEvent: vi.fn() }));
 
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getLocationById } from '@main/core/locations/store';
+import { getSession } from '@main/core/sessions/operations/getSession';
 import { registerTelemetryListeners } from './telemetry-listeners';
 import { trackEvent } from './telemetry-service';
 
-type Emit = (...args: never[]) => void | Promise<void>;
+type Bus = keyof typeof buses;
 
-async function emit(name: string, ...args: unknown[]): Promise<void> {
-  const handler = handlers.get(name);
-  if (!handler) throw new Error(`nothing subscribed to ${name}`);
-  await (handler as Emit)(...(args as never[]));
+async function emit(bus: Bus, name: string, ...args: unknown[]): Promise<void> {
+  const handler = buses[bus].handlers.get(name);
+  if (!handler) throw new Error(`nothing on the ${bus} bus subscribed to ${name}`);
+  await (handler as (...a: unknown[]) => void | Promise<void>)(...args);
 }
 
 function onLocation(kind: 'local' | 'remote' | 'missing') {
@@ -36,9 +55,9 @@ function onLocation(kind: 'local' | 'remote' | 'missing') {
   );
 }
 
-function startSession(id: string) {
+function startSession(id: string, providerId = 'claude') {
   vi.mocked(getAgentById).mockResolvedValue({ id: 'agent', locationId: 'loc' } as never);
-  return emit('session:created', { id, agentId: 'agent', providerId: 'claude' });
+  return emit('sessionService', 'session:created', { id, agentId: 'agent', providerId });
 }
 
 registerTelemetryListeners();
@@ -51,7 +70,7 @@ describe('agent_created', () => {
   it('reports where the agent runs', async () => {
     onLocation('remote');
 
-    await emit('agent:created', { providerId: 'codex', locationId: 'loc' });
+    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'loc' });
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
@@ -62,11 +81,27 @@ describe('agent_created', () => {
   it('says unknown rather than guessing when the location has gone', async () => {
     onLocation('missing');
 
-    await emit('agent:created', { providerId: 'codex', locationId: 'gone' });
+    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'gone' });
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
       location: 'unknown',
+    });
+  });
+
+  it('does not pass through a provider id it does not recognise', async () => {
+    // The column it comes from is typed, not constrained, so an unexpected
+    // value would otherwise become free text in a payload.
+    onLocation('local');
+
+    await emit('agents', 'agent:created', {
+      providerId: '/Users/someone/custom-agent',
+      locationId: 'loc',
+    });
+
+    expect(trackEvent).toHaveBeenCalledWith('agent_created', {
+      agent_type: 'unknown',
+      location: 'local',
     });
   });
 });
@@ -80,7 +115,7 @@ describe('a session ending', () => {
       location: 'local',
     });
 
-    await emit('session:archived', 's-normal');
+    await emit('sessionService', 'session:archived', 's-normal');
 
     expect(trackEvent).toHaveBeenCalledWith('session_ended', {
       agent_type: 'claude',
@@ -93,7 +128,10 @@ describe('a session ending', () => {
     onLocation('remote');
     await startSession('s-crash');
 
-    await emit('session:agent-exited', { sessionId: 's-crash', decision: 'failed' });
+    await emit('sessionHooks', 'session:agent-exited', {
+      sessionId: 's-crash',
+      decision: 'failed',
+    });
 
     expect(trackEvent).toHaveBeenCalledWith('session_ended', {
       agent_type: 'claude',
@@ -107,7 +145,10 @@ describe('a session ending', () => {
     await startSession('s-respawn');
     vi.mocked(trackEvent).mockClear();
 
-    await emit('session:agent-exited', { sessionId: 's-respawn', decision: 'respawnResume' });
+    await emit('sessionHooks', 'session:agent-exited', {
+      sessionId: 's-respawn',
+      decision: 'respawnResume',
+    });
 
     expect(trackEvent).not.toHaveBeenCalled();
   });
@@ -115,21 +156,114 @@ describe('a session ending', () => {
   it('ends a session once, not once per way of ending', async () => {
     onLocation('local');
     await startSession('s-twice');
-    await emit('session:agent-exited', { sessionId: 's-twice', decision: 'failed' });
+    await emit('sessionHooks', 'session:agent-exited', {
+      sessionId: 's-twice',
+      decision: 'failed',
+    });
     vi.mocked(trackEvent).mockClear();
 
-    await emit('session:deleted', 's-twice');
+    await emit('sessionService', 'session:deleted', 's-twice');
 
     expect(trackEvent).not.toHaveBeenCalled();
   });
 
-  it('reports a session this run never saw start as unknown', async () => {
-    await emit('session:deleted', 's-from-a-previous-run');
+  it('reports one pruned from its remote host, which arrives on the other bus', async () => {
+    // The reconciler deletes the row itself when a session has gone from the
+    // VM, or was terminated from another client. Subscribing only to the
+    // session service leaves those reporting a start and never an end.
+    onLocation('remote');
+    await startSession('s-pruned');
+    vi.mocked(trackEvent).mockClear();
+
+    await emit('sessionHooks', 'session:deleted', 's-pruned');
+
+    expect(trackEvent).toHaveBeenCalledWith('session_ended', {
+      agent_type: 'claude',
+      location: 'remote',
+      outcome: 'normal',
+    });
+  });
+});
+
+describe('a session that outlived a restart', () => {
+  it('is recognised when its runtime comes back, without counting as new', async () => {
+    onLocation('remote');
+    vi.mocked(getSession).mockResolvedValue({ id: 's-restored', providerId: 'codex' } as never);
+
+    await emit('sessionService', 'session:runtime-ready', 's-restored', {
+      path: '/somewhere',
+      locationId: 'loc',
+    });
+
+    expect(trackEvent).not.toHaveBeenCalled();
+
+    await emit('sessionService', 'session:deleted', 's-restored');
+
+    expect(trackEvent).toHaveBeenCalledWith('session_ended', {
+      agent_type: 'codex',
+      location: 'remote',
+      outcome: 'normal',
+    });
+  });
+
+  it('does not overwrite what a session that started here is known to be', async () => {
+    onLocation('local');
+    await startSession('s-known');
+    vi.mocked(getSession).mockResolvedValue({ id: 's-known', providerId: 'codex' } as never);
+    onLocation('remote');
+
+    await emit('sessionService', 'session:runtime-ready', 's-known', {
+      path: '/somewhere',
+      locationId: 'loc',
+    });
+    await emit('sessionService', 'session:deleted', 's-known');
+
+    expect(trackEvent).toHaveBeenLastCalledWith('session_ended', {
+      agent_type: 'claude',
+      location: 'local',
+      outcome: 'normal',
+    });
+  });
+
+  it('is still reported as unknown if its row has gone by the time it ends', async () => {
+    vi.mocked(getSession).mockResolvedValue(null);
+
+    await emit('sessionService', 'session:runtime-ready', 's-vanished', {
+      path: '/somewhere',
+      locationId: 'loc',
+    });
+    await emit('sessionService', 'session:deleted', 's-vanished');
 
     expect(trackEvent).toHaveBeenCalledWith('session_ended', {
       agent_type: 'unknown',
       location: 'unknown',
       outcome: 'normal',
     });
+  });
+});
+
+describe('the memory of what has ended', () => {
+  it('does not grow without limit', async () => {
+    // A long-running app ends a lot of sessions; the set only exists to
+    // recognise a second ending moments after the first.
+    for (let i = 0; i < 300; i++) {
+      await emit('sessionService', 'session:deleted', `bulk-${i}`);
+    }
+    vi.mocked(trackEvent).mockClear();
+
+    // The oldest have been forgotten, so this one reports again rather than
+    // being suppressed forever.
+    await emit('sessionService', 'session:deleted', 'bulk-0');
+
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('still suppresses a repeat that arrives while it is remembered', async () => {
+    await emit('sessionService', 'session:deleted', 'recent');
+    vi.mocked(trackEvent).mockClear();
+
+    await emit('sessionService', 'session:deleted', 'recent');
+
+    expect(trackEvent).not.toHaveBeenCalled();
   });
 });

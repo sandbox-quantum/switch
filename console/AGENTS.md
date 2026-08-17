@@ -410,8 +410,11 @@ pnpm run lint
   Flipping the default back to on is a product decision that requires the id to go first,
   not a code change.
 - **What a telemetry payload may contain.** Add an event only by adding it to the closed
-  catalogue in `src/main/core/telemetry/events.ts`, whose property types are literal
-  unions and numbers — nothing free-text can reach a payload through it, by construction.
+  catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions
+  and numbers, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which the
+  emitter uses to drop anything else before it builds a payload. The types alone are not
+  enough — excess-property checking does not apply through a spread — so the runtime
+  filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
   success-vs-failure, app version, operating system, and the random install id. Never:
   prompts, code, file paths, working directories, error messages or stack traces (use an

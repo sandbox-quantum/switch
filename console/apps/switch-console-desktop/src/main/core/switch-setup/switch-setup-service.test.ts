@@ -403,6 +403,11 @@ describe('switchSetupService mutations', () => {
       ['plugin', 'install', 'switch-connector@switch-plugins', '-s', 'user'],
       expect.anything()
     );
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'claude',
+      target: 'local',
+      outcome: 'success',
+    });
   });
 
   it('uninstall issues the scoped uninstall command', async () => {
@@ -443,6 +448,23 @@ describe('switchSetupService mutations', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toBe('no write access');
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'claude',
+      target: 'local',
+      outcome: 'failure',
+    });
+  });
+
+  it('reports nothing when the agent type has no Switch setup to attempt', async () => {
+    mocks.getPlugin.mockReturnValue(NONE_AGENT);
+
+    const result = await switchSetupService.install('no-switch-agent');
+
+    expect(result).toEqual({
+      success: false,
+      message: 'Switch setup is not supported for this agent.',
+    });
+    expect(mocks.trackEvent).not.toHaveBeenCalled();
   });
 });
 

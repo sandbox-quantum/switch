@@ -384,10 +384,11 @@ class SwitchSetupService {
   }
 
   async install(agentId: string): Promise<SwitchSetupResult> {
-    const result = await this.runInstall(agentId);
-    if (isValidProviderId(agentId)) {
+    const { result, attempted } = await this.runInstall(agentId);
+    // An agent type with no connector to install did not fail to install one.
+    if (attempted) {
       trackEvent('connector_installed', {
-        agent_type: agentId,
+        agent_type: isValidProviderId(agentId) ? agentId : 'unknown',
         target: 'local',
         outcome: result.success ? 'success' : 'failure',
       });
@@ -395,13 +396,21 @@ class SwitchSetupService {
     return result;
   }
 
-  private async runInstall(agentId: string): Promise<SwitchSetupResult> {
+  private async runInstall(
+    agentId: string
+  ): Promise<{ result: SwitchSetupResult; attempted: boolean }> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      return this.runFiles(agentId, (files, fs, version) => files.install(fs, { version }));
+      const result = await this.runFiles(agentId, (files, fs, version) =>
+        files.install(fs, { version })
+      );
+      return { result, attempted: true };
     }
     const resolved = await this.resolve(agentId);
     if (!resolved)
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+      return {
+        result: { success: false, message: 'Switch setup is not supported for this agent.' },
+        attempted: false,
+      };
     const { descriptor, bin, ref, rules } = resolved;
     try {
       await this.ensureMarketplace(
@@ -411,12 +420,19 @@ class SwitchSetupService {
         rules
       );
     } catch (err) {
-      return { success: false, message: installFailureMessage(String(err)) };
+      return {
+        result: { success: false, message: installFailureMessage(String(err)) },
+        attempted: true,
+      };
     }
     const res = await this.run(bin, rules.installArgs(ref, descriptor.scope));
-    return res.code === 0
-      ? { success: true }
-      : { success: false, message: installFailureMessage(res.stderr.trim()) };
+    return {
+      result:
+        res.code === 0
+          ? { success: true }
+          : { success: false, message: installFailureMessage(res.stderr.trim()) },
+      attempted: true,
+    };
   }
 
   /**

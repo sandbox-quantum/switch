@@ -38,31 +38,61 @@ export function telemetryBuildChannel(): TelemetryBuildChannel {
 }
 
 /**
+ * Everything the decision depends on, so that it depends on nothing else.
+ *
+ * Of the environment it reads `SWITCHDASH_TELEMETRY_DEV`,
+ * `SWITCHDASH_TELEMETRY_ENDPOINT` and `MAIN_VITE_AMPLITUDE_API_KEY`, and only in
+ * a dev run.
+ */
+export type TelemetryEnvironment = {
+  build: TelemetryBuildChannel;
+  /** The key compiled into this build, if it was built with one. */
+  bakedKey: string | undefined;
+  env: NodeJS.ProcessEnv;
+};
+
+/**
  * Whether this build can send at all, before any question of consent.
  *
- * The key is baked in at build time from `MAIN_VITE_AMPLITUDE_API_KEY`, so it
- * reaches only the main bundle and never the renderer. A build made without one
- * is inert: that is the expected state of a local `pnpm run package`, and it is
- * reported once as a warning rather than failing or retrying.
+ * Taken as an argument rather than read from the ambient environment, because
+ * `import.meta.env.DEV` is replaced at build time: a test cannot become a
+ * packaged build, and the rules that only apply to one are exactly the rules
+ * worth proving.
  *
- * A dev run sends nothing unless `SWITCHDASH_TELEMETRY_DEV=1`, mirroring how the
- * updater stays inert outside packaged builds. With it set, a dev run can be
- * pointed at a local listener with `SWITCHDASH_TELEMETRY_ENDPOINT` — that
- * override is dev-only, so a packaged build cannot be redirected.
+ * The environment is consulted only in a dev run. A shipped build sends with
+ * the key it was built with or sends nothing at all — otherwise anything able
+ * to set a variable before launch could point a consenting user's events at its
+ * own Amplitude project, and a build documented as inert would not be.
  */
-export function resolveTelemetryConfig(): TelemetryResolution {
-  const build = telemetryBuildChannel();
-  if (build === 'dev' && process.env.SWITCHDASH_TELEMETRY_DEV !== '1') {
+export function resolveTelemetryEnvironment({
+  build,
+  bakedKey,
+  env,
+}: TelemetryEnvironment): TelemetryResolution {
+  const isDev = build === 'dev';
+  if (isDev && env.SWITCHDASH_TELEMETRY_DEV !== '1') {
     return { enabled: false, reason: 'dev_build' };
   }
 
-  const apiKey = (
-    viteEnv?.MAIN_VITE_AMPLITUDE_API_KEY ??
-    process.env.MAIN_VITE_AMPLITUDE_API_KEY ??
-    ''
-  ).trim();
+  const apiKey = (bakedKey ?? (isDev ? env.MAIN_VITE_AMPLITUDE_API_KEY : undefined) ?? '').trim();
   if (!apiKey) return { enabled: false, reason: 'no_api_key' };
 
-  const override = build === 'dev' ? process.env.SWITCHDASH_TELEMETRY_ENDPOINT?.trim() : undefined;
+  const override = isDev ? env.SWITCHDASH_TELEMETRY_ENDPOINT?.trim() : undefined;
   return { enabled: true, config: { apiKey, endpoint: override || AMPLITUDE_US_ENDPOINT, build } };
+}
+
+/**
+ * The same decision for the build that is actually running.
+ *
+ * The key is baked in at build time from `MAIN_VITE_AMPLITUDE_API_KEY`, so it
+ * reaches only the main bundle and never the renderer. A build made without one
+ * is inert — the expected state of a local `pnpm run package` — and says so
+ * once rather than failing or retrying.
+ */
+export function resolveTelemetryConfig(): TelemetryResolution {
+  return resolveTelemetryEnvironment({
+    build: telemetryBuildChannel(),
+    bakedKey: viteEnv?.MAIN_VITE_AMPLITUDE_API_KEY,
+    env: process.env,
+  });
 }

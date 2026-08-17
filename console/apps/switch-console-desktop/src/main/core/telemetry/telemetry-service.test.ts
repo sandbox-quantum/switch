@@ -1,3 +1,4 @@
+import { release } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@main/lib/logger', () => ({
@@ -20,11 +21,6 @@ function sentBody(): Record<string, unknown> {
 
 function sentEvent(): Record<string, unknown> {
   return (sentBody().events as Record<string, unknown>[])[0];
-}
-
-/** Anything a payload must never carry, as it would appear once serialised. */
-function payloadText(): string {
-  return JSON.stringify(sentBody());
 }
 
 beforeEach(() => {
@@ -74,7 +70,7 @@ describe('the consent gate', () => {
   });
 });
 
-// Each reason is reported once per process, so these two assert the first
+// Each reason is reported once per process, so these assert the first
 // occurrence of theirs and must not be split into more cases of the same reason.
 describe('a build that cannot send', () => {
   it('makes no request when there is no API key, and says so', async () => {
@@ -89,6 +85,17 @@ describe('a build that cannot send', () => {
       'telemetry: not sending',
       expect.objectContaining({ reason: 'no_api_key' })
     );
+  });
+
+  it('says it once, however many events are dropped', async () => {
+    // The reason above has already been reported by the test before this one —
+    // which is the point: a silent build explains itself once, not per event.
+    delete process.env.MAIN_VITE_AMPLITUDE_API_KEY;
+
+    await telemetryService.track('app_launched', {});
+    await telemetryService.track('app_launched', {});
+
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   it('makes no request from a dev run that has not opted in', async () => {
@@ -138,7 +145,6 @@ describe('the payload', () => {
     const event = sentEvent();
     expect(event.event_type).toBe('connector_installed');
     expect(event.app_version).toBe('1.2.3');
-    expect(event.os_name).toEqual(expect.any(String));
     expect(event.event_properties).toEqual({
       agent_type: 'claude',
       target: 'remote',
@@ -147,17 +153,40 @@ describe('the payload', () => {
     });
   });
 
-  it('carries no machine, user or network identity', async () => {
+  it('names the operating system it is actually running on', async () => {
+    const expected = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[
+      process.platform as string
+    ];
+
+    await telemetryService.track('app_launched', {});
+
+    const event = sentEvent();
+    expect(event.os_name).toBe(expected ?? 'Other');
+    expect(event.os_version).toBe(release());
+  });
+
+  it('sends nothing beyond the fields this test names', async () => {
+    // A substring search for forbidden words would pass whatever the payload
+    // contained, since nothing here could produce them. Pinning the whole set
+    // of keys is what actually notices a new field arriving.
     await telemetryService.track('session_ended', {
       agent_type: 'codex',
       location: 'remote',
       outcome: 'failed',
     });
 
-    const text = payloadText().toLowerCase();
-    for (const forbidden of ['hostname', 'username', 'home/', 'users/', '@', 'mac_address']) {
-      expect(text).not.toContain(forbidden);
-    }
+    expect(Object.keys(sentEvent()).sort()).toEqual([
+      'app_version',
+      'device_id',
+      'event_properties',
+      'event_type',
+      'insert_id',
+      'ip',
+      'os_name',
+      'os_version',
+      'platform',
+      'time',
+    ]);
   });
 });
 
