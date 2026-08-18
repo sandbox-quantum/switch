@@ -18,14 +18,15 @@ export const TELEMETRY_SHARED = [
   'A random id for this install, so one copy of the app can be told from another',
 ];
 
-// "Your location" is deliberately not on this list. Nothing here sends one, and
-// the payload asks Amplitude not to derive one from the connection — but that
-// request is a convention rather than something Amplitude documents, and this
-// list is a promise. It can be added once the ingestion-side setting is
-// confirmed; see `UNROUTABLE_IP` in `@main/core/telemetry/amplitude-client`.
+// "Your location" is back on this list, and is now true by construction rather
+// than by request: events go to our own relay, which forwards them onward, so
+// the analytics vendors see the relay's address and never the user's. Under the
+// previous design the app called Amplitude directly and could only *ask* it not
+// to geolocate the connection, which was a convention Amplitude does not
+// document — not something to put in a promise.
 export const TELEMETRY_NEVER_SHARED = [
   'Your name, email address, or sign-in',
-  'Your machine or its user account',
+  'Your machine, its user account, or your location',
   'Your prompts, code, files, or file paths',
   'Agent, room, project, or server names',
 ];

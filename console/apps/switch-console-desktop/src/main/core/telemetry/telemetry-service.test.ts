@@ -19,8 +19,26 @@ function sentBody(): Record<string, unknown> {
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
-function sentEvent(): Record<string, unknown> {
-  return (sentBody().events as Record<string, unknown>[])[0];
+type Attribute = { key: string; value: { stringValue: string } };
+
+function sentRecord(): Record<string, unknown> {
+  const resourceLogs = sentBody().resourceLogs as [
+    { scopeLogs: [{ logRecords: [Record<string, unknown>] }] },
+  ];
+  return resourceLogs[0].scopeLogs[0].logRecords[0];
+}
+
+function sentResource(): Record<string, string> {
+  const resourceLogs = sentBody().resourceLogs as [{ resource: { attributes: Attribute[] } }];
+  return Object.fromEntries(
+    resourceLogs[0].resource.attributes.map((a) => [a.key, a.value.stringValue])
+  );
+}
+
+function sentAttributes(): Record<string, string> {
+  return Object.fromEntries(
+    (sentRecord().attributes as Attribute[]).map((a) => [a.key, a.value.stringValue])
+  );
 }
 
 beforeEach(() => {
@@ -30,14 +48,12 @@ beforeEach(() => {
   // A test run is a dev build, so telemetry is off unless a dev opts in — the
   // same switch a developer uses to watch the traffic locally.
   process.env.SWITCHDASH_TELEMETRY_DEV = '1';
-  process.env.MAIN_VITE_AMPLITUDE_API_KEY = 'test-key';
   delete process.env.SWITCHDASH_TELEMETRY_ENDPOINT;
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.SWITCHDASH_TELEMETRY_DEV;
-  delete process.env.MAIN_VITE_AMPLITUDE_API_KEY;
 });
 
 describe('the consent gate', () => {
@@ -66,7 +82,7 @@ describe('the consent gate', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toBe('https://api2.amplitude.com/2/httpapi');
+    expect(url).toBe('https://telemetry.flintai.dev/v1/logs');
   });
 });
 
@@ -83,33 +99,7 @@ describe('a build that cannot send', () => {
     return module.telemetryService;
   }
 
-  it('makes no request when there is no API key, and says so', async () => {
-    delete process.env.MAIN_VITE_AMPLITUDE_API_KEY;
-    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
-    const service = await freshService();
-
-    await service.track('app_launched', {});
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(isTelemetryAllowed).not.toHaveBeenCalled();
-    expect(log.warn).toHaveBeenCalledWith(
-      'telemetry: not sending',
-      expect.objectContaining({ reason: 'no_api_key' })
-    );
-  });
-
-  it('says it once, however many events are dropped', async () => {
-    delete process.env.MAIN_VITE_AMPLITUDE_API_KEY;
-    const service = await freshService();
-
-    await service.track('app_launched', {});
-    await service.track('app_launched', {});
-    await service.track('app_launched', {});
-
-    expect(log.warn).toHaveBeenCalledTimes(1);
-  });
-
-  it('makes no request from a dev run that has not opted in', async () => {
+  it('makes no request from a dev run that has not opted in, and says so', async () => {
     delete process.env.SWITCHDASH_TELEMETRY_DEV;
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
     const service = await freshService();
@@ -117,10 +107,22 @@ describe('a build that cannot send', () => {
     await service.track('app_launched', {});
 
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(isTelemetryAllowed).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledWith(
       'telemetry: not sending',
       expect.objectContaining({ reason: 'dev_build' })
     );
+  });
+
+  it('says it once, however many events are dropped', async () => {
+    delete process.env.SWITCHDASH_TELEMETRY_DEV;
+    const service = await freshService();
+
+    await service.track('app_launched', {});
+    await service.track('app_launched', {});
+    await service.track('app_launched', {});
+
+    expect(log.info).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -129,20 +131,13 @@ describe('the payload', () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
   });
 
-  it('identifies the install and nothing else', async () => {
+  it('identifies the install, and no user', async () => {
+    // The relay reads this as Amplitude's device id. It sets a user id only
+    // for a caller that sends one, which this is not.
     await telemetryService.track('session_started', { agent_type: 'claude', location: 'local' });
 
-    const event = sentEvent();
-    expect(event.device_id).toBe('install-abc');
-    expect(event).not.toHaveProperty('user_id');
-  });
-
-  it("declines Amplitude's location lookup", async () => {
-    // That no location field is sent is covered by pinning the whole set of
-    // keys below, rather than by listing fields nothing could produce.
-    await telemetryService.track('app_launched', {});
-
-    expect(sentEvent().ip).toBe('0.0.0.0');
+    expect(sentResource()['flint.client_id']).toBe('install-abc');
+    expect(sentResource()).not.toHaveProperty('flint.user_id');
   });
 
   it('stamps the event when it happened, not after the reads that describe it', async () => {
@@ -154,21 +149,20 @@ describe('the payload', () => {
 
     await telemetryService.track('app_launched', {});
 
-    expect(sentEvent().time).toBe(1_000);
+    expect(sentRecord().timeUnixNano).toBe('1000000000');
     now.mockRestore();
   });
 
-  it('carries the event, the build, the app version and the OS', async () => {
+  it('carries the event, the build and the app version', async () => {
     await telemetryService.track('connector_installed', {
       agent_type: 'claude',
       target: 'remote',
       outcome: 'failure',
     });
 
-    const event = sentEvent();
-    expect(event.event_type).toBe('connector_installed');
-    expect(event.app_version).toBe('1.2.3');
-    expect(event.event_properties).toEqual({
+    expect(sentResource()['service.version']).toBe('1.2.3');
+    expect(sentAttributes()).toEqual({
+      'event.name': 'switch_console.connector_installed',
       agent_type: 'claude',
       target: 'remote',
       outcome: 'failure',
@@ -177,15 +171,14 @@ describe('the payload', () => {
   });
 
   it('names the operating system it is actually running on', async () => {
-    const expected = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' }[
+    const expected = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[
       process.platform as string
     ];
 
     await telemetryService.track('app_launched', {});
 
-    const event = sentEvent();
-    expect(event.os_name).toBe(expected ?? 'Other');
-    expect(event.os_version).toBe(release());
+    expect(sentResource()['os.type']).toBe(expected ?? 'other');
+    expect(sentResource()['os.version']).toBe(release());
   });
 
   it('sends nothing beyond the fields this test names', async () => {
@@ -198,17 +191,19 @@ describe('the payload', () => {
       outcome: 'failed',
     });
 
-    expect(Object.keys(sentEvent()).sort()).toEqual([
-      'app_version',
-      'device_id',
-      'event_properties',
-      'event_type',
-      'insert_id',
-      'ip',
-      'os_name',
-      'os_version',
-      'platform',
-      'time',
+    expect(Object.keys(sentResource()).sort()).toEqual([
+      'flint.client_id',
+      'os.type',
+      'os.version',
+      'service.name',
+      'service.version',
+    ]);
+    expect(Object.keys(sentAttributes()).sort()).toEqual([
+      'agent_type',
+      'build',
+      'event.name',
+      'location',
+      'outcome',
     ]);
   });
 });

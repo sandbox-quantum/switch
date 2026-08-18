@@ -1,17 +1,17 @@
-import { randomUUID } from 'node:crypto';
 import { release } from 'node:os';
 import { resolveAppVersion } from '@main/core/app/utils';
 import { log } from '@main/lib/logger';
-import { buildAmplitudeEvent, postAmplitudeEvent, TelemetrySendError } from './amplitude-client';
 import { resolveTelemetryConfig, type TelemetryDisabledReason } from './config';
 import { isTelemetryAllowed } from './consent';
 import type { TelemetryEventMap, TelemetryEventName } from './events';
 import { getInstallId } from './install-id';
+import { buildOtlpPayload, postTelemetryEvent, TelemetrySendError } from './relay-client';
 
-const OS_NAMES: Record<string, string> = {
-  darwin: 'macOS',
-  win32: 'Windows',
-  linux: 'Linux',
+/** OpenTelemetry's names for what `process.platform` calls darwin/win32/linux. */
+const OS_TYPES: Record<string, string> = {
+  darwin: 'darwin',
+  win32: 'windows',
+  linux: 'linux',
 };
 
 class TelemetryService {
@@ -38,21 +38,20 @@ class TelemetryService {
 
     // Before the gate, which reads the database: the event happened now, not
     // whenever the reads that describe it finish.
-    const time = Date.now();
+    const timeMs = Date.now();
 
     if (!(await isTelemetryAllowed())) return;
 
-    const event = buildAmplitudeEvent(name, properties, {
-      installId: await getInstallId(),
+    const payload = buildOtlpPayload(name, properties, {
+      clientId: await getInstallId(),
       appVersion: await this.resolveVersion(),
-      osName: OS_NAMES[process.platform] ?? 'Other',
+      osType: OS_TYPES[process.platform] ?? 'other',
       osVersion: release(),
       build: resolution.config.build,
-      time,
-      insertId: randomUUID(),
+      timeMs,
     });
 
-    await postAmplitudeEvent(event, resolution.config);
+    await postTelemetryEvent(payload, resolution.config);
   }
 
   private resolveVersion(): Promise<string> {
@@ -62,17 +61,14 @@ class TelemetryService {
 
   /**
    * Say once, per reason, that this build reports nothing — a build that is
-   * silent should be able to explain itself. A dev run is expected; a packaged
-   * build with no key usually means someone meant to supply one.
+   * silent should be able to explain itself. `info` rather than `warn`: a dev
+   * run not reporting is the expected state, not a degraded one.
    */
   private reportDisabled(reason: TelemetryDisabledReason): void {
     if (this.reportedDisabled.has(reason)) return;
     this.reportedDisabled.add(reason);
 
-    const line = 'telemetry: not sending';
-    const context = { event: 'telemetry_disabled', reason };
-    if (reason === 'dev_build') log.info(line, context);
-    else log.warn(line, context);
+    log.info('telemetry: not sending', { event: 'telemetry_disabled', reason });
   }
 }
 

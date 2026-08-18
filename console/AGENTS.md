@@ -394,7 +394,12 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- The app sends a small, fixed set of product events to Amplitude, and nothing else.
+- The app sends a small, fixed set of product events to the company's public OTLP relay,
+  which forwards them to Amplitude and Datadog, and nothing else. The relay holds both
+  vendor keys, so **no credential ships in the app** — do not reintroduce one, and do not
+  call a vendor directly. It also means the vendors see the relay's network address rather
+  than the user's, which is what makes the "never your location" promise in the consent
+  copy true rather than merely requested.
   Logs are local-only and no code path transmits them off the machine. Do not add one.
   `getDiagnosticLogAttachment()` builds a redacted export and is the only function
   intended to ever feed such a path; anything that ships log content must go through it
@@ -640,11 +645,10 @@ pnpm run test
   `pnpm run dev` alone. `SWITCHDASH_TELEMETRY_DEV=1` opts a dev run in, and
   `SWITCHDASH_TELEMETRY_ENDPOINT` redirects it at a local listener so what is actually
   sent can be read off the wire rather than off the code. Both are dev-only and cannot
-  activate in a packaged build. The API key is separate and comes from the build:
-  `MAIN_VITE_AMPLITUDE_API_KEY`, statically replaced into the main bundle only, absent by
-  default, and inert when absent. Example:
-  `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009
-  MAIN_VITE_AMPLITUDE_API_KEY=local pnpm run dev`.
+  activate in a packaged build. There is no key to configure: events go to the public
+  OTLP relay, which holds the vendor credentials server-side, so every build can report
+  and none carries a secret. Example:
+  `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009 pnpm run dev`.
 - **A hook command is built for the machine the session runs on, not for the one
   building it.** `writeHooks(fs, hooks, { platform })` takes the target
   platform: `process.platform` locally and in the sidecar, the VM's `uname -s`

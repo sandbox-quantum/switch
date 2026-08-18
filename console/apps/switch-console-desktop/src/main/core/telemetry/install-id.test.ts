@@ -23,14 +23,32 @@ beforeEach(() => {
   store.setOrThrow.mockResolvedValue(undefined);
 });
 
+/**
+ * The relay's guard, verbatim from its `filter/guard` processor. A payload
+ * whose client id does not match is dropped — and answered with a 200, so
+ * nothing downstream would ever tell us. This id is that client id.
+ */
+const CANONICAL_UUID =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
 describe('the install id', () => {
   it('is created and stored the first time it is needed', async () => {
     const { getInstallId } = await loadModule();
 
     const id = await getInstallId();
 
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(id).toMatch(CANONICAL_UUID);
     expect(store.setOrThrow).toHaveBeenCalledWith('installId', id);
+  });
+
+  it('is a shape the relay will accept, since it is silent when it will not', async () => {
+    const { getInstallId } = await loadModule();
+
+    const id = await getInstallId();
+
+    expect(id).toMatch(CANONICAL_UUID);
+    expect(id).not.toBe(NIL_UUID);
   });
 
   it('is the one already stored, when there is one', async () => {
@@ -87,6 +105,6 @@ describe('the install id', () => {
 
     await expect(getInstallId()).rejects.toThrow('database is locked');
 
-    await expect(getInstallId()).resolves.toMatch(/^[0-9a-f-]{36}$/);
+    await expect(getInstallId()).resolves.toMatch(CANONICAL_UUID);
   });
 });
