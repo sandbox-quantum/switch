@@ -460,6 +460,33 @@ export class SessionManagerStore {
     }
   }
 
+  /**
+   * Drop sessions whose creation failed, which exist only in this store: the
+   * server rejected the create, so there is nothing there to delete.
+   *
+   * They cannot go through {@link deleteSessions}, which restores what it
+   * removed when the server call fails — and that call fails for a session the
+   * server never registered. Nor does anything else clear them: `loadSessions`
+   * only adds, and an unregistered session carries no `agentId`, so the sidebar
+   * omits it from the agent's list while still counting it as an error. Without
+   * this the agent keeps a failure badge, pointing at a session the user cannot
+   * reach, until the app restarts.
+   */
+  discardFailedCreations(): void {
+    const failed = Array.from(this.sessions.values()).filter(
+      (session) => isUnregistered(session) && session.phase === 'create-error'
+    );
+    if (failed.length === 0) return;
+
+    runInAction(() => {
+      for (const session of failed) this.sessions.delete(session.data.id);
+    });
+    for (const session of failed) {
+      this._releaseSessionRegistries(session.data.id);
+      session.dispose();
+    }
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     return this.deleteSessions([sessionId]);
   }

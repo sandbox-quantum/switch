@@ -66,6 +66,21 @@ export class AgentsStore {
   }
 
   /**
+   * The agent an agent page is routed to — its location plus its name, the pair
+   * every caller of the `location` view navigates with.
+   *
+   * A route carrying no name is answered only where there is nothing to guess
+   * between: a location holding exactly one agent resolves to it. Beyond that,
+   * null rather than a guess — picking one of several would put another agent's
+   * provider and identity above someone's session list.
+   */
+  agentAtLocation(locationId: string, agentName: string | undefined): Agent | null {
+    const agents = this.byLocation.get(locationId) ?? [];
+    if (agentName === undefined) return agents.length === 1 ? agents[0]! : null;
+    return agents.find((a) => a.name === agentName) ?? null;
+  }
+
+  /**
    * This install's agents that are registered on a given Switch server, i.e.
    * the ones Switch Console can actually act on there. The room views list and
    * offer these and no others: an agent registered on some other Switch Console

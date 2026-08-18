@@ -1,9 +1,10 @@
-import { CircleCheck, Globe, HardDrive, Server, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
@@ -17,9 +18,16 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import type { ServerApiUrlPropagation } from '@shared/core/switch-servers/switch-servers';
+import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import type {
+  ServerApiUrlPropagation,
+  SwitchServer,
+} from '@shared/core/switch-servers/switch-servers';
+import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
+import { LogTail } from './log-tail';
 import { remoteServerStore } from './remote-server-store';
+import { ServerSignInFields, useServerSignIn } from './server-sign-in';
 import { switchServersStore } from './switch-servers-store';
 
 /**
@@ -64,11 +72,52 @@ type Props = BaseModalProps<void> & {
   mode?: 'local' | 'remoteHost' | 'external';
 };
 
-type Step = 'choose' | 'local' | 'remoteHost' | 'external';
+type Step = 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
 
+/**
+ * How many steps connecting to a server someone else runs takes: choose that
+ * path, point at the server, sign in, then say which messaging account is you.
+ *
+ * The chooser is step 1 but carries no counter — the other two paths it leads
+ * to are not four steps, and a count shown before the choice would promise a
+ * length that depends on what is clicked next.
+ */
+const CONNECT_STEPS = 4;
+
+/**
+ * Add a Switch server: run one here, run one on a host you have onboarded, or
+ * connect to one someone else runs.
+ *
+ * Only the third is a wizard. Connecting to an existing server is not finished
+ * when the URL is saved — that server already has its own accounts and its own
+ * messaging apps, and until you have signed in and said which account in each
+ * app is you, the entry in the sidebar is a name with nothing behind it. So
+ * those two steps follow in the same dialog rather than waiting on the server's
+ * page to be discovered (CHOO-2164).
+ */
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;
   const [step, setStep] = useState<Step>(isEdit ? 'external' : (props.mode ?? 'choose'));
+  // The server the wizard just created, and the subject of every step after
+  // it. Null in edit mode and on the two managed paths, which is what
+  // distinguishes the standalone edit form from step 2 of the wizard.
+  const [connected, setConnected] = useState<SwitchServer | null>(null);
+  const { navigate } = useNavigate();
+
+  /**
+   * End the flow on the new server's own page.
+   *
+   * Adding a server is done in order to use it, and the dialog closing onto
+   * whatever was behind it left no sign anything had happened. A path that
+   * cannot name the server it made lands nowhere rather than guessing.
+   */
+  const finish = (serverId: string | null) => {
+    if (serverId) {
+      void switchServersStore.setActive(serverId);
+      navigate('server', { serverId });
+    }
+    props.onSuccess();
+  };
 
   if (step === 'choose') {
     return (
@@ -84,7 +133,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     return (
       <LocalSetupStep
         onBack={isEdit ? undefined : () => setStep('choose')}
-        onSuccess={props.onSuccess}
+        onDone={finish}
         onClose={props.onClose}
       />
     );
@@ -93,8 +142,29 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     return (
       <RemoteHostSetupStep
         onBack={() => setStep('choose')}
-        onSuccess={props.onSuccess}
+        onDone={finish}
         onClose={props.onClose}
+      />
+    );
+  }
+  if (step === 'signIn' && connected) {
+    return (
+      <SignInStep
+        server={connected}
+        onBack={() => setStep('external')}
+        onClose={props.onClose}
+        onSignedIn={() => setStep('linkAccounts')}
+      />
+    );
+  }
+  if (step === 'linkAccounts' && connected) {
+    return (
+      <LinkAccountsStep
+        serverId={connected.id}
+        serverName={connected.name}
+        step={CONNECT_STEPS}
+        of={CONNECT_STEPS}
+        onDone={() => finish(connected.id)}
       />
     );
   }
@@ -102,7 +172,12 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     <ExternalServerStep
       {...props}
       isEdit={isEdit}
+      existing={connected}
       onBack={isEdit ? undefined : () => setStep('choose')}
+      onConnected={(server) => {
+        setConnected(server);
+        setStep('signIn');
+      }}
     />
   );
 });
@@ -130,7 +205,7 @@ function ChooseStep({
       <DialogContentArea className="pt-0">
         <div className="grid gap-3">
           <ChoiceCard
-            icon={<HardDrive className="size-5" />}
+            icon={<Laptop className="size-5" />}
             title="Run a server on this computer"
             description="Switch Console sets up and runs the full Switch stack here with Docker. Best for trying Switch out."
             onClick={onLocal}
@@ -199,11 +274,12 @@ function SetupStepItem({ children }: { children: React.ReactNode }) {
 
 const LocalSetupStep = observer(function LocalSetupStep({
   onBack,
-  onSuccess,
+  onDone,
   onClose,
 }: {
   onBack?: () => void;
-  onSuccess: () => void;
+  /** Reports the server the stack registered, so the flow can end on it. */
+  onDone: (serverId: string | null) => void;
   onClose: () => void;
 }) {
   const store = localServerStore;
@@ -222,7 +298,7 @@ const LocalSetupStep = observer(function LocalSetupStep({
 
   const primaryLabel = running ? 'Done' : store.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
-    if (running) onSuccess();
+    if (running) onDone(store.status?.serverId ?? null);
     else void store.start();
   };
 
@@ -234,7 +310,7 @@ const LocalSetupStep = observer(function LocalSetupStep({
       <DialogContentArea className="space-y-4 pt-0">
         <div className="flex items-center gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-background-tertiary text-foreground-muted">
-            <HardDrive className="size-5" />
+            <Laptop className="size-5" />
           </div>
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground">Switch server · this computer</p>
@@ -288,7 +364,10 @@ const LocalSetupStep = observer(function LocalSetupStep({
                 <span>{store.message}</span>
               </div>
             )}
-            <LogTail lines={store.logs} />
+            <LogTail
+              lines={store.logs}
+              placeholder={starting ? 'Waiting for Docker to report progress…' : null}
+            />
           </div>
         )}
       </DialogContentArea>
@@ -351,42 +430,18 @@ function DockerStatus({
   return null;
 }
 
-function LogTail({ lines }: { lines: string[] }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
-
-  if (lines.length === 0) return null;
-
-  return (
-    <div
-      ref={ref}
-      className="max-h-48 overflow-auto rounded-md border border-border bg-background-tertiary p-2 font-mono text-[11px] leading-relaxed text-foreground-muted"
-    >
-      {lines.map((line, i) => (
-        // Log lines have no stable id; index is fine for an append-only tail.
-        <div key={i} className="break-all whitespace-pre-wrap">
-          {line}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Step 2b — remote-host managed setup (pick an onboarded SSH host → start)
 // ---------------------------------------------------------------------------
 
 const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   onBack,
-  onSuccess,
+  onDone,
   onClose,
 }: {
   onBack: () => void;
-  onSuccess: () => void;
+  /** Reports the server the stack registered, so the flow can end on it. */
+  onDone: (serverId: string | null) => void;
   onClose: () => void;
 }) {
   const store = remoteServerStore;
@@ -421,7 +476,7 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
   const canStart = !!sshHost && name.trim().length > 0 && dockerReady && !starting && !hostBlocked;
   const primaryLabel = running ? 'Done' : status?.phase === 'error' ? 'Retry' : 'Start';
   const onPrimary = () => {
-    if (running) onSuccess();
+    if (running) onDone(sshHost ? (store.statusFor(sshHost).serverId ?? null) : null);
     else if (sshHost) void store.start(sshHost, name.trim());
   };
 
@@ -542,7 +597,10 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
                     <span>{status.message}</span>
                   </div>
                 )}
-                <LogTail lines={logs} />
+                <LogTail
+                  lines={logs}
+                  placeholder={starting ? 'Waiting for Docker to report progress…' : null}
+                />
               </div>
             )}
           </>
@@ -588,10 +646,19 @@ const ExternalServerStep = observer(function ExternalServerStep({
   initialName,
   serverId,
   isEdit,
-}: Props & { isEdit: boolean; onBack?: () => void }) {
-  const [name, setName] = useState(initialName ?? '');
-  const [gatewayUrl, setGatewayUrl] = useState(initialGatewayUrl ?? '');
-  const [apiUrl, setApiUrl] = useState(initialApiUrl ?? '');
+  existing,
+  onConnected,
+}: Props & {
+  isEdit: boolean;
+  onBack?: () => void;
+  /** Set when the wizard has already created the server and the user came back
+   * to fix what they typed — the same form, saving instead of adding. */
+  existing: SwitchServer | null;
+  onConnected: (server: SwitchServer) => void;
+}) {
+  const [name, setName] = useState(initialName ?? existing?.name ?? '');
+  const [gatewayUrl, setGatewayUrl] = useState(initialGatewayUrl ?? existing?.gatewayUrl ?? '');
+  const [apiUrl, setApiUrl] = useState(initialApiUrl ?? existing?.apiUrl ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -613,13 +680,17 @@ const ExternalServerStep = observer(function ExternalServerStep({
       ? 'Enter a full URL, e.g. https://switch-api.example.com'
       : undefined;
 
+  // The row this form writes to, when one already exists: the server being
+  // edited, or the one the wizard created before the user stepped back.
+  const savedId = isEdit ? serverId : existing?.id;
+
   const handleSubmit = useCallback(async () => {
     if (!isValid) return;
     setSubmitting(true);
     setError(null);
-    if (isEdit && serverId) {
+    if (savedId) {
       const result = await switchServersStore.updateServer(
-        serverId,
+        savedId,
         trimmedName,
         trimmedGateway,
         trimmedApi
@@ -630,6 +701,10 @@ const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
       notifyPropagation(result.propagation);
+      if (!isEdit) {
+        onConnected(result.server);
+        return;
+      }
     } else {
       const saved = await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
       if (!saved) {
@@ -637,15 +712,21 @@ const ExternalServerStep = observer(function ExternalServerStep({
         setSubmitting(false);
         return;
       }
+      onConnected(saved);
+      return;
     }
     onSuccess();
-  }, [isValid, isEdit, serverId, trimmedName, trimmedGateway, trimmedApi, onSuccess]);
+  }, [isValid, isEdit, savedId, trimmedName, trimmedGateway, trimmedApi, onSuccess, onConnected]);
 
   return (
     <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>{isEdit ? 'Edit connection' : 'Connect to an existing server'}</DialogTitle>
-      </DialogHeader>
+      {isEdit ? (
+        <DialogHeader showCloseButton={false}>
+          <DialogTitle>Edit connection</DialogTitle>
+        </DialogHeader>
+      ) : (
+        <WizardStepHeader title="Connect to an existing server" step={2} of={CONNECT_STEPS} />
+      )}
       <DialogContentArea className="pt-0">
         <FieldGroup>
           {!isEdit && (
@@ -689,8 +770,75 @@ const ExternalServerStep = observer(function ExternalServerStep({
           {onBack ? 'Back' : 'Cancel'}
         </Button>
         <ConfirmButton onClick={() => void handleSubmit()} disabled={!isValid || submitting}>
-          {submitting ? (isEdit ? 'Saving…' : 'Adding…') : isEdit ? 'Save changes' : 'Add server'}
+          {submitting ? (savedId ? 'Saving…' : 'Adding…') : savedId ? 'Save changes' : 'Add server'}
         </ConfirmButton>
+      </DialogFooter>
+    </>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Step 3 — sign in to the server that was just added
+// ---------------------------------------------------------------------------
+
+/**
+ * Signing in here rather than on the server's page, because everything the
+ * next step and the sidebar want to show is behind the session: an added but
+ * signed-out server lists no rooms, no agents and no messaging apps, and looks
+ * broken rather than unauthenticated.
+ */
+const SignInStep = observer(function SignInStep({
+  server,
+  onBack,
+  onClose,
+  onSignedIn,
+}: {
+  server: SwitchServer;
+  onBack: () => void;
+  onClose: () => void;
+  onSignedIn: () => void;
+}) {
+  const signIn = useServerSignIn(server.id);
+  const canUsePassword = signIn.config?.passwordLoginEnabled ?? false;
+  const canUseOidc = signIn.config?.oidcEnabled ?? false;
+
+  const submit = async () => {
+    if (await signIn.signInWithPassword()) onSignedIn();
+  };
+
+  return (
+    <>
+      <WizardStepHeader title={`Sign in to ${server.name}`} step={3} of={CONNECT_STEPS} />
+      <DialogContentArea className="pt-0">
+        <ServerSignInFields
+          signIn={signIn}
+          idPrefix="connect-server-sign-in"
+          gatewayUrl={server.gatewayUrl}
+          onSignedIn={onSignedIn}
+        />
+      </DialogContentArea>
+      <DialogFooter>
+        <Button variant="outline" onClick={onBack} disabled={signIn.submitting}>
+          Back
+        </Button>
+        {canUsePassword ? (
+          <ConfirmButton
+            onClick={() => void submit()}
+            disabled={!signIn.canSubmitPassword || signIn.submitting}
+          >
+            {signIn.submitting ? 'Signing in…' : 'Sign in'}
+          </ConfirmButton>
+        ) : (
+          // Nothing for a primary button to do: either the only method is the
+          // provider button in the body, or the server offers none at all and
+          // the body says so. Leaving a dead "Sign in" there would imply the
+          // form was incomplete rather than absent.
+          !canUseOidc && (
+            <Button variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          )
+        )}
       </DialogFooter>
     </>
   );

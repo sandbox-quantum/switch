@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldTitle } from '@renderer/lib/ui/field';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -37,13 +38,19 @@ export function AutoSessionSettingsSection({
   return (
     <Field>
       <div className="flex items-center justify-between gap-3">
-        <FieldTitle>Auto-create a session on notify</FieldTitle>
+        <FieldTitle>
+          <span className="flex items-center gap-1.5">
+            Auto-create a session on notify
+            <InfoTooltip
+              label="More info about auto-creating a session"
+              content="Switch Console watches this agent's Switch rooms and starts a session — connected to the room and ready to reply — whenever it's addressed with no session running."
+            />
+          </span>
+        </FieldTitle>
         {single && <AutoSessionSwitch agentId={single.id} />}
       </div>
       <FieldDescription className="text-foreground-muted">
-        When on, Switch Console watches this agent&apos;s Switch rooms and automatically starts a
-        session — connected to the room and ready to reply — whenever it&apos;s addressed with no
-        session running.
+        Start a session when this agent is addressed.
       </FieldDescription>
       {!single && (
         <div className="flex flex-col gap-2">

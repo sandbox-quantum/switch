@@ -45,7 +45,7 @@ id, which file) and use `AskUserQuestion` to offer three choices:
 - **Keep it** — stop the skill. Re-registering would mint a fresh agent
   and orphan the old one in Switch.
 - **Add subagents** — keep the existing main agent and jump straight to
-  Step 12 to bring in `.claude/agents/*.md` subagents under it. The
+  Step 11 to bring in `.claude/agents/*.md` subagents under it. The
   parent is the already-configured agent: use its id (`env.SWITCH_AGENT_ID`
   from the settings file / environment) as `parent_agent_id`. Skip steps
   2–11 entirely — you are not re-registering the main agent, only adding
@@ -264,36 +264,7 @@ pass an empty string — leave the key out so the schema default of
 
 The answer is passed as `options.repo_dir` in the register payload.
 
-## Step 8 — Notify user (`notify_user`)
-
-When someone addresses this agent in a room but no Claude Code session is
-active, Switch posts the paste-ready terminal command from step 7. If you
-also want the operator to be **pinged** by the bridged platform (Slack /
-Mattermost push notification, mobile alert), Switch can prepend an
-`@username` mention to that message.
-
-Use `AskUserQuestion` to ask whether to record `notify_user`. Explain in
-plain terms: *"If you set this, the unavailable-session message will
-start with `@<name>` so the bridge fires a push notification at that
-person. Use the exact handle they have on the room's bridged platform
-(Slack / Mattermost), or their Switch user name for unbridged rooms —
-this is often NOT the same as the local/gateway username. If the handle
-doesn't match a real bridge user the mention silently does nothing (it
-just shows up as plain text and nobody is paged). If you skip, the
-message is posted without a mention."*
-
-If the user opts in, ask for the bare handle (no leading `@`). Do not
-assume a default — in particular, do not fall back to `$USER` or the
-local/gateway identity. Have the operator give the handle explicitly,
-and confirm before saving.
-
-If the user opts out, omit `notify_user` from the options payload (do not
-pass an empty string — leave the key out so the schema default of
-`None` applies).
-
-The answer is passed as `options.notify_user` in the register payload.
-
-## Step 9 — Register
+## Step 8 — Register
 
 Call the bridge endpoint `POST /agents/register-known`. It takes the
 registration token in the `Authorization` header, looks up the
@@ -313,18 +284,15 @@ curl -sf -X POST "$ENDPOINT/agents/register-known" \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
        --argjson channels "$CHANNELS_ENABLED" \
        --arg repo_dir "$REPO_DIR" \
-       --arg notify_user "$NOTIFY_USER" \
        '{agent_type:"claude-code", name:$name, description:$desc,
          options:({channels_enabled:$channels}
-                  + (if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)
-                  + (if $notify_user == "" then {} else {notify_user:$notify_user} end)),
+                  + (if $repo_dir == "" then {} else {repo_dir:$repo_dir} end)),
          overwrite:false}')"
 ```
 
 `$CHANNELS_ENABLED` must be the JSON literal `true` or `false` (passed
 via `--argjson`, not `--arg`). Set `$REPO_DIR` to the absolute path
-from step 7 (or empty to omit). Set `$NOTIFY_USER` to the bare handle
-from step 8 (or empty to omit).
+from step 7 (or empty to omit).
 
 **Pitfall — env-var expansion order.** Do NOT prefix the curl command
 with `SWITCH_REGISTRATION_TOKEN=... curl ...` while also referencing
@@ -358,7 +326,7 @@ show the user the HTTP status and response body, then stop.
   retry with `overwrite:true` silently.
 - Any other non-2xx — show the status and body, then stop.
 
-## Step 10 — Write settings, and the agent's credentials
+## Step 9 — Write settings, and the agent's credentials
 
 Two files, with different jobs. The settings file is Claude Code's own and is
 read by **every** session in the directory, so it carries no credential — only
@@ -408,7 +376,7 @@ too if it is not already covered.
 The runtime reads this file itself (`switch-agent-runtime` 0.2.0+), so no `env`
 block in any MCP config is needed to carry the credentials.
 
-## Step 11 — Confirm
+## Step 10 — Confirm
 
 Report to the user:
 
@@ -423,7 +391,7 @@ Report to the user:
 Do **not** print the API token. Echoing secrets into the transcript is a
 common way they leak into logs or screenshots.
 
-## Step 12 — Bring in existing Claude Code subagents (optional)
+## Step 11 — Bring in existing Claude Code subagents (optional)
 
 A user may already have **Claude Code subagents** defined as
 `.claude/agents/*.md` files (a `name`, `description`, optional `tools`
@@ -491,7 +459,7 @@ declines all, skip the rest of this step.
 ### 12d — Bulk-register under the main agent
 
 Call `POST /agents/register-known-bulk` with the same registration
-token as Step 9. The Switch agent name for each child is derived
+token as Step 8. The Switch agent name for each child is derived
 server-side as `<main-agent-name>.<subagent_name>`, so you only send the
 bare `subagent_name` and `description`. `options` is the shared base
 applied to every subagent; the server merges each `subagent_name` in on
@@ -500,17 +468,16 @@ top.
 **`parent_agent_id` is the dir's main agent — read it from the
 environment, don't ask.** The running session's own agent id is in
 `$SWITCH_AGENT_ID` (the same value written into the settings `env` block
-in Step 11). That is exactly the parent these subagents belong under, so
+in Step 10). That is exactly the parent these subagents belong under, so
 default `parent_agent_id` to `$SWITCH_AGENT_ID`. When you registered the
-main agent earlier in *this same run* (Step 9), use that id instead — it
+main agent earlier in *this same run* (Step 8), use that id instead — it
 is the same agent. Only ask the user if neither is available.
 
 **Subagents inherit the parent's settings automatically.** The server
-reads the parent agent's recorded `channels_enabled`, `repo_dir`, and
-`notify_user` and applies them as the base for every subagent (so they
-page the same operator, run in the same channels mode, and share the
-repo dir) — you do **not** need to recover these from the parent or pass
-them. Only set a key in `options` to deliberately *override* the
+reads the parent agent's recorded `channels_enabled` and `repo_dir` and
+applies them as the base for every subagent (so they run in the same
+channels mode and share the repo dir) — you do **not** need to recover
+these from the parent or pass them. Only set a key in `options` to deliberately *override* the
 inherited value; otherwise omit it.
 
 ```bash
@@ -526,9 +493,9 @@ curl -sf -X POST "$ENDPOINT/agents/register-known-bulk" \
 
 `$SUBS_JSON` is a JSON array of `{"subagent_name": "...",
 "description": "..."}` for the selected subagents. `$SWITCH_AGENT_ID` is
-the parent agent id read from the environment (or the id from Step 9 if
+the parent agent id read from the environment (or the id from Step 8 if
 you just registered the main agent in this run). The same
-env-var-expansion pitfall and the token-handling rules from Step 9 apply
+env-var-expansion pitfall and the token-handling rules from Step 8 apply
 — never inline the token.
 
 The response is `{"results": [{"subagent_name","name","id","api_key"},

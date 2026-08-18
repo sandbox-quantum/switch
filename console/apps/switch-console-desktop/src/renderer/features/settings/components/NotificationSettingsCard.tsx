@@ -69,7 +69,6 @@ const NotificationSettingsCard: React.FC = () => {
     enabled: true,
     sound: true,
     customSoundPath: '',
-    osNotifications: true,
     soundFocusMode: 'always',
   };
   const customSoundPath = currentNotifications.customSoundPath?.trim() ?? '';
@@ -210,26 +209,6 @@ const NotificationSettingsCard: React.FC = () => {
                   <SelectItem value="unfocused">Only when unfocused</SelectItem>
                 </SelectContent>
               </Select>
-            </>
-          }
-        />
-
-        <SettingRow
-          title="OS notifications"
-          description="Show system banners when agents need attention or finish (while Switch Console is unfocused)."
-          control={
-            <>
-              <ResetToDefaultButton
-                visible={isFieldOverridden('osNotifications')}
-                defaultLabel="on"
-                onReset={() => resetNotificationField('osNotifications', true)}
-                disabled={loading}
-              />
-              <Switch
-                checked={notifications?.osNotifications ?? true}
-                disabled={loading}
-                onCheckedChange={(next) => updateNotifications({ osNotifications: next })}
-              />
             </>
           }
         />

@@ -104,6 +104,12 @@ class ClientBase[ConfigT: ClientConfig]:
         self.nio_client: AsyncClient | None = None
         self.room_join_times: dict[str, int] = {}
         self._room_joined_events: dict[str, asyncio.Event] = {}
+        # Rooms this client has already announced its arrival in. Distinct from
+        # `room_join_times`, which is membership bookkeeping recorded as early as
+        # possible (an explicit join, a membership lookup) so `wait_joined` and
+        # the `_should_ignore` cutoff are accurate. Membership being known is not
+        # evidence the arrival was announced.
+        self._self_join_dispatched: set[str] = set()
         self._ready = asyncio.Event()
         self._startup_ts: int = 0
         self._last_sync_persist: float = 0.0
@@ -290,19 +296,32 @@ class ClientBase[ConfigT: ClientConfig]:
     async def _handle_member_event(
         self, room: MatrixRoom, event: RoomMemberEvent
     ) -> None:
-        if event.state_key == self.matrix_user_id and event.membership == "join":
-            already_joined = room.room_id in self.room_join_times
-            self._mark_joined(room.room_id, event.server_timestamp)
-            if not already_joined and event.server_timestamp >= self._startup_ts:
-                try:
-                    await self.on_self_join(room, event)
-                except Exception:
-                    logger.exception(
-                        "Error in on_self_join for %s in %s",
-                        self.matrix_user_id,
-                        room.room_id,
-                    )
-            return
+        if event.state_key == self.matrix_user_id:
+            if event.membership == "join":
+                self._mark_joined(room.room_id, event.server_timestamp)
+                # A membership-preserving update (display name, avatar) re-fires
+                # m.room.member with membership == "join"; only a transition into
+                # membership is an arrival. Joins predating this process are not
+                # ours to announce, and the room is recorded so a redelivery of
+                # the same join does not announce it twice.
+                if (
+                    event.prev_membership != "join"
+                    and event.server_timestamp >= self._startup_ts
+                    and room.room_id not in self._self_join_dispatched
+                ):
+                    self._self_join_dispatched.add(room.room_id)
+                    try:
+                        await self.on_self_join(room, event)
+                    except Exception:
+                        logger.exception(
+                            "Error in on_self_join for %s in %s",
+                            self.matrix_user_id,
+                            room.room_id,
+                        )
+                return
+            if event.membership in ("leave", "ban"):
+                # Departing ends the visit: being added back is a fresh arrival.
+                self._self_join_dispatched.discard(room.room_id)
         if self._should_ignore(room, event):
             return
         try:

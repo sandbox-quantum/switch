@@ -83,6 +83,12 @@ vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: vi.fn(async () => ({ autoApprove: false })),
 }));
 
+// Same reason: this install's deployer identity is persisted in the DB, and the
+// sidecar launch path reads it to stamp whatever sidecar it starts.
+vi.mock('@main/core/sidecar/deployer-identity', () => ({
+  deployerIdentity: vi.fn(async () => 'install-under-test'),
+}));
+
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: vi.fn(defaultGetPlugin),
 }));
@@ -334,7 +340,7 @@ describe('SshAgentRuntime', () => {
     vi.mocked(getAgentById).mockResolvedValueOnce({
       autoApprove: false,
       name: 'codex-hoot',
-      providerConfig: { model: 'gpt-5.6-terra' },
+      providerConfig: { version: '2', providerId: 'codex', values: { model: 'gpt-5.6-terra' } },
     } as never);
     mockSpawn([]);
 
@@ -820,6 +826,29 @@ describe('SshAgentRuntime', () => {
 
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
     expect(provider.isAttached()).toBe(true);
+  });
+
+  // Covers a re-open, where a size is already on record: the attach spawns at it
+  // rather than the 80x24 default. It does NOT cover a first open — nothing has
+  // measured the pane by then, and the fix for that is in the registry, which
+  // applies a late-arriving size when the pty registers (CHOO-2066).
+  it('attaches at a size already on record rather than the default', async () => {
+    mockSpawn([]);
+    const provider = sshProvider({ tmux: true });
+    const item = session();
+    const ptySessionId = makeAgentPtySessionId('location-1', item.id);
+
+    ptySessionRegistry.resize(ptySessionId, 203, 51);
+
+    await provider.ensureAttachable(item);
+    await provider.attach();
+
+    expect(openSsh2Pty).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cols: 203, rows: 51 })
+    );
+
+    ptySessionRegistry.unregister(ptySessionId);
   });
 
   it('does not report the agent as exited when a session is evicted', async () => {

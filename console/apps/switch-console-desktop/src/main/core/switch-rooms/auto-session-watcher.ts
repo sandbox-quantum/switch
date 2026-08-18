@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
+import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import {
@@ -9,6 +9,8 @@ import {
 } from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
 import { sessionService } from '@main/core/sessions/session-service';
+import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
+import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import {
   listAutoSessionAgentIds,
@@ -21,8 +23,22 @@ import {
   readSwitchAgentCredentialsFromSettings,
   type SwitchAgentCredentials,
 } from './switch-credentials';
-import { switchNotificationPoller } from './switch-notification-poller';
+import { formatEventForInjection } from './switch-event-format';
+import { type SpawnTurn, switchNotificationPoller } from './switch-notification-poller';
 import { switchRoomService } from './switch-room-service';
+
+/**
+ * Where in the conversation the message that caused this spawn sits, so the
+ * session can report working against it the moment it reaches the room.
+ *
+ * Only a message can start a turn — a command or a join has nobody waiting on
+ * an answer, so there is no turn to open and this is null for them.
+ */
+function spawnTurnOf(event: AgentBridgeEvent): SpawnTurn | null {
+  if (event.type !== 'message') return null;
+  const msg = event.payload as { thread_id?: string | null; message_id?: string | null };
+  return { threadId: msg.thread_id ?? null, anchorId: msg.message_id ?? null };
+}
 
 const SPAWN_MAX_ATTEMPTS = 3;
 const SPAWN_RETRY_DELAY_MS = 2000;
@@ -73,6 +89,33 @@ async function getAgentLocalDir(localAgentId: string): Promise<string | null> {
   const location = await getLocationById(agent.locationId);
   if (!location || location.sshHost !== null) return null;
   return location.dir;
+}
+
+/**
+ * The room's name, for the title of the session being started in it.
+ *
+ * The spawn is driven by an event that carries only the room's id, so the name
+ * has to be asked for. It is worth one call: the id names nothing a person
+ * recognises, and this title is how the session is listed from the moment it
+ * appears. A failure here is not a reason to abandon the spawn — the caller
+ * falls back to the id and says so in the log.
+ */
+async function roomNameFor(localAgentId: string, roomId: string): Promise<string | null> {
+  try {
+    const agent = await getAgentById(localAgentId);
+    if (!agent?.serverId) return null;
+    const server = await getServer(agent.serverId);
+    if (!server) return null;
+    const detail = await fetchRoomDetail(server, roomId);
+    return detail.name || null;
+  } catch (error) {
+    log.warn('AutoSessionWatcher: could not read the room name; titling by id', {
+      localAgentId,
+      roomId,
+      error: String(error),
+    });
+    return null;
+  }
 }
 
 /** Post a message to a room on the agent's behalf (used for the spawn-failure
@@ -349,7 +392,7 @@ class AutoSessionWatcher {
       // offline.
       spawnCapable: true,
       onEvent: (event) => {
-        if (event.room_id) this.handleNotification(watcher, event.room_id, event.sequence);
+        if (event.room_id) this.handleNotification(watcher, event);
       },
       onGap: (info) => {
         // A gap here means we may have missed a request to start a session.
@@ -389,7 +432,9 @@ class AutoSessionWatcher {
    * between deciding to spawn and the spawned session claiming the room, which
    * the server cannot know about.
    */
-  private handleNotification(watcher: AgentWatcher, roomId: string, sequence?: number): void {
+  private handleNotification(watcher: AgentWatcher, event: AgentBridgeEvent): void {
+    const roomId = event.room_id as string;
+    const sequence = event.sequence;
     if (watcher.inFlight.has(roomId)) {
       log.info(
         'AutoSessionWatcher: notification for room with a spawn already in flight — skipping duplicate spawn',
@@ -425,12 +470,26 @@ class AutoSessionWatcher {
       return;
     }
 
+    // The message the session is being started for, written the way it would
+    // have read had it been injected — so the agent sees the same line either
+    // way. Handed to the session as part of its opening prompt rather than
+    // typed in afterwards: the session has no terminal for the first seconds
+    // of its life, which is exactly when this message arrives.
+    const triggerLine = formatEventForInjection(event, null);
+
     // Tell the poller where the session it is about to open should start
     // reading. We have already consumed this event — that is how we know to
     // spawn — so a session starting at head would come up having missed the
-    // very message it exists to answer.
+    // very message it exists to answer. When the message is going in the
+    // opening prompt the session starts *after* it instead, or it would arrive
+    // twice and be answered twice.
     if (sequence !== undefined) {
-      switchNotificationPoller.noteSpawnTrigger(watcher.creds.agentId, sequence);
+      switchNotificationPoller.noteSpawnTrigger(
+        watcher.creds.agentId,
+        sequence,
+        triggerLine !== null,
+        spawnTurnOf(event)
+      );
     }
     // The two halves of the hand-off are logged at both ends, so a session that
     // comes up without its triggering message can be diagnosed from the log
@@ -443,13 +502,19 @@ class AutoSessionWatcher {
       agentId: watcher.creds.agentId,
       roomId,
       triggerSequence: sequence ?? null,
-      sessionWillStartFrom: sequence === undefined ? 'head' : Math.max(sequence - 1, 0),
+      triggerInOpeningPrompt: triggerLine !== null,
+      sessionWillStartFrom:
+        sequence === undefined
+          ? 'head'
+          : triggerLine !== null
+            ? sequence
+            : Math.max(sequence - 1, 0),
     });
 
     const timer = setTimeout(() => watcher.inFlight.delete(roomId), INFLIGHT_TTL_MS);
     watcher.inFlight.set(roomId, timer);
 
-    void this.spawnForRoom(watcher, roomId).catch((error) => {
+    void this.spawnForRoom(watcher, roomId, triggerLine).catch((error) => {
       log.warn('AutoSessionWatcher: spawn failed', {
         localAgentId: watcher.localAgentId,
         roomId,
@@ -458,12 +523,18 @@ class AutoSessionWatcher {
     });
   }
 
-  private async spawnForRoom(watcher: AgentWatcher, roomId: string): Promise<void> {
+  private async spawnForRoom(
+    watcher: AgentWatcher,
+    roomId: string,
+    triggerLine: string | null
+  ): Promise<void> {
     // Bypass permissions only if this agent is configured to. Auto-started
     // local sessions run with no operator watching, but the default is off —
     // the per-agent setting (location settings) is the source of truth.
     const agent = await getAgentById(watcher.localAgentId);
     const autoApprove = agent?.autoApprove ?? false;
+    const roomName = await roomNameFor(watcher.localAgentId, roomId);
+    const title = `Session for room ${roomName ?? roomId}`;
     let lastError: string | null = null;
     for (let attempt = 1; attempt <= SPAWN_MAX_ATTEMPTS; attempt += 1) {
       if (watcher.abort.signal.aborted) return;
@@ -479,11 +550,17 @@ class AutoSessionWatcher {
           id: sessionId,
           agentId: watcher.localAgentId,
           agentName: watcher.agentName,
-          title: `Switch room ${roomId}`,
-          // Bootstrap: tell the fresh session to join the room. Once it calls
-          // connect_to_room, the connect hook starts the per-room poller, which
-          // injects the message waiting in the room's event queue.
-          initialPrompt: `connect to switch room ${roomId}`,
+          title,
+          // Bootstrap: join the room, then answer the message that started this
+          // session. Both in the opening prompt because the session has no
+          // terminal to be typed into for the first seconds of its life —
+          // which is precisely when that message arrives. Waiting for one and
+          // typing it in afterwards is what left the agent connecting, finding
+          // nothing addressed to it, and greeting the room instead.
+          initialPrompt:
+            triggerLine === null
+              ? `connect to switch room ${roomId}`
+              : `connect to switch room ${roomId}\n\nThen respond to this, which is what you were started for:\n${triggerLine}`,
           autoApprove,
         });
         if (result.success) {

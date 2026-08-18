@@ -185,8 +185,9 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // under `~/.codex` carrying model / effort / instructions, loaded with
       // `--profile <slug>`. The Switch MCP server is not written here — the
       // connector plugin registers it from its own bundled `.mcp.json`.
-      const launchProfileArgs = await prepareAgentLaunchProfile(plugin, {
+      const launchProfile = await prepareAgentLaunchProfile(plugin, {
         homeFs: createPluginFs(homedir()),
+        homeDir: homedir(),
         slug: agentCredsSlug(session),
         workingDir: this.sessionPath,
         specialization: toSwitchSpecialization(agentRecord?.providerConfig),
@@ -201,7 +202,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...launchProfileArgs,
+          ...launchProfile.args,
         ],
         autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
@@ -212,7 +213,11 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       });
 
       const customEnv = providerConfig?.env ?? {};
-      const providerVars: Record<string, string> = { ...agentCommand.env, ...customEnv };
+      const providerVars: Record<string, string> = {
+        ...agentCommand.env,
+        ...launchProfile.env,
+        ...customEnv,
+      };
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 
@@ -327,6 +332,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
       // If this session was connected to a Switch room before an app restart,
       // resume polling that room — the connect_to_room hook only fires on a

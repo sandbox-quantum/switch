@@ -8,6 +8,8 @@ from switch_core.gateway.known_agents import (
     ClaudeCodeOptions,
     CodexKnownAgent,
     CodexOptions,
+    OpenCodeKnownAgent,
+    OpenCodeOptions,
     known_agent_for,
 )
 
@@ -63,7 +65,9 @@ class TestBuildProfileCommandCapabilities:
 class TestStartSessionInstructions:
     def test_channels_enabled_appends_dev_flag_after_prompt(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/Users/x/aq-switch")
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
         assert msg is not None
         # The flag must come AFTER the prompt argument so claude treats the
         # quoted text as the initial prompt, not as a value for the flag.
@@ -76,7 +80,9 @@ class TestStartSessionInstructions:
 
     def test_channels_disabled_passive_message_shape(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="/srv/agent")
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "ops")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", None
+        )
         assert msg is not None
         assert "--dangerously-load-development-channels" not in msg
         # The connect prompt itself instructs a pull (passive sessions get no
@@ -91,7 +97,9 @@ class TestStartSessionInstructions:
 
     def test_channels_enabled_is_not_passive_shaped(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/srv/agent")
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "ops")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", None
+        )
         assert msg is not None
         assert "pull the latest messages" not in msg
         assert "Anthropic API key or subscription" not in msg
@@ -103,7 +111,9 @@ class TestStartSessionInstructions:
         opts = ClaudeCodeOptions(
             channels_enabled=False, auto_session=True, repo_dir="/srv/agent"
         )
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "ops")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", None
+        )
         assert msg is not None
         assert "--dangerously-load-development-channels" not in msg
         assert (
@@ -114,7 +124,7 @@ class TestStartSessionInstructions:
     def test_connected_not_live_opening(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/srv/agent")
         msg = ClaudeCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", connected_not_live=True
+            opts, _agent({}), "ops", None, connected_not_live=True
         )
         assert msg is not None
         # Acknowledges a connected-but-not-live session and steers to relaunch
@@ -127,7 +137,7 @@ class TestStartSessionInstructions:
     def test_no_repo_dir_uses_placeholder(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir=None)
         msg = ClaudeCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "triage"
+            opts, _agent({}), "triage", None
         )
         assert msg is not None
         assert "cd <claude-dir>" in msg
@@ -141,39 +151,47 @@ class TestStartSessionInstructions:
         opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="")
         assert opts.repo_dir is None
         msg = ClaudeCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "triage"
+            opts, _agent({}), "triage", None
         )
         assert msg is not None
         assert "cd <claude-dir>" in msg
 
-    def test_notify_user_is_prepended_as_at_mention(self) -> None:
-        opts = ClaudeCodeOptions(
-            channels_enabled=True, repo_dir="/x", notify_user="louisa"
+    def test_the_owner_is_prepended_as_an_at_mention(self) -> None:
+        # The handle is the owner's account on the platform this room is
+        # bridged to, resolved by the caller (CHOO-2137) — it used to be a
+        # single string configured on the agent, which could only ever be
+        # right on one platform.
+        opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/x")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", "louisa"
         )
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
         assert msg is not None
         assert msg.startswith("@louisa\n\n")
 
-    def test_empty_string_notify_user_normalised_to_none(self) -> None:
-        opts = ClaudeCodeOptions(channels_enabled=True, notify_user="")
-        assert opts.notify_user is None
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+    def test_an_unlinked_owner_leaves_the_message_unmentioned(self) -> None:
+        # Nobody to mention is not a reason to withhold the instructions.
+        opts = ClaudeCodeOptions(channels_enabled=True)
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
         assert msg is not None
         assert not msg.startswith("@")
 
     def test_passive_mentions_operator_inline(self) -> None:
         # Passive message names the operator inline ("my operator @louisa")
         # rather than as a leading prefix, so they still get pinged to pull.
-        opts = ClaudeCodeOptions(
-            channels_enabled=False, repo_dir="/x", notify_user="louisa"
+        opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="/x")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", "louisa"
         )
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
         assert msg is not None
         assert "my operator @louisa" in msg
 
-    def test_passive_without_notify_user_says_my_operator(self) -> None:
+    def test_passive_without_a_linked_owner_says_my_operator(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="/x")
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
         assert msg is not None
         assert "my operator has to trigger me" in msg
         assert "@" not in msg
@@ -184,7 +202,9 @@ class TestStartSessionInstructions:
             repo_dir="/Users/x/repo",
             subagent_name="seo-writer",
         )
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
         assert msg is not None
         # --agent / --settings come after the quoted prompt and before the
         # dev-channels flag; the settings path matches what the configure skill
@@ -201,7 +221,9 @@ class TestStartSessionInstructions:
         opts = ClaudeCodeOptions(
             channels_enabled=False, repo_dir="/r", subagent_name="reviewer"
         )
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "ops")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", None
+        )
         assert msg is not None
         assert "--agent reviewer" in msg
         assert "--settings .claude/switch-subagents/reviewer.settings.json" in msg
@@ -209,7 +231,9 @@ class TestStartSessionInstructions:
 
     def test_no_subagent_name_omits_agent_flag(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/r")
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
         assert msg is not None
         assert "--agent" not in msg
         assert "switch-subagents" not in msg
@@ -217,7 +241,9 @@ class TestStartSessionInstructions:
     def test_empty_string_subagent_name_normalised_to_none(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, subagent_name="")
         assert opts.subagent_name is None
-        msg = ClaudeCodeKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = ClaudeCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
         assert msg is not None
         assert "--agent" not in msg
 
@@ -226,7 +252,7 @@ class TestStartSessionInstructions:
         # message reads the same regardless of where it's posted.
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/x")
         msg = ClaudeCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "Some Long Room Name"
+            opts, _agent({}), "Some Long Room Name", None
         )
         assert msg is not None
         # The room name still appears once inside the quoted `connect to switch
@@ -273,7 +299,7 @@ class TestCodexKnownAgent:
 
     def test_start_session_instructions_emit_codex_not_claude(self) -> None:
         opts = CodexOptions(repo_dir="/Users/x/repo")
-        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub", None)
         assert msg is not None
         # The path is quoted so a repo_dir with spaces still produces a valid
         # paste command.
@@ -288,14 +314,14 @@ class TestCodexKnownAgent:
 
     def test_repo_dir_with_spaces_stays_quoted(self) -> None:
         opts = CodexOptions(repo_dir="/Users/alice/my project")
-        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub", None)
         assert msg is not None
         assert 'cd "/Users/alice/my project" && codex' in msg
 
     def test_connected_not_live_opening(self) -> None:
         opts = CodexOptions(repo_dir="/r")
         msg = CodexKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", connected_not_live=True
+            opts, _agent({}), "ops", None, connected_not_live=True
         )
         assert msg is not None
         assert "isn't reporting" in msg
@@ -305,7 +331,7 @@ class TestCodexKnownAgent:
     def test_other_room_names_branch(self) -> None:
         opts = CodexOptions(repo_dir="/r")
         msg = CodexKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", other_room_names=["hub", "triage"]
+            opts, _agent({}), "ops", None, other_room_names=["hub", "triage"]
         )
         assert msg is not None
         assert "**hub**" in msg
@@ -315,7 +341,7 @@ class TestCodexKnownAgent:
     def test_assume_role_folded_into_prompt(self) -> None:
         opts = CodexOptions(repo_dir="/r")
         msg = CodexKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", assume_role="reviewer"
+            opts, _agent({}), "ops", None, assume_role="reviewer"
         )
         assert msg is not None
         assert 'codex "connect to switch room ops and assume the role reviewer"' in msg
@@ -323,27 +349,30 @@ class TestCodexKnownAgent:
     def test_empty_string_repo_dir_normalised_to_placeholder(self) -> None:
         opts = CodexOptions(repo_dir="")
         assert opts.repo_dir is None
-        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "triage")
+        msg = CodexKnownAgent.start_session_instructions(
+            opts, _agent({}), "triage", None
+        )
         assert msg is not None
         assert 'cd "<codex-dir>"' in msg
 
-    def test_empty_string_notify_user_normalised_to_none(self) -> None:
-        opts = CodexOptions(notify_user="")
-        assert opts.notify_user is None
-        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+    def test_an_unlinked_owner_leaves_the_message_unmentioned(self) -> None:
+        opts = CodexOptions()
+        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub", None)
         assert msg is not None
         assert not msg.startswith("@")
 
     def test_no_repo_dir_uses_codex_placeholder(self) -> None:
         msg = CodexKnownAgent.start_session_instructions(
-            CodexOptions(repo_dir=None), _agent({}), "triage"
+            CodexOptions(repo_dir=None), _agent({}), "triage", None
         )
         assert msg is not None
         assert 'cd "<codex-dir>"' in msg
 
-    def test_notify_user_prepended_as_at_mention(self) -> None:
-        opts = CodexOptions(repo_dir="/x", notify_user="cmcd")
-        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub")
+    def test_the_owner_is_prepended_as_an_at_mention(self) -> None:
+        opts = CodexOptions(repo_dir="/x")
+        msg = CodexKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", "cmcd"
+        )
         assert msg is not None
         assert msg.startswith("@cmcd\n\n")
 
@@ -373,6 +402,150 @@ class TestCodexKnownAgent:
         spec, options = result
         assert spec is CodexKnownAgent
         assert isinstance(options, CodexOptions)
+        assert options.auto_session is True
+        assert options.repo_dir == "/tmp/r"
+
+
+class TestOpenCodeKnownAgent:
+    def test_registered_under_opencode_key(self) -> None:
+        assert KNOWN_AGENTS.get("opencode") is OpenCodeKnownAgent
+        assert OpenCodeKnownAgent.connector_type == "OpenCode CLI"
+
+    def test_default_profile_is_session_addressable(self) -> None:
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
+        assert profile.connection_model == "session_addressable"
+
+    def test_auto_session_sets_auto_session_model(self) -> None:
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions(auto_session=True))
+        assert profile.connection_model == "auto_session"
+
+    def test_no_tool_call_mediation_or_reporting(self) -> None:
+        # OpenCode's connector reports activity to Switch Console over the local
+        # hook port to drive session status; none of it reaches Switch as
+        # reported events, and nothing gates a tool call before it runs.
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
+        assert profile.pre_invocation_mediation == []
+        assert profile.post_invocation_mediation == []
+        assert profile.event_reporting == []
+
+    def test_can_delegate_and_accept_tasks(self) -> None:
+        profile = OpenCodeKnownAgent.build_profile(OpenCodeOptions())
+        assert profile.task_protocol.can_delegate is True
+        assert profile.task_protocol.can_accept is True
+
+    def test_commands_are_session_dependent(self) -> None:
+        # Must stay in step with `BY_PROVIDER.opencode` in Switch Console's
+        # `main/core/switch-rooms/session-control.ts`; declaring a command here
+        # that Switch Console cannot execute yields a worse message than
+        # "unsupported".
+        caps = OpenCodeKnownAgent.build_profile(OpenCodeOptions()).command_capabilities
+        assert caps.reset == "session_dependent"
+        assert caps.compact == "session_dependent"
+        assert caps.interrupt == "session_dependent"
+
+    def test_prompt_is_passed_as_a_flag_not_a_positional(self) -> None:
+        # OpenCode reads its first positional as the project directory, so a bare
+        # `opencode "connect to switch room hub"` asks it to open a directory of
+        # that name. The prompt must go through --prompt.
+        opts = OpenCodeOptions(repo_dir="/Users/x/repo")
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
+        assert msg is not None
+        assert (
+            'cd "/Users/x/repo" && opencode --prompt "connect to switch room hub"'
+            in msg
+        )
+        assert 'opencode "connect' not in msg
+
+    def test_start_session_instructions_emit_opencode_only(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/Users/x/repo")
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
+        assert msg is not None
+        assert "claude" not in msg
+        assert "codex" not in msg
+        assert "--dangerously-load-development-channels" not in msg
+        assert "auto-starts one when I'm addressed" not in msg
+        assert "start OpenCode manually" in msg
+
+    def test_repo_dir_with_spaces_stays_quoted(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/Users/alice/my project")
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
+        assert msg is not None
+        assert 'cd "/Users/alice/my project" && opencode' in msg
+
+    def test_assume_role_is_folded_into_the_prompt(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/r")
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "ops", None, assume_role="reviewer"
+        )
+        assert msg is not None
+        assert (
+            '--prompt "connect to switch room ops and assume the role reviewer"' in msg
+        )
+
+    def test_blank_repo_dir_uses_placeholder(self) -> None:
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            OpenCodeOptions(repo_dir=""), _agent({}), "triage", None
+        )
+        assert msg is not None
+        assert 'cd "<opencode-dir>"' in msg
+
+    def test_no_repo_dir_uses_placeholder(self) -> None:
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            OpenCodeOptions(repo_dir=None), _agent({}), "triage", None
+        )
+        assert msg is not None
+        assert 'cd "<opencode-dir>"' in msg
+
+    def test_an_unlinked_owner_produces_no_mention(self) -> None:
+        opts = OpenCodeOptions()
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", None
+        )
+        assert msg is not None
+        assert not msg.startswith("@")
+
+    def test_the_owner_is_mentioned(self) -> None:
+        opts = OpenCodeOptions(repo_dir="/x")
+        msg = OpenCodeKnownAgent.start_session_instructions(
+            opts, _agent({}), "hub", "cmcd"
+        )
+        assert msg is not None
+        assert msg.startswith("@cmcd")
+
+    def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
+        # Switch Console sends channels_enabled for every provider, so registration
+        # must still accept it — but OpenCode has no channel, so it is not a
+        # field. The gateway renders the options form from this schema; a
+        # declared field would be an interactive control that changes nothing.
+        assert (
+            "channels_enabled" not in OpenCodeOptions.model_json_schema()["properties"]
+        )
+
+        opts = OpenCodeOptions.model_validate({"channels_enabled": False})
+        assert "channels_enabled" not in opts.model_dump()
+        assert (
+            OpenCodeKnownAgent.build_profile(opts).connection_model
+            == "session_addressable"
+        )
+
+    def test_known_agent_for_round_trips_opencode(self) -> None:
+        agent = _agent(
+            {
+                "known_agent_type": "opencode",
+                "known_agent_options": {"auto_session": True, "repo_dir": "/tmp/r"},
+            }
+        )
+        result = known_agent_for(agent)
+        assert result is not None
+        spec, options = result
+        assert spec is OpenCodeKnownAgent
+        assert isinstance(options, OpenCodeOptions)
         assert options.auto_session is True
         assert options.repo_dir == "/tmp/r"
 

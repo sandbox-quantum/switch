@@ -6,11 +6,12 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
  * in `switch_core/gateway/known_agents.py` — a value outside it is rejected at
  * registration, so it is worth catching at the call site instead.
  */
-export type KnownAgentType = 'claude-code' | 'codex';
+export type KnownAgentType = 'claude-code' | 'codex' | 'opencode';
 
 const KNOWN_AGENT_TYPE_BY_PROVIDER: Partial<Record<AgentProviderId, KnownAgentType>> = {
   claude: 'claude-code',
   codex: 'codex',
+  opencode: 'opencode',
 };
 
 const FALLBACK_KNOWN_AGENT_TYPE: KnownAgentType = 'claude-code';
@@ -18,7 +19,7 @@ const FALLBACK_KNOWN_AGENT_TYPE: KnownAgentType = 'claude-code';
 /**
  * Map a Switch Console provider to the gateway known-agent type it registers as.
  *
- * A provider outside the two server-side types has no faithful representation.
+ * A provider outside the server-side types has no faithful representation.
  * It still registers as `claude-code` — the generic Switch Console-managed shape —
  * because Switch Console drives the session itself and the type mainly determines
  * the connector label and the hand-onboarding command an operator is shown. That

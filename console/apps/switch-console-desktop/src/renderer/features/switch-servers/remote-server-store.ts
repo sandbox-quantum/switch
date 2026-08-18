@@ -15,6 +15,10 @@ import { switchServersStore } from './switch-servers-store';
 
 const MAX_LOG_LINES = 400;
 
+/** See the local store: compose reports a pull faster than the UI can redraw,
+ *  so lines are applied in batches rather than one render each. */
+const LOG_FLUSH_MS = 100;
+
 function defaultStatus(sshHost: string): RemoteServerStatus {
   return {
     sshHost,
@@ -43,9 +47,39 @@ export class RemoteServerStore {
 
   private off: (() => void) | null = null;
   private offLog: (() => void) | null = null;
+  /** Lines received since the last flush, per host. Not observable. */
+  /* internal */ pendingByHost = new Map<string, string[]>();
+  /* internal */ flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    makeAutoObservable(this);
+    makeAutoObservable(this, { pendingByHost: false, flushTimer: false });
+  }
+
+  private queueLine(sshHost: string, line: string): void {
+    const pending = this.pendingByHost.get(sshHost) ?? [];
+    pending.push(line);
+    this.pendingByHost.set(sshHost, pending);
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => this.flushLines(), LOG_FLUSH_MS);
+  }
+
+  /** Applies the batched lines for every host. */
+  flushLines(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.pendingByHost.size === 0) return;
+    const batches = this.pendingByHost;
+    this.pendingByHost = new Map();
+    runInAction(() => {
+      for (const [sshHost, batch] of batches) {
+        const lines = this.logsByHost.get(sshHost) ?? [];
+        lines.push(...batch);
+        if (lines.length > MAX_LOG_LINES) lines.splice(0, lines.length - MAX_LOG_LINES);
+        this.logsByHost.set(sshHost, lines);
+      }
+    });
   }
 
   statusFor(sshHost: string): RemoteServerStatus {
@@ -96,14 +130,9 @@ export class RemoteServerStore {
       });
     }
     if (!this.offLog) {
-      this.offLog = events.on(remoteServerLogChannel, ({ sshHost, line }) => {
-        runInAction(() => {
-          const lines = this.logsByHost.get(sshHost) ?? [];
-          lines.push(line);
-          if (lines.length > MAX_LOG_LINES) lines.splice(0, lines.length - MAX_LOG_LINES);
-          this.logsByHost.set(sshHost, lines);
-        });
-      });
+      this.offLog = events.on(remoteServerLogChannel, ({ sshHost, line }) =>
+        this.queueLine(sshHost, line)
+      );
     }
     try {
       const statuses = await rpc.remoteSwitchServer.getStatuses();
@@ -120,6 +149,7 @@ export class RemoteServerStore {
     this.off = null;
     this.offLog?.();
     this.offLog = null;
+    this.flushLines();
   }
 
   async checkDocker(sshHost: string): Promise<void> {

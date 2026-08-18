@@ -11,13 +11,14 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import requests as sync_requests
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import NoAccessTokenProvided
 
+from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -27,6 +28,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     ChannelType,
+    DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -36,6 +38,11 @@ from switch_core.bridges.collaboration.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Ceiling on a bot icon Switch downloads before re-uploading it to Mattermost.
+# Generously above any real avatar; it exists so a hostile or broken URL cannot
+# stream unbounded data into memory.
+_MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
@@ -57,6 +64,11 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 
 
 class MattermostAdapter(CollaborationAdapter):
+    #: Mattermost renders a thread inline under its root as well as in the
+    #: side panel, so anchoring the status to the message being worked on keeps
+    #: it beside the answer instead of stranding it at the channel root.
+    runtime_state_follows_anchor: ClassVar[bool] = True
+
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -79,14 +91,6 @@ class MattermostAdapter(CollaborationAdapter):
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
-
-        # Mattermost's ordinary delete leaves a "(message deleted)" tombstone,
-        # so the runtime indicator (base class `_working_msg`) is never soft
-        # deleted — it is hard deleted where the server permits it, and
-        # otherwise edited in place to a terminal marker when the turn ends.
-        # Channels where the hard delete has been found unavailable, so the
-        # operator is warned once rather than on every message.
-        self._no_hard_delete_warned: set[str] = set()
 
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -171,7 +175,13 @@ class MattermostAdapter(CollaborationAdapter):
         In a normal channel it goes out as the dedicated Switch Admin bot. A
         1:1 DM channel cannot admit a third bot, so there it falls back to the
         agent bot that owns the DM, lightly marked so it reads as a system
-        notice rather than the agent's own voice."""
+        notice rather than the agent's own voice.
+
+        Renders its own body: every caller passes Switch Markdown, so the
+        conversion belongs here rather than at each of them — one of them
+        forgetting is how a notice reached a channel with its markup showing.
+        """
+        content = self.translate_outbound(content)
         loop = self._main_loop
         if loop is None:
             logger.error("Cannot post admin message: event loop not initialized")
@@ -415,7 +425,18 @@ class MattermostAdapter(CollaborationAdapter):
         logger.debug("Mattermost set typing: %s", is_typing)
         if not is_typing:
             return
+        await self._post_typing(channel_id, sender_name, None)
 
+    async def _post_typing(
+        self, channel_id: str, sender_name: str, thread_root_id: str | None
+    ) -> None:
+        """Tell Mattermost the agent's bot is typing, in a thread when given one.
+
+        Mattermost expires the indicator on its own after a few seconds, so
+        this is a one-shot nudge rather than something to switch off. Without
+        `parent_id` it only ever shows at the channel root, which is the wrong
+        place when the agent is answering inside a thread.
+        """
         bot_info = self._agent_bots.get(sender_name)
         if not bot_info:
             logger.warning("No bot info found for sender name %s", sender_name)
@@ -427,13 +448,17 @@ class MattermostAdapter(CollaborationAdapter):
             logger.warning("No bot driver found for sender name %s", sender_name)
             return
 
+        body: dict[str, str] = {"channel_id": channel_id}
+        if thread_root_id is not None:
+            body["parent_id"] = thread_root_id
+
         try:
             await loop.run_in_executor(
                 None,
                 bot_driver.client.make_request,
                 "post",
                 f"/users/{bot_info['user_id']}/typing",
-                {"channel_id": channel_id},
+                body,
             )
         except Exception as e:
             logger.debug("Failed to send MM typing for %s: %s", sender_name, e)
@@ -446,23 +471,30 @@ class MattermostAdapter(CollaborationAdapter):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
-        """Surface runtime state as a posted message that is never *soft*
-        deleted — Mattermost's soft delete leaves a "(message deleted)"
-        tombstone.
+        """Surface runtime state as a posted message that is **never deleted**.
+
+        Mattermost's web client replaces any message deleted while it is on
+        screen with a "(message deleted)" placeholder, and only drops that on
+        reload. It does so however the message was removed — a permanent delete
+        looks the same to it as a soft one — so a status line that appears and
+        vanishes each turn leaves a trail of placeholders behind it. There is no
+        server setting that turns this off. The only way not to provoke it is
+        not to delete: every status message here is retired by editing it in
+        place.
 
         - ``working`` → post "working on it…" as the agent (in-thread when the
           trigger was threaded); it stays up across intermediate replies and
           through ``awaiting-input``.
-        - ``idle`` (where ``completed`` collapses) → hard-delete the working
-          message and any pings so they vanish cleanly, falling back to an
-          in-place edit when permanent deletion is unavailable.
+        - ``idle`` (where ``completed`` collapses) → edit the working message
+          into a "done" marker, and resolve any pings the same way.
         - ``awaiting-input`` → leave the working message up; post a separate
-          operator ping (tracked for removal when the turn ends).
+          operator ping (tracked for resolution when the turn ends).
         """
         key = (channel_id, agent_name)
         if state == "working":
@@ -479,11 +511,25 @@ class MattermostAdapter(CollaborationAdapter):
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
                 self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                    message_ref=ref,
+                    body=body,
+                    thread_root_id=thread_root_id,
+                    started_at=time.monotonic(),
                 )
+                # Where the message came from, not where the status went. The
+                # status is pinned to the thread the answer will land in, but
+                # typing is for whoever is waiting — and someone who wrote at
+                # the channel root is watching the root, not a thread they have
+                # not opened.
+                #
+                # Only as the turn opens. Mattermost expires a typing indicator
+                # after a few seconds, and the posted message is what carries
+                # the state from there on — repeating it on every activity
+                # refresh would say "typing" for as long as the agent runs.
+                await self._post_typing(channel_id, agent_name, trigger_thread_root_id)
         elif state == "awaiting-input":
             ref = await self._ping_operator(
-                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -492,106 +538,47 @@ class MattermostAdapter(CollaborationAdapter):
             await self._clear_input_pings(channel_id, agent_name)
 
     async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
-        """Remove the tracked operator pings when the turn ends.
+        """Resolve the tracked operator pings when the turn ends.
 
-        Same tombstone-avoidance as the working message: hard-delete when
-        permitted, otherwise edit the ping to a terminal marker."""
+        Edited rather than removed, for the same reason as the working message:
+        a delete would leave a placeholder in every client that had the ping on
+        screen — which, for a ping, is precisely the people it was aimed at."""
         for post_id in self._input_pings.pop((channel_id, agent_name), []):
-            if await self._permanent_delete(post_id):
-                continue
             await self._patch_post_as(
-                agent_name, post_id, self.translate_outbound("✓ input received")
+                agent_name, post_id, self.translate_outbound("✓ Input received")
             )
 
     async def _reposition_runtime_state(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
     ) -> None:
-        """Move the indicator only when Mattermost will truly delete the old one.
+        """Leave the indicator where it was first posted.
 
-        This inverts the base class's post-then-delete order. Mattermost can only
-        remove a post without leaving a "(message deleted)" tombstone when the
-        server permits a hard delete (v10.2+, ``EnableAPIPostDeletion``, and a
-        system-admin account). Reposting first and discovering the delete is
-        unavailable would strand a dead marker in the channel on *every*
-        message, so the delete is attempted first and the move is abandoned —
-        loudly — when it fails.
+        Moving it means removing it from where it is, and any removal shows as
+        "(message deleted)" to everyone currently looking at the channel — once
+        per move, so an active conversation accumulates them fastest. The
+        indicator is pinned to the point the turn began instead: less precise
+        about where the agent is up to, but it costs the reader nothing.
         """
-        key = (channel_id, agent_name)
-        live = self._working_msg.get(key)
-        if live is None:
-            return
-
-        if not await self._permanent_delete(live.message_ref):
-            if channel_id not in self._no_hard_delete_warned:
-                self._no_hard_delete_warned.add(channel_id)
-                logger.warning(
-                    "Cannot move the runtime indicator in Mattermost channel %s: "
-                    "hard delete is unavailable, so the indicator would leave a "
-                    "marker behind each time it moved. It will stay where it was "
-                    "first posted. Requires Mattermost v10.2+ with "
-                    "ServiceSettings.EnableAPIPostDeletion and a system-admin "
-                    "account.",
-                    channel_id,
-                )
-            return
-
-        ref = await self.send_message(channel_id, agent_name, live.body, thread_root_id)
-        if ref is None:
-            # The old post is already gone, so there is nothing to fall back to.
-            self._working_msg.pop(key, None)
-            logger.error(
-                "Removed the runtime indicator for %s in %s but could not repost "
-                "it; the channel now shows no indicator for this turn",
-                agent_name,
-                channel_id,
-            )
-            return
-
-        self._working_msg[key] = replace(
-            live, message_ref=ref, thread_root_id=thread_root_id
-        )
+        return
 
     async def _dispose_working(self, channel_id: str, agent_name: str) -> None:
-        """Remove the live "working on it…" message when the turn ends.
+        """Retire the live "working on it…" message when the turn ends.
 
-        Prefers a true hard delete (``?permanent=true``) so the message vanishes
-        with no trace. That is gated on Mattermost ≥ v10.2 with
-        ``ServiceSettings.EnableAPIPostDeletion`` enabled and a system-admin
-        account, so when it is unavailable we fall back to editing the message
-        in place — never a soft delete, which would leave a tombstone."""
+        Edited into a terminal marker rather than removed — see
+        ``_apply_runtime_state`` for why nothing here is ever deleted. Kept to
+        the bare fact that the turn finished and how long it took: this line
+        stays in the channel for good, so it earns its place by being small.
+        The session link belongs on the live indicator, where it is still
+        actionable, not on the record of a turn that is over."""
         live = self._working_msg.pop((channel_id, agent_name), None)
         if live is None:
             return
-        if await self._permanent_delete(live.message_ref):
-            return
+        elapsed = _format_elapsed(time.monotonic() - live.started_at)
         await self._patch_post_as(
-            agent_name, live.message_ref, self.translate_outbound("✓ done")
+            agent_name,
+            live.message_ref,
+            self.translate_outbound(f"✓ Done · {elapsed}"),
         )
-
-    async def _permanent_delete(self, post_id: str) -> bool:
-        """Hard-delete a post via the admin (system-admin) driver.
-
-        Returns True on success; False on any failure (older server, config
-        disabled, insufficient permissions) so the caller can fall back to an
-        in-place edit rather than leave a tombstone."""
-        driver = self._admin_driver
-        loop = self._main_loop
-        if driver is None or loop is None:
-            return False
-
-        def _do() -> bool:
-            driver.client.delete(f"/posts/{post_id}", params={"permanent": "true"})
-            return True
-
-        try:
-            return await loop.run_in_executor(None, _do)
-        except Exception as e:
-            logger.debug(
-                "Permanent delete unavailable for post %s (%s); editing instead",
-                post_id,
-                e,
-            )
-            return False
 
     async def _patch_post_as(self, agent_name: str, post_id: str, content: str) -> None:
         driver = self._bot_drivers.get(agent_name) or self._admin_driver
@@ -1015,18 +1002,37 @@ class MattermostAdapter(CollaborationAdapter):
 
     # ── Bot icons ────────────────────────────────────────────────────────────
 
+    def default_agent_icon(self, agent_name: str) -> str:
+        # Mattermost uploads the image itself rather than passing a link on, so
+        # the response has to be a PNG it can accept.
+        return default_icon_url(agent_name, image_format="png")
+
     async def _set_bot_icon(self, bot_id: str, agent_name: str) -> None:
         if not self._admin_driver or not self._main_loop:
             logger.error("[BOT-ICON] skipping %s: no driver or loop", agent_name)
             return
         driver = self._admin_driver
         try:
-            url = f"https://ui-avatars.com/api/?name={agent_name}&background=random&size=128&format=png"
+            url = await self.agent_icon_url(agent_name)
             logger.debug("[BOT-ICON] fetching avatar for %s", agent_name)
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
+            # This is the one place Switch dereferences an agent's icon URL
+            # rather than handing it to a platform, so the fetch is bounded:
+            # redirects off (a permitted host could otherwise bounce us to an
+            # internal one, which validation at write time cannot foresee) and
+            # a size ceiling so a hostile response cannot be read unbounded.
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                resp = await client.get(url, timeout=10.0)
                 resp.raise_for_status()
                 image_bytes = resp.content
+            if len(image_bytes) > _MAX_BOT_ICON_BYTES:
+                logger.error(
+                    "[BOT-ICON] icon for %s is %d bytes, over the %d limit — "
+                    "leaving the current icon in place",
+                    agent_name,
+                    len(image_bytes),
+                    _MAX_BOT_ICON_BYTES,
+                )
+                return
             logger.debug(
                 "[BOT-ICON] fetched %d bytes for %s", len(image_bytes), agent_name
             )
@@ -1313,6 +1319,48 @@ class MattermostAdapter(CollaborationAdapter):
         )
         self._dispatch(coro, loop)  # type: ignore[arg-type]
 
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """Find team members via Mattermost's own user search.
+
+        Scoped to the bridge's team, and bots are dropped — a bot is not a
+        person who can own an agent.
+        """
+        if not self._admin_driver or not self._main_loop:
+            raise RuntimeError("Mattermost adapter is not started")
+
+        term = query.strip()
+        if not term:
+            return []
+
+        driver = self._admin_driver
+        try:
+            found = await self._main_loop.run_in_executor(
+                None,
+                driver.users.search_users,
+                {"term": term, "team_id": self._team_id, "allow_inactive": False},
+            )
+        except Exception as e:
+            raise RuntimeError(f"Mattermost user directory lookup failed: {e}") from e
+
+        results: list[DirectoryUser] = []
+        for user in found or []:
+            if user.get("is_bot"):
+                continue
+            username = user.get("username", "") or ""
+            first = user.get("first_name", "") or ""
+            last = user.get("last_name", "") or ""
+            full_name = " ".join(part for part in (first, last) if part)
+            results.append(
+                DirectoryUser(
+                    external_user_id=str(user.get("id")),
+                    username=username,
+                    display_name=(user.get("nickname") or full_name or username),
+                    email=user.get("email") or None,
+                )
+            )
+        results.sort(key=lambda u: u.display_name.lower())
+        return results
+
     @staticmethod
     def _to_channel_type(mm_type: str) -> ChannelType:
         if mm_type == "D":
@@ -1402,3 +1450,20 @@ class MattermostAdapter(CollaborationAdapter):
         except Exception:
             pass
         return None
+
+
+def _format_elapsed(seconds: float) -> str:
+    """How long a turn took, for the marker its status line becomes.
+
+    Rounded to whole seconds and written the way a reader skims it — "8s",
+    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
+    second turns report "0s" instead of an empty string.
+    """
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"

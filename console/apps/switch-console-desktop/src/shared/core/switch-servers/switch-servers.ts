@@ -178,10 +178,39 @@ export type RemoteAgentSummary = {
   name: string;
   description: string;
   connectorType: string;
+  /** Switch user id of the agent's owner, or null for an agent registered
+   * before ownership was tracked. The id rather than the name is what an
+   * "is this mine" check can be made against. */
+  ownerId: string | null;
   ownerName: string | null;
   knownAgentType: string | null;
+  /** Who may address the agent, or null when it is open to everyone. On the
+   * summary as well as the detail, so "which of these agents answers only its
+   * owner" is one list read rather than a read per agent. Null also for a
+   * server older than the field, which reads the same as open. */
+  addressingPolicy: AddressingPolicy | null;
+  /** Absolute URL of the agent's own icon, or null when it has none. Null is
+   * the ordinary state rather than an error: the display layer draws a
+   * name-derived avatar instead, so the fallback can change without every
+   * agent needing rewriting. */
+  iconUrl: string | null;
   createdAt: string;
 };
+
+/**
+ * What came of giving this user's icon-less agents their generated avatar
+ * (CHOO-2171).
+ *
+ * Reported rather than logged because the app cannot tell the difference on
+ * screen: it draws a name-derived bot for any agent with no stored icon, so a
+ * server that rejected every write still looks right here while the chat
+ * platforms show the lettered avatar.
+ */
+export type AgentIconBackfill =
+  | { kind: 'written'; written: number }
+  /** The server has no agent-icon endpoint — it predates the feature. */
+  | { kind: 'unsupported' }
+  | { kind: 'partial'; written: number; failed: number };
 
 /** Read-only summary of a remote room (mirrors the gateway `RoomSummary`). */
 export type RemoteRoomSummary = {
@@ -205,6 +234,33 @@ export type RemoteRoomSummary = {
   ownerId: string | null;
   archived: boolean;
   createdAt: string;
+};
+
+/**
+ * One room read on its own (mirrors the gateway `RoomDetail`), for the room's
+ * own configuration page.
+ *
+ * The room list cannot answer this: it carries neither the instructions nor who
+ * is in the room, only how many agents there are. Both are read one room at a
+ * time because both are what that room's page is for.
+ */
+export type RemoteRoomDetail = RemoteRoomSummary & {
+  /** Room-specific system prompt shown to agents on connect; null when unset. */
+  instructions: string | null;
+  /** Switch agent ids in the room — every install's agents, not just this one's. */
+  agentIds: string[];
+  /** Display names of the people in the room, via the messaging app it is
+   * bridged to. Empty for an unbridged room, which has no people in it. */
+  connectedUserNames: string[];
+};
+
+/** The room fields Switch Console can change. Anything omitted is left alone;
+ * an empty string clears the field rather than leaving it. */
+export type UpdateRoomParams = {
+  serverId: string;
+  roomId: string;
+  description?: string;
+  instructions?: string;
 };
 
 /**
@@ -250,6 +306,31 @@ export type RemoteBridge = {
    * absence as "no action to offer", not as an error.
    */
   homeUrl: string | null;
+  /**
+   * Whether the platform this connection runs on can create a channel at all
+   * (e.g. false for Telegram — the Bot API has no such call). Fixed per
+   * platform; not something an operator can change. Defaults to true for a
+   * server predating the field, matching how every bridge behaved before the
+   * capability existed.
+   */
+  channelCreationSupported: boolean;
+  /**
+   * Whether this connection may actually be used to create a channel —
+   * `channelCreationSupported` ANDed with the operator's own switch for this
+   * connection. This is the one callers creating a room should read;
+   * `channelCreationSupported` exists only to explain *why* when this is
+   * false (a platform ceiling vs. an operator's choice).
+   */
+  canCreateChannels: boolean;
+  /**
+   * Whether this platform has a user directory Switch can search. False where
+   * the only people it can name are the ones who have spoken to it, which is
+   * why the "which account is you" step is not offered while connecting one:
+   * on a connection nobody has used yet the answer is always nobody. Defaults
+   * to true for a server predating the field — every platform Switch bridged
+   * before Telegram had one.
+   */
+  directorySearchSupported: boolean;
 };
 
 /**
@@ -298,6 +379,14 @@ export type RemoteBridgeType = {
   /** Platform key (`slack`, `mattermost`, …). */
   key: string;
   fields: BridgeConfigField[];
+  /** Whether this platform can create channels at all — read from the
+   * adapter class, so it is answerable before any connection of this type
+   * exists, which is exactly when the attach form needs it. */
+  channelCreationSupported: boolean;
+  /** Whether this platform's user directory can be searched — read from the
+   * adapter class, so the connect flow can decide whether to offer the
+   * link-your-account step for a connection that does not exist yet. */
+  directorySearchSupported: boolean;
 };
 
 /**
@@ -316,6 +405,11 @@ export type CreateBridgeParams = {
   connectionConfig: Record<string, string>;
   /** Make this the bridge new rooms land on when none is named. */
   setAsDefault: boolean;
+  /** Whether this connection may create channels on the platform. The
+   * gateway defaults this to true when omitted, but Switch Console always
+   * states it explicitly, forced off for a platform that cannot create
+   * channels at all — registering `true` there returns 400. */
+  channelCreationEnabled: boolean;
 };
 
 /**
@@ -334,11 +428,153 @@ export type CreateBridgeResult =
   | { kind: 'invalid'; message: string }
   | { kind: 'error'; message: string };
 
+/**
+ * Parameters for editing an existing bridge's operator-controlled switches
+ * (`PATCH /collaborations/{id}`). Only `channelCreationEnabled` is wired up
+ * today; leave a field unset to leave it unchanged, matching the gateway's
+ * own partial-update contract.
+ */
+export type UpdateBridgeParams = {
+  serverId: string;
+  bridgeId: string;
+  channelCreationEnabled?: boolean;
+};
+
+/** Outcome of editing a bridge. Mirrors {@link CreateBridgeResult}'s recoverable
+ * cases: editing is admin-only like registering, so a non-admin gets the same
+ * `forbidden` rather than a validation error. */
+export type UpdateBridgeResult =
+  | { kind: 'updated'; bridge: RemoteBridge }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Parameters for disconnecting a bridge from a server
+ * (`DELETE /collaborations/{id}`). */
+export type DeleteBridgeParams = {
+  serverId: string;
+  bridgeId: string;
+};
+
+/**
+ * Outcome of disconnecting a bridge.
+ *
+ * `deleted` means the bridge *and every Switch room that lived on it* are gone
+ * — the gateway deletes the rooms first — so this is not the inverse of
+ * attaching one, and a caller must have said so before asking.
+ *
+ * `not-found` is its own case rather than a success: a bridge that is already
+ * absent is usually another operator's deletion, and reporting it as done hides
+ * a mistyped id just as effectively.
+ */
+export type DeleteBridgeResult =
+  | { kind: 'deleted' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'not-found' }
+  | { kind: 'error'; message: string };
+
 /** A bridged (external) human identity on a server. The `users` dimension of an
  * addressing policy keys off these ids. */
 export type RemoteExternalUser = {
   id: string;
   username: string;
+};
+
+/**
+ * A Switch user who says a platform account is theirs (mirrors the gateway
+ * `IdentityClaimant`).
+ */
+export type IdentityClaimant = {
+  userId: string;
+  userName: string;
+};
+
+/**
+ * Someone found in a messaging platform's own user directory (mirrors the
+ * gateway `DirectoryUserSummary`).
+ *
+ * Switch only records a person once they have spoken, so a freshly connected
+ * workspace has nobody to pick from. The directory is the platform's, which is
+ * what lets a user claim their account before ever posting.
+ */
+export type BridgeDirectoryUser = {
+  /** The platform's own id (a Slack `U…`, a Mattermost user id). */
+  externalUserId: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+  /** The `ExternalUser` row id when Switch has already seen this person, else
+   * null. Present rows are reused on claim rather than duplicated. */
+  knownExternalUserId: string | null;
+  /** Everyone who has claimed this account. Claiming is not exclusive, so this
+   * is information about who else is recognised on the account rather than a
+   * reason to stop someone claiming it too. */
+  claimedBy: IdentityClaimant[];
+};
+
+/**
+ * Outcome of searching a bridge's user directory.
+ *
+ * `unsupported` is its own case rather than an empty list: a platform with no
+ * searchable directory (Telegram) answers 501, and the only way forward is to
+ * post a message so Switch learns the account exists. Showing "no matches"
+ * there would send the user searching harder for something that can never
+ * appear.
+ */
+export type BridgeDirectorySearchResult =
+  /**
+   * `note` is set when the platform has no searchable directory and the server
+   * answered from the accounts it has already seen instead. The results are
+   * real but narrower — someone who has never spoken is not among them — so it
+   * is shown alongside them, never in their place.
+   */
+  | { kind: 'results'; users: BridgeDirectoryUser[]; note: string | null }
+  /** Only reachable against a switch-core predating the fallback above, which
+   * refused the search outright rather than narrowing it. */
+  | { kind: 'unsupported'; message: string }
+  | { kind: 'bridge-unavailable'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
+/** Claim a platform identity for the signed-in Switch user (CHOO-2137). */
+export type ClaimIdentityParams = {
+  serverId: string;
+  bridgeId: string;
+  /** The platform's own id, not an `ExternalUser` row id — the row may not
+   * exist yet, and the server creates it on demand. */
+  externalUserId: string;
+  username: string;
+};
+
+/**
+ * Outcome of claiming an identity. `bridge-unavailable` is the one failure a
+ * user can act on: an account Switch has never seen has to be provisioned on
+ * the platform's side, which a stopped bridge cannot do.
+ */
+export type ClaimIdentityResult =
+  | { kind: 'claimed'; identity: LinkedIdentity }
+  | { kind: 'bridge-unavailable'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
+/**
+ * One messaging account the signed-in user has claimed (mirrors the gateway
+ * `LinkedIdentity`).
+ *
+ * An agent whose addressing policy names its owner is only reachable by that
+ * owner over a bridge that appears in this list — which is why the app reads it
+ * to warn before a policy seals an agent off from everybody.
+ */
+export type LinkedIdentity = {
+  /** The `ExternalUser` row id; what unclaiming addresses. */
+  id: string;
+  bridgeId: string;
+  bridgeDisplayName: string;
+  bridgeType: string;
+  externalUserId: string;
+  externalUsername: string;
 };
 
 /**
@@ -354,6 +590,26 @@ export type AddressingRule = {
   room_groups: AddressingDimension;
   users: AddressingDimension;
   agents: AddressingDimension;
+  /**
+   * Admit the agent's owner, resolved when the message arrives rather than
+   * frozen into the `users` list (CHOO-2137). It survives connecting a new
+   * workspace, recreating a bridge, or the agent changing hands — but it can
+   * only recognise an owner who has claimed their messaging account, so a rule
+   * that names the owner on a platform where they have not admits nobody.
+   *
+   * Optional because a policy written before the field exists carries no
+   * `owner` key; absent reads as false, as it does server-side.
+   */
+  owner?: boolean;
+  /**
+   * Admit any agent owned by the same person, resolved on arrival like
+   * {@link owner} (CHOO-2137). The owner's manager agent handing work to their
+   * worker is the owner acting through a program; naming each one in `agents`
+   * would go stale the next time they register one.
+   *
+   * Optional for the same reason as `owner`: absent reads as false.
+   */
+  owner_agents?: boolean;
 };
 
 export type AddressingPolicy = {
@@ -397,8 +653,6 @@ export type ProvisionAgentParams = {
   name: string;
   description: string;
   providerKind: AgentProviderKind;
-  /** Bridge handle to @-mention in offline-session notices; omit to skip. */
-  notifyUser?: string;
   /** Register with the `auto_session` connection model: Switch Console watches the
    * agent's rooms and auto-spawns a session on notification. Defaults to off. */
   autoSession?: boolean;
@@ -420,8 +674,6 @@ export type ProvisionRemoteAgentParams = {
   name: string;
   description: string;
   providerKind: AgentProviderKind;
-  /** Bridge handle to @-mention in offline-session notices; omit to skip. */
-  notifyUser?: string;
   /** Register with the `auto_session` connection model. Defaults to off. */
   autoSession?: boolean;
 };
@@ -432,12 +684,25 @@ export type ProvisionRemoteAgentParams = {
  * message the modal can act on (re-login, rename) rather than a raw throw. The
  * minted API token is written to disk by the main process and never returned.
  */
-export type ProvisionAgentResult =
-  | { kind: 'created'; agentId: string }
+/**
+ * The recoverable ways minting an identity on the gateway can fail. Separate
+ * from {@link ProvisionAgentResult} because provisioning can also fail for
+ * reasons the gateway never sees — the working directory, so far — and a caller
+ * handling a registration result should not have to consider those.
+ */
+export type RegisterIdentityFailure =
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
   | { kind: 'invalid-name'; message: string }
   | { kind: 'error'; message: string };
+
+export type ProvisionAgentResult =
+  | { kind: 'created'; agentId: string }
+  /** The working directory already holds credentials for this name belonging to
+   * the Switch deployment at `endpoint` — another install's agent. Refused
+   * before minting, so nothing was created. */
+  | { kind: 'credentials-conflict'; endpoint: string }
+  | RegisterIdentityFailure;
 
 /**
  * Parameters for creating a room on a server from inside Switch Console

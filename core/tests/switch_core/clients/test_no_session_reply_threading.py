@@ -161,16 +161,41 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
     assert "@operator" in body
 
 
-@pytest.mark.asyncio
-async def test_no_session_reply_threads_under_root_level_mention() -> None:
-    # CHOO-586: a root-level mention (no existing thread) must still get a
-    # threaded reply — the reply starts a NEW thread rooted at the triggering
-    # message itself, rather than posting at the channel root. PR #115 only
-    # handled the already-in-a-thread case; this is the remaining edge case.
-    send_message = _Recorder()
-    room = SimpleNamespace(room_id="!matrix:server")
-    await AgentClient.on_message(_fake_self(send_message), room, _event(thread_id=None))
+class TestUnavailableReplyGoesWhereItWasAsked:
+    """Where "Starting a session to handle this" lands (CHOO-2173).
 
-    assert len(send_message.calls) == 1
-    # Falls back to the triggering event's own id, starting a thread under it.
-    assert send_message.calls[0]["thread_root_id"] == "$trigger"
+    It used to reply onto the triggering message, which for a message at the
+    conversation root means opening a thread off it. So asking at the root got
+    a one-line notice tucked into a new thread, away from where the asker was
+    looking and away from the answer that follows.
+
+    This reverses CHOO-586, which made the root case start a thread on purpose.
+    The reply is now placed the same way the typing indicator already is: in the
+    thread when asked in a thread, at the root when asked at the root.
+    """
+
+    @pytest.mark.asyncio
+    async def test_asked_at_the_root_it_answers_at_the_root(self) -> None:
+        send_message = _Recorder()
+        room = SimpleNamespace(room_id="!matrix:server")
+
+        await AgentClient.on_message(
+            _fake_self(send_message), room, _event(thread_id=None)
+        )
+
+        assert len(send_message.calls) == 1
+        # Not "$trigger": that would open a thread on the asker's message.
+        assert send_message.calls[0]["thread_root_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_asked_in_a_thread_it_stays_in_that_thread(self) -> None:
+        # The other half of the rule — replying at the root here would strand
+        # the notice away from the conversation it belongs to.
+        send_message = _Recorder()
+        room = SimpleNamespace(room_id="!matrix:server")
+
+        await AgentClient.on_message(
+            _fake_self(send_message), room, _event(thread_id="$thread-root")
+        )
+
+        assert send_message.calls[0]["thread_root_id"] == "$thread-root"

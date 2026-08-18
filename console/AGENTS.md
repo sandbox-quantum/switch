@@ -384,9 +384,10 @@ pnpm run lint
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
 - The app sends no telemetry or analytics today, and nothing may start sending without
-  going through the consent gate below. Logs are local-only: they leave the machine
-  solely when the user attaches them to a feedback report, via
-  `getDiagnosticLogAttachment()`. Do not add any other path that transmits log content.
+  going through the consent gate below. Logs are local-only and no code path transmits
+  them off the machine. Do not add one. `getDiagnosticLogAttachment()` builds a redacted
+  export and is the only function intended to ever feed such a path; anything that ships
+  log content must go through it rather than reading the log itself.
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
   emission and send nothing when it returns false. Do not read `telemetry.enabled` from
@@ -409,8 +410,9 @@ pnpm run lint
   - **Personal data** (home directories, IP and MAC addresses, emails) is deliberately
     *retained* in the local log file — it is what makes a user's own log debuggable —
     and is redacted by `redactDiagnosticLog()` in `getDiagnosticLogAttachment()`, the
-    single point at which content leaves the machine. Do not "fix" the local file by
-    scrubbing it on write; that reinstates the problem this split exists to solve.
+    single point at which content is prepared to leave the machine. Do not "fix" the
+    local file by scrubbing it on write; that reinstates the problem this split exists
+    to solve.
   - Anything contributed via `registerDiagnosticSection()` passes through the same
     export scrub. Never read the raw log file from outside `file-logger.ts`.
 - **An agent's Switch API token lives in exactly one file:**
@@ -476,7 +478,8 @@ forgotten and someone will debug a build they think is newer than it is.
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
 | Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
-| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and **both** connectors' `.mcp.json` pin the version sessions actually run. Nothing in the app pins it — the plugins register the runtime themselves — so those two files are the only pins |
+| OpenCode connector | `connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and the marketplace connectors' `.mcp.json` pin the version sessions actually run. An agent type whose connector the app writes rather than installs is pinned by `SWITCH_AGENT_RUNTIME_PIN` in `packages/plugins/src/distribution.ts`, which `connectors/opencode-plugin/opencode.json` must match. `runtime-pin.test.ts` and `connector-assets.test.ts` fail if any of them disagree |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
 dependencies. A comment or a rename that changes nothing does not need one.
@@ -555,6 +558,18 @@ pnpm run test
   display metadata, and a mirror of each provider's argv shape. The mirror is
   descriptive: nothing reads it at spawn time, so change the plugin first and update the
   mirror to match. `provider-argv-parity.test.ts` pins Codex's.
+- **How an agent type gets its Switch connector** is the `switchSetup` capability
+  in `packages/core/src/agents/plugins/capabilities/switch-setup.ts`, and it has
+  two working shapes. `kind: 'cli'` drives the host's plugin-marketplace CLI, with
+  the per-host verbs and JSON shapes in
+  `src/main/core/switch-setup/switch-setup-cli-dialect.ts` (Claude Code, Codex).
+  `kind: 'files'` is for a host with no marketplace: the plugin supplies a
+  behavior that writes the connector itself, through a home-rooted `PluginFs` so
+  one implementation serves a local machine and an SSH host alike (OpenCode).
+  Both reach the same status / install / update / uninstall surface in
+  `switch-setup-service.ts` and `remote-switch-setup.ts`. A `files` connector has
+  no version of its own — it ships inside the app, so the app version stamps the
+  install and "update available" means an install written by an older build.
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
   `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
 - Provider PTY behavior and env passthrough live under `src/main/core/pty/`.

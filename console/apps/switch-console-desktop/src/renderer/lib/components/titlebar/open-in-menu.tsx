@@ -33,8 +33,7 @@ export const OpenInMenu: React.FC<OpenInMenuProps> = ({
   const { toast } = useToast();
   const { icons, labels, installedApps, availability, platform, loading } = useOpenInApps();
   const { value: openIn, update } = useAppSettingsKey('openIn');
-  const { value: keyboard } = useAppSettingsKey('keyboard');
-  const openInHotkey = getEffectiveHotkey('openInEditor', keyboard);
+  const openInHotkey = getEffectiveHotkey('openInEditor');
 
   const defaultApp: OpenInAppId | null =
     openIn?.default && isValidOpenInAppId(openIn.default) ? openIn.default : null;
@@ -111,7 +110,7 @@ export const OpenInMenu: React.FC<OpenInMenuProps> = ({
   const buttonAppLabel = buttonAppId ? (labels[buttonAppId] ?? buttonAppId) : null;
 
   useHotkey(
-    getHotkeyRegistration('openInEditor', keyboard),
+    getHotkeyRegistration('openInEditor'),
     () => {
       if (!buttonAppId) return;
       void triggerOpenIn(buttonAppId);

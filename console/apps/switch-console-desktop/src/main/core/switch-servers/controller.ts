@@ -1,4 +1,5 @@
 import type { Result } from '@switch-console/shared';
+import { foreignCredentialsOwner } from '@main/core/agents/agent-credentials-slot';
 import { suggestAgentDefaults } from '@main/core/agents/agent-defaults';
 import { resolveWorkspaceFsFor } from '@main/core/agents/agent-workspace-fs';
 import { knownAgentTypeForProvider } from '@main/core/agents/known-agent-type';
@@ -18,6 +19,7 @@ import {
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
 import type {
@@ -25,11 +27,18 @@ import type {
   AddServerParams,
   AgentDefaults,
   AgentVerifyResult,
+  BridgeDirectorySearchResult,
+  AgentIconBackfill,
   BundledChatSignIn,
+  ClaimIdentityParams,
+  ClaimIdentityResult,
   CreateBridgeParams,
   CreateBridgeResult,
   CreateRoomParams,
   CreateRoomResult,
+  DeleteBridgeParams,
+  DeleteBridgeResult,
+  LinkedIdentity,
   PasswordLoginParams,
   ProvisionAgentParams,
   ProvisionAgentResult,
@@ -39,6 +48,7 @@ import type {
   RemoteBridge,
   RemoteBridgeType,
   RemoteExternalUser,
+  RemoteRoomDetail,
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
@@ -46,11 +56,15 @@ import type {
   ServerConnectionStatus,
   SwitchAuthConfig,
   SwitchServer,
+  UpdateBridgeParams,
+  UpdateBridgeResult,
+  UpdateRoomParams,
   UpdateServerParams,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type LoginError, oidcLogin, passwordLogin } from './auth';
+import { backfillAgentIcons } from './backfill-agent-icons';
 import { withResolvedHomeUrls } from './bridge-home-url';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import { createBridgeOnServer } from './create-bridge';
@@ -58,6 +72,8 @@ import { createRoomOnServer } from './create-room';
 import {
   addRoomAgents,
   agentExistsOnServer,
+  deleteBridge,
+  deleteRoom,
   fetchAddressingPolicy,
   fetchAgentDetail,
   fetchAgentRooms,
@@ -67,15 +83,22 @@ import {
   fetchBridges,
   fetchBridgeTypes,
   fetchMe,
+  fetchMyIdentities,
   fetchRoomAgentIds,
+  fetchRoomDetail,
   fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
   GatewayError,
+  ownsOwnerAddressedAgent,
+  releaseBridgeIdentity,
   removeRoomAgent,
   updateAddressingPolicy,
+  updateAgentIcon,
+  updateRoom,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
+import { claimIdentityOnServer, searchDirectoryOnServer } from './identities';
 import {
   addServer,
   deleteSessionCookie,
@@ -87,6 +110,7 @@ import {
   setActiveServerId,
   updateServer,
 } from './servers-store';
+import { updateBridgeOnServer } from './update-bridge';
 
 async function requireServer(serverId: string): Promise<SwitchServer> {
   const server = await getServer(serverId);
@@ -240,8 +264,31 @@ export const switchServersController = createRPCController({
       displayName: params.displayName,
       connectionConfig: params.connectionConfig,
       setAsDefault: params.setAsDefault,
+      channelCreationEnabled: params.channelCreationEnabled,
     });
   },
+
+  /**
+   * Edit a bridge's operator-controlled switches — today, only whether the
+   * connection may create channels. Admin-only, like registering one; see
+   * `updateBridgeOnServer` for the recoverable-failure mapping.
+   */
+  updateBridge: async (params: UpdateBridgeParams): Promise<UpdateBridgeResult> => {
+    const server = await requireReachableServer(params.serverId);
+    return updateBridgeOnServer(server, {
+      bridgeId: params.bridgeId,
+      channelCreationEnabled: params.channelCreationEnabled,
+    });
+  },
+
+  /**
+   * Disconnect a messaging app from the chosen server. Admin-only, and the
+   * gateway deletes every Switch room on the bridge on the way — see
+   * `deleteBridge`. The renderer owns the confirmation; by the time this runs
+   * the rooms are being given up deliberately.
+   */
+  deleteBridge: async (params: DeleteBridgeParams): Promise<DeleteBridgeResult> =>
+    deleteBridge(await requireReachableServer(params.serverId), params.bridgeId),
 
   /**
    * Create a room on the chosen server, owned by the signed-in user. Room
@@ -271,6 +318,21 @@ export const switchServersController = createRPCController({
   listRoomAgentIds: async (params: { serverId: string; roomId: string }): Promise<string[]> =>
     fetchRoomAgentIds(await requireServer(params.serverId), params.roomId),
 
+  /** One room in full, for its configuration page. */
+  getRoomDetail: async (params: { serverId: string; roomId: string }): Promise<RemoteRoomDetail> =>
+    fetchRoomDetail(await requireServer(params.serverId), params.roomId),
+
+  /**
+   * Change a room's own settings. Failures propagate as-is — a user without
+   * write access to the room needs the gateway's refusal, not a saved-looking
+   * field holding a value the server never took.
+   */
+  updateRoom: async (params: UpdateRoomParams): Promise<RemoteRoomDetail> =>
+    updateRoom(await requireReachableServer(params.serverId), params.roomId, {
+      description: params.description,
+      instructions: params.instructions,
+    }),
+
   /**
    * Add agents to a room. Failures propagate as-is: the caller shows the
    * gateway's own words (e.g. an agent whose server-side client is not running,
@@ -291,11 +353,67 @@ export const switchServersController = createRPCController({
   }): Promise<void> =>
     removeRoomAgent(await requireReachableServer(params.serverId), params.roomId, params.agentId),
 
+  /** Delete a room and everything in it. The gateway enforces who may. */
+  deleteRoom: async (params: { serverId: string; roomId: string }): Promise<void> =>
+    deleteRoom(await requireReachableServer(params.serverId), params.roomId),
+
   listRemoteRoomGroups: async (serverId: string): Promise<RemoteRoomGroup[]> =>
     fetchRoomGroups(await requireServer(serverId)),
 
   listRemoteExternalUsers: async (serverId: string): Promise<RemoteExternalUser[]> =>
     fetchAllExternalUsers(await requireServer(serverId)),
+
+  /**
+   * Search a bridge's own user directory so the signed-in user can find
+   * themselves before they have ever posted in the workspace (CHOO-2137).
+   */
+  searchBridgeDirectory: async (params: {
+    serverId: string;
+    bridgeId: string;
+    query: string;
+  }): Promise<BridgeDirectorySearchResult> =>
+    searchDirectoryOnServer(
+      await requireReachableServer(params.serverId),
+      params.bridgeId,
+      params.query
+    ),
+
+  /** Claim a messaging-app account as the signed-in Switch user's own. */
+  claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> =>
+    claimIdentityOnServer(await requireReachableServer(params.serverId), {
+      bridgeId: params.bridgeId,
+      externalUserId: params.externalUserId,
+      username: params.username,
+    }),
+
+  /** Give up a claim on a messaging-app account, leaving any other user's claim
+   * on it in place. `userId` is whose claim to drop — null for the signed-in
+   * user, which is the only one this app offers. Failures propagate: unclaiming
+   * is a deliberate act, and reporting success for one that did not happen
+   * would leave the user thinking an agent is no longer reachable by them when
+   * it still is. */
+  releaseBridgeIdentity: async (params: {
+    serverId: string;
+    bridgeId: string;
+    identityId: string;
+    userId: string | null;
+  }): Promise<void> =>
+    releaseBridgeIdentity(
+      await requireReachableServer(params.serverId),
+      params.bridgeId,
+      params.identityId,
+      params.userId
+    ),
+
+  /** The messaging accounts the signed-in user has claimed on this server. */
+  listMyIdentities: async (serverId: string): Promise<LinkedIdentity[]> =>
+    fetchMyIdentities(await requireServer(serverId)),
+
+  /** Whether the signed-in user owns an agent here that is set to answer its
+   * owner, which is what makes an unlinked messaging account worth warning
+   * about. One agent-list read, so callers need not ration it. */
+  ownsOwnerAddressedAgent: async (serverId: string): Promise<boolean> =>
+    ownsOwnerAddressedAgent(await requireServer(serverId)),
 
   getAddressingPolicy: async (params: {
     serverId: string;
@@ -309,6 +427,22 @@ export const switchServersController = createRPCController({
     policy: AddressingPolicy | null;
   }): Promise<void> =>
     updateAddressingPolicy(await requireServer(params.serverId), params.agentId, params.policy),
+
+  /** Give this user's icon-less agents the avatar their name generates. Runs
+   * once per server per app run; reports what happened so the caller can say
+   * when the icons did not reach the server. */
+  backfillAgentIcons: async (serverId: string): Promise<AgentIconBackfill> =>
+    backfillAgentIcons(await requireServer(serverId)),
+
+  /** Set or clear an agent's icon. Returns the agent as the server now holds
+   * it, so the caller refreshes from the stored value rather than the one it
+   * hoped for. */
+  updateAgentIcon: async (params: {
+    serverId: string;
+    agentId: string;
+    iconUrl: string | null;
+  }): Promise<RemoteAgentSummary> =>
+    updateAgentIcon(await requireServer(params.serverId), params.agentId, params.iconUrl),
 
   verifyAgent: async (params: {
     serverId: string;
@@ -340,11 +474,15 @@ export const switchServersController = createRPCController({
   provisionAgent: async (params: ProvisionAgentParams): Promise<ProvisionAgentResult> => {
     const server = await requireServer(params.serverId);
 
+    const conflict = await foreignCredentialsOwner(null, params.dir, params.name, server.apiUrl);
+    if (conflict !== null) return { kind: 'credentials-conflict', endpoint: conflict };
+
     const registered = await registerAgentIdentity(server, {
       name: params.name,
       description: params.description,
       repoDir: params.dir,
       autoSession: params.autoSession,
+      iconUrl: agentAvatarUrlForName(params.name),
       // Provisioning writes `.claude/settings.local.json` — this is the Claude
       // Code path by construction, not a fallback.
       agentType: knownAgentTypeForProvider('claude'),
@@ -387,11 +525,20 @@ export const switchServersController = createRPCController({
   ): Promise<ProvisionAgentResult> => {
     const server = await requireServer(params.serverId);
 
+    const conflict = await foreignCredentialsOwner(
+      params.sshHost,
+      params.remoteRepoDir,
+      params.name,
+      server.apiUrl
+    );
+    if (conflict !== null) return { kind: 'credentials-conflict', endpoint: conflict };
+
     const registered = await registerAgentIdentity(server, {
       name: params.name,
       description: params.description,
       repoDir: params.remoteRepoDir,
       autoSession: params.autoSession,
+      iconUrl: agentAvatarUrlForName(params.name),
       // Remote provisioning likewise writes `.claude/settings.local.json`.
       agentType: knownAgentTypeForProvider('claude'),
     });

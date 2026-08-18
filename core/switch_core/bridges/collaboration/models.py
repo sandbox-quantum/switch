@@ -5,6 +5,18 @@ from pydantic import BaseModel
 ChannelType = Literal["lobby", "channel_public", "channel_private", "group", "direct"]
 
 
+class ChannelCreationUnsupported(ValueError):
+    """Raised when a bridge will not create a channel for a new room.
+
+    Either the platform has no such call — a Telegram bot cannot create a chat
+    — or an operator has withheld it from this connection. Both are answers to
+    a caller's request rather than faults, so this is a ``ValueError``: every
+    door into room creation already turns one into a 4xx carrying the message,
+    where an unexpected exception becomes an opaque 500 and the explanation
+    never leaves the server.
+    """
+
+
 class Attachment(BaseModel):
     """An inbound file attachment of any type, with its raw bytes.
 
@@ -34,6 +46,23 @@ class AttachmentFailure(BaseModel):
 
     filename: str
     reason: str
+
+
+class DirectoryUser(BaseModel):
+    """A person as the messaging platform's own directory describes them.
+
+    Distinct from an `ExternalUser`: that record only exists once Switch has
+    seen someone speak, whereas this comes straight from the platform, so a
+    user who has never posted can still be found and claimed (CHOO-2137).
+    `email` is whatever the platform exposes — absent on platforms that do not
+    carry one — and is offered to help a person recognise themselves in the
+    list, never as proof of identity.
+    """
+
+    external_user_id: str
+    username: str
+    display_name: str
+    email: str | None = None
 
 
 class InboundMessage(BaseModel):
@@ -102,6 +131,23 @@ class InboundAppJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     channel_name: str | None = None
+
+
+class BridgeInstallLink(BaseModel):
+    """A link that adds this bridge's app to a channel in one step.
+
+    Some platforms can express the whole install — pick a chat, grant the
+    permissions the bridge needs, confirm — as a single URL, which is strictly
+    better than a documented sequence of clicks an operator performs by hand.
+    Adapters that can build one return it here and the operator dashboard
+    offers it; the rest return nothing and the platform's own admin UI remains
+    the way in.
+    """
+
+    key: str
+    label: str
+    description: str
+    url: str
 
 
 class BridgeConnectionConfig(BaseModel):

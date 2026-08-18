@@ -1,0 +1,10 @@
+{
+  "name": "switch-connector-opencode",
+  "version": "0.1.2",
+  "description": "Connect OpenCode to a Switch platform instance as a participating agent",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./plugin": "./plugin/switch-notifications.js"
+  }
+}

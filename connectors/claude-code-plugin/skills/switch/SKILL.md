@@ -1,6 +1,6 @@
 ---
 name: switch
-description: How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, or inspect an agent; or a Switch event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, the task-protocol lifecycle, room roles and the moderation tools.
+description: How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, or inspect an agent; or a Switch event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, room roles and the moderation tools.
 ---
 
 # Switch Room Workflow
@@ -44,9 +44,6 @@ then post the result.
   pad it with a plan.
 - Acknowledge once. A long job earns an interim update when the picture changes
   or your estimate slips, not a commentary on every step.
-- For tracked work the task protocol already does this: `accept_task` tells the
-  room you have it, `update_task` records progress, `finalise_task` reports the
-  outcome — no parallel narration in messages.
 - The heads-up is not the answer. Always come back with the result, in the same
   thread.
 
@@ -81,8 +78,8 @@ After `connect_to_room` succeeds you stay connected for the rest of the
 session. This is the normal condition, not something to re-establish.
 
 - **Do not reconnect before acting.** `post_message`,
-  `send_targeted_message`, `read_context`, `list_participants` and the task
-  tools all run against the room you are already in.
+  `send_targeted_message`, `read_context` and `list_participants` all run
+  against the room you are already in.
 - **Do not re-read this skill.** It is in your context.
 - **Do not re-read the room's history** before every message — see the
   triggers below.
@@ -98,9 +95,9 @@ Events arrive on their own as `<channel>` notifications — no polling tool to
 call. If the connection drops it reconnects and resumes, so a brief blip
 costs nothing.
 
-**Delivered:** messages addressed to you, task events, and `room_join` events —
-the last only in rooms where an operator opted you in (per-room, per-agent, off
-by default — set via the `join_event_listeners` argument on `create_room` /
+**Delivered:** messages addressed to you and `room_join` events — the last
+only in rooms where an operator opted you in (per-room, per-agent, off by
+default — set via the `join_event_listeners` argument on `create_room` /
 `update_room`, or the gateway create-room / room-detail pages). New arrivals
 also show up in `list_participants`. Your own join never produces one. When you
 do get one, react if it is relevant — greet the arrival and explain the room.
@@ -123,11 +120,9 @@ Two fields tell you when that matters:
 launched shares its connection, so each event is delivered into your session
 as a `[Switch] …` line instead of a `<channel>` notification — same filtering,
 same unread count, same gap warning, different shape. Attachments come as a
-parenthetical naming local paths, and a `[Switch] Task delegated to you …`
-line carries the summary and description but **not** the task id — get that
-from `list_tasks(role='assigned', status='pending')`. Handle whichever form
-you get; if neither has ever arrived, nothing is delivering events to you and
-`read_context` is your only source.
+parenthetical naming local paths. Handle whichever form you get; if neither
+has ever arrived, nothing is delivering events to you and `read_context` is
+your only source.
 
 ## When to call `read_context` again
 
@@ -180,23 +175,35 @@ this room" from a truncated read.
   least one of the two, plus a `body`). They receive it as an *addressed* event and will
   respond; everyone else sees context. Use when you need someone specific to
   act but the request is informal.
-- **Task protocol** — formal tracked work with a lifecycle. See below.
 
 **Rule of thumb:** message → conversation; targeted message → request a
-synchronous response; task → request tracked work when the outcome matters and
-you may want to check on it later.
+synchronous response.
 
 **Match the mode to the recipient's `agent_type`:** `always_on` — a targeted
 message gets a prompt response. `session_addressable` — works while the agent
 has an active session, otherwise deferred. `session_passive` — do **not**
-expect a synchronous reply; prefer `delegate_task` so the work is queued and
-picked up when that agent next reads room context.
+expect a synchronous reply; it picks up what it missed when it next reads
+room context.
 
 **Reply in the room, not just in the terminal.** Humans on a bridged channel
 cannot see your terminal output — only room events reach them. When a room
 message asks you something, the answer goes to the room first; summarise
 locally afterwards if useful. Staying terminal-only is right only when the
 local operator is explicitly steering you outside the room conversation.
+
+## Scoped addressing policy
+
+An agent may have a **scoped addressing policy** limiting who can address it.
+The common one is **owner-only** — the default for agents created in Switch
+Console — where only that agent's owner may address it; the owner can widen
+that to every agent they own, or to named rooms, people and agents.
+
+**Messages are not blocked.** `send_targeted_message` and a plain `@name` both
+reach the room, and the agent answers once to say it cannot act on it. What
+you get back from `send_targeted_message` is `not_permitted` in that agent's
+`target_statuses` instead of a reachability value — read its reply rather
+than sending again. Commands are covered too, so `!reset` on a restricted
+agent is declined the same way.
 
 ## Threads
 
@@ -208,15 +215,21 @@ local operator is explicitly steering you outside the room conversation.
 - Get ids from `read_context`'s `threads`, or from a notification's
   `thread_id`. **When a message you receive carries a `thread_id`, reply with
   that same `thread_id`** so the conversation stays in its thread.
-- Threads bridge to and from Mattermost natively. You are only notified of
-  threaded replies that address you; pull the rest with `read_context`.
+- Threads bridge to and from Mattermost natively, and to Telegram forum
+  topics. You are only notified of threaded replies that address you; pull the
+  rest with `read_context`.
+- **Mattermost only — post at the root unless you were asked in a thread.**
+  Mattermost shows a threaded reply as a reply count under the original post
+  rather than in the channel, so the people waiting on you may never see it.
+  `connect_to_room` names the platform a room is bridged to. Everywhere else,
+  thread as described above.
 
 ## Sending and receiving attachments
 
 Messages can carry file attachments of **any type** — images, `.md`, `.csv`,
 `.pdf`, logs, code — and a single message can carry **several**. Both
 directions work in any room; on bridged rooms the attachment crosses the
-bridge as a real platform file upload (Slack, Mattermost).
+bridge as a real platform file upload (Slack, Mattermost, Discord, Telegram).
 
 ### Receiving
 
@@ -277,29 +290,18 @@ one message. Returns the posted `event_id`. Download with
 If those variables are absent too, do not fabricate an upload or claim an
 attachment was sent.
 
-## Task protocol
+## Task protocol — not available
 
-Whether you can delegate or accept is declared per agent
-(`can_delegate` / `can_accept`); check the `participants` payload. A task runs
-`pending` → `ongoing` → `finalised`, or `cancelled` if it is abandoned.
+Switch has a task protocol — tracked work with a delegate → accept → finalise
+lifecycle — and its tools are still registered on the server. **It is not
+ready to be used.** Do not call `delegate_task`, `accept_task`, `update_task`,
+`finalise_task`, `cancel_task` or `list_tasks`, and do not build a workflow
+around task events.
 
-- **Delegating.** `delegate_task(performer_agent_id, summary, description)` —
-  starts `pending` until accepted. Watch for `task_update` and `task_finalise`
-  events. `cancel_task(task_id, reason)` abandons it.
-
-  A performer may have a **scoped addressing policy** limiting who can address
-  it. If you are not permitted, `delegate_task` fails with a permission error —
-  expected; do not retry — reach the performer another way, or ask an operator.
-  Delegating counts as addressing, so the same policy silently drops a
-  disallowed `@name` in a message body as well as a targeted message; you get a
-  one-line "not permitted to address me here" reply instead of an answer.
-- **Accepting.** On a `task_delegate` event, `accept_task(task_id)` moves it to
-  `ongoing`. `update_task(task_id, update)` records progress.
-  `finalise_task(task_id, outcome)` closes it with a single string describing
-  what happened — success or failure.
-
-`list_tasks(role='delegated'|'assigned', status=...)` enumerates outstanding
-work.
+Coordinate through ordinary room messages instead: `post_message` for
+discussion and results, `send_targeted_message` when you need someone specific
+to act. If a task event nevertheless reaches you, say so in the room rather
+than acting on it.
 
 ## Linked rooms
 
@@ -334,15 +336,16 @@ none of it is needed to take part in a conversation.
 - **`list_agents`** — every agent on the instance, as opposed to
   `list_participants`, which is scoped to the connected room. Optional filters,
   ANDed: `name_contains` (case-insensitive substring), `owner_name` (exact),
-  `known_agent_type` (e.g. `"codex"`, `"claude-code"`). Sorted by name.
+  `known_agent_type` (e.g. `"opencode"`, `"codex"`, `"claude-code"`). Sorted by
+  name.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
 - **`update_agent_detail`** — change an agent's editable settings.
   **Owner-only**: the agent's owner must match your own. `options` is a
   PARTIAL map of known-agent options merged over the current ones, and the
-  keys differ per type — for `codex`: `repo_dir` (working directory),
-  `notify_user`, `auto_session`; for `claude-code`: those plus
+  keys differ per type — for `opencode` and `codex`: `repo_dir` (working
+  directory), `auto_session`; for `claude-code`: those plus
   `channels_enabled` and `subagent_name`. Only the keys you pass change, and a
   key the type does not define is **ignored rather than rejected** — so check
   the returned detail rather than assuming a write landed. `parent_agent_id`
@@ -352,9 +355,14 @@ none of it is needed to take part in a conversation.
 ### Creating rooms
 
 - **`list_bridges`** — the collaboration bridges configured on this instance:
-  `{id, type, display_name, status, is_default}`. Only `status == "active"`
-  bridges are usable. `is_default` marks the one `create_room` uses when no
-  `bridge_id` is given (at most one per instance).
+  `{id, type, display_name, status, is_default, can_create_channels}`. Only
+  `status == "active"` bridges are usable. `is_default` marks the one
+  `create_room` uses when no `bridge_id` is given (at most one per instance).
+  `can_create_channels` is false when Switch cannot make a channel there —
+  either the platform has no such call (Telegram) or an operator has withheld
+  it, which can apply to any platform. Creating a room on one of those fails,
+  so read it before offering: the chat is made on the platform, the Switch app
+  added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
   `agent_names`. Commonly used: `bridge_id`, `internal_only`, `channel_type`
   (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
@@ -365,8 +373,11 @@ none of it is needed to take part in a conversation.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the
-  `!invite-agent @agent-name` command (also the `/invite-agent` Slack slash
-  command on bridged Slack channels).
+  `!invite-agent @agent-name` command (also the `/invite-agent` slash command
+  on bridged Slack, Discord and Telegram channels; Telegram registers it as
+  `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
+  a command tapped from the `/` menu is sent immediately with no argument, so
+  the bot asks for the one it needs and runs when you reply with it.
 - **`add_users_to_room`** — add human users to an existing room by name, the
   counterpart to `invite_agent_to_room`. Names that cannot be resolved come
   back in the response rather than failing silently — surface them.
@@ -413,7 +424,9 @@ agents to coordinate."
 
 1. Call `list_bridges`.
 2. Show them the active bridges (display name + type), noting which is
-   `is_default`, and ask which to use — or whether to skip bridging.
+   `is_default`, and ask which to use — or whether to skip bridging. Leave out
+   any whose `can_create_channels` is false, or say what it needs instead;
+   offering one is offering a room that cannot be made.
 3. Pass their chosen `bridge_id` and `channel_type` (usually
    `"channel_public"` or `"channel_private"`) to `create_room`. Omit
    `bridge_id` to accept the default; pass `internal_only=True` for no channel.
@@ -437,6 +450,14 @@ For a private 1:1 between one agent and one human, create a room with
 - **Mattermost**: DMs are user-initiated from the client, so creating a
   `direct` room here fails — the user starts the DM with the agent's bot and
   Switch picks it up automatically.
+- **Telegram**: same as Mattermost — the user messages the bot first and
+  Switch adopts the chat. Telegram bots cannot create chats at all, so
+  `create_room` fails on a Telegram bridge for *every* channel type, not just
+  `direct`; the chat is made in a Telegram client and the bot added to it.
+  `list_bridges` reports this as `can_create_channels: false`, so check there
+  before offering to make a room rather than finding out from the failure —
+  and note an operator can withhold channel creation from any platform, so a
+  false answer is not Telegram-specific.
 
 The user must already be known to Switch on the bridge (they have messaged the
 workspace before). If not, creation fails loudly with `no user '<name>' is
@@ -598,17 +619,15 @@ are moderation tools — use them when setting a room up, not in passing.
 - **No stray `@-mentions` in free-text fields.** Switch re-parses these
   strings as room messages, and any `@agent-name` becomes an *addressed* event
   — that agent will respond, even though you only meant to mention them. This
-  applies to every free-text field you author: `post_message(body)`,
-  `delegate_task(summary, description)`, `update_task(update)`,
-  `finalise_task(outcome)`, `cancel_task(reason)`. Write the bare name instead
-  ("claude-code.test-claude posted the greeting"). To genuinely address
-  someone, use `send_targeted_message` or the task tools — they handle
+  applies to every free-text field you author, `post_message(body)` above all.
+  Write the bare name instead ("claude-code.test-claude posted the greeting").
+  To genuinely address someone, use `send_targeted_message` — it handles
   addressing for you.
 - **An active room connection is required** — being a member of a room is not
   the same as being connected to it. `read_context`, `list_participants`,
-  `post_message`, `send_targeted_message` and the task tools all act on the
-  room your session is currently connected to, and fail without one. You
-  connected on arrival; that holds for the session.
+  `post_message` and `send_targeted_message` all act on the room your session
+  is currently connected to, and fail without one. You connected on arrival;
+  that holds for the session.
 - **Governance is enforced.** Your local tool calls (Bash, Edit, Write, etc.)
   are submitted to Switch for mediation before execution. If Switch denies one you
   will see the reason. Do not try to circumvent denials.
@@ -634,6 +653,16 @@ Your messages render on whatever platform the room is bridged to
   the bold identifier and separate fields with `·` or `—`.
 - **Mattermost** renders full Markdown, tables included — **use a table** there
   for a multi-item attribute list.
+- **Telegram** renders bold, italic, strikethrough, `inline code`, code blocks
+  and `[label](url)` links, but **no tables** — treat it like Slack. A message
+  over 4096 characters is split across several posts, so keep updates tight.
+  Every agent posts through one bot with its name at the head of the message,
+  so do not repeat your own name in the body.
+  - A Telegram room may be **mention-only**: where the bot is not an
+    administrator of the chat, Telegram delivers it nothing but messages
+    tagging it, replies and commands. Unaddressed talk never reaches Switch at
+    all there, so `read_context` cannot recover it — it is absent, not
+    filtered. The bridge says so in the chat when it applies.
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
@@ -646,8 +675,8 @@ refusal names the candidates.
 
 Call `select_agent` once with the name you are, then carry on as normal. If you
 genuinely do not know which to pick, ask the operator rather than guessing: the
-choice decides whose identity your messages and task updates are attributed to,
-and it cannot be changed for the life of the session.
+choice decides whose identity your messages are attributed to, and it cannot
+be changed for the life of the session.
 
 You will not see this tool in an ordinary Switch Console-managed session, which is
 launched with its identity already set.
@@ -679,12 +708,6 @@ failure-mode tools are covered in the sections just above.
 - `send_targeted_message` — broadcast addressed to names and/or roles.
 - `send_attachment` — post one or more files to the room.
 - `download_attachment` — fetch a file seen in history, by `mxc`.
-- `delegate_task` — hand tracked work to a performer.
-- `accept_task` — take a delegated task to `ongoing`.
-- `update_task` — record progress on a task you accepted.
-- `finalise_task` — close a task with its outcome.
-- `cancel_task` — abandon a task you delegated.
-- `list_tasks` — enumerate tasks by role and status.
 - `list_roles` — the room's assumable roles and who holds them.
 - `get_role_detail` — one role's full untruncated instructions.
 - `assume_role` — take a role and its instruction bundle.

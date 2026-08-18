@@ -40,8 +40,6 @@ export class SwitchServersStore {
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
   error: string | null = null;
-  /** Whether the sidebar "Servers" section is expanded. */
-  serversExpanded = true;
 
   constructor() {
     makeAutoObservable(this);
@@ -57,10 +55,6 @@ export class SwitchServersStore {
 
   get activeServer(): SwitchServer | null {
     return this.servers.find((s) => s.id === this.activeServerId) ?? null;
-  }
-
-  toggleServersExpanded(): void {
-    this.serversExpanded = !this.serversExpanded;
   }
 
   statusFor(serverId: string): ServerConnectionStatus | null {
@@ -94,11 +88,7 @@ export class SwitchServersStore {
         this.servers = servers;
         this.activeServerId = activeServerId;
       });
-      // The sidebar scopes its whole view to the active server, so one must
-      // always be selected when any server exists. Default to the first.
-      if (!this.activeServerId && servers.length > 0) {
-        await this.setActive(servers[0].id);
-      }
+      await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
       this.setError(cause);
@@ -107,6 +97,23 @@ export class SwitchServersStore {
         this.loadingServers = false;
       });
     }
+  }
+
+  /**
+   * A server is a workspace: the switcher, the sidebar and the sessions under
+   * it all read the active one, so one must be selected whenever any server
+   * exists. Nothing on the main side picks it — adding the first server leaves
+   * the active id null — so every path that changes the list ends here.
+   *
+   * A stored id that no longer names a server counts as no selection. It is not
+   * hypothetical: removing the active server and adding another leaves the id
+   * pointing at the removed one, and treating that as a selection left the app
+   * with no workspace at all — no switcher, no sidebar tree, no way back.
+   */
+  private async ensureActiveServer(): Promise<void> {
+    if (this.activeServerId && this.servers.some((s) => s.id === this.activeServerId)) return;
+    const first = this.servers[0];
+    if (first) await this.setActive(first.id);
   }
 
   async refreshAllStatuses(): Promise<void> {
@@ -223,6 +230,7 @@ export class SwitchServersStore {
         this.servers = servers;
         this.activeServerId = activeServerId;
       });
+      await this.ensureActiveServer();
       await this.refreshStatus(created.id);
       return created;
     } catch (cause) {
@@ -311,10 +319,7 @@ export class SwitchServersStore {
         this.authConfigWanted.delete(serverId);
         this.unreachable.delete(serverId);
       });
-      // Keep a server scoped when any remain (the sidebar scopes to it).
-      if (!this.activeServerId && servers.length > 0) {
-        await this.setActive(servers[0].id);
-      }
+      await this.ensureActiveServer();
     } catch (cause) {
       this.setError(cause);
     }

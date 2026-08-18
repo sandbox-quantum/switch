@@ -1,10 +1,13 @@
-import { ChevronDown, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
+import { useRemoteAgents } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import {
   Combobox,
@@ -13,7 +16,6 @@ import {
   ComboboxInput,
   ComboboxItem,
   ComboboxList,
-  ComboboxTrigger,
 } from '@renderer/lib/ui/combobox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -23,12 +25,16 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
-import { cn } from '@renderer/utils/utils';
 
 type Props = BaseModalProps<void> & { roomId: string };
 
 /** An agent that can be added: this install's agent, by its Switch identity. */
-type Candidate = { id: string; name: string };
+type Candidate = {
+  id: string;
+  name: string;
+  providerId: string | null;
+  iconUrl: string | null;
+};
 
 export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   roomId,
@@ -48,13 +54,22 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   // offer have to be the same two sets the tree uses, or the picker and the
   // sidebar can disagree about who is already in the room.
   const members = new Set(switchRoomsStore.localMemberIds(roomId));
+  // The agents' own icons live on the server, not in the local row, so the
+  // list is joined against the server's summary to draw them.
+  const { data: remoteAgents } = useRemoteAgents(serverId);
+  const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
   // Only this install's agents are offered. An agent registered on another
   // Switch Console could be added server-side but could never be shown or driven
   // from here, so it is not ours to offer.
   const candidates: Candidate[] = serverId
     ? agentsStore
         .agentsOnServer(serverId)
-        .map((agent) => ({ id: agent.switchAgentId as string, name: agent.name }))
+        .map((agent) => ({
+          id: agent.switchAgentId as string,
+          name: agent.name,
+          providerId: agent.providerId ?? null,
+          iconUrl: remoteById.get(agent.switchAgentId as string)?.iconUrl ?? null,
+        }))
         .filter((a) => !members.has(a.id) && !selected.some((s) => s.id === a.id))
     : [];
   const nothingToAdd = candidates.length === 0 && selected.length === 0;
@@ -94,7 +109,27 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
           )}
 
           <Field>
-            <FieldLabel>Agents</FieldLabel>
+            <div className="flex items-center justify-between gap-3">
+              <FieldLabel>Agents</FieldLabel>
+              {selected.length > 0 && (
+                <span className="text-sm text-foreground-muted">{selected.length} selected</span>
+              )}
+            </div>
+
+            {selected.length > 0 && (
+              <div className="grid grid-cols-3 gap-2.5">
+                {selected.map((agent) => (
+                  <ChosenAgentTile
+                    key={agent.id}
+                    agent={agent}
+                    onRemove={() =>
+                      setSelected((current) => current.filter((a) => a.id !== agent.id))
+                    }
+                  />
+                ))}
+              </div>
+            )}
+
             <Combobox
               items={candidates}
               value={null}
@@ -108,52 +143,30 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
               }
               autoHighlight
             >
-              <ComboboxTrigger
+              {/* The search box is the control rather than something a button
+                  has to open: putting several agents in a room at once is the
+                  reason this dialog exists. */}
+              <ComboboxInput
+                showTrigger={false}
                 disabled={nothingToAdd}
-                className={cn(
-                  'flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none',
-                  nothingToAdd && 'cursor-not-allowed opacity-60'
-                )}
-              >
-                <span className="flex-1 truncate text-left text-foreground-muted">
-                  Add an agent
-                </span>
-                <ChevronDown className="size-3.5 shrink-0 text-foreground-muted" />
-              </ComboboxTrigger>
+                placeholder="Search agents to add..."
+                leftAddon={<Search className="size-3.5 text-foreground-muted" />}
+              />
               <ComboboxContent className="min-w-(--anchor-width)">
-                <ComboboxInput showTrigger={false} placeholder="Search agents…" />
                 <ComboboxList>
                   {(item: Candidate) => (
-                    <ComboboxItem key={item.id} value={item}>
+                    <ComboboxItem key={item.id} value={item} showCheck={false}>
+                      <AgentAvatar name={item.name} iconUrl={item.iconUrl} size={22} />
                       <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                      <span className="shrink-0 text-xs text-foreground-muted">
+                        {agentProviderLabel(item.providerId)}
+                      </span>
                     </ComboboxItem>
                   )}
                 </ComboboxList>
                 <ComboboxEmpty>No agents found</ComboboxEmpty>
               </ComboboxContent>
             </Combobox>
-            {selected.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {selected.map((agent) => (
-                  <span
-                    key={agent.id}
-                    className="flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs"
-                  >
-                    {agent.name}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${agent.name}`}
-                      className="text-foreground-muted hover:text-foreground"
-                      onClick={() =>
-                        setSelected((current) => current.filter((a) => a.id !== agent.id))
-                      }
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
             {nothingToAdd && (
               <p className="mt-1 text-xs text-foreground-muted">
                 Every agent on this copy of Switch Console is already in the room. Agents registered
@@ -179,3 +192,29 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
     </>
   );
 });
+
+/** An agent already chosen, with the way to take it back out. */
+function ChosenAgentTile({ agent, onRemove }: { agent: Candidate; onRemove: () => void }) {
+  return (
+    // `--fill` rather than `--surface-2`: in dark mode that surface is the
+    // dialog's own background, so a tile drawn in it was a tile nobody could
+    // see.
+    <div className="group relative flex flex-col gap-2 rounded-[10px] bg-[var(--fill)] p-3">
+      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} size={26} />
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate text-sm text-foreground">{agent.name}</span>
+        <span className="truncate text-xs text-foreground-muted">
+          {agentProviderLabel(agent.providerId)}
+        </span>
+      </div>
+      <button
+        type="button"
+        aria-label={`Remove ${agent.name}`}
+        onClick={onRemove}
+        className="absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-md text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--fill-2)] hover:text-foreground focus-visible:opacity-100"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+}

@@ -36,7 +36,8 @@ import {
  * bound; the launcher polls that file until a line from the incarnation it just
  * started appears, then returns the endpoint so the caller can point its remote
  * sessions' hook env at the VM-local server. The ready line also carries the
- * sidecar's `version` (human-readable `x.y`) and build `hash`.
+ * sidecar's `version` (human-readable `x.y`), its build `hash`, and the
+ * `deployer` identity of the install that started it.
  *
  * Replacing a running sidecar is serialised across clients by a host-side deploy
  * lock: two clients deploying at once would overwrite the bundle under each
@@ -65,6 +66,10 @@ export interface SidecarLaunchConfig {
    * id — so the sidecar reads `.switch/agents/<slug>.json` for this agent's Switch
    * identity rather than the legacy shared settings file (CHOO-1440). */
   credsSlug: string;
+  /** This Switch Console install's deployer identity, stamped on whatever sidecar
+   * it starts so another install can tell that build apart from its own without
+   * relying on the version string. */
+  deployerId: string;
 }
 
 export interface SidecarEndpoint {
@@ -95,6 +100,9 @@ interface ReadyLine {
   contract: ContractRange | null;
   /** OS process id of the running sidecar, for display. Absent from an older one. */
   pid: number | null;
+  /** Which Switch Console install deployed this sidecar. Null for one deployed
+   * before installs identified themselves, which means *unknown* — never "mine". */
+  deployer: string | null;
 }
 
 /**
@@ -115,6 +123,9 @@ export interface SidecarRunStatus {
   contract: ContractRange | null;
   epoch: number | null;
   pid: number | null;
+  /** The install that deployed it, or null when it predates deployer identity.
+   * Null must read as unknown, never as this install. */
+  deployerId: string | null;
   /** Sessions the running sidecar currently owns, from its durable state. */
   liveSessions: number;
 }
@@ -136,6 +147,7 @@ function sidecarEnv(config: SidecarLaunchConfig): Record<string, string> {
     SWITCHDASH_SIDECAR_REPO_DIR: config.repoDir,
     SWITCHDASH_SIDECAR_DEEPLINK_SCHEME: config.deeplinkScheme,
     SWITCHDASH_SIDECAR_AGENT_SLUG: config.credsSlug,
+    SWITCHDASH_SIDECAR_DEPLOYER_ID: config.deployerId,
   };
 }
 
@@ -167,6 +179,10 @@ function parseReady(raw: string): ReadyLine | null {
     const version =
       'version' in parsed && typeof parsed.version === 'string' ? parsed.version : null;
     const pid = 'pid' in parsed && typeof parsed.pid === 'number' ? parsed.pid : null;
+    const deployer =
+      'deployer' in parsed && typeof parsed.deployer === 'string' && parsed.deployer
+        ? parsed.deployer
+        : null;
     return {
       port: parsed.port,
       token: parsed.token,
@@ -175,6 +191,7 @@ function parseReady(raw: string): ReadyLine | null {
       version,
       contract: parseContract(parsed),
       pid,
+      deployer,
     };
   }
   return null;
@@ -561,6 +578,7 @@ export class RemoteSidecarLauncher {
         contract: null,
         epoch: null,
         pid: null,
+        deployerId: null,
         liveSessions: 0,
       };
     }
@@ -572,6 +590,7 @@ export class RemoteSidecarLauncher {
       contract: ready.contract,
       epoch: ready.epoch,
       pid: ready.pid,
+      deployerId: ready.deployer,
       liveSessions: await this.runningSessionCount(),
     };
   }
@@ -580,6 +599,12 @@ export class RemoteSidecarLauncher {
    * `readStatus().hash`. */
   localBundleHash(): Promise<string> {
     return this.hashBundle();
+  }
+
+  /** This install's deployer identity, for the caller to compare against
+   * `readStatus().deployerId`. */
+  localDeployerId(): string {
+    return this.config.deployerId;
   }
 
   async probeExisting(): Promise<SidecarEndpoint | null> {
@@ -605,6 +630,8 @@ export class RemoteSidecarLauncher {
    *  - same build → reattach; there is nothing to gain.
    *  - newer version → reattach; a newer Switch Console deployed it, and replacing
    *    it would be a downgrade.
+   *  - same version, another install's build → reattach; neither of us can claim
+   *    to be the upgrade, so whoever got there first keeps it.
    *  - different build, no live sessions → upgrade, since nothing is disturbed.
    *  - different build, live sessions → reattach and record that an upgrade is
    *    pending, rather than interrupting work in flight for a build difference.
@@ -636,6 +663,34 @@ export class RemoteSidecarLauncher {
         runningVersion: ready.version,
         clientVersion: SIDECAR_VERSION,
       });
+      return this.toEndpoint(ready);
+    }
+
+    // Version ordering has nothing left to say once the versions are equal, and
+    // that is the everyday case for two dev builds of one release: each install
+    // reads the other's hash as an upgrade and they trade the sidecar back and
+    // forth for as long as both are open. So when the build on the host is
+    // another install's, yield to it — whoever deployed first keeps it, and the
+    // operator's Restart is the way to take it over deliberately.
+    //
+    // Only ever replaces LESS than before: an older version is still replaced,
+    // and an unidentified sidecar (deployed before this, or by our own install)
+    // still is, so a single deploy ends the trading rather than nothing ever
+    // being upgraded again.
+    if (
+      ready.deployer !== null &&
+      ready.deployer !== this.config.deployerId &&
+      compareSidecarVersions(ready.version, SIDECAR_VERSION) === 0
+    ) {
+      this.log.debug(
+        'RemoteSidecarLauncher: another install deployed this sidecar at the same version — leaving it in place',
+        {
+          sidecarTmuxName: this.sidecarTmuxName,
+          version: ready.version,
+          runningHash: ready.hash,
+          localHash,
+        }
+      );
       return this.toEndpoint(ready);
     }
 

@@ -7,7 +7,6 @@ import {
   TERMINAL_SHELL_IDS,
 } from '@shared/core/terminals/terminal-settings';
 import { openInAppIdSchema } from '@shared/openInApps';
-import { APP_SHORTCUTS } from '@shared/shortcuts';
 import { DEFAULT_AGENT_ID } from './settings-registry';
 
 export const locationSettingsSchema = z.object({
@@ -24,16 +23,13 @@ export const notificationSettingsSchema = z.object({
   enabled: z.boolean(),
   sound: z.boolean(),
   customSoundPath: z.string(),
-  osNotifications: z.boolean(),
   soundFocusMode: z.enum(['always', 'unfocused']),
 });
 
 export const sessionSettingsSchema = z.object({
   autoGenerateName: z.boolean(),
   autoTrustWorktrees: z.boolean(),
-  createBranchAndWorktree: z.boolean(),
   preserveNameCapitalization: z.boolean(),
-  includeIssueContextByDefault: z.boolean(),
 });
 
 export const terminalSettingsSchema = z.object({
@@ -53,16 +49,6 @@ export const themeSchema = z
 
 export const defaultAgentSchema = z.optional(z.enum(AGENT_PROVIDER_IDS)).default(DEFAULT_AGENT_ID);
 
-export const keyboardSettingsSchema = z
-  .optional(
-    z.object(
-      Object.fromEntries(
-        Object.keys(APP_SHORTCUTS).map((k) => [k, z.string().nullable().optional()])
-      ) as Record<keyof typeof APP_SHORTCUTS, z.ZodOptional<z.ZodNullable<z.ZodString>>>
-    )
-  )
-  .default({});
-
 /**
  * Per-provider execution settings stored as host-agnostic overrides.
  * Installation source/path/cli overrides are now stored host-specifically
@@ -78,11 +64,6 @@ export const providerConfigDefaults: Record<string, unknown> = {};
 export const interfaceSettingsSchema = z.object({
   sessionHoverAction: z.enum(['delete', 'archive']),
   autoRightSidebarBehavior: z.boolean(),
-  showLeftSidebarLineChanges: z.boolean(),
-  showLeftSidebarPrStatus: z.boolean(),
-  showLeftSidebarTimestamps: z.boolean(),
-  confirmTabClose: z.boolean(),
-  hideContextBar: z.boolean(),
 });
 
 export const changesViewModeSchema = z.object({
@@ -121,8 +102,6 @@ export const browserSettingsSchema = z
       settings.profiles.some((profile) => profile.id === settings.defaultProfileId)
   );
 
-export const resourceMonitorSettingsSchema = z.object({ enabled: z.boolean() });
-
 /**
  * Whether the user lets the app send anonymous usage data, and when they were
  * asked.
@@ -154,7 +133,18 @@ export const remoteSettingsSchema = z.object({
 
 export const openInSettingsSchema = z.object({
   default: openInAppIdSchema,
-  hidden: z.array(openInAppIdSchema),
+});
+
+/**
+ * Whether the first-run setup checklist is shown (CHOO-2022).
+ *
+ * Dismissing the checklist with its ✕ clears this, and the Settings toggle is
+ * the way back — a dismissal that could not be undone would make the checklist
+ * a one-shot, which is the wrong shape for something a user may dismiss before
+ * they know what it was.
+ */
+export const onboardingSettingsSchema = z.object({
+  showChecklist: z.boolean(),
 });
 
 export const APP_SETTINGS_SCHEMA_MAP = {
@@ -162,7 +152,6 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   defaultAgent: defaultAgentSchema,
-  keyboard: keyboardSettingsSchema,
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
@@ -170,9 +159,9 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   terminal: terminalSettingsSchema,
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
-  resourceMonitor: resourceMonitorSettingsSchema,
   changesViewMode: changesViewModeSchema,
   remote: remoteSettingsSchema,
+  onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 } as const;
 
@@ -181,7 +170,6 @@ export const appSettingsSchema = z.object({
   location: locationSettingsSchema,
   sessions: sessionSettingsSchema,
   defaultAgent: defaultAgentSchema,
-  keyboard: keyboardSettingsSchema,
   notifications: notificationSettingsSchema,
   theme: themeSchema,
   openIn: openInSettingsSchema,
@@ -189,8 +177,8 @@ export const appSettingsSchema = z.object({
   terminal: terminalSettingsSchema,
   browserPreview: browserPreviewSettingsSchema,
   browser: browserSettingsSchema,
-  resourceMonitor: resourceMonitorSettingsSchema,
   changesViewMode: changesViewModeSchema,
   remote: remoteSettingsSchema,
+  onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 });

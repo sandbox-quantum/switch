@@ -61,15 +61,23 @@ async function paramsForAgent(agent: Agent): Promise<AgentSidecarParams> {
  */
 async function readAndBroadcast(agentId: string): Promise<AgentSidecarStatus> {
   const { agent, sshHost, repoDir, credsSlug } = await requireRemoteAgent(agentId);
-  const { status, clientHash } = await readAgentSidecarStatus(await paramsForAgent(agent));
+  const { status, clientHash, clientDeployerId } = await readAgentSidecarStatus(
+    await paramsForAgent(agent)
+  );
   const full: AgentSidecarStatus = {
     agentId,
     running: status.running,
-    verdict: verdictFor(status, clientHash, SIDECAR_VERSION),
+    verdict: verdictFor(status, {
+      hash: clientHash,
+      version: SIDECAR_VERSION,
+      deployerId: clientDeployerId,
+    }),
     clientHash,
     clientVersion: SIDECAR_VERSION,
+    clientDeployerId,
     deployedHash: status.hash,
     deployedVersion: status.version,
+    deployedBy: status.deployerId,
     epoch: status.epoch,
     pid: status.pid,
     liveSessions: status.liveSessions,

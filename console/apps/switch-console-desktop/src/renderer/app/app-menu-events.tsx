@@ -6,7 +6,6 @@ import { toggleSettingsView } from '@renderer/lib/layout/settings-toggle';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import {
-  menuGiveFeedbackChannel,
   menuOpenSettingsChannel,
   menuQuitRequestedChannel,
   notificationFocusSessionChannel,
@@ -17,7 +16,6 @@ export function AppMenuEvents({ onOpenSettings }: { onOpenSettings?: () => boole
   const { navigate } = useNavigate();
   const { currentView, lastNonSettingsView } = useWorkspaceSlots();
   const showConfirmQuitModal = useShowModal('confirmActionModal');
-  const showFeedbackModal = useShowModal('feedbackModal');
 
   useEffect(() => {
     return events.on(menuOpenSettingsChannel, () => {
@@ -42,12 +40,6 @@ export function AppMenuEvents({ onOpenSettings }: { onOpenSettings?: () => boole
       });
     });
   }, [showConfirmQuitModal]);
-
-  useEffect(() => {
-    return events.on(menuGiveFeedbackChannel, () => {
-      showFeedbackModal({});
-    });
-  }, [showFeedbackModal]);
 
   useEffect(() => {
     return events.on(browserLinkCopiedChannel, ({ kind }) => {

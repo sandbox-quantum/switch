@@ -3,7 +3,6 @@ import { events } from '@main/lib/events';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import {
   menuCheckForUpdatesChannel,
-  menuGiveFeedbackChannel,
   menuOpenSettingsChannel,
   menuQuitRequestedChannel,
   menuRedoChannel,
@@ -183,10 +182,6 @@ export function setupApplicationMenu(): void {
               click: copyVersionInfo,
             },
           ],
-        },
-        {
-          label: 'Give Feedback',
-          click: () => events.emit(menuGiveFeedbackChannel, undefined),
         },
       ],
     },

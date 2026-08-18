@@ -206,10 +206,11 @@ export function agentTypeBadge(row: AgentTypeRow): BadgeSpec {
   if (row.plugin && row.plugin.state !== 'satisfied') {
     return { tone: 'warning', label: 'Switch setup required' };
   }
-  // Either half being out of date is worth saying, and the row states one
-  // question — is this usable, and is it current?
-  if (row.cli.updateAvailable || row.plugin?.updateAvailable) {
-    return { tone: 'warning', label: 'Update available' };
+  // Only the connector. A newer release of the agent's own CLI changes nothing
+  // about whether the agent works here, and reporting it in place of
+  // "Installed" made a working host look like it needed attention.
+  if (row.plugin?.updateAvailable) {
+    return { tone: 'warning', label: 'Connector update' };
   }
   return { tone: 'success', label: 'Installed' };
 }

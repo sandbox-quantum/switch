@@ -1,6 +1,16 @@
-import type { PluginFs, SwitchLaunchSpecialization } from '@switch-console/core/agents/plugins';
+import type {
+  PluginFs,
+  PluginScope,
+  SwitchLaunchSpecialization,
+} from '@switch-console/core/agents/plugins';
+import {
+  LAUNCH_PROFILE_HOME_PLACEHOLDER,
+  resolveLaunchProfileEnv,
+  resolveLaunchProfileHome,
+} from '@switch-console/core/agents/plugins';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
+import type { PreparedLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { resolveAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
 import type { AttachableRuntime } from '@main/core/agent-runtime/attachment/types';
@@ -21,6 +31,7 @@ import { getTerminalColorEnv } from '@main/core/pty/terminal-color-scheme';
 import { killTmuxSession, makeAgentTmuxSessionName } from '@main/core/pty/tmux-session-name';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
+import { resolveRemoteHome } from '@main/core/ssh/lifecycle/remote-shell-profile';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credentials';
 import { events } from '@main/lib/events';
@@ -298,16 +309,38 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     const plugin = getPlugin(providerId);
     const hooks = plugin.capabilities.hooks;
     if (hooks.kind === 'none') return;
-    if (hooks.kind !== 'config' || !plugin.behavior.hooks) {
+
+    const fs = this.remoteHookFs(hooks.scope);
+    // Both delivery mechanisms, not just config files. A provider whose hooks
+    // ride a dropped plugin (OpenCode) would otherwise run on the host with
+    // nothing installed — no session id captured, and a "working on it" that
+    // never clears.
+    let install: (() => Promise<unknown>) | null = null;
+    // Null unless a config write actually resolved it: the hook commands are
+    // built for the VM's platform, and a provider whose hooks ride a dropped
+    // plugin never needs it, so it is not worth a round-trip to the host.
+    let resolvedPlatform: NodeJS.Platform | null = null;
+    if (hooks.kind === 'config' && plugin.behavior.hooks) {
+      const writeHooks = plugin.behavior.hooks.writeHooks;
+      install = async () => {
+        resolvedPlatform = await remoteNodePlatform(this.connectionId, this.ctx);
+        return writeHooks(fs, [], { platform: resolvedPlatform });
+      };
+    } else if (hooks.kind === 'plugin' && plugin.behavior.plugins) {
+      const installPlugin = plugin.behavior.plugins.installPlugin;
+      const scope: PluginScope =
+        hooks.scope === 'global'
+          ? { kind: 'global' }
+          : { kind: 'workspace', path: this.sessionPath };
+      install = () => installPlugin(fs, scope);
+    }
+    if (!install) {
       log.error('SshAgentRuntime: provider hooks cannot be installed on a remote host', {
         providerId,
         kind: hooks.kind,
       });
       return;
     }
-    const writeHooks = plugin.behavior.hooks.writeHooks;
-    const fs = this.remoteHookFs(hooks.scope);
-    const platform = await remoteNodePlatform(this.connectionId, this.ctx);
     // A global-scope write targets the VM's home, so it is shared by every dir
     // on the host; keying it on the dir would let one write per dir through.
     const scopeKey = hooks.scope === 'global' ? '~' : this.sessionPath;
@@ -315,12 +348,12 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       await dedupeInFlight(
         remoteHookInstallsInFlight,
         `${this.connectionId}::${scopeKey}::${providerId}`,
-        () => writeHooks(fs, [], { platform })
+        install
       );
       log.info('SshAgentRuntime: installed remote agent hooks', {
         providerId,
         scope: hooks.scope,
-        platform,
+        platform: resolvedPlatform,
       });
     } catch (error) {
       log.error('SshAgentRuntime: failed to install remote agent hooks', {
@@ -334,25 +367,39 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
   /**
    * Write the per-agent launch files of a provider that needs them under the
    * VM's home (Codex: a profile carrying model / effort / instructions).
-   * Returns the argv that loads them, or `[]` when there is nothing to write.
+   * Returns the argv and environment that load them, both empty when there is
+   * nothing to write.
+   *
+   * The VM's home is resolved only when the profile has env to place it in: the
+   * files themselves are written through a home-rooted fs that expands `$HOME`
+   * on the far side, so the common case still costs no extra round trip.
    */
   private async writeRemoteLaunchProfile(
     plugin: ReturnType<typeof getPlugin>,
     slug: string,
     specialization: SwitchLaunchSpecialization | undefined
-  ): Promise<string[]> {
+  ): Promise<PreparedLaunchProfile> {
     const profile = resolveAgentLaunchProfile(plugin, {
       slug,
       workingDir: this.sessionPath,
       specialization,
     });
-    if (!profile) return [];
+    if (!profile) return { args: [], env: {} };
+
+    // Only resolved when something actually carries the placeholder: the files
+    // are written through a home-rooted fs that expands `$HOME` on the far side,
+    // so a profile that needs no absolute path costs no extra round trip.
+    const needsHome =
+      profile.env !== undefined ||
+      profile.files.some((file) => file.content.includes(LAUNCH_PROFILE_HOME_PLACEHOLDER));
+    const homeDir = needsHome ? await resolveRemoteHome(this.ctx) : '';
 
     const homeFs = createRemoteHomePluginFs(this.ctx);
     for (const file of profile.files) {
-      await homeFs.write(file.relativePath, file.content);
+      await homeFs.write(file.relativePath, resolveLaunchProfileHome(file.content, homeDir));
     }
-    return profile.args;
+
+    return { args: profile.args, env: resolveLaunchProfileEnv(profile.env, homeDir) };
   }
 
   private async launchSidecar(session: Session): Promise<SidecarEndpoint> {
@@ -674,7 +721,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       // Codex writes a profile under the VM's ~/.codex for model / effort /
       // instructions. The Switch MCP server comes from the connector plugin's
       // own `.mcp.json`, on the VM as locally.
-      const launchProfileArgs = await this.writeRemoteLaunchProfile(
+      const launchProfile = await this.writeRemoteLaunchProfile(
         plugin,
         agentCredsSlug(session),
         toSwitchSpecialization(agentRecord?.providerConfig)
@@ -692,7 +739,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...launchProfileArgs,
+          ...launchProfile.args,
         ],
         autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
@@ -703,7 +750,11 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       });
 
       const customEnv = providerConfig?.env ?? {};
-      const providerEnv: Record<string, string> = { ...agentCommand.env, ...customEnv };
+      const providerEnv: Record<string, string> = {
+        ...agentCommand.env,
+        ...launchProfile.env,
+        ...customEnv,
+      };
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 
@@ -858,6 +909,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
     } catch (error) {
       this.supervisor.failSpawn(spawnToken);

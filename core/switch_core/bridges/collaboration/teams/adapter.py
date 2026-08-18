@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -22,6 +23,7 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     ChannelType,
+    DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -391,13 +393,16 @@ class TeamsAdapter(CollaborationAdapter):
     def _thread_conversation(channel_id: str, root_id: str) -> str:
         return f"{channel_id};messageid={root_id}"
 
-    def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
+    async def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
+        icon_url = await self.agent_icon_url(sender_name)
         return {
             "type": "message",
             # Notification/preview text; without it Teams renders a
             # "cards.unsupported" placeholder in toasts, mobile, and link previews.
             "summary": f"{sender_name}: {body}",
-            "attachments": [card_attachment(agent_message_card(sender_name, body))],
+            "attachments": [
+                card_attachment(agent_message_card(sender_name, body, icon_url))
+            ],
         }
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -413,7 +418,9 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Cannot send message: Teams adapter not started")
 
         service_url = self._service_url_for(channel_id)
-        activity = self._message_activity(sender_name, self.translate_outbound(content))
+        activity = await self._message_activity(
+            sender_name, self.translate_outbound(content)
+        )
 
         if self._is_channel(channel_id) and thread_root_id is None:
             conversation_id, msg_id = await self._connector.create_channel_thread(
@@ -537,10 +544,11 @@ class TeamsAdapter(CollaborationAdapter):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
         """Persistent status messages, mirroring Slack.
 
@@ -565,11 +573,14 @@ class TeamsAdapter(CollaborationAdapter):
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
                 self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                    message_ref=ref,
+                    body=body,
+                    thread_root_id=thread_root_id,
+                    started_at=time.monotonic(),
                 )
         elif state == "awaiting-input":
             ref = await self._ping_operator(
-                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -587,7 +598,7 @@ class TeamsAdapter(CollaborationAdapter):
             service_url=service_url,
             conversation_id=conversation_id,
             activity_id=message_ref,
-            activity=self._message_activity(agent_name, body),
+            activity=await self._message_activity(agent_name, body),
         )
 
     async def _clear_working(self, channel_id: str, agent_name: str) -> None:
@@ -676,6 +687,34 @@ class TeamsAdapter(CollaborationAdapter):
         )
         self._channel_type[channel_id] = resolved
         return resolved
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """Search the AAD directory for people to claim as an identity.
+
+        Teams identifies a message sender by AAD object id where one is
+        available, which is what Graph returns here, so a claim made from this
+        list matches what arrives on the inbound path.
+        """
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        term = query.strip()
+        if not term:
+            return []
+        users = await self._graph.search_users(query=term)
+        results = [
+            DirectoryUser(
+                external_user_id=str(user.get("id")),
+                username=str(user.get("userPrincipalName") or user.get("id") or ""),
+                display_name=str(
+                    user.get("displayName") or user.get("userPrincipalName") or ""
+                ),
+                email=user.get("mail") or user.get("userPrincipalName") or None,
+            )
+            for user in users
+            if user.get("id")
+        ]
+        results.sort(key=lambda u: u.display_name.lower())
+        return results
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
         """`https://teams.microsoft.com/l/channel/...` opening the channel in the

@@ -1,5 +1,4 @@
 import { useHotkey } from '@tanstack/react-hotkeys';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
   getEffectiveHotkey,
   getHotkeyRegistration,
@@ -11,14 +10,13 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 
 export function AppKeyboardShortcuts() {
-  const { value: keyboard } = useAppSettingsKey('keyboard');
   const showCommandPalette = useShowModal('commandPaletteModal');
   const { toggleLeft } = useWorkspaceLayoutContext();
   const { navigate } = useNavigate();
 
-  const commandPaletteHotkey = getEffectiveHotkey('commandPalette', keyboard);
-  const closeModalHotkey = getEffectiveHotkey('closeModal', keyboard);
-  const toggleLeftSidebarHotkey = getEffectiveHotkey('toggleLeftSidebar', keyboard);
+  const commandPaletteHotkey = getEffectiveHotkey('commandPalette');
+  const closeModalHotkey = getEffectiveHotkey('closeModal');
+  const toggleLeftSidebarHotkey = getEffectiveHotkey('toggleLeftSidebar');
 
   const { currentView, lastNonSettingsView } = useWorkspaceSlots();
   const { params: sessionParams } = useParams('session');
@@ -33,7 +31,7 @@ export function AppKeyboardShortcuts() {
   const currentSessionId = currentView === 'session' ? sessionParams.sessionId : undefined;
 
   useHotkey(
-    getHotkeyRegistration('commandPalette', keyboard),
+    getHotkeyRegistration('commandPalette'),
     () =>
       showCommandPalette({
         locationId: currentLocationId,
@@ -43,7 +41,7 @@ export function AppKeyboardShortcuts() {
   );
 
   useHotkey(
-    getHotkeyRegistration('closeModal', keyboard),
+    getHotkeyRegistration('closeModal'),
     () => {
       if (currentView === 'settings' && !modalStore.isOpen) {
         (navigate as (viewId: typeof lastNonSettingsView) => void)(lastNonSettingsView);
@@ -52,7 +50,7 @@ export function AppKeyboardShortcuts() {
     { enabled: currentView === 'settings' && closeModalHotkey !== null }
   );
 
-  useHotkey(getHotkeyRegistration('toggleLeftSidebar', keyboard), () => toggleLeft(), {
+  useHotkey(getHotkeyRegistration('toggleLeftSidebar'), () => toggleLeft(), {
     enabled: toggleLeftSidebarHotkey !== null,
   });
 

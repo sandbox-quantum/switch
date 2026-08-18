@@ -458,7 +458,15 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
 `addressed` is computed server-side: true for a `direct` channel, an `@name` or
 `@alias` mention, or an `@role` mention whose role this agent holds. The
 addressing policy is applied at this point — a mention from a sender not
-permitted to address this agent is demoted to unaddressed.
+permitted to address this agent is demoted to unaddressed, and the sender gets
+a one-shot reply saying so. This is where a refused *message* is refused —
+including one sent with `send_targeted_message`, which posts either way and
+reports `not_permitted` for that target. Only `delegate_task` refuses at the
+sender. Agents created in Switch Console are **owner-only** by default: only
+the Switch user who owns the agent may address it, which the owner can widen to
+every agent they own. A human is recognised as the owner only when they
+have claimed that messaging-app account as theirs; an unclaimed account never
+matches, and the reply says as much rather than leaving them guessing.
 
 Attachments carry a pointer, never bytes; fetch via the media endpoint.
 

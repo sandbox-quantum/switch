@@ -8,7 +8,7 @@ import {
   InstalledBadge,
   InstallingBadge,
   UninstalledBadge,
-  UpdateAvailableBadge,
+  ConnectorUpdateBadge,
   UpdatingBadge,
 } from './agent-status-badge';
 
@@ -45,7 +45,7 @@ export function SwitchSetupCard({ agentId }: { agentId: string }) {
   ) : !status.installed ? (
     <UninstalledBadge />
   ) : status.updateAvailable ? (
-    <UpdateAvailableBadge />
+    <ConnectorUpdateBadge />
   ) : (
     <InstalledBadge />
   );

@@ -305,7 +305,7 @@ describe('local agent runtime respawn state', () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
     vi.mocked(getAgentById).mockResolvedValueOnce({
-      providerConfig: { model: 'gpt-5.6-terra' },
+      providerConfig: { version: '2', providerId: 'codex', values: { model: 'gpt-5.6-terra' } },
     } as unknown as Awaited<ReturnType<typeof getAgentById>>);
     vi.mocked(readAgentSwitchEnvFromFs).mockResolvedValueOnce({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',

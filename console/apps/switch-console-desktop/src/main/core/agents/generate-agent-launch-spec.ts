@@ -106,7 +106,10 @@ export async function generateAgentLaunchSpec(params: {
   return {
     command: agentCommand.command,
     args: agentCommand.args,
-    env: { ...agentCommand.env, ...(providerConfig?.env ?? {}) },
+    // The profile's env may name one of its own files, which needs the VM's home
+    // directory — unknown here. It carries the home placeholder instead and the
+    // sidecar substitutes its own home when it materializes the command.
+    env: { ...agentCommand.env, ...(switchProfile?.env ?? {}), ...(providerConfig?.env ?? {}) },
     cwd: remoteRepoDir,
     launchFiles: switchProfile?.files.map((file) => ({
       homeRelativePath: file.relativePath,

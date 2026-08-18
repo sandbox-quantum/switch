@@ -29,9 +29,9 @@ async function removeDefaultSwitchCredentials(fs: PluginFs): Promise<void> {
  * at the agent's working directory (local or remote), so one call covers both.
  */
 export async function removeSwitchCredentials(providerId: string, fs: PluginFs): Promise<void> {
-  const behavior = getPlugin(providerId).behavior.switchSetup;
-  if (behavior) {
-    await behavior.removeCredentials(fs);
+  const removeCredentials = getPlugin(providerId).behavior.switchSetup?.removeCredentials;
+  if (removeCredentials) {
+    await removeCredentials(fs);
     return;
   }
   await removeDefaultSwitchCredentials(fs);

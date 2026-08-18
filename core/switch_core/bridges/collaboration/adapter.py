@@ -5,9 +5,14 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import ClassVar
 
+from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.models import (
+    BridgeInstallLink,
+    ChannelCreationUnsupported,
     ChannelType,
+    DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -27,14 +32,68 @@ class LiveRuntimeIndicator:
     reposted verbatim, in the same thread, when it is moved to follow newer
     traffic — a move has no access to the ``detail``/``deeplink_url`` the body
     was originally rendered from.
+
+    ``started_at`` is a ``time.monotonic()`` reading from when the turn's
+    indicator first went up, for adapters that report how long the turn took
+    once it ends. Monotonic because it measures an elapsed span, which a clock
+    adjustment must not distort.
     """
 
     message_ref: str
     body: str
     thread_root_id: str | None
+    started_at: float
 
 
 class CollaborationAdapter(ABC):
+    #: Whether this platform can create a channel from Switch at all.
+    #:
+    #: A ceiling, not a preference: an operator may withhold channel creation
+    #: from a connection whose platform allows it, but cannot grant it to one
+    #: that does not. Declared on the class rather than resolved from a running
+    #: bridge so the answer is available before a connection is registered and
+    #: while it is stopped — the operator asks "can this platform do it?" at
+    #: exactly those moments.
+    supports_channel_creation: ClassVar[bool] = True
+
+    #: Whether this platform has a user directory Switch can search.
+    #:
+    #: False where the only people Switch can name are the ones who have
+    #: spoken to it — a Telegram bot cannot enumerate anyone else. That is not
+    #: a smaller directory, it is a different question: on a freshly connected
+    #: connection of such a type the answer is always "nobody", so asking a
+    #: user to pick themselves from it is asking them to pick from an empty
+    #: list. Declared on the class for the same reason as
+    #: `supports_channel_creation` — the answer is needed before a connection
+    #: exists and while one is stopped.
+    supports_directory_search: ClassVar[bool] = True
+
+    #: Whether this platform renders a link whose scheme is not http(s).
+    #:
+    #: False for platforms that linkify only the web schemes. It matters
+    #: because the "Open in Switch Console" deeplink is a `switchdash://` URL:
+    #: where this is False that link cannot work as written, and the deployment
+    #: needs `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to the https
+    #: redirect. Declared here so the lifecycle can say so once at startup
+    #: instead of each bridge discovering it in its own way.
+    renders_custom_url_schemes: ClassVar[bool] = True
+
+    #: Whether a runtime-state report with no thread of its own should anchor
+    #: to the message the agent is working on.
+    #:
+    #: A report only carries a `thread_id` when the agent was addressed inside
+    #: an existing thread. Addressed at the conversation root it carries none,
+    #: while the agent's reply still opens a thread on the triggering message —
+    #: so the status and the answer to it end up in two different places.
+    #: Where this is True the anchor the agent reports (the last message it was
+    #: actually handed) stands in, putting the status in the thread the reply
+    #: will land in.
+    #:
+    #: Off by default: on a platform that renders a thread as a side panel
+    #: rather than inline, moving the status out of the channel hides it, and
+    #: that trade is the platform's to make.
+    runtime_state_follows_anchor: ClassVar[bool] = False
+
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
@@ -43,6 +102,14 @@ class CollaborationAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_channel_migration_handler. Called with (old_id, new_id)
+        # when the platform reissues a channel's id.
+        self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_agent_icon_resolver. Returns an agent's own icon URL, or
+        # None when it has not been given one. Left unset an adapter still
+        # works — every agent just gets the default — so adapters stay usable
+        # without a bridge core wired up behind them.
+        self._resolve_agent_icon: Callable[[str], Awaitable[str | None]] | None = None
         # Inbound attachment size ceiling, set by the lifecycle service from
         # config.agent_media_max_bytes. Adapters check a platform-reported file
         # size against this before downloading so an oversize file is rejected
@@ -108,9 +175,20 @@ class CollaborationAdapter(ABC):
         can special-case rendering per platform; adapters that don't simply
         render the default `content`. The default implementation posts via
         `send_message` under the bridge display name; adapters whose platform
-        has a distinct bot identity should override to use it."""
+        has a distinct bot identity should override to use it.
+
+        **`content` is Switch Markdown, and this method renders it.** Unlike
+        `send_message`, whose caller translates, every caller here passes an
+        unrendered body — the notices in `bridge_core`, the adapters' own
+        notices, and the relayed admin events alike. An override must therefore
+        run `translate_outbound` itself. Splitting that responsibility between
+        callers is what once sent a body through the conversion twice, and the
+        second pass escapes the markup the first one produced."""
         return await self.send_message(
-            channel_id, self._bridge_display_name(), content, thread_root_id
+            channel_id,
+            self._bridge_display_name(),
+            self.translate_outbound(content),
+            thread_root_id,
         )
 
     def _bridge_display_name(self) -> str:
@@ -120,11 +198,12 @@ class CollaborationAdapter(ABC):
         """How to run `invite-agent` as a native slash command here, if at all.
 
         Native slash commands are per-platform: Slack declares them in its app
-        manifest and Discord registers them per guild, while Mattermost and
-        Teams have none — so the no-agents notice must not advertise a `/` form
-        on a bridge that has none to offer. The invocation differs too, since
-        Slack takes a free-text tail where Discord names each argument as its
-        own field, so each adapter spells out its own.
+        manifest, Discord registers them per guild and Telegram publishes a bot
+        command menu, while Mattermost and Teams have none — so the no-agents
+        notice must not advertise a `/` form on a bridge that has none to offer.
+        The invocation differs too, since Slack and Telegram take a free-text
+        tail where Discord names each argument as its own field, so each adapter
+        spells out its own.
 
         Returns the body of the bullet; the caller owns the list formatting.
         None means this platform has no slash commands.
@@ -217,10 +296,11 @@ class CollaborationAdapter(ABC):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
         """Serialise against any other runtime-indicator work for this agent,
         then apply the state. Adapters override ``_apply_runtime_state``."""
@@ -229,10 +309,11 @@ class CollaborationAdapter(ABC):
                 channel_id,
                 agent_name,
                 state,
-                notify_user=notify_user,
+                mention_handle=mention_handle,
                 thread_root_id=thread_root_id,
                 deeplink_url=deeplink_url,
                 detail=detail,
+                trigger_thread_root_id=trigger_thread_root_id,
             )
 
     async def reposition_runtime_state(
@@ -250,10 +331,11 @@ class CollaborationAdapter(ABC):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
         """Surface a Switch Console-managed agent's runtime state on the channel.
 
@@ -262,8 +344,17 @@ class CollaborationAdapter(ABC):
         show a persistent status message they remove (Slack) or edit to a
         terminal marker (Mattermost, whose delete leaves a tombstone).
 
-        ``thread_root_id``, when set, is the external thread the triggering
-        message belonged to; the state surfaces in that thread.
+        ``thread_root_id``, when set, is the external thread the state belongs
+        in; the state surfaces there.
+
+        ``trigger_thread_root_id`` is where the triggering message itself sits,
+        and is None when it came from the channel root. The two differ on an
+        adapter that pins a status to a thread the conversation is not in yet
+        (see ``runtime_state_follows_anchor``): the status belongs in the
+        thread, but a typing indicator belongs where the person who is waiting
+        for it is looking. Defaulted because only an adapter that draws the
+        distinction reads it, and its callers should not have to restate a
+        value the other adapters ignore.
 
         ``deeplink_url``, when set, is an https link (served by the gateway) that
         opens the agent's session in the Switch Console desktop app; adapters that
@@ -279,7 +370,7 @@ class CollaborationAdapter(ABC):
         elif state == "awaiting-input":
             await self.send_typing(channel_id, agent_name, True)
             await self._ping_operator(
-                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
             )
         else:
             await self.send_typing(channel_id, agent_name, False)
@@ -373,19 +464,29 @@ class CollaborationAdapter(ABC):
         self,
         channel_id: str,
         agent_name: str,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
     ) -> str | None:
         """Post a message nudging the operator that the agent needs input.
 
+        `mention_handle` is the agent owner's account on this platform, or None
+        when there is nobody to reach — no owner, or an owner who has not said
+        which account here is theirs. That case says so instead of posting a
+        line nobody is notified about: a nudge that reaches no one looks
+        identical to an agent that never asked.
+
         Returns the posted message ref so callers that can remove it (Slack,
         Mattermost) track it for cleanup when the turn ends."""
-        mention = f"@{notify_user} " if notify_user else ""
-        body = self.translate_outbound(
-            f"{mention}**{agent_name}** needs your input."
-            + self._deeplink_suffix(deeplink_url)
-        )
+        if mention_handle:
+            text = f"@{mention_handle} **{agent_name}** needs your input."
+        else:
+            text = (
+                f"**{agent_name}** needs your input — but nobody here is linked "
+                f"to its owner, so this pings no one. Link your "
+                f"{self.platform_name} account in Switch Console to be notified."
+            )
+        body = self.translate_outbound(text + self._deeplink_suffix(deeplink_url))
         return await self.send_message(channel_id, agent_name, body, thread_root_id)
 
     @abstractmethod
@@ -410,9 +511,32 @@ class CollaborationAdapter(ABC):
         Used for outbound-created DM rooms (`channel_type="direct"`). Platforms
         where DMs can only be initiated by the user — and so cannot be created
         from Switch — raise instead of pretending to succeed."""
-        raise NotImplementedError(
-            f"{type(self).__name__} cannot create DM channels — on this platform "
+        raise ChannelCreationUnsupported(
+            f"{self.platform_name} cannot create DM channels — on this platform "
             "DMs are initiated by the user from the messaging client"
+        )
+
+    @property
+    def platform_name(self) -> str:
+        """The platform as a person would name it, for messages that reach a
+        user. The class name is the fallback rather than the source: "Telegram"
+        belongs in a dialog, "TelegramAdapter" does not."""
+        return type(self).__name__.removesuffix("Adapter")
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """Search the platform's own user directory (CHOO-2137).
+
+        Lets someone claim their platform identity before Switch has ever seen
+        them speak — `ExternalUser` rows are only created on first message, so
+        without this a freshly connected workspace offers nobody to pick from.
+
+        Platforms with no searchable directory raise instead of returning an
+        empty list, so the caller can say "you must post once first" rather
+        than showing an empty picker that looks broken.
+        """
+        raise NotImplementedError(
+            f"{self.platform_name} has no searchable user directory — on this "
+            "platform someone must send a message before Switch knows them"
         )
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
@@ -434,6 +558,26 @@ class CollaborationAdapter(ABC):
         "open the messaging app" next to the bridge itself. Built from the
         connection config, which never leaves the server; only the resulting
         URL is exposed."""
+        return None
+
+    async def install_links(self) -> list[BridgeInstallLink]:
+        """One-click links that add this bridge's app to a chat, if the
+        platform has them.
+
+        Empty by default: on most platforms installation is an app-directory or
+        OAuth flow the operator runs elsewhere, and inventing a link for it
+        would be a link to nowhere. An adapter overrides this only when the
+        platform accepts a URL that selects the chat and works on every client
+        of that platform."""
+        return []
+
+    async def install_note(self) -> str | None:
+        """What the links do not cover, in the platform's own terms.
+
+        Rendered under :meth:`install_links` in the operator dashboard. Some
+        kinds of chat cannot be reached by a link at all, and the operator is
+        better told where to go instead than left to conclude a button is
+        missing. Markdown-free plain text; None when there is nothing to add."""
         return None
 
     @abstractmethod
@@ -503,3 +647,45 @@ class CollaborationAdapter(ABC):
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
         return None
+
+    def set_channel_migration_handler(
+        self, handler: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls when the platform reissues a
+        channel's id, so the room bound to the old one follows it.
+
+        Stored for every adapter and used by those whose platform does this:
+        Telegram reissues a chat's id when a basic group becomes a supergroup.
+        The symptom without it is one-way traffic — sends still arrive, because
+        the platform forwards them, while nothing inbound matches a room again."""
+        self._on_channel_migrated = handler
+
+    def set_agent_icon_resolver(
+        self, resolver: Callable[[str], Awaitable[str | None]]
+    ) -> None:
+        """Install the lookup for an agent's own icon URL (None if it has none).
+
+        The bridge core supplies this because the adapter has no database of
+        its own. Resolution happens per send rather than being cached, so
+        changing an agent's icon shows up on its next message instead of at the
+        next restart."""
+        self._resolve_agent_icon = resolver
+
+    def default_agent_icon(self, agent_name: str) -> str:
+        """The avatar for an agent that has set no icon.
+
+        Overridable for a platform that needs the default in a particular shape
+        — Mattermost uploads the bytes rather than passing a link on, so it
+        pins the response format."""
+        return default_icon_url(agent_name)
+
+    async def agent_icon_url(self, agent_name: str) -> str:
+        """The icon URL to render for an agent on this platform.
+
+        Adapters call this wherever they need a per-message avatar: the agent's
+        own icon when it has one, otherwise this platform's existing default."""
+        if self._resolve_agent_icon is not None:
+            chosen = await self._resolve_agent_icon(agent_name)
+            if chosen:
+                return chosen
+        return self.default_agent_icon(agent_name)

@@ -55,7 +55,7 @@ separate ops task before you can onboard the bridge.
 ## Onboard the bridge in Switch
 
 As a gateway admin, onboard the bridge from the **operator dashboard**:
-**Messaging Apps → Add bridge → Teams**, give it a display name (e.g. "Acme
+**Messaging Apps → Register messaging app → Teams**, give it a display name (e.g. "Acme
 Teams"), and fill in the fields below.
 
 Fields (`TeamsConnectionConfig`):

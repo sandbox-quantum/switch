@@ -191,7 +191,7 @@ def _fake_client(*, role_exists: bool) -> SimpleNamespace:
         yield object()
 
     async def _resolve_room_meta(_matrix_room_id: str):  # type: ignore[no-untyped-def]
-        return SimpleNamespace(room_id="room-1", name="Feature Room")
+        return SimpleNamespace(room_id="room-1", name="Feature Room", bridge_id=None)
 
     async def _agent_get(_session, _agent_id):  # type: ignore[no-untyped-def]
         return None  # fall back to client.agent
@@ -202,6 +202,10 @@ def _fake_client(*, role_exists: bool) -> SimpleNamespace:
     async def _send_message(_room_id, body, **_kw):  # type: ignore[no-untyped-def]
         sent.append(body)
 
+    async def _owner_handle_in(_agent, _bridge_id):  # type: ignore[no-untyped-def]
+        # No linked owner: these cover the connect command, not the mention.
+        return None
+
     client = SimpleNamespace(
         agent=SimpleNamespace(id="a1", name="cc-bug-fixing"),
         session_factory=_session_factory,
@@ -210,6 +214,7 @@ def _fake_client(*, role_exists: bool) -> SimpleNamespace:
         _room_role_store=SimpleNamespace(get_role=_get_role),
         send_message=_send_message,
         reply_command=_send_message,
+        owner_handle_in=_owner_handle_in,
         sent=sent,
     )
     return client
@@ -222,6 +227,7 @@ def _patch_known_agent(monkeypatch: pytest.MonkeyPatch) -> None:
             _options: Any,
             _agent: Any,
             room_name: str,
+            _owner_handle: str | None,
             assume_role: str | None = None,
         ) -> str:
             prompt = f"connect to switch room {room_name}"

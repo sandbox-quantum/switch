@@ -49,6 +49,10 @@ from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
 )
+from switch_core.bridges.collaboration.telegram.adapter import (
+    TelegramAdapter,
+    TelegramConnectionConfig,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.admin_client import AdminClient
@@ -381,6 +385,9 @@ async def run() -> None:
     collab_lifecycle.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
     collab_lifecycle.register_adapter(
         "discord", DiscordAdapter, DiscordConnectionConfig
+    )
+    collab_lifecycle.register_adapter(
+        "telegram", TelegramAdapter, TelegramConnectionConfig
     )
 
     # Health check mounted on the agent bridge app

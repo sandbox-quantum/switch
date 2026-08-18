@@ -8,6 +8,7 @@ import {
   HostUnreachableError,
   unknownHostReachability,
 } from '@shared/core/remote-hosts/reachability';
+import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 
 const getSessionCookie = vi.hoisted(() => vi.fn());
 const refreshSession = vi.hoisted(() => vi.fn());
@@ -26,7 +27,15 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 
-const { createRoom, fetchBridges, fetchMe, registerKnownAgent } = await import('./gateway-client');
+const {
+  createRoom,
+  deleteBridge,
+  fetchBridges,
+  fetchMe,
+  ownsOwnerAddressedAgent,
+  registerKnownAgent,
+  updateBridge,
+} = await import('./gateway-client');
 
 const SERVER = {
   id: 'srv-1',
@@ -322,6 +331,8 @@ describe('room creation', () => {
           status: 'active',
           is_default: true,
           home_url: 'mattermost://chat.example.com/switch',
+          channel_creation_supported: true,
+          channel_creation_enabled: true,
         },
         { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Slack', status: 'stopped' },
       ]) as never
@@ -335,6 +346,9 @@ describe('room creation', () => {
         status: 'active',
         isDefault: true,
         homeUrl: 'mattermost://chat.example.com/switch',
+        channelCreationSupported: true,
+        canCreateChannels: true,
+        directorySearchSupported: true,
       },
       {
         id: 'b2',
@@ -343,8 +357,45 @@ describe('room creation', () => {
         status: 'stopped',
         isDefault: false,
         homeUrl: null,
+        // Both fields post-date the pinned switch-core too, defaulting the
+        // same way home_url does: absent reads as the pre-capability world,
+        // where every bridge could create a channel.
+        channelCreationSupported: true,
+        canCreateChannels: true,
+        directorySearchSupported: true,
       },
     ]);
+  });
+
+  it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'telegram',
+          display_name: 'Telegram',
+          status: 'active',
+          channel_creation_supported: false,
+          channel_creation_enabled: true,
+        },
+        {
+          bridge_id: 'b2',
+          bridge_type: 'slack',
+          display_name: 'Slack',
+          status: 'active',
+          channel_creation_supported: true,
+          channel_creation_enabled: false,
+        },
+      ]) as never
+    );
+
+    const [telegram, slack] = await fetchBridges(SERVER);
+
+    // Telegram: the platform ceiling is the binding constraint, regardless of
+    // what an operator's switch says.
+    expect(telegram).toMatchObject({ channelCreationSupported: false, canCreateChannels: false });
+    // Slack: the platform can, but the operator withheld it from this connection.
+    expect(slack).toMatchObject({ channelCreationSupported: true, canCreateChannels: false });
   });
 
   it('always names a bridge and a channel type, never the internal-only escape hatch', async () => {
@@ -453,6 +504,7 @@ describe('registerKnownAgent', () => {
       description: 'Codex running in repo',
       agentType: 'codex',
       options: { channels_enabled: true, repo_dir: '/repo' },
+      iconUrl: null,
     });
 
     expect(registered).toEqual({ id: 'sw-1', apiKey: 'tok-123' });
@@ -462,7 +514,225 @@ describe('registerKnownAgent', () => {
       name: 'codex-hoot',
       description: 'Codex running in repo',
       options: { channels_enabled: true, repo_dir: '/repo' },
+      icon_url: null,
       overwrite: false,
     });
+  });
+});
+
+describe('ownsOwnerAddressedAgent', () => {
+  let listedAgents: unknown[] = [];
+  const routedFetch = vi.fn<(url: string) => Promise<Response>>();
+
+  /** An agent as `GET /agents` returns it, with only the fields the probe uses
+   * spelled out per case. */
+  function listedAgent(fields: {
+    id: string;
+    owner_id: string | null;
+    addressing_policy?: unknown;
+  }): unknown {
+    return {
+      name: fields.id,
+      description: '',
+      connector_type: 'http',
+      owner_name: null,
+      known_agent_type: null,
+      created_at: '2026-01-01T00:00:00Z',
+      ...fields,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listedAgents = [];
+    // `GET /auth/me` answers as `u1`; everything else is the agent list.
+    routedFetch.mockImplementation(async (url: string) =>
+      url.endsWith('/auth/me') ? okMeResponse() : jsonResponse(listedAgents)
+    );
+    vi.stubGlobal('fetch', routedFetch);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads the whole answer off the agent list', async () => {
+    // The policy is on the list response now, so the probe costs `/auth/me`
+    // plus `/agents` and nothing per agent — however many the user owns
+    // (CHOO-2137).
+    listedAgents = Array.from({ length: 20 }, (_, i) =>
+      listedAgent({
+        id: `a${i}`,
+        owner_id: 'u1',
+        addressing_policy: ownerOnlyPolicy(),
+      })
+    );
+
+    await expect(ownsOwnerAddressedAgent(SERVER)).resolves.toBe(true);
+    expect(routedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores an owner-restricted agent belonging to somebody else', async () => {
+    listedAgents = [
+      listedAgent({ id: 'theirs', owner_id: 'u2', addressing_policy: ownerOnlyPolicy() }),
+    ];
+
+    await expect(ownsOwnerAddressedAgent(SERVER)).resolves.toBe(false);
+  });
+
+  it('ignores an agent of the user’s that anyone may address', async () => {
+    listedAgents = [
+      listedAgent({ id: 'open', owner_id: 'u1', addressing_policy: null }),
+      listedAgent({ id: 'rule-less', owner_id: 'u1', addressing_policy: { rules: [] } }),
+    ];
+
+    await expect(ownsOwnerAddressedAgent(SERVER)).resolves.toBe(false);
+  });
+
+  it('counts a hand-built policy that names the owner, not just the shortcut', async () => {
+    // A rule set the chooser calls `custom` still leans on owner recognition,
+    // so an unlinked account costs the user just as much there.
+    listedAgents = [
+      listedAgent({
+        id: 'scoped',
+        owner_id: 'u1',
+        addressing_policy: {
+          rules: [
+            { rooms: ['room-1'], room_groups: '*', users: [], agents: [], owner: true },
+            { rooms: '*', room_groups: '*', users: ['u9'], agents: [], owner: false },
+          ],
+        },
+      }),
+    ];
+
+    await expect(ownsOwnerAddressedAgent(SERVER)).resolves.toBe(true);
+  });
+
+  it('stays quiet against a server that does not report policies on the list', async () => {
+    // Older switch-core carries `addressing_policy` only on `GET /agents/{id}`.
+    // Absent has to read as "nothing to warn about" rather than warn on a guess.
+    listedAgents = [listedAgent({ id: 'unknown-policy', owner_id: 'u1' })];
+
+    await expect(ownsOwnerAddressedAgent(SERVER)).resolves.toBe(false);
+  });
+
+  it('propagates a failed list read instead of answering false', async () => {
+    // The caller turns a rejection into a log line and no warning; a false here
+    // would be indistinguishable from a real "you own nothing restricted".
+    routedFetch.mockImplementation(async (url: string) =>
+      url.endsWith('/auth/me') ? okMeResponse() : errorResponse(503, 'gateway down')
+    );
+
+    await expect(ownsOwnerAddressedAgent(SERVER)).rejects.toMatchObject({ status: 503 });
+  });
+});
+
+describe('updateBridge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('PATCHes only the field given, leaving an unset one out of the body', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        bridge_id: 'b1',
+        bridge_type: 'slack',
+        display_name: 'Slack',
+        status: 'active',
+        channel_creation_supported: true,
+        channel_creation_enabled: false,
+      }) as never
+    );
+
+    const bridge = await updateBridge(SERVER, 'b1', { channelCreationEnabled: false });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ channel_creation_enabled: false });
+    expect(bridge).toMatchObject({ canCreateChannels: false, channelCreationSupported: true });
+  });
+
+  it('sends no field at all when nothing changed', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        bridge_id: 'b1',
+        bridge_type: 'slack',
+        display_name: 'Slack',
+        status: 'active',
+      }) as never
+    );
+
+    await updateBridge(SERVER, 'b1', {});
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({});
+  });
+});
+
+describe('deleteBridge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('DELETEs the bridge and reports it deleted', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }) as never);
+
+    await expect(deleteBridge(SERVER, 'b1')).resolves.toEqual({ kind: 'deleted' });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('escapes the bridge id into the path', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }) as never);
+
+    await deleteBridge(SERVER, 'b/1 2');
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b%2F1%202');
+  });
+
+  it('reports a non-admin as forbidden', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admin only"}') as never);
+
+    await expect(deleteBridge(SERVER, 'b1')).resolves.toEqual({ kind: 'forbidden' });
+  });
+
+  it('reports an unknown bridge as not-found rather than deleted', async () => {
+    // Somebody else's deletion, or a stale list — either way the rooms this
+    // call would have taken with it were not this call's to take.
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Bridge not found"}') as never);
+
+    await expect(deleteBridge(SERVER, 'gone')).resolves.toEqual({ kind: 'not-found' });
+  });
+
+  it('reports an expired session as unauthenticated', async () => {
+    fetchMock.mockResolvedValue(unauthorizedResponse() as never);
+
+    await expect(deleteBridge(SERVER, 'b1')).resolves.toEqual({ kind: 'unauthenticated' });
+  });
+
+  it('propagates a failure it has no case for instead of claiming success', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, 'adapter shutdown failed') as never);
+
+    await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
   });
 });

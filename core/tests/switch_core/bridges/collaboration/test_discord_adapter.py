@@ -888,7 +888,7 @@ def test_runtime_state_working_posts_persistent_indicator() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
         )
     )
@@ -910,7 +910,7 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
         )
     )
@@ -919,7 +919,7 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
             detail="Editing adapter.py",
         )
@@ -943,13 +943,17 @@ def test_runtime_state_idle_clears_working_message() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
         )
     )
     _run(
         adapter.apply_runtime_state(
-            str(CHANNEL_ID), "my-agent", "idle", notify_user=None, thread_root_id=None
+            str(CHANNEL_ID),
+            "my-agent",
+            "idle",
+            mention_handle=None,
+            thread_root_id=None,
         )
     )
 
@@ -966,7 +970,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
         )
     )
@@ -975,7 +979,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "awaiting-input",
-            notify_user="louis",
+            mention_handle="louis",
             thread_root_id=None,
         )
     )
@@ -993,7 +997,7 @@ def test_runtime_state_awaiting_input_pings_and_resume_clears_pings() -> None:
             str(CHANNEL_ID),
             "my-agent",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
         )
     )
@@ -1212,3 +1216,29 @@ def test_start_times_out_when_never_ready_and_stops() -> None:
             assert adapter._client is None
 
     _run(scenario())
+
+
+def test_awaiting_input_with_nobody_linked_says_so() -> None:
+    # The ping used to post with the mention simply missing, which on the
+    # channel reads exactly like a ping that worked — an agent waiting on input
+    # nobody knows to give. The handle is the agent owner's linked account
+    # (CHOO-2137), so "nobody" now means the owner has not said which account
+    # here is theirs, and the line says that instead of trailing off.
+    adapter, _channel, webhook = _runtime_setup()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHANNEL_ID),
+            "my-agent",
+            "awaiting-input",
+            mention_handle=None,
+            thread_root_id=None,
+        )
+    )
+
+    content = webhook.sent[-1]["content"]
+    assert "needs your input" in content
+    assert "pings no one" in content
+    # Named as a person would name it, not as the class is.
+    assert "Discord" in content
+    assert "Adapter" not in content

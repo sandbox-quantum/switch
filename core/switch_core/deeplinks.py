@@ -36,6 +36,29 @@ def switchdash_to_gateway(deeplink_url: str, gateway_public_url: str) -> str | N
     return f"{base}{DEEPLINK_REDIRECT_PATH}{query}"
 
 
+def deeplink_for_platform(
+    deeplink_url: str | None,
+    gateway_public_url: str | None,
+    platform_renders_custom_schemes: bool,
+) -> str | None:
+    """Which form of the deeplink to post on a given platform.
+
+    The redirect lands where the deeplink already points, so it buys nothing
+    except a trip through the browser. It is worth that only where the raw
+    scheme would not be a link at all. Three things have to be true to rewrite:
+    there is a deeplink, the gateway has a public URL to redirect from, and the
+    platform will not render the scheme itself.
+
+    Returns the link to post — unchanged when any of those does not hold, and
+    unchanged too if it is not a session deeplink this can rewrite.
+    """
+    if deeplink_url is None or not gateway_public_url:
+        return deeplink_url
+    if platform_renders_custom_schemes:
+        return deeplink_url
+    return switchdash_to_gateway(deeplink_url, gateway_public_url) or deeplink_url
+
+
 def gateway_query_to_switchdash(query: str) -> str:
     """Reconstruct the `switchdash://session?…` deeplink the redirect targets.
 

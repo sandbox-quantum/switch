@@ -1,14 +1,12 @@
 import { useHotkey } from '@tanstack/react-hotkeys';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { Archive, RotateCcw, Trash2, X } from 'lucide-react';
+import { Archive, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useRef } from 'react';
+import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import {
   asMounted,
   getLocationStore,
 } from '@renderer/features/locations/stores/location-selectors';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { ListPopoverCard } from '@renderer/lib/components/list-popover-card';
 import {
   getEffectiveHotkey,
@@ -18,74 +16,8 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
-import { EmptyState } from '@renderer/lib/ui/empty-state';
-import { SearchInput } from '@renderer/lib/ui/search-input';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
-import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
-import { cn } from '@renderer/utils/utils';
-import { SessionListEmptyState } from './session-list-empty-state';
 import { SessionRow, type ReadySession } from './session-row';
-
-function SessionVirtualList({
-  sessions,
-  selectedIds,
-  onToggleSelect,
-}: {
-  sessions: ReadySession[];
-  selectedIds: Set<string>;
-  onToggleSelect: (id: string, shiftKey: boolean) => void;
-}) {
-  const parentRef = useRef<HTMLDivElement>(null);
-
-  const virtualizer = useVirtualizer({
-    count: sessions.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 60,
-    overscan: 5,
-    measureElement: (el) => el.getBoundingClientRect().height,
-  });
-
-  const virtualItems = virtualizer.getVirtualItems();
-
-  if (sessions.length === 0) {
-    return <EmptyState label="No sessions" description="No sessions found" />;
-  }
-
-  return (
-    <div
-      ref={parentRef}
-      className="min-h-0 flex-1 overflow-y-auto py-3"
-      style={{ scrollbarWidth: 'none' }}
-    >
-      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
-        {virtualItems.map((virtualItem) => {
-          const session = sessions[virtualItem.index]!;
-          return (
-            <div
-              key={virtualItem.key}
-              data-index={virtualItem.index}
-              ref={virtualizer.measureElement}
-              className={cn(virtualItem.index === sessions.length - 1 && 'border-b-0')}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
-            >
-              <SessionRow
-                session={session}
-                isSelected={selectedIds.has(session.data.id)}
-                onToggleSelect={(shiftKey) => onToggleSelect(session.data.id, shiftKey)}
-              />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function SelectionBar({
   count,
@@ -140,7 +72,6 @@ export const SessionList = observer(function SessionList() {
   const sessionManager = getSessionManagerStore(locationId);
   const showDeleteSession = useShowModal('deleteSessionModal');
   const showCreateSessionModal = useShowModal('sessionModal');
-  const { value: keyboard } = useAppSettingsKey('keyboard');
 
   const sessionView = store?.view.sessionView ?? null;
 
@@ -194,7 +125,7 @@ export const SessionList = observer(function SessionList() {
   };
 
   useHotkey(
-    getHotkeyRegistration('deleteSelectedSessions', keyboard),
+    getHotkeyRegistration('deleteSelectedSessions'),
     (e) => {
       e.preventDefault();
       bulkDelete();
@@ -203,64 +134,73 @@ export const SessionList = observer(function SessionList() {
       enabled:
         (sessionView?.selectedIds.size ?? 0) > 0 &&
         !modalStore.isOpen &&
-        getEffectiveHotkey('deleteSelectedSessions', keyboard) !== null,
+        getEffectiveHotkey('deleteSelectedSessions') !== null,
       ignoreInputs: true,
     }
   );
 
   if (!sessionView) return null;
 
-  const displaySessions = sessionView.tab === 'active' ? activeSessions : archivedSessions;
-  const q = sessionView.searchQuery.trim().toLowerCase();
-  const filteredSessions = q
-    ? displaySessions.filter((t) => t.data.title.toLowerCase().includes(q))
-    : displaySessions;
+  const showingArchived = sessionView.tab === 'archived';
+  const displaySessions = showingArchived ? archivedSessions : activeSessions;
 
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col">
-      <div className="flex shrink-0 flex-col gap-4 border-b border-border pb-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <ToggleGroup
-            multiple={false}
-            value={[sessionView.tab]}
-            onValueChange={([value]) => {
-              if (value) sessionView.setTab(value as 'active' | 'archived');
-            }}
-          >
-            <ToggleGroupItem value="active">Active ({activeSessions.length})</ToggleGroupItem>
-            <ToggleGroupItem value="archived">Archived ({archivedSessions.length})</ToggleGroupItem>
-          </ToggleGroup>
-          <div className="flex items-center gap-2">
-            <SearchInput
-              placeholder="Search sessions…"
-              value={sessionView.searchQuery}
-              onChange={(e) => sessionView.setSearchQuery(e.target.value)}
-              className="flex-1"
-            />
-            <Button onClick={() => showCreateSessionModal({ locationId, agentName })}>
-              Create Session <BoundShortcut settingsKey="newSession" />
-            </Button>
-          </div>
-        </div>
+    <section className="relative flex w-full flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <SectionLabel>Sessions</SectionLabel>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label="New session"
+          onClick={() => showCreateSessionModal({ locationId, agentName })}
+        >
+          <Plus className="size-4" />
+        </Button>
       </div>
 
-      {filteredSessions.length === 0 && sessionView.tab === 'active' ? (
-        <SessionListEmptyState locationId={locationId} agentName={agentName} />
+      {displaySessions.length === 0 && !showingArchived ? (
+        // No call to action here: New Session sits at the top of the page and
+        // again beside this heading, so a third one would be the loudest thing
+        // on an empty section.
+        <p className="py-2 text-sm text-foreground-muted">No sessions yet.</p>
       ) : (
-        <SessionVirtualList
-          sessions={filteredSessions}
-          selectedIds={sessionView.selectedIds}
-          onToggleSelect={(id, shiftKey) => {
-            if (shiftKey) {
-              sessionView.selectRange(
-                filteredSessions.map((t) => t.data.id),
-                id
-              );
-            } else {
-              sessionView.toggleSelect(id);
-            }
+        <div className="-mx-3 flex flex-col">
+          {displaySessions.map((session) => (
+            <SessionRow
+              key={session.data.id}
+              session={session}
+              isSelected={sessionView.selectedIds.has(session.data.id)}
+              onToggleSelect={(shiftKey) => {
+                if (shiftKey) {
+                  sessionView.selectRange(
+                    displaySessions.map((t) => t.data.id),
+                    session.data.id
+                  );
+                } else {
+                  sessionView.toggleSelect(session.data.id);
+                }
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Archiving is otherwise a one-way door: with no way back to an archived
+        session, Archive and Delete would look like the same action. One quiet
+        line, and only when there is something behind it. */}
+      {archivedSessions.length > 0 && (
+        <button
+          type="button"
+          className="-mx-1 w-fit cursor-pointer rounded px-1 py-1 text-xs text-foreground-muted underline underline-offset-2 transition-colors hover:bg-background-1 hover:text-foreground"
+          onClick={() => {
+            clearSelection();
+            sessionView.setTab(showingArchived ? 'active' : 'archived');
           }}
-        />
+        >
+          {showingArchived
+            ? 'Back to active sessions'
+            : `${archivedSessions.length} archived ${archivedSessions.length === 1 ? 'session' : 'sessions'}`}
+        </button>
       )}
 
       <SelectionBar
@@ -271,6 +211,6 @@ export const SessionList = observer(function SessionList() {
         onRestore={bulkRestore}
         onDelete={bulkDelete}
       />
-    </div>
+    </section>
   );
 });

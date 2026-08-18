@@ -5,6 +5,38 @@
 [extend]
 useDefault = true
 
+# Incoming-webhook URLs are bearer credentials: the URL *is* the secret, so
+# whoever holds it can post as the integration. The default ruleset keys off
+# `name = value` assignments near a vendor word and so misses URL-shaped
+# credentials — which is how a Discord webhook reached main (CHOO-2040).
+#
+# Slack is left to the default `slack-webhook-url` rule, which already covers
+# it. The rules below fill the gaps that one leaves.
+
+[[rules]]
+id = "discord-webhook-url"
+description = "Discord incoming webhook URL (the id + token pair grants posting rights)"
+regex = '''https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/[A-Za-z0-9_-]{20,}'''
+keywords = ["discord.com/api/webhooks", "discordapp.com/api/webhooks"]
+
+# Broader than the default `microsoft-teams-webhook`, which requires a
+# hyphen-free tenant and lowercase GUIDs and so misses e.g.
+# `contoso-corp.webhook.office.com` or an uppercased id.
+[[rules]]
+id = "microsoft-teams-webhook-url"
+description = "Microsoft Teams incoming webhook URL"
+regex = '''(?i)https?://[a-z0-9.-]*\.(?:webhook\.office\.com/webhookb2|office\.com/webhook)/[a-z0-9@/_-]{20,}'''
+keywords = ["webhook.office.com", "office.com/webhook"]
+
+# Vendor-agnostic backstop: any URL whose path goes through `webhook(s)/` and
+# ends in a long opaque token. Catches the vendors nobody thought to enumerate,
+# which is the failure mode this whole section exists to prevent.
+[[rules]]
+id = "generic-webhook-url-with-token"
+description = "Webhook URL carrying an embedded token"
+regex = '''https?://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]*webhooks?/[A-Za-z0-9._-]*/[A-Za-z0-9_-]{32,}'''
+keywords = ["webhook"]
+
 [allowlist]
 description = "Known false positives"
 regexTarget = "line"
@@ -14,6 +46,9 @@ regexes = [
   '''"mattermost", MattermostAdapter, MattermostConnectionConfig''',
 ]
 paths = [
-  # Log-redaction tests exercise deliberately fake vendor tokens.
-  '''console/apps/switch-console-desktop/src/main/lib/file-logger\.test\.ts$''',
+  # Log-redaction tests exercise deliberately fake vendor tokens. Both spellings
+  # of the path: gitleaks scans history, where the file lived under
+  # `dash/apps/switchdash-desktop/` before the rename in CHOO-2008, and those
+  # commits still carry the fixtures.
+  '''(dash/apps/switchdash-desktop|console/apps/switch-console-desktop)/src/main/lib/file-logger\.test\.ts$''',
 ]

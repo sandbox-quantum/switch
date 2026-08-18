@@ -1,9 +1,11 @@
 import { join } from 'node:path';
 import { BrowserWindow } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
+import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
+import { appCommandNavigateChannel } from '@shared/events/appEvents';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -34,6 +36,19 @@ export function createMainWindow(): BrowserWindow {
           titleBarStyle: 'hiddenInset',
           trafficLightPosition: { x: 10, y: 10 },
           acceptFirstMouse: true,
+          // The sidebar is meant to read as a vibrancy material rather than a
+          // painted panel, which means the desktop behind the window has to
+          // show through it. Only the compositor can blur what is behind a
+          // window — CSS `backdrop-filter` reaches no further than the page —
+          // so the effect is the OS's and the renderer only tints it.
+          //
+          // A transparent `backgroundColor` is what stops Electron painting an
+          // opaque sheet over the effect. The renderer must not repaint one
+          // either: `index.html` keys its translucent material on the same
+          // platform test this branch does.
+          vibrancy: 'under-window',
+          visualEffectState: 'active',
+          backgroundColor: '#00000000',
         }
       : {}),
     show: false,
@@ -53,6 +68,17 @@ export function createMainWindow(): BrowserWindow {
   // Show when ready
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+  });
+
+  // Windows delivers the mouse's back/forward buttons here rather than to the
+  // page, so they have to be handed across; macOS and Linux give them to the
+  // renderer as ordinary mouse events and never reach this.
+  mainWindow.on('app-command', (_event, command) => {
+    if (command === 'browser-backward') {
+      events.emit(appCommandNavigateChannel, { direction: 'back' });
+    } else if (command === 'browser-forward') {
+      events.emit(appCommandNavigateChannel, { direction: 'forward' });
+    }
   });
 
   mainWindow.on('focus', () => {

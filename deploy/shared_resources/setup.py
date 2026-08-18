@@ -4,6 +4,8 @@ Runs as a short-lived init container in docker-compose. Waits for Switch and
 Mattermost to be healthy, bootstraps the Mattermost admin/team, then registers
 the Mattermost bridge via the authorized Switch gateway API — logging in as the
 seeded gateway admin first, since bridge administration is an admin action.
+Finally it links the seeded Mattermost account to that admin, so the deployment
+comes up knowing which chat account its owner is.
 """
 
 import os
@@ -38,6 +40,10 @@ MATTERMOST_USER_EMAIL = os.environ.get(
 MAX_RETRIES = 60
 RETRY_DELAY = 5
 
+# Shorter than MAX_RETRIES: by the time this runs both services have answered,
+# so it waits only for the bridge adapter to finish starting.
+LINK_MAX_RETRIES = 24
+
 
 def wait_for_service(url: str, name: str) -> None:
     for attempt in range(1, MAX_RETRIES + 1):
@@ -54,8 +60,13 @@ def wait_for_service(url: str, name: str) -> None:
     sys.exit(1)
 
 
-def setup_mattermost() -> None:
-    """Create admin user and team in Mattermost."""
+def setup_mattermost() -> str | None:
+    """Create admin user and team in Mattermost.
+
+    Returns the Mattermost id of the human account, which is also its
+    ``external_user_id`` on the bridge — what linking it to a Switch user is
+    keyed by. None when the account could not be created or read.
+    """
     client = httpx.Client(base_url=MATTERMOST_URL, timeout=10)
 
     # Create admin user (first user becomes system admin)
@@ -162,19 +173,19 @@ def setup_mattermost() -> None:
         print(f"Added {MATTERMOST_USER} to team {MATTERMOST_TEAM_NAME}")
 
     client.close()
+    return user_id
 
 
-def register_bridge() -> None:
-    """Register Mattermost bridge with Switch via the authorized gateway API.
+def gateway_login() -> httpx.Client:
+    """A gateway client authenticated as the seeded admin.
 
     Bridge administration is admin-gated, so we log in as the seeded gateway
-    admin (cookie-based JWT) and drive the same authorized endpoint the
-    dashboard uses — there is no unauthenticated bridge-admin surface.
+    admin (cookie-based JWT) and drive the same authorized endpoints the
+    dashboard uses — there is no unauthenticated bridge-admin surface. The
+    login sets the switch_auth cookie on the client, which every subsequent
+    gateway call carries.
     """
     client = httpx.Client(base_url=SWITCH_URL, timeout=10)
-
-    # Authenticate as the seeded gateway admin; the login sets the switch_auth
-    # cookie on the client, which every subsequent gateway call carries.
     resp = client.post(
         "/gateway/auth/login",
         json={"email": GATEWAY_ADMIN_EMAIL, "password": GATEWAY_ADMIN_PASSWORD},
@@ -185,7 +196,16 @@ def register_bridge() -> None:
             f"{GATEWAY_ADMIN_EMAIL}: {resp.status_code} {resp.text}"
         )
         sys.exit(1)
+    return client
 
+
+def register_bridge(client: httpx.Client) -> str:
+    """Register Mattermost bridge with Switch via the authorized gateway API.
+
+    Returns the bridge id — the one already registered, or the new one. A
+    registration that fails raises, as it did before: without a bridge there is
+    no deployment to speak of, so it is not something to carry on past.
+    """
     # Check if bridge already registered
     resp = client.get("/gateway/collaborations")
     if resp.is_success:
@@ -202,8 +222,7 @@ def register_bridge() -> None:
                         f"/gateway/collaborations/{bridge_id}/default"
                     ).raise_for_status()
                     print(f"Set Mattermost bridge as default: {bridge_id}")
-                client.close()
-                return
+                return bridge_id
 
     # Register new bridge
     connection_config: dict[str, str] = {
@@ -233,18 +252,112 @@ def register_bridge() -> None:
     resp.raise_for_status()
     data = resp.json()
     print(f"Registered Mattermost bridge: {data['bridge_id']} (default)")
+    return data["bridge_id"]
 
-    client.close()
+
+def await_directory_account(
+    client: httpx.Client, bridge_id: str, external_user_id: str
+) -> bool:
+    """Wait until the bridge's own directory lists the seeded human account.
+
+    Registering a bridge records it; it does not mean its adapter has finished
+    starting, and a claim for an account Switch has never seen is refused until
+    it has (409). This probes the directory the claim itself consults, so a
+    success here means the next call has what it needs rather than merely that
+    some other endpoint answered.
+    """
+    for attempt in range(1, LINK_MAX_RETRIES + 1):
+        resp = client.get(
+            f"/gateway/collaborations/{bridge_id}/directory",
+            params={"query": MATTERMOST_USER},
+        )
+        if resp.is_success:
+            found = resp.json().get("users", [])
+            if any(u.get("external_user_id") == external_user_id for u in found):
+                return True
+            reason = f"{MATTERMOST_USER} not in the directory yet"
+        else:
+            reason = f"{resp.status_code} {resp.text}"
+        print(
+            f"Waiting for the Mattermost bridge to serve its directory "
+            f"({attempt}/{LINK_MAX_RETRIES}): {reason}"
+        )
+        time.sleep(RETRY_DELAY)
+    return False
+
+
+def link_owner_identity(
+    client: httpx.Client, bridge_id: str, external_user_id: str
+) -> None:
+    """Link the seeded Mattermost account to the seeded gateway admin.
+
+    The deployment provisions both halves of one person — a Switch admin and
+    the Mattermost account they will chat from — so leaving them unassociated
+    means owner-only addressing (CHOO-2137) cannot recognise the owner in the
+    deployment's own chat, and the Home page reports an account the user has to
+    link by hand (CHOO-2172).
+
+    Only ever claims when the admin holds no identity on this bridge, so a
+    re-run is a no-op. Someone who deliberately unlinks themselves and runs
+    setup again does get relinked; that is the cost of repairing every existing
+    deployment on its next run, and the manual control to undo it is still
+    there.
+    """
+    resp = client.get("/gateway/auth/me/identities")
+    if resp.is_success:
+        if any(i.get("bridge_id") == bridge_id for i in resp.json()):
+            print(f"Gateway admin already linked to a Mattermost account: {bridge_id}")
+            return
+    else:
+        print(
+            "WARNING: Could not read the gateway admin's linked accounts: "
+            f"{resp.status_code} {resp.text}"
+        )
+        return
+
+    if not await_directory_account(client, bridge_id, external_user_id):
+        print(
+            f"WARNING: The Mattermost bridge never listed {MATTERMOST_USER} in its "
+            f"directory, so {GATEWAY_ADMIN_EMAIL} was NOT linked to it. Owner-only "
+            "agents will not recognise you in Mattermost until you link the account "
+            "yourself from the server's Messaging apps section."
+        )
+        return
+
+    resp = client.post(
+        f"/gateway/collaborations/{bridge_id}/identities",
+        json={"external_user_id": external_user_id, "username": MATTERMOST_USER},
+    )
+    if resp.is_success:
+        print(f"Linked {GATEWAY_ADMIN_EMAIL} to Mattermost account {MATTERMOST_USER}")
+        return
+    print(
+        f"WARNING: Could not link {GATEWAY_ADMIN_EMAIL} to the Mattermost account "
+        f"{MATTERMOST_USER}: {resp.status_code} {resp.text}. Owner-only agents will "
+        "not recognise you in Mattermost until you link the account yourself from "
+        "the server's Messaging apps section."
+    )
 
 
 def main() -> None:
     print("Switch local setup starting...")
 
     wait_for_service(f"{MATTERMOST_URL}/api/v4/system/ping", "Mattermost")
-    setup_mattermost()
+    mattermost_user_id = setup_mattermost()
 
     wait_for_service(f"{SWITCH_URL}/health", "Switch")
-    register_bridge()
+    client = gateway_login()
+    try:
+        bridge_id = register_bridge(client)
+        if mattermost_user_id is None:
+            print(
+                f"WARNING: No Mattermost account for {MATTERMOST_USER}, so "
+                f"{GATEWAY_ADMIN_EMAIL} could not be linked to one"
+            )
+        else:
+            link_owner_identity(client, bridge_id, mattermost_user_id)
+    finally:
+        client.close()
 
     print("Setup complete!")
 

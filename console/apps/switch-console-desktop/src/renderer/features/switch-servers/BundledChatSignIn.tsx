@@ -1,8 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
-import { Check, ChevronDown, ChevronRight, Copy, Eye, EyeOff } from 'lucide-react';
+import { Check, Copy, ExternalLink, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { useCallback, useState } from 'react';
+import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { rpc } from '@renderer/lib/ipc';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogContentArea,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/lib/ui/dialog';
+import { DropdownMenuItem } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
 
 function CopyButton({ value, label }: { value: string; label: string }) {
@@ -75,63 +88,104 @@ function CredentialRow({
  * so it is never exposed to the LAN, so the copy must not invite the user to
  * try a device that cannot reach it.
  *
- * Collapsed by default, and the values are only fetched once it is opened: the
- * password should not cross into the renderer for everyone who merely looks at
- * the server page. When Switch Console cannot read the real values it says which
- * one is missing and why, and shows nothing else — a template password would
- * only send the user round a login loop.
+ * The values are only fetched once the dialog is opened: the password should
+ * not cross into the renderer for everyone who merely looks at the server page.
+ * When Switch Console cannot read the real values it says which one is missing
+ * and why, and shows nothing else — a template password would only send the
+ * user round a login loop.
  */
-export function BundledChatSignIn({ serverId }: { serverId: string }) {
-  const [expanded, setExpanded] = useState(false);
+export function BundledChatSignIn({
+  serverId,
+  bridgeDisplayName,
+  asMenuItem = false,
+}: {
+  serverId: string;
+  bridgeDisplayName: string;
+  /** Render the opener as a dropdown entry rather than a standalone icon
+   * button, for the row menu that now carries this action. */
+  asMenuItem?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
 
   const signInQuery = useQuery({
     queryKey: ['bundled-chat-sign-in', serverId],
     queryFn: () => rpc.switchServers.getBundledChatSignIn(serverId),
-    enabled: expanded,
+    // The password only crosses into the renderer once the dialog is actually
+    // opened, so merely listing the app never fetches it.
+    enabled: open,
   });
 
   const signIn = signInQuery.data;
+  const url = signIn?.kind === 'available' ? signIn.url : null;
 
   return (
-    <div className="mt-1 ml-6">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-auto px-1 py-0.5 text-xs text-foreground-muted"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((e) => !e)}
-      >
-        {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-        Sign-in details
-      </Button>
-
-      {expanded && (
-        <div className="mt-2 space-y-2">
-          <p className="text-xs text-foreground-muted">
-            Use these to sign in to this chat in a browser or the Mattermost desktop app on this
-            computer.
-          </p>
-
-          {signInQuery.isLoading ? (
-            <Spinner className="size-3.5" />
-          ) : signInQuery.isError ? (
-            <p className="text-destructive text-xs">
-              Could not read the sign-in details:{' '}
-              {signInQuery.error instanceof Error
-                ? signInQuery.error.message
-                : String(signInQuery.error)}
-            </p>
-          ) : signIn?.kind === 'unavailable' ? (
-            <p className="text-xs text-foreground-muted">{signIn.reason}</p>
-          ) : signIn?.kind === 'available' ? (
-            <>
-              <CredentialRow label="Server" value={signIn.url} />
-              <CredentialRow label="Username" value={signIn.username} />
-              <CredentialRow label="Password" value={signIn.password} secret />
-            </>
-          ) : null}
-        </div>
+    <>
+      {asMenuItem ? (
+        // `closeOnClick={false}` would leave the menu over the dialog; letting
+        // it close and opening the dialog from the same click is what keeps one
+        // surface on screen at a time.
+        <DropdownMenuItem onClick={() => setOpen(true)}>
+          <KeyRound className="size-4" />
+          Sign-in details…
+        </DropdownMenuItem>
+      ) : (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`${bridgeDisplayName} sign-in details`}
+          title={`${bridgeDisplayName} sign-in details`}
+          onClick={() => setOpen(true)}
+        >
+          <KeyRound className="size-3" />
+        </Button>
       )}
-    </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <BridgeIcon bridgeType="mattermost" size={16} />
+            <DialogTitle>{bridgeDisplayName} sign-in details</DialogTitle>
+          </DialogHeader>
+          <DialogContentArea className="space-y-3">
+            <DialogDescription>
+              Use these to sign in to this chat in a browser or the {bridgeDisplayName} desktop app
+              on this computer.
+            </DialogDescription>
+
+            {signInQuery.isLoading ? (
+              <Spinner className="size-3.5" />
+            ) : signInQuery.isError ? (
+              <p className="text-destructive text-xs">
+                Could not read the sign-in details:{' '}
+                {signInQuery.error instanceof Error
+                  ? signInQuery.error.message
+                  : String(signInQuery.error)}
+              </p>
+            ) : signIn?.kind === 'unavailable' ? (
+              <p className="text-xs text-foreground-muted">{signIn.reason}</p>
+            ) : signIn?.kind === 'available' ? (
+              <>
+                <CredentialRow label="Server" value={signIn.url} />
+                <CredentialRow label="Username" value={signIn.username} />
+                <CredentialRow label="Password" value={signIn.password} secret />
+              </>
+            ) : null}
+          </DialogContentArea>
+          <DialogFooter>
+            {url && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void openExternalUrl(url, `Could not open ${bridgeDisplayName}`)}
+              >
+                <ExternalLink className="size-4" />
+                Open in browser
+              </Button>
+            )}
+            <DialogClose render={<Button size="sm" />}>Done</DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

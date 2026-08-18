@@ -53,7 +53,7 @@ function plannableAgentTypes() {
   return listPlugins()
     .filter(
       (plugin) =>
-        plugin.capabilities.switchSetup.kind === 'cli' &&
+        plugin.capabilities.switchSetup.kind !== 'none' &&
         plugin.capabilities.hostDependency.binaryNames.length > 0
     )
     .map((plugin) => ({

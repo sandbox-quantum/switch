@@ -17,6 +17,7 @@ platform is exactly what the adapter thinks is posted.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import LiveRuntimeIndicator
@@ -78,6 +79,7 @@ def _adapter() -> tuple[SlackAdapter, _Platform]:
         message_ref="msg-1",
         body="⚙️ _Working on it…_",
         thread_root_id=None,
+        started_at=time.monotonic(),
     )
     return adapter, _Platform(adapter, "msg-1")
 
@@ -87,7 +89,7 @@ def _refresh(adapter: SlackAdapter, detail: str) -> Any:
         CHANNEL,
         AGENT,
         "working",
-        notify_user=None,
+        mention_handle=None,
         thread_root_id=None,
         detail=detail,
     )
@@ -178,7 +180,7 @@ async def test_the_turn_end_clear_removes_everything() -> None:
         CHANNEL,
         AGENT,
         "idle",
-        notify_user=None,
+        mention_handle=None,
         thread_root_id=None,
     )
 

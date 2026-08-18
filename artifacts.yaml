@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.13.2
+    version: 0.17.1
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.22.1
+    version: 0.27.1
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,7 +78,7 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.13.2
+      switch-core: 0.17.1
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
@@ -90,7 +90,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.1
+    version: 1.9.3
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with
@@ -127,13 +127,21 @@ artifacts:
 
   switch-connector:
     description: The Claude Code connector plugin.
-    version: 0.9.1
+    version: 0.9.4
     declared_in: connectors/claude-code-plugin/.claude-plugin/plugin.json
 
   switch-connector-codex:
     description: The Codex connector plugin.
-    version: 0.3.2
+    version: 0.3.5
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
+
+  switch-connector-opencode:
+    description: >-
+      The OpenCode connector. Unlike the other two it is written by Switch
+      Console rather than installed from the marketplace, because OpenCode has
+      no plugin marketplace to install it from.
+    version: 0.1.2
+    declared_in: connectors/opencode-plugin/package.json
 
 contracts:
   agent-protocol:

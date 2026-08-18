@@ -85,6 +85,7 @@ function params(overrides: Record<string, unknown> = {}) {
     providerId: 'codex' as const,
     serverId: 'srv-1',
     description: 'Codex running in repo',
+    iconUrl: null,
     autoSession: false,
     autoApprove: false,
     definitionAttributes: {},
@@ -164,6 +165,33 @@ describe('addAgent', () => {
     expect((await addAgent(params())).kind).toBe('name-conflict');
     expect(await fs.read(agentSettingsRelativePath('codex-hoot'))).toBeNull();
     expect(h.createAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses a name another Switch Console install already provisioned here, without minting an identity', async () => {
+    // A second install has its own database, so `agentNameTaken` cannot see its
+    // agent; the credentials file it left in the directory is the only trace.
+    // Refusing after registration would be too late — this agent's token is
+    // returned once, so it would already be lost (CHOO-1960).
+    const theirs = JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://their-switch.example.com',
+        SWITCH_API_TOKEN: 'their-token',
+        SWITCH_AGENT_ID: 'their-agent',
+      },
+    });
+    h.state.workspace = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: theirs });
+
+    const result = await addAgent(params());
+
+    expect(result).toEqual({
+      kind: 'credentials-conflict',
+      endpoint: 'https://their-switch.example.com',
+    });
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+    expect(h.createAgent).not.toHaveBeenCalled();
+    expect(
+      await (h.state.workspace as PluginFs).read(agentSettingsRelativePath('codex-hoot'))
+    ).toBe(theirs);
   });
 
   it('refuses a name already taken in the location, without minting an identity', async () => {

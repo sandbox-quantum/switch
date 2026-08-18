@@ -12,7 +12,9 @@ import type { AgentStatus, NotificationType } from '@shared/core/providers/agent
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import { PtyInjectionSink } from './injection-sink';
 import { PluginPromptInjector } from './plugin-prompt-injector';
-import { RoomConnection } from './room-connection';
+import { RoomConnection, type SpawnTurn } from './room-connection';
+
+export type { SpawnTurn };
 import { sessionConnectionId } from './session-connection-id';
 import { resolveSessionControl } from './session-control';
 import {
@@ -39,6 +41,8 @@ class SwitchNotificationPoller {
   private readonly connections = new Map<string, RoomConnection>();
   /** Agent id → buffer position the next session for it should start from. */
   private readonly pendingStart = new Map<string, number>();
+  /** The turn a spawned session owes an answer to, keyed like `pendingStart`. */
+  private readonly pendingTurn = new Map<string, SpawnTurn>();
   /** Session id → the room it is being started for, before it exists. */
   private readonly pendingRoom = new Map<string, { roomId: string; roomName: string | null }>();
 
@@ -97,10 +101,23 @@ class SwitchNotificationPoller {
    * the room it claims, so the cost of overlap is small and the cost of a gap
    * is the bug this fixes.
    */
-  noteSpawnTrigger(agentId: string, sequence: number): void {
-    const start = Math.max(sequence - 1, 0);
+  noteSpawnTrigger(
+    agentId: string,
+    sequence: number,
+    deliveredInOpeningPrompt: boolean,
+    turn: SpawnTurn | null
+  ): void {
+    // The trigger is replayed to the session unless it has already been handed
+    // to it in its opening prompt — in which case start *after* it, or the
+    // session receives the same message twice and answers it twice.
+    const start = deliveredInOpeningPrompt ? sequence : Math.max(sequence - 1, 0);
     const pending = this.pendingStart.get(agentId);
     this.pendingStart.set(agentId, pending === undefined ? start : Math.min(pending, start));
+    // Only meaningful when the message went in the opening prompt: that is the
+    // case with no injection to open the turn, which is why the turn has to be
+    // opened on arrival instead. A replayed trigger opens its own turn when it
+    // is injected, as any other message does.
+    if (turn !== null && deliveredInOpeningPrompt) this.pendingTurn.set(agentId, turn);
   }
 
   /**
@@ -227,6 +244,8 @@ class SwitchNotificationPoller {
     // later session must not rewind to a message this one already handled.
     const startCursor = this.pendingStart.get(creds.agentId);
     this.pendingStart.delete(creds.agentId);
+    const spawnTurn = this.pendingTurn.get(creds.agentId) ?? null;
+    this.pendingTurn.delete(creds.agentId);
     // The other end of the watcher's hand-off. If a spawned session comes up
     // without the message that triggered it, these two lines say whether the
     // cursor was handed over and honoured, or whether the session opened at
@@ -238,6 +257,7 @@ class SwitchNotificationPoller {
       connectionId,
       startFrom: startCursor ?? 'head',
       roomId: roomId ?? '(await the server)',
+      owesTurn: spawnTurn !== null,
     });
     const connection = new RoomConnection({
       creds,
@@ -245,6 +265,7 @@ class SwitchNotificationPoller {
       roomName,
       connectionId,
       startCursor,
+      spawnTurn,
       sessionId: ctx.sessionId,
       sink: new PtyInjectionSink(ptySessionId),
       injector: new PluginPromptInjector(ctx.providerId),

@@ -1,7 +1,9 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HomeMainPanel } from '@renderer/app/home-view';
+import { appSettingsMetaQueryKey } from '@renderer/features/settings/app-settings-client';
 import { ThemeContext } from '@renderer/lib/providers/theme-provider';
 
 /**
@@ -20,22 +22,39 @@ import { ThemeContext } from '@renderer/lib/providers/theme-provider';
 
 let container: HTMLDivElement | null = null;
 
-async function renderHome(): Promise<HTMLDivElement> {
+async function renderHome({
+  showChecklist = true,
+}: { showChecklist?: boolean } = {}): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
+  // The welcome screen reads onboarding progress through React Query, so it
+  // needs a client even though nothing here resolves.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  // The checklist is hidden until the setting says otherwise, and the test
+  // bridge answers every IPC call with `undefined` — so without seeding this
+  // there is no checklist on screen to make assertions about.
+  queryClient.setQueryData(appSettingsMetaQueryKey('onboarding'), {
+    value: { showChecklist },
+    defaults: { showChecklist: true },
+    overrides: {},
+  });
   await act(async () =>
     root.render(
-      <ThemeContext.Provider
-        value={{
-          theme: null,
-          setTheme: () => {},
-          toggleTheme: () => {},
-          effectiveTheme: 'emlight',
-        }}
-      >
-        <HomeMainPanel />
-      </ThemeContext.Provider>
+      <QueryClientProvider client={queryClient}>
+        <ThemeContext.Provider
+          value={{
+            theme: null,
+            setTheme: () => {},
+            toggleTheme: () => {},
+            effectiveTheme: 'emlight',
+          }}
+        >
+          <HomeMainPanel />
+        </ThemeContext.Provider>
+      </QueryClientProvider>
     )
   );
   return container;
@@ -55,11 +74,21 @@ describe('home view drag region', () => {
     expect(surface?.className).toContain('[-webkit-app-region:drag]');
   });
 
-  it('opts the action list out so its buttons stay clickable', async () => {
+  it('opts the checklist out so its steps stay clickable', async () => {
     const el = await renderHome();
-    const action = el.querySelector('button[aria-label="Add Switch agent"]');
+    const step = [...el.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === 'Add a server'
+    );
 
-    expect(action).not.toBeNull();
-    expect(action?.closest('[class*="[-webkit-app-region:no-drag]"]')).not.toBeNull();
+    expect(step).toBeDefined();
+    expect(step?.closest('[class*="[-webkit-app-region:no-drag]"]')).not.toBeNull();
+  });
+
+  it('drops the checklist once it has been dismissed', async () => {
+    const el = await renderHome({ showChecklist: false });
+
+    expect(el.textContent).not.toContain('Setting up Switch');
+    // The rest of the welcome screen is not the checklist's to take with it.
+    expect(el.textContent).toContain('Learn more');
   });
 });

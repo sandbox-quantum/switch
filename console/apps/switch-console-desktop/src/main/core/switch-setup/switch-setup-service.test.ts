@@ -31,6 +31,7 @@ vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 }));
 
+import { ARTIFACT_VERSIONS } from '@switch-console/shared';
 import { switchSetupService } from './switch-setup-service';
 
 const CLI_AGENT = {
@@ -640,5 +641,49 @@ describe('switchSetupService with the codex dialect', () => {
       message:
         'Update failed: the plugin was removed but could not be reinstalled. Install it again from Settings → Agents.',
     });
+  });
+});
+
+describe('file-based connector version', () => {
+  const installedVersion = vi.fn();
+  const FILES_AGENT = {
+    metadata: { id: 'opencode' },
+    capabilities: {
+      switchSetup: {
+        kind: 'files',
+        connectorName: 'Switch connector',
+        artifact: 'switch-connector-opencode',
+      },
+      hostDependency: { binaryNames: ['opencode'] },
+    },
+    behavior: { switchSetup: { files: { installedVersion } } },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getPlugin.mockReturnValue(FILES_AGENT);
+  });
+
+  // The connector is versioned in its own directory and listed in the registry
+  // beside the marketplace connectors. Reporting the app's version here would
+  // put a number on the card that matches nothing the connector declares.
+  it('reports the connector artifact version, not the app version', async () => {
+    installedVersion.mockResolvedValue('0.1.0');
+
+    const status = await switchSetupService.getStatus('opencode');
+
+    expect(status.latestVersion).toBe(ARTIFACT_VERSIONS['switch-connector-opencode']);
+    expect(status.installedVersion).toBe('0.1.0');
+  });
+
+  // Keying "update available" on the app version offered an update on every
+  // app release, even one that rewrote the connector with identical bytes.
+  it('offers no update when the installed connector is the current one', async () => {
+    installedVersion.mockResolvedValue(ARTIFACT_VERSIONS['switch-connector-opencode']);
+
+    const status = await switchSetupService.getStatus('opencode');
+
+    expect(status.installed).toBe(true);
+    expect(status.updateAvailable).toBe(false);
   });
 });

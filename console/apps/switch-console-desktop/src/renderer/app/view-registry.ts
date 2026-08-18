@@ -6,13 +6,15 @@ import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-ho
 import { sessionView } from '@renderer/features/sessions/view';
 import { settingsView } from '@renderer/features/settings/settings-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
+import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
+import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-view';
 import { serverView } from '@renderer/features/switch-servers/view';
 import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
 
 // Switch Console views: agents-at-a-location (location), sessions (session), home, settings,
-// server (a connected Switch gateway). Automations, library, skills, and mcp
-// were removed.
+// and a connected Switch gateway's workspace — its Home (server) plus that
+// server's agents and rooms. Automations, library, skills, and mcp were removed.
 export const views = {
   home: homeView,
   location: locationView,
@@ -20,6 +22,8 @@ export const views = {
   room: roomView,
   settings: settingsView,
   server: serverView,
+  serverAgents: serverAgentsView,
+  serverRooms: serverRoomsView,
   remoteHosts: remoteHostsView,
   remoteHost: remoteHostView,
   // oxlint-disable-next-line typescript/no-explicit-any

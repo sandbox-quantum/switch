@@ -156,7 +156,8 @@ describe('RoomConnection', () => {
   function connect(
     sink: { acquire: () => InjectionTarget | null },
     events: AgentBridgeEvent[],
-    isHumanTyping: () => boolean = () => false
+    isHumanTyping: () => boolean = () => false,
+    spawnTurn: { threadId: string | null; anchorId: string | null } | null = null
   ) {
     const fetchMock = makeFetch(events);
     vi.stubGlobal('fetch', fetchMock);
@@ -172,11 +173,87 @@ describe('RoomConnection', () => {
       deeplinkScheme: 'switchdash',
       isHumanTyping,
       mediaDir,
+      spawnTurn,
       log: silentLog,
     });
     conn.start();
     return { conn, fetchMock };
   }
+
+  /**
+   * The turn a spawned session was started for (CHOO-2173).
+   *
+   * Addressing an agent with no session gets "Starting a session to handle
+   * this" — and then, until now, nothing. The message that caused the spawn
+   * travels in the session's opening prompt, because it arrives before there is
+   * a terminal to type into, so no injection ever opens the turn. That made the
+   * first turn the one turn that reported no state at all: no working, and on
+   * Mattermost no indicator and no typing.
+   */
+  describe('the turn a session was spawned to answer', () => {
+    const idleSink = { acquire: () => null };
+
+    it('reports working on reaching the room, with nobody having injected anything', async () => {
+      const { conn, fetchMock } = connect(idleSink, [], () => false, {
+        threadId: null,
+        anchorId: 'msg-42',
+      });
+      await flush();
+      conn.stop();
+
+      expect(runtimeStates(fetchMock)[0]).toBe('working');
+    });
+
+    it('reports against the message that is waiting, not the room root', async () => {
+      // So the indicator and Mattermost's typing land where the asking happened.
+      const { conn, fetchMock } = connect(idleSink, [], () => false, {
+        threadId: 'thread-9',
+        anchorId: 'msg-42',
+      });
+      await flush();
+      conn.stop();
+
+      expect(workingAnchors(fetchMock)[0]).toBe('msg-42');
+    });
+
+    it('still goes idle when the agent finishes', async () => {
+      // The turn has to close, or the indicator spins for the session's life.
+      const { conn, fetchMock } = connect(idleSink, [], () => false, {
+        threadId: null,
+        anchorId: 'msg-42',
+      });
+      await flush();
+      conn.onAgentStatusChange('completed');
+      await flush();
+      conn.stop();
+
+      expect(runtimeStates(fetchMock)).toContain('idle');
+    });
+
+    it('opens the turn once, not again on every reconnect', async () => {
+      const { conn, fetchMock } = connect(idleSink, [], () => false, {
+        threadId: null,
+        anchorId: 'msg-42',
+      });
+      await flush();
+      conn.onAgentStatusChange('completed');
+      await flush();
+      // A second arrival in the same room must not re-raise a turn that is done.
+      (conn as unknown as { adoptRoom: (rooms: string[]) => void }).adoptRoom(['room-2']);
+      await flush();
+      conn.stop();
+
+      expect(runtimeStates(fetchMock).filter((s) => s === 'working')).toHaveLength(1);
+    });
+
+    it('a session nobody is waiting on reports idle, as before', async () => {
+      const { conn, fetchMock } = connect(idleSink, []);
+      await flush();
+      conn.stop();
+
+      expect(runtimeStates(fetchMock)).not.toContain('working');
+    });
+  });
 
   it('injects an addressed message then submits, and surfaces a working turn', async () => {
     const target: InjectionTarget = { write: vi.fn() };
@@ -315,6 +392,52 @@ describe('RoomConnection', () => {
       expect.objectContaining({ queued: 1 })
     );
     conn.stop();
+  });
+
+  it('delivers the message once the session has a terminal to type into', async () => {
+    // The bug this guards (CHOO-2173): a session auto-started to answer a room
+    // message opens this connection before its terminal exists, so the very
+    // message it was started for arrives with nowhere to go. The dialog and
+    // operator-typing gates both come back on a timer; this one did not, and
+    // waited on an unrelated event that on a fresh session never came — so the
+    // agent booted, said hello, and never saw what it was asked.
+    vi.useFakeTimers();
+    try {
+      const target: InjectionTarget = { write: vi.fn() };
+      let live = false;
+      const { conn } = connect({ acquire: () => (live ? target : null) }, [messageEvent(true)]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(target.write).not.toHaveBeenCalled();
+
+      live = true;
+      // NO_TARGET_RETRY_MS.
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(vi.mocked(target.write).mock.calls.map((c) => c[0])[0]).toContain('<<');
+      conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops looking for a terminal once the connection is stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const target: InjectionTarget = { write: vi.fn() };
+      let live = false;
+      const { conn } = connect({ acquire: () => (live ? target : null) }, [messageEvent(true)]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      conn.stop();
+
+      live = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(target.write).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('defers injection while the operator is typing into the pane', async () => {

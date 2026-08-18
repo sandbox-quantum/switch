@@ -4,21 +4,12 @@ import { APP_SHORTCUTS, resolveDefaultHotkey, type ShortcutSettingsKey } from '@
 export type { AppShortcutDef, ShortcutSettingsKey } from '@shared/shortcuts';
 export { APP_SHORTCUTS, resolveDefaultHotkey } from '@shared/shortcuts';
 
-type ShortcutOverrides = Partial<Record<ShortcutSettingsKey, string | null>>;
-
 /**
- * Returns the currently assigned hotkey for an action.
- * - `undefined` override -> falls back to default
- * - `null` override -> unassigned (disabled)
- * - no `defaultHotkey` and no override -> `null` (not bound)
+ * Returns the hotkey assigned to an action, or `null` when it has no
+ * `defaultHotkey` on the current platform (not bound).
  */
-export function getEffectiveHotkey(
-  key: ShortcutSettingsKey,
-  custom?: ShortcutOverrides
-): Hotkey | null {
-  const configured = custom?.[key];
-  if (configured === null) return null;
-  const resolved = configured ?? resolveDefaultHotkey(APP_SHORTCUTS[key]);
+export function getEffectiveHotkey(key: ShortcutSettingsKey): Hotkey | null {
+  const resolved = resolveDefaultHotkey(APP_SHORTCUTS[key]);
   return resolved != null ? (resolved as Hotkey) : null;
 }
 
@@ -26,11 +17,6 @@ export function getEffectiveHotkey(
  * Always returns a valid hotkey string for hook registration.
  * Pair this with `getEffectiveHotkey(...) !== null` in `enabled`.
  */
-export function getHotkeyRegistration(
-  key: ShortcutSettingsKey,
-  custom?: ShortcutOverrides
-): Hotkey {
-  return (getEffectiveHotkey(key, custom) ??
-    resolveDefaultHotkey(APP_SHORTCUTS[key]) ??
-    '') as Hotkey;
+export function getHotkeyRegistration(key: ShortcutSettingsKey): Hotkey {
+  return (getEffectiveHotkey(key) ?? '') as Hotkey;
 }

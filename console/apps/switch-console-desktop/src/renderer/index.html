@@ -17,6 +17,16 @@
                 : 'emlight';
           document.documentElement.classList.add(effective);
         } catch (_) {}
+        try {
+          // Paired with the `vibrancy` branch in main/app/window.ts: only
+          // macOS gets a translucent window, so only there may the renderer
+          // leave the material see-through. Anywhere else the same colour has
+          // to be opaque, or the window shows the desktop through an effect
+          // the compositor never applied.
+          if (navigator.userAgent.indexOf('Macintosh') !== -1) {
+            document.documentElement.classList.add('has-vibrancy');
+          }
+        } catch (_) {}
       })();
     </script>
   </head>

@@ -131,10 +131,6 @@ services:
       MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: switchdash
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
-      # Lets the bridge hard-delete (permanent=true) an agent's transient
-      # "working on it…" status post instead of soft-deleting it, which would
-      # leave a "(message deleted)" tombstone. Requires Mattermost >= v10.2.
-      MM_SERVICESETTINGS_ENABLEAPIPOSTDELETION: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
       # configured provider and throws a 404 looking up its bot on every page

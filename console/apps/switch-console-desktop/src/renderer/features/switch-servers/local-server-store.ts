@@ -16,6 +16,19 @@ import { switchServersStore } from './switch-servers-store';
 const MAX_LOG_LINES = 400;
 
 /**
+ * How often the tail is allowed to repaint.
+ *
+ * `docker compose` reports a pull faster than a person can read and far faster
+ * than the UI can usefully redraw — a few images' worth of layers runs to
+ * hundreds of lines a second, sustained for minutes on a first run. One store
+ * write per line means one render of the whole dialog per line, each rebuilding
+ * the tail and measuring it to scroll; the renderer stops painting and the
+ * output only lands once the command falls quiet. Lines are collected and
+ * applied in batches instead.
+ */
+const LOG_FLUSH_MS = 100;
+
+/**
  * Renderer store for local-server mode. Mirrors the main-process supervisor's
  * status (streamed over `localServerStatusChannel`) and exposes the lifecycle
  * actions. On a successful start/reset it refreshes the servers store so the
@@ -32,9 +45,13 @@ export class LocalServerStore {
 
   private off: (() => void) | null = null;
   private offLog: (() => void) | null = null;
+  /** Lines received since the last flush. Not observable: reading it would
+   *  defeat the batching it exists for. */
+  /* internal */ pendingLines: string[] = [];
+  /* internal */ flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    makeAutoObservable(this);
+    makeAutoObservable(this, { pendingLines: false, flushTimer: false });
   }
 
   get phase(): LocalServerStatus['phase'] {
@@ -67,14 +84,7 @@ export class LocalServerStore {
       });
     }
     if (!this.offLog) {
-      this.offLog = events.on(localServerLogChannel, ({ line }) => {
-        runInAction(() => {
-          this.logs.push(line);
-          if (this.logs.length > MAX_LOG_LINES) {
-            this.logs.splice(0, this.logs.length - MAX_LOG_LINES);
-          }
-        });
-      });
+      this.offLog = events.on(localServerLogChannel, ({ line }) => this.queueLine(line));
     }
     try {
       const status = await rpc.localSwitchServer.getStatus();
@@ -86,11 +96,37 @@ export class LocalServerStore {
     }
   }
 
+  /** Collects a line for the next flush. Public for the batching test. */
+  queueLine(line: string): void {
+    this.pendingLines.push(line);
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => this.flushLines(), LOG_FLUSH_MS);
+  }
+
+  /** Applies the batch. Exposed for tests and for the end of a run, where the
+   *  last few lines must not wait on a timer that may never fire. */
+  flushLines(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.pendingLines.length === 0) return;
+    const batch = this.pendingLines;
+    this.pendingLines = [];
+    runInAction(() => {
+      this.logs.push(...batch);
+      if (this.logs.length > MAX_LOG_LINES) {
+        this.logs.splice(0, this.logs.length - MAX_LOG_LINES);
+      }
+    });
+  }
+
   dispose(): void {
     this.off?.();
     this.off = null;
     this.offLog?.();
     this.offLog = null;
+    this.flushLines();
   }
 
   async checkDocker(): Promise<void> {
@@ -105,6 +141,11 @@ export class LocalServerStore {
   }
 
   async start(): Promise<void> {
+    this.pendingLines = [];
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
     runInAction(() => {
       this.busy = true;
       this.error = null;
@@ -131,6 +172,9 @@ export class LocalServerStore {
     } catch (cause) {
       this.setError(cause);
     } finally {
+      // The command has finished, so nothing more will arrive to trigger a
+      // flush — the tail's last lines are the ones that say how it went.
+      this.flushLines();
       runInAction(() => {
         this.busy = false;
       });

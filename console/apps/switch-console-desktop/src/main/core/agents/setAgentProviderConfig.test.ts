@@ -47,7 +47,11 @@ vi.mock('./remove-launch-profile', () => ({
 
 import { setAgentProviderConfig } from './setAgentProviderConfig';
 
-const CONFIG: AgentProviderConfig = { version: '1', model: 'gpt-5.6-terra', effort: 'high' };
+const CONFIG: AgentProviderConfig = {
+  version: '2',
+  providerId: 'codex',
+  values: { model: 'gpt-5.6-terra', effort: 'high' },
+};
 
 describe('setAgentProviderConfig', () => {
   beforeEach(() => {

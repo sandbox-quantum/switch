@@ -194,7 +194,6 @@ class TestUpdateAgentDetail:
         assert detail.known_agent_options["repo_dir"] == "/work/dir"
         # ...and the untouched fields keep their prior values (partial merge).
         assert detail.known_agent_options["channels_enabled"] is True
-        assert detail.known_agent_options["notify_user"] is None
 
     async def test_options_rebuild_integration_profile(
         self, session_factory: async_sessionmaker[AsyncSession]

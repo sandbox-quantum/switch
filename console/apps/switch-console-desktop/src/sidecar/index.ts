@@ -375,6 +375,13 @@ async function main(): Promise<void> {
     token: server.getToken(),
     hash: bundleHash,
     version: SIDECAR_VERSION,
+    // Which Switch Console install deployed this process. Echoed from the env we
+    // were launched with — unlike the hash above, which we recompute because the
+    // launcher's claim about our BYTES can go stale under a concurrent deploy.
+    // Nothing on the host can derive this: who started us is precisely what the
+    // launcher knows and we do not. Omitted when launched without one, and a
+    // reader must take its absence as unknown rather than as its own.
+    deployer: process.env.SWITCHDASH_SIDECAR_DEPLOYER_ID?.trim() || null,
     // What this sidecar speaks, declared in the file the client already reads
     // (CHOO-1865). The version above says only which release this is;
     // compatibility is this. A sidecar deployed before it existed omits the

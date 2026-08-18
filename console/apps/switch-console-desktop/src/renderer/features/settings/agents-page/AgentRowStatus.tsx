@@ -1,9 +1,9 @@
 import { useSwitchSetup } from '@renderer/lib/stores/use-switch-setup';
 import {
+  ConnectorUpdateBadge,
   InstalledBadge,
   SwitchSetupRequiredBadge,
   UninstalledBadge,
-  UpdateAvailableBadge,
 } from './agent-status-badge';
 
 /**
@@ -14,65 +14,44 @@ import {
  * the connector is set up. The intermediate "Switch setup required" state makes
  * clear that an installed CLI is not yet usable on its own. Agent types with no
  * Switch setup keep the plain installed/not-installed status.
+ *
+ * A newer version of the agent's own CLI is deliberately not reported here. It
+ * changes nothing about whether the agent works in Switch, and shown beside the
+ * name it read as a fault on an agent that was fine — the list answers "can I
+ * use this", and an optional upgrade is not an answer to that. It stays on the
+ * agent's own page, where someone has gone looking. The connector is the
+ * exception: it is ours, and a stale one is worth acting on.
  */
 export function AgentRowStatus({
   agentId,
   supportsSwitch,
   cliInstalled,
-  cliUpdateAvailable,
 }: {
   agentId: string;
   supportsSwitch: boolean;
   cliInstalled: boolean;
-  cliUpdateAvailable: boolean;
 }) {
   if (!supportsSwitch) {
-    return (
-      <>
-        {cliUpdateAvailable && <UpdateAvailableBadge />}
-        {cliInstalled ? <InstalledBadge /> : <UninstalledBadge />}
-      </>
-    );
+    return cliInstalled ? <InstalledBadge /> : <UninstalledBadge />;
   }
-  return (
-    <SwitchAwareStatus
-      agentId={agentId}
-      cliInstalled={cliInstalled}
-      cliUpdateAvailable={cliUpdateAvailable}
-    />
-  );
+  return <SwitchAwareStatus agentId={agentId} cliInstalled={cliInstalled} />;
 }
 
-function SwitchAwareStatus({
-  agentId,
-  cliInstalled,
-  cliUpdateAvailable,
-}: {
-  agentId: string;
-  cliInstalled: boolean;
-  cliUpdateAvailable: boolean;
-}) {
+function SwitchAwareStatus({ agentId, cliInstalled }: { agentId: string; cliInstalled: boolean }) {
   const { status, isLoading } = useSwitchSetup(agentId);
-  const connectorUpdateAvailable = !!status?.installed && !!status.updateAvailable;
 
   // Not on the machine yet — nothing else matters.
   if (!cliInstalled) return <UninstalledBadge />;
 
   // CLI installed; refine by connector state. While the connector status is
   // still loading (or unexpectedly unsupported), fall back to plain Installed.
-  const statusBadge =
-    isLoading || !status?.supported ? (
-      <InstalledBadge />
-    ) : status.installed ? (
-      <InstalledBadge />
-    ) : (
-      <SwitchSetupRequiredBadge />
-    );
+  if (isLoading || !status?.supported) return <InstalledBadge />;
+  if (!status.installed) return <SwitchSetupRequiredBadge />;
 
   return (
     <>
-      {(cliUpdateAvailable || connectorUpdateAvailable) && <UpdateAvailableBadge />}
-      {statusBadge}
+      {status.updateAvailable && <ConnectorUpdateBadge />}
+      <InstalledBadge />
     </>
   );
 }

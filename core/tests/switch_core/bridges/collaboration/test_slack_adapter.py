@@ -614,7 +614,7 @@ def test_runtime_state_working_posts_generic_indicator() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "C123", "agent-bot", "working", notify_user=None, thread_root_id=None
+            "C123", "agent-bot", "working", mention_handle=None, thread_root_id=None
         )
     )
 
@@ -632,7 +632,7 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "C123", "agent-bot", "working", notify_user=None, thread_root_id=None
+            "C123", "agent-bot", "working", mention_handle=None, thread_root_id=None
         )
     )
     _run(
@@ -640,7 +640,7 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
             "C123",
             "agent-bot",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
             detail="Editing room-connection.ts",
         )
@@ -662,12 +662,12 @@ def test_runtime_state_idle_clears_working_message() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "C123", "agent-bot", "working", notify_user=None, thread_root_id=None
+            "C123", "agent-bot", "working", mention_handle=None, thread_root_id=None
         )
     )
     _run(
         adapter.apply_runtime_state(
-            "C123", "agent-bot", "idle", notify_user=None, thread_root_id=None
+            "C123", "agent-bot", "idle", mention_handle=None, thread_root_id=None
         )
     )
 
@@ -688,7 +688,7 @@ def test_reposition_reposts_indicator_below_newer_traffic() -> None:
             "C123",
             "agent-bot",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id=None,
             detail="Editing adapter.py",
         )
@@ -713,7 +713,7 @@ def test_reposition_stays_in_the_thread_when_the_message_is_in_it() -> None:
             "C123",
             "agent-bot",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id="C123:111.1",
         )
     )
@@ -734,7 +734,7 @@ def test_reposition_follows_the_agent_into_a_different_thread() -> None:
             "C123",
             "agent-bot",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id="C123:111.1",
         )
     )
@@ -754,7 +754,7 @@ def test_reposition_follows_the_agent_back_out_to_the_channel_root() -> None:
             "C123",
             "agent-bot",
             "working",
-            notify_user=None,
+            mention_handle=None,
             thread_root_id="C123:111.1",
         )
     )
@@ -785,12 +785,12 @@ def test_a_turn_ending_during_a_move_clears_what_the_move_left() -> None:
 
     async def scenario() -> None:
         await adapter.apply_runtime_state(
-            "C123", "agent-bot", "working", notify_user=None, thread_root_id=None
+            "C123", "agent-bot", "working", mention_handle=None, thread_root_id=None
         )
         await asyncio.gather(
             adapter.reposition_runtime_state("C123", "agent-bot", None),
             adapter.apply_runtime_state(
-                "C123", "agent-bot", "idle", notify_user=None, thread_root_id=None
+                "C123", "agent-bot", "idle", mention_handle=None, thread_root_id=None
             ),
         )
 
@@ -811,7 +811,7 @@ def test_reposition_leaves_the_original_when_the_repost_fails() -> None:
 
     _run(
         adapter.apply_runtime_state(
-            "C123", "agent-bot", "working", notify_user=None, thread_root_id=None
+            "C123", "agent-bot", "working", mention_handle=None, thread_root_id=None
         )
     )
 

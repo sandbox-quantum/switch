@@ -61,6 +61,7 @@ async def build_agent_summary(
         id=agent.id,
         name=agent.name,
         description=agent.description,
+        icon_url=agent.icon_url,
         connector_type=agent.connector_type,
         connection_model=profile.get("connection_model"),
         tool_count=len(tools),
@@ -76,6 +77,11 @@ async def build_agent_summary(
         known_agent_options=known_agent_options
         if isinstance(known_agent_options, dict)
         else None,
+        addressing_policy=(
+            AddressingPolicy.model_validate(agent.addressing_policy)
+            if isinstance(agent.addressing_policy, dict)
+            else None
+        ),
     )
 
 
@@ -251,12 +257,6 @@ async def assemble_agent_detail(
         for child in child_agents
     ]
 
-    addressing_policy = (
-        AddressingPolicy.model_validate(agent.addressing_policy)
-        if isinstance(agent.addressing_policy, dict)
-        else None
-    )
-
     return AgentDetail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
@@ -270,7 +270,6 @@ async def assemble_agent_detail(
         rooms=memberships,
         sessions=sessions,
         children=children,
-        addressing_policy=addressing_policy,
     )
 
 

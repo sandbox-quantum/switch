@@ -146,6 +146,32 @@ class GraphClient:
         result: dict[str, Any] = resp.json()
         return result
 
+    async def search_users(self, *, query: str, top: int = 25) -> list[dict[str, Any]]:
+        """Search the directory for people whose name, handle or mail matches.
+
+        Uses `$search` over the `users` collection, which needs the
+        ConsistencyLevel header. Returns the raw Graph user objects.
+        """
+        escaped = query.replace('"', '\\"')
+        headers = await self._headers()
+        headers["ConsistencyLevel"] = "eventual"
+        resp = await self._http.get(
+            f"{GRAPH_BASE}/users",
+            params={
+                "$search": f'"displayName:{escaped}" OR "mail:{escaped}"',
+                "$select": "id,displayName,userPrincipalName,mail",
+                "$top": str(top),
+            },
+            headers=headers,
+        )
+        if resp.status_code >= 300:
+            raise GraphError(
+                f"user search for {query!r} failed ({resp.status_code}): {resp.text}"
+            )
+        payload: dict[str, Any] = resp.json()
+        users: list[dict[str, Any]] = payload.get("value", []) or []
+        return users
+
     async def add_channel_member(
         self, *, team_id: str, channel_id: str, user_aad_id: str
     ) -> None:

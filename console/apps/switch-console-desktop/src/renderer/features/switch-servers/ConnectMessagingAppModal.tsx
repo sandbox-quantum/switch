@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
 import { switchServersStore } from './switch-servers-store';
 
@@ -33,7 +34,17 @@ type ConnectMessagingAppModalArgs = {
   serverId?: string;
 };
 
-type Props = BaseModalProps<{ bridgeId: string }> & ConnectMessagingAppModalArgs;
+/** What the caller needs to decide what to do next. `directorySearchSupported`
+ * says whether there is any point offering the link-your-account step: on a
+ * platform without a directory, a connection nobody has used yet knows nobody,
+ * so the search would be a form that cannot be filled in. */
+type ConnectedApp = {
+  bridgeId: string;
+  displayName: string;
+  directorySearchSupported: boolean;
+};
+
+type Props = BaseModalProps<ConnectedApp> & ConnectMessagingAppModalArgs;
 
 export const ConnectMessagingAppModal = observer(function ConnectMessagingAppModal({
   serverId: overrideServerId,
@@ -52,6 +63,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   // the modal, and the only thing that reads it is the submit call.
   const [config, setConfig] = useState<Record<string, string>>({});
   const [setAsDefault, setSetAsDefault] = useState(false);
+  // Defaults on: most platforms can create channels, and the server rejects
+  // this staying true for one that can't rather than us guessing wrong.
+  const [channelCreationEnabled, setChannelCreationEnabled] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,6 +77,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
   const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
   const selectedType = types.find((t) => t.key === typeKey) ?? null;
+  // Unknown until the type list has loaded; assume supported so the checkbox
+  // isn't forced off while that request is in flight.
+  const channelCreationSupported = selectedType?.channelCreationSupported ?? true;
 
   const handleTypeChange = useCallback((next: string | null) => {
     // Switching platform drops whatever was typed for the previous one — those
@@ -70,6 +87,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     // would silently submit a credential the user thinks they replaced.
     setTypeKey(next);
     setConfig({});
+    setChannelCreationEnabled(true);
     setError(null);
   }, []);
 
@@ -101,13 +119,21 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
         displayName: trimmedName,
         connectionConfig,
         setAsDefault,
+        // Forced off for a platform that can't create channels regardless of
+        // the checkbox state — the server rejects `true` there anyway, but
+        // sending what the form actually shows is the honest request.
+        channelCreationEnabled: channelCreationSupported && channelCreationEnabled,
       });
 
       if (result.kind !== 'created') {
         setError(messageFor(result));
         return;
       }
-      onSuccess({ bridgeId: result.bridge.id });
+      onSuccess({
+        bridgeId: result.bridge.id,
+        displayName: result.bridge.displayName,
+        directorySearchSupported: selectedType.directorySearchSupported,
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -121,6 +147,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     trimmedName,
     config,
     setAsDefault,
+    channelCreationSupported,
+    channelCreationEnabled,
     onSuccess,
     setCloseGuard,
   ]);
@@ -236,6 +264,28 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                   )}
                 </Field>
               ))}
+
+              <label
+                className={cn(
+                  'group/field flex items-start gap-2.5',
+                  channelCreationSupported ? 'cursor-pointer' : 'cursor-not-allowed'
+                )}
+              >
+                <Checkbox
+                  checked={channelCreationSupported && channelCreationEnabled}
+                  disabled={!channelCreationSupported}
+                  onCheckedChange={(checked) => setChannelCreationEnabled(checked === true)}
+                  className="mt-0.5"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="text-sm font-medium">Allow creating channels from Switch</span>
+                  <span className="text-xs text-foreground-muted">
+                    {channelCreationSupported
+                      ? `Allows Switch users and agents to create channels in ${bridgePlatformLabel(selectedType.key)} from Switch. Turn it off to only ever use channels made in the app.`
+                      : `${bridgePlatformLabel(selectedType.key)} has no way to create channels from Switch, so this connection can only be used with channels made in the app.`}
+                  </span>
+                </span>
+              </label>
 
               <label className="group/field flex cursor-pointer items-start gap-2.5">
                 <Checkbox

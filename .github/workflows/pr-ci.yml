@@ -160,8 +160,14 @@ jobs:
       # nothing verified the sync had run — the two could drift with only a
       # comment asking nicely, which is how it silently stopped running once
       # already (CHOO-1865).
+      #
+      # The filter is the package name, not the directory. `pnpm --filter` on a
+      # name nothing matches prints a notice and exits 0, so getting it wrong
+      # does not fail the build — it just stops checking, which is how this
+      # died the second time (the directory was renamed to
+      # switch-console-desktop, the package is still @switch-console/desktop).
       - name: Bundled standalone compose is current
-        run: pnpm --filter switch-console-desktop run sync:compose:check
+        run: pnpm --filter @switch-console/desktop run sync:compose:check
 
       - name: Build workspace packages
         run: pnpm -r --filter './packages/**' run build

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.room_service import RoomService
 
 
@@ -127,6 +128,23 @@ class _FakeMatrix:
         self._events.append(("kick", matrix_user_id))
 
 
+class _FakeBridgeStore:
+    """Whether an operator has left this connection able to create channels.
+
+    Moving a room to a bridge provisions a channel on it, so the same switch
+    that governs creating a room governs this."""
+
+    def __init__(self, *, channel_creation_enabled: bool) -> None:
+        self._enabled = channel_creation_enabled
+
+    async def get(self, session: Any, bridge_id: str) -> Any:
+        return SimpleNamespace(
+            id=bridge_id,
+            display_name=bridge_id,
+            channel_creation_enabled=self._enabled,
+        )
+
+
 def _build_service(
     *,
     room: Any,
@@ -134,6 +152,7 @@ def _build_service(
     agent_names: dict[str, str],
     bridges: dict[str, Any],
     events: list[Any],
+    channel_creation_enabled: bool = True,
 ) -> tuple[RoomService, _FakeRoomStore]:
     room_store = _FakeRoomStore(room, agent_ids)
     svc = object.__new__(RoomService)
@@ -142,6 +161,9 @@ def _build_service(
     svc._agent_store = _FakeAgentStore(agent_names)  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle(bridges)  # type: ignore[assignment]
     svc._matrix_admin = _FakeMatrix(events)  # type: ignore[assignment]
+    svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
+        channel_creation_enabled=channel_creation_enabled
+    )
     return svc, room_store
 
 
@@ -338,3 +360,38 @@ class TestChangeBridge:
 
         with pytest.raises(ValueError, match="already bound"):
             await svc.change_bridge("room-1", bridge_id="bridge-x")
+
+    async def test_move_refused_when_the_target_may_not_create_channels(self) -> None:
+        # Moving a room to a bridge provisions a channel on it, so a connection
+        # an operator has withheld channel creation from must refuse here too —
+        # before the old binding is touched, so a refused move changes nothing.
+        events: list[Any] = []
+        room = SimpleNamespace(
+            id="room-1",
+            name="Work",
+            description="d",
+            matrix_room_id="!mx:switch.local",
+            bridge_id="bridge-old",
+            channel_type="channel_public",
+            external_channel_id="chan-old",
+        )
+        new_bridge = _FakeBridgeCore(
+            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        )
+        svc, room_store = _build_service(
+            room=room,
+            agent_ids=[],
+            agent_names={},
+            bridges={
+                "bridge-new": new_bridge,
+                "bridge-old": _FakeBridgeCore(events, matrix_user_id="@bot-old:s"),
+            },
+            events=events,
+            channel_creation_enabled=False,
+        )
+
+        with pytest.raises(ChannelCreationUnsupported, match="turned off"):
+            await svc.change_bridge("room-1", bridge_id="bridge-new")
+
+        assert room_store.update_bridge_calls == []
+        assert events == []

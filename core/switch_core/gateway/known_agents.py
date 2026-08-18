@@ -54,6 +54,7 @@ class KnownAgent(ABC):
         options: KnownAgentOptions,
         agent: Agent,
         room_name: str,
+        owner_handle: str | None,
         assume_role: str | None = None,
         other_room_names: list[str] | None = None,
         connected_not_live: bool = False,
@@ -62,6 +63,14 @@ class KnownAgent(ABC):
         connects this agent to the room named `room_name`. Posted
         automatically when the agent is addressed but has no live session,
         and on demand via `!run-cmd`.
+
+        `owner_handle` is the agent owner's account on the platform this room
+        is bridged to, @-mentioned so they are actually notified — None when
+        the agent has no owner or that owner has claimed no account there, in
+        which case the message still posts and simply says "my operator". It
+        is passed in rather than read from `options`: the right handle depends
+        on which platform the room is on, which the caller knows and a
+        per-agent setting could not.
 
         When `assume_role` is set, the generated connect prompt also tells the
         agent to assume that role on connect (e.g. `!run-cmd @agent @role`).
@@ -114,12 +123,6 @@ class ClaudeCodeOptions(KnownAgentOptions):
     active. Leave None if the directory is unknown — a fallback guidance
     message is shown instead."""
 
-    notify_user: str | None = None
-    """Username (on the room's bridged platform — Slack/Mattermost handle, or
-    a Switch user name) to `@`-mention in the unavailable-session message so
-    the operator gets a notification. Bare name, no leading `@`. Leave None
-    to post without a mention."""
-
     subagent_name: str | None = None
     """When set, this agent is a Claude Code *subagent* (a `.claude/agents/*.md`
     definition) rather than a top-level Claude Code install. The value is the
@@ -131,7 +134,7 @@ class ClaudeCodeOptions(KnownAgentOptions):
     session authenticates to Switch as the subagent, not the parent). Leave
     None for ordinary top-level agents."""
 
-    @field_validator("repo_dir", "notify_user", "subagent_name", mode="before")
+    @field_validator("repo_dir", "subagent_name", mode="before")
     @classmethod
     def _blank_string_to_none(cls, value: object) -> object:
         # The gateway edit form submits an empty string when the user clears
@@ -194,6 +197,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
         options: KnownAgentOptions,
         agent: Agent,
         room_name: str,
+        owner_handle: str | None,
         assume_role: str | None = None,
         other_room_names: list[str] | None = None,
         connected_not_live: bool = False,
@@ -253,11 +257,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
             # session_passive: reads asynchronously, so the operator must
             # trigger a pull (from an open session or a fresh one). Mention the
             # configured operator inline so they get pinged.
-            operator = (
-                f"my operator @{options.notify_user}"
-                if options.notify_user
-                else "my operator"
-            )
+            operator = f"my operator @{owner_handle}" if owner_handle else "my operator"
             return (
                 f"I read room messages asynchronously, not in real time — "
                 f"{operator} has to trigger me to pull the latest messages. "
@@ -270,7 +270,7 @@ class ClaudeCodeKnownAgent(KnownAgent):
         # session_addressable: an optional @-mention so the operator gets a
         # push from the bridged platform. The bridge re-parses these as
         # addressed events.
-        prefix = f"@{options.notify_user}\n\n" if options.notify_user else ""
+        prefix = f"@{owner_handle}\n\n" if owner_handle else ""
         if connected_not_live:
             opening = (
                 "I have a session connected to this room, but it isn't "
@@ -312,18 +312,13 @@ class CodexOptions(KnownAgentOptions):
     command shown when the agent is addressed with no live session. None → a
     `<codex-dir>` placeholder is shown instead."""
 
-    notify_user: str | None = None
-    """Username (on the room's bridged platform) to `@`-mention in the
-    unavailable-session message so the operator gets a notification. Bare name,
-    no leading `@`. None → post without a mention."""
-
     # No `channels_enabled`: Switch Console sends it for every provider, but Codex
     # has no connector channel of its own, so nothing here could act on it.
     # `KnownAgentOptions` ignores unknown keys, so the shared registration path
     # still works — and the schema-driven gateway form does not render a control
     # that silently does nothing.
 
-    @field_validator("repo_dir", "notify_user", mode="before")
+    @field_validator("repo_dir", mode="before")
     @classmethod
     def _blank_string_to_none(cls, value: object) -> object:
         if isinstance(value, str) and value.strip() == "":
@@ -376,6 +371,7 @@ class CodexKnownAgent(KnownAgent):
         options: KnownAgentOptions,
         agent: Agent,
         room_name: str,
+        owner_handle: str | None,
         assume_role: str | None = None,
         other_room_names: list[str] | None = None,
         connected_not_live: bool = False,
@@ -394,7 +390,7 @@ class CodexKnownAgent(KnownAgent):
             prompt += f" and assume the role {assume_role}"
         cmd = f'cd "{dir_token}" && codex "{prompt}"'
 
-        prefix = f"@{options.notify_user}\n\n" if options.notify_user else ""
+        prefix = f"@{owner_handle}\n\n" if owner_handle else ""
         if connected_not_live:
             opening = (
                 "I have a session connected to this room, but it isn't reporting "
@@ -420,9 +416,132 @@ class CodexKnownAgent(KnownAgent):
         )
 
 
+class OpenCodeOptions(KnownAgentOptions):
+    auto_session: bool = False
+    """When True, the operator's connector (Switch Console) watches every room this
+    agent belongs to and auto-spawns an OpenCode session — connected to the room
+    and wired to the agent's identity — the moment the agent is addressed in a
+    room where it has no live session. The registered profile becomes
+    `auto_session`. Like Codex, OpenCode has no connector channel of its own;
+    Switch Console delivers inbound room messages by injecting them into the
+    session's terminal."""
+
+    repo_dir: str | None = None
+    """Absolute path to the directory the operator runs OpenCode from. Used to
+    generate a ready-to-paste `cd <repo_dir> && opencode --prompt "connect to
+    switch room …"` command shown when the agent is addressed with no live
+    session. None → an `<opencode-dir>` placeholder is shown instead."""
+
+    # No `channels_enabled`, for the same reason as Codex: Switch Console sends it
+    # for every provider, but OpenCode has no connector channel for it to act on.
+
+    @field_validator("repo_dir", mode="before")
+    @classmethod
+    def _blank_string_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+
+class OpenCodeKnownAgent(KnownAgent):
+    connector_type = "OpenCode CLI"
+    options_schema = OpenCodeOptions
+    tools = [
+        ToolSpec(name="Bash", description="Executes shell commands"),
+        ToolSpec(name="Edit", description="Edits existing files"),
+        ToolSpec(name="Write", description="Writes new files"),
+        ToolSpec(name="Read", description="Reads file contents"),
+        ToolSpec(name="Grep", description="Searches file contents"),
+        ToolSpec(name="Glob", description="Finds files by pattern"),
+        ToolSpec(name="List", description="Lists directory contents"),
+        ToolSpec(name="WebFetch", description="Fetches web pages"),
+        ToolSpec(name="Task", description="Spawns a sub-agent"),
+    ]
+    models: ClassVar[list[ModelSpec]] = []
+
+    @classmethod
+    def build_profile(cls, options: KnownAgentOptions) -> IntegrationProfile:
+        assert isinstance(options, OpenCodeOptions)
+        return IntegrationProfile(
+            connection_model=(
+                "auto_session" if options.auto_session else "session_addressable"
+            ),
+            message_exchange=True,
+            # OpenCode's connector reports session and tool activity to Switch
+            # Console over its local hook port, which drives the session's status
+            # in the app. None of it reaches Switch as reported events, and
+            # nothing mediates a tool call before it runs, so both stay empty —
+            # the same position as Codex, and unlike Claude Code.
+            pre_invocation_mediation=[],
+            post_invocation_mediation=[],
+            event_reporting=[],
+            task_protocol=TaskProtocolConfig(can_delegate=True, can_accept=True),
+            # A TUI, so reset / compact / interrupt only work while Switch Console
+            # is driving the session and can write to it. A standalone `opencode`
+            # cannot be controlled, so all three resolve per live session via
+            # AgentRuntimeState.
+            command_capabilities=CommandCapabilities(
+                reset="session_dependent",
+                compact="session_dependent",
+                interrupt="session_dependent",
+            ),
+        )
+
+    @classmethod
+    def start_session_instructions(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        owner_handle: str | None,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        """Build the room-facing onboarding message for an OpenCode agent.
+
+        The prompt goes through `--prompt`, never as a positional argument:
+        OpenCode reads its first positional as the project directory, so a bare
+        `opencode "connect to switch room …"` is a request to open a directory of
+        that name rather than a prompt.
+        """
+        assert isinstance(options, OpenCodeOptions)
+        dir_token = options.repo_dir if options.repo_dir else "<opencode-dir>"
+        prompt = f"connect to switch room {room_name}"
+        if assume_role:
+            prompt += f" and assume the role {assume_role}"
+        cmd = f'cd "{dir_token}" && opencode --prompt "{prompt}"'
+
+        prefix = f"@{owner_handle}\n\n" if owner_handle else ""
+        if connected_not_live:
+            opening = (
+                "I have a session connected to this room, but it isn't reporting "
+                "as live, so I'm not receiving messages. Relaunch it, or start a "
+                "fresh session, with:"
+            )
+        elif other_room_names:
+            where = ", ".join(f"**{name}**" for name in other_room_names)
+            opening = (
+                f"I don't have a session connected to this room right now, but I "
+                f"do have other session(s) connected to {where}. Either ask me in "
+                "one of those rooms to come here, or start a new session connected "
+                "to this room — my operator should run:"
+            )
+        else:
+            opening = (
+                "I don't have a session connected to this room. To set up a new "
+                "session connected to this room, my operator should run:"
+            )
+        return (
+            f"{prefix}{opening}\n\n```\n{cmd}\n```\n\n(or start OpenCode manually "
+            "and ask me to connect to the room.)"
+        )
+
+
 KNOWN_AGENTS: dict[str, type[KnownAgent]] = {
     "claude-code": ClaudeCodeKnownAgent,
     "codex": CodexKnownAgent,
+    "opencode": OpenCodeKnownAgent,
 }
 
 

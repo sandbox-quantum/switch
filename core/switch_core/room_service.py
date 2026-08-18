@@ -8,7 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_map
 from switch_core.authz import Principal, can, validate_visibility_pair
-from switch_core.bridges.collaboration.models import ChannelType
+from switch_core.bridges.collaboration.models import (
+    ChannelCreationUnsupported,
+    ChannelType,
+)
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import Room, RoomGroup, RoomRole
@@ -321,6 +324,26 @@ class RoomService:
             )
         return default.id
 
+    async def _require_channel_creation(self, bridge_id: str) -> None:
+        """Refuse to make a channel on a connection an operator has withheld it
+        from, before anything is provisioned.
+
+        Only the operator's switch is checked here. A platform that cannot
+        create channels at all is caught by its own adapter raising, which says
+        so in the platform's terms — naming the bot, the link, the step to take
+        — and that is a better error than anything this layer could compose.
+        """
+        async with self._session_factory() as session:
+            bridge = await self._collab_bridge_store.get(session, bridge_id)
+        if bridge is None or bridge.channel_creation_enabled:
+            return
+        raise ChannelCreationUnsupported(
+            f"Creating channels is turned off for the '{bridge.display_name}' "
+            "connection. Create the channel on the platform and add the Switch "
+            "app to it — Switch adopts it as a room — or ask an administrator to "
+            "allow channel creation for this connection."
+        )
+
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
@@ -357,6 +380,7 @@ class RoomService:
             self._validate_dm_room(config, agent_ids)
 
         if bridge_core and external_channel_id is None:
+            await self._require_channel_creation(bridge_id)  # type: ignore[arg-type]
             if is_dm:
                 user_name = (config.user_names or [])[0]
                 agent_name = (await self._resolve_ids_to_names(agent_ids))[0]
@@ -776,14 +800,10 @@ class RoomService:
         bridge_core = self._collab_lifecycle.get(bridge_id)
 
         if external_channel_id is None and bridge_core is not None:
+            await self._require_channel_creation(bridge_id)
             external_channel_id = await bridge_core.adapter.create_channel(
                 room.name, room.description
             )
-            if external_channel_id is None:
-                raise RuntimeError(
-                    f"Failed to create external channel for room {room_id} "
-                    f"on bridge {bridge_id}"
-                )
 
         async with self._session_factory() as session:
             await self._room_store.update_bridge(
@@ -880,6 +900,7 @@ class RoomService:
         )
 
         if external_channel_id is None:
+            await self._require_channel_creation(bridge_id)
             external_channel_id = await new_bridge.adapter.create_channel(
                 room.name,
                 room.description,
