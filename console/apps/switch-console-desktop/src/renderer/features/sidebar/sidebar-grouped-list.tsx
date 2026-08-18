@@ -15,10 +15,12 @@ import { refreshSidebarRoomState } from './sidebar-tree-data';
 
 /**
  * How often the room state is reconciled against the servers while the window
- * is visible. Slow on purpose: it is a safety net for changes made outside this
- * app, not the primary path — mutations made here refresh immediately.
+ * is visible. A safety net for changes made outside this app, not the primary
+ * path — mutations made here refresh immediately. Kept short enough that a
+ * change nothing here initiated (a bridge adopting a channel, an agent joining
+ * a room server-side) does not sit invisible for a noticeable stretch.
  */
-const ROOM_STATE_RECONCILE_MS = 60_000;
+const ROOM_STATE_RECONCILE_MS = 20_000;
 
 /** @see refreshSidebarRoomState — shared so every trigger, including the
  * mutations in other components, refreshes the same set. */

@@ -125,6 +125,31 @@ export async function refreshSidebarRoomState(force: boolean): Promise<void> {
 }
 
 /**
+ * Gaps between the passes {@link refreshSidebarRoomStateAfterOnboarding} makes.
+ * Spread over a few seconds rather than fired once, because the state being
+ * waited for does not exist yet when onboarding returns.
+ */
+const POST_ONBOARD_REFRESH_GAPS_MS = [0, 2_000, 4_000];
+
+/**
+ * Catch up after onboarding an agent, whose rooms land asynchronously.
+ *
+ * Onboarding returns once the agent is registered, but its room membership is
+ * still being written: the collaboration bridge creates the agent's bot on the
+ * chat platform and adds it to the team, the platform auto-joins it to that
+ * team's default channels, and only then does the bridge see those joins and
+ * record the rooms. A single refresh on completion reliably loses that race and
+ * leaves the new agent looking roomless until the background reconcile, so
+ * re-read a few times across the window in which the server settles.
+ */
+export async function refreshSidebarRoomStateAfterOnboarding(): Promise<void> {
+  for (const gap of POST_ONBOARD_REFRESH_GAPS_MS) {
+    if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+    await refreshSidebarRoomState(true);
+  }
+}
+
+/**
  * Fill in the avatar of any of this user's agents registered before icons
  * existed (CHOO-2171). The main process does it once per server per run, so
  * calling it on every refresh costs nothing after the first.

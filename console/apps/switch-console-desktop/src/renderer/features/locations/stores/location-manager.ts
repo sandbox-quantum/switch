@@ -1,5 +1,6 @@
 import { err, ok } from '@switch-console/shared';
 import { makeObservable, observable, runInAction } from 'mobx';
+import { refreshSidebarRoomStateAfterOnboarding } from '@renderer/features/sidebar/sidebar-tree-data';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -184,6 +185,7 @@ export class LocationManagerStore {
         // Drop the optimistic placeholder; key the store by the real location id.
         runInAction(() => this.locations.delete(placeholderId));
         this._setAndOpenLocation(location.id, location);
+        void refreshSidebarRoomStateAfterOnboarding();
         result = ok();
       }
     } catch (error) {
