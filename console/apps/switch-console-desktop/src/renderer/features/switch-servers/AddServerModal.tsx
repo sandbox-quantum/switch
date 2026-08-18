@@ -351,8 +351,8 @@ const LocalSetupStep = observer(function LocalSetupStep({
 
         {store.error && !dockerUnavailable && !running && (
           <Alert variant="destructive">
-            <AlertTitle>Setup failed</AlertTitle>
-            <AlertDescription>{store.error}</AlertDescription>
+            <AlertTitle>{store.error}</AlertTitle>
+            {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
         )}
 
@@ -584,8 +584,8 @@ const RemoteHostSetupStep = observer(function RemoteHostSetupStep({
 
             {store.error && !dockerUnavailable && !running && (
               <Alert variant="destructive">
-                <AlertTitle>Setup failed</AlertTitle>
-                <AlertDescription>{store.error}</AlertDescription>
+                <AlertTitle>{store.error}</AlertTitle>
+                {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
               </Alert>
             )}
 
@@ -696,7 +696,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
         trimmedApi
       );
       if (!result) {
-        setError(switchServersStore.error ?? 'Could not save the server.');
+        setError(switchServersStore.errorText ?? 'Could not save the server.');
         setSubmitting(false);
         return;
       }
@@ -708,7 +708,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
     } else {
       const saved = await switchServersStore.addServer(trimmedName, trimmedGateway, trimmedApi);
       if (!saved) {
-        setError(switchServersStore.error ?? 'Could not add the server.');
+        setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
         return;
       }

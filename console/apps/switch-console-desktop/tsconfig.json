@@ -24,7 +24,8 @@
     "src/sidecar/**/*",
     "src/types/**/*",
     "src/test/**/*",
-    "tooling/**/*"
+    "tooling/**/*",
+    "scripts/**/*"
   ],
   "exclude": ["node_modules", "dist", "out", "**/_*/**"]
 }

@@ -103,6 +103,12 @@ class _PendingAttachmentGroup:
     total: int
     parts: dict[int, AttachmentRef] = field(default_factory=dict)
     body: str = ""
+    # Whether any part of the group addressed this agent. Addressing is read off
+    # the message text, and the text rides on part 0 alone — every other part's
+    # body is its bare filename. Answering from whichever part completes the
+    # group would therefore say "not addressed" for any group not finishing on
+    # part 0, which is every group a bridge sends in order.
+    addressed: bool = False
     # The index-0 event, kept so a group that has to be flushed incomplete is
     # still anchored on its canonical first part (message_id / timestamp /
     # sender) rather than on whichever part happened to arrive last.
@@ -373,7 +379,13 @@ class AgentClient(ClientBase[ClientConfig]):
                     body,
                     format="markdown",
                     mentions=[event.sender],
-                    thread_root_id=reply_thread_root,
+                    # Answer where the question was asked: `thread_id`, not the
+                    # reply root. They differ for a message at the conversation
+                    # root, where the reply root is the message itself — which
+                    # opens a thread off it, so a one-line "starting a session"
+                    # buries itself somewhere nobody is looking, away from the
+                    # answer that follows it.
+                    thread_root_id=thread_id,
                     extra_content={AUTO_REPLY_FLAG: True},
                 )
 
@@ -466,12 +478,13 @@ class AgentClient(ClientBase[ClientConfig]):
             group_id, _PendingAttachmentGroup(total=total)
         )
         pending.parts[index] = attachment
+        pending.addressed = pending.addressed or is_addressed
         if index == 0:
             pending.body = event.body
             pending.first_event = event
         if len(pending.parts) < total:
             self._schedule_attachment_group_flush(
-                group_id, room, event, meta, is_addressed, sender_name, thread_id
+                group_id, room, event, meta, sender_name, thread_id
             )
             return
 
@@ -483,7 +496,7 @@ class AgentClient(ClientBase[ClientConfig]):
             room,
             pending.first_event or event,
             meta,
-            is_addressed,
+            pending.addressed,
             sender_name,
             thread_id,
             [pending.parts[i] for i in sorted(pending.parts)],
@@ -496,7 +509,6 @@ class AgentClient(ClientBase[ClientConfig]):
         room: MatrixRoom,
         event: RoomMessageMedia,
         meta: RoomMeta,
-        is_addressed: bool,
         sender_name: str,
         thread_id: str | None,
     ) -> None:
@@ -517,7 +529,7 @@ class AgentClient(ClientBase[ClientConfig]):
             ATTACHMENT_GROUP_TIMEOUT_SECONDS,
             lambda: asyncio.create_task(
                 self._flush_incomplete_attachment_group(
-                    group_id, room, event, meta, is_addressed, sender_name, thread_id
+                    group_id, room, event, meta, sender_name, thread_id
                 )
             ),
         )
@@ -533,7 +545,6 @@ class AgentClient(ClientBase[ClientConfig]):
         room: MatrixRoom,
         event: RoomMessageMedia,
         meta: RoomMeta,
-        is_addressed: bool,
         sender_name: str,
         thread_id: str | None,
     ) -> None:
@@ -562,7 +573,7 @@ class AgentClient(ClientBase[ClientConfig]):
             room,
             anchor,
             meta,
-            is_addressed,
+            pending.addressed,
             sender_name,
             thread_id,
             [pending.parts[i] for i in sorted(pending.parts)],

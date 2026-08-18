@@ -44,6 +44,20 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.17.2] - 2026-08-18
+
+#### Fixed
+
+- The collaboration-bridge runtime status is delivered where the reply is. When
+  an agent was addressed at channel level its reply opened a thread on the
+  triggering message while the status line stayed at the channel root, so the
+  two landed in different places. Adapters can now opt into anchoring the status
+  on the triggering message; Mattermost takes it — where a thread is a side
+  panel, a status left at the root is the one nobody opens. The typing indicator
+  is reported against the trigger's actual location (channel vs thread) rather
+  than the status's, so it shows where the person who addressed the agent is
+  watching (CHOO-2173).
+
 ### [0.17.1] - 2026-08-16
 
 #### Fixed
@@ -645,6 +659,37 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.27.2] - 2026-08-18
+
+#### Added
+
+- Switch Console now asks, the first time you open it, whether you are happy to
+  share anonymous usage data, and states plainly what that would and would not
+  include. The choice is saved per install and can be changed at any time from
+  **Settings → General** (CHOO-1955).
+- The app still sends nothing: there is no telemetry to consent to yet. What
+  this adds is the control and the contract — a single gate that any future
+  collection must ask before sending, which fails closed, so a fresh install
+  that has not reached the prompt sends nothing regardless of how the toggle
+  reads. Because the toggle defaults to on, `console/AGENTS.md` now pins what a
+  payload may ever contain: anonymous counters, and no identifier of any kind.
+- A signed, notarized **Intel (x86_64) macOS build**. macOS now builds per-arch
+  on native runners, so an Intel Mac has an installer again after the app went
+  Apple-silicon-only; the auto-update channel manifest is written per arch so
+  the two builds no longer overwrite each other's update feed (CHOO-2195).
+
+#### Changed
+
+- **Windows builds are now signed** with Azure Trusted Signing, so the installer
+  and app no longer trip SmartScreen's unknown-publisher warning (CHOO-1468).
+- Local-server mode now bundles and pulls **switch-core `0.17.2`** (was
+  `0.17.1`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
+  current core release.
+- The add-agent addressing control is renamed **"Who can talk to your agent"**,
+  and its Settings section now unfolds itself when the owner-only default would
+  reach nobody, so the warning that the agent will answer no one on that
+  messaging app is visible instead of hidden in the fold (CHOO-2173).
+
 #### Fixed
 
 - A directory configured by the connector's `configure` skill is recognised as
@@ -654,6 +699,19 @@ version of their own to them without also giving them a release of their own.
   standalone sessions. It now falls back to the credentials store, and names no
   agent when the store holds several, since choosing between them is
   `select_agent`'s job and not detection's.
+- An auto-started session now receives the message it was started for. Its room
+  connection opens before the terminal is spawned, so the replayed trigger had
+  nowhere to go and — unlike the other wait paths — never retried: the agent
+  booted, greeted, and never answered. It now retries until the connection
+  closes, and a pty accepts injected input only once the runtime has delivered
+  the session's opening prompt, so the trigger can't be appended to that prompt
+  and sent as one (CHOO-2173).
+- The agent tree no longer highlights every copy of an open room, and the
+  titlebar breadcrumb shows the agent's own icon rather than its provider logo
+  (CHOO-2173).
+- User-facing error messages across the app were audited and rewritten to say
+  what happened and what to do, rather than surfacing raw internal errors
+  (CHOO-2060).
 - Two Switch Console installs sharing a host no longer destroy each other's
   agents. Per-agent credentials live at `.switch/agents/<name>.json`, keyed by
   name alone, and each install's uniqueness check only sees its own database —
@@ -2065,6 +2123,17 @@ compatibility signal. History for those is in the git log.
   can be the only tool, and both now point at the `configure` skill as the remedy
   for the ones it can fix.
 
+### [0.9.5] - 2026-08-18
+
+#### Changed
+
+- The room-workflow skill no longer teaches the task protocol as an interaction
+  mode: the lifecycle section is replaced by a short note that the protocol
+  exists, is registered on the server, and must not be called yet, and the
+  guidance to delegate rather than message is removed. The scoped-addressing
+  material moves to its own section. Documentation only — the MCP/HTTP tool
+  surface is unchanged (CHOO-1418).
+
 ### [0.9.4] - 2026-08-15
 
 #### Changed
@@ -2168,6 +2237,17 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.3.6] - 2026-08-18
+
+#### Changed
+
+- The room-workflow skill no longer teaches the task protocol as an interaction
+  mode: the lifecycle section is replaced by a short note that the protocol
+  exists, is registered on the server, and must not be called yet, and the
+  guidance to delegate rather than message is removed. The scoped-addressing
+  material moves to its own section. Documentation only — the MCP/HTTP tool
+  surface is unchanged (CHOO-1418).
 
 #### Fixed
 
@@ -2295,6 +2375,17 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.3] - 2026-08-18
+
+#### Changed
+
+- The room-workflow skill no longer teaches the task protocol as an interaction
+  mode: the lifecycle section is replaced by a short note that the protocol
+  exists, is registered on the server, and must not be called yet, and the
+  guidance to delegate rather than message is removed. The scoped-addressing
+  material moves to its own section. Documentation only — the MCP/HTTP tool
+  surface is unchanged (CHOO-1418).
 
 ### [0.1.2] - 2026-08-15
 

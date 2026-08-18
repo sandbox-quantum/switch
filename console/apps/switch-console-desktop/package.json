@@ -1,6 +1,6 @@
 {
   "name": "@switch-console/desktop",
-  "version": "0.27.1",
+  "version": "0.27.2",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",
@@ -35,7 +35,8 @@
     "sync:compose:check": "node scripts/sync-standalone-compose.mjs --check",
     "build:renderer": "electron-vite build --filter renderer",
     "package": "pnpm run build && electron-builder --config electron-builder.config.ts",
-    "package:mac": "pnpm run build && electron-builder --mac --config electron-builder.config.ts",
+    "package:mac": "pnpm run build && electron-builder --mac --arm64 --publish never --config electron-builder.config.ts",
+    "package:mac:x64": "pnpm run build && electron-builder --mac --x64 --publish never --config electron-builder.config.ts",
     "package:linux": "pnpm run build && electron-builder --linux --x64 --publish never --config electron-builder.config.ts",
     "package:linux:arm64": "pnpm run build && electron-builder --linux --arm64 --publish never --config electron-builder.config.ts",
     "package:win": "pnpm run build && electron-builder --win --publish never --config electron-builder.config.ts",
@@ -115,6 +116,7 @@
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "framer-motion": "^12.33.0",
+    "js-yaml": "^5.3.0",
     "jsdom": "^29.0.2",
     "katex": "^0.16.45",
     "lucide-react": "^0.564.0",

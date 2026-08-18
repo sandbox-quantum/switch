@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
   DockerAvailability,
@@ -39,7 +40,10 @@ export class LocalServerStore {
   docker: DockerAvailability | null = null;
   /** True while a start/stop/reset RPC is in flight. */
   busy = false;
+  /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
+  /** Diagnostics for the same failure, rendered under `error` rather than in it. */
+  errorDetail: string | null = null;
   /** Live `docker compose` output tail during a start. */
   logs: string[] = [];
 
@@ -52,6 +56,12 @@ export class LocalServerStore {
 
   constructor() {
     makeAutoObservable(this, { pendingLines: false, flushTimer: false });
+  }
+
+  /** Headline and detail as one string, for the modals that have a single slot. */
+  get errorText(): string | null {
+    if (!this.error) return null;
+    return this.errorDetail ? `${this.error} (${this.errorDetail})` : this.error;
   }
 
   get phase(): LocalServerStatus['phase'] {
@@ -92,7 +102,7 @@ export class LocalServerStore {
         this.status = status;
       });
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not read the server status.');
     }
   }
 
@@ -136,7 +146,7 @@ export class LocalServerStore {
         this.docker = docker;
       });
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not check Docker availability.');
     }
   }
 
@@ -149,6 +159,7 @@ export class LocalServerStore {
     runInAction(() => {
       this.busy = true;
       this.error = null;
+      this.errorDetail = null;
       this.logs = [];
     });
     try {
@@ -170,7 +181,7 @@ export class LocalServerStore {
         await switchServersStore.init();
       }
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not start the server.');
     } finally {
       // The command has finished, so nothing more will arrive to trigger a
       // flush — the tail's last lines are the ones that say how it went.
@@ -185,11 +196,12 @@ export class LocalServerStore {
     runInAction(() => {
       this.busy = true;
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       await rpc.localSwitchServer.stop();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not stop the server.');
     } finally {
       runInAction(() => {
         this.busy = false;
@@ -201,6 +213,7 @@ export class LocalServerStore {
     runInAction(() => {
       this.busy = true;
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       // The reset deletes the stack's agents itself — their server-side
@@ -210,7 +223,7 @@ export class LocalServerStore {
       await agentsStore.load();
       await switchServersStore.init();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not reset the server.');
     } finally {
       runInAction(() => {
         this.busy = false;
@@ -218,9 +231,17 @@ export class LocalServerStore {
     }
   }
 
-  private setError(cause: unknown): void {
+  /**
+   * `error` is rendered directly in banners, so it goes through the shared
+   * boundary rather than carrying whatever was thrown. The fallback is
+   * per-action: the store knows which request failed, and the failure itself
+   * usually does not.
+   */
+  private setError(cause: unknown, fallback: string): void {
+    const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
-      this.error = cause instanceof Error ? cause.message : String(cause);
+      this.error = headline;
+      this.errorDetail = detail;
     });
   }
 }

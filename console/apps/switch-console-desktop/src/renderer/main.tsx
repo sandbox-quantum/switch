@@ -32,6 +32,7 @@ async function bootstrap() {
     rpc.viewState.getAll(),
     appState.locations.load(),
     prefetchAppSettingsKey('interface'),
+    prefetchAppSettingsKey('telemetry'),
   ]);
 
   viewStateCache.populate(allViewState as Record<string, unknown>);

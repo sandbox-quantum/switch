@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 /**
- * What "Who can send instructions" starts on for a brand-new agent (CHOO-2137).
+ * What "Who can talk to your agent" starts on for a brand-new agent (CHOO-2137).
  *
  * This is the ticket's whole point — an agent created in Switch Console answers
  * only its owner unless someone says otherwise — and it lives in one line of

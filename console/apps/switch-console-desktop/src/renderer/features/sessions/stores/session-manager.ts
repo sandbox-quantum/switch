@@ -2,6 +2,7 @@ import { makeObservable, observable, runInAction, toJS } from 'mobx';
 import { toast } from 'sonner';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import type { LocationSettingsStore } from '@renderer/features/locations/stores/location-settings-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
@@ -233,7 +234,7 @@ export class SessionManagerStore {
     const result = await rpc.sessions
       .createSession(JSON.parse(JSON.stringify(toJS(params))) as typeof params)
       .catch((e: unknown) => {
-        const message = e instanceof Error ? e.message : String(e);
+        const message = failureText(e, 'Could not create the session.');
         clearOptimisticInitialWorking();
         runInAction(() => {
           const current = this.sessions.get(params.id);

@@ -909,6 +909,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
     } catch (error) {
       this.supervisor.failSpawn(spawnToken);

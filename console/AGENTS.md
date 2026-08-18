@@ -181,7 +181,8 @@ Package desktop artifacts locally:
 
 ```bash
 pnpm run package
-pnpm run package:mac
+pnpm run package:mac           # arm64
+pnpm run package:mac:x64
 pnpm run package:linux         # x64
 pnpm run package:linux:arm64
 pnpm run package:win
@@ -198,9 +199,19 @@ Two things these scripts do NOT do for you:
   `pnpm --filter @switch-console/desktop run rebuild` last produced is what
   gets copied into the package.
 
-The Linux scripts name an arch for that second reason: the natives are built for
-the host, so packaging the other arch yields a package that installs, launches,
-and dies on the first wrong-arch `.node`. Build each arch on that arch.
+The macOS and Linux scripts name an arch for that second reason: the natives are
+built for the host, so packaging the other arch yields a package that installs,
+launches, and dies on the first wrong-arch `.node`. Build each arch on that arch
+— which is also why the release workflow runs macOS twice, on an Apple silicon
+runner and an Intel one, rather than passing both flags to one job.
+
+The two macOS builds share one auto-update channel file. electron-builder writes
+`latest-mac.yml` for every macOS arch (the per-arch suffix it gives Linux is
+Linux-only), so neither release job publishes its own — `merge-mac-manifest`
+combines them into one manifest listing both, which is what electron-updater
+reads and how it routes each Mac to its own build. Anything that changes macOS
+artifact names has to keep `arm64` in the Apple silicon file names: that
+substring is the whole of the updater's routing rule.
 
 Run formatting, linting, type checks, and tests:
 
@@ -383,11 +394,27 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- The app ships no telemetry or analytics; do not add tracking or phone-home behavior.
-  Logs are local-only and no code path transmits them off the machine. Do not add one.
-  `getDiagnosticLogAttachment()` builds a redacted export and is the only function
-  intended to ever feed such a path; anything that ships log content must go through it
-  rather than reading the log itself.
+- The app sends no telemetry or analytics today, and nothing may start sending without
+  going through the consent gate below. Logs are local-only and no code path transmits
+  them off the machine. Do not add one. `getDiagnosticLogAttachment()` builds a redacted
+  export and is the only function intended to ever feed such a path; anything that ships
+  log content must go through it rather than reading the log itself.
+- **Telemetry consent is a gate, not a preference.** Anything that would send usage data
+  must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
+  emission and send nothing when it returns false. Do not read `telemetry.enabled` from
+  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
+  cache the answer across a send, since the user can revoke it at any time.
+- **What telemetry may contain, if it is ever built.** The consent toggle defaults to *on*,
+  which is only defensible for data that is not personal, so the payload is limited to
+  anonymous counters: feature-usage counts, error and crash counts, app version, operating
+  system. It must carry **no identifier of any kind** — no install id, machine id, user id,
+  or any other value that distinguishes one install from another — and no prompts, code,
+  file paths, or agent/room/project/server names. Adding an identifier makes the data
+  pseudonymous personal data under GDPR/nFADP, at which point an opt-out default is no
+  longer valid and the default has to flip to off. That is a decision for the product
+  owner, not a code change: if you need per-install numbers, raise it rather than adding
+  a field. The user-facing wording of this promise lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.

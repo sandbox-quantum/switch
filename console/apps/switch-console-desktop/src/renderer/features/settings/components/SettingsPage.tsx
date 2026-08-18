@@ -13,6 +13,7 @@ import {
   EnableTmuxRow,
   PreserveSessionNameCapitalizationRow,
 } from './SessionSettingsRows';
+import TelemetrySettingsCard from './TelemetrySettingsCard';
 import TerminalSettingsCard from './TerminalSettingsCard';
 import ThemeCard from './ThemeCard';
 import { UpdateCard } from './UpdateCard';
@@ -46,6 +47,7 @@ function GeneralSettingsPage() {
       <EnableTmuxRow />
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
+      <TelemetrySettingsCard />
     </div>
   );
 }

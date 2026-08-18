@@ -7,6 +7,7 @@ import {
   policyHasDeadRule,
 } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { log } from '@renderer/utils/logger';
@@ -115,7 +116,7 @@ function AddressingPolicyRow({
       setError(null);
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save policy');
+      setError(failureText(err, 'Could not save the addressing policy.'));
       log.error('Failed to update addressing policy', { agentId, error: err });
     },
   });
@@ -150,10 +151,10 @@ function AddressingPolicyRow({
         onChange={change}
         inlineLabel={
           <span className="flex items-center gap-1.5 text-sm leading-snug font-medium">
-            Who can send instructions
+            Who can talk to your agent
             <InfoTooltip
               label="More info about addressing"
-              content="Sending instructions means an @mention, a targeted message, or a delegated task. Only you, anyone in the agent's rooms, or whoever a rule admits."
+              content="Talking to an agent means an @mention, a targeted message, or a delegated task. Only you, anyone in the agent's rooms, or whoever a rule admits."
             />
           </span>
         }

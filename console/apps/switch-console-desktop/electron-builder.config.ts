@@ -44,6 +44,18 @@ async function adhocSignMac(context: AfterPackContext): Promise<void> {
 // the bundle at least launches on Apple Silicon.
 const hasDeveloperIdCert = Boolean(process.env.CSC_LINK);
 
+// Azure Artifact Signing credentials reach the build as an OIDC login performed
+// by the release workflow, which only happens on main and tags. Elsewhere — a
+// branch dispatch, a fork, a local build — there is nothing to sign with, so the
+// `win.azureSignOptions` key below must be absent rather than merely unusable:
+// electron-builder picks its signing backend from that key's presence alone and
+// never checks for credentials, so leaving it set would send every build down
+// the Azure path, which shells out to PowerShell and fails without them.
+// Omitting it selects the signtool backend, which finds no certificate and skips
+// signing rather than failing. Unsigned Windows builds warn via SmartScreen but
+// install (CHOO-1468).
+const hasAzureSigning = Boolean(process.env.AZURE_CLIENT_ID);
+
 const config: Configuration = {
   // Must run AFTER electron-builder applies @electron/fuses (which rewrites the
   // Electron Framework binary and would invalidate an earlier signature). afterSign
@@ -99,10 +111,12 @@ const config: Configuration = {
     hardenedRuntime: true,
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
-    target: [
-      { target: 'dmg', arch: ['arm64'] },
-      { target: 'zip', arch: ['arm64'] },
-    ],
+    // No `arch` here, for the same reason as `linux` below: naming an arch makes
+    // every invocation build it and ignore the `--x64` / `--arm64` flag, and
+    // `npmRebuild: false` means the package carries whatever native modules the
+    // earlier `pnpm rebuild` produced for the host. The release workflow builds
+    // each arch on a runner of that arch and passes the matching flag.
+    target: ['dmg', 'zip'],
     icon: 'src/assets/images/switch-console/switch-console-beta.icns',
     // electron-builder reads the App Store Connect API key from APPLE_API_KEY
     // (path to .p8) / APPLE_API_KEY_ID / APPLE_API_ISSUER when notarize is on.
@@ -146,28 +160,26 @@ const config: Configuration = {
   rpm: {
     packageName: APP_NAME_LOWER,
   },
-  // Windows ships UNSIGNED: there is no Authenticode identity for this app
-  // (CHOO-1468), so SmartScreen warns on first run.
-  //
-  // There is deliberately no `azureSignOptions` key. electron-builder chooses its
-  // signing backend from that key's presence alone, never checking for
-  // credentials, so setting it commits the build to Azure Trusted Signing: a
-  // PowerShell call that fails on any non-Windows host and, without credentials,
-  // on Windows too. Its absence selects the signtool backend, which finds no
-  // certificate and skips signing rather than failing.
-  //
-  // Its absence also keeps `publisherName` out of app-update.yml, which is what
-  // makes auto-update work here: electron-updater verifies an installer's
-  // Authenticode signature only when app-update.yml names a publisher, so an
-  // unsigned build that named one would reject every update it downloaded.
-  //
-  // Adding signing therefore means adding both an identity and this key together.
+  // `publisherName` is deliberately unset. electron-updater verifies a downloaded
+  // installer's Authenticode signature against the publisher named in
+  // app-update.yml, and the name has to match the certificate subject exactly —
+  // a wrong value rejects every update rather than failing at build time. Until
+  // the certificate's common name is known verbatim, leaving it unset writes no
+  // publisher into app-update.yml, which makes the updater skip that check.
+  // Signing itself is unaffected; setting the real string later strengthens it.
   win: {
     icon: 'src/assets/images/switch-console/app-icon-beta.png',
     target: [
       { target: 'nsis', arch: ['x64'] },
       { target: 'msi', arch: ['x64'] },
     ],
+    azureSignOptions: hasAzureSigning
+      ? {
+          endpoint: 'https://eus.codesigning.azure.net/',
+          codeSigningAccountName: 'cg-asa-basic-eastus',
+          certificateProfileName: 'cg-public',
+        }
+      : undefined,
   },
   msi: {
     oneClick: false,

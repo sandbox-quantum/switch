@@ -1,6 +1,7 @@
 import { TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -56,13 +57,13 @@ export const DisconnectMessagingAppModal = observer(function DisconnectMessaging
     try {
       const result = await rpc.switchServers.deleteBridge({ serverId, bridgeId });
       if (result.kind !== 'deleted') {
-        setError(failureText(result));
+        setError(messageFor(result));
         setIsDeleting(false);
         return;
       }
       onSuccess();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not disconnect the messaging app.'));
       setIsDeleting(false);
     }
   }, [typeConfirmed, serverId, bridgeId, onSuccess]);
@@ -124,7 +125,7 @@ export const DisconnectMessagingAppModal = observer(function DisconnectMessaging
 });
 
 /** Turn a refused disconnect into something the user can act on. */
-function failureText(result: Exclude<DeleteBridgeResult, { kind: 'deleted' }>): string {
+function messageFor(result: Exclude<DeleteBridgeResult, { kind: 'deleted' }>): string {
   switch (result.kind) {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';

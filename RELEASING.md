@@ -90,11 +90,17 @@ The desktop app (`console/`) releases on its own tag, `switch-console-v<version>
 `console/apps/switch-console-desktop/package.json` `version` (the workflow verifies
 this and fails on mismatch). Procedure: bump `package.json`, cut the
 `## switch-console` `CHANGELOG.md` section, merge to `main`, tag, push. The workflow
-publishes a **GitHub Release** (macOS arm64 signed + notarized; Linux x64 and
-arm64 AppImage/deb/rpm, unsigned — one job per arch, each on a runner of that
-arch).
+publishes a **GitHub Release** (macOS arm64 and x64, signed + notarized; Linux
+x64 and arm64 AppImage/deb/rpm, unsigned — one job per arch, each on a runner of
+that arch).
 
-**Approval gate (required).** The `build-macos` job runs in the GitHub
+macOS also gets a `merge-mac-manifest` job. electron-updater reads one channel
+file for macOS, `latest-mac.yml`, so the two mac jobs upload installers only and
+that job publishes a single manifest listing both architectures. `publish-release`
+refuses to publish if the manifest names only one of them: the missing
+architecture would go on checking for updates and silently never install another.
+
+**Approval gate (required).** Both `build-macos` matrix jobs run in the GitHub
 `release` environment (required reviewers), which holds the Apple signing /
 notarization secrets. On tag push the (assetless) GitHub Release is created and
 the Linux build runs immediately, but the **signed + notarized macOS

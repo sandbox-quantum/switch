@@ -332,6 +332,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
       // If this session was connected to a Switch room before an app restart,
       // resume polling that room — the connect_to_room hook only fires on a

@@ -576,6 +576,7 @@ class DiscordAdapter(CollaborationAdapter):
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
         """Render runtime state as persistent, truly-deletable status messages.
 

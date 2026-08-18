@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -101,7 +102,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
       await switchRoomsStore.refreshRoomState();
       onSuccess();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not add the agent to the selected rooms.'));
     } finally {
       setIsSubmitting(false);
       setCloseGuard(false);

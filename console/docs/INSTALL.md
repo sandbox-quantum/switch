@@ -4,8 +4,8 @@ Switch Console is distributed as a desktop app through **GitHub Releases on this
 repository** (`sandbox-quantum/switch`). The repo is public, so the downloads
 need no account, token or sign-up. No need to build from source.
 
-> Builds are currently **macOS arm64** (Apple Silicon), **Linux x64 and arm64**
-> and **Windows x64**. Windows builds are not code signed — see
+> Builds are currently **macOS arm64 (Apple Silicon) and x64 (Intel)**, **Linux
+> x64 and arm64** and **Windows x64**. Windows builds are not code signed — see
 > [Install (Windows x64)](#install-windows-x64).
 
 ## Download
@@ -25,8 +25,10 @@ need no account, token or sign-up. No need to build from source.
 Release assets are public, so a plain `curl` works — no token, no `gh`:
 
 ```bash
-# Download an installer from a specific release (macOS):
+# Download an installer from a specific release (macOS — Apple Silicon):
 curl -fLO https://github.com/sandbox-quantum/switch/releases/download/switch-console-v<version>/switch-console-arm64.dmg
+# macOS on Intel:
+curl -fLO https://github.com/sandbox-quantum/switch/releases/download/switch-console-v<version>/switch-console-x64.dmg
 
 # Linux — pick the format your distro uses:
 curl -fLO https://github.com/sandbox-quantum/switch/releases/download/switch-console-v<version>/switch-console-x86_64.AppImage
@@ -46,11 +48,22 @@ gh release download switch-console-v<version> \
 
 ## Install (macOS)
 
+Two `.dmg` files are published — take the one matching your Mac:
+
+| Mac | Asset |
+| --- | --- |
+| Apple Silicon (M1 and later) | `switch-console-arm64.dmg` |
+| Intel | `switch-console-x64.dmg` |
+
+Apple menu → **About This Mac** names the chip if you are unsure; `uname -m`
+prints `arm64` or `x86_64`.
+
 1. Open the downloaded `.dmg`.
 2. Drag **Switch Console** into your **Applications** folder.
 
 Tagged macOS releases are signed and notarized with SandboxAQ's Developer ID, so
-they open without a Gatekeeper bypass.
+they open without a Gatekeeper bypass. Both architectures receive in-app updates,
+each one offered its own build.
 
 ## Install (Linux)
 
@@ -159,7 +172,7 @@ pnpm install
 pnpm run build                                       # workspace packages, then the app
 pnpm --filter @switch-console/desktop run rebuild    # native modules for THIS machine
 cd apps/switch-console-desktop
-pnpm run package:linux          # or package:linux:arm64 / package:mac / package:win
+pnpm run package:linux          # or package:linux:arm64 / package:mac / package:mac:x64 / package:win
 ```
 
 The first two steps are not optional. Packaging from the app directory alone

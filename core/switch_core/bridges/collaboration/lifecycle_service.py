@@ -131,6 +131,24 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.supports_directory_search
 
+    def renders_custom_url_schemes(self, bridge_type: str) -> bool:
+        """Whether this platform makes a `switchdash://` link clickable.
+
+        Decides whether the "Open in Switch Console" deeplink is rewritten to
+        the gateway's https redirect. The redirect exists for platforms that
+        linkify only http(s) — a hop through the browser that lands in the same
+        place, but a hop. A platform that renders the scheme should be handed
+        the real link.
+
+        Read from the adapter class for the same reason as
+        `supports_channel_creation`. An unknown type is reported as rendering
+        it, matching the base class default.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return True
+        return adapter_cls.renders_custom_url_schemes
+
     def get_config_schema(self, bridge_type: str) -> dict[str, object]:
         config_cls = self._config_registry.get(bridge_type)
         if config_cls is None:

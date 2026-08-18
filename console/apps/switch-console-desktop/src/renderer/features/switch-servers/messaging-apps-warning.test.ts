@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import {
   hasUnlinkedMessagingApp,
+  identityLinkOrderingNote,
   shouldOfferIdentityLinkOnConnect,
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
@@ -154,5 +155,37 @@ describe('offering the link step after connecting an app', () => {
     // box that was guaranteed to come back empty, which reads as "you are not
     // in your own workspace" rather than "not yet".
     expect(shouldOfferIdentityLinkOnConnect({ directorySearchSupported: false })).toBe(false);
+  });
+});
+
+describe('what is said instead, where the link step is withheld', () => {
+  // Withholding the picker is right; withholding the reason left the user
+  // waiting for a prompt that never came (CHOO-2173).
+  it('says nothing where the directory can be searched', () => {
+    expect(
+      identityLinkOrderingNote({ displayName: 'Acme Slack', directorySearchSupported: true })
+    ).toBeNull();
+  });
+
+  it('gives the ordering where it cannot, naming the app', () => {
+    const note = identityLinkOrderingNote({
+      displayName: 'Telegram louis',
+      directorySearchSupported: false,
+    });
+
+    expect(note).toContain('Telegram louis');
+    // Be seen first, link second — the part that cannot be guessed.
+    expect(note).toContain('send a message');
+    expect(note).toContain('link your account');
+  });
+
+  it('never contradicts the decision not to offer the step', () => {
+    // The two must agree: an app that is offered the picker is not also told
+    // to come back later, and one that is withheld is always told why.
+    for (const directorySearchSupported of [true, false]) {
+      const offered = shouldOfferIdentityLinkOnConnect({ directorySearchSupported });
+      const note = identityLinkOrderingNote({ displayName: 'X', directorySearchSupported });
+      expect(offered).toBe(note === null);
+    }
   });
 });

@@ -47,7 +47,7 @@ export function useServerSignIn(serverId: string): ServerSignIn {
     setError(null);
     try {
       const ok = await run();
-      if (!ok) setError(switchServersStore.error ?? 'Could not sign in.');
+      if (!ok) setError(switchServersStore.errorText ?? 'Could not sign in.');
       return ok;
     } finally {
       setSubmitting(false);

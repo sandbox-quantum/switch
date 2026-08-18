@@ -28,7 +28,7 @@ export function policyNamesOwner(policy: AddressingPolicy | null): boolean {
 }
 
 /**
- * What the "Who can send instructions" chooser offers.
+ * What the "Who can talk to your agent" chooser offers.
  *
  * Three answers people actually want, each backed by one policy shape, and
  * `custom` — the rule editor — for everything else.

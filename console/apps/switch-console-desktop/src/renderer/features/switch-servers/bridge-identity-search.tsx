@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { rpc } from '@renderer/lib/ipc';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
@@ -94,7 +95,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
       refreshIdentities();
       onClaimed(result.identity);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not link this account.'));
     } finally {
       setClaiming(null);
       setCloseGuard(false);
@@ -119,7 +120,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
       refreshIdentities();
       await queryClient.invalidateQueries({ queryKey: ['bridge-directory', serverId, bridgeId] });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not unlink this account.'));
     } finally {
       setReleasing(null);
       setCloseGuard(false);
@@ -202,15 +203,14 @@ function DirectoryResults({
       <p className="text-xs text-foreground-muted">
         {hasDirectory
           ? `Type at least ${MIN_QUERY_LENGTH} characters to search the workspace directory.`
-          : `Type at least ${MIN_QUERY_LENGTH} characters to search the people Switch has seen on ${platform}. It has no directory to search — someone appears here once they have sent a message.`}
+          : `Type at least ${MIN_QUERY_LENGTH} characters to search the people Switch has seen on ${platform}. It has no directory to search — you appear here once you have sent a message in a chat the bot is in.`}
       </p>
     );
   }
   if (fetchError) {
     return (
       <p className="text-destructive text-xs">
-        Could not search the directory:{' '}
-        {fetchError instanceof Error ? fetchError.message : String(fetchError)}
+        {failureText(fetchError, 'Could not search the directory.')}
       </p>
     );
   }

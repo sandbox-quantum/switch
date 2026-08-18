@@ -2,6 +2,7 @@ import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -100,7 +101,10 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         setStates((prev) =>
           new Map(prev).set(roomId, {
             phase: 'error',
-            message: cause instanceof Error ? cause.message : String(cause),
+            message: failureText(
+              cause,
+              'Could not show this room inside Switch Console. Open it in the messaging app instead.'
+            ),
           })
         );
       }

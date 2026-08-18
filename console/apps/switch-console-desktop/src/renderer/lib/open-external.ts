@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 
 /** What the main process reports back from an attempt to open something. */
@@ -31,9 +32,8 @@ export async function reportOpenAttempt(
     if (result.success) return true;
     toast.error(failureTitle, { description: result.error ?? failureDetail });
   } catch (cause) {
-    toast.error(failureTitle, {
-      description: cause instanceof Error ? cause.message : String(cause),
-    });
+    const { detail } = describeFailure(cause, failureTitle);
+    toast.error(failureTitle, { description: detail ?? failureDetail });
   }
   return false;
 }

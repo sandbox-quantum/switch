@@ -13,6 +13,7 @@ import {
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -215,11 +216,14 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     runHostReady &&
     submitState === 'idle';
 
-  const finishWith = (locationId: string) => {
+  /** `agentName` is what picks the agent out of the location — a location can
+   * hold several, so navigating on `locationId` alone opens the directory
+   * rather than the agent that was just created. */
+  const finishWith = (agent: { locationId: string; name: string }) => {
     setCloseGuard(false);
     setSubmitState('idle');
     onClose();
-    navigate('location', { locationId });
+    navigate('location', { locationId: agent.locationId, agentName: agent.name });
   };
 
   const reportProvisionError = (result: ProvisionAgentResult) => {
@@ -250,12 +254,16 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       return;
     }
     if (result.kind === 'invalid-name') {
-      toast({ title: 'Invalid agent name', description: result.message, variant: 'destructive' });
+      toast({
+        title: 'That agent name cannot be used',
+        description: result.message,
+        variant: 'destructive',
+      });
       return;
     }
     if (result.kind === 'error') {
       toast({
-        title: 'Failed to register agent',
+        title: 'The agent could not be registered on the server. Nothing was created.',
         description: result.message,
         variant: 'destructive',
       });
@@ -296,17 +304,17 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           policy: form.addressingPolicy,
         });
       }
-      void agentsStore.load();
-      finishWith(result.agent.locationId);
+      await agentsStore.load();
+      finishWith(result.agent);
     } catch (error) {
       log.error(error);
       setCloseGuard(false);
       setSubmitState('idle');
-      toast({
-        title: 'Failed to add agent',
-        description: String(error),
-        variant: 'destructive',
-      });
+      const { headline, detail } = describeFailure(
+        error,
+        'Could not add the agent. Nothing was created — check the directory is reachable and writable, then try again.'
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
     }
   };
 

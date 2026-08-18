@@ -82,7 +82,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.deeplinks import switchdash_to_gateway
+from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
     LlmCallReport as MatrixLlmCallReport,
 )
@@ -1262,25 +1262,37 @@ class ProtocolService:
         transient routing — reported on every refresh, and only a change moves
         anything.
 
-        The `switchdash://` deeplink is rewritten to a gateway HTTP redirect when
-        `GATEWAY_PUBLIC_URL` is configured, so the "Open in Switch Console" link is
-        clickable on platforms that only linkify http(s) (Discord). The rewritten
-        link is what gets persisted and emitted, so both the bridged status
-        message and the `!status` command surface a clickable link. When unset,
-        the raw `switchdash://` deeplink is left untouched (today's behavior).
-        """
-        if deeplink_url is not None and self.config.gateway_public_url:
-            deeplink_url = (
-                switchdash_to_gateway(deeplink_url, self.config.gateway_public_url)
-                or deeplink_url
-            )
+        The `switchdash://` deeplink is rewritten to a gateway HTTP redirect for
+        platforms that linkify only http(s) (Discord, Telegram), so the "Open in
+        Switch Console" link is clickable there. It takes both a configured
+        `GATEWAY_PUBLIC_URL` and a room whose bridge needs the hop: the redirect
+        lands in the same place the deeplink already points, so handing it to a
+        platform that renders the scheme — Mattermost, Slack — sends the reader
+        through the browser for nothing. A room on no bridge keeps the raw link
+        for the same reason. When `GATEWAY_PUBLIC_URL` is unset the raw deeplink
+        is left untouched whatever the platform.
 
+        The result is what gets persisted and emitted, so the bridged status
+        message and the `!status` command surface the same link.
+        """
         room = await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             agent = await self.agent_store.get(session, agent_id)
             if agent is None:
                 raise ValueError(f"Agent not found: {agent_id}")
             room_row = await self.room_store.get(session, room.id)
+            bridge_type: str | None = None
+            if room_row is not None and room_row.bridge_id is not None:
+                bridge = await self.bridge_store.get(session, room_row.bridge_id)
+                bridge_type = bridge.type if bridge is not None else None
+            deeplink_url = deeplink_for_platform(
+                deeplink_url,
+                self.config.gateway_public_url,
+                # A room on no bridge has no platform to accommodate, so it
+                # keeps the link Switch Console built.
+                bridge_type is None
+                or self.collab_lifecycle.renders_custom_url_schemes(bridge_type),
+            )
             await self.agent_runtime_state_store.upsert(
                 session,
                 agent_id,

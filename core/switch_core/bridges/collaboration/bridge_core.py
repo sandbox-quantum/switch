@@ -1449,6 +1449,11 @@ class BridgeCore:
         message was in a thread, the state surfaces in that same thread: the
         event's `thread_id` (a Matrix event id) is resolved to the external
         thread root via the same map outbound replies use.
+
+        Addressed at the conversation root there is no `thread_id`, and on an
+        adapter that asks for it the reported anchor — the last message the
+        agent was handed — stands in, so the status joins the thread the reply
+        opens on that message instead of sitting at the channel root beside it.
         """
         channel_id = self._find_channel(matrix_room_id=room.room_id)
         if channel_id is None:
@@ -1458,18 +1463,30 @@ class BridgeCore:
             )
             return
 
-        thread_root_ref: str | None = None
+        # Where the triggering message itself sits — None when it came from the
+        # channel root. This is what a typing indicator follows.
+        trigger_thread_ref: str | None = None
         if event.thread_id is not None:
-            thread_root_ref = await self._external_post_for_matrix_event(
+            trigger_thread_ref = await self._external_post_for_matrix_event(
                 event.thread_id
             )
-            if thread_root_ref is None:
-                logger.debug(
-                    "[BRIDGE-OUT] no external post mapped for runtime-state thread "
-                    "%s; surfacing at channel root in %s",
-                    event.thread_id,
-                    channel_id,
-                )
+
+        # Where a persistent status belongs, which on an adapter that asks for
+        # it is the thread the reply will open on the message being worked on.
+        anchor_ref = event.thread_id
+        if anchor_ref is None and self._adapter.runtime_state_follows_anchor:
+            anchor_ref = event.anchor_event_id
+
+        thread_root_ref: str | None = trigger_thread_ref
+        if anchor_ref is not None and anchor_ref != event.thread_id:
+            thread_root_ref = await self._external_post_for_matrix_event(anchor_ref)
+        if anchor_ref is not None and thread_root_ref is None:
+            logger.debug(
+                "[BRIDGE-OUT] no external post mapped for runtime-state thread "
+                "%s; surfacing at channel root in %s",
+                anchor_ref,
+                channel_id,
+            )
 
         await self._adapter.apply_runtime_state(
             channel_id,
@@ -1479,6 +1496,7 @@ class BridgeCore:
             thread_root_id=thread_root_ref,
             deeplink_url=event.deeplink_url,
             detail=event.detail,
+            trigger_thread_root_id=trigger_thread_ref,
         )
         await self._follow_reported_anchor(
             channel_id,

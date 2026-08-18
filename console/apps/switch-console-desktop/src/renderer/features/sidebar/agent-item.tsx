@@ -14,6 +14,7 @@ import {
 } from '@renderer/features/sessions/stores/session-selectors';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -233,8 +234,9 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                   void toastPromise(rpc.agents.resetRemoteAgent({ agentId: agent.id }), {
                     loading: `Resetting ${label}…`,
                     success: `${label} was reset`,
-                    error: (error) =>
-                      `Failed to reset agent: ${error instanceof Error ? error.message : String(error)}`,
+                    error: (error) => {
+                      return resetAgentErrorText(error);
+                    },
                   });
                 },
               });

@@ -121,6 +121,29 @@ bot lands.
 A bot cannot be added to a chat by Switch, and it cannot add anyone else: people
 join from a Telegram client or an invite link.
 
+## 5. Link your own Telegram account — after you have been seen, not before
+
+Switch has to know which Telegram account is you, or an agent set to answer only
+its owner will read your messages as a stranger's. On Slack or Mattermost you do
+this straight after connecting, by searching the workspace directory. **Telegram
+has no directory a bot may search**, so there is nothing to search until you
+have spoken. Switch Console therefore does not offer the step on the way in, and
+that is deliberate rather than an omission.
+
+The order is:
+
+1. Connect the Telegram app to your Switch server.
+2. Add the bot to a chat — the group or channel from sections 2 to 4.
+3. **Send a message in that chat.** This is the step that makes you someone
+   Switch has seen; nothing before it puts you in reach.
+4. In Switch Console, open the server's **Messaging apps**, choose **Link my
+   account…** on the Telegram row, and pick yourself.
+
+Only people who have posted in a chat the bot can see are listed, so a member
+who has never spoken cannot be linked yet. In a chat still under privacy mode
+(see below) only messages that tag the bot reach Switch at all, so tag it in
+that first message.
+
 ## Mention-only chats, and how to repair one
 
 A chat where privacy mode is still in force still works, in a reduced way

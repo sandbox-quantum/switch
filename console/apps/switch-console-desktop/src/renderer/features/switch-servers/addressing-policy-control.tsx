@@ -29,9 +29,9 @@ const MODE_LABELS: Record<AddressingMode, string> = {
 const MODE_HINTS: Record<AddressingMode, string> = {
   ownerAndAgents:
     'You, and any agent you own — so one of your agents can hand this one work. Nobody else.',
-  owner: 'Only you, in person. Agents cannot send it instructions, including your own.',
-  anyone: 'Anyone in this agent’s rooms can send it instructions.',
-  custom: 'Rules say exactly who can send instructions, and in which rooms.',
+  owner: 'Only you, in person. Agents cannot talk to it, including your own.',
+  anyone: 'Anyone in this agent’s rooms can talk to it.',
+  custom: 'Rules say exactly who can talk to it, and in which rooms.',
 };
 
 /**

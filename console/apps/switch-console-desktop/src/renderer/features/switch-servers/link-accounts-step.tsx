@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -134,8 +135,7 @@ function BridgeList({
     return (
       <div className="flex flex-col items-start gap-3">
         <p className="text-destructive text-sm">
-          Could not read this server’s messaging apps:{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {failureText(error, 'Could not read this server’s messaging apps.')}
         </p>
         <Button variant="outline" size="sm" onClick={onRetry}>
           Retry

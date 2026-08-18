@@ -24,6 +24,12 @@ export class PtyInjectionSink implements InjectionSink {
   constructor(private readonly ptyKey: string) {}
 
   acquire(): InjectionTarget | null {
+    // A live pty is not the same as one ready to be typed into. A session
+    // launched to answer a room message spends its first seconds booting its
+    // TUI and then receiving its own opening prompt; the runtime says when
+    // that is done. Writing before it means the message is swallowed by a TUI
+    // that is not listening, or tacked onto the opening prompt.
+    if (!ptySessionRegistry.isOpenForInjection(this.ptyKey)) return null;
     return ptySessionRegistry.get(this.ptyKey) ?? null;
   }
 }

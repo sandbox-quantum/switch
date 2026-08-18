@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { useCallback, useMemo, useState } from 'react';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -38,7 +39,11 @@ type ConnectMessagingAppModalArgs = {
  * says whether there is any point offering the link-your-account step: on a
  * platform without a directory, a connection nobody has used yet knows nobody,
  * so the search would be a form that cannot be filled in. */
-type ConnectedApp = { bridgeId: string; directorySearchSupported: boolean };
+type ConnectedApp = {
+  bridgeId: string;
+  displayName: string;
+  directorySearchSupported: boolean;
+};
 
 type Props = BaseModalProps<ConnectedApp> & ConnectMessagingAppModalArgs;
 
@@ -127,10 +132,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       }
       onSuccess({
         bridgeId: result.bridge.id,
+        displayName: result.bridge.displayName,
         directorySearchSupported: selectedType.directorySearchSupported,
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureText(cause, 'Could not connect the messaging app.'));
     } finally {
       setIsSubmitting(false);
       setCloseGuard(false);
@@ -193,7 +199,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
             </Select>
             {typesQuery.isError && (
               <p className="text-destructive mt-1 text-xs">
-                Could not load the available messaging apps: {errorText(typesQuery.error)}
+                {failureText(typesQuery.error, 'Could not load the available messaging apps.')}
               </p>
             )}
           </Field>
@@ -276,7 +282,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                   <span className="text-sm font-medium">Allow creating channels from Switch</span>
                   <span className="text-xs text-foreground-muted">
                     {channelCreationSupported
-                      ? 'Lets a new room create its channel here directly. Turn off to only ever adopt channels made in the app.'
+                      ? `Allows Switch users and agents to create channels in ${bridgePlatformLabel(selectedType.key)} from Switch. Turn it off to only ever use channels made in the app.`
                       : `${bridgePlatformLabel(selectedType.key)} has no way to create channels from Switch, so this connection can only be used with channels made in the app.`}
                   </span>
                 </span>
@@ -313,10 +319,6 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     </>
   );
 });
-
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 /** Turn a failed attach into something the user can act on. */
 function messageFor(result: Exclude<CreateBridgeResult, { kind: 'created' }>): string {

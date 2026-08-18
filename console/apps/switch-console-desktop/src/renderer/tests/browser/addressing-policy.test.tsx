@@ -14,7 +14,7 @@ vi.hoisted(() => {
 });
 
 /**
- * "Who can send instructions", as the person setting it sees it (CHOO-2137).
+ * "Who can talk to your agent", as the person setting it sees it (CHOO-2137).
  *
  * The chooser and the rule editor answer the same question at two levels of
  * detail, and the thing that goes wrong is the seam between them: the owner and

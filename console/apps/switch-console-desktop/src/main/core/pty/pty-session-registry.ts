@@ -21,6 +21,7 @@ export class PtySessionRegistry {
   private metadata: Map<string, PtySessionMetadata> = new Map();
   private lastSizes: Map<string, { cols: number; rows: number }> = new Map();
   private pendingFlushes: Map<string, () => void> = new Map();
+  private openForInjection: Set<string> = new Set();
 
   register(
     sessionId: string,
@@ -36,6 +37,7 @@ export class PtySessionRegistry {
     this.ringBuffers.delete(sessionId);
     this.activeConsumers.delete(sessionId);
     this.metadata.delete(sessionId);
+    this.openForInjection.delete(sessionId);
     if (options?.metadata) this.metadata.set(sessionId, options.metadata);
 
     this.ptyMap.set(sessionId, pty);
@@ -136,11 +138,35 @@ export class PtySessionRegistry {
     this.ringBuffers.delete(sessionId);
     this.activeConsumers.delete(sessionId);
     this.metadata.delete(sessionId);
+    this.openForInjection.delete(sessionId);
     if (!options.preserveSize) this.lastSizes.delete(sessionId);
   }
 
   get(sessionId: string): Pty | undefined {
     return this.ptyMap.get(sessionId);
+  }
+
+  /**
+   * Declare that the session's own opening prompt is in, so anything else may
+   * now type into it.
+   *
+   * A session is launched with a prompt of its own and a TUI that is not ready
+   * for it for a second or two, and the runtime holds that prompt back until it
+   * is. Meanwhile a room message can arrive — an auto-started session is
+   * answering one, and its room connection opens before the terminal exists.
+   * Writing it on arrival puts it into a booting TUI, or interleaves it with
+   * the opening prompt; both read as the message never arriving.
+   *
+   * Cleared whenever the pty is registered or torn down, so a respawned session
+   * starts closed again.
+   */
+  markOpenForInjection(sessionId: string): void {
+    this.openForInjection.add(sessionId);
+  }
+
+  /** Whether {@link markOpenForInjection} has been declared for this session. */
+  isOpenForInjection(sessionId: string): boolean {
+    return this.openForInjection.has(sessionId);
   }
 
   /**

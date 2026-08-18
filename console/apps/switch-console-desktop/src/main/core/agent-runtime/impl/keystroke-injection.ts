@@ -9,64 +9,114 @@ import { buildPromptInjectionPayload } from '@shared/prompt-injection';
 const QUIET_PERIOD_MS = 800;
 const MAX_WAIT_MS = 15_000;
 
+/**
+ * Wait for a session's TUI to settle, deliver its opening prompt if that prompt
+ * is delivered by typing, and then declare the pane free for anything else.
+ *
+ * Two jobs, because they share one signal. Most providers take their opening
+ * prompt on the command line (`argv`) rather than through the keyboard, so
+ * there is nothing to type — but a room message still must not be typed into a
+ * TUI that is mid-boot, and "the TUI has gone quiet" is the only readiness
+ * signal there is. So the wait happens either way and only the injection is
+ * conditional.
+ */
 export function scheduleInitialPromptInjection(args: {
   pty: Pty;
   session: Session;
   initialPrompt: string | undefined;
   isResuming: boolean;
+  /**
+   * Called once the pane is ready to be typed into and the session's own
+   * opening prompt (if it had one to type) is in. Room messages wait on this:
+   * delivered any earlier they land in a booting TUI, or in the middle of the
+   * prompt being typed. Not called at all if the pty exits first.
+   */
+  onOpenForInjection: () => void;
 }): void {
-  if (args.isResuming) return;
-  if (!args.initialPrompt?.trim()) return;
-
   const plugin = getPlugin(args.session.providerId);
   const promptDelivery = plugin.capabilities.prompt;
-  if (promptDelivery.kind !== 'keystroke') return;
+  // Only a keystroke provider has a prompt for us to type. Elsewhere it went
+  // on the command line, or there is none, or the session is being resumed and
+  // is picking up where it left off.
+  const promptToType =
+    !args.isResuming && args.initialPrompt?.trim() && promptDelivery.kind === 'keystroke'
+      ? args.initialPrompt
+      : null;
 
-  const submitSequence = promptDelivery.submitSequence ?? '\r';
-  const submitDelayMs = promptDelivery.submitDelayMs;
-
-  const payload = buildPromptInjectionPayload(args.initialPrompt);
-
-  let injected = false;
+  let done = false;
   let sawAnyOutput = false;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const inject = () => {
-    if (injected) return;
-    injected = true;
+  const open = (reason: string) => {
+    log.info('AgentRuntime: session open for injected prompts', {
+      event: 'switch_session_open_for_injection',
+      providerId: args.session.providerId,
+      sessionId: args.session.id,
+      typedOpeningPrompt: promptToType !== null,
+      reason,
+    });
+    args.onOpenForInjection();
+  };
+
+  const ready = () => {
+    if (done) return;
+    done = true;
     if (quietTimer) clearTimeout(quietTimer);
     clearTimeout(maxWaitTimer);
+    const reason = sawAnyOutput ? 'tui-quiet' : 'max-wait';
+
+    if (promptToType === null) {
+      open(reason);
+      return;
+    }
+
+    const submitSequence =
+      promptDelivery.kind === 'keystroke' ? (promptDelivery.submitSequence ?? '\r') : '\r';
+    const submitDelayMs =
+      promptDelivery.kind === 'keystroke' ? promptDelivery.submitDelayMs : undefined;
+    const payload = buildPromptInjectionPayload(promptToType);
+
     try {
       if (submitDelayMs) {
         args.pty.write(payload);
-        setTimeout(() => args.pty.write(submitSequence), submitDelayMs);
+        // Opened after the submit, not after the text: in between, the prompt
+        // is sitting unsent in the composer and anything else typed would be
+        // appended to it and sent as one.
+        setTimeout(() => {
+          args.pty.write(submitSequence);
+          open(reason);
+        }, submitDelayMs);
         return;
       }
       args.pty.write(`${payload}${submitSequence}`);
+      open(reason);
     } catch (error) {
       log.warn('AgentRuntime: failed to inject initial prompt', {
         providerId: args.session.providerId,
         sessionId: args.session.id,
         error: String(error),
       });
+      // The pane is no worse off for a write that failed, and holding the gate
+      // shut would strand every room message for the life of the session.
+      open('initial-prompt-failed');
     }
   };
 
-  const maxWaitTimer = setTimeout(inject, MAX_WAIT_MS);
+  const maxWaitTimer = setTimeout(ready, MAX_WAIT_MS);
 
   args.pty.onData(() => {
-    if (injected) return;
+    if (done) return;
     sawAnyOutput = true;
     if (quietTimer) clearTimeout(quietTimer);
-    quietTimer = setTimeout(inject, QUIET_PERIOD_MS);
+    quietTimer = setTimeout(ready, QUIET_PERIOD_MS);
   });
 
   args.pty.onExit(() => {
-    const promptWasInjected = injected;
-    injected = true;
+    const settled = done;
+    done = true;
     if (quietTimer) clearTimeout(quietTimer);
     clearTimeout(maxWaitTimer);
-    if (!promptWasInjected) {
+    if (!settled && promptToType !== null) {
       log.warn('AgentRuntime: PTY exited before initial prompt could be injected', {
         providerId: args.session.providerId,
         sessionId: args.session.id,

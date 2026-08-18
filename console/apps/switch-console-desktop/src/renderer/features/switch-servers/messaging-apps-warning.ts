@@ -78,3 +78,23 @@ export function shouldOfferIdentityLinkOnConnect(app: {
 }): boolean {
   return app.directorySearchSupported;
 }
+
+/**
+ * What to say instead, on an app whose directory cannot be searched
+ * (CHOO-2173).
+ *
+ * Withholding the picker is right, but on its own it reads as the step having
+ * been skipped or forgotten — the user is left waiting for a prompt that is
+ * never coming, and nothing says linking is still owed. This is the ordering
+ * they cannot infer: be seen first, link second.
+ *
+ * Null where the directory can be searched, because there the ordinary flow
+ * asks at the moment it is offering to act.
+ */
+export function identityLinkOrderingNote(app: {
+  displayName: string;
+  directorySearchSupported: boolean;
+}): string | null {
+  if (app.directorySearchSupported) return null;
+  return `${app.displayName} has no directory of users to search, so Switch does not know you there yet. Add the bot to a chat and send a message in it — you can then link your account from this app’s menu, once you are someone Switch has seen.`;
+}

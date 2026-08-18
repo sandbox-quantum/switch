@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
@@ -11,9 +11,10 @@ import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
+import { Field, FieldGroup, FieldLabel, FieldTitle } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
+import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import type { ConfigureAgentFormState } from './modes';
 
 /**
@@ -98,6 +99,23 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
           .filter((bridge) => !identities.some((identity) => identity.bridgeId === bridge.id))
           .map((bridge) => bridge.displayName);
 
+  // The same condition the control draws its warning from, so the section opens
+  // exactly when there is a warning inside it and never on a hunch of its own.
+  const ownerUnreachable =
+    policyNamesOwner(form.addressingPolicy) && unlinkedApps !== null && unlinkedApps.length > 0;
+
+  // Folded is right until the defaults are wrong. The owner-only default admits
+  // nobody in an app with no account linked, and a warning nothing on screen
+  // hints at is a warning nobody reads — so the section opens itself the first
+  // time that is true. Once only: closing it again is an answer, not an
+  // oversight, and the queries behind `unlinkedApps` settle after mount.
+  const openedForWarning = useRef(false);
+  useEffect(() => {
+    if (!ownerUnreachable || openedForWarning.current) return;
+    openedForWarning.current = true;
+    setSettingsOpen(true);
+  }, [ownerUnreachable]);
+
   if (servers.length === 0) {
     return (
       <div className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted">
@@ -173,15 +191,18 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
             </Field>
 
             <Field>
-              <FieldLabel>
+              {/* FieldTitle rather than FieldLabel: this is a settings row like
+                  the two toggles above it, and the label styling set it lighter
+                  and greyer than them for no reason the reader can see. */}
+              <FieldTitle>
                 <span className="flex items-center gap-1.5">
-                  Who can send instructions
+                  Who can talk to your agent
                   <InfoTooltip
                     label="More info about addressing"
-                    content="Sending instructions means an @mention, a targeted message, or a delegated task. A new agent answers only you; grant other agents to let them delegate to it. You can change this later from the agent's settings."
+                    content="Talking to an agent means an @mention, a targeted message, or a delegated task. A new agent answers only you; grant other agents to let them delegate to it. You can change this later from the agent's settings."
                   />
                 </span>
-              </FieldLabel>
+              </FieldTitle>
               <AddressingPolicyControl
                 value={form.addressingPolicy}
                 onChange={form.setAddressingPolicy}

@@ -2,10 +2,6 @@ import { Bot, DoorOpen, MessageSquare, Pin } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import {
-  getLocationStore,
-  locationDisplayName,
-} from '@renderer/features/locations/stores/location-selectors';
 import { useSessionViewContext } from '@renderer/features/sessions/session-view-context';
 import {
   getRegisteredSessionData,
@@ -59,7 +55,7 @@ export const SessionTitlebar = observer(function SessionTitlebar() {
       ) : (
         <Bot className="size-3.5 shrink-0" />
       ),
-      label: agentName ?? locationDisplayName(getLocationStore(locationId)) ?? 'Agent',
+      label: agentName ?? agent?.name ?? 'Agent',
       maxWidthClassName: 'max-w-40',
       onClick: () => navigate('location', { locationId, agentName }),
     },

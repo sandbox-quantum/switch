@@ -85,8 +85,10 @@ const config: Configuration = {
   rpm: {
     packageName: APP_NAME_LOWER,
   },
-  // Unsigned, like the base config — see the `win` comment there before adding
-  // any signing key here.
+  // Always unsigned: no workflow builds this channel, so the Azure OIDC login the
+  // stable config's signing depends on never runs here. Adding `azureSignOptions`
+  // without that login breaks the build outright rather than leaving it unsigned —
+  // see the `hasAzureSigning` comment in the base config.
   win: {
     icon: 'src/assets/images/switch-console/app-icon-canary.png',
     target: [

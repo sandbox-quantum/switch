@@ -1,4 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { sessionRoomChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 
@@ -51,7 +52,10 @@ export class SwitchRoomsStore {
       .catch((cause: unknown) => {
         runInAction(() => {
           this.loaded = false;
-          this.seedError = cause instanceof Error ? cause.message : String(cause);
+          this.seedError = failureText(
+            cause,
+            'Could not read which Switch rooms these sessions are connected to.'
+          );
         });
       });
   }

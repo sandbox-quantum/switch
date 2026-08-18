@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import requests as sync_requests
@@ -64,6 +64,11 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
 
 
 class MattermostAdapter(CollaborationAdapter):
+    #: Mattermost renders a thread inline under its root as well as in the
+    #: side panel, so anchoring the status to the message being worked on keeps
+    #: it beside the answer instead of stranding it at the channel root.
+    runtime_state_follows_anchor: ClassVar[bool] = True
+
     def __init__(self, *, config: MattermostConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -420,7 +425,18 @@ class MattermostAdapter(CollaborationAdapter):
         logger.debug("Mattermost set typing: %s", is_typing)
         if not is_typing:
             return
+        await self._post_typing(channel_id, sender_name, None)
 
+    async def _post_typing(
+        self, channel_id: str, sender_name: str, thread_root_id: str | None
+    ) -> None:
+        """Tell Mattermost the agent's bot is typing, in a thread when given one.
+
+        Mattermost expires the indicator on its own after a few seconds, so
+        this is a one-shot nudge rather than something to switch off. Without
+        `parent_id` it only ever shows at the channel root, which is the wrong
+        place when the agent is answering inside a thread.
+        """
         bot_info = self._agent_bots.get(sender_name)
         if not bot_info:
             logger.warning("No bot info found for sender name %s", sender_name)
@@ -432,13 +448,17 @@ class MattermostAdapter(CollaborationAdapter):
             logger.warning("No bot driver found for sender name %s", sender_name)
             return
 
+        body: dict[str, str] = {"channel_id": channel_id}
+        if thread_root_id is not None:
+            body["parent_id"] = thread_root_id
+
         try:
             await loop.run_in_executor(
                 None,
                 bot_driver.client.make_request,
                 "post",
                 f"/users/{bot_info['user_id']}/typing",
-                {"channel_id": channel_id},
+                body,
             )
         except Exception as e:
             logger.debug("Failed to send MM typing for %s: %s", sender_name, e)
@@ -455,6 +475,7 @@ class MattermostAdapter(CollaborationAdapter):
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
         """Surface runtime state as a posted message that is **never deleted**.
 
@@ -495,6 +516,17 @@ class MattermostAdapter(CollaborationAdapter):
                     thread_root_id=thread_root_id,
                     started_at=time.monotonic(),
                 )
+                # Where the message came from, not where the status went. The
+                # status is pinned to the thread the answer will land in, but
+                # typing is for whoever is waiting — and someone who wrote at
+                # the channel root is watching the root, not a thread they have
+                # not opened.
+                #
+                # Only as the turn opens. Mattermost expires a typing indicator
+                # after a few seconds, and the posted message is what carries
+                # the state from there on — repeating it on every activity
+                # refresh would say "typing" for as long as the agent runs.
+                await self._post_typing(channel_id, agent_name, trigger_thread_root_id)
         elif state == "awaiting-input":
             ref = await self._ping_operator(
                 channel_id, agent_name, mention_handle, thread_root_id, deeplink_url

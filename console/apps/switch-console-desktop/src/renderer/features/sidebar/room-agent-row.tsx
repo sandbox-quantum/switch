@@ -5,6 +5,7 @@ import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-troub
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -88,8 +89,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
       {
         loading: `Removing ${label} from ${roomLabel}…`,
         success: `${label} was removed from ${roomLabel}`,
-        error: (error) =>
-          `Failed to remove from room: ${error instanceof Error ? error.message : String(error)}`,
+        error: (error) => failureText(error, `Could not remove ${label} from ${roomLabel}.`),
       }
     );
   };

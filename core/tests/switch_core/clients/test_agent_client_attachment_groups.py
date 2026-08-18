@@ -58,8 +58,12 @@ def _fake_client() -> SimpleNamespace:
     async def _resolve_room_meta(_matrix_room_id: str) -> RoomMeta:
         return meta
 
-    async def _compute_addressed(_event: Any, _meta: RoomMeta) -> bool:
-        return True
+    async def _compute_addressed(event: Any, _meta: RoomMeta) -> bool:
+        # Mirrors production, where addressing is read off the message text.
+        # Standing in a constant `True` here is what let the coalescing bug
+        # through: every part looked addressed, including the caption-less ones
+        # that in reality address nobody.
+        return f"@{ns.agent.name}" in getattr(event, "body", "")
 
     async def _gate_addressed(
         _room: Any, _event: Any, _meta: Any, _root: Any, is_addressed: bool
@@ -293,3 +297,113 @@ async def test_group_timeout_bounds_the_group_not_the_gap_between_parts() -> Non
     assert "incomplete attachment group: 3 of 4" in payload.body
     assert client._attachment_groups == {}
     assert client._attachment_group_timers == {}
+
+
+class TestAddressingSurvivesCoalescing:
+    """Two screenshots in one Slack message reached nobody (CHOO-2173).
+
+    Matrix has no multi-attachment event, so one such message is split: the
+    text and its `@mention` ride on part 0 and every later part is a bare
+    file. Addressing was read from whichever part completed the group — a
+    filename — so the reassembled message claimed to address nobody and each
+    consumer, correctly, ignored it.
+    """
+
+    async def test_a_mention_on_part_zero_addresses_the_whole_group(self) -> None:
+        client = _fake_client()
+        for index, name in [(0, "one.png"), (1, "two.png")]:
+            await AgentClient.on_media(
+                client,
+                _room(),
+                _media_event(
+                    body="@agent-a look at these" if index == 0 else name,
+                    filename=name if index == 0 else None,
+                    event_id=f"$part-{index}",
+                    group={"id": "grp-addr", "index": index, "total": 2},
+                ),
+            )
+
+        assert len(client.queue.events) == 1
+        payload = client.queue.events[0].payload
+        assert payload.addressed is True
+        # The text travels with the images rather than being left on the part
+        # it arrived on.
+        assert payload.body == "@agent-a look at these"
+        assert [a.filename for a in payload.attachments] == ["one.png", "two.png"]
+
+    async def test_it_holds_when_the_captioned_part_arrives_last(self) -> None:
+        client = _fake_client()
+        for index, name in [(1, "two.png"), (0, "one.png")]:
+            await AgentClient.on_media(
+                client,
+                _room(),
+                _media_event(
+                    body="@agent-a look at these" if index == 0 else name,
+                    filename=name if index == 0 else None,
+                    event_id=f"$part-{index}",
+                    group={"id": "grp-addr-rev", "index": index, "total": 2},
+                ),
+            )
+
+        assert client.queue.events[0].payload.addressed is True
+
+    async def test_a_group_that_mentions_nobody_stays_unaddressed(self) -> None:
+        # The fix must carry addressing across the group, not assert it.
+        client = _fake_client()
+        for index, name in [(0, "one.png"), (1, "two.png")]:
+            await AgentClient.on_media(
+                client,
+                _room(),
+                _media_event(
+                    body="just some pictures" if index == 0 else name,
+                    filename=name if index == 0 else None,
+                    event_id=f"$part-{index}",
+                    group={"id": "grp-unaddr", "index": index, "total": 2},
+                ),
+            )
+
+        assert client.queue.events[0].payload.addressed is False
+
+    async def test_an_incomplete_group_is_still_addressed(self) -> None:
+        # A batch that never completes is delivered by the safety net, and
+        # losing a file is no reason to also lose who it was for.
+        original = ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS
+        ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = 0.01
+        try:
+            client = _fake_client()
+            await AgentClient.on_media(
+                client,
+                _room(),
+                _media_event(
+                    body="@agent-a two of three",
+                    filename="one.png",
+                    event_id="$part-0",
+                    group={"id": "grp-addr-partial", "index": 0, "total": 3},
+                ),
+            )
+            await AgentClient.on_media(
+                client,
+                _room(),
+                _media_event(
+                    body="two.png",
+                    event_id="$part-1",
+                    group={"id": "grp-addr-partial", "index": 1, "total": 3},
+                ),
+            )
+            await asyncio.sleep(0.15)
+        finally:
+            ac.ATTACHMENT_GROUP_TIMEOUT_SECONDS = original
+
+        assert len(client.queue.events) == 1
+        payload = client.queue.events[0].payload
+        assert payload.addressed is True
+        assert "@agent-a two of three" in payload.body
+
+    async def test_a_single_attachment_is_unaffected(self) -> None:
+        # One screenshot always worked; it takes no group and no buffering.
+        client = _fake_client()
+        await AgentClient.on_media(
+            client, _room(), _media_event(body="@agent-a one picture")
+        )
+
+        assert client.queue.events[0].payload.addressed is True

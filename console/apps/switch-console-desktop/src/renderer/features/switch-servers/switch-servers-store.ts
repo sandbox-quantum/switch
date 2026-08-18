@@ -1,5 +1,6 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
   ServerConnectionStatus,
@@ -39,10 +40,19 @@ export class SwitchServersStore {
   loadingServers = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
+  /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
+  /** Diagnostics for the same failure, rendered under `error` rather than in it. */
+  errorDetail: string | null = null;
 
   constructor() {
     makeAutoObservable(this);
+  }
+
+  /** Headline and detail as one string, for the modals that have a single slot. */
+  get errorText(): string | null {
+    if (!this.error) return null;
+    return this.errorDetail ? `${this.error} (${this.errorDetail})` : this.error;
   }
 
   /** Whether this server is managed on a host the reachability manager has
@@ -78,6 +88,7 @@ export class SwitchServersStore {
     runInAction(() => {
       this.loadingServers = true;
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       const [servers, activeServerId] = await Promise.all([
@@ -91,7 +102,7 @@ export class SwitchServersStore {
       await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not load your Switch servers.');
     } finally {
       runInAction(() => {
         this.loadingServers = false;
@@ -234,7 +245,7 @@ export class SwitchServersStore {
       await this.refreshStatus(created.id);
       return created;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not add the server.');
       return null;
     }
   }
@@ -254,7 +265,7 @@ export class SwitchServersStore {
       });
       return result;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not save the server.');
       return null;
     }
   }
@@ -269,7 +280,7 @@ export class SwitchServersStore {
       });
       return true;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not rename the server.');
       return false;
     }
   }
@@ -296,7 +307,7 @@ export class SwitchServersStore {
         }
       }
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not shut down the server’s stack, so it was not deleted.');
       return false;
     }
     await this.removeServer(serverId);
@@ -321,7 +332,7 @@ export class SwitchServersStore {
       });
       await this.ensureActiveServer();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not remove the server.');
     }
   }
 
@@ -333,7 +344,7 @@ export class SwitchServersStore {
         this.activeServerId = serverId;
       });
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not switch to that server.');
     }
   }
 
@@ -343,6 +354,7 @@ export class SwitchServersStore {
     if (!result.success) {
       runInAction(() => {
         this.error = result.error.message;
+        this.errorDetail = null;
       });
       return false;
     }
@@ -358,6 +370,7 @@ export class SwitchServersStore {
       if (result.error.kind !== 'cancelled') {
         runInAction(() => {
           this.error = result.error.message;
+          this.errorDetail = null;
         });
       }
       return false;
@@ -372,19 +385,28 @@ export class SwitchServersStore {
       await rpc.switchServers.logout(serverId);
       await this.refreshStatus(serverId);
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not sign out of the server.');
     }
   }
 
   private clearError(): void {
     runInAction(() => {
       this.error = null;
+      this.errorDetail = null;
     });
   }
 
-  private setError(cause: unknown): void {
+  /**
+   * `error` is rendered directly in banners and modals, so it goes through the
+   * shared boundary rather than carrying whatever was thrown. The fallback is
+   * per-action: the store knows which request failed, and the failure itself
+   * usually does not.
+   */
+  private setError(cause: unknown, fallback: string): void {
+    const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
-      this.error = cause instanceof Error ? cause.message : String(cause);
+      this.error = headline;
+      this.errorDetail = detail;
     });
   }
 }

@@ -76,6 +76,7 @@
     {
       "files": ["src/renderer/**/*.{ts,tsx}"],
       "rules": {
+        "switch-console/no-raw-error-text": "error",
         "no-restricted-imports": [
           "error",
           {
@@ -93,7 +94,14 @@
       "files": ["**/*.test.{ts,tsx}"],
       "rules": {
         "typescript/no-explicit-any": "off",
-        "switch-console/no-tooling-imports": "off"
+        "switch-console/no-tooling-imports": "off",
+        "switch-console/no-raw-error-text": "off"
+      }
+    },
+    {
+      "files": ["src/renderer/lib/errors/describe-failure.ts"],
+      "rules": {
+        "switch-console/no-raw-error-text": "off"
       }
     }
   ]

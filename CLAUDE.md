@@ -181,8 +181,8 @@ commands, room workflow, or anything an agent-facing client needs to know:
   can trust. `console/AGENTS.md` has the table (all three plugins, runtime
   package, sidecar) and the rules for which digit moves.
 - **Diff the skills against each other after editing.** They are deliberately not identical
-  (host-specific wording for tool namespacing, event delivery and task
-  notifications, attachments, and MCP registration), so diff them to confirm
+  (host-specific wording for tool namespacing, event delivery, attachments, and
+  MCP registration), so diff them to confirm
   every remaining difference is intentional rather than a fix that only landed
   on one side.
 - **Publishing the runtime is a tag**, not a merge:

@@ -18,6 +18,7 @@ import {
 } from '@renderer/features/locations/components/agent-model-catalogue';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
@@ -125,9 +126,10 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     },
     onError: (error) => {
       log.error('Failed to save agent advanced configuration', { agentId, error });
+      const { headline, detail } = describeFailure(error, 'Could not save the configuration.');
       toast({
-        title: 'Failed to save configuration',
-        description: String(error),
+        title: headline,
+        description: detail ?? undefined,
         variant: 'destructive',
       });
       // A save can fail after the row was written — pushing the change to a
@@ -173,9 +175,10 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
         agentId,
         error,
       });
+      const { headline, detail } = describeFailure(error, 'Could not restart the session.');
       toast({
-        title: 'Failed to restart the session',
-        description: String(error),
+        title: headline,
+        description: detail ?? undefined,
         variant: 'destructive',
       });
     },

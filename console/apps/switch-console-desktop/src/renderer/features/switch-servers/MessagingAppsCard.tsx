@@ -15,6 +15,8 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -36,6 +38,7 @@ import { BundledChatSignIn } from './BundledChatSignIn';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
+  identityLinkOrderingNote,
   shouldOfferIdentityLinkOnConnect,
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
@@ -83,6 +86,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   className?: string;
 }) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
   const showClaimIdentity = useShowModal('claimIdentityModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
@@ -161,9 +165,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       }
       await queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] });
     } catch (cause) {
-      setToggleError(
-        `Could not update ${bridge.displayName}: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
+      setToggleError(failureText(cause, `Could not update ${bridge.displayName}.`));
     } finally {
       setSavingBridgeId(null);
     }
@@ -201,7 +203,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
             onClick={() =>
               showConnectMessagingApp({
                 serverId,
-                onSuccess: ({ bridgeId, directorySearchSupported }) => {
+                onSuccess: ({ bridgeId, displayName, directorySearchSupported }) => {
                   // Refresh the bridge list everywhere it is consumed — this
                   // card and the room-creation picker share the query key.
                   void queryClient.invalidateQueries({ queryKey: ['remote-bridges', serverId] });
@@ -217,9 +219,16 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                   // second ago. The search would be guaranteed empty, which
                   // teaches the user that they are not in their own workspace.
                   // Linking waits for the server page, by which time someone
-                  // has messaged the app and there is a name to pick.
+                  // has messaged the app and there is a name to pick. Say that,
+                  // rather than closing on nothing and leaving the step looking
+                  // forgotten.
                   if (shouldOfferIdentityLinkOnConnect({ directorySearchSupported })) {
                     showClaimIdentity({ serverId, bridgeId });
+                    return;
+                  }
+                  const note = identityLinkOrderingNote({ displayName, directorySearchSupported });
+                  if (note !== null) {
+                    toast({ title: 'Link your account later', description: note });
                   }
                 },
               })
@@ -246,17 +255,19 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
 
       {identitiesError !== null && (
         <p className="text-destructive mt-2 text-xs">
-          Could not load your linked accounts:{' '}
-          {identitiesError instanceof Error ? identitiesError.message : String(identitiesError)}
+          {failureText(
+            identitiesError,
+            'Could not load which messaging accounts are linked to you, so this list may be incomplete.'
+          )}
         </p>
       )}
 
       {bridgesQuery.isError ? (
         <p className="text-destructive mt-3 text-xs">
-          Could not load messaging apps:{' '}
-          {bridgesQuery.error instanceof Error
-            ? bridgesQuery.error.message
-            : String(bridgesQuery.error)}
+          {failureText(
+            bridgesQuery.error,
+            'Could not load this server’s messaging apps. Re-check the server, or reload the page.'
+          )}
         </p>
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
@@ -363,11 +374,21 @@ export function MessagingAppRow({
       });
       onReleased();
     } catch (cause) {
-      setReleaseError(cause instanceof Error ? cause.message : String(cause));
+      setReleaseError(failureText(cause, 'Could not unlink this account.'));
     } finally {
       setReleasing(false);
     }
   };
+
+  // What it costs not to be linked, and — where the app has no directory to
+  // search — how to become linkable at all. The second half is not obvious and
+  // is the reason nothing offered to link on the way in.
+  const orderingNote = identityLinkOrderingNote({
+    displayName: bridge.displayName,
+    directorySearchSupported: bridge.directorySearchSupported,
+  });
+  const noAccountHelp =
+    orderingNote === null ? NO_ACCOUNT_EXPLANATION : `${NO_ACCOUNT_EXPLANATION} ${orderingNote}`;
 
   // Why the switch cannot be moved, when it cannot. Said in a tooltip rather
   // than left to a greyed control, because "off" and "this platform cannot do
@@ -411,14 +432,14 @@ export function MessagingAppRow({
                 render={
                   <span
                     tabIndex={0}
-                    aria-label={NO_ACCOUNT_EXPLANATION}
+                    aria-label={noAccountHelp}
                     className="inline-flex text-foreground-muted"
                   >
                     <Info className="size-3" />
                   </span>
                 }
               />
-              <TooltipContent className="max-w-xs">{NO_ACCOUNT_EXPLANATION}</TooltipContent>
+              <TooltipContent className="max-w-xs">{noAccountHelp}</TooltipContent>
             </Tooltip>
           </span>
         ) : (

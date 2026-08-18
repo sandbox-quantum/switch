@@ -8,7 +8,6 @@ import { AGENTS_CONTAINER, makeDndId, SortableBranch, SortableList } from './sid
 import {
   groupByRoom,
   isRoomNameKnown,
-  isRoomViewActive,
   openRoomInMessagingApp,
   openRoomView,
   RoomRow,
@@ -67,7 +66,12 @@ const AgentSessions = observer(function AgentSessions({
               bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
               onToggle={() => sidebarStore.toggleGroupExpanded(groupKey)}
               onSelect={() => openRoomView(roomKey)}
-              isActive={isRoomViewActive(roomKey)}
+              // Deliberately never active. A room is a heading under every
+              // agent with a session in it, so an open room is several rows
+              // here and nothing says which one you came from — highlighting on
+              // the room id alone lit all of them at once. The agent rows under
+              // a room have the same problem and answer it the same way: with
+              // no way to tell the copies apart, none of them lights up.
               onOpenChannel={
                 switchRoomsStore.roomChannelUrl(roomKey)
                   ? () => openRoomInMessagingApp(roomKey)

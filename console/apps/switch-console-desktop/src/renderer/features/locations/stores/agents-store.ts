@@ -69,13 +69,15 @@ export class AgentsStore {
    * The agent an agent page is routed to — its location plus its name, the pair
    * every caller of the `location` view navigates with.
    *
-   * Returns null rather than guessing when the route carries no name: a location
-   * can hold several agents, and picking one of them would put another agent's
+   * A route carrying no name is answered only where there is nothing to guess
+   * between: a location holding exactly one agent resolves to it. Beyond that,
+   * null rather than a guess — picking one of several would put another agent's
    * provider and identity above someone's session list.
    */
   agentAtLocation(locationId: string, agentName: string | undefined): Agent | null {
-    if (agentName === undefined) return null;
-    return (this.byLocation.get(locationId) ?? []).find((a) => a.name === agentName) ?? null;
+    const agents = this.byLocation.get(locationId) ?? [];
+    if (agentName === undefined) return agents.length === 1 ? agents[0]! : null;
+    return agents.find((a) => a.name === agentName) ?? null;
   }
 
   /**

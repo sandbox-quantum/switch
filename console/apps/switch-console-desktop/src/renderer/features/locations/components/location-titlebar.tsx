@@ -5,20 +5,21 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import {
   asMounted,
   getLocationStore,
-  locationDisplayName,
   locationViewKind,
 } from '@renderer/features/locations/stores/location-selectors';
 import { ServerStatusPill } from '@renderer/features/switch-servers/server-presentation';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { OpenInMenu } from '@renderer/lib/components/titlebar/open-in-menu';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
+import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { useAgentIconUrl } from '@renderer/lib/stores/use-remote-agents';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -31,24 +32,23 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import type { Agent } from '@shared/core/agents/agents';
 
 /**
- * The agent this page is about. Falls back to the location's own name while the
- * agent list is still loading, or when the route carries no agent name.
+ * The agent this page is about. Shows a neutral placeholder while the agent
+ * list is still loading, or where the route names no agent and the location
+ * holds more than one to choose between.
  */
-const AgentCrumb = observer(function AgentCrumb({
-  locationId,
-  agent,
-}: {
-  locationId: string;
-  agent: Agent | null;
-}) {
-  const label = agent?.name ?? locationDisplayName(getLocationStore(locationId)) ?? 'Agent';
+const AgentCrumb = observer(function AgentCrumb({ agent }: { agent: Agent | null }) {
+  const label = agent?.name ?? 'Agent';
+  const iconUrl = useAgentIconUrl(agent?.serverId ?? null, agent?.switchAgentId ?? null);
   return (
     <TitlebarBreadcrumb
       crumbs={[
         {
           key: 'agent',
-          icon: agent?.providerId ? (
-            <AgentIcon id={agent.providerId} size={14} className="shrink-0" />
+          // The agent's own picture, as everywhere else it is listed — the
+          // provider logo that used to sit here says what it runs on, which is
+          // not what a crumb naming one agent is for.
+          icon: agent ? (
+            <AgentAvatar name={label} iconUrl={iconUrl} size={16} className="bg-transparent" />
           ) : (
             <Bot className="size-3.5 shrink-0" />
           ),
@@ -103,7 +103,7 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
   const confirmDeleteAgent = useConfirmDeleteAgent();
   const { toastPromise } = useToast();
 
-  const label = agent?.name ?? locationDisplayName(getLocationStore(locationId)) ?? 'this agent';
+  const label = agent?.name ?? 'this agent';
   const gatewayUrl =
     agent?.serverId && agent.switchAgentId
       ? switchRoomsStore.gatewayAgentUrl(agent.serverId, agent.switchAgentId)
@@ -138,8 +138,9 @@ const AgentActionsMenu = observer(function AgentActionsMenu({
                   void toastPromise(rpc.agents.resetRemoteAgent({ agentId: agent.id }), {
                     loading: `Resetting ${label}…`,
                     success: `${label} was reset`,
-                    error: (error) =>
-                      `Failed to reset agent: ${error instanceof Error ? error.message : String(error)}`,
+                    error: (error) => {
+                      return resetAgentErrorText(error);
+                    },
                   });
                 },
               })
@@ -183,7 +184,7 @@ export const LocationTitlebar = observer(function LocationTitlebar() {
 
   return (
     <Titlebar
-      leftSlot={<AgentCrumb locationId={locationId} agent={agent} />}
+      leftSlot={<AgentCrumb agent={agent} />}
       rightSlot={
         <div className="mr-1 flex items-center gap-1.5">
           {mounted &&
