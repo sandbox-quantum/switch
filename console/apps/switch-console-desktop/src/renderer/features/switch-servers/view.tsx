@@ -135,11 +135,15 @@ const ServerMainPanel = observer(function ServerMainPanel() {
   // effect re-runs and finally fetches what it skipped (CHOO-2042).
   const hostBlocked = store.isHostBlocked(serverId);
 
+  // An id naming no server resolves to nothing on the main side, so both reads
+  // would fail — and mark the server unreachable, which is a different claim
+  // from the truth that it is gone. The page says so below instead.
+  const serverExists = server !== undefined;
   useEffect(() => {
-    if (!detailsVisible || hostBlocked) return;
+    if (!serverExists || !detailsVisible || hostBlocked) return;
     void store.refreshStatus(serverId);
     void store.ensureAuthConfig(serverId);
-  }, [serverId, store, detailsVisible, hostBlocked]);
+  }, [serverId, store, serverExists, detailsVisible, hostBlocked]);
 
   if (!server) {
     return (
@@ -485,6 +489,13 @@ export const serverView = {
         : undefined;
     if (typeof serverId !== 'string') {
       return { ok: false, redirect: 'home' };
+    }
+    // Saved params outlive the server they name: deleting one leaves its id
+    // here, and a page restored onto it reads a gateway nothing can resolve.
+    // Until the list has been read, an absent server means "not asked yet" —
+    // the store revalidates once it knows.
+    if (switchServersStore.loaded && !switchServersStore.servers.some((s) => s.id === serverId)) {
+      return { ok: false, redirect: 'home', discardParams: true };
     }
     return { ok: true };
   },

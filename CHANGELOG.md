@@ -659,6 +659,18 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+
+- **Sign-in details** for a managed server's bundled chat now stays open. The
+  dialog was rendered inside the messaging app's dropdown menu, so the same
+  click that opened it closed the menu — and the menu took the dialog with it,
+  before anyone could read a credential off it.
+- Deleting a Switch server no longer leaves the app pointed at it. The deleted
+  server's id survived in the saved page state, so the app could return to a
+  page for a server that no longer exists and keep asking its gateway for a
+  sign-in configuration nothing could answer. The page now falls back to home
+  and the dead id is discarded.
+
 ### [0.27.2] - 2026-08-18
 
 #### Added

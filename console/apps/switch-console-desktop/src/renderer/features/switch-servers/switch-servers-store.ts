@@ -2,6 +2,7 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { appState } from '@renderer/lib/stores/app-state';
 import type {
   ServerConnectionStatus,
   SwitchAuthConfig,
@@ -38,6 +39,11 @@ export class SwitchServersStore {
   readonly unreachable = new Set<string>();
 
   loadingServers = false;
+  /** Whether the list has been read at least once. Until it has, an empty
+   * `servers` means "not asked yet", not "no such server" — the difference
+   * matters to the server view's guard, which runs at startup before anything
+   * has mounted to call {@link init}. */
+  loaded = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
   /** The sentence the page leads with. Never raw exception text. */
@@ -98,7 +104,12 @@ export class SwitchServersStore {
       runInAction(() => {
         this.servers = servers;
         this.activeServerId = activeServerId;
+        this.loaded = true;
       });
+      // A page restored onto a server that has since been deleted can only be
+      // judged once the list is known, and startup restores navigation before
+      // anything asks for it.
+      appState.navigation.revalidate();
       await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
@@ -330,6 +341,10 @@ export class SwitchServersStore {
         this.authConfigWanted.delete(serverId);
         this.unreachable.delete(serverId);
       });
+      // The removed id also sits in the server view's saved params, where it
+      // outlives the record and would be read back — as a page for a server
+      // that is gone, and as gateway calls for an id nothing can resolve.
+      appState.navigation.revalidate();
       await this.ensureActiveServer();
     } catch (cause) {
       this.setError(cause, 'Could not remove the server.');

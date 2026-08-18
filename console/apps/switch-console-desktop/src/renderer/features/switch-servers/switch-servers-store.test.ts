@@ -28,6 +28,10 @@ vi.mock('@renderer/lib/ipc', () => ({
 vi.mock('@renderer/features/remote-hosts/host-reachability-store', () => ({
   hostReachabilityStore: { isBlocked: (sshHost: string) => blockedHosts.has(sshHost) },
 }));
+const revalidate = vi.hoisted(() => vi.fn());
+vi.mock('@renderer/lib/stores/app-state', () => ({
+  appState: { navigation: { revalidate } },
+}));
 
 const { SwitchServersStore } = await import('./switch-servers-store');
 
@@ -167,6 +171,31 @@ describe('recovering when connectivity returns', () => {
     await store.recoverStale();
 
     expect(getAuthConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('a page left on a server that is gone', () => {
+  it('is revalidated when the server is removed', async () => {
+    const store = newStore([server('srv-a')]);
+    listServers.mockResolvedValue([]);
+    getActiveServerId.mockResolvedValue(null);
+    removeServer.mockResolvedValue(undefined);
+
+    await store.removeServer('srv-a');
+
+    expect(revalidate).toHaveBeenCalled();
+  });
+
+  it('is revalidated once the list is known, not before', async () => {
+    const store = new SwitchServersStore();
+    expect(store.loaded).toBe(false);
+
+    listServers.mockResolvedValue([server('srv-a')]);
+    getActiveServerId.mockResolvedValue('srv-a');
+    await store.init();
+
+    expect(store.loaded).toBe(true);
+    expect(revalidate).toHaveBeenCalled();
   });
 });
 

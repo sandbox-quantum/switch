@@ -3,6 +3,7 @@ import {
   CircleAlert,
   ExternalLink,
   Info,
+  KeyRound,
   Link2,
   MessageSquare,
   MoreVertical,
@@ -34,7 +35,6 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
-import { BundledChatSignIn } from './BundledChatSignIn';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
@@ -355,6 +355,7 @@ export function MessagingAppRow({
   onDisconnect: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
+  const showBundledChatSignIn = useShowModal('bundledChatSignInModal');
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
 
@@ -510,11 +511,14 @@ export function MessagingAppRow({
 
           {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
           {showBundledSignIn && (
-            <BundledChatSignIn
-              serverId={serverId}
-              bridgeDisplayName={bridge.displayName}
-              asMenuItem
-            />
+            <DropdownMenuItem
+              onClick={() =>
+                showBundledChatSignIn({ serverId, bridgeDisplayName: bridge.displayName })
+              }
+            >
+              <KeyRound className="size-4" />
+              Sign-in details…
+            </DropdownMenuItem>
           )}
           {/* Offered only when the link resolves — an older server, or a bridge
               that is down, reports none. */}
