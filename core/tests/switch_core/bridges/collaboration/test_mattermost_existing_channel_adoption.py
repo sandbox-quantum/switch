@@ -104,7 +104,6 @@ def test_carries_the_channel_type_across() -> None:
         [
             {"id": "c-pub", "type": "O", "display_name": "Public"},
             {"id": "c-priv", "type": "P", "display_name": "Private"},
-            {"id": "c-dm", "type": "D", "display_name": ""},
         ],
     )
 
@@ -113,8 +112,39 @@ def test_carries_the_channel_type_across() -> None:
     assert [join.channel_type for join in seen] == [
         "channel_public",
         "channel_private",
-        "direct",
     ]
+
+
+def test_leaves_direct_and_group_messages_alone() -> None:
+    # A bot has a DM channel with the admin the moment anyone opens one, and it
+    # is listed among its channels whether or not a word was ever said in it.
+    # Nobody "joins" a DM, so the join path could never have reported one, and
+    # sweeping memberships must not invent rooms the events never would have —
+    # a DM becomes a room when someone writes in it.
+    adapter = _adapter()
+    _, seen = _wire(
+        adapter,
+        [
+            {"id": "c-dm", "type": "D", "display_name": ""},
+            {"id": "c-group", "type": "G", "display_name": ""},
+            {"id": "c-real", "type": "O", "display_name": "Town Square"},
+        ],
+    )
+
+    _run(adapter)
+
+    assert [join.channel_id for join in seen] == ["c-real"]
+
+
+def test_skips_a_channel_type_it_does_not_recognise() -> None:
+    # Unknown types map to "channel_public" by default, so an allowlist is what
+    # keeps a future Mattermost channel kind from being bridged as an open one.
+    adapter = _adapter()
+    _, seen = _wire(adapter, [{"id": "c-new", "type": "Z", "display_name": "New"}])
+
+    _run(adapter)
+
+    assert seen == []
 
 
 def test_one_unbridgeable_channel_does_not_strand_the_others() -> None:

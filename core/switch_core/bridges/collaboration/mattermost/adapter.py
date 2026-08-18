@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 # stream unbounded data into memory.
 _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 
+# Mattermost channel types a bot can be *added* to: open and private channels.
+# Membership of a DM ("D") or group DM ("G") is a property of the conversation
+# existing rather than of anyone joining, so Mattermost raises no `user_added`
+# for them and they must not be adopted from a membership sweep either — a DM
+# becomes a room when someone actually writes in it.
+_JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
+
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
     url: str
@@ -942,15 +949,14 @@ class MattermostAdapter(CollaborationAdapter):
 
         for channel in channels or []:
             channel_id = str(channel.get("id", ""))
-            if not channel_id:
+            mm_type = str(channel.get("type", ""))
+            if not channel_id or mm_type not in _JOINABLE_MM_CHANNEL_TYPES:
                 continue
             try:
                 await self._on_agent_joined(
                     InboundAgentJoin(
                         channel_id=channel_id,
-                        channel_type=self._to_channel_type(
-                            str(channel.get("type", ""))
-                        ),
+                        channel_type=self._to_channel_type(mm_type),
                         agent_name=agent_name,
                         channel_name=str(channel.get("display_name", "")) or None,
                     )
