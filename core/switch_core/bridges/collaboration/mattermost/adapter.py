@@ -903,7 +903,66 @@ class MattermostAdapter(CollaborationAdapter):
         )
         ws_thread.start()
 
+        await self._bridge_channels_already_joined(agent_name, bot_id)
+
         logger.info("Created Mattermost bot identity: %s", agent_name)
+
+    async def _bridge_channels_already_joined(
+        self, agent_name: str, bot_id: str
+    ) -> None:
+        """Bridge the channels this bot is a member of but was never seen joining.
+
+        A bot cannot witness its own joins: its websocket opens only after it has
+        been added to the team, by which point Mattermost has already put it in
+        the team's default channels. Those joins are therefore noticed only if
+        some *other* agent's socket happens to be listening, which means the
+        first agent on an instance bridges nothing at all and a later one drags
+        the backlog in with it. Ask Mattermost outright instead of waiting to
+        overhear it.
+
+        Also runs for every known agent on startup, so a channel joined while the
+        bridge was down is picked up rather than waiting for the next message in
+        it.
+        """
+        loop = self._main_loop
+        if self._on_agent_joined is None or self._admin_driver is None or loop is None:
+            return
+        try:
+            channels = await loop.run_in_executor(
+                None,
+                self._admin_driver.channels.get_channels_for_user,
+                bot_id,
+                self._team_id,
+            )
+        except Exception:
+            logger.exception(
+                "Could not list Mattermost channels for agent %s", agent_name
+            )
+            return
+
+        for channel in channels or []:
+            channel_id = str(channel.get("id", ""))
+            if not channel_id:
+                continue
+            try:
+                await self._on_agent_joined(
+                    InboundAgentJoin(
+                        channel_id=channel_id,
+                        channel_type=self._to_channel_type(
+                            str(channel.get("type", ""))
+                        ),
+                        agent_name=agent_name,
+                        channel_name=str(channel.get("display_name", "")) or None,
+                    )
+                )
+            except Exception:
+                # One channel that cannot be bridged is not a reason to abandon
+                # the rest, nor to fail the agent's registration.
+                logger.exception(
+                    "Could not bridge Mattermost channel %s for agent %s",
+                    channel_id,
+                    agent_name,
+                )
 
     async def _ensure_admin_bot(self) -> None:
         """Provision the dedicated Switch Admin bot used to post admin/system
