@@ -236,8 +236,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
   return (
     <FieldGroup>
       {/* Above the name, because it is the first thing the finished agent is
-          recognised by — and it follows the name as it is typed, which only
-          reads as cause and effect if it is on screen while you type. */}
+          recognised by. */}
       <div className="flex flex-col items-center gap-1.5 pb-1">
         <AgentIconPicker
           name={form.agentName}
@@ -246,7 +245,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           size={84}
         />
         <span className="text-xs text-foreground-muted">
-          {form.iconUrl === null ? 'Automatically generated' : 'Click to change'}
+          {form.iconIsGenerated ? 'Automatically generated' : 'Custom icon'}
         </span>
       </div>
 

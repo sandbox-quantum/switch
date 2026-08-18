@@ -1,4 +1,4 @@
-import { RotateCw, X } from 'lucide-react';
+import { Pencil, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { Input } from '@renderer/lib/ui/input';
@@ -19,10 +19,9 @@ const TABS: readonly { value: PickerTab; label: string }[] = [
  * link to an image of the reader's own.
  *
  * `iconUrl` is null when nothing has been chosen, and the agent then wears the
- * avatar its name generates. That null is deliberately preserved rather than
- * resolved to a URL on open: while a new agent is still being named, its
- * avatar should follow what is being typed, and it can only do that if no
- * concrete choice has been recorded.
+ * avatar its name generates — the state the ✕ returns to. A new agent does not
+ * start there: it opens on a concrete random bot, since an unnamed agent has no
+ * name to draw from.
  */
 export function AgentIconPicker({
   name,
@@ -71,11 +70,22 @@ export function AgentIconPicker({
         aria-label="Change the agent's icon"
         disabled={disabled}
         className={cn(
-          'rounded-full transition-opacity',
+          'relative rounded-full transition-opacity',
           !disabled && 'cursor-pointer hover:opacity-80'
         )}
       >
         <AgentAvatar name={seedName} iconUrl={iconUrl} size={size} />
+        {/* Shown at rest rather than on hover: that the picture is editable at
+            all is not guessable, and a hover-only affordance answers the
+            question only for someone who already suspected the answer. */}
+        {!disabled ? (
+          <span
+            aria-hidden
+            className="absolute right-0 bottom-0 flex size-6 items-center justify-center rounded-full border border-border bg-background text-foreground-muted shadow-sm"
+          >
+            <Pencil className="size-3" />
+          </span>
+        ) : null}
       </PopoverTrigger>
 
       <PopoverContent align="center" sideOffset={8} className="w-80 gap-3">

@@ -46,6 +46,18 @@ export function agentAvatarUrlForName(agentName: string): string {
 }
 
 /**
+ * An avatar drawn from a fresh random seed.
+ *
+ * For a *new* agent, whose name is not typed yet and whose eventual name is no
+ * reason for two people's agents to look alike. Determinism is the point
+ * everywhere else in this module, so the randomness is confined to picking the
+ * seed: once drawn, the URL is an ordinary stable one.
+ */
+export function randomAgentAvatarUrl(): string {
+  return agentAvatarUrlForSeed(crypto.randomUUID());
+}
+
+/**
  * One page of choices for the picker. `round` 0 leads with the agent's own
  * name, so the first tile is the avatar it already has; later rounds are
  * different bots.

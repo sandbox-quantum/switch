@@ -5,7 +5,21 @@ import {
   agentAvatarUrlForName,
   agentAvatarUrlForSeed,
   agentInitials,
+  randomAgentAvatarUrl,
 } from './agent-avatar';
+
+describe('randomAgentAvatarUrl', () => {
+  it('draws a different bot each time', () => {
+    // A new agent opens on one of these, so two agents created in a row must
+    // not look alike.
+    const urls = new Set(Array.from({ length: 20 }, randomAgentAvatarUrl));
+    expect(urls.size).toBe(20);
+  });
+
+  it('is an ordinary avatar URL once drawn', () => {
+    expect(randomAgentAvatarUrl()).toContain('/bottts/png?');
+  });
+});
 
 describe('agentAvatarUrlForSeed', () => {
   it('is stable for a seed', () => {

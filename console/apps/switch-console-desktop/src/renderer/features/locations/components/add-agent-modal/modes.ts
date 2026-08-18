@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
@@ -52,11 +53,13 @@ export function useConfigureAgentForm() {
   const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(() =>
     ownerOnlyPolicy()
   );
-  // The agent's icon (CHOO-2171). Null means "whatever the name generates",
-  // which is also what the ✕ in the picker returns to — held as null rather
-  // than as the resolved URL so the avatar keeps following the name while the
-  // user is still typing it.
-  const [iconUrl, setIconUrl] = useState<string | null>(null);
+  // The agent's icon (CHOO-2171). A new agent opens on a random bot rather than
+  // one drawn from its name: the name is empty at that point, so a name-derived
+  // seed is the same constant for everybody, and two agents that end up sharing
+  // a name have no reason to share a face. Null still means "whatever the name
+  // generates" — that is what the ✕ in the picker returns to.
+  const [initialIconUrl] = useState(randomAgentAvatarUrl);
+  const [iconUrl, setIconUrl] = useState<string | null>(initialIconUrl);
 
   const setAutoApprove = useCallback((value: boolean) => {
     setAutoApproveRaw(value);
@@ -95,6 +98,10 @@ export function useConfigureAgentForm() {
     setAddressingPolicy,
     iconUrl,
     setIconUrl,
+    /** Whether the icon on screen is still one this app drew, as opposed to one
+     * the user went and chose. Only the caption cares; the value sent to the
+     * server is `iconUrl` either way. */
+    iconIsGenerated: iconUrl === null || iconUrl === initialIconUrl,
     isValid,
   };
 }
