@@ -4,6 +4,7 @@ import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
 import type { InjectionSink } from './injection-sink';
 import type { SessionControl } from './session-control';
+import { buildSessionDeeplink } from './session-deeplink';
 import {
   formatEventForInjection,
   formatAttachmentAnnotation,
@@ -501,15 +502,13 @@ export class RoomConnection {
    * it verbatim. Resolution is by room, so `server`/`agent` are advisory.
    */
   private sessionDeeplink(): string {
-    const params = new URLSearchParams({
-      server: this.creds.apiEndpoint,
-      agent: this.creds.agentId,
-      room: this.roomId ?? '',
-      // The shared session id resolves to the exact session on any client
-      // (a client that only adopted the session has no room mapping to match on).
-      session: this.sessionId,
+    return buildSessionDeeplink({
+      scheme: this.deeplinkScheme,
+      apiEndpoint: this.creds.apiEndpoint,
+      agentId: this.creds.agentId,
+      roomId: this.roomId,
+      sessionId: this.sessionId,
     });
-    return `${this.deeplinkScheme}://session?${params.toString()}`;
   }
 
   /**

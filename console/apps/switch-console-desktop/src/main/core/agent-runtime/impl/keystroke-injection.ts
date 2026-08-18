@@ -26,6 +26,18 @@ export function scheduleInitialPromptInjection(args: {
   initialPrompt: string | undefined;
   isResuming: boolean;
   /**
+   * Resolves true once the provider reports its session is really up, or false
+   * if the pty exits first. Null for providers that cannot report it.
+   *
+   * "The TUI went quiet" cannot tell a ready pane from one parked on a
+   * first-run trust or permission prompt — both stop producing output and wait
+   * — so where a real signal exists it replaces the guess rather than racing
+   * it. A session that never reports stays shut, which is the point: its pane
+   * may be showing a security prompt whose default answer is "No, exit", and
+   * typing a room message into that answers it.
+   */
+  awaitStartupSignal: (() => Promise<boolean>) | null;
+  /**
    * Called once the pane is ready to be typed into and the session's own
    * opening prompt (if it had one to type) is in. Room messages wait on this:
    * delivered any earlier they land in a booting TUI, or in the middle of the
@@ -46,6 +58,10 @@ export function scheduleInitialPromptInjection(args: {
   let done = false;
   let sawAnyOutput = false;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
+  // Both must hold before anything is typed: the session has reported itself
+  // up (or cannot report at all), and the pane has stopped painting.
+  let startupReported = args.awaitStartupSignal === null;
+  let settled = false;
 
   const open = (reason: string) => {
     log.info('AgentRuntime: session open for injected prompts', {
@@ -58,8 +74,13 @@ export function scheduleInitialPromptInjection(args: {
     args.onOpenForInjection();
   };
 
+  const settle = () => {
+    settled = true;
+    if (startupReported) ready();
+  };
+
   const ready = () => {
-    if (done) return;
+    if (done || !settled || !startupReported) return;
     done = true;
     if (quietTimer) clearTimeout(quietTimer);
     clearTimeout(maxWaitTimer);
@@ -102,25 +123,34 @@ export function scheduleInitialPromptInjection(args: {
     }
   };
 
-  const maxWaitTimer = setTimeout(ready, MAX_WAIT_MS);
+  const maxWaitTimer = setTimeout(settle, MAX_WAIT_MS);
+
+  if (args.awaitStartupSignal) {
+    void args.awaitStartupSignal().then((reported) => {
+      if (!reported) return;
+      startupReported = true;
+      ready();
+    });
+  }
 
   args.pty.onData(() => {
     if (done) return;
     sawAnyOutput = true;
     if (quietTimer) clearTimeout(quietTimer);
-    quietTimer = setTimeout(ready, QUIET_PERIOD_MS);
+    quietTimer = setTimeout(settle, QUIET_PERIOD_MS);
   });
 
   args.pty.onExit(() => {
-    const settled = done;
+    const opened = done;
     done = true;
     if (quietTimer) clearTimeout(quietTimer);
     clearTimeout(maxWaitTimer);
-    if (!settled && promptToType !== null) {
+    if (!opened && promptToType !== null) {
       log.warn('AgentRuntime: PTY exited before initial prompt could be injected', {
         providerId: args.session.providerId,
         sessionId: args.session.id,
         sawAnyOutput,
+        startupReported,
       });
     }
   });

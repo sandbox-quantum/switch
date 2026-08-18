@@ -28,6 +28,7 @@ export const plugin = definePlugin(
       kind: 'plugin',
       scope: 'workspace',
       supportedEvents: ['notification', 'stop', 'session'],
+      reportsSessionStart: false,
     },
     hostDependency: npmDependency({
       id: 'kilocode',

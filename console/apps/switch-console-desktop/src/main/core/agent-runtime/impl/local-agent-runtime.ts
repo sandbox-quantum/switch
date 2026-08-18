@@ -34,6 +34,7 @@ import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
+import { sessionStartupWatch } from '../desktop-session-startup-watch';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { resolveAgentExecutable } from './resolve-agent-executable';
 
@@ -273,6 +274,16 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         sessionId: ptySessionId,
       });
 
+      const reportsSessionStart =
+        plugin.capabilities.hooks.kind !== 'none' && plugin.capabilities.hooks.reportsSessionStart;
+      if (reportsSessionStart) {
+        sessionStartupWatch.begin({
+          ptyId,
+          sessionId: this.sessionId,
+          providerId: session.providerId,
+        });
+      }
+
       const pty = spawnLocalPty({
         id: ptySessionId,
         command: resolved.command,
@@ -284,6 +295,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       });
 
       pty.onExit((info) => {
+        sessionStartupWatch.end(ptyId);
         const decision = this.supervisor.handleExit(pty);
         if (decision.kind === 'stale') return;
         const replacementSize = ptySessionRegistry.getLastSize(ptySessionId) ?? spawnSize;
@@ -332,6 +344,13 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        // Where the provider can say when its session is really up, wait for
+        // that instead of guessing from terminal output: the pane may be
+        // sitting on a startup prompt, which goes quiet exactly like a session
+        // that is ready.
+        awaitStartupSignal: reportsSessionStart
+          ? () => sessionStartupWatch.waitForStart(ptyId)
+          : null,
         onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
       // If this session was connected to a Switch room before an app restart,

@@ -91,6 +91,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'global',
       supportedEvents: ['notification', 'stop', 'session', 'tool-use', 'tool-done'],
+      reportsSessionStart: true,
     },
     hostDependency: codexHostDependency(),
     mcp: {

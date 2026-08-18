@@ -21,6 +21,8 @@ function spec(overrides: Partial<AgentLaunchSpec> = {}): AgentLaunchSpec {
     cwd: '/home/agent/repo',
     providerId: 'claude',
     deeplinkScheme: 'switchdash',
+    autoApprove: false,
+    autoTrustWorktrees: true,
     ...overrides,
   };
 }

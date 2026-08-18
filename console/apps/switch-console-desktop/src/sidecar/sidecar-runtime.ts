@@ -4,6 +4,7 @@ import { deriveAgentStatus } from '@main/core/agent-hooks/derive-agent-status';
 import type { ContextResolver, ParsedHookEvent } from '@main/core/agent-hooks/event-enricher';
 import { parseHookEvent } from '@main/core/agent-hooks/event-enricher';
 import type { RawHookRequest } from '@main/core/agent-hooks/hook-server';
+import type { SessionStartupWatch } from '@main/core/agent-runtime/session-startup-watch';
 import { PluginPromptInjector } from '@main/core/switch-rooms/plugin-prompt-injector';
 import {
   RoomConnection,
@@ -14,7 +15,7 @@ import {
 import { sessionConnectionId } from '@main/core/switch-rooms/session-connection-id';
 import { resolveSessionControl } from '@main/core/switch-rooms/session-control';
 import { type TmuxRun, TmuxInjectionSink } from '@main/core/switch-rooms/tmux-injection-sink';
-import { parsePtyId } from '@shared/core/pty/ptyId';
+import { asPtyProviderId, makePtyId, parsePtyId } from '@shared/core/pty/ptyId';
 import { makeAgentTmuxSessionName } from './vm-tmux';
 
 /** A live per-room connection — the slice of RoomConnection the runtime drives. */
@@ -47,6 +48,14 @@ export interface SidecarRuntimeDeps {
    * file so ownership survives a restart, rather than being rebuilt only as
    * each session happens to post its next hook. */
   registry: SessionRegistry;
+  /**
+   * Tracks which spawned sessions have reported that they are really running.
+   *
+   * Shared with the spawner, which arms it: the spawner knows a session is new,
+   * and this runtime is where the report arrives and where the pane is written
+   * to, so both halves need the same view.
+   */
+  startupWatch: SessionStartupWatch;
 }
 
 /** The slice of the durable state store the runtime needs. */
@@ -129,6 +138,12 @@ export class SidecarRuntime {
 
   /** Handle one raw hook callback from an agent CLI. Never throws. */
   async handleHook(raw: RawHookRequest): Promise<void> {
+    // Any hook at all proves the CLI is past its startup prompts and running,
+    // so this is not narrowed to the session-start event: it is also the point
+    // where the pane stops being a place a security prompt might be showing,
+    // and room messages held back for that reason are released.
+    this.deps.startupWatch.markStarted(raw.ptyId);
+
     // Every hook posted to THIS sidecar comes from a session it owns (the
     // session's hook env points here), so record its session id. This is
     // how `/sessions` scopes the VM-wide tmux enumeration to this agent's own
@@ -258,8 +273,17 @@ export class SidecarRuntime {
       connectionId,
       startCursor,
       sessionId,
-      sink: new TmuxInjectionSink(tmuxTarget, this.deps.tmuxRun, () =>
-        this.deps.isPaneLive(tmuxTarget)
+      // A live pane is not a ready session. Until one this sidecar spawned
+      // reports itself up, its pane may be showing a first-run trust or
+      // permissions prompt, and a room message typed there answers it — on
+      // Claude Code's bypass warning the default answer is "No, exit". A
+      // session with no watch (adopted, or already running) is not gated.
+      sink: new TmuxInjectionSink(
+        tmuxTarget,
+        this.deps.tmuxRun,
+        () =>
+          this.deps.isPaneLive(tmuxTarget) &&
+          !this.deps.startupWatch.blocksInjection(makePtyId(asPtyProviderId(providerId), sessionId))
       ),
       injector: new PluginPromptInjector(providerId),
       control: resolveSessionControl(providerId),
@@ -331,6 +355,24 @@ export class SidecarRuntime {
    * poll + renew heartbeat that keeps the agent marked live) and forget it, so
    * `/sessions` no longer reports it. Called when Switch Console deletes the session.
    */
+  /**
+   * Report a spawned session as waiting on a human because it never started.
+   *
+   * Goes through the session's runtime state rather than a posted message: the
+   * state report carries the session deeplink, and switch-core turns that into
+   * the clickable "Open in Switch Console" line addressed to the agent's owner.
+   * A `switchdash://` URL written into a message body gets no such treatment —
+   * only `deeplink_url` on the report is rewritten — so it arrives as dead text.
+   *
+   * No-op for a session with no connection yet, which is the common case when a
+   * pane dies before its first `connect_to_room`.
+   */
+  reportStartupStalled(sessionId: string): void {
+    this.sessions
+      .get(sessionId)
+      ?.connection.onAgentStatusChange('awaiting-input', 'startup_prompt');
+  }
+
   stopSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;

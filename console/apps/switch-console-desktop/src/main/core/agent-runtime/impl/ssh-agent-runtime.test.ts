@@ -30,6 +30,10 @@ const resolveSshCommand = vi.hoisted(() => vi.fn(() => 'remote-cmd'));
 const deployAndLaunch = vi.hoisted(() => vi.fn(async () => ({ port: 9999, token: 'sidecar-tok' })));
 const sidecarStop = vi.hoisted(() => vi.fn(async () => {}));
 
+vi.mock('@main/core/settings/settings-service', () => ({
+  appSettingsService: { get: vi.fn(async () => ({ autoTrustWorktrees: true })) },
+}));
+
 vi.mock('./resolve-sidecar-bundle', () => ({
   resolveSidecarBundlePath: vi.fn(() => '/local/dist-sidecar/sidecar.mjs'),
 }));

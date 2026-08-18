@@ -4,9 +4,12 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { createDirTrustService } from '@main/core/agent-hooks/dir-trust';
+import type { SessionStartupWatch } from '@main/core/agent-runtime/session-startup-watch';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { quoteShellArg } from '@main/utils/shellEscape';
+import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
 import { asPtyProviderId, makePtyId } from '@shared/core/pty/ptyId';
 import {
@@ -19,6 +22,44 @@ import type { SessionSpawner, WatcherLogger } from './notification-watcher';
 import { makeAgentTmuxSessionName } from './vm-tmux';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Answer the CLI's own first-run prompts for a spec's directory — workspace
+ * trust, and the confirmation a bypass-permissions launch provokes.
+ *
+ * Has to happen on this machine: the entries go in config files belonging to
+ * the host the session runs on, and writing them on the desktop only clears the
+ * prompts on the wrong computer.
+ *
+ * Run at sidecar startup as well as per spawn, because a session started from
+ * Switch Console over SSH never passes through the spawner — the desktop opens
+ * the pane itself. The sidecar is launched before that pane exists, so doing it
+ * at boot is what covers both ways a session reaches this host.
+ *
+ * Best-effort by design (the writers log and continue): an unwritable config is
+ * not a reason to refuse a session that may well come up fine, and the startup
+ * watch reports it if it does not.
+ */
+export async function clearStartupPromptsFor(
+  spec: AgentLaunchSpec,
+  log: WatcherLogger
+): Promise<void> {
+  await createDirTrustService({
+    getSessionSettings: async () => ({ autoTrustWorktrees: spec.autoTrustWorktrees }),
+    log,
+  }).maybeAutoTrustLocal({
+    providerId: asAgentProviderId(spec.providerId),
+    cwd: spec.cwd,
+    homedir: homedir(),
+    force: spec.autoApprove,
+  });
+}
+
+/** Whether this provider fires a hook when its session comes up. */
+function reportsSessionStart(providerId: string): boolean {
+  const hooks = getPlugin(providerId).capabilities.hooks;
+  return hooks.kind !== 'none' && hooks.reportsSessionStart;
+}
 
 /** The runtime slice the spawner needs to tell whether a room is already served. */
 export interface RoomLivenessSource {
@@ -55,6 +96,8 @@ export interface InProcessSessionSpawnerDeps {
   /** Whether a given tmux target is currently live (poller-backed cache). */
   isPaneLive: (tmuxTarget: string) => boolean;
   log: WatcherLogger;
+  /** Shared with the runtime, which receives the sessions' reports. */
+  startupWatch: SessionStartupWatch;
   /** Run a command on the VM. Injected so tests can drive it without a real host. */
   exec?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 }
@@ -71,7 +114,10 @@ export class InProcessSessionSpawner implements SessionSpawner {
     args: string[]
   ) => Promise<{ stdout: string; stderr: string }>;
   /** Room id → the session we launched for it (its minted id + tmux target). */
-  private readonly launched = new Map<string, { sessionId: string; tmuxTarget: string }>();
+  private readonly launched = new Map<
+    string,
+    { sessionId: string; tmuxTarget: string; requesterName: string | null }
+  >();
   /** The live launch recipe. Seeded from deps, replaceable via `setSpec` so a
    * bypass-permissions toggle takes effect without restarting the sidecar. */
   private spec: AgentLaunchSpec;
@@ -115,10 +161,21 @@ export class InProcessSessionSpawner implements SessionSpawner {
     }
   }
 
-  /** The room a launched (not-yet-connected) session was started for, or null. */
+  /** The room a launched session was started for, or null if we did not start it. */
   roomIdForSession(sessionId: string): string | null {
+    return this.launchedFor(sessionId)?.roomId ?? null;
+  }
+
+  /**
+   * The room a launched session was started for and who is waiting on it, so a
+   * session that never comes up can be reported to the person rather than only
+   * into the channel. Null if this sidecar did not start it.
+   */
+  launchedFor(sessionId: string): { roomId: string; requesterName: string | null } | null {
     for (const [roomId, session] of this.launched) {
-      if (session.sessionId === sessionId) return roomId;
+      if (session.sessionId === sessionId) {
+        return { roomId, requesterName: session.requesterName };
+      }
     }
     return null;
   }
@@ -156,7 +213,7 @@ export class InProcessSessionSpawner implements SessionSpawner {
     return false;
   }
 
-  async launch(roomId: string, startCursor?: number): Promise<void> {
+  async launch(roomId: string, requesterName: string | null, startCursor?: number): Promise<void> {
     const { hookPort, hookToken, endpointFile, log } = this.deps;
     const spec = this.spec;
     const sessionId = randomUUID();
@@ -170,13 +227,15 @@ export class InProcessSessionSpawner implements SessionSpawner {
     const connectionId =
       this.deps.openConnectionFor?.(sessionId, spec.providerId, roomId, startCursor) ?? null;
 
+    // The spec is JSON off the host's disk, so its provider id is only a
+    // string until something checks it.
+    const ptyId = makePtyId(asPtyProviderId(spec.providerId), sessionId);
+
     const hookEnv = {
       ...this.deps.switchEnv,
       ...buildAgentHookEnv({
         port: hookPort,
-        // The spec is JSON off the host's disk, so its provider id is only a
-        // string until something checks it.
-        ptyId: makePtyId(asPtyProviderId(spec.providerId), sessionId),
+        ptyId,
         token: hookToken,
         endpointFile,
       }),
@@ -191,8 +250,15 @@ export class InProcessSessionSpawner implements SessionSpawner {
 
     await this.writeLaunchFiles();
     await this.installHooks();
+    await this.clearStartupPrompts();
+    // Armed only for a session this sidecar is spawning right now, so an
+    // adopted or already-running pane is never held mute waiting for a report
+    // that was never expected of it.
+    if (reportsSessionStart(spec.providerId)) {
+      this.deps.startupWatch.begin({ ptyId, sessionId, providerId: spec.providerId });
+    }
     await this.startDetachedTmux(tmuxTarget, spec.cwd, command.env, command.command, command.args);
-    this.launched.set(roomId, { sessionId, tmuxTarget });
+    this.launched.set(roomId, { sessionId, tmuxTarget, requesterName });
     log.info('InProcessSessionSpawner: launched session for room', {
       roomId,
       sessionId,
@@ -214,6 +280,10 @@ export class InProcessSessionSpawner implements SessionSpawner {
       // without knowing this VM's home.
       await atomicWriteFile(absPath, file.content.split(HOME_PLACEHOLDER).join(homedir()));
     }
+  }
+
+  private async clearStartupPrompts(): Promise<void> {
+    await clearStartupPromptsFor(this.spec, this.deps.log);
   }
 
   /**

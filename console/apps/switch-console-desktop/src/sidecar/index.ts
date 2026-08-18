@@ -5,6 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { HookEventLog, HookServer } from '@main/core/agent-hooks/hook-server';
+import {
+  SessionStartupWatch,
+  STARTUP_SIGNAL_TIMEOUT_MS,
+} from '@main/core/agent-runtime/session-startup-watch';
 import { agentSettingsPath } from '@main/core/agents/switch-settings-paths';
 import {
   readSwitchAgentCredentials,
@@ -13,8 +17,13 @@ import {
 import { createTmuxRun } from '@main/core/switch-rooms/tmux-injection-sink';
 import { type AgentLaunchSpec } from './agent-launch-spec';
 import { atomicWriteFile } from './atomic-file';
-import { NotificationWatcher, type WatcherLogger } from './notification-watcher';
-import { InProcessSessionSpawner } from './session-spawner';
+import {
+  NotificationWatcher,
+  postRoomMessage,
+  STARTUP_STALL_NOTICE,
+  type WatcherLogger,
+} from './notification-watcher';
+import { clearStartupPromptsFor, InProcessSessionSpawner } from './session-spawner';
 import { createSidecarLogger, requireEnv } from './sidecar-logger';
 import {
   LEGACY_LAUNCH_SPEC_REL_PATH,
@@ -78,7 +87,11 @@ async function hashOwnBundle(log: WatcherLogger): Promise<string | null> {
   }
 }
 
-async function readLaunchSpec(repoDir: string, specRelPath: string): Promise<AgentLaunchSpec> {
+async function readLaunchSpec(
+  repoDir: string,
+  specRelPath: string,
+  log: { warn: (message: string, meta?: Record<string, unknown>) => void }
+): Promise<AgentLaunchSpec> {
   const specPath = path.join(repoDir, specRelPath);
   let raw: string;
   try {
@@ -89,6 +102,16 @@ async function readLaunchSpec(repoDir: string, specRelPath: string): Promise<Age
   const spec = JSON.parse(raw) as AgentLaunchSpec;
   if (!spec.command || !Array.isArray(spec.args) || !spec.cwd || !spec.providerId) {
     throw new Error(`sidecar: launch spec at ${specPath} is missing required fields`);
+  }
+  // A spec written by an older Switch Console carries neither flag. Both decide
+  // whether to waive a prompt on the user's behalf, so an absent one reads as
+  // "do not" — and says so, because the visible effect is sessions stalling on
+  // prompts this sidecar could otherwise have cleared.
+  for (const key of ['autoApprove', 'autoTrustWorktrees'] as const) {
+    if (typeof spec[key] !== 'boolean') {
+      log.warn(`sidecar: launch spec predates ${key}; treating it as off`, { specPath });
+      spec[key] = false;
+    }
   }
   return spec;
 }
@@ -122,7 +145,7 @@ async function main(): Promise<void> {
   const watchEnabledRel = credsSlug
     ? sidecarWatchEnabledRelPath(credsSlug)
     : LEGACY_WATCH_ENABLED_REL_PATH;
-  const launchSpec = await readLaunchSpec(repoDir, launchSpecRel);
+  const launchSpec = await readLaunchSpec(repoDir, launchSpecRel, log);
 
   // Pane-liveness cache: a background poll marks each active/pending tmux target
   // live or dead so injection defers (rather than fails) when a pane is briefly
@@ -163,6 +186,11 @@ async function main(): Promise<void> {
     log,
   });
 
+  // Owned here and shared with both halves: the spawner arms it for a session
+  // it starts, the runtime clears it when that session's first hook arrives and
+  // consults it before typing into the pane.
+  const startupWatch = new SessionStartupWatch(STARTUP_SIGNAL_TIMEOUT_MS, log);
+
   const runtime = new SidecarRuntime({
     creds,
     deeplinkScheme,
@@ -171,6 +199,32 @@ async function main(): Promise<void> {
     log,
     createConnection: defaultRoomConnectionFactory,
     registry: store,
+    startupWatch,
+  });
+
+  // A session that never reported itself up is stopped on something only a
+  // human can answer, and on a VM nobody is looking at that terminal. Say so in
+  // the room the session was started to answer — the same courtesy the watcher
+  // already extends when a spawn fails outright, for the case where the spawn
+  // succeeded and the session did not.
+  //
+  // The launched entry is deliberately left in place: the stuck pane is alive,
+  // so dropping it would let the next message spawn a second session on top of
+  // the first rather than surfacing the one that needs attention.
+  startupWatch.onStall(({ sessionId, providerId }) => {
+    const roomId = spawner?.roomIdForSession(sessionId);
+    if (!roomId) return;
+    log.error('sidecar: spawned session never reported that it started', {
+      sessionId,
+      providerId,
+      roomId,
+    });
+    // The state report is what carries the deeplink and names the owner; the
+    // message only says why. Both, because the report's wording is generic.
+    runtime.reportStartupStalled(sessionId);
+    void postRoomMessage(creds, roomId, STARTUP_STALL_NOTICE).catch((error) => {
+      log.warn('sidecar: failed to post startup-stall notice', { roomId, error: String(error) });
+    });
   });
 
   // Bring each restored session's room connection back up. The agent is still
@@ -289,6 +343,7 @@ async function main(): Promise<void> {
     },
     isPaneLive,
     log,
+    startupWatch,
   });
 
   // The sidecar always serves session injection; the notification watcher only
@@ -314,7 +369,7 @@ async function main(): Promise<void> {
   const refreshLaunchSpec = async (): Promise<void> => {
     let spec: AgentLaunchSpec;
     try {
-      spec = await readLaunchSpec(repoDir, launchSpecRel);
+      spec = await readLaunchSpec(repoDir, launchSpecRel, log);
     } catch (error) {
       log.warn('sidecar: failed to re-read launch spec; keeping current', {
         error: String(error),
@@ -368,6 +423,12 @@ async function main(): Promise<void> {
   // Hash our OWN bytes rather than echoing the hash we were launched with: the
   // launcher can skip an upload it believes is redundant and be wrong, and a
   // sidecar that advertises a build it is not running is undetectable.
+  // Before this sidecar reports ready — which is the signal Switch Console
+  // waits on before opening a session's pane over SSH — clear the CLI prompts
+  // that would stop that pane before it starts. A desktop-started session never
+  // passes through the spawner, so this is the only point that covers it.
+  await clearStartupPromptsFor(launchSpec, log);
+
   const bundleHash = await hashOwnBundle(log);
   const readyLine = `${JSON.stringify({
     event: 'ready',

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RawHookRequest } from '@main/core/agent-hooks/hook-server';
+import { SessionStartupWatch } from '@main/core/agent-runtime/session-startup-watch';
 import type { RoomConnectionDeps } from '@main/core/switch-rooms/room-connection';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import {
@@ -60,6 +61,11 @@ function fakeRegistry(): SessionRegistry & { entries: () => SidecarSessionEntry[
   };
 }
 
+/** A watch nothing has armed — every session reads as "not being watched". */
+function makeStartupWatch(): SessionStartupWatch {
+  return new SessionStartupWatch(45_000, { warn: vi.fn(), error: vi.fn() });
+}
+
 function makeRuntime() {
   const created: Array<{ deps: RoomConnectionDeps; conn: ManagedConnection }> = [];
   const factory: RoomConnectionFactory = (deps) => {
@@ -76,6 +82,7 @@ function makeRuntime() {
     log: silentLog,
     createConnection: factory,
     registry,
+    startupWatch: makeStartupWatch(),
   });
   return { runtime, created, registry };
 }
@@ -287,6 +294,7 @@ describe('SidecarRuntime (multi-session)', () => {
       log: silentLog,
       createConnection: factory,
       registry: fakeRegistry(),
+      startupWatch: makeStartupWatch(),
     });
     await runtime.handleHook(switchRoomHook('room-1', PTY_A));
     expect(runtime.connectedSessions()).toHaveLength(1);
@@ -370,5 +378,71 @@ describe('SidecarRuntime (multi-session)', () => {
 
     expect(created[0].conn.stop).not.toHaveBeenCalled();
     expect(runtime.connectedSessions()).toHaveLength(1);
+  });
+});
+
+describe('SidecarRuntime startup gate', () => {
+  /** Build a runtime whose watch is already armed for one spawned session. */
+  function armed() {
+    const created: Array<{ deps: RoomConnectionDeps; conn: ManagedConnection }> = [];
+    const startupWatch = new SessionStartupWatch(45_000, { warn: vi.fn(), error: vi.fn() });
+    const runtime = new SidecarRuntime({
+      creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
+      deeplinkScheme: 'switchdash',
+      tmuxRun: vi.fn(),
+      isPaneLive: () => true,
+      log: silentLog,
+      createConnection: (deps) => {
+        const conn = fakeConnection();
+        created.push({ deps, conn });
+        return conn;
+      },
+      registry: fakeRegistry(),
+      startupWatch,
+    });
+    const ptyId = makePtyId('codex', 'session-a');
+    startupWatch.begin({ ptyId, sessionId: 'session-a', providerId: 'codex' });
+    runtime.ensureForSession('session-a', 'codex', 'room-1');
+    return { runtime, sink: created[0].deps.sink, ptyId };
+  }
+
+  it('holds the pane shut until the spawned session reports that it started', () => {
+    const { sink } = armed();
+
+    // The pane is live, but a live pane is not a ready session: it may be
+    // showing a trust prompt, and a room message typed there answers it.
+    expect(sink.acquire()).toBeNull();
+  });
+
+  it('opens the pane as soon as any hook arrives from it', async () => {
+    const { runtime, sink, ptyId } = armed();
+
+    await runtime.handleHook({ ptyId, type: 'stop', body: '{}' });
+
+    expect(sink.acquire()).not.toBeNull();
+  });
+
+  it('never gates a session it did not spawn', () => {
+    const created: Array<{ deps: RoomConnectionDeps; conn: ManagedConnection }> = [];
+    const runtime = new SidecarRuntime({
+      creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
+      deeplinkScheme: 'switchdash',
+      tmuxRun: vi.fn(),
+      isPaneLive: () => true,
+      log: silentLog,
+      createConnection: (deps) => {
+        const conn = fakeConnection();
+        created.push({ deps, conn });
+        return conn;
+      },
+      registry: fakeRegistry(),
+      startupWatch: makeStartupWatch(),
+    });
+
+    runtime.ensureForSession('session-adopted', 'codex', 'room-1');
+
+    // An adopted or already-running pane will never announce a start, so
+    // waiting for one would leave it mute for the rest of its life.
+    expect(created[0].deps.sink.acquire()).not.toBeNull();
   });
 });

@@ -39,7 +39,8 @@ export type NotificationType =
   | 'permission_prompt'
   | 'idle_prompt'
   | 'auth_success'
-  | 'elicitation_dialog';
+  | 'elicitation_dialog'
+  | 'startup_prompt';
 
 /**
  * Normalised hook event produced by a plugin's parseHookEvent method.

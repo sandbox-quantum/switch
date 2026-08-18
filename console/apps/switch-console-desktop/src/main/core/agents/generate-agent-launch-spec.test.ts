@@ -32,6 +32,10 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 vi.mock('@main/core/agent-runtime/impl/resolve-agent-executable', () => ({
   resolveAgentExecutable: vi.fn(async () => '/usr/bin/claude'),
 }));
+vi.mock('@main/core/settings/settings-service', () => ({
+  appSettingsService: { get: vi.fn(async () => ({ autoTrustWorktrees: true })) },
+}));
+
 vi.mock('@main/core/settings/provider-settings-service', () => ({
   providerOverrideSettings: { getItem: vi.fn(async () => undefined) },
 }));
@@ -49,6 +53,8 @@ const baseParams = {
   providerId: 'claude',
   remoteRepoDir: '/home/agent/repo',
   deeplinkScheme: 'switchdash',
+  autoApprove: false,
+  autoTrustWorktrees: true,
   agentName: null,
   credsSlug: 'hoot',
   ctx: {} as never,
@@ -239,6 +245,8 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
         cwd: '/home/agent/repo',
         providerId: 'codex',
         deeplinkScheme: 'switchdash',
+        autoApprove: false,
+        autoTrustWorktrees: true,
       },
       {
         sessionId: 's1',
@@ -264,6 +272,8 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
         cwd: '/home/agent/repo',
         providerId: 'claude',
         deeplinkScheme: 'switchdash',
+        autoApprove: false,
+        autoTrustWorktrees: true,
       },
       {
         sessionId: 's1',

@@ -69,6 +69,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -81,6 +82,68 @@ describe('scheduleInitialPromptInjection', () => {
     expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
   });
 
+  it('stays shut while the session has not reported that it started', async () => {
+    const { pty, write, emitData } = makePty();
+    let reportStarted: (started: boolean) => void = () => {};
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: false,
+      awaitStartupSignal: () => new Promise<boolean>((resolve) => (reportStarted = resolve)),
+      onOpenForInjection,
+    });
+
+    // A pane parked on a startup prompt looks exactly like this: output, then
+    // quiet, then quiet for as long as you care to wait.
+    emitData('Do you trust this folder?');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(write).not.toHaveBeenCalled();
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+
+    reportStarted(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
+    expect(onOpenForInjection).toHaveBeenCalledOnce();
+  });
+
+  it('still waits for the pane to settle once the session reports', async () => {
+    const { pty, write, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: false,
+      awaitStartupSignal: () => Promise.resolve(true),
+      onOpenForInjection,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    emitData('painting the TUI');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(write).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(900);
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
+  });
+
+  it('never opens the pane when the pty dies before reporting', async () => {
+    const { pty, write, emitExit } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: false,
+      awaitStartupSignal: () => Promise.resolve(false),
+      onOpenForInjection,
+    });
+
+    emitExit();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(write).not.toHaveBeenCalled();
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+  });
+
   it('falls back to a max wait when no output ever arrives', () => {
     const { pty, write } = makePty();
     scheduleInitialPromptInjection({
@@ -88,6 +151,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -102,6 +166,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'line one\nline two',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -117,6 +182,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('opencode'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -132,6 +198,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('grok'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -147,6 +214,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('claude'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -162,6 +230,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: true,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -177,6 +246,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: '   ',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -192,6 +262,7 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -228,6 +299,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('hermes'),
       initialPrompt: 'connect to switch room r-1',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -244,6 +316,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('hermes'),
       initialPrompt: 'connect to switch room r-1',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -270,6 +343,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('claude'),
       initialPrompt: 'connect to switch room r-1',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -293,6 +367,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('hermes'),
       initialPrompt: undefined,
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -311,6 +386,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: true,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -330,6 +406,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('claude'),
       initialPrompt: 'connect to switch room r-1',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 
@@ -345,6 +422,7 @@ describe('the gate on typing into a starting session', () => {
       session: makeSession('claude'),
       initialPrompt: 'connect to switch room r-1',
       isResuming: false,
+      awaitStartupSignal: null,
       onOpenForInjection,
     });
 

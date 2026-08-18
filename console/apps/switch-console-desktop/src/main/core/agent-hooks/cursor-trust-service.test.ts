@@ -5,10 +5,13 @@ const mockAccess = vi.hoisted(() => vi.fn());
 const mockMkdir = vi.hoisted(() => vi.fn());
 const mockWriteFile = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
+// Trust keys are the resolved path; identity here keeps the fixtures literal.
+const mockRealpath = vi.hoisted(() => vi.fn(async (p: string) => p));
 
 vi.mock('node:fs', () => ({
   promises: {
     access: mockAccess,
+    realpath: mockRealpath,
     mkdir: mockMkdir,
     writeFile: mockWriteFile,
   },
@@ -35,6 +38,7 @@ function makeService(overrides: { autoTrustWorktrees?: boolean } = {}): CursorTr
   return new CursorTrustService({
     getSessionSettings: () =>
       Promise.resolve({ autoTrustWorktrees: overrides.autoTrustWorktrees ?? true }),
+    log: { warn: mockWarn },
   });
 }
 

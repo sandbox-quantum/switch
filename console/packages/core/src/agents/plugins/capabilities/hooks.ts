@@ -56,6 +56,15 @@ export const hooksCapability = definePluginCapability<IHooksBehavior>()(
           'subagent-done',
         ])
       ),
+      /**
+       * Whether the agent fires a hook when its session comes up, before any
+       * turn. That signal is what tells Switch Console a spawned session is
+       * really running rather than parked on a first-run prompt it has nobody
+       * to answer; without it a stalled session is indistinguishable from a
+       * working one. Only set this where the hook has been observed firing on
+       * a real spawn.
+       */
+      reportsSessionStart: z.boolean(),
     }),
     z.object({
       kind: z.literal('plugin'),
@@ -73,6 +82,15 @@ export const hooksCapability = definePluginCapability<IHooksBehavior>()(
           'subagent-done',
         ])
       ),
+      /**
+       * Whether the agent fires a hook when its session comes up, before any
+       * turn. That signal is what tells Switch Console a spawned session is
+       * really running rather than parked on a first-run prompt it has nobody
+       * to answer; without it a stalled session is indistinguishable from a
+       * working one. Only set this where the hook has been observed firing on
+       * a real spawn.
+       */
+      reportsSessionStart: z.boolean(),
     }),
     z.object({ kind: z.literal('none') }),
   ])

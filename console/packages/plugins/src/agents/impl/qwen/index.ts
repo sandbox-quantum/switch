@@ -26,6 +26,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'workspace',
       supportedEvents: ['notification', 'stop'],
+      reportsSessionStart: false,
     },
     hostDependency: npmDependency({ id: 'qwen', package: '@qwen-code/qwen-code' }),
     mcp: {

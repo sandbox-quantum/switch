@@ -76,6 +76,7 @@ export const plugin = definePlugin(
       // No 'notification': the plugin reports real turn boundaries now, so
       // nothing sends the idle_prompt that used to stand in for them.
       supportedEvents: ['start', 'stop', 'session', 'tool-use', 'tool-done'],
+      reportsSessionStart: false,
     },
     hostDependency: OPENCODE_HOST_DEPENDENCY,
     mcp: {

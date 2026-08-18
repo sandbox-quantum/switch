@@ -21,6 +21,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'workspace',
       supportedEvents: ['notification', 'stop', 'session'],
+      reportsSessionStart: false,
     },
     hostDependency: {
       id: 'droid',

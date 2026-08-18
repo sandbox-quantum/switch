@@ -909,6 +909,22 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        // A remote session's startup signal does reach Switch Console — the
+        // sidecar installs the same hooks on the VM and relays their events
+        // back through `handleRawHook`, under the same deterministic ptyId.
+        // What is missing is a safe moment to start waiting for it. This
+        // method runs again on every re-attach, where the agent has been up
+        // for hours and will not report a start a second time; an idle one
+        // emits no hooks at all, so a watch armed here would call a healthy
+        // session stalled. `reattaching` cannot rule that out either, since it
+        // is process-local and reads false after an app restart.
+        //
+        // The signal belongs where the session is actually spawned, which for
+        // a remote host is the sidecar — and that is also where the startup
+        // prompts would have to be cleared, since this runtime writes no trust
+        // entries on the far side. Both are left to that work rather than
+        // approximated from here.
+        awaitStartupSignal: null,
         onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
     } catch (error) {

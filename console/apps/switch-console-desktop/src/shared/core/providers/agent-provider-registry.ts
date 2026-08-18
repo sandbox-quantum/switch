@@ -34,6 +34,18 @@ export const AGENT_PROVIDER_IDS = [
 
 export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
 
+/**
+ * Narrow a provider id that arrived as an opaque string — from a database row
+ * or a launch spec read off disk — to a registered one.
+ *
+ * Throws rather than passing it through: every consumer dispatches on this
+ * value, so an unregistered id silently selects no behaviour at all.
+ */
+export function asAgentProviderId(value: string): AgentProviderId {
+  if ((AGENT_PROVIDER_IDS as readonly string[]).includes(value)) return value as AgentProviderId;
+  throw new Error(`unknown agent provider '${value}'`);
+}
+
 export type AgentProviderDefinition = {
   id: AgentProviderId;
   name: string;

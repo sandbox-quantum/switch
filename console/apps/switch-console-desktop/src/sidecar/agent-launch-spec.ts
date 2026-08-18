@@ -44,6 +44,18 @@ export interface AgentLaunchSpec {
   launchFiles?: AgentLaunchFile[];
   providerId: string;
   deeplinkScheme: string;
+  /**
+   * The agent's bypass-permissions setting, already reflected in {@link args}.
+   * Repeated here because clearing the confirmation the bypass flag provokes is
+   * a separate act from passing the flag, and the sidecar performs it on the VM.
+   */
+  autoApprove: boolean;
+  /**
+   * Switch Console's "auto-trust worktree directories" setting, carried to the
+   * VM because that is where the trust entries have to be written and the
+   * sidecar cannot read the desktop's settings.
+   */
+  autoTrustWorktrees: boolean;
 }
 
 /** Argv token Switch Console emits in place of the fresh session's session id. */

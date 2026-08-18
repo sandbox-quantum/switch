@@ -22,6 +22,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'workspace',
       supportedEvents: ['stop', 'notification'],
+      reportsSessionStart: false,
     },
     hostDependency: {
       id: 'devin',

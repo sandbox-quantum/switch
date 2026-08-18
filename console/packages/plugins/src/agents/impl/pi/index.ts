@@ -28,6 +28,7 @@ export const plugin = definePlugin(
       kind: 'plugin',
       scope: 'workspace',
       supportedEvents: ['stop'],
+      reportsSessionStart: false,
     },
     hostDependency: npmDependency({
       id: 'pi',

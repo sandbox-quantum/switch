@@ -21,6 +21,8 @@ const SPEC: AgentLaunchSpec = {
   cwd: '/home/dev/repo',
   providerId: 'claude',
   deeplinkScheme: 'switchdash',
+  autoApprove: false,
+  autoTrustWorktrees: true,
 };
 
 /** This client install's deployer identity, as minted once and persisted locally. */

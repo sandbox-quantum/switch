@@ -5,6 +5,7 @@ import { hostDependencyStore } from '@main/core/dependencies/host-dependency-sto
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
+import { appSettingsService } from '@main/core/settings/settings-service';
 import {
   type AgentLaunchSpec,
   INITIAL_PROMPT_PLACEHOLDER,
@@ -117,5 +118,9 @@ export async function generateAgentLaunchSpec(params: {
     })),
     providerId,
     deeplinkScheme,
+    autoApprove,
+    // Read here rather than passed in: it is one global app setting, not a
+    // per-call decision, and the sidecar has no way to reach it.
+    autoTrustWorktrees: (await appSettingsService.get('sessions')).autoTrustWorktrees,
   };
 }

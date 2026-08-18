@@ -1,26 +1,11 @@
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { claudeTrustService } from './claude-trust-service';
-import { cursorTrustService } from './cursor-trust-service';
+import { appSettingsService } from '@main/core/settings/settings-service';
+import { log } from '@main/lib/logger';
+import { createDirTrustService } from './dir-trust';
 
-type DirTrustLocalArgs = {
-  providerId: AgentProviderId;
-  cwd?: string;
-  homedir: string;
-  force?: boolean;
-};
+export { createDirTrustService, DirTrustService } from './dir-trust';
 
-type DirTrustProvider = {
-  maybeAutoTrustLocal(args: DirTrustLocalArgs): Promise<void>;
-};
-
-export class DirTrustService {
-  constructor(private readonly providers: readonly DirTrustProvider[]) {}
-
-  async maybeAutoTrustLocal(args: DirTrustLocalArgs): Promise<void> {
-    for (const provider of this.providers) {
-      await provider.maybeAutoTrustLocal(args);
-    }
-  }
-}
-
-export const dirTrustService = new DirTrustService([claudeTrustService, cursorTrustService]);
+/** The trust writers for this machine, for sessions the desktop starts here. */
+export const dirTrustService = createDirTrustService({
+  getSessionSettings: () => appSettingsService.get('sessions'),
+  log,
+});
