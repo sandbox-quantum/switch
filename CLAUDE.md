@@ -139,21 +139,27 @@ and each ships its own copy of the Switch room-workflow skill at
   npm modules, so that is its native manifest shape). Ships the skill, an MCP
   config (`opencode.json`) and a reporting plugin (`plugin/`).
 
-  **It is written, not installed, and that is the one real difference between
-  it and the other two.** OpenCode has no plugin marketplace — its `plugin`
-  subcommand installs a single npm module and has no list, remove or version
-  verb — so there is nothing for the marketplace driver to drive. Switch Console
-  writes the files itself via `switchSetup: { kind: 'files' }`
-  (`console/packages/plugins/src/agents/impl/opencode/switch-connector.ts`), and
-  this directory is **not** registered in `.claude-plugin/marketplace.json`. The
-  user-facing surface is the same: install, update and uninstall on the agent's
-  card and in a remote host's setup.
+  **It has no marketplace, and that is the one real difference between it and
+  the other two.** OpenCode's plugin resolver takes a directory on disk or an
+  npm package name and nothing else, and its `plugin` subcommand has no list,
+  remove or version verb, so there is nothing for the marketplace driver to
+  drive and this directory is **not** registered in
+  `.claude-plugin/marketplace.json`. It is published to the registry instead,
+  and carries its own install command (`install.js`) — because installing the
+  package is not by itself an install: npm leaves the module in a cache, and
+  OpenCode discovers a skill only as a file in a directory it searches. The
+  standalone path is that command followed by the `configure` skill.
 
-  Because the app writes the files it also **embeds** them, and the embedded
-  copies must not drift from this directory — `connector-assets.test.ts` fails
-  if they do. Edit the files here; the test names what to update. Nothing
-  fetched the install, so it has no version of its own to report: a status read
-  compares the app version that stamped it against the running one.
+  Switch Console writes the same files itself rather than running that command,
+  via `switchSetup: { kind: 'files' }`
+  (`console/packages/plugins/src/agents/impl/opencode/switch-connector.ts`), so
+  it also **embeds** them — and the embedded copies must not drift from this
+  directory; `connector-assets.test.ts` fails if they do. Edit the files here;
+  the test names what to update. The user-facing surface is the same as for the
+  other two — install, update and uninstall on the agent's card and in a remote
+  host's setup — and because the app wrote that install rather than fetching
+  it, a status read there compares the app version that stamped it against the
+  running one.
 
   The MCP server is registered as a `local` (stdio) server, deliberately.
   OpenCode spawns a local server with the parent environment, so the runtime

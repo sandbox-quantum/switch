@@ -137,9 +137,10 @@ artifacts:
 
   switch-connector-opencode:
     description: >-
-      The OpenCode connector. Unlike the other two it is written by Switch
-      Console rather than installed from the marketplace, because OpenCode has
-      no plugin marketplace to install it from.
+      The OpenCode connector, published to a registry. Unlike the other two it
+      has no marketplace to be installed from — OpenCode's plugin resolver
+      takes a directory on disk or an npm package name and nothing else — so a
+      published package is what makes it installable without a clone.
     version: 0.1.2
     declared_in: connectors/opencode-plugin/package.json
 

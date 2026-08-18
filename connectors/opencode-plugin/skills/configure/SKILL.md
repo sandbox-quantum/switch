@@ -1,37 +1,40 @@
 ---
 name: "configure"
-description: "Set up the Switch connector for Codex — register this Codex instance as a Switch agent and write the credentials the bundled MCP server reads. Use when the user asks to configure Switch, set up the plugin, register with a Switch server, or when the Switch tools report no identity."
+description: "Set up the Switch connector for OpenCode — register this OpenCode instance as a Switch agent and write the credentials the Switch MCP server reads. Use when the user asks to configure Switch, set up the connector, register with a Switch server, or when the Switch tools report no identity."
 ---
 
-# Configure the Switch connector (Codex)
+# Configure the Switch connector (OpenCode)
 
-This skill registers the current Codex instance as a Switch agent and writes
+This skill registers the current OpenCode instance as a Switch agent and writes
 its credentials where the Switch runtime looks for them, so a session started
 from a plain terminal acts as that agent.
 
 **This is the standalone path.** Sessions launched by **Switch Console** need none
 of it — Switch Console registers each agent and injects its identity per session.
-Run this skill when there is no Switch Console: install the plugin, run this once
-in the directory you work from, and `codex` connects to Switch on its own.
-Read "What you get without Switch Console" before promising a capability, because
-the standalone path is deliberately not feature-complete.
+Run this skill when there is no Switch Console: install the connector, run this
+once in the directory you work from, and `opencode` connects to Switch on its
+own. Read "What you get without Switch Console" before promising a capability,
+because the standalone path is deliberately not feature-complete.
 
 ## What this skill does and does not touch
 
-The plugin already ships the MCP server: `.mcp.json` declares `mcp_servers.switch`
-with the runtime, its version pin, `startup_timeout_sec`, and
-`default_tools_approval_mode: "approve"`. **Leave that alone.**
+Installing the connector already registered the MCP server: `~/.config/opencode/opencode.json`
+carries an `mcp.switch` entry with the runtime, its version pin, and a raised
+`timeout`. **Leave that alone.** This skill supplies only the *identity*.
 
-> ⚠️ **Never write an `mcp_servers.switch` entry anywhere.** Not in
-> `$CODEX_HOME/config.toml`, not in a profile, not via `codex mcp add`, not with
-> `-c` on argv. Measured against codex-cli 0.146.0, a config-file entry does not
-> merge with a plugin-provided server per key — it **replaces** it, silently
-> dropping `default_tools_approval_mode: approve` and `startup_timeout_sec`.
-> Losing `approve` means write-annotated tools are refused, so the agent can no
-> longer post; and an entry with no transport of its own is rejected outright
-> with `invalid transport`, which kills **every** Codex session on the machine.
-> The plugin's config is the single definition. This skill supplies only the
-> *identity*.
+> ⚠️ **Never put a Switch credential in `opencode.json`.** OpenCode interpolates
+> `{env:VAR}` and `{file:path}` in config values, and an MCP entry accepts an
+> `environment` key, so it is entirely possible to wire the token in there — and
+> wrong. That file is global: every OpenCode session on the machine reads it, so
+> a credential there makes every session the same agent, and puts a secret in a
+> file the user has no reason to treat as sensitive. Identity in Switch is per
+> working directory, which is what the store below gives you.
+
+> ⚠️ **Do not add anything else to that MCP entry either.** OpenCode validates
+> its config against a published schema that rejects unknown properties, and it
+> fails the **whole config** with them — every session on the machine, not just
+> this one. Only `type`, `command`, `cwd`, `environment`, `enabled` and
+> `timeout` may appear.
 
 The runtime resolves its own identity, in this order:
 
@@ -45,13 +48,19 @@ authenticating as the wrong agent is worse than not starting.
 
 **Requires `switch-agent-runtime` 0.2.0 or newer.** Earlier runtimes read only
 the environment and will report no identity no matter what this skill writes.
-The version in play is the pin in the plugin's `.mcp.json`; if it is below
-0.2.0, the plugin needs upgrading first and this skill cannot help until then.
+The version in play is the one pinned in the `mcp.switch` entry; if it is below
+0.2.0, the connector needs updating first and this skill cannot help until then.
+
+**Note the asymmetry, because it surprises people.** The MCP server and this
+skill are installed **globally**, so every OpenCode session on the machine has
+the Switch tools and can load these instructions. The identity is **per working
+directory**. A session started somewhere without a store has the whole tool
+surface and no agent to be.
 
 ## Step 1 — Check what is already there
 
 The store is read from the **working directory**, so check the directory the
-user will start Codex in:
+user will start OpenCode in:
 
 ```bash
 ls .switch/agents/*.json 2>/dev/null
@@ -87,8 +96,8 @@ hard error, so a false "clean" here is the worst possible answer.)
 
 If all three are set, tell the user before going further: either they are
 already configured and don't need this skill, or those variables are leaking in
-from somewhere (a Switch Console-spawned terminal exports them) and Codex must be
-started from a shell without them for the store to be used at all.
+from somewhere (a Switch Console-spawned terminal exports them) and OpenCode must
+be started from a shell without them for the store to be used at all.
 
 If entries exist for **different Switch servers**, say so plainly: the runtime
 **refuses to start** in that case, because the operation catalog is fetched
@@ -192,10 +201,10 @@ spaces, no `@`, no uppercase.** The name is used in Matrix room handles and
 
 Suggest a default that **identifies the user**, not just the repo. Agent names
 are visible to everyone in the rooms the agent joins. If two developers both
-register from a shared repo, a repo-only name like `codex.my-project` collides
-and nobody can tell which human is behind which agent:
+register from a shared repo, a repo-only name like `opencode.my-project`
+collides and nobody can tell which human is behind which agent:
 
-- `codex.<slug-of-repo-name>.<slug-of-username>` — repo name from
+- `opencode.<slug-of-repo-name>.<slug-of-username>` — repo name from
   `basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"`, username
   from `$USER` or `whoami`.
 
@@ -207,33 +216,40 @@ ask again. If it carries no user identifier, flag the collision risk once and
 let the user decide.
 
 Also ask for a one-line description — it appears in room participant lists.
-Default: `Codex running in <repo-name-or-hostname>`.
+Default: `OpenCode running in <repo-name-or-hostname>`.
 
 > **No channels question, and no subagents step.** The Claude Code connector has
-> both; Codex has neither. `CodexOptions` has no `channels_enabled` field —
-> sending one is silently dropped — and Codex has no `.claude/agents/*.md`
+> both; OpenCode has neither. `OpenCodeOptions` has no `channels_enabled` field —
+> sending one is silently dropped — and OpenCode has no `.claude/agents/*.md`
 > equivalent, so the bulk endpoint would mint indistinguishable children. Do not
 > call it.
 
-## Step 5 — Repository directory
+## Step 5 — Repository directory and notify user
 
 Switch shows room participants a paste-ready command when the agent is
 addressed with no live session:
 
 ```
-cd "<repo_dir>" && codex "connect to switch room <name>"
+cd "<repo_dir>" && opencode --prompt "connect to switch room <name>"
 ```
 
-`repo_dir` is what makes it useful — **and for Codex it matters twice over**,
+`repo_dir` is what makes it useful — **and for OpenCode it matters twice over**,
 because the runtime reads the agent store from the session's working directory.
 `repo_dir` should therefore be **the directory this skill writes the credentials
-into**, or the pasted command starts Codex somewhere the store isn't and the
+into**, or the pasted command starts OpenCode somewhere the store isn't and the
 session has no identity.
 
 Ask whether to record it, defaulting to the current working directory. Validate
 that it is absolute (`startswith("/")`) and exists (`test -d`).
 
-Omit the key entirely if the user opts out — leave it out rather than passing
+Then ask whether to record `notify_user` — a handle to `@`-mention on the
+bridged platform so the operator gets a push notification. Explain: *"Use the
+exact handle they have on the room's bridged platform (Slack / Mattermost), or
+their Switch user name for unbridged rooms — often NOT the local username. If it
+doesn't match a real bridge user the mention silently does nothing."* Ask for
+the bare handle, no leading `@`, and do not default to `$USER`.
+
+Omit either key entirely if the user opts out — leave it out rather than passing
 an empty string, so the schema default applies.
 
 **Do not set `auto_session`.** It means "Switch Console watches rooms and auto-spawns
@@ -252,18 +268,18 @@ registration token in an `Authorization: Bearer` header and this body:
 
 ```json
 {
-  "agent_type": "codex",
+  "agent_type": "opencode",
   "name": "<from step 4>",
   "description": "<from step 4>",
-  "options": { "repo_dir": "<from step 5>" },
+  "options": { "repo_dir": "<from step 5>", "notify_user": "<from step 5>" },
   "overwrite": false
 }
 ```
 
-It looks up the `codex` known-agent spec and returns the agent's `id` and
-`api_key`. `repo_dir` may be an empty string — the server normalises a blank to
-"unset". Never inline the token: command lines reach shell history and process
-listings.
+It looks up the `opencode` known-agent spec and returns the agent's `id` and
+`api_key`. Either option may be an empty string — the server normalises a blank
+to "unset" — so the payload does not have to be built conditionally. Never
+inline the token: command lines reach shell history and process listings.
 
 **Pitfall — env-var expansion order.** Do NOT prefix the command with
 `SWITCH_REGISTRATION_TOKEN=... curl ...` while also referencing
@@ -290,11 +306,11 @@ The response is `{"id":"...","api_key":"..."}`.
 > now exists on the server with a token nobody holds, and re-registering to
 > recover returns `409`.
 >
-> This is not hypothetical — it happened twice in testing before this note
-> existed. So do not split them. Do the curl and the file write in a **single**
-> invocation, as Step 7 shows, or at minimum redirect the response body to a
-> file (`--output`) in the same command that makes the request, and read it
-> back from there.
+> This is not hypothetical — it happened twice in testing of the Codex skill
+> this one is ported from, before the note existed. So do not split them. Do the
+> curl and the file write in a **single** invocation, as Step 7 shows, or at
+> minimum redirect the response body to a file (`--output`) in the same command
+> that makes the request, and read it back from there.
 >
 > Two shell details, both from real runs: `status` is a **reserved variable in
 > zsh** — use `http_status` — and a `$(...)` capture of the body must not
@@ -303,8 +319,8 @@ The response is `{"id":"...","api_key":"..."}`.
 **Responses:**
 
 - `401` — bad registration token (or the pitfall above); stop.
-- `400 Unknown agent type: codex` — the server predates Codex support. Say so
-  and stop; do not fall back to another type.
+- `400 Unknown agent type: opencode` — the server predates OpenCode support. Say
+  so and stop; do not fall back to another type.
 - `400` with a name validation error — re-ask in Step 4.
 - `409` — that name already exists. The bridge refuses to clobber it because
   re-registering rotates the API key and invalidates the old credentials.
@@ -330,8 +346,9 @@ there.
 > ⚠️ **Write these lines to a file and run that file.** Do not paste them
 > inside `bash -lc '...'`. The jq filter is single-quoted, and nesting it in an
 > outer single-quoted string collapses the quoting — jq then sees bare
-> `agent_type:"codex"` and dies with `syntax error, unexpected ':'`, or curl
-> receives a blank argument. This has already cost one real run:
+> `agent_type:"opencode"` and dies with `syntax error, unexpected ':'`, or curl
+> receives a blank argument. This has already cost one real run on the Codex
+> connector:
 >
 > ```bash
 > cat > /tmp/switch-configure.sh <<'SCRIPT'
@@ -342,32 +359,15 @@ there.
 >
 > The quoted heredoc (`<<'SCRIPT'`) is what keeps the body intact.
 
-`ENDPOINT`, `NAME`, `DESC`, `REPO_DIR` and `SWITCH_REGISTRATION_TOKEN` must be
-exported in the environment the script runs in. `REPO_DIR` may be an empty
-string — the server normalises a blank to "unset", so there is no need to build
-the payload conditionally.
+`ENDPOINT`, `NAME`, `DESC`, `REPO_DIR`, `NOTIFY_USER` and
+`SWITCH_REGISTRATION_TOKEN` must be exported in the environment the script runs
+in. `REPO_DIR` and `NOTIFY_USER` may be empty strings — the server normalises a
+blank to "unset", so there is no need to build the payload conditionally.
 
 ```bash
 set -eu
 mkdir -p .switch/agents
 printf '*\n' > .switch/agents/.gitignore
-
-# This file is keyed by name alone, so a directory shared with another Switch
-# setup — a Switch Console install, or an earlier run of this skill against a
-# different server — can already have one under this name. Writing over it
-# destroys a token that was returned once and exists nowhere else, and the
-# displaced agent's sessions then authenticate as this one. A different endpoint
-# is what makes it someone else's: the same server would have refused the name
-# at registration.
-creds=".switch/agents/$NAME.json"
-if [ -f "$creds" ]; then
-  owner=$(jq -r '.env.SWITCH_API_ENDPOINT // empty' "$creds" 2>/dev/null || true)
-  if [ -n "$owner" ] && [ "${owner%/}" != "${ENDPOINT%/}" ]; then
-    printf '%s already holds credentials for the Switch server at %s.\n' "$creds" "$owner" >&2
-    printf 'Refusing to overwrite them. Choose a different agent name, or a different directory.\n' >&2
-    exit 1
-  fi
-fi
 
 resp=$(mktemp)
 trap 'rm -f "$resp"' EXIT
@@ -379,9 +379,9 @@ http_status=$(curl -sS --max-time 30 -o "$resp" -w '%{http_code}' -X POST "$ENDP
   -H "Authorization: Bearer $SWITCH_REGISTRATION_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg name "$NAME" --arg desc "$DESC" \
-         --arg repo_dir "$REPO_DIR" \
-         '{agent_type:"codex", name:$name, description:$desc,
-           options:{repo_dir:$repo_dir},
+         --arg repo_dir "$REPO_DIR" --arg notify_user "$NOTIFY_USER" \
+         '{agent_type:"opencode", name:$name, description:$desc,
+           options:{repo_dir:$repo_dir, notify_user:$notify_user},
            overwrite:false}')")
 
 if [ "$http_status" != "200" ]; then
@@ -396,15 +396,8 @@ jq -r '"registered " + .id' "$resp"
 ```
 
 The token goes from the response straight into the file without ever being
-echoed or held in a variable that a later command would need.
-
-The guard runs **before** the registration, not just before the write: refusing
-afterwards would leave an agent on the server whose key nobody holds. If it
-fires, tell the user which server already owns that name here and let them
-choose — a different name, or a different directory. Do not delete the file and
-retry.
-
-The resulting file is the same shape Switch Console writes:
+echoed or held in a variable that a later command would need. The resulting
+file is the same shape Switch Console writes:
 
 ```json
 {
@@ -416,16 +409,16 @@ The resulting file is the same shape Switch Console writes:
 }
 ```
 
-Write it in the directory the user will start Codex from — the same one used for
-`repo_dir` in Step 5. The runtime reads the store from the session's working
+Write it in the directory the user will start OpenCode from — the same one used
+for `repo_dir` in Step 5. The runtime reads the store from the session's working
 directory, so a file in the wrong directory is simply not found.
 
 Add `.switch/` to the repo's own `.gitignore` too if it is not already covered.
 The token lives in this file in plaintext, inside the working tree; say so
 plainly rather than leaving the user to find it.
 
-No MCP config is touched. The plugin's `.mcp.json` already declares the server,
-and the runtime reads this file itself.
+No OpenCode config is touched. The connector's install already declared the MCP
+server, and the runtime reads this file itself.
 
 ## Step 8 — Confirm
 
@@ -435,9 +428,9 @@ Report to the user:
 - That credentials went to `.switch/agents/<name>.json` (git-ignored), and that
   the **token is stored there in plaintext** inside the working tree — a
   credential at rest in a directory they may archive or copy.
-- That Codex must be **restarted** to pick up the identity, and that it must be
-  started **from this directory**.
-- How to check: start `codex` here and ask it to `list_rooms`.
+- That OpenCode must be **restarted** to pick up the identity, and that it must
+  be started **from this directory**.
+- How to check: start `opencode` here and ask it to list your Switch rooms.
 
 Do **not** print the API token. Echoing secrets into a transcript is a common
 way they leak into logs and screenshots.
@@ -448,9 +441,9 @@ Be straight with the user; do not imply parity.
 
 **Works:** the full Switch tool surface (including `send_attachment` /
 `download_attachment`), room participation, threads, tasks, roles, moderation,
-and the offline run command Switch posts — which is a bare
-`cd "<repo_dir>" && codex "connect to switch room <name>"`, so it works as
-written provided `repo_dir` is where the store lives.
+and the offline run command Switch posts — which is
+`cd "<repo_dir>" && opencode --prompt "connect to switch room <name>"`, so it
+works as written provided `repo_dir` is where the store lives.
 
 **Does not work, or works differently:**
 
@@ -460,9 +453,13 @@ written provided `repo_dir` is where the store lives.
   to catch up rather than waiting to be notified. Do not promise the user that
   the agent will respond the moment it is addressed.
 - **No auto-spawned sessions.** `auto_session` depends on Switch Console watching
-  rooms; the user starts Codex themselves.
-- **No per-agent model / reasoning-effort / instruction overrides.** Those live
-  in the profile Switch Console writes.
+  rooms; the user starts OpenCode themselves.
+- **Nothing reports what the session is doing.** The connector's reporting
+  plugin tells Switch Console the session id, turn boundaries and tool activity;
+  with no Switch Console listening there is nowhere for that to go, so the agent
+  will not show as working or idle anywhere.
+- **No per-agent model, reasoning-effort or instruction overrides.** Those live
+  in the launch profile Switch Console writes.
 
 **Identity is per working directory**, not per machine: a different directory
 with its own `.switch/agents/` is a different agent, and several entries in one
@@ -471,7 +468,7 @@ directory are chosen between at session start with `select_agent`.
 ## Troubleshooting
 
 - **"no Switch identity" / tools present but unusable** — the runtime found no
-  environment and no usable store entry. Check you started Codex from the
+  environment and no usable store entry. Check you started OpenCode from the
   directory holding `.switch/agents/`, and that the entry parses as JSON with an
   endpoint, token and agent id.
 - **Startup refuses, naming several servers** — the store spans more than one
@@ -479,12 +476,20 @@ directory are chosen between at session start with `select_agent`.
   only that server's agents in the directory.
 - **Tools refuse and name a list of agents** — several agents on one server and
   no identity bound yet. Call `select_agent` with one of the names first.
-- **Tools missing entirely** — the plugin is not installed or not enabled
-  (`codex plugin list`), or its pinned runtime predates 0.2.0. Restart Codex
-  after any change.
+- **Tools missing entirely** — the connector is not installed. Check that
+  `~/.config/opencode/opencode.json` has an `mcp.switch` entry, and restart
+  OpenCode after any change to it.
+- **Tools missing on the first session after an install, then present** — the
+  MCP server timed out while `npx` fetched the runtime on a cold cache. The
+  connector raises the startup allowance for exactly this, but a slow link can
+  still miss it. Start a second session.
 - **`connection closed: initialize response`** — the runtime died before the
   handshake; the reason is in `~/.switch/sessions/<ppid>/startup-error.log`. Read
   it rather than guessing: the host reports every cause identically.
+- **Every OpenCode session breaks after editing the config** — OpenCode rejects
+  unknown properties on an MCP entry and fails the whole config with them.
+  Remove whatever was added beyond `type`, `command`, `cwd`, `environment`,
+  `enabled` and `timeout`.
 - **404 fetching the runtime** — the runtime is on the public npm registry, so
   this is a reachability problem (offline, proxy, or a registry override in an
   `.npmrc`), not an authentication one. `npm view @sandboxaq/switch-agent-runtime

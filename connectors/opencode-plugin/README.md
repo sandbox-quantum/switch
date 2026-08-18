@@ -13,31 +13,52 @@ This is the sibling of `connectors/claude-code-plugin/` and
 three of those pieces. One thing about it is genuinely different, and it is
 worth understanding before changing anything here.
 
-## It is written, not installed
+## It installs itself
 
 The other two connectors are installed by their host's plugin-marketplace CLI:
 `claude plugin install`, `codex plugin add`. **OpenCode has no marketplace.**
-Its `plugin` subcommand installs a single npm module and has no list, remove or
-version verb, so there is nothing for the marketplace driver to drive.
+Its plugin resolver takes exactly two things — a directory on disk, or an npm
+package name — and its `plugin` subcommand has no list, remove or version verb,
+so there is nothing for a marketplace driver to drive.
 
-So Switch Console installs this connector by writing its files itself, through
-the `switchSetup: { kind: 'files' }` capability
-(`console/packages/plugins/src/agents/impl/opencode/switch-connector.ts`). The
-user-facing surface is identical — the agent's card in Settings → Agents, and a
-remote host's setup, offer install, update and uninstall exactly as for the
-other two — but there is no marketplace entry, and this directory is not
-registered in `.claude-plugin/marketplace.json`.
+Nor does installing the package amount to installing the connector. npm leaves
+the module in a cache, and OpenCode discovers a skill only as a file in one of
+a few directories it searches; a cached module is not one of them. So the
+package carries the install itself:
 
-Because the app writes the files, it also carries their content: the plugin
-source, the skill and the MCP fragment here are embedded in the app at
-`console/packages/plugins/src/agents/impl/opencode/`. **They must not drift** —
-`connector-assets.test.ts` fails if they do. Edit the files here; the test tells
-you what to update.
+```
+npx -y @sandboxaq/switch-connector-opencode install
+```
 
-An install has no version of its own to report, since nothing fetched it. A
-status read compares the app version that stamped the install against the
-running one, so "update available" means the connector was written by an older
-build of Switch Console.
+That merges the `mcp` block below into `~/.config/opencode/opencode.json`,
+leaving the user's other MCP servers and settings alone, writes every skill
+under `skills/` to where OpenCode looks for it, and records what it wrote in
+`switch-connector.json` beside the config — outside `opencode.json`, because of
+the unknown-key rule below. `uninstall` reverses exactly that, and `status`
+reports the installed version.
+
+Everything it writes comes from the files in this directory, so there is no
+second copy of the connector to keep in step: the MCP entry is `opencode.json`'s
+own `mcp` block, and the skills are the directories under `skills/`.
+
+Switch Console offers install, update and uninstall on the agent's card in
+Settings → Agents, and in a remote host's setup, exactly as for the other two.
+
+Publishing is a tag, `switch-connector-opencode-v<version>`, and the same lag
+rule as the agent runtime applies: nothing may pin a version before the tag
+that publishes it exists.
+
+## The standalone path
+
+With no Switch Console, an OpenCode session reaches Switch in two steps: the
+install command above, then the **`configure` skill** (`skills/configure/`) run
+once in the directory you work from. That registers the agent and writes its
+credentials to `.switch/agents/<name>.json`, which is where the runtime looks
+when the session environment carries no identity.
+
+Note the asymmetry, because it catches people out: the MCP server and the
+skills are installed **globally**, so every OpenCode session on the machine has
+the Switch tools; the identity is **per working directory**.
 
 ## The room-workflow skill
 
@@ -63,8 +84,9 @@ name `switch`, as a **local** (stdio) server.
 That transport choice is what keeps the credential off disk. OpenCode spawns a
 local MCP server with the full parent environment, so the runtime inherits
 `SWITCH_API_ENDPOINT`, `SWITCH_API_TOKEN` and `SWITCH_AGENT_ID` from the session
-Switch Console launched — and nothing secret is written into a config file that
-every OpenCode session on the machine reads.
+that launched it — and nothing secret is written into a config file that every
+OpenCode session on the machine reads. Standalone there is no such environment,
+which is what the per-directory credential store is for.
 
 OpenCode *does* interpolate `{env:VAR}` and `{file:path}` in config values
 (unlike Codex, which forwards variables by name, and Claude Code, which expands
@@ -80,18 +102,16 @@ Two constraints on this file, both of which fail loudly if broken:
   `timeout` is raised. The first session after an install is the one that pays
   that cost.
 
-Switch Console's install merges this `mcp` block into the user's global
-`~/.config/opencode/opencode.json`, leaving their other MCP servers and settings
-alone, and records what it wrote in `switch-connector.json` beside it — outside
-`opencode.json`, because of the unknown-key rule above.
-
 ## The reporting plugin
 
 `plugin/switch-notifications.js` is dropped into a session's working directory
-at `.opencode/plugins/`, where OpenCode auto-discovers it. It reports the
-session id, turn boundaries and per-tool activity to Switch Console over the
-local hook port, which is what makes an OpenCode session show as working or
-completed in its rooms rather than sitting in one state.
+at `.opencode/plugins/`, where OpenCode auto-discovers it, and is also the
+package's `./server` entrypoint for anyone loading the connector through
+OpenCode's own `plugin` array. It reports the session id, turn boundaries and
+per-tool activity to Switch Console over the local hook port, which is what
+makes an OpenCode session show as working or completed in its rooms rather than
+sitting in one state. Standalone there is nothing listening on that port, and it
+reports nothing.
 
 Two things about it are load-bearing and are pinned by tests:
 

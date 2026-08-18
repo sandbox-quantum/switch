@@ -115,7 +115,7 @@ describe('opencode connector assets', () => {
       name?: string;
       version?: string;
     };
-    expect(manifest.name).toBe('switch-connector-opencode');
+    expect(manifest.name).toBe('@sandboxaq/switch-connector-opencode');
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });

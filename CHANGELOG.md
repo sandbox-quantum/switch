@@ -28,9 +28,9 @@ leaves its contracts alone.
   `sidecar-version.ts` and deployed by Switch Console, not published separately.
 - **switch-connector** / **switch-connector-codex** / **switch-connector-opencode**
   — the three connectors (`connectors/`), versioned in their respective
-  manifests. The first two are installed from the plugin marketplace; the
-  OpenCode one is written by Switch Console, which has no marketplace to install
-  from, so its version identifies the source rather than an install.
+  manifests. The first two are installed from the plugin marketplace; OpenCode
+  has no marketplace, so that one is published to a registry and carries an
+  install command of its own.
 
 Three things are **not** separately versioned, and ship under the switch-core
 release so a single tag pins the whole stack: the **operator dashboard**
@@ -2173,12 +2173,24 @@ manifest history.
 
 `connectors/opencode-plugin/`. Version lives in `package.json`.
 
-Unlike the other two connectors, nothing installs this one from a marketplace —
-OpenCode has none. Switch Console writes its files directly, so the version is
-for humans reading a diff rather than for an installer, and an install reports
-the app version that wrote it rather than a version of its own.
+Unlike the other two connectors, no marketplace installs this one — OpenCode
+has none. It is published to a registry instead, and installs itself with a
+command of its own.
 
 ### [Unreleased]
+
+#### Added
+- A `configure` skill: the standalone path. It registers this OpenCode instance
+  as a Switch agent and writes the credentials the runtime reads, so a session
+  started from a plain terminal acts as that agent with no Switch Console
+  involved.
+- An install command. It merges the Switch MCP server into OpenCode's global
+  config, writes the skills where OpenCode discovers them, and reverses cleanly
+  — leaving the user's other MCP servers and settings alone. Installing the
+  package is not by itself an install: npm caches the module, and OpenCode
+  reads a skill only as a file in a directory it searches.
+- A release workflow. The connector is published to the public registry, which
+  is the only way OpenCode can install it without a clone of this repository.
 
 ### [0.1.2] - 2026-08-15
 

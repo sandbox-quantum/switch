@@ -1,0 +1,157 @@
+# Publish the OpenCode connector to the public npm registry.
+#
+# The other two connectors are not published at all: their hosts have plugin
+# marketplaces, so `claude plugin install` and `codex plugin add` fetch them
+# straight out of this repository and their version numbers are read by people
+# rather than resolved by an installer. OpenCode has no marketplace, and its
+# plugin resolver takes exactly two things — a directory on disk, or an npm
+# package name. A registry is therefore the only way to install this connector
+# without cloning the repository, which is what publishing buys.
+#
+# Triggered by a tag, so a version can be published from a BRANCH — you should
+# not have to merge to main to test the thing you are testing. To cut one:
+#
+#   # bump "version" in connectors/opencode-plugin/package.json first
+#   git tag switch-connector-opencode-v0.1.0
+#   git push origin switch-connector-opencode-v0.1.0
+#
+# The tag must match the version in package.json, or the job fails rather than
+# publishing something whose name disagrees with its contents.
+#
+# For a pre-merge test, use a prerelease version (0.2.0-rc.1). Those publish
+# under the `next` dist-tag so they never become what `@latest` resolves to.
+#
+# Publishing is idempotent: a tag for a version already on the registry reports
+# that and exits cleanly rather than failing.
+#
+# There is no build step. The connector is the files it ships — the installer,
+# the MCP fragment, the reporting plugin and the skills — so the tarball is the
+# directory, and `files` in package.json is what decides its contents.
+#
+# No secret is needed, and none is stored. npm trusted publishing authenticates
+# this workflow by OIDC: GitHub mints a short-lived token asserting which
+# repository and workflow file is running, and npm checks that against the
+# trusted publisher registered for the package. There is no NPM_TOKEN to
+# create, rotate, or leak, and a token stolen from anywhere else cannot publish.
+#
+# That registration is manual, one-time, and must exist BEFORE this workflow
+# first runs. It names the repository, THIS FILE'S NAME, and the environment
+# below — all case-sensitive, none validated when saved, so renaming any of
+# them breaks publishing and the error arrives at the next release rather than
+# at the rename. It is a second registration in its own right: the one covering
+# the agent runtime does not extend to this package.
+name: Publish switch-connector-opencode
+
+on:
+  push:
+    tags:
+      - 'switch-connector-opencode-v*'
+  # Lets you re-run a publish for an already-tagged commit (e.g. main) without
+  # pushing the tag again:
+  #   gh workflow run switch-connector-opencode-publish.yml --ref main
+  # The version guard still applies: the commit must carry a matching
+  # switch-connector-opencode-v<version> tag, or the run refuses to publish.
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Publish only from a matching tag or from main. A workflow_dispatch from an
+    # arbitrary branch would otherwise publish whatever that branch's
+    # package.json says into the real @sandboxaq namespace, bypassing the
+    # tag-vs-version guard below (which only runs on the tag path).
+    if: ${{ startsWith(github.ref, 'refs/tags/switch-connector-opencode-v') || github.ref == 'refs/heads/main' }}
+    # Gates the publish on the `release` environment's protection rules, so a
+    # pushed tag queues a release for approval rather than shipping one.
+    #
+    # It is also half of the trusted publisher's identity: the environment is a
+    # claim in the OIDC token, so this name and the one registered on npm must
+    # match exactly. Changing it here without changing it there fails the
+    # publish, and only at the next release.
+    environment: release
+    permissions:
+      contents: read
+      # Mints the OIDC token npm verifies. Nothing here can write to a registry
+      # with an ambient credential.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        # Full history + tags so the version guard can resolve the tag pointing
+        # at HEAD on a workflow_dispatch (where github.ref is a branch, not the tag).
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          # Still required with OIDC: this is what writes the .npmrc that points
+          # npm at the public registry for the scope.
+          registry-url: https://registry.npmjs.org
+          scope: '@sandboxaq'
+
+      # Trusted publishing needs npm 11.5.1+; Node 22 ships an older one, and
+      # without this the publish fails with an authentication error that says
+      # nothing about the version.
+      #
+      # Held on 11.x rather than `@latest`: npm 12 requires Node ^22.22.2, so
+      # `@latest` couples this job to whatever patch `node-version: 22` resolves
+      # to today, and the next npm major would break it without a change here.
+      - run: npm install -g npm@^11.15.0
+
+      - name: Publish if this version is new
+        working-directory: connectors/opencode-plugin
+        env:
+          TAG_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+
+          # The published version must be backed by a matching tag on this
+          # commit. On a tag push that's the trigger ref; on a workflow_dispatch
+          # (branch ref, e.g. main) we resolve the tag pointing at HEAD.
+          case "$TAG_REF" in
+            refs/tags/switch-connector-opencode-v*)
+              tagged="${TAG_REF#refs/tags/switch-connector-opencode-v}"
+              ;;
+            *)
+              tag="$(git tag --points-at HEAD --list 'switch-connector-opencode-v*' | head -n1)"
+              tagged="${tag#switch-connector-opencode-v}"
+              ;;
+          esac
+
+          if [ -z "$tagged" ]; then
+            echo "Refusing to publish: this commit has no switch-connector-opencode-v* tag." >&2
+            echo "Publishing the connector is a tag — push switch-connector-opencode-v$version first." >&2
+            exit 1
+          fi
+
+          # A tag naming one version while package.json says another publishes
+          # something whose name disagrees with its contents. Refuse.
+          if [ "$tagged" != "$version" ]; then
+            echo "Tag says $tagged, package.json says $version." >&2
+            echo "Bump the version and re-tag." >&2
+            exit 1
+          fi
+
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published — nothing to do."
+            echo "Bump the version in package.json to publish a new one."
+            exit 0
+          fi
+
+          # --access public: a scoped package defaults to private, which on this
+          # account is not merely unwanted but unpublishable. Harmless to repeat
+          # after the first publish sets it.
+          #
+          # --provenance: signed attestation of which workflow and commit built
+          # the tarball.
+          #
+          # A prerelease must not become what `@latest` resolves to.
+          case "$version" in
+            *-*) npm publish --access public --provenance --tag next ;;
+            *)   npm publish --access public --provenance ;;
+          esac
+          echo "Published $name@$version"
+          echo "Switch Console installs this package by version — move its pin only now that this exists."

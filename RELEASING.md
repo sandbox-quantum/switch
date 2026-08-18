@@ -36,7 +36,7 @@ of its own — a version nobody publishes independently is a number that drifts
 from reality, which is exactly what `Chart.yaml` did while it claimed `0.2.1`.
 
 The separately-versioned artifacts are switch-core, switch-console, the
-agent-runtime package, the sidecar, and the two connector plugins.
+agent-runtime package, the sidecar, and the three connector plugins.
 
 ### A known gap: the Helm chart has no contract
 

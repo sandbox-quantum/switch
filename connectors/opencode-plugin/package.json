@@ -1,10 +1,37 @@
 {
-  "name": "switch-connector-opencode",
+  "name": "@sandboxaq/switch-connector-opencode",
   "version": "0.1.2",
   "description": "Connect OpenCode to a Switch platform instance as a participating agent",
-  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sandbox-quantum/switch.git",
+    "directory": "connectors/opencode-plugin"
+  },
   "type": "module",
+  "bin": {
+    "switch-connector-opencode": "./install.js"
+  },
+  "files": [
+    "install.js",
+    "install.d.ts",
+    "opencode.json",
+    "plugin",
+    "skills"
+  ],
   "exports": {
+    ".": {
+      "types": "./install.d.ts",
+      "default": "./install.js"
+    },
+    "./server": "./plugin/switch-notifications.js",
     "./plugin": "./plugin/switch-notifications.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
