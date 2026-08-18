@@ -3,6 +3,8 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { Switch } from '@renderer/lib/ui/switch';
+import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import { phaseLabel, StackAction, StackSection, StackStatusRow } from './server-stack-section';
@@ -28,6 +30,13 @@ export const LocalServerControls = observer(function LocalServerControls() {
   // A stack ahead of this build must not be started at all: doing so would point
   // it at a core older than its database has migrated to (CHOO-1736).
   const downgradeBlocked = store.drift?.direction === 'downgrade';
+  // Dev builds run from a Switch checkout only; null everywhere else.
+  const checkout = store.checkoutBuild;
+  const runsCheckoutBuild = store.status?.deployedVersion === CHECKOUT_IMAGE_TAG;
+  // The toggle applies from the next start on, so say so while the containers
+  // are still the ones the previous choice produced.
+  const restartToApply =
+    checkout !== null && store.isRunning && checkout.enabled !== runsCheckoutBuild;
 
   return (
     <StackSection>
@@ -35,7 +44,13 @@ export const LocalServerControls = observer(function LocalServerControls() {
         title="Local server"
         phase={store.phase}
         summary={store.isRunning ? 'Running on this computer' : phaseLabel(store.phase)}
-        versionDetail={runningVersion ? `switch-core ${runningVersion}` : null}
+        versionDetail={
+          runsCheckoutBuild && checkout
+            ? `switch-core built from ${checkout.root}`
+            : runningVersion
+              ? `switch-core ${runningVersion}`
+              : null
+        }
         activity={
           store.logs.length > 0 ? (
             <button
@@ -97,6 +112,31 @@ export const LocalServerControls = observer(function LocalServerControls() {
             <AlertTitle>{store.error}</AlertTitle>
             {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
           </Alert>
+        )}
+
+        {/* Dev builds launched from a Switch checkout only — a released build
+            never has a source tree to build from, so the row is absent rather
+            than disabled. */}
+        {checkout && (
+          <div className="flex items-start justify-between gap-3 rounded-md border border-dashed border-border p-3">
+            <div className="min-w-0">
+              <p className="text-sm text-foreground">Build switch-core from this checkout</p>
+              <p className="mt-0.5 text-xs text-foreground-muted">
+                Dev builds only. Builds the switch, gateway and setup images from{' '}
+                <span className="font-mono break-all">{checkout.root}</span> on every start, instead
+                of pulling switch-core {store.status?.version}. They are tagged{' '}
+                <span className="font-mono">{CHECKOUT_IMAGE_TAG}</span> so they can't be mistaken
+                for a release.
+                {restartToApply && ' Restart the server to apply.'}
+              </p>
+            </div>
+            <Switch
+              checked={checkout.enabled}
+              disabled={transitioning}
+              onCheckedChange={(enabled) => void store.setCheckoutBuild(enabled)}
+              aria-label="Build switch-core from this checkout"
+            />
+          </div>
         )}
 
         {/* Behind the disclosure rather than shown the moment there is output:

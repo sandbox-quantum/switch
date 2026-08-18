@@ -32,6 +32,9 @@ function initialStatus(sshHost: string): RemoteServerStatus {
     version: COMPATIBLE_SWITCH_VERSION,
     deployedVersion: null,
     drift: null,
+    // A remote host builds nothing: its stack always runs the pinned released
+    // images, so the dev checkout option is not on offer there.
+    checkoutBuild: null,
     message: null,
     error: null,
   };
@@ -168,6 +171,7 @@ class RemoteServerService {
         onMessage: (message) => this.setStatus(sshHost, { message }),
         onLog: (line) => events.emit(remoteServerLogChannel, { sshHost, line }),
         signal: abort.signal,
+        checkoutRoot: null,
       });
       if (result.kind === 'docker-unavailable') {
         this.setStatus(sshHost, { phase: 'error', error: result.detail });

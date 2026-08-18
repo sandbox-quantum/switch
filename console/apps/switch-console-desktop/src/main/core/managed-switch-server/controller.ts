@@ -16,4 +16,9 @@ export const localSwitchServerController = createRPCController({
   stop: (): Promise<void> => localServerService.stop(),
 
   reset: (): Promise<void> => localServerService.reset(),
+
+  /** Dev-only: build the stack's images from the local Switch checkout on the
+   * next start, instead of pulling this build's pinned images. */
+  setCheckoutBuild: (enabled: boolean): Promise<void> =>
+    localServerService.setCheckoutBuild(enabled),
 });

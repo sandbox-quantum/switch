@@ -26,7 +26,7 @@ describe('composeUp', () => {
   it('asks for plain progress before the subcommand, where compose accepts it', async () => {
     const { host, streamCommand } = hostSpy();
 
-    await composeUp(host, () => {});
+    await composeUp(host, () => {}, false);
 
     const args = streamCommand.mock.calls[0]![1];
     const progressAt = args.indexOf('--progress');
@@ -39,8 +39,36 @@ describe('composeUp', () => {
   it('still brings the stack up detached', async () => {
     const { host, streamCommand } = hostSpy();
 
-    await composeUp(host, () => {});
+    await composeUp(host, () => {}, false);
 
     expect(streamCommand.mock.calls[0]![1]).toEqual(expect.arrayContaining(['up', '-d']));
+  });
+
+  /** The dev-only checkout build layers the build override on top of the
+   * pinned compose file and asks compose to build; without `--build` an
+   * already-built image is reused and the working tree's changes never land. */
+  it('layers the build override and builds when running from a checkout', async () => {
+    const { host, streamCommand } = hostSpy();
+
+    await composeUp(host, () => {}, true);
+
+    const args = streamCommand.mock.calls[0]![1];
+
+    expect(args).toEqual(expect.arrayContaining(['-f', 'standalone-docker-compose.build.yml']));
+    expect(args.indexOf('standalone-docker-compose.yml')).toBeLessThan(
+      args.indexOf('standalone-docker-compose.build.yml')
+    );
+    expect(args).toEqual(expect.arrayContaining(['up', '-d', '--build']));
+  });
+
+  it('does not build or override on the released path', async () => {
+    const { host, streamCommand } = hostSpy();
+
+    await composeUp(host, () => {}, false);
+
+    const args = streamCommand.mock.calls[0]![1];
+
+    expect(args).not.toContain('standalone-docker-compose.build.yml');
+    expect(args).not.toContain('--build');
   });
 });

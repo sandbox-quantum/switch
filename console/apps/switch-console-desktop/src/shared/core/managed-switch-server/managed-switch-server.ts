@@ -72,6 +72,28 @@ export function switchVersionDowngradeMessage(deployed: string, expected: string
   );
 }
 
+/**
+ * Image tag a checkout build is tagged with. Deliberately not a semver and
+ * deliberately not the pin: it must never be mistaken for a released version,
+ * and it must not overwrite the pinned image in the local image store. Shared
+ * because the renderer recognises it too — a stack on this tag is a checkout
+ * build rather than a stack that has drifted.
+ */
+export const CHECKOUT_IMAGE_TAG = 'dev-checkout';
+
+/**
+ * The dev-only "build switch-core from this checkout" option: where the
+ * checkout is, and whether the next start will build from it instead of pulling
+ * the pinned released images. Only ever offered to a dev build running out of a
+ * Switch source tree.
+ */
+export type CheckoutBuild = {
+  /** Absolute path of the checkout the images would be built from. */
+  root: string;
+  /** Whether the option is on. Applies from the next start onwards. */
+  enabled: boolean;
+};
+
 /** Snapshot of the managed local server, emitted on every transition. */
 export type LocalServerStatus = {
   phase: LocalServerPhase;
@@ -84,6 +106,11 @@ export type LocalServerStatus = {
   deployedVersion: string | null;
   /** Set when {@link deployedVersion} differs from {@link version}, else null. */
   drift: SwitchVersionDrift | null;
+  /** Dev builds launched from a Switch checkout only: the checkout the stack's
+   * images can be (or are being) built from, and whether that is turned on.
+   * Null in a released build, and in a dev build that is not running from a
+   * checkout — there is nothing to offer then. */
+  checkoutBuild: CheckoutBuild | null;
   /** Human-readable current step (e.g. "Pulling images…"), or null. */
   message: string | null;
   /** Populated only when `phase === 'error'`. */

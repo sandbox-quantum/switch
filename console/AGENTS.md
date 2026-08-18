@@ -672,6 +672,18 @@ pnpm run test
   duration. Nothing is downloaded or installed, and the harness cannot activate in
   a packaged build. Example:
   `SWITCHDASH_FAKE_UPDATE=available pnpm run dev`.
+- The managed local Switch server in dev: a dev build launched from a Switch
+  checkout shows a **"Build switch-core from this checkout"** toggle on the local
+  server's page. With it on, every start layers a generated build override on the
+  bundled compose file and runs `up -d --build`, so `switch`, `gateway` and
+  `setup` are built from the working tree and tagged `dev-checkout` instead of
+  pulling the pinned GHCR images. The choice persists in
+  `local-switch-server/checkout-build.json` under user-data and applies from the
+  next start. The compose file stays the bundled pinned one — re-sync it
+  (`pnpm run sync:compose`) if the checkout's own standalone compose has moved
+  on. Because the tag is not a semver, the downgrade guard cannot run against a
+  checkout build; it is skipped with a warning rather than silently.
+  See `src/main/core/managed-switch-server/checkout-build.ts`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

@@ -35,6 +35,10 @@ export const REMOTE_SERVER_PROJECT_NAME =
 export const COMPOSE_FILE_NAME = 'standalone-docker-compose.yml';
 export const ENV_FILE_NAME = '.env';
 
+/** File name of the dev-only build override layered on top of the compose file
+ * when the stack is built from a local checkout (see checkout-build.ts). */
+export const BUILD_OVERRIDE_FILE_NAME = 'standalone-docker-compose.build.yml';
+
 /** Display name of the auto-registered server record. */
 export const LOCAL_SERVER_NAME = 'Local Switch server';
 

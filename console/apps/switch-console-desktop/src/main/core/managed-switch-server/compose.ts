@@ -1,5 +1,10 @@
 import { log } from '@main/lib/logger';
-import { COMPOSE_FILE_NAME, ENV_FILE_NAME, LOCAL_SERVER_PROFILES } from './constants';
+import {
+  BUILD_OVERRIDE_FILE_NAME,
+  COMPOSE_FILE_NAME,
+  ENV_FILE_NAME,
+  LOCAL_SERVER_PROFILES,
+} from './constants';
 import type { ServerHost } from './host/types';
 
 /** Pulls can take minutes on a cold machine; give compose a generous ceiling. */
@@ -11,12 +16,13 @@ function profileArgs(): string[] {
 
 /** Base args that scope every invocation to the managed project + env file.
  * Relative file names resolve against the host working dir (the ctx root). */
-function baseArgs(host: ServerHost, globalFlags: string[]): string[] {
+function baseArgs(host: ServerHost, globalFlags: string[], extraFiles: string[] = []): string[] {
   return [
     'compose',
     ...globalFlags,
     '-f',
     COMPOSE_FILE_NAME,
+    ...extraFiles.flatMap((file) => ['-f', file]),
     '--env-file',
     ENV_FILE_NAME,
     '--project-name',
@@ -44,16 +50,33 @@ async function runCompose(host: ServerHost, args: string[], timeout: number): Pr
  * Bring the stack up in the background (`up -d`), streaming each line of output
  * to `onLog` so the UI can show a live tail during the (slow) image pull.
  * Assumes the compose file and `.env` are written and GHCR login has run.
+ *
+ * `fromCheckout` layers the dev-only build override on top of the compose file
+ * and adds `--build`, so the stack's images come from the developer's working
+ * tree instead of the registry (see checkout-build.ts). The override must
+ * already be written to the host working dir.
  */
-export function composeUp(host: ServerHost, onLog: (line: string) => void): Promise<void> {
-  log.info(`local-switch-server: docker compose up (${host.label})`);
+export function composeUp(
+  host: ServerHost,
+  onLog: (line: string) => void,
+  fromCheckout: boolean
+): Promise<void> {
+  log.info(
+    `local-switch-server: docker compose up (${host.label})${fromCheckout ? ' from local checkout' : ''}`
+  );
   // Compose already falls back to plain, line-per-event output when it is not
   // attached to a TTY, which is how we always run it — so this pins the
   // behaviour we depend on rather than changing it. `--progress` belongs to
   // `compose`, not to `up`; after the subcommand it exits with "unknown flag".
+  const overrides = fromCheckout ? [BUILD_OVERRIDE_FILE_NAME] : [];
   return host.streamCommand(
     host.dockerBin,
-    [...baseArgs(host, ['--progress', 'plain']), 'up', '-d'],
+    [
+      ...baseArgs(host, ['--progress', 'plain'], overrides),
+      'up',
+      '-d',
+      ...(fromCheckout ? ['--build'] : []),
+    ],
     onLog,
     { timeoutMs: COMPOSE_TIMEOUT_MS }
   );

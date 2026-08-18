@@ -28,6 +28,9 @@ function defaultStatus(sshHost: string): RemoteServerStatus {
     version: '',
     deployedVersion: null,
     drift: null,
+    // A remote stack always runs the pinned released images — the dev checkout
+    // build is a local-only option.
+    checkoutBuild: null,
     message: null,
     error: null,
   };

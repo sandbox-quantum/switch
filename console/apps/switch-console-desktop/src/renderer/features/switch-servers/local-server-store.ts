@@ -3,6 +3,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import type {
+  CheckoutBuild,
   DockerAvailability,
   LocalServerStatus,
   SwitchVersionDrift,
@@ -79,6 +80,13 @@ export class LocalServerStore {
   /** Set when the stack's switch-core differs from the version this build pins. */
   get drift(): SwitchVersionDrift | null {
     return this.status?.drift ?? null;
+  }
+
+  /** Dev builds launched from a Switch checkout only: the checkout the stack's
+   * images can be built from, and whether that is on. Null everywhere else, and
+   * the controls hide the option when it is. */
+  get checkoutBuild(): CheckoutBuild | null {
+    return this.status?.checkoutBuild ?? null;
   }
 
   get isTransitioning(): boolean {
@@ -206,6 +214,16 @@ export class LocalServerStore {
       runInAction(() => {
         this.busy = false;
       });
+    }
+  }
+
+  /** Dev-only: build the stack from the local checkout from the next start on.
+   * The main process pushes the new status, so nothing is mirrored here. */
+  async setCheckoutBuild(enabled: boolean): Promise<void> {
+    try {
+      await rpc.localSwitchServer.setCheckoutBuild(enabled);
+    } catch (cause) {
+      this.setError(cause, 'Could not change where switch-core is built from.');
     }
   }
 

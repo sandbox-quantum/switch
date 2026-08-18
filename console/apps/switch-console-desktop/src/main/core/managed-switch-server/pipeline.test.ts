@@ -59,7 +59,9 @@ const { startStack } = await import('./pipeline');
 const { ENV_FILE_NAME } = await import('./constants');
 
 function options() {
-  const writeFile = vi.fn(() => Promise.resolve());
+  const writeFile = vi.fn<(relPath: string, content: string, mode?: number) => Promise<void>>(() =>
+    Promise.resolve()
+  );
   const host = {
     label: 'this computer',
     writeFile,
@@ -75,6 +77,7 @@ function options() {
       onMessage: vi.fn(),
       onLog: vi.fn(),
       signal: new AbortController().signal,
+      checkoutRoot: null as string | null,
     },
   };
 }
@@ -193,5 +196,48 @@ describe('startStack version guard', () => {
     const { writeFile, opts } = options();
     await startStack(opts);
     expect(writeFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('startStack checkout build', () => {
+  /** The whole point of the dev mode: the images must come from the working
+   * tree, and must not be tagged as if they were the pinned release. */
+  it('writes the build override, tags the images apart, and builds', async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+    const { opts, writeFile } = options();
+    opts.checkoutRoot = '/src/switch';
+
+    expect(await startStack(opts)).toEqual({ kind: 'started', serverId: 'srv-1' });
+
+    const override = writeFile.mock.calls.find(
+      ([name]) => name === 'standalone-docker-compose.build.yml'
+    );
+    expect(override?.[1]).toContain('/src/switch');
+    expect(composeUpMock).toHaveBeenCalledWith(expect.anything(), expect.any(Function), true);
+  });
+
+  it('skips the downgrade guard, saying so, rather than refusing the start', async () => {
+    readDeployedVersionMock.mockResolvedValue({
+      kind: 'deployed',
+      version: '0.12.0',
+      source: 'container',
+    });
+    const { opts } = options();
+    opts.checkoutRoot = '/src/switch';
+
+    expect(await startStack(opts)).toEqual({ kind: 'started', serverId: 'srv-1' });
+    expect(logWarn).toHaveBeenCalled();
+  });
+
+  it('leaves the released path unbuilt and without an override', async () => {
+    readDeployedVersionMock.mockResolvedValue({ kind: 'absent' });
+    const { opts, writeFile } = options();
+
+    await startStack(opts);
+
+    expect(
+      writeFile.mock.calls.some(([name]) => name === 'standalone-docker-compose.build.yml')
+    ).toBe(false);
+    expect(composeUpMock).toHaveBeenCalledWith(expect.anything(), expect.any(Function), false);
   });
 });
