@@ -14,7 +14,9 @@ const TOKEN_VARIABLES: Record<keyof ThemeTokens, string> = {
   foregroundMuted: '--foreground-muted',
   border: '--border',
   accent: '--primary-button-border',
-  accentStrong: '--selection',
+  // Link and mention text, so it needs a foreground colour: `--selection` is a
+  // highlight background and is unreadable as text on the light palette.
+  accentStrong: '--foreground-info',
   buttonBg: '--primary-button-background',
   buttonColor: '--primary-button-foreground',
   destructive: '--foreground-destructive',
