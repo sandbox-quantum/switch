@@ -114,6 +114,24 @@ describe('the record that gets built', () => {
     });
   });
 
+  it('carries a body, so the event is not a blank line in the log sink', () => {
+    // The relay forwards the same record to Datadog, which reads the body as
+    // the message. It repeats the name rather than adding anything new.
+    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+
+    expect(logRecord(payload).body).toEqual({ stringValue: 'switch_console.app_launched' });
+  });
+
+  it('refuses to invent a property the catalogue promised', () => {
+    // Coercing a missing value would put the string "undefined" into the data
+    // as though it were an answer. Better to lose the event and say so.
+    const incomplete = { agent_type: 'codex' } as never;
+
+    expect(() => buildOtlpPayload('session_ended', incomplete, CONTEXT)).toThrow(
+      /missing the catalogued property/
+    );
+  });
+
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {
     const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
 
@@ -140,7 +158,13 @@ describe('sending it', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue({ ok: true, status: 200 } as Response);
+    // What the relay actually answers: a 200 whose body reports nothing
+    // rejected. A double without `json` would not be a Response.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ partialSuccess: {} }),
+    } as unknown as Response);
   });
 
   afterEach(() => {
@@ -164,7 +188,44 @@ describe('sending it', () => {
     await postTelemetryEvent({ resourceLogs: [] }, CONFIG);
 
     const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
-    expect(Object.keys(init.headers)).toEqual(['Content-Type']);
+    expect(Object.keys(init.headers).sort()).toEqual(['Content-Type', 'User-Agent']);
+    expect(init.headers['User-Agent']).toBe('switch-console');
+  });
+
+  it('reports records the relay says it would not take', async () => {
+    // A 200 is the answer to a dropped payload as well as an accepted one, so
+    // the only rejection this end can ever see is the one it is told about.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        partialSuccess: { rejectedLogRecords: '1', errorMessage: 'nope' },
+      }),
+    } as unknown as Response);
+
+    await expect(postTelemetryEvent({}, CONFIG)).rejects.toMatchObject({ code: 'rejected' });
+  });
+
+  it('treats the ordinary empty partial success as success', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ partialSuccess: {} }),
+    } as unknown as Response);
+
+    await expect(postTelemetryEvent({}, CONFIG)).resolves.toBeUndefined();
+  });
+
+  it('does not fail an accepted send over a body it cannot parse', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('not json');
+      },
+    } as unknown as Response);
+
+    await expect(postTelemetryEvent({}, CONFIG)).resolves.toBeUndefined();
   });
 
   it('gives up rather than retrying when the relay refuses', async () => {

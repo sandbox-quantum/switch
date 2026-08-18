@@ -400,10 +400,21 @@ class SwitchSetupService {
     agentId: string
   ): Promise<{ result: SwitchSetupResult; attempted: boolean }> {
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
-      const result = await this.runFiles(agentId, (files, fs, version) =>
-        files.install(fs, { version })
-      );
-      return { result, attempted: true };
+      // `runFiles` resolves the behavior outside its own try, and that throws
+      // for a connector that declares files and implements none. An install the
+      // user asked for must come back as a failed result either way — a
+      // rejection here would skip the report and reach the UI as a stack.
+      try {
+        const result = await this.runFiles(agentId, (files, fs, version) =>
+          files.install(fs, { version })
+        );
+        return { result, attempted: true };
+      } catch (err) {
+        return {
+          result: { success: false, message: installFailureMessage(String(err)) },
+          attempted: true,
+        };
+      }
     }
     const resolved = await this.resolve(agentId);
     if (!resolved)

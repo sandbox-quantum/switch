@@ -398,8 +398,10 @@ pnpm run lint
   which forwards them to Amplitude and Datadog, and nothing else. The relay holds both
   vendor keys, so **no credential ships in the app** — do not reintroduce one, and do not
   call a vendor directly. It also means the vendors see the relay's network address rather
-  than the user's, which is what makes the "never your location" promise in the consent
-  copy true rather than merely requested.
+  than the user's. Do not turn that into a promise about *them*: it is a property of the
+  relay's configuration, which lives in another repository and whose own documentation
+  describes the change that would undo it. The consent copy therefore promises only what
+  this app does — it sends no address and no location — which stays true either way.
   Logs are local-only and no code path transmits them off the machine. Do not add one.
   `getDiagnosticLogAttachment()` builds a redacted export and is the only function
   intended to ever feed such a path; anything that ships log content must go through it
@@ -429,9 +431,8 @@ pnpm run lint
   `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step with it.
 - **Telemetry never affects the user.** It is fire-and-forget with a short timeout and no
   retry: a send that fails is logged with an `errorCode` and dropped. It must never block,
-  delay or fail an operation, and must never surface in the UI. It is off in a dev build
-  and inert without a build-time API key, both of which are logged once so a build that
-  is not reporting says why.
+  delay or fail an operation, and must never surface in the UI. It is off in a dev build,
+  which is logged once so a build that is not reporting says why.
 - **The sidecar sends nothing.** It runs headless on a user's VM with no consent prompt
   and no access to this setting, so sessions it starts are not counted. Do not "fix" that
   by having it report; the gate is not reachable from there.

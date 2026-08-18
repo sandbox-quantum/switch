@@ -37,7 +37,7 @@ Two names in this list are easy to misread, because one of them changed meaning:
 - **switch-rooms** — Room connections, the auto-session watcher, prompt injection sinks, Switch credentials, notification polling
 - **switch-servers** — Switch server records, gateway client, auth, room creation
 - **switch-setup** — First-run Switch setup, local and remote (`remote-switch-setup.ts`)
-- **telemetry** — The consent gate, the closed event catalogue, and the Amplitude sender. The three session/agent events are subscribed in `telemetry-listeners.ts`; the other three (app launched, server added, connector installed) have no hook bus to subscribe to and call `trackEvent` at their own site
+- **telemetry** — The consent gate, the closed event catalogue, and `relay-client.ts`, which posts one OTLP log record per event to the company's public relay (which forwards to Amplitude and Datadog, and holds their keys, so the app ships none). The three session/agent events are subscribed in `telemetry-listeners.ts`; the other three (app launched, server added, connector installed) have no hook bus to subscribe to and call `trackEvent` at their own site
 - **terminal-shell** — Terminal shell availability and detection
 - **terminals** — Terminal lifecycle with provider pattern (`impl/local-terminal-provider.ts`), lifecycle scripts
 - **updates** — Auto-update service

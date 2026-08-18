@@ -18,6 +18,13 @@ const EVENT_NAME_PREFIX = 'switch_console';
 const SERVICE_NAME = 'switch-console';
 
 /**
+ * Sent in place of whatever the HTTP client would otherwise volunteer, so that
+ * everything leaving the machine is chosen here — and so the relay's operators
+ * can see which client their traffic is coming from.
+ */
+const USER_AGENT = SERVICE_NAME;
+
+/**
  * The relay reads the event's name from this attribute.
  *
  * It looks in three places — the OTLP `event_name` field, then this attribute,
@@ -28,7 +35,12 @@ const SERVICE_NAME = 'switch-console';
  */
 const EVENT_NAME_ATTRIBUTE = 'event.name';
 
-export type TelemetrySendErrorCode = 'timeout' | 'network' | 'http_status' | 'unexpected';
+export type TelemetrySendErrorCode =
+  | 'timeout'
+  | 'network'
+  | 'http_status'
+  | 'rejected'
+  | 'unexpected';
 
 export class TelemetrySendError extends Error {
   constructor(
@@ -76,7 +88,17 @@ function allowedProperties<K extends TelemetryEventName>(
 ): Record<string, string> {
   const allowed: Record<string, string> = {};
   for (const key of TELEMETRY_EVENT_PROPERTIES[name]) {
-    allowed[key] = String((properties as Record<string, unknown>)[key]);
+    const value = (properties as Record<string, unknown>)[key];
+    // Coercing a missing property would send the string "undefined" as though
+    // it were data. Refusing means the event is dropped and the mismatch is
+    // logged, which is the lesser of the two.
+    if (typeof value !== 'string') {
+      throw new TelemetrySendError(
+        'unexpected',
+        `Event ${name} is missing the catalogued property ${key}`
+      );
+    }
+    allowed[key] = value;
   }
   return allowed;
 }
@@ -95,6 +117,7 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
   context: TelemetryContext
 ): Record<string, unknown> {
   const timeNano = String(BigInt(context.timeMs) * 1_000_000n);
+  const eventName = `${EVENT_NAME_PREFIX}.${name}`;
 
   return {
     resourceLogs: [
@@ -117,8 +140,13 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
                 observedTimeUnixNano: timeNano,
                 severityNumber: 9,
                 severityText: 'INFO',
+                // The relay forwards the same record to Datadog, which reads
+                // the body as the log message. Without one every event is a
+                // blank line there. The name is already leaving the machine as
+                // an attribute, so repeating it here discloses nothing new.
+                body: { stringValue: eventName },
                 attributes: attributes({
-                  [EVENT_NAME_ATTRIBUTE]: `${EVENT_NAME_PREFIX}.${name}`,
+                  [EVENT_NAME_ATTRIBUTE]: eventName,
                   ...allowedProperties(name, properties),
                   build: context.build,
                 }),
@@ -145,7 +173,8 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
  * user never sees and must never wait on.
  *
  * A 200 does not prove the event arrived. The relay drops a payload it cannot
- * name or whose client id fails its guard, and answers 200 either way.
+ * name or whose client id fails its guard, and answers 200 either way — so the
+ * partial-success body is read for the cases where it does say something.
  */
 export async function postTelemetryEvent(
   payload: Record<string, unknown>,
@@ -155,7 +184,7 @@ export async function postTelemetryEvent(
   try {
     response = await fetch(config.endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
@@ -167,4 +196,28 @@ export async function postTelemetryEvent(
   if (!response.ok) {
     throw new TelemetrySendError('http_status', `Relay responded ${response.status}`);
   }
+
+  await reportRejection(response);
+}
+
+/**
+ * OTLP allows a 200 to carry a count of records the receiver would not take.
+ *
+ * Today's relay drops on a failed guard without reporting one, so this will
+ * usually be empty — but it is the only channel through which a rejection can
+ * ever become visible from here, and reading it costs one parse of a very small
+ * body. A response that is not JSON at all is not worth a second failure.
+ */
+async function reportRejection(response: Response): Promise<void> {
+  const body = (await response.json().catch(() => null)) as {
+    partialSuccess?: { rejectedLogRecords?: string | number; errorMessage?: string };
+  } | null;
+
+  const rejected = Number(body?.partialSuccess?.rejectedLogRecords ?? 0);
+  if (!rejected) return;
+
+  throw new TelemetrySendError(
+    'rejected',
+    `Relay rejected ${rejected} record(s): ${body?.partialSuccess?.errorMessage ?? 'no reason given'}`
+  );
 }

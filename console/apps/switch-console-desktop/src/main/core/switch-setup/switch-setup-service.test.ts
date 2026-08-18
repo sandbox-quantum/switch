@@ -741,4 +741,20 @@ describe('file-based connector version', () => {
       outcome: 'failure',
     });
   });
+
+  it('still answers, and still reports, when the connector implements nothing', async () => {
+    // A plugin can declare a files connector and supply no behaviour for it.
+    // The user asked for an install: they get a failure, not a rejected promise
+    // reaching the UI as a stack trace with nothing recorded.
+    mocks.getPlugin.mockReturnValue({ ...FILES_AGENT, behavior: { switchSetup: {} } });
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'failure',
+    });
+  });
 });

@@ -44,7 +44,11 @@ function sentAttributes(): Record<string, string> {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('fetch', fetchMock);
-  fetchMock.mockResolvedValue({ ok: true, status: 200 } as Response);
+  fetchMock.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ partialSuccess: {} }),
+  } as unknown as Response);
   // A test run is a dev build, so telemetry is off unless a dev opts in — the
   // same switch a developer uses to watch the traffic locally.
   process.env.SWITCHDASH_TELEMETRY_DEV = '1';
