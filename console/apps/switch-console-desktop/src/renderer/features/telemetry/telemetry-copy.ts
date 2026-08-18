@@ -22,4 +22,4 @@ export const TELEMETRY_NEVER_SHARED = [
   'Agent, room, project, or server names',
 ];
 
-export const TELEMETRY_REVERSIBLE = 'You can change this at any time in Settings → General.';
+export const TELEMETRY_REVERSIBLE = 'You can change this at any time in Settings, under General.';
