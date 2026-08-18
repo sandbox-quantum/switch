@@ -46,12 +46,12 @@ ingress:
     - /oauth
     - /.well-known
     - /health
-  # Path prefixes routed to the Teams bridge listener instead of the FastAPI app,
-  # because that listener is a separate HTTP server on its own port. Rendered
-  # only when switchCore.teamsBridge.enabled — see that value for why it is
-  # opt-in. Graph rejects a subscription whose notification URL does not answer
-  # its validation handshake over valid TLS within 10 seconds, so these must be
-  # publicly reachable, not Tailscale- or VPN-only.
+  # Path prefixes served by the Teams bridge listener rather than the FastAPI
+  # app, because that listener is a separate HTTP server on its own port. Used
+  # by both switchCore.teamsBridge.ingress modes "shared" and "dedicated".
+  # Graph rejects a subscription whose notification URL does not answer its
+  # validation handshake over valid TLS within 10 seconds, so wherever these are
+  # served must be publicly reachable — not Tailscale- or VPN-only.
   teamsPaths:
     - /api/messages
     - /api/teams/notifications
@@ -139,6 +139,44 @@ switchCore:
     # Listener bind port inside the container; must match the bridge's
     # listen_port (default 3978). One Teams bridge per port.
     port: 3978
+    # How Microsoft reaches the two callback paths (ingress.teamsPaths).
+    # Required when enabled — publishing the port without routing it is the
+    # failure this whole block exists to prevent, so the chart refuses to render
+    # rather than let you deploy a bridge that can never receive anything.
+    #
+    #   dedicated -> the chart renders a second Ingress carrying only those two
+    #                paths, with its own host, class, annotations and TLS. Use
+    #                this to give Teams a public hostname while the gateway
+    #                stays internal: Microsoft needs those two paths and nothing
+    #                else, and both authenticate per-request inside the adapter.
+    #   shared    -> add the paths to the chart's main Ingress. Requires
+    #                ingress.mode=managed, and puts Teams on the same public
+    #                host as the gateway.
+    #   external  -> the chart renders no route; you add the two paths to your
+    #                own Ingress. See samples/ingress.example.yaml.
+    ingress:
+      mode: ""
+      # Used by mode=dedicated only.
+      className: ""
+      # Public hostname Microsoft resolves, e.g. "teams.switch.example.com".
+      # Required for mode=dedicated, and must match the host in the bridge's
+      # public_base_url.
+      host: ""
+      # Extra annotations for the dedicated Ingress. The main Ingress's
+      # streaming annotations are deliberately NOT applied here — Teams
+      # callbacks are short request/response, not long-lived streams.
+      # For cert-manager, add e.g.:
+      #   cert-manager.io/cluster-issuer: letsencrypt-prod
+      annotations: {}
+      tls:
+        # Graph only calls an HTTPS URL whose certificate it trusts, so this is
+        # on by default. Set false only when TLS terminates upstream and is not
+        # expressed in spec.tls — e.g. an AWS ALB configured by annotation. The
+        # chart cannot verify that, so it warns instead of failing.
+        enabled: true
+        # Secret holding the cert; cert-manager creates it from the annotation
+        # above, or reference a pre-created TLS Secret.
+        secretName: ""
   # switch-core keeps live Matrix sync sessions in memory, so it MUST run as a
   # single replica — a second replica would double every client and split
   # session state. This is enforced at render time; do not raise it.

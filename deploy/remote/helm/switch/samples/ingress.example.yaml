@@ -49,13 +49,19 @@ spec:
           - path: /health
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 8000 } } }
-          # Microsoft Teams bridge only. The Teams adapter listens on its own
-          # port inside switch-core (3978 by default), NOT on 8000 — so these two
-          # paths need the teams port, and the chart only publishes it when
-          # switchCore.teamsBridge.enabled=true. Delete both if you run no Teams
-          # bridge. If you do run one and omit them, Microsoft cannot reach
-          # Switch: the bridge creates channels and posts fine, but receives
-          # nothing and captures no messages.
+          # Microsoft Teams bridge only, and only with
+          # switchCore.teamsBridge.ingress.mode=external — the mode that says
+          # "I route these myself". Delete both if you run no Teams bridge.
+          #
+          # The Teams adapter listens on its own port inside switch-core (3978
+          # by default), NOT on 8000, so these two paths need the teams port;
+          # aiming them at 8000 reaches the API, which does not speak Bot
+          # Framework. The chart publishes that port only when
+          # switchCore.teamsBridge.enabled=true.
+          #
+          # Prefer mode=dedicated to putting these here: it gives the callback
+          # its own host and certificate, so Microsoft reaches those two paths
+          # and nothing else while the gateway stays internal.
           - path: /api/messages
             pathType: Prefix
             backend: { service: { name: RELEASE-switch-core, port: { number: 3978 } } }

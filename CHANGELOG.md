@@ -42,16 +42,33 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
-- The Helm chart can publish the Microsoft Teams bridge listener. The Teams
-  adapter serves Bot Framework activities and Graph change notifications from
-  its own HTTP server on port 3978, separate from the API on 8000, and nothing
-  in the chart exposed it — so a Teams bridge could create channels and post
-  while receiving nothing back. Set `switchCore.teamsBridge.enabled=true` to
-  publish the container and Service port; with `ingress.mode=managed` the two
-  callback paths are routed for you from `ingress.teamsPaths`. Off by default:
-  bridges are created at runtime, so the chart cannot detect one. Installs using
-  `ingress.mode=existing` must add the paths to their own Ingress — see
-  `samples/ingress.example.yaml`.
+- The Helm chart can publish and route the Microsoft Teams bridge listener. The
+  Teams adapter serves Bot Framework activities and Graph change notifications
+  from its own HTTP server on port 3978, separate from the API on 8000, and
+  nothing in the chart exposed it — so a Teams bridge could create channels and
+  post while receiving nothing back, looking healthy throughout. Set
+  `switchCore.teamsBridge.enabled=true` to publish the container and Service
+  port, and `switchCore.teamsBridge.ingress.mode` to say how the two callback
+  paths are routed: `dedicated` renders a second Ingress carrying only those
+  paths on their own host and certificate, so Microsoft can reach them while the
+  gateway stays internal; `shared` adds them to the chart's managed Ingress;
+  `external` leaves the routing to you (see `samples/ingress.example.yaml`).
+  Off by default, because bridges are created at runtime and the chart cannot
+  detect one.
+- The chart now refuses to render a Teams bridge that nothing can reach —
+  enabled with no routing mode, `shared` without a managed Ingress, or either
+  managed mode without a hostname. Publishing the port without a route is the
+  silent half-failure the rest of this work exists to prevent, so it is a
+  render-time error rather than something found days later.
+- `helm test` checks the Teams listener, running Graph's own validation
+  handshake against the Service. It proves the listener is bound and the port
+  published; it runs in-cluster, so it deliberately does not claim anything
+  about public reachability, and says so.
+- Post-install notes print the exact `public_base_url` to paste into the bridge,
+  and warn when its Ingress has TLS disabled — Graph only calls HTTPS it trusts.
+- The Helm chart has a `README.md`, covering which of Switch's three network
+  surfaces have to be reachable from where. Only the Teams listener needs the
+  public internet; every other bridge connects outbound.
 
 #### Changed
 - `docs/bridges/TEAMS_SETUP.md` rewritten. It now walks through Azure setup

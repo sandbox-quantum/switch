@@ -1,0 +1,53 @@
+{{- if eq .Values.switchCore.teamsBridge.ingress.mode "dedicated" }}
+{{- $teams := .Values.switchCore.teamsBridge }}
+{{- $svcCore := include "switch.switchCoreHost" . }}
+# Dedicated Ingress for the Microsoft Teams bridge listener
+# (switchCore.teamsBridge.ingress.mode=dedicated).
+#
+# Separate from the main web Ingress on purpose. Microsoft needs exactly two
+# paths and nothing else, so this lets the Teams callback have a public
+# hostname and certificate while the gateway and agent API stay wherever you
+# put them — including entirely internal. It renders independently of
+# ingress.mode, so installs that bring their own Ingress for everything else
+# still get this one for free.
+#
+# Both paths are unauthenticated at the network layer by necessity: Microsoft
+# cannot satisfy an auth proxy, and Graph's validation handshake fails in front
+# of one. The adapter authenticates every request itself — Bot Connector JWT on
+# /api/messages, the clientState shared secret on /api/teams/notifications.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "switch.fullname" . }}-teams
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  {{- with $teams.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $teams.ingress.className }}
+  ingressClassName: {{ $teams.ingress.className }}
+  {{- end }}
+  {{- if $teams.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $teams.ingress.host | quote }}
+      {{- if $teams.ingress.tls.secretName }}
+      secretName: {{ $teams.ingress.tls.secretName }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ $teams.ingress.host | quote }}
+      http:
+        paths:
+          {{- range $path := $.Values.ingress.teamsPaths }}
+          - path: {{ $path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $svcCore }}
+                port:
+                  number: {{ $teams.port }}
+          {{- end }}
+{{- end }}

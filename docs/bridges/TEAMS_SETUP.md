@@ -117,9 +117,12 @@ date somewhere you will see it.
 - **Messaging endpoint:** `https://<your-public-host>/api/messages`
 - **Channels:** enable **Microsoft Teams**
 
-The messaging endpoint must match the public host you will configure as
-`public_base_url` in Part 3, and it must be reachable before Teams will deliver
-anything.
+The messaging endpoint must be the same origin you configure as
+`public_base_url` in Part 3, with `/api/messages` on the end — the listener's
+host, which is not necessarily the one serving the gateway. If you follow
+[Part 2](#part-2-deployment)'s recommended `mode: dedicated`, both are the Teams
+host. Deciding that hostname now, before you create the bot, saves editing it
+later.
 
 ### 1.4 Graph API permissions
 
@@ -188,7 +191,7 @@ component in Switch that needs its own network path.
 ### What has to be true
 
 1. Port **3978** on the switch-core pod/container is published by a Service.
-2. An Ingress routes `/api/messages` and `/api/teams/notifications` to that
+2. Something routes `/api/messages` and `/api/teams/notifications` to that
    port — **not** to port 8000, which is a different HTTP server.
 3. The host is reachable **from the public internet** over HTTPS with a valid
    certificate.
@@ -203,22 +206,84 @@ a redirect, or an auth proxy in front will all fail that handshake.
 
 The chart publishes the listener only when you ask it to, because bridges are
 created at runtime in the gateway — the chart cannot tell whether you have a
-Teams bridge:
+Teams bridge. Enabling it takes two decisions, not one: the port, and how
+Microsoft reaches it.
 
 ```yaml
 switchCore:
   teamsBridge:
-    enabled: true    # publishes containerPort + Service port
-    port: 3978       # must match the bridge's listen_port
+    enabled: true      # publishes containerPort + Service port
+    port: 3978         # must match the bridge's listen_port
+    ingress:
+      mode: dedicated  # dedicated | shared | external — required when enabled
 ```
 
-**If you use `ingress.mode: managed`,** that is all you need — the chart adds
-the two paths, routed to the teams port, from `ingress.teamsPaths`.
+`mode` has no default, because none of the three is a safe guess. Leaving it
+unset **fails the render** rather than deploying a listener nothing can reach:
 
-**If you use `ingress.mode: existing`** (the chart renders no Ingress and you
-bring your own), you must add the two paths to your own manifest yourself.
-Enabling `teamsBridge` publishes the Service port but cannot touch an Ingress it
-does not manage:
+```
+switchCore.teamsBridge.enabled is true but switchCore.teamsBridge.ingress.mode
+is unset. Microsoft calls the Teams listener from the public internet, so
+publishing the port is only half the job — choose how the two callback paths
+are routed: ...
+```
+
+A mode set while `enabled: false` fails the same way — nothing publishes the
+port for it to route to — as does any value outside the three below.
+
+**`mode: dedicated` — the chart renders a second Ingress.** Recommended.
+`<release>-teams` carries only the two callback paths, on its own host, class,
+annotations and TLS:
+
+```yaml
+switchCore:
+  teamsBridge:
+    enabled: true
+    ingress:
+      mode: dedicated
+      className: nginx
+      host: teams.example.com    # must match the host in public_base_url
+      annotations:
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+      tls:
+        enabled: true
+        secretName: teams-tls
+```
+
+It renders **regardless of `ingress.mode`**, including `existing`, where the
+chart renders no other Ingress at all — and that is the point. Microsoft needs
+those two paths and nothing else, and the adapter authenticates every request
+itself, so the gateway and agent API can stay internal while only these are
+public. The main Ingress's nginx streaming annotations are deliberately **not**
+applied here: Teams callbacks are short request/response, not long-lived
+streams. An empty `host` fails the render — Microsoft resolves the name from
+public DNS, and a host-less rule cannot carry TLS.
+
+**`mode: shared` — the paths go on the chart's main Ingress,** putting Teams on
+the same public host as the gateway. That Ingress has to exist and to have a
+real hostname, so `ingress.mode: managed` and a non-empty `ingress.host` are
+both required:
+
+```yaml
+ingress:
+  mode: managed
+  host: switch.example.com
+switchCore:
+  teamsBridge:
+    enabled: true
+    ingress:
+      mode: shared
+```
+
+Otherwise:
+
+```
+switchCore.teamsBridge.ingress.mode is "shared" but ingress.mode is "existing":
+there is no chart-managed Ingress to add the Teams paths to.
+```
+
+**`mode: external` — the chart renders no route.** Enabling the bridge still
+publishes the Service port, but you add the two paths to your own manifest:
 
 ```yaml
 - path: /api/messages
@@ -231,6 +296,41 @@ does not manage:
 
 See [`samples/ingress.example.yaml`](../../deploy/remote/helm/switch/samples/ingress.example.yaml)
 for the full manifest.
+
+**TLS is on by default, and warns rather than fails.**
+`switchCore.teamsBridge.ingress.tls.enabled` defaults to `true`, because Graph
+calls only an HTTPS URL whose certificate it trusts. Setting it `false` is *not*
+an error: TLS may terminate upstream where the chart cannot see it — an AWS ALB
+configured by annotation, say — so the install output warns instead:
+
+```
+⚠  TLS is disabled on this Ingress. Microsoft Graph only calls an HTTPS URL
+   whose certificate it trusts, so this works only if TLS terminates upstream
+   (e.g. an AWS ALB configured by annotation). If it does not, the bridge will
+   create channels and then silently receive nothing.
+```
+
+If nothing upstream is terminating TLS, that warning is the only notice you get
+before the bridge goes quietly deaf.
+
+For `dedicated` and `shared` that output also prints the exact origin to paste
+into `public_base_url` in Part 3, derived from the mode and its TLS setting so
+it matches what is served. Under `external` the chart cannot know it and says so.
+
+### Checking it with `helm test`
+
+`helm test <release>` runs `<release>-teams-listener-test`, a pod that performs
+Graph's own handshake against the Service: GET the notification path with a
+`validationToken` and require it echoed back verbatim.
+
+It proves two things — the listener is bound inside the pod, and the Service
+publishes its port. **It cannot prove Microsoft can reach you.** It runs inside
+the cluster, so it says nothing about public DNS, ingress routing or certificate
+trust, which is exactly where this usually fails; the external `curl` in
+[Part 4](#part-4-verify) step 3 remains the real check. A failure here means the
+listener never started — look for `Teams adapter listening on` in the
+switch-core logs, and note that a second Teams bridge on the same port will keep
+it from binding.
 
 ### Running more than one Teams bridge
 
@@ -253,7 +353,7 @@ Fields (`TeamsConnectionConfig`), with where each value came from:
 | `app_password` | yes | Client secret **Value** — not the Secret ID | 1.2 |
 | `tenant_id` | yes | Directory (tenant) ID | 1.1 |
 | `team_id` | yes | AAD group id of the team new channels go into | 1.6 |
-| `public_base_url` | yes | Public HTTPS origin of the listener, e.g. `https://switch.example.com` — scheme + host, no path | Part 2 |
+| `public_base_url` | yes | Public HTTPS origin **of the listener** — scheme + host, no path. Under `mode: dedicated` that is the Teams host (`https://teams.example.com`), not the gateway's; a Helm install prints the exact value to use | Part 2 |
 | `client_state` | yes | A shared secret you invent. Echoed in every Graph notification and validated on receipt — the only control authenticating a notification's origin | — |
 | `encryption_certificate_id` | for channel capture | Stable id you chose | 1.5 |
 | `encryption_public_certificate` | for channel capture | PEM public certificate | 1.5 |
@@ -294,22 +394,35 @@ That warning means the very first Graph call failed — almost always the client
 secret, occasionally missing admin consent. Fix it before going further; every
 later step depends on this call working.
 
-**3. The listener is publicly reachable.** From outside your network:
+**3. The listener is reachable in-cluster.** On a Helm install, `helm test
+<release>` answers this without leaving the cluster — see
+[above](#checking-it-with-helm-test). Skip to step 4 if it passes; if it fails,
+the problem is the pod or the Service, not your ingress.
+
+**4. The listener is publicly reachable.** From outside your network — a phone
+on mobile data is a good check, since it cannot be on your VPN:
 
 ```bash
 curl -i "https://<your-public-host>/api/teams/notifications?validationToken=ping"
 ```
 
-Expect `200` with `ping` echoed back as `text/plain`. A 404 means the ingress
-path is missing or pointed at port 8000; a timeout means it is not public.
+Use the host from `public_base_url`, which under `mode: dedicated` is the Teams
+host rather than the gateway's. Expect `200` with `ping` echoed back as
+`text/plain`. A 404 means the path is missing or pointed at port 8000; a timeout
+or DNS error means it is not public. **This is the step `helm test` cannot do
+for you, and the one that most often fails.**
 
-**4. Provisioning works.** Add a room to the bridge in the gateway. A matching
+**5. Provisioning works.** Add a room to the bridge in the gateway. A matching
 channel should appear in the target team within a second or two.
 
-**5. Capture works.** Post in that channel from Teams and confirm it reaches the
+**6. Capture works.** Post in that channel from Teams and confirm it reaches the
 Switch room. If `@mentions` arrive but ordinary messages do not, Graph
-subscriptions are failing while Bot Framework is fine — check step 3 and the
+subscriptions are failing while Bot Framework is fine — check step 4 and the
 encryption fields.
+
+Note that steps 5 and 6 fail independently: provisioning is outbound and needs
+only working credentials, while capture needs the public route. A bridge that
+passes 5 and fails 6 is the signature of unreachable ingress.
 
 ---
 
@@ -335,17 +448,44 @@ wrong `team_id`; the Teams app not installed in that team.
 **`Failed to create Graph subscription for channel <id>`**
 Channel provisioning succeeded but capture setup did not, so the channel exists
 and only `@mentions` will arrive. Usually the notification URL is not publicly
-reachable (Part 2, step 3), or its TLS is not trusted. This is logged and does
-not fail the operation.
+reachable ([Part 2](#part-2-deployment)), or its TLS is not trusted. This is
+logged and does not fail the operation. Read the `GraphError` on the same line —
+Graph says which it was.
+
+**`Failed to resolve domain <host>: No such host is known`** (inside that error)
+`public_base_url` points at a name Microsoft cannot resolve. A Tailscale or
+other VPN-internal hostname does this: it resolves for you and not for them, so
+Graph rejects the subscription before ever sending traffic. It must be public
+DNS.
 
 **`Cannot subscribe to channel <id> messages: encryption certificate not
 configured on the Teams bridge`**
 The three encryption fields are absent. Expected if you deliberately run
 `@mention`-only; otherwise supply them (1.5).
 
-**Bot posts fine, but nothing from Teams ever arrives**
-The classic symptom of a missing public route to 3978. Outbound needs no
-ingress, so the bridge looks healthy. Work through Part 2, then Part 4 step 3.
+**`no Bot Connector serviceUrl known for channel <id> — the bot has not yet
+received an activity from this tenant`**
+An agent tried to post into Teams and could not. This looks like an outbound
+fault and is not: the address Switch posts to is per-tenant and Microsoft only
+ever hands it over inside an *inbound* activity, which is then persisted. If
+nothing has ever reached the listener, there is nothing to send to. **Fix
+inbound and outbound starts working too** — no separate action.
+
+**Bot creates channels, but nothing from Teams ever arrives, and agents cannot
+reply either**
+The classic symptom of no public route to 3978, and the reason it is confusing
+is above: channel creation is Graph (outbound, works) while both message
+directions depend on the listener. Work through [Part 2](#part-2-deployment),
+then Part 4 step 4. On a Helm install with `teamsBridge.ingress.mode` set to
+`dedicated` or `shared` the route exists by construction, so look instead at DNS,
+TLS trust, or an auth proxy in front.
+
+**`Bridge not running: <bridge id>`** when adding a room
+The bridge crashed during startup and was dropped; it is not retried until
+switch-core restarts. Look for `Bridge <id> crashed` in the logs. On Teams the
+usual cause is `address already in use` on 3978 — a second Teams bridge cannot
+bind the same port. Delete the old bridge, then restart switch-core to bring the
+survivor up.
 
 **`Authorization_RequestDenied` from Graph**
 A permission is present but not admin-consented, or you granted a delegated

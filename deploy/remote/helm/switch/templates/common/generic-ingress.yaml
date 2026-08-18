@@ -54,7 +54,7 @@ spec:
                 port:
                   number: {{ $.Values.switchCore.service.port }}
           {{- end }}
-          {{- if .Values.switchCore.teamsBridge.enabled }}
+          {{- if eq .Values.switchCore.teamsBridge.ingress.mode "shared" }}
           {{- range $path := .Values.ingress.teamsPaths }}
           - path: {{ $path | quote }}
             pathType: Prefix

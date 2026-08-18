@@ -1,0 +1,64 @@
+{{- if .Values.switchCore.teamsBridge.enabled }}
+{{- $teams := .Values.switchCore.teamsBridge }}
+# `helm test` check for the Teams bridge listener.
+#
+# Runs Graph's own validation handshake against the Service: GET the
+# notification path with a validationToken and require it echoed back verbatim.
+# That proves the listener is bound inside the pod AND that the Service
+# publishes its port — the two halves the chart is responsible for.
+#
+# It deliberately does NOT prove Microsoft can reach you. This runs inside the
+# cluster, so it says nothing about public DNS, ingress routing or certificate
+# trust, which is exactly where this usually fails. Verify that from outside:
+#
+#   curl -i "https://<your-public-host>/api/teams/notifications?validationToken=ping"
+#
+# Expect 200 with `ping` echoed as text/plain.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "switch.fullname" . }}-teams-listener-test
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- if .Values.global.imagePullSecrets }}
+  {{- include "switch.imagePullSecrets" . | nindent 2 }}
+  {{- end }}
+  containers:
+    - name: probe
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          url="http://{{ include "switch.switchCoreHost" . }}:{{ $teams.port }}/api/teams/notifications"
+          token="switch-helm-test"
+          echo "GET $url?validationToken=$token"
+          body=$(wget -qO- "$url?validationToken=$token") || {
+            echo "FAIL: no answer on port {{ $teams.port }}."
+            echo "The Teams listener is not bound, or the Service does not publish it."
+            echo "Check the switch-core logs for 'Teams adapter listening on' — if that"
+            echo "line is absent the bridge crashed on start (a second Teams bridge on"
+            echo "the same port will do this)."
+            exit 1
+          }
+          if [ "$body" != "$token" ]; then
+            echo "FAIL: expected the validation token echoed back, got: $body"
+            exit 1
+          fi
+          echo "OK: listener answered Graph's validation handshake."
+          echo
+          echo "This proves the pod and Service only. Confirm Microsoft can reach you"
+          echo "from OUTSIDE the cluster:"
+          {{- $origin := include "switch.teamsPublicOrigin" . }}
+          {{- if $origin }}
+          echo '  curl -i "{{ $origin }}/api/teams/notifications?validationToken=ping"'
+          {{- else }}
+          echo '  curl -i "https://<your-public-host>/api/teams/notifications?validationToken=ping"'
+          {{- end }}
+{{- end }}

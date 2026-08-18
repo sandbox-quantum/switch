@@ -119,6 +119,56 @@ Other service hostnames (used in env vars and init containers).
 {{- end }}
 
 {{/*
+Public origin of the Teams bridge listener, derived from the routing mode.
+Empty when the chart cannot know it (mode=external). This is what the bridge's
+public_base_url must be set to.
+*/}}
+{{- define "switch.teamsPublicOrigin" -}}
+{{- $teams := .Values.switchCore.teamsBridge -}}
+{{- if eq $teams.ingress.mode "dedicated" -}}
+{{- $scheme := ternary "https" "http" $teams.ingress.tls.enabled -}}
+{{- printf "%s://%s" $scheme $teams.ingress.host -}}
+{{- else if eq $teams.ingress.mode "shared" -}}
+{{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
+{{- printf "%s://%s" $scheme .Values.ingress.host -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Reject Teams bridge configurations that would deploy a listener nothing can
+reach. Publishing the port without routing it produces a bridge that creates
+channels and posts fine while silently receiving nothing, which is the exact
+failure this block exists to prevent — so these are render-time errors rather
+than something you discover hours later at Graph subscription time.
+*/}}
+{{- define "switch.validateTeamsBridge" -}}
+{{- $teams := .Values.switchCore.teamsBridge -}}
+{{- $mode := $teams.ingress.mode -}}
+{{- $modes := list "dedicated" "shared" "external" -}}
+{{- if not $teams.enabled -}}
+{{- if $mode -}}
+{{- fail (printf "switchCore.teamsBridge.ingress.mode is %q but switchCore.teamsBridge.enabled is false: nothing publishes port %v for it to route to. Set enabled=true, or clear the mode." $mode $teams.port) -}}
+{{- end -}}
+{{- else -}}
+{{- if not $mode -}}
+{{- fail "switchCore.teamsBridge.enabled is true but switchCore.teamsBridge.ingress.mode is unset. Microsoft calls the Teams listener from the public internet, so publishing the port is only half the job — choose how the two callback paths are routed: \"dedicated\" (the chart renders an Ingress for them on their own host), \"shared\" (add them to the chart's managed Ingress), or \"external\" (you route them yourself; see samples/ingress.example.yaml)." -}}
+{{- end -}}
+{{- if not (has $mode $modes) -}}
+{{- fail (printf "switchCore.teamsBridge.ingress.mode must be one of dedicated, shared or external — got %q." $mode) -}}
+{{- end -}}
+{{- if and (eq $mode "shared") (ne .Values.ingress.mode "managed") -}}
+{{- fail (printf "switchCore.teamsBridge.ingress.mode is \"shared\" but ingress.mode is %q: there is no chart-managed Ingress to add the Teams paths to. Set ingress.mode=managed, or use teamsBridge.ingress.mode=dedicated to give Teams its own Ingress, or \"external\" to route it yourself." .Values.ingress.mode) -}}
+{{- end -}}
+{{- if and (eq $mode "shared") (not .Values.ingress.host) -}}
+{{- fail "switchCore.teamsBridge.ingress.mode is \"shared\" but ingress.host is empty. Microsoft resolves the notification URL from public DNS, so the Ingress needs a real hostname rather than a catch-all rule." -}}
+{{- end -}}
+{{- if and (eq $mode "dedicated") (not $teams.ingress.host) -}}
+{{- fail "switchCore.teamsBridge.ingress.mode is \"dedicated\" but switchCore.teamsBridge.ingress.host is empty. Microsoft resolves the notification URL from public DNS, so a hostname is required (and a host-less rule cannot carry TLS)." -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Prepend the global image registry if set.
 Usage: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
 */}}
