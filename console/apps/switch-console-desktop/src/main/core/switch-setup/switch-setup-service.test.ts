@@ -672,6 +672,7 @@ describe('switchSetupService with the codex dialect', () => {
 
 describe('file-based connector version', () => {
   const installedVersion = vi.fn();
+  const install = vi.fn();
   const FILES_AGENT = {
     metadata: { id: 'opencode' },
     capabilities: {
@@ -682,7 +683,7 @@ describe('file-based connector version', () => {
       },
       hostDependency: { binaryNames: ['opencode'] },
     },
-    behavior: { switchSetup: { files: { installedVersion } } },
+    behavior: { switchSetup: { files: { installedVersion, install } } },
   };
 
   beforeEach(() => {
@@ -711,5 +712,33 @@ describe('file-based connector version', () => {
 
     expect(status.installed).toBe(true);
     expect(status.updateAvailable).toBe(false);
+  });
+
+  // The app writes this connector rather than driving a marketplace CLI for it,
+  // and it is still a connector being installed.
+  it('reports an install the app performs itself', async () => {
+    install.mockResolvedValue(undefined);
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'success',
+    });
+  });
+
+  it('reports its failure too', async () => {
+    install.mockRejectedValue(new Error('permission denied'));
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'failure',
+    });
   });
 });
