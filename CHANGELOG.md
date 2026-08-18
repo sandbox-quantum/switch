@@ -804,6 +804,27 @@ version of their own to them without also giving them a release of their own.
   sign-in configuration nothing could answer. The page now falls back to home
   and the dead id is discarded.
 
+#### Added
+
+- Switch Console now sends a small, fixed set of product events — the app
+  launching, an agent being created, a session starting and ending, a server
+  being added, a connector being installed — so we can see which features get
+  used and where the app runs into trouble. Nothing is sent unless you agree to
+  it, and the first-run prompt now defaults to **off**, because each event
+  carries a random id for your installation.
+- Events go to a relay we run, which forwards them on. The analytics services
+  therefore never see your network address, and the app itself ships no
+  credential — there is nothing in it to leak.
+
+#### Changed
+
+- The **Share usage data** prompt and its Settings row default to off, and say
+  plainly that a random id for the installation is part of what is sent. The
+  previous release described a payload of anonymous counters carrying no
+  identifier of any kind; that was the shape of a feature that sent nothing, and
+  this replaces it. Anyone who had already agreed under the old default keeps
+  that answer — it is not silently reset to a refusal.
+
 ### [0.27.2] - 2026-08-18
 
 #### Added
