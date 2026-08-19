@@ -70,7 +70,29 @@ version of their own to them without also giving them a release of their own.
   surfaces have to be reachable from where. Only the Teams listener needs the
   public internet; every other bridge connects outbound.
 
+- Bridge credentials are verified before a bridge is saved. Adapters start in a
+  background task whose exceptions are logged and swallowed, so credentials that
+  the platform rejects used to be stored, reported as success, and surface hours
+  later as an unrelated-looking failure. Registering a Teams bridge now asks
+  Azure for both tokens it will need first, and a refusal comes back as a 400
+  carrying Microsoft's own explanation — which names the mistake outright,
+  including the client secret **value** vs secret **ID** mix-up. Adapters opt in
+  by implementing `verify_credentials`; the default still accepts anything,
+  because an adapter that cannot check cheaply should not pretend to.
+
 #### Changed
+- A Teams bridge is five fields instead of nine. The `clientState` shared secret
+  and the Graph encryption certificate, public key and private key are generated
+  when the bridge is created rather than asked for: they are values the operator
+  invents rather than gets from Microsoft, and asking meant an invented secret,
+  an `openssl` invocation, and three PEM fields whose only symptom when pasted
+  wrong is channel capture that silently never decrypts. Supplying your own
+  through the API still wins, all three or none. Existing bridges are untouched,
+  including any left without encryption material.
+- The Teams Graph private key is no longer typed into a plaintext form field.
+  The gateway decides which inputs to mask by matching the field name against
+  `token|password|secret|api_key`, which `encryption_private_key` does not match;
+  generating it removes the field from the form entirely.
 - `docs/bridges/TEAMS_SETUP.md` rewritten. It now walks through Azure setup
   value by value and says where each one comes from, documents the deployment
   and public-ingress requirements (previously absent), and adds verification and

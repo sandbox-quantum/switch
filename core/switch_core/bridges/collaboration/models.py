@@ -106,3 +106,12 @@ class InboundAppJoin(BaseModel):
 
 class BridgeConnectionConfig(BaseModel):
     pass
+
+
+class BridgeCredentialError(Exception):
+    """A bridge's credentials were rejected by the platform.
+
+    Carries a message intended for the operator who typed them, so it is
+    surfaced verbatim rather than being reduced to "invalid configuration" —
+    the platform's own explanation is almost always the actionable part.
+    """

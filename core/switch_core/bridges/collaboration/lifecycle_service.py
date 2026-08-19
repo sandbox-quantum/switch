@@ -110,7 +110,19 @@ class CollaborationBridgeLifecycleService:
         if adapter_cls is None or config_cls is None:
             raise ValueError(f"Unknown bridge type: {bridge_type}")
 
-        config_cls.model_validate(connection_config)
+        # Fill in what the adapter generates, validate the result, and persist
+        # the validated form — not the raw request — so a value minted here is
+        # stored once and never re-derived.
+        connection_config = adapter_cls.prepare_config(connection_config)
+        validated = config_cls.model_validate(connection_config)
+        connection_config = validated.model_dump(mode="json")
+
+        # Before anything is written. The adapter runs in a background task
+        # whose failures are logged and swallowed, so credentials that are wrong
+        # would otherwise be stored, reported as success, and only surface later
+        # as an unrelated-looking error. Failing here also avoids leaving an
+        # orphan Matrix identity behind for a bridge that was never viable.
+        await adapter_cls.verify_credentials(connection_config)
 
         safe_name = re.sub(r"[^a-z0-9._=-]", "-", display_name.lower())[:16]
         bridge_client_record = await self._client_lifecycle.create_client(

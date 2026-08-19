@@ -4,15 +4,18 @@ import base64
 import hashlib
 import hmac
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.hashes import SHA1
+from cryptography.hazmat.primitives.hashes import SHA1, SHA256
 from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.x509.oid import NameOID
 
 
 class ResourceDataError(RuntimeError):
@@ -81,6 +84,44 @@ def decrypt_resource_data(
     except json.JSONDecodeError as e:
         raise ResourceDataError(f"decrypted resource is not valid JSON: {e}") from e
     return result
+
+
+def generate_encryption_keypair() -> tuple[str, str]:
+    """Mint a self-signed X.509 keypair for Graph resource-data encryption.
+
+    Graph uses the certificate purely as key transport for the per-notification
+    symmetric key: it encrypts to the public key and never validates a chain, an
+    issuer or an expiry against any trust store. So a self-signed certificate is
+    not a compromise here — there is no party for a CA to vouch to.
+
+    Returns ``(certificate_pem, private_key_pem)``.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "switch-teams-bridge")]
+    )
+    # Graph rejects a subscription whose certificate is outside its validity
+    # window, so this has to outlive the bridge in practice. Rotation replaces
+    # the pair rather than renewing it.
+    not_before = datetime(2000, 1, 1, tzinfo=UTC)
+    not_after = not_before + timedelta(days=365 * 100)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .sign(key, SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+    key_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+    return cert_pem, key_pem
 
 
 def load_certificate_der_b64(cert_pem: str) -> str:

@@ -61,6 +61,32 @@ class CollaborationAdapter(ABC):
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
 
+    @classmethod
+    def prepare_config(cls, connection_config: dict[str, object]) -> dict[str, object]:
+        """Fill in values the operator should not have to supply, at create time.
+
+        Called once, when a bridge is registered — never on start, so a value
+        minted here is persisted and stable for the life of the bridge. An
+        adapter that generates key material must do it here rather than in a
+        model default, or every restart would mint a fresh one and quietly
+        invalidate whatever the last one signed or encrypted.
+        """
+        return connection_config
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Prove the credentials work, before the bridge is persisted.
+
+        Raise :class:`BridgeCredentialError` with a message fit for an operator
+        to read. Adapters start in a background task whose exceptions are logged
+        and swallowed, so without this a wrong password looks like success and
+        surfaces hours later as an unrelated-looking failure.
+
+        The default accepts anything: an adapter that cannot check cheaply
+        should not pretend to.
+        """
+        return None
+
     @abstractmethod
     async def start(
         self,

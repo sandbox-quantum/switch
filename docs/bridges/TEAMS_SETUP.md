@@ -26,8 +26,8 @@ Both produce confusing failures. Neither is obvious from the error you see.
 When you create a client secret, the Azure portal shows two columns: **Value**
 and **Secret ID**. Both look like opaque strings. You want the **Value**.
 
-Pasting the Secret ID gives you this, at the moment the bridge first calls
-Microsoft — typically when you add the first room:
+Pasting the Secret ID is rejected when you save the bridge, with Microsoft's
+own words:
 
 ```
 AADSTS7000215: Invalid client secret provided. Ensure the secret being sent
@@ -147,29 +147,25 @@ consented behave as if absent, and the resulting Graph errors say
 > subscription quota**. A tenant already using Graph subscriptions heavily can
 > hit that ceiling.
 
-### 1.5 Encryption certificate
+### 1.5 Encryption certificate — nothing to do
 
-Required for full channel capture (not for `@mention`-only operation). Graph
-encrypts message bodies to a public certificate; the bridge decrypts with the
-private key.
+Full channel capture needs an X.509 keypair: Graph encrypts message bodies to a
+public certificate and the bridge decrypts with the private key. **Switch
+generates it when you create the bridge**, so there is no step here and no
+`openssl` to run.
 
-Any X.509 keypair works — it is used purely as a key transport, and Microsoft
-never validates a chain, so self-signed is fine:
+The certificate is pure key transport — Microsoft never validates it against a
+trust store, checks an issuer, or cares who signed it — so a generated
+self-signed pair is not a compromise. There is no party for a CA to vouch to.
 
-```bash
-openssl req -x509 -newkey rsa:2048 -keyout teams-key.pem -out teams-cert.pem \
-  -days 730 -nodes -subj "/CN=switch-teams-bridge"
-```
+If your organisation insists on supplying its own, the three fields still exist
+on the API (`encryption_certificate_id`, `encryption_public_certificate`,
+`encryption_private_key`) and a supplied set takes precedence. Supply all three
+or none; a partial set is rejected, because pairing someone's certificate with a
+private key they do not hold fails only at decryption time, long after the
+mistake.
 
-You supply three values in Part 3:
-
-- `encryption_certificate_id` — any stable string you choose (e.g.
-  `switch-teams-v1`). It labels the key so you can rotate later.
-- `encryption_public_certificate` — contents of `teams-cert.pem`
-- `encryption_private_key` — contents of `teams-key.pem`
-
-Rotating means generating a new pair, giving it a **new** id, and updating all
-three together.
+Rotating means creating a new bridge, which mints a new pair.
 
 ### 1.6 Teams app package
 
@@ -345,32 +341,41 @@ and its own ingress route.
 As a gateway admin: **Messaging Apps → Add bridge → Teams**, give it a display
 name (e.g. "Acme Teams"), and fill in the fields.
 
-Fields (`TeamsConnectionConfig`), with where each value came from:
+There are five, and every one is a value Azure gave you in Part 1:
 
-| Field | Required | Value | From |
-| --- | --- | --- | --- |
-| `app_id` | yes | Application (client) ID | 1.1 |
-| `app_password` | yes | Client secret **Value** — not the Secret ID | 1.2 |
-| `tenant_id` | yes | Directory (tenant) ID | 1.1 |
-| `team_id` | yes | AAD group id of the team new channels go into | 1.6 |
-| `public_base_url` | yes | Public HTTPS origin **of the listener** — scheme + host, no path. Under `mode: dedicated` that is the Teams host (`https://teams.example.com`), not the gateway's; a Helm install prints the exact value to use | Part 2 |
-| `client_state` | yes | A shared secret you invent. Echoed in every Graph notification and validated on receipt — the only control authenticating a notification's origin | — |
-| `encryption_certificate_id` | for channel capture | Stable id you chose | 1.5 |
-| `encryption_public_certificate` | for channel capture | PEM public certificate | 1.5 |
-| `encryption_private_key` | for channel capture | PEM private key | 1.5 |
+| Field | Value | From |
+| --- | --- | --- |
+| `app_id` | Application (client) ID | 1.1 |
+| `app_password` | Client secret **Value** — not the Secret ID | 1.2 |
+| `tenant_id` | Directory (tenant) ID | 1.1 |
+| `team_id` | AAD group id of the team new channels go into | 1.6 |
+| `public_base_url` | Public HTTPS origin **of the listener** — scheme + host, no path. Under `mode: dedicated` that is the Teams host (`https://teams.example.com`), not the gateway's; a Helm install prints the exact value to use | Part 2 |
 
-Switch-internal fields, hidden from the gateway form:
+**Switch checks these before saving.** It requests both Azure tokens the bridge
+needs, and if Microsoft refuses, the form fails with Microsoft's own
+explanation instead of accepting the values and going quiet. So a wrong secret
+is a red message in front of you, not a mystery hours later.
 
+That also means creating a bridge requires Switch to reach
+`login.microsoftonline.com`. On a restricted network, allow that egress first.
+
+Everything else is generated or learned, and hidden from the form:
+
+- `client_state` — the shared secret echoed in every Graph notification and
+  validated on receipt. Minted per bridge; there is nothing to invent.
+- The **encryption trio** — generated (1.5), so channel capture works out of the
+  box rather than only once someone pastes three PEMs correctly.
 - `listen_host` / `listen_port` (default `0.0.0.0:3978`) — the listener bind.
   Override via the stored `connection_config` only when running more than one
   Teams bridge on a host.
 - `service_url` — the Bot Connector outbound endpoint, learned at runtime from
   inbound activities and persisted automatically.
 
-Without the three encryption fields the bridge still runs — outbound, chats and
-`@mention` capture all work — but per-channel Graph subscriptions are skipped
-and an error is logged. **Full channel capture is disabled until they are
-supplied.**
+**Bridges created before Switch generated this material keep their original
+values**, including no encryption material at all — in which case channel
+capture stays off and an error is logged. There is no way to edit a bridge's
+credentials, so adopting the generated ones means deleting it and creating it
+again.
 
 ---
 
@@ -430,14 +435,16 @@ passes 5 and fails 6 is the signature of unreachable ingress.
 
 Symptoms as they actually appear, and what each one means.
 
-**`AADSTS7000215: Invalid client secret provided`**
+**`AADSTS7000215: Invalid client secret provided`**, when saving the bridge
 The `app_password` is the secret **ID** instead of the secret **value**, or the
 secret has expired. Create a new secret and use the Value column. See 1.2.
 
 **`Could not list existing Graph subscriptions on start`** (at startup)
-The first Graph call failed. Same causes as above, plus missing admin consent on
-the Graph permissions. The bridge starts anyway and fails later, at the first
-real operation.
+The first Graph call failed — missing admin consent on the Graph permissions, or
+a secret that expired after the bridge was created. The bridge starts anyway and
+fails at the first real operation. Credentials are checked when the bridge is
+saved, so on a bridge created since then this points at consent or expiry rather
+than a typo.
 
 **Adding a room to the bridge returns an error**
 Channel provisioning called Graph and Graph refused. The switch-core logs carry
@@ -460,8 +467,9 @@ DNS.
 
 **`Cannot subscribe to channel <id> messages: encryption certificate not
 configured on the Teams bridge`**
-The three encryption fields are absent. Expected if you deliberately run
-`@mention`-only; otherwise supply them (1.5).
+The bridge has no encryption material. Switch generates it at creation, so this
+means a bridge created before it did — or one deliberately registered without
+it. There is no way to add it to an existing bridge; delete and re-create.
 
 **`no Bot Connector serviceUrl known for channel <id> — the bot has not yet
 received an activity from this tenant`**
