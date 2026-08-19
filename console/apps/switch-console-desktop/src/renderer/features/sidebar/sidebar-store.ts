@@ -190,9 +190,11 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   /** Whether the first-run setup checklist is collapsed to its header row. */
   onboardingChecklistCollapsed = false;
 
-  /** Whether to hide the provider mark beside a sidebar agent's name. Stated
-   * as "hide" so the default — showing it — is the falsy one, and a reader who
-   * never opens the menu keeps seeing what an agent runs on. */
+  /** Whether to hide the provider mark beside an agent's name, in the sidebar
+   * and in search alike — a reader who does not want to be told what an agent
+   * runs on does not want it in one list and not the other. Stated as "hide" so
+   * the default — showing it — is the falsy one, and a reader who never opens
+   * the menu keeps seeing what an agent runs on. */
   hideProviderMark = false;
 
   constructor(private readonly locationManager: LocationManagerStore) {

@@ -54,9 +54,9 @@ export class AgentsStore {
     });
   }
 
-  /** One agent by id, across every location — the palette resolves an agent's
-   *  provider from a search hit this way, so it can show the same provider mark
-   *  the sidebar does. */
+  /** One agent by id, across every location — the palette resolves a search
+   *  hit's agent this way, so it can wear the same face and provider mark the
+   *  sidebar gives it. */
   agentById(agentId: string): Agent | null {
     for (const agents of this.byLocation.values()) {
       const found = agents.find((a) => a.id === agentId);

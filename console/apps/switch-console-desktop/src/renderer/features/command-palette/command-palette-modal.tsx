@@ -1,17 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Command } from 'cmdk';
-import {
-  Activity,
-  Bot,
-  DoorOpen,
-  Globe,
-  type LucideIcon,
-  MessageSquare,
-  Server,
-} from 'lucide-react';
+import { Activity, DoorOpen, Globe, type LucideIcon, MessageSquare, Server } from 'lucide-react';
 import { observer, useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
 import { agentExpandKey } from '@renderer/features/sidebar/sidebar-store';
@@ -20,7 +11,6 @@ import { serverIcon } from '@renderer/features/switch-servers/server-icon';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { commandRegistry } from '@renderer/lib/commands/registry';
-import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
@@ -34,6 +24,7 @@ import { cn } from '@renderer/utils/utils';
 import { ALL_COMMAND_DEFS, type CommandDef } from '@shared/commands';
 import type { SearchItem, SearchResult } from '@shared/core/search';
 import { getCommandIcon } from './command-icons';
+import { PaletteAgentItem } from './palette-agent-item';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
 import { PaletteSessionItem } from './palette-session-item';
 import { ResourceMonitorView } from './resource-monitor-view';
@@ -66,21 +57,16 @@ const MUTED_ICON = 'size-3.5 shrink-0 text-foreground/40';
  * The icon a result carries in the left sidebar.
  *
  * Deliberately not a static kind→glyph map: the sidebar's icons are conditional
- * — an agent shows its provider's mark, a room its bridge platform, a server its
- * management kind — so a flat map can only ever approximate them. Resolving from
- * the same stores the sidebar reads keeps the two in step instead of leaving a
- * second set of lookalikes to drift.
+ * — a room shows its bridge platform, a server its management kind — so a flat
+ * map can only ever approximate them. Resolving from the same stores the sidebar
+ * reads keeps the two in step instead of leaving a second set of lookalikes to
+ * drift.
+ *
+ * Agents are not here: they wear their own picture, which needs a query, so
+ * `PaletteAgentItem` draws the whole row.
  */
 const PaletteKindIcon = observer(function PaletteKindIcon({ item }: { item: SearchItem }) {
   switch (item.kind) {
-    case 'agent': {
-      const providerId = agentsStore.agentById(item.id)?.providerId;
-      return providerId ? (
-        <AgentIcon id={providerId} size={14} className="shrink-0" />
-      ) : (
-        <Bot className={MUTED_ICON} />
-      );
-    }
     case 'room': {
       const bridgeType = switchRoomsStore.roomBridgeTypeById(item.id);
       return hasBridgeIcon(bridgeType) ? (
@@ -133,6 +119,9 @@ function PaletteItem({
   item: SearchItem | PaletteAction;
   onSelect: () => void;
 }) {
+  if (item.kind === 'agent') {
+    return <PaletteAgentItem item={item as SearchItem} value={value} onSelect={onSelect} />;
+  }
   const action = item.kind === 'action' ? (item as PaletteAction) : null;
   const ActionIcon = action?.icon;
   const iconNode = ActionIcon ? (
