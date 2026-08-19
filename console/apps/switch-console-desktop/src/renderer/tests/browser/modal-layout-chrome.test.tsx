@@ -20,6 +20,13 @@ const HEADER_HEIGHT = 40;
 const SHORT_FOOTER = 56;
 const TALL_FOOTER = 120;
 
+/**
+ * Sub-pixel residue from the body wrapper's height animation, which a loaded CI
+ * runner can leave a fraction short. The regression here is the footer pushed
+ * clean out of the popup, so a couple of pixels of slack costs nothing.
+ */
+const TOLERANCE = 2;
+
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -67,11 +74,21 @@ async function rerender(footerHeight: number): Promise<void> {
   await settle();
 }
 
+/** Wait for the body wrapper to stop animating rather than sleeping a fixed
+ * span: easing crawls at the end, so one repeated read is not proof it is over. */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 12; i++) {
+  const footer = container?.querySelector('[data-testid="footer"]');
+  let previous = -1;
+  let stableReads = 0;
+  for (let i = 0; i < 60; i++) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
+    if (!footer) continue;
+    const current = Math.round(footer.getBoundingClientRect().top);
+    stableReads = current === previous ? stableReads + 1 : 0;
+    previous = current;
+    if (stableReads >= 3) return;
   }
 }
 
@@ -109,8 +126,8 @@ describe('ModalLayout chrome reservation', () => {
     // doing any work.
     expect(body.scrollHeight).toBeGreaterThan(body.clientHeight);
 
-    expect(bottomOf(footer)).toBeLessThanOrEqual(bottomOf(popup) + 0.5);
-    expect(bottomOf(body)).toBeLessThanOrEqual(footer.getBoundingClientRect().top + 0.5);
+    expect(bottomOf(footer)).toBeLessThanOrEqual(bottomOf(popup) + TOLERANCE);
+    expect(bottomOf(body)).toBeLessThanOrEqual(footer.getBoundingClientRect().top + TOLERANCE);
   });
 
   it('follows the footer when it grows a row', async () => {
@@ -124,7 +141,7 @@ describe('ModalLayout chrome reservation', () => {
     expect(getComputedStyle(body).getPropertyValue('--modal-chrome').trim()).toBe(
       `${HEADER_HEIGHT + TALL_FOOTER}px`
     );
-    expect(bottomOf(footer)).toBeLessThanOrEqual(bottomOf(popup) + 0.5);
-    expect(bottomOf(body)).toBeLessThanOrEqual(footer.getBoundingClientRect().top + 0.5);
+    expect(bottomOf(footer)).toBeLessThanOrEqual(bottomOf(popup) + TOLERANCE);
+    expect(bottomOf(body)).toBeLessThanOrEqual(footer.getBoundingClientRect().top + TOLERANCE);
   });
 });

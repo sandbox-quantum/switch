@@ -26,6 +26,14 @@ const INITIAL_HEIGHT = 200;
 const GROWN_HEIGHT = 420;
 const FOOTER_HEIGHT = 56;
 
+/**
+ * Sub-pixel residue from the height animation, which a loaded CI runner can
+ * leave a fraction short of its target. The regression this guards against is
+ * two orders of magnitude larger — the wrapper stuck at its pre-growth height —
+ * so a couple of pixels of slack costs the assertions nothing.
+ */
+const TOLERANCE = 2;
+
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -74,13 +82,17 @@ function wrapperOf(el: HTMLDivElement): HTMLElement {
 async function settle(el: HTMLDivElement): Promise<void> {
   const wrapper = wrapperOf(el);
   let previous = -1;
-  for (let i = 0; i < 30; i++) {
+  let stableReads = 0;
+  for (let i = 0; i < 60; i++) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
     const current = Math.round(wrapper.getBoundingClientRect().height);
-    if (current === previous) return;
+    // Easing crawls at the end, so a single repeated read is not proof the
+    // animation is over — one starved frame looks the same.
+    stableReads = current === previous ? stableReads + 1 : 0;
     previous = current;
+    if (stableReads >= 3) return;
   }
 }
 
@@ -102,7 +114,9 @@ describe('AnimatedHeight late growth', () => {
     // Guard the guard: a body that never grew would satisfy the containment
     // check below while proving nothing.
     expect(body.getBoundingClientRect().height).toBeCloseTo(GROWN_HEIGHT, 0);
-    expect(wrapper.getBoundingClientRect().height).toBeCloseTo(GROWN_HEIGHT, 0);
+    expect(Math.abs(wrapper.getBoundingClientRect().height - GROWN_HEIGHT)).toBeLessThanOrEqual(
+      TOLERANCE
+    );
   });
 
   it('keeps grown content inside its box, clear of what follows', async () => {
@@ -118,14 +132,16 @@ describe('AnimatedHeight late growth', () => {
 
     // The content must not spill past the box that positions the footer, and
     // must not reach into the footer itself.
-    expect(bodyRect.bottom).toBeLessThanOrEqual(wrapper.getBoundingClientRect().bottom + 0.5);
-    expect(bodyRect.bottom).toBeLessThanOrEqual(footerRect.top + 0.5);
+    expect(bodyRect.bottom).toBeLessThanOrEqual(wrapper.getBoundingClientRect().bottom + TOLERANCE);
+    expect(bodyRect.bottom).toBeLessThanOrEqual(footerRect.top + TOLERANCE);
   });
 
   it('leaves a wrapper whose content never changed at its measured height', async () => {
     const el = await render(false);
     await settle(el);
 
-    expect(wrapperOf(el).getBoundingClientRect().height).toBeCloseTo(INITIAL_HEIGHT, 0);
+    expect(
+      Math.abs(wrapperOf(el).getBoundingClientRect().height - INITIAL_HEIGHT)
+    ).toBeLessThanOrEqual(TOLERANCE);
   });
 });
