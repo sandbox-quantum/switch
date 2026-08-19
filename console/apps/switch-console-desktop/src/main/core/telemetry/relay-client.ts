@@ -25,13 +25,18 @@ const SERVICE_NAME = 'switch-console';
 const USER_AGENT = SERVICE_NAME;
 
 /**
- * The relay reads the event's name from this attribute.
+ * The name is sent twice, in both of the places the relay looks.
  *
- * It looks in three places — the OTLP `event_name` field, then this attribute,
- * then `event_type` — and this is the one that does not depend on the record
- * carrying a field only newer OTLP builds know about. A record it cannot name
- * is dropped, and the response is still a 200, so the choice matters more than
- * it looks.
+ * `eventName` is the OTLP log record's own field and the first thing the
+ * relay's exporter reads — it is what the reference client sends, and the only
+ * form older builds of that exporter understand at all. The attribute is its
+ * documented fallback, and is separately what the relay's "drop records with no
+ * name" filter tests.
+ *
+ * Sending one was not enough: a record naming itself only in the attribute
+ * survives the filter and reaches the exporter with an empty name field, which
+ * an exporter without the fallback discards. Every step of that answers 200, so
+ * nothing here would ever have seen it happen.
  */
 const EVENT_NAME_ATTRIBUTE = 'event.name';
 
@@ -138,6 +143,7 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
               {
                 timeUnixNano: timeNano,
                 observedTimeUnixNano: timeNano,
+                eventName,
                 severityNumber: 9,
                 severityText: 'INFO',
                 // The relay forwards the same record to Datadog, which reads

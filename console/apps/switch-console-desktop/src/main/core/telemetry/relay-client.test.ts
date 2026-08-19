@@ -72,6 +72,15 @@ describe('the record that gets built', () => {
     expect(logAttributes(payload)['event.name']).toBe('switch_console.session_started');
   });
 
+  it('names it in the record field too, which is what the relay reads first', () => {
+    // The attribute alone gets a record past the relay's "is it named?" filter
+    // and then dropped by an exporter that only reads the field — silently, and
+    // with a 200 at every step. Both, or nothing arrives and nothing says so.
+    const payload = buildOtlpPayload('app_launched', {}, CONTEXT);
+
+    expect(logRecord(payload).eventName).toBe('switch_console.app_launched');
+  });
+
   it('carries the catalogued properties, plus which build sent it', () => {
     const payload = buildOtlpPayload(
       'session_ended',
