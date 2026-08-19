@@ -40,11 +40,17 @@ spec:
           token="switch-helm-test"
           echo "GET $url?validationToken=$token"
           body=$(wget -qO- "$url?validationToken=$token") || {
-            echo "FAIL: no answer on port {{ $teams.port }}."
-            echo "The Teams listener is not bound, or the Service does not publish it."
-            echo "Check the switch-core logs for 'Teams adapter listening on' — if that"
-            echo "line is absent the bridge crashed on start (a second Teams bridge on"
-            echo "the same port will do this)."
+            echo "FAIL: nothing answered on port {{ $teams.port }}."
+            echo
+            echo "Most likely no Teams bridge is registered yet. The chart publishes"
+            echo "the port, but only a configured bridge starts a listener behind it —"
+            echo "and you normally enable the chart flag FIRST, because the bridge"
+            echo "needs the public URL that produces. If that is where you are,"
+            echo "register the bridge and run this again."
+            echo
+            echo "Otherwise the listener failed to start. Look for 'Teams adapter"
+            echo "listening on' in the switch-core logs; if it is absent, look for"
+            echo "'crashed' — a second Teams bridge cannot bind the same port."
             exit 1
           }
           if [ "$body" != "$token" ]; then

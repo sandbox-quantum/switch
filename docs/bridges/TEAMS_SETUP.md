@@ -323,10 +323,17 @@ It proves two things — the listener is bound inside the pod, and the Service
 publishes its port. **It cannot prove Microsoft can reach you.** It runs inside
 the cluster, so it says nothing about public DNS, ingress routing or certificate
 trust, which is exactly where this usually fails; the external `curl` in
-[Part 4](#part-4-verify) step 3 remains the real check. A failure here means the
-listener never started — look for `Teams adapter listening on` in the
-switch-core logs, and note that a second Teams bridge on the same port will keep
-it from binding.
+[Part 4](#part-4-verify) step 4 remains the real check.
+
+**Run it after registering the bridge, not before.** The chart publishes the
+port; only a configured Teams bridge starts a listener behind it. Enabling
+`teamsBridge` necessarily comes first — the bridge's `public_base_url` is the
+address that enabling it produces — so between the two there is a window where
+this test fails and nothing is wrong. Its output says so.
+
+A failure *after* the bridge exists means the listener never started: look for
+`Teams adapter listening on` in the switch-core logs, and note that a second
+Teams bridge on the same port will keep it from binding.
 
 ### Running more than one Teams bridge
 
