@@ -5,10 +5,13 @@ import { cn } from '@renderer/utils/utils';
 export function AnimatedHeight({
   children,
   className,
+  style,
   onAnimatingChange,
 }: {
   children: React.ReactNode;
   className?: string;
+  // React sets custom properties happily; only the type omits them.
+  style?: React.CSSProperties & Record<`--${string}`, string>;
   onAnimatingChange?: (isAnimating: boolean) => void;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
@@ -59,6 +62,7 @@ export function AnimatedHeight({
     <motion.div
       animate={{ height: height ?? 'auto' }}
       transition={{ duration: 0.25, ease: 'easeInOut' }}
+      style={style}
       className={cn('w-full', isAnimating ? 'overflow-hidden' : 'overflow-visible', className)}
       onAnimationComplete={() => setIsAnimating(false)}
     >

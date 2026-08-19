@@ -352,7 +352,11 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         </DialogFooter>
       }
     >
-      <DialogContentArea data-autofocus tabIndex={-1} className="max-h-[calc(100dvh-13rem)] gap-4">
+      <DialogContentArea
+        data-autofocus
+        tabIndex={-1}
+        className="max-h-[calc(100dvh-2rem-var(--modal-chrome,8.5rem))] gap-4"
+      >
         <AgentIdentityFields form={form} />
 
         <Field>
