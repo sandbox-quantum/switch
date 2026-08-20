@@ -51,13 +51,26 @@ they do not know cannot tell a good answer from a confident wrong one.
 and closed without losing track of what is in flight.
 
 **Shape.** One hub channel where work is requested. For each item, a coordinator creates a
-private room containing the agent that will do the work and the person who asked, kicks it
-off there, and posts a single banner message in the hub linking to it. That banner's thread
-becomes the item's whole conversation. When it is done the work room is closed.
+private room with the worker and the person who asked already in it, **writes the brief into
+that room's instructions**, and then addresses the worker there to start. It posts a single
+banner message in the hub linking to the room, and that banner's thread becomes the item's
+whole conversation. When it is done the work room is closed.
 
 **Agents.** A coordinator that lives in the hub and holds an exclusive role there, and any
 number of doers that are idle until addressed. The coordinator travels to a work room to
-start or brief someone, then comes straight home.
+set it up or say something, then comes straight home.
+
+**How the worker knows what to do.** The room instructions, mostly — they persist and it
+re-reads them every session, so a brief written there survives a restart while one sent as a
+message does not. The message that starts it is the nudge, not the specification. Anything
+situational goes in the message.
+
+**This is also how you run many in parallel.** Each item is its own room with its own
+worker, so ten can be live at once and nothing tangles. **If the workers touch code, give
+each one its own git worktree** — created when the room opens, removed when it closes. They
+share the repository's history so they are cheap, but each has its own branch and files, so
+parallel edits cannot clobber each other. A shared checkout means two agents fighting over
+one working tree, and one silently reverting the other. This is the piece people leave out.
 
 **Where things live.** The portable procedure is in the coordinator's instructions. Project
 keys, board ids, channel names, who to notify — in the hub's room instructions. The long
@@ -75,7 +88,8 @@ second, contextless copy of it.
 **Patterns:** `shape/hub-and-execution-rooms` · `shape/banner-thread` · `run/home-room` ·
 `run/idle-until-addressed` · `role/exclusive` · `role/thin-shell` ·
 `knowledge/procedure-vs-bindings` · `knowledge/templates-artifact` ·
-`messaging/no-blind-targeting`
+`messaging/no-blind-targeting` · `messaging/agents-ask-each-other-by-addressing` ·
+`external/worktree-per-parallel-task`
 
 ---
 
@@ -174,22 +188,39 @@ silently caps what the agent can see.
 
 ## 6. A recurring digest or newsletter
 
-**Use when** someone hand-writes a regular summary from scattered sources.
+**Use when** someone hand-writes a regular summary from scattered sources — a daily digest
+of what happened in some channels and some repositories, a monthly newsletter.
 
 **Shape.** One agent, one room. It sweeps the sources for the period, drafts in the room,
 takes edits from whoever is reviewing, and publishes when told. It keeps a style file and an
 archive of past editions so each one sounds like the last.
 
-**The rule that matters:** it may **read** external platforms through its connectors, but it
-**publishes through Switch** — by posting into the room bridged to the target channel, as
-itself. The output is then a governed event under the agent's own identity rather than an
-app post that bypasses Switch. The consequence to design around is that any publish target
-must be a bridged room.
+**Reading the sources — get this the right way round.**
+- **Chat:** give it that platform's **own connector** and let it query directly. It can then
+  search, page through history, and reach channels it is not a member of. Reading through
+  Switch rooms instead limits it to channels bridged into rooms it belongs to, and is the
+  wrong tool for bulk retrieval — a fallback when no connector exists, not the first answer.
+- **Repositories:** it clones them into its working directory and pulls each run, then reads
+  the commits, pull requests and diffs for the period.
+
+**Publishing — the other way round.** It **posts through Switch**, into the room bridged to
+the target channel, as itself. The output is then a governed event under the agent's own
+identity rather than an app post that bypasses Switch. Consequence: any publish target must
+be a bridged room.
+
+**Making it run on a schedule.** Nothing in Switch fires on a timer — an agent acts when
+something addresses it, so the trigger comes from outside. Easiest first: **a scheduled
+workflow on the chat platform** posting a message into the room that addresses the agent —
+no extra infrastructure, and everyone in the channel can see the trigger. Otherwise any
+external automation that can post, or a scheduled job on the agent's own host. All of them
+mean it must run somewhere always-on; a laptop that closes is a schedule that stops without
+telling anyone.
 
 **It gets better because** the style file and the edition archive are artifacts it updates,
 so corrections to tone survive into the next edition instead of being re-explained.
 
-**Patterns:** `external/write-through-switch` · `knowledge/learning-loop` ·
+**Patterns:** `external/read-via-connector-write-via-switch` ·
+`external/switch-has-no-scheduler` · `knowledge/learning-loop` ·
 `capture/there-is-no-single-workspace`
 
 ---

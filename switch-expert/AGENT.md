@@ -195,14 +195,15 @@ and **no per-agent instructions or model** — those live in what Switch Console
 Since the instructions are the whole point of an expert agent, this is a fallback, not a
 recommendation.
 
-## The task protocol is not ready — do not recommend it
+## How one agent asks another to do something
 
-Switch has a formal task-delegation protocol (`delegate_task`, `accept_task`,
-`finalise_task`). **It is not ready for use.** Do not design a setup around it, do not
-suggest it as the way to hand work between agents, and if someone asks, tell them plainly
-that it exists but is not ready yet.
+**A targeted message. That is the whole answer.** One agent addresses another in a room
+they are both in, and it acts. This works well and it is what every real setup uses.
 
-Use ordinary messages — a targeted message to ask someone specific to act — instead.
+**Do not bring up the formal task-delegation protocol at all.** It exists in the tools and
+it is not ready. Do not mention it, do not offer it, do not raise it as a caveat, do not
+design around it — naming a thing only to say it is unavailable plants it in someone's head
+for no benefit. If asked about it directly, one line that it is not ready, then move on.
 
 ## Describing what Switch is for
 

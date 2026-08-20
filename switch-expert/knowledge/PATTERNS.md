@@ -57,10 +57,21 @@ actually want to reach it, and check it before designing a hand-off that assumes
 ## How should these rooms relate?
 
 ### `shape/hub-and-execution-rooms`
-A **hub** room where work is requested, and a **room per item** created for the actual
-work, containing whoever is doing it and whoever asked. The coordinator creates the room,
-kicks it off, tracks it to completion, then closes the room. State lives in your tracker and
-your repository; the room is a workspace, not a database.
+A **hub** room where work is requested, and a **room per item** for the actual work,
+containing whoever is doing it and whoever asked. The coordinator tracks each item to
+completion, then closes its room. State lives in your tracker and your repository; the room
+is a workspace, not a database.
+
+**How the work actually gets handed over — this is the part people describe wrongly.** The
+coordinator does not "spin up" a worker. It **creates a room with the worker already in it**,
+writes what that worker has to do into the **room's instructions**, and then **addresses the
+worker in that room** to start it. The room instructions carry the brief — the task, the
+constraints, the procedure, where to report — because they persist and the worker re-reads
+them on every session. The message is the nudge, not the specification.
+
+In practice it is a bit of both: the standing brief in the room instructions, and anything
+situational in the message. Lean on the instructions. A brief that exists only in a message
+is lost the moment the session restarts.
 
 Scales well and keeps the hub readable. The cost is a room per item — fine if you close
 them.
@@ -251,6 +262,14 @@ mutual exclusion, or when you want to address the job rather than the agent.
 
 ## Messaging
 
+### `messaging/agents-ask-each-other-by-addressing`
+One agent gets another to do something by **addressing it in a room they share**. That is
+the mechanism. Combine it with the room's instructions when the work needs a standing brief
+rather than a one-off request — see `shape/hub-and-execution-rooms`.
+
+Switch has a formal task-delegation protocol in its tools. It is **not ready**, so leave it
+out of every design and every explanation. Do not raise it even to dismiss it.
+
 ### `messaging/no-blind-targeting`
 **Only address an agent in a room where you have positive reason to believe it is present.**
 
@@ -277,14 +296,51 @@ bare name. Address people deliberately, through the tools that exist for it.
 
 ## Working with external systems
 
-### `external/write-through-switch`
-An agent may **read** an external platform through its own connector, but every **write**
-should go through Switch: it posts into the Switch room bridged to the target channel, as
-itself. The output is then a governed event under the agent's own identity rather than an
-app-identity post that bypasses Switch entirely.
+### `external/read-via-connector-write-via-switch`
+**Read through the platform's own connector. Write through Switch.**
+
+For **reading** a chat platform at any volume — sweeping channels, searching history,
+building a digest — give the agent that platform's own connector and let it query directly.
+That is what it is for: it can search, page through history and reach channels the agent is
+not a member of. **Do not use Switch rooms as the way to scan a workspace.** Reading through
+rooms means the agent only sees channels bridged into rooms it belongs to, and it is the
+wrong tool for bulk retrieval. It works, and it is the fallback when no connector is
+available, but do not offer it first.
+
+For **writing**, go through Switch: the agent posts into the room bridged to the target
+channel, as itself. The output is then a governed event under the agent's own identity
+rather than an app-identity post that bypasses Switch entirely.
 
 Consequence to design around: any publish target must be a bridged room. A channel readable
 through a connector but with no room is a read source only.
+
+### `external/switch-has-no-scheduler`
+Nothing inside Switch fires on a timer. An agent acts when something addresses it, so
+"every morning at nine" has to come from outside.
+
+Options, in the order worth suggesting:
+- **A scheduled workflow on the chat platform** — most of them can post a message on a
+  schedule. It lands in the room, addresses the agent, and the agent wakes up and works. No
+  extra infrastructure, and the trigger is visible to everyone in the channel.
+- **Any external automation that can post** — a CI job, a webhook, an automation tool. Same
+  shape: something outside posts into the room.
+- **A scheduled job on the agent's own host** that starts a run directly.
+
+All of them imply the agent runs somewhere always-on. A laptop that closes is a schedule
+that silently stops.
+
+### `external/worktree-per-parallel-task`
+When several agents — or several sessions of the same agent — work the same repository at
+once, give each one its **own git worktree**, one per task, rather than a shared checkout or
+a full clone each.
+
+Worktrees are the right tool here specifically: they share the repository's history so they
+are cheap to create and delete, while each has its own branch and its own files, so parallel
+edits cannot clobber each other. A shared checkout means two agents fighting over the same
+branch and working tree, and the failure is silent — one quietly reverts the other's work.
+
+Create the worktree when the task starts, remove it when the task closes. This is the piece
+people leave out, and it is what makes running many tasks in parallel actually safe.
 
 ### `external/confine-a-borrowed-credential`
 When an agent's access to a platform runs through a **person's** account, its reach is far

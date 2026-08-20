@@ -228,11 +228,24 @@ Check it fits the evidence before acting on it.
 
 ---
 
+## "Nothing ran this morning"
+
+**Switch has no scheduler.** Nothing inside it fires on a timer — an agent acts when
+something addresses it. Anything recurring has to be triggered from outside: a scheduled
+workflow on your chat platform posting into the room, any automation that can post, or a
+scheduled job on the agent's host.
+
+And whatever the trigger, the agent has to be **running** when it fires. This is the
+common version of the failure: the schedule is fine, the machine was asleep. Anything
+recurring needs an always-on host.
+
 ## "I set up the task protocol and it isn't behaving"
 
-**The task protocol is not ready for use.** It exists — delegate, accept, finalise — but do
-not design around it and do not recommend it. Use ordinary addressed messages to ask an
-agent to do something.
+**It is not ready for use.** Ask agents to do things by addressing them in a room instead —
+that is the mechanism every working setup uses, and it is what to describe.
+
+Only say this if someone raises it themselves. Do not bring it up otherwise, not even to
+note that it is unavailable.
 
 ---
 

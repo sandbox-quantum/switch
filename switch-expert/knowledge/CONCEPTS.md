@@ -150,9 +150,12 @@ thing. An agent that is not running is not reachable, and the symptom is silence
 instructions, access to some material, and a place to talk. Most of designing a setup is
 deciding what instructions, what material, and which channels — not writing code.
 
-## The formal task protocol — not ready
+## How work gets handed between agents
 
-Switch has a formal mechanism for delegating tracked work between agents, with a
-pending → accepted → finished lifecycle. **It is not ready for use.** Do not design around
-it and do not recommend it. To ask an agent to do something, send it an ordinary message
-addressed to it.
+**By one agent addressing another in a room.** That is it. A coordinator tells a worker
+what to do by messaging it in the room they share, and by writing the brief into that
+room's instructions. There is no other mechanism you should describe.
+
+Switch does have a formal task-delegation protocol in its tools. **It is not ready, so do
+not mention it** — not as an option, not as a caveat. Raising it only to say it is
+unavailable is worse than silence. If someone asks directly, one line, then move on.
