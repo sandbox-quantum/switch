@@ -125,10 +125,10 @@ public_base_url must be set to.
 */}}
 {{- define "switch.teamsPublicOrigin" -}}
 {{- $teams := .Values.switchCore.teamsBridge -}}
-{{- if eq $teams.ingress.mode "dedicated" -}}
+{{- if and (eq $teams.ingress.mode "dedicated") $teams.ingress.host -}}
 {{- $scheme := ternary "https" "http" $teams.ingress.tls.enabled -}}
 {{- printf "%s://%s" $scheme $teams.ingress.host -}}
-{{- else if eq $teams.ingress.mode "shared" -}}
+{{- else if and (eq $teams.ingress.mode "shared") .Values.ingress.host -}}
 {{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
 {{- printf "%s://%s" $scheme .Values.ingress.host -}}
 {{- end -}}
@@ -162,8 +162,8 @@ than something you discover hours later at Graph subscription time.
 {{- if and (eq $mode "shared") (not .Values.ingress.host) -}}
 {{- fail "switchCore.teamsBridge.ingress.mode is \"shared\" but ingress.host is empty. Microsoft resolves the notification URL from public DNS, so the Ingress needs a real hostname rather than a catch-all rule." -}}
 {{- end -}}
-{{- if and (eq $mode "dedicated") (not $teams.ingress.host) -}}
-{{- fail "switchCore.teamsBridge.ingress.mode is \"dedicated\" but switchCore.teamsBridge.ingress.host is empty. Microsoft resolves the notification URL from public DNS, so a hostname is required (and a host-less rule cannot carry TLS)." -}}
+{{- if and (eq $mode "dedicated") (not $teams.ingress.host) $teams.ingress.tls.enabled -}}
+{{- fail "switchCore.teamsBridge.ingress.mode is \"dedicated\" with TLS enabled but switchCore.teamsBridge.ingress.host is empty: a host-less rule cannot carry a TLS certificate. Either set the host, or set tls.enabled=false if something upstream terminates TLS and owns the public name (a CDN or reverse proxy — then public_base_url is that name, not this Ingress's)." -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

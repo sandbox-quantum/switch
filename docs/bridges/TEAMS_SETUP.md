@@ -252,8 +252,45 @@ those two paths and nothing else, and the adapter authenticates every request
 itself, so the gateway and agent API can stay internal while only these are
 public. The main Ingress's nginx streaming annotations are deliberately **not**
 applied here: Teams callbacks are short request/response, not long-lived
-streams. An empty `host` fails the render — Microsoft resolves the name from
-public DNS, and a host-less rule cannot carry TLS.
+streams.
+
+**Behind a CDN or reverse proxy, leave `host` empty and TLS off.** This is the
+option to reach for when you have no domain to hand — a CDN in front of the load
+balancer gives you a public HTTPS name and a trusted certificate with no DNS
+work at all:
+
+```yaml
+switchCore:
+  teamsBridge:
+    enabled: true
+    ingress:
+      mode: dedicated
+      className: alb
+      annotations:
+        alb.ingress.kubernetes.io/scheme: internet-facing
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+        alb.ingress.kubernetes.io/target-type: ip
+      tls:
+        enabled: false      # the CDN terminates TLS, not this Ingress
+```
+
+The rule then carries no host and answers whatever `Host` header arrives, which
+is required: the incoming Host is the CDN's name, and the chart cannot know it.
+`public_base_url` is the CDN's name, not this Ingress's.
+
+**Two things the CDN must do**, or the bridge fails in ways that look unrelated:
+forward query strings, and **not cache** — Graph validates every new
+subscription with a `GET …?validationToken=…` and a cached answer fails the
+handshake. On CloudFront that is the `Managed-AllViewer` origin-request policy
+and the `Managed-CachingDisabled` cache policy, with all HTTP methods allowed so
+`POST` reaches you.
+
+Note the trade: with an HTTP origin, anyone who learns the load balancer's own
+hostname can reach these paths directly, bypassing the CDN. That is tolerable
+here only because the adapter authenticates every request itself.
+
+Empty `host` with `tls.enabled: true` is rejected — a host-less rule cannot
+carry a certificate.
 
 **`mode: shared` — the paths go on the chart's main Ingress,** putting Teams on
 the same public host as the gateway. That Ingress has to exist and to have a

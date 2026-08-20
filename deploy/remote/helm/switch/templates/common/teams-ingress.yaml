@@ -38,8 +38,11 @@ spec:
       {{- end }}
   {{- end }}
   rules:
-    - host: {{ $teams.ingress.host | quote }}
-      http:
+    # Host-less when no host is set: with a CDN or reverse proxy in front, the
+    # Host header arriving here is that proxy's name, which is not known when
+    # the chart renders. Matching on it would 404 every callback.
+    - {{ if $teams.ingress.host }}host: {{ $teams.ingress.host | quote }}
+      {{ end }}http:
         paths:
           {{- range $path := $.Values.ingress.teamsPaths }}
           - path: {{ $path | quote }}

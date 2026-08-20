@@ -159,8 +159,14 @@ switchCore:
       # Used by mode=dedicated only.
       className: ""
       # Public hostname Microsoft resolves, e.g. "teams.switch.example.com".
-      # Required for mode=dedicated, and must match the host in the bridge's
-      # public_base_url.
+      # Must match the host in the bridge's public_base_url.
+      #
+      # Leave empty ONLY when something upstream terminates TLS and owns the
+      # public name — a CDN or reverse proxy in front of this Ingress. The rule
+      # then carries no host and answers whatever Host header arrives, which is
+      # required there: the incoming Host is the proxy's name, and the chart
+      # cannot know it. Empty with tls.enabled=true is rejected, because a
+      # host-less rule cannot carry a certificate.
       host: ""
       # Extra annotations for the dedicated Ingress. The main Ingress's
       # streaming annotations are deliberately NOT applied here — Teams

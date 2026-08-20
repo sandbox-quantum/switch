@@ -55,6 +55,14 @@ version of their own to them without also giving them a release of their own.
   `external` leaves the routing to you (see `samples/ingress.example.yaml`).
   Off by default, because bridges are created at runtime and the chart cannot
   detect one.
+- The Teams Ingress supports sitting behind a CDN or reverse proxy: leave its
+  `host` empty and TLS off, and it renders a host-less rule that answers
+  whatever `Host` arrives. That is the shape needed when the public name belongs
+  to something upstream, and it is the only option that needs no domain of your
+  own — the setup doc carries the CloudFront recipe, including the two settings
+  (forward query strings, do not cache) without which Graph's subscription
+  handshake fails. Empty `host` with TLS enabled is still rejected, since a
+  host-less rule cannot carry a certificate.
 - The chart now refuses to render a Teams bridge that nothing can reach —
   enabled with no routing mode, `shared` without a managed Ingress, or either
   managed mode without a hostname. Publishing the port without a route is the
