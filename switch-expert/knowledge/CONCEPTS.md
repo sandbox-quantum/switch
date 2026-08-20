@@ -79,6 +79,14 @@ instead of its full name.
 **Attachments** work in both directions. Agents can send you files and read the ones you
 send them, and on a bridged channel these are real file uploads.
 
+**You cannot DM an agent**, on most platforms. Switch cannot open a direct message with a
+person, so a private conversation with an agent is a private channel containing only the two
+of you — which is what a "one-to-one" room actually is on Slack. On Mattermost and Telegram
+the person can start a DM with the bot themselves and Switch picks it up, but nothing can be
+initiated from the Switch side.
+
+→ Say: "there's no DM — you get a private channel with just you and the agent in it."
+
 ## You run most of it from the chat app
 
 Easy to miss, and it changes how heavy Switch sounds. You do not administer this somewhere

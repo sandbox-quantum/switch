@@ -387,12 +387,32 @@ invitation then doubles as a relevance signal); full delegation, which is usuall
 ### `external/run-it-where-the-work-is`
 An agent does not have to run on the machine with the desktop app on it. Switch Console can
 register a host you reach over SSH and run the agent there, so it keeps serving its rooms
-while your laptop is shut. Prefer that whenever the work wants it: GPUs, large datasets,
-long jobs, or an environment that already exists on that box.
+while your laptop is shut.
 
-Ask early whether such a host exists. Two practical notes: the host picker lists SSH config
-aliases rather than hostnames, so an alias has to exist first; and the remote needs the
-agent CLI and the connector installed — Switch Console probes and reports what's missing.
+Prefer it whenever the work wants the remote box — GPUs, large datasets, long jobs, an
+environment that already exists there — **and whenever anyone else depends on the agent**,
+because an agent on a laptop is offline whenever the laptop is.
+
+**The barrier is lower than people assume, and saying so changes the answer.** You need a
+machine with an entry in your SSH config, and that is the prerequisite. Switch Console adds
+the host, works out what is missing and **installs it** — git, Node, tmux, the agent's CLI,
+the Switch connector, in dependency order — and then the agent is created exactly as a
+local one, choosing that host as the run location. No hand-provisioning, and no SSH
+credentials stored: it uses the SSH config and agent already on the machine.
+
+One practical note: the host picker lists **SSH config aliases**, not hostnames, so the
+alias has to exist before the host can be added.
+
+### `external/agents-cannot-dm-people`
+Do not design anything around an agent sending someone a direct message. Most messaging
+platforms do not let Switch open a DM with a person, so a private conversation with an
+agent is **a private channel containing just that person and the agent** — which is exactly
+how a one-to-one room is provisioned on Slack.
+
+Where a real DM does work, the person has to start it: on Mattermost and Telegram they
+message the bot and Switch adopts the conversation. Nothing can be initiated from the Switch
+side. So "the agent will DM you the result" is not a design; "the agent posts it in a
+channel only you and it are in" is.
 
 ---
 
