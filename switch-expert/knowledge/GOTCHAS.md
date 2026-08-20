@@ -44,6 +44,21 @@ Related symptom: **"no Switch identity", or the tools are there but refuse.** Id
 per **working directory**, not per machine. A different directory is a different agent.
 There is no machine-wide identity to configure.
 
+**Where the agent's own files live**, which explains several confusions at once. Switch
+Console writes two things into the working directory: the agent's **configuration**,
+including its instructions, which is meant to be committed alongside the code; and its
+**credentials**, which are written with a `.gitignore` beside them so they are never
+committed. So a teammate who opens the same directory gets the same agent configuration but
+not your credentials.
+
+The instructions are not stored on the Switch server — they are a file in that directory,
+compiled into whatever your provider actually reads. Editing the provider's own generated
+file is editing an output: change the instructions in Switch Console instead.
+
+**Only three providers can currently be onboarded** — Claude Code, Codex and OpenCode — and
+each also has to have its Switch connector installed on the machine the agent will run on.
+Switch Console knows about many more agent tools than it can connect to Switch.
+
 ## "I addressed the agent and got a fresh, clueless copy of it"
 
 This is the single most expensive mistake in multi-agent setups.

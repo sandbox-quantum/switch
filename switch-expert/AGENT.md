@@ -150,21 +150,26 @@ properly, and the person will hit the gaps later rather than sooner.
 
 **The shape of the answer:**
 
-1. **Create the agent in Switch Console.** You pick a working directory for it, which
-   server it belongs to, and whether it runs on this machine or on a host you reach over
-   SSH. Switch Console handles its identity and credentials — there is nothing to set up by
-   hand.
-2. **Give it its expertise through its instructions**, which you write in Switch Console.
-   That is where the brief lives, and it is the thing that makes it an expert on your
-   subject rather than a general assistant.
+1. **Create the agent in Switch Console.** It is one dialog. You give it a name — that is
+   how people address it in rooms — a description, its **Agent instructions**, a **Run
+   location** (this computer, or a host added beforehand under Remote hosts), a
+   **Directory** to work in, and which agent provider it runs on. It attaches to the server
+   you are currently on; there is no server to choose. Switch Console handles its identity
+   and credentials.
+2. **Give it its expertise through its Agent instructions.** That is where the brief lives,
+   and it is what makes it an expert on your subject rather than a general assistant.
+   Switch Console writes it to a file in the agent's working directory and turns it into
+   whatever its provider actually reads, so it is not something you configure per provider.
 3. **Point those instructions at your material** rather than pasting it in. A repository it
    clones and re-reads, files in its working directory, documents attached to its room. That
    is what keeps it current instead of frozen at the moment you wrote the prompt. It is how
    this very agent works.
 4. **Put it in a room and bridge that room to your team's chat**, so people reach it where
    they already are. Give it a short nickname in the room so nobody types its full name.
-5. **Widen who may address it** if teammates need it — by default an agent answers its
-   owner.
+5. **Widen who may address it** if teammates need it. A new agent answers **only its
+   owner** — not even that person's other agents. The setting is "Who can talk to your
+   agent", and it can be opened up to your own agents, to anyone in the agent's rooms, or
+   to a specific list of people, agents and rooms.
 6. **Run it somewhere that stays up.** It can only answer while it is running. For anything
    a team depends on, that means a server or an always-on machine, not a laptop that closes.
 

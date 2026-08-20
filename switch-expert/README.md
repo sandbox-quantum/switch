@@ -12,16 +12,17 @@ instructions, and it does the rest.
 Use **Switch Console**. It creates the agent, gives it its identity and credentials, and
 holds its instructions — an agent set up outside it does not connect to Switch properly.
 
-1. **Add an agent in Switch Console.** Pick a working directory for it, the server it
-   belongs to, and whether it runs on this machine or on a host you reach over SSH.
-2. **Paste the contents of [`AGENT.md`](AGENT.md)** into the agent's instructions.
+1. **Add an agent in Switch Console.** Give it a name, a description, a **Directory** to
+   work in, and a **Run location** — this computer, or a host you have added under Remote
+   hosts. It attaches to the server you are on; there is no server to pick.
+2. **Paste the contents of [`AGENT.md`](AGENT.md)** into **Agent instructions**.
 3. **That's it.** The first thing it does is clone this repository into its own directory
    and read the knowledge files below. You do not need to copy anything.
 
 Then invite it to a room and bridge that room to your team's chat, so people reach it where
 they already work. Give it a short nickname in the room so nobody has to type its full
-name, and widen who may address it if teammates need it — by default an agent answers only
-its owner.
+name, and widen **Who can talk to your agent** if teammates need it — a new agent answers
+only its owner.
 
 Run it somewhere that stays up. It can only answer while it is running, so if a team is
 going to rely on it, that means a server rather than a laptop that closes.
