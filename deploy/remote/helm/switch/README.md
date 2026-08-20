@@ -96,9 +96,16 @@ Publishing the port with nothing routing to it produces a bridge that creates
 channels and posts messages while receiving nothing back, which is a failure you
 would otherwise discover days later. The chart refuses instead.
 
+Note the dedicated Ingress takes its annotations only from
+`teamsBridge.ingress.annotations`; the top-level `ingress.annotations` are not
+merged in, so anything org-wide has to be repeated there.
+
 After install, `helm test` runs Graph's validation handshake against the Service
-to prove the listener is bound and published. It runs *inside* the cluster, so
-it cannot tell you whether Microsoft can reach you — check that from outside:
+to prove the listener is bound and published. **It fails until a Teams bridge is
+registered** — the chart opens the port, but only a configured bridge puts a
+listener behind it — so keep it out of any automated gate that reads a failure
+as broken. And it runs *inside* the cluster, so it cannot tell you whether
+Microsoft can reach you. Check that from outside:
 
 ```bash
 curl -i "https://teams.switch.example.com/api/teams/notifications?validationToken=ping"

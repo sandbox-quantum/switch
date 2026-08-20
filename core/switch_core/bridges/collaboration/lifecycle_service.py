@@ -84,6 +84,18 @@ class CollaborationBridgeLifecycleService:
         # (see CollaborationAdapter.exclusive_resource). Lets a second
         # claimant be refused by name instead of failing on the resource.
         self._held_resources: dict[str, str] = {}
+        # Serialises registration. The exclusivity check reads the stored
+        # bridges and the winner is not written until several awaits later,
+        # so two concurrent registrations would both see a free resource and
+        # both take it — the very collision the check exists to refuse.
+        #
+        # A process-wide lock is sufficient *because* switch-core is a
+        # singleton: the chart fails the render for replicaCount != 1, since
+        # it holds live Matrix sessions in memory. If that ever changes, this
+        # has to become a database constraint — the way the single-default
+        # bridge invariant already is — because a lock in one process would
+        # then be guarding nothing.
+        self._register_lock = asyncio.Lock()
 
     def register_adapter(
         self,
@@ -192,7 +204,12 @@ class CollaborationBridgeLifecycleService:
         async with self._session_factory() as session:
             existing = await self._bridge_store.get_all(session)
         for other in existing:
-            if other.id == exclude_bridge_id or other.type != bridge_type:
+            # Guard the None case explicitly: an unflushed row has no id yet, and
+            # `other.id == exclude_bridge_id` would then be None == None and skip
+            # a bridge that genuinely holds the resource.
+            if exclude_bridge_id is not None and other.id == exclude_bridge_id:
+                continue
+            if other.type != bridge_type:
                 continue
             other_cls = self._adapter_registry.get(other.type)
             if other_cls is None:
@@ -221,6 +238,22 @@ class CollaborationBridgeLifecycleService:
                 )
 
     async def register(
+        self,
+        *,
+        bridge_type: str,
+        display_name: str,
+        connection_config: dict[str, object],
+        channel_creation_enabled: bool,
+    ) -> CollaborationBridge:
+        async with self._register_lock:
+            return await self._register_locked(
+                bridge_type=bridge_type,
+                display_name=display_name,
+                connection_config=connection_config,
+                channel_creation_enabled=channel_creation_enabled,
+            )
+
+    async def _register_locked(
         self,
         *,
         bridge_type: str,

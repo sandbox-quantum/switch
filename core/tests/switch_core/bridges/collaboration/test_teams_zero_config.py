@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -468,3 +469,112 @@ async def test_a_non_teams_bridge_is_not_blocked_by_a_teams_one(
             connection_config=_raw_config(),
             channel_creation_enabled=True,
         )
+
+
+# ── Regressions found in review ──────────────────────────────────────────────
+
+
+async def test_a_200_with_no_access_token_is_a_credential_error(
+    fake_http: Any,
+) -> None:
+    """A proxy in front of AAD answering 200 with the wrong body.
+
+    Left to raise on its own this is a KeyError, which no caller catches, so a
+    save-time check designed to produce a clean 400 produced a 500 instead.
+    """
+    fake_http(200, {"expires_in": 3600})
+
+    with pytest.raises(BridgeCredentialError, match="unusable body"):
+        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+
+
+async def test_a_200_that_is_not_json_is_a_credential_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Html(_FakeHttp):
+        async def post(self, url: str, data: dict[str, str]) -> httpx.Response:
+            return httpx.Response(
+                status_code=200,
+                text="<html>blocked by policy</html>",
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.teams.adapter.httpx.AsyncClient",
+        lambda **_: _Html(200, {}),
+    )
+
+    with pytest.raises(BridgeCredentialError, match="unusable body"):
+        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+
+
+async def test_concurrent_registration_cannot_take_the_same_port_twice() -> None:
+    """Two bridges registered at once must not both pass the exclusivity check.
+
+    The check reads the stored bridges and the winner is not written until
+    several awaits later, so without serialisation both callers saw a free port
+    and both took it — reproducing the collision the check exists to refuse.
+    """
+    stored: list[Any] = []
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.commit = AsyncMock(return_value=None)
+    store = MagicMock()
+    store.get_all = AsyncMock(side_effect=lambda _s: list(stored))
+
+    async def _create(_s: Any, bridge: Any) -> Any:
+        # The real store commits well after the conflict check has run.
+        await asyncio.sleep(0)
+        stored.append(bridge)
+        return bridge
+
+    store.create = AsyncMock(side_effect=_create)
+
+    service = CollaborationBridgeLifecycleService(
+        bridge_store=store,
+        external_user_store=MagicMock(),
+        bridge_message_map_store=MagicMock(),
+        room_store=MagicMock(),
+        agent_store=MagicMock(),
+        client_store=MagicMock(),
+        client_lifecycle=MagicMock(),
+        room_service=MagicMock(),
+        matrix_admin=MagicMock(),
+        session_factory=MagicMock(return_value=session),
+        config=MagicMock(),
+    )
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+    TeamsAdapter.verify_credentials = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    client = MagicMock()
+    client.id = "client-id"
+
+    async def _create_client(**_: Any) -> Any:
+        await asyncio.sleep(0)
+        return client
+
+    service._client_lifecycle.create_client = AsyncMock(side_effect=_create_client)  # type: ignore[attr-defined]
+    service.start = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    results = await asyncio.gather(
+        service.register(
+            bridge_type="teams",
+            display_name="Teams A",
+            connection_config=_raw_config(),
+            channel_creation_enabled=True,
+        ),
+        service.register(
+            bridge_type="teams",
+            display_name="Teams B",
+            connection_config=_raw_config(),
+            channel_creation_enabled=True,
+        ),
+        return_exceptions=True,
+    )
+
+    refused = [r for r in results if isinstance(r, ValueError)]
+    assert len(refused) == 1, f"expected exactly one refusal, got {results}"
+    assert "tcp/3978" in str(refused[0])
+    assert len(stored) == 1

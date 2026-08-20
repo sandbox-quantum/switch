@@ -119,18 +119,23 @@ Other service hostnames (used in env vars and init containers).
 {{- end }}
 
 {{/*
-Public origin of the Teams bridge listener, derived from the routing mode.
-Empty when the chart cannot know it (mode=external). This is what the bridge's
-public_base_url must be set to.
+Public origin of the Teams bridge listener — ONLY when the chart can know it for
+certain, which means this Ingress terminates TLS itself on a known host.
+
+Empty otherwise, and the caller must then tell the operator to supply it rather
+than print a guess. With TLS off, something upstream terminates it (a CDN, a
+reverse proxy, an ALB configured by annotation) and owns the public name; the
+scheme and host here are the *origin* side, not what Microsoft will call.
+Printing `http://<this host>` as the answer would be confidently wrong, and
+Graph refuses a plaintext URL — the exact silent failure the rest of this work
+exists to prevent.
 */}}
 {{- define "switch.teamsPublicOrigin" -}}
 {{- $teams := .Values.switchCore.teamsBridge -}}
-{{- if and (eq $teams.ingress.mode "dedicated") $teams.ingress.host -}}
-{{- $scheme := ternary "https" "http" $teams.ingress.tls.enabled -}}
-{{- printf "%s://%s" $scheme $teams.ingress.host -}}
-{{- else if and (eq $teams.ingress.mode "shared") .Values.ingress.host -}}
-{{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
-{{- printf "%s://%s" $scheme .Values.ingress.host -}}
+{{- if and (eq $teams.ingress.mode "dedicated") $teams.ingress.host $teams.ingress.tls.enabled -}}
+{{- printf "https://%s" $teams.ingress.host -}}
+{{- else if and (eq $teams.ingress.mode "shared") .Values.ingress.host .Values.ingress.tls.enabled -}}
+{{- printf "https://%s" .Values.ingress.host -}}
 {{- end -}}
 {{- end }}
 
@@ -161,6 +166,9 @@ than something you discover hours later at Graph subscription time.
 {{- end -}}
 {{- if and (eq $mode "shared") (not .Values.ingress.host) -}}
 {{- fail "switchCore.teamsBridge.ingress.mode is \"shared\" but ingress.host is empty. Microsoft resolves the notification URL from public DNS, so the Ingress needs a real hostname rather than a catch-all rule." -}}
+{{- end -}}
+{{- if and (ne $mode "external") (not .Values.ingress.teamsPaths) -}}
+{{- fail "ingress.teamsPaths is empty, so the Teams Ingress would render a rule with no paths — which Helm accepts and the Kubernetes API rejects at apply time. Restore the two callback paths, or set switchCore.teamsBridge.ingress.mode=external if you route them yourself." -}}
 {{- end -}}
 {{- if and (eq $mode "dedicated") (not $teams.ingress.host) $teams.ingress.tls.enabled -}}
 {{- fail "switchCore.teamsBridge.ingress.mode is \"dedicated\" with TLS enabled but switchCore.teamsBridge.ingress.host is empty: a host-less rule cannot carry a TLS certificate. Either set the host, or set tls.enabled=false if something upstream terminates TLS and owns the public name (a CDN or reverse proxy — then public_base_url is that name, not this Ingress's)." -}}

@@ -39,7 +39,7 @@ spec:
           url="http://{{ include "switch.switchCoreHost" . }}:{{ $teams.port }}/api/teams/notifications"
           token="switch-helm-test"
           echo "GET $url?validationToken=$token"
-          body=$(wget -qO- "$url?validationToken=$token") || {
+          body=$(wget -T 10 -qO- "$url?validationToken=$token") || {
             echo "FAIL: nothing answered on port {{ $teams.port }}."
             echo
             echo "Most likely no Teams bridge is registered yet. The chart publishes"

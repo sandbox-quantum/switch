@@ -169,9 +169,13 @@ switchCore:
       # cannot know it. Empty with tls.enabled=true is rejected, because a
       # host-less rule cannot carry a certificate.
       host: ""
-      # Extra annotations for the dedicated Ingress. The main Ingress's
-      # streaming annotations are deliberately NOT applied here — Teams
-      # callbacks are short request/response, not long-lived streams.
+      # Annotations for the dedicated Ingress. This is the ONLY source of them:
+      # the top-level ingress.annotations are not merged in, so an org-wide
+      # annotation set there (a WAF association, cost tags, a policy webhook)
+      # does not reach this Ingress and must be repeated here. That separation
+      # is deliberate — the main Ingress's streaming annotations suit long-lived
+      # MCP/SSE connections and Teams callbacks are short request/response —
+      # but it does mean this list is not additive.
       # For cert-manager, add e.g.:
       #   cert-manager.io/cluster-issuer: letsencrypt-prod
       annotations: {}
