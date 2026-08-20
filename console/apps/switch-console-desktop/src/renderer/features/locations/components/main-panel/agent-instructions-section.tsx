@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -38,6 +38,22 @@ export function AgentInstructionsSection({
 
   const savedValue = saved ?? '';
   const [value, setValue] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const [clipped, setClipped] = useState(false);
+
+  // Whether the box is actually holding more than it can show. Measured rather
+  // than guessed from the text's length: how much fits depends on how the lines
+  // wrap, so it changes with the width of the page as well as with the text.
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const measure = () => setClipped(box.scrollHeight > box.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [value, expanded]);
 
   // Re-seed when the stored value changes — after a save, and when the page
   // swaps to a different agent without remounting. No refetch fires while
@@ -85,15 +101,32 @@ export function AgentInstructionsSection({
 
   return (
     <Field>
-      <FieldLabel htmlFor={fieldId}>
-        Agent instructions <span className="text-foreground-muted">(optional)</span>
-      </FieldLabel>
+      <div className="flex items-center justify-between gap-2">
+        <FieldLabel htmlFor={fieldId}>
+          Agent instructions <span className="text-foreground-muted">(optional)</span>
+        </FieldLabel>
+        {/* Offered only once there is something being withheld, so a two-line
+            instruction does not carry a control that would do nothing. */}
+        {(clipped || expanded) && (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={fieldId}
+            onClick={() => setExpanded((open) => !open)}
+            className="cursor-pointer text-sm text-foreground-muted hover:text-foreground"
+          >
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
+        )}
+      </div>
       <Textarea
+        ref={boxRef}
         id={fieldId}
         rows={4}
         placeholder="How this agent should work"
         value={value}
         onChange={(event) => setValue(event.target.value)}
+        className={expanded ? 'max-h-none' : undefined}
       />
     </Field>
   );
