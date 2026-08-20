@@ -153,6 +153,56 @@ class TestDelegateAddressingGate:
         result = await svc.delegate_task(req_id, room_id, perf_id, "do it", "details")
         assert result.task_id
 
+    async def test_the_owners_own_manager_may_still_dispatch(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # The case the default has to survive: one person's manager agent
+        # handing work to their worker. Under strict owner-only this raised,
+        # which is a working setup broken by a privacy default.
+        svc = _service(session_factory)
+        async with session_factory() as session:
+            owner = await _make_user(session, "owner")
+            manager = await _make_agent(session, "manager", owner_id=owner.id)
+            worker = await _make_agent(
+                session,
+                "worker",
+                owner_id=owner.id,
+                addressing_policy={
+                    "rules": [{"users": [], "agents": [], "owner_agents": True}]
+                },
+            )
+            room = await _make_room(session, svc.room_store, [manager.id, worker.id])
+            await session.commit()
+            mgr_id, worker_id, room_id = manager.id, worker.id, room.id
+
+        result = await svc.delegate_task(mgr_id, room_id, worker_id, "do it", "details")
+        assert result.task_id
+
+    async def test_but_not_somebody_elses_manager(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Same rule, different owner. "My agents" has to mean mine, or the
+        # setting is just "any agent" with a friendlier name.
+        svc = _service(session_factory)
+        async with session_factory() as session:
+            owner = await _make_user(session, "owner")
+            other = await _make_user(session, "other")
+            manager = await _make_agent(session, "their-manager", owner_id=other.id)
+            worker = await _make_agent(
+                session,
+                "worker",
+                owner_id=owner.id,
+                addressing_policy={
+                    "rules": [{"users": [], "agents": [], "owner_agents": True}]
+                },
+            )
+            room = await _make_room(session, svc.room_store, [manager.id, worker.id])
+            await session.commit()
+            mgr_id, worker_id, room_id = manager.id, worker.id, room.id
+
+        with pytest.raises(PermissionError, match="not permitted to address"):
+            await svc.delegate_task(mgr_id, room_id, worker_id, "do it", "details")
+
     async def test_open_policy_allows_delegation(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

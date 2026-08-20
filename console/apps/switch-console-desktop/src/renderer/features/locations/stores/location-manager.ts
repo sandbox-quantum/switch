@@ -1,5 +1,7 @@
 import { err, ok } from '@switch-console/shared';
 import { makeObservable, observable, runInAction } from 'mobx';
+import { refreshSidebarRoomStateAfterOnboarding } from '@renderer/features/sidebar/sidebar-tree-data';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
@@ -183,6 +185,7 @@ export class LocationManagerStore {
         // Drop the optimistic placeholder; key the store by the real location id.
         runInAction(() => this.locations.delete(placeholderId));
         this._setAndOpenLocation(location.id, location);
+        void refreshSidebarRoomStateAfterOnboarding();
         result = ok();
       }
     } catch (error) {
@@ -262,7 +265,7 @@ export class LocationManagerStore {
           const current = this.locations.get(locationId);
           if (current && isUnmountedLocation(current)) {
             current.phase = 'error';
-            current.error = error instanceof Error ? error.message : String(error);
+            current.error = failureText(error, 'Could not open this location.');
             current.errorCode = undefined;
           }
         });
@@ -378,7 +381,7 @@ export class LocationManagerStore {
       const store = this.locations.get(id);
       if (store && isUnregisteredLocation(store)) {
         store.phase = 'error';
-        store.error = error instanceof Error ? error.message : String(error);
+        store.error = failureText(error, 'Could not add this location.');
       }
     });
   }

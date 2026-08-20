@@ -399,8 +399,8 @@ deployments want exactly one.
 
 ## Part 3: Onboard the bridge in Switch
 
-As a gateway admin: **Messaging Apps → Add bridge → Teams**, give it a display
-name (e.g. "Acme Teams"), and fill in the fields.
+As a gateway admin: **Messaging Apps → Register messaging app → Teams**, give it
+a display name (e.g. "Acme Teams"), and fill in the fields.
 
 There are five, and every one is a value Azure gave you in Part 1:
 

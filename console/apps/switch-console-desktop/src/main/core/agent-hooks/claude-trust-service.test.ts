@@ -8,6 +8,8 @@ const mockMkdir = vi.hoisted(() => vi.fn());
 const mockRename = vi.hoisted(() => vi.fn());
 const mockRm = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
+// Trust keys are the resolved path; identity here keeps the fixtures literal.
+const mockRealpath = vi.hoisted(() => vi.fn(async (p: string) => p));
 
 vi.mock('node:fs', () => ({
   promises: {
@@ -16,6 +18,7 @@ vi.mock('node:fs', () => ({
     mkdir: mockMkdir,
     rename: mockRename,
     rm: mockRm,
+    realpath: mockRealpath,
   },
 }));
 
@@ -32,10 +35,15 @@ vi.mock('@main/lib/logger', () => ({
   },
 }));
 
+function renamedTo(): string[] {
+  return mockRename.mock.calls.map(([, target]) => String(target));
+}
+
 function makeService(overrides: { autoTrustWorktrees?: boolean } = {}): ClaudeTrustService {
   return new ClaudeTrustService({
     getSessionSettings: () =>
       Promise.resolve({ autoTrustWorktrees: overrides.autoTrustWorktrees ?? true }),
+    log: { warn: mockWarn },
   });
 }
 
@@ -53,7 +61,7 @@ describe('ClaudeTrustService', () => {
     const service = makeService();
 
     await service.maybeAutoTrustLocal({
-      providerId: 'codex',
+      providerId: 'opencode',
       cwd: '/tmp/worktree',
       homedir: '/home/local-user',
     });
@@ -86,7 +94,55 @@ describe('ClaudeTrustService', () => {
     });
 
     expect(mockReadFile).toHaveBeenCalledWith('/home/local-user/.claude.json', 'utf8');
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    expect(renamedTo()).toContain('/home/local-user/.claude.json');
+  });
+
+  it('accepts the bypass-permissions warning only when auto-approve forced the launch', async () => {
+    const service = makeService();
+
+    await service.maybeAutoTrustLocal({
+      providerId: 'claude',
+      cwd: '/tmp/worktree',
+      homedir: '/home/local-user',
+    });
+
+    expect(renamedTo()).not.toContain('/tmp/worktree/.claude/settings.local.json');
+
+    vi.clearAllMocks();
+    mockReadFile.mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' }));
+
+    await service.maybeAutoTrustLocal({
+      providerId: 'claude',
+      cwd: '/tmp/worktree',
+      homedir: '/home/local-user',
+      force: true,
+    });
+
+    const settingsWrite = mockWriteFile.mock.calls.find(([tmpPath]) =>
+      String(tmpPath).startsWith('/tmp/worktree/.claude/settings.local.json.')
+    );
+    expect(settingsWrite).toBeDefined();
+    expect(JSON.parse(String(settingsWrite?.[1]))).toEqual({
+      skipDangerousModePermissionPrompt: true,
+    });
+  });
+
+  it('leaves Claude settings alone when the bypass warning is already accepted', async () => {
+    const service = makeService();
+    mockReadFile.mockImplementation(async (target: string) =>
+      String(target).endsWith('.claude/settings.local.json')
+        ? JSON.stringify({ skipDangerousModePermissionPrompt: true, model: 'opus' })
+        : null
+    );
+
+    await service.maybeAutoTrustLocal({
+      providerId: 'claude',
+      cwd: '/tmp/worktree',
+      homedir: '/home/local-user',
+      force: true,
+    });
+
+    expect(renamedTo()).not.toContain('/tmp/worktree/.claude/settings.local.json');
   });
 
   it('writes local config atomically when missing', async () => {
@@ -111,10 +167,47 @@ describe('ClaudeTrustService', () => {
     expect(renameTo).toBe('/home/local-user/.claude.json');
 
     const written = JSON.parse(String(content));
-    expect(written.locations[path.resolve(relPath)]).toEqual({
+    expect(written.projects[path.resolve(relPath)]).toEqual({
       hasTrustDialogAccepted: true,
-      hasCompletedLocationOnboarding: true,
+      hasCompletedProjectOnboarding: true,
     });
+  });
+
+  it('keys trust to the resolved directory, not the symlink used to reach it', async () => {
+    const service = makeService();
+    mockRealpath.mockImplementation(async (p: string) =>
+      p === '/link/to/worktree' ? '/real/worktree' : p
+    );
+
+    await service.maybeAutoTrustLocal({
+      providerId: 'claude',
+      cwd: '/link/to/worktree',
+      homedir: '/home/local-user',
+    });
+
+    // A process asks the kernel where it is and gets the real path back, so a
+    // CLI comparing its cwd against a trust entry never sees the link.
+    const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+    expect(Object.keys(written.projects)).toEqual(['/real/worktree']);
+  });
+
+  it('leaves the global first-run setup wizard for the user to answer', async () => {
+    const service = makeService();
+
+    await service.maybeAutoTrustLocal({
+      providerId: 'claude',
+      cwd: '/tmp/worktree',
+      homedir: '/home/local-user',
+      force: true,
+    });
+
+    const claudeJson = mockWriteFile.mock.calls.find(([tmpPath]) =>
+      String(tmpPath).startsWith('/home/local-user/.claude.json.')
+    );
+    // That wizard is where a fresh install is told to connect an account.
+    // Skipping it would trade a prompt that says what is missing for a session
+    // that fails later without saying anything.
+    expect(JSON.parse(String(claudeJson?.[1]))).not.toHaveProperty('hasCompletedOnboarding');
   });
 
   it('adds Copilot trusted folders', async () => {
@@ -158,10 +251,10 @@ describe('ClaudeTrustService', () => {
     const trustedPath = '/already/trusted';
     mockReadFile.mockResolvedValue(
       JSON.stringify({
-        locations: {
+        projects: {
           [trustedPath]: {
             hasTrustDialogAccepted: true,
-            hasCompletedLocationOnboarding: true,
+            hasCompletedProjectOnboarding: true,
           },
         },
       })
@@ -237,13 +330,13 @@ describe('ClaudeTrustService', () => {
 
     expect(mockWriteFile).toHaveBeenCalledTimes(2);
     const secondWriteContent = JSON.parse(String(mockWriteFile.mock.calls[1][1]));
-    expect(secondWriteContent.locations[path.resolve('/worktree/a')]).toEqual({
+    expect(secondWriteContent.projects[path.resolve('/worktree/a')]).toEqual({
       hasTrustDialogAccepted: true,
-      hasCompletedLocationOnboarding: true,
+      hasCompletedProjectOnboarding: true,
     });
-    expect(secondWriteContent.locations[path.resolve('/worktree/b')]).toEqual({
+    expect(secondWriteContent.projects[path.resolve('/worktree/b')]).toEqual({
       hasTrustDialogAccepted: true,
-      hasCompletedLocationOnboarding: true,
+      hasCompletedProjectOnboarding: true,
     });
   });
 });

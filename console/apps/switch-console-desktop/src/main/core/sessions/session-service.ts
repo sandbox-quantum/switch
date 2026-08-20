@@ -46,6 +46,17 @@ export type SessionLifecycleHooks = {
   'session:runtime-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
 };
 
+/**
+ * A session cannot start while its agent's location is closed. The condition is
+ * a normal one — the user closed the agent — and is undone by reopening it, so
+ * the message names the agent and the remedy. The location id it replaces was
+ * an internal key the user could not have looked up anywhere.
+ */
+function notOpenMessage(agentName: string | undefined): string {
+  const subject = agentName ? `The agent "${agentName}"` : 'This session’s agent';
+  return `${subject} is not open, so its session cannot start. Open it from the sidebar and try again.`;
+}
+
 export class SessionService implements Hookable<SessionLifecycleHooks> {
   private readonly _hooks = new HookCore<SessionLifecycleHooks>((name, e) =>
     log.error(`SessionService: ${String(name)} hook error`, e)
@@ -104,7 +115,9 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
   ): Promise<Result<ProvisionResult, TeardownSessionError>> {
     const session = await this._loadSession(sessionId);
     const location = locationManager.getLocation(session.agentLocationId);
-    if (!location) throw new Error(`Location not open: ${session.agentLocationId}`);
+    // Recoverable in one click, so say which agent and what to do rather than
+    // handing the user the location's id, which appears nowhere they can act on.
+    if (!location) throw new Error(notOpenMessage(session.session.agentName));
 
     // Idempotency: session is already live — return current state.
     if (sessionRuntimeManager.getAgent(sessionId)) {
@@ -147,7 +160,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
   private async _registerAndPersist(sessionId: string, data: SessionRuntimeResult): Promise<void> {
     const location = locationManager.getLocation(data.locationId);
-    if (!location) throw new Error(`Location not open: ${data.locationId}`);
+    if (!location) throw new Error(notOpenMessage(undefined));
 
     await sessionRuntimeManager.registerSession(sessionId, data, location.ctx);
 

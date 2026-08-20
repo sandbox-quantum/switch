@@ -60,6 +60,8 @@ export type { AgentIconAsset, AgentIconVariant } from './assets/icon';
 export type { AgentCommand, CommandContext } from './capabilities/prompt';
 export type {
   CanonicalHookEvent,
+  HookCommand,
+  HookCommandOptions,
   HookEvent,
   HookRegistration,
   NotificationType,
@@ -70,12 +72,19 @@ export type { IHostDependencyBehavior } from '../../host-dependencies/capability
 export type { IHooksBehavior } from './capabilities/hooks';
 export type {
   IMcpBehavior,
+  LaunchProfileHostExec,
+  LaunchProfileModel,
   McpServerRegistration,
   SwitchLaunchProfile,
   SwitchLaunchProfileFile,
   SwitchLaunchSpecialization,
 } from './capabilities/mcp';
-export type { IPlugins } from './capabilities/plugins';
+export {
+  LAUNCH_PROFILE_HOME_PLACEHOLDER,
+  resolveLaunchProfileEnv,
+  resolveLaunchProfileHome,
+} from './capabilities/mcp';
+export type { IPlugins, PluginScope } from './capabilities/plugins';
 export type { ISessionsBehavior } from './capabilities/sessions';
 export {
   RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES,
@@ -89,12 +98,14 @@ export type {
   RepoAgentAttributeValue,
   RepoAgentDefinition,
   RepoAgentField,
+  RepoAgentFieldCatalogue,
   RepoAgentFieldOption,
   RepoAgentFieldType,
   RepoAgentsDescriptor,
 } from './capabilities/repo-agents';
 export type {
   ISwitchSetupBehavior,
+  ISwitchSetupFilesBehavior,
   SwitchSetupCliDialect,
   SwitchSetupDescriptor,
 } from './capabilities/switch-setup';

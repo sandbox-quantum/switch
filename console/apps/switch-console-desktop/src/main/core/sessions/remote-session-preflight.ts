@@ -58,12 +58,45 @@ export interface RemotePreflightFs {
   read(path: string): Promise<{ content: string }>;
 }
 
+/**
+ * Addresses that mean "the machine this resolves on". A remote host handed one
+ * of these is being pointed at itself, never at the machine running Switch
+ * Console — so no amount of egress will make the endpoint reachable.
+ */
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', '[::]']);
+
+function isLoopbackEndpoint(endpoint: string): boolean {
+  try {
+    return LOOPBACK_HOSTNAMES.has(new URL(endpoint).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A captured failure, fit to sit in a parenthetical.
+ *
+ * Command output arrives with its trailing newline attached; interpolated
+ * straight into a sentence that produced the stray space before the full stop
+ * in `… TypeError: fetch failed . The sidecar polls …`.
+ */
+function probeDetail(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
 export interface RemotePreflightDeps {
   ctx: RemotePreflightExec;
   fs: RemotePreflightFs;
   log: CredentialsLogger;
   host: string;
   workDir: string;
+  /**
+   * Whether the host's SSH connection is down because authentication was
+   * rejected. That state does not auto-recover, so it changes the advice given
+   * for a transport failure from "wait" to "fix the credentials".
+   */
+  isAuthSuspended: () => boolean;
   /** Candidate creds files (relative to the working dir) to check, in priority
    * order — the agent's neutral `.switch/agents/<name>.json` first, then the
    * legacy `.claude/settings.local.json`. The first that parses is used. */
@@ -72,7 +105,7 @@ export interface RemotePreflightDeps {
 
 export async function preflightRemoteSession(deps: RemotePreflightDeps): Promise<void> {
   const [hostReady, endpoint] = await Promise.allSettled([
-    assertHostReady(deps.ctx, deps.workDir, deps.host, deps.log),
+    assertHostReady(deps.ctx, deps.workDir, deps.host, deps.log, deps.isAuthSuspended),
     readRemoteEndpoint(deps),
   ]);
   if (hostReady.status === 'rejected') throw hostReady.reason;
@@ -87,13 +120,14 @@ async function assertHostReady(
   ctx: RemotePreflightExec,
   workDir: string,
   host: string,
-  log: CredentialsLogger
+  log: CredentialsLogger,
+  isAuthSuspended: () => boolean
 ): Promise<void> {
   let stdout: string;
   try {
     ({ stdout } = await ctx.exec('sh', ['-c', HOST_READY_SCRIPT]));
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = probeDetail(error);
     const cause = error instanceof Error ? error.cause : undefined;
     // A channel-open REFUSAL (the server answered "no") usually means session
     // exhaustion; do not blame sshd MaxSessions for every transport failure —
@@ -110,13 +144,21 @@ async function assertHostReady(
       );
     }
     if (isTransportFailure(error)) {
+      const authSuspended = isAuthSuspended();
       log.warn('preflightRemoteSession: SSH transport failed on host-ready probe', {
         workDir,
         host,
         detail,
+        authSuspended,
       });
+      // Only the reconnecting states get told to wait. A rejected credential
+      // never becomes accepted on its own, and the reconnect loop is stopped
+      // for exactly that reason, so promising a recovery here would leave the
+      // user waiting for something that is not coming.
       throw new Error(
-        `the SSH connection to host '${host}' is not usable right now (${detail}). Switch Console reconnects automatically — retry in a few seconds.`
+        authSuspended
+          ? `SSH authentication to host '${host}' was rejected, so the connection is stopped. It will not retry on its own. Fix the credentials for '${host}' — the key or agent your SSH config uses for it — then start the session again. (${detail})`
+          : `The SSH connection to host '${host}' dropped. Switch Console is reconnecting in the background; start the session again in a few seconds. (${detail})`
       );
     }
     log.warn('preflightRemoteSession: host-ready probe failed', { workDir, host, detail });
@@ -185,10 +227,18 @@ async function assertEndpointReachable(
   try {
     await ctx.exec('node', ['-e', REACHABILITY_SCRIPT, apiEndpoint]);
   } catch (error) {
+    const detail = probeDetail(error);
+    // A loopback endpoint is not an egress problem and never becomes one: the
+    // address resolves on the host to the host, so the probe is asking the VM
+    // to call itself. The old message quoted the endpoint and still sent the
+    // user to their firewall, where there was nothing to find.
+    if (isLoopbackEndpoint(apiEndpoint)) {
+      throw new Error(
+        `Host '${host}' is configured to reach Switch at ${apiEndpoint}, which on that host means the host itself — not the machine running Switch Console. No firewall change will make this work. Set this agent's Switch endpoint to an address '${host}' can resolve, such as the Switch server's LAN or public address, then re-run remote setup for it. (probe: ${detail})`
+      );
+    }
     throw new Error(
-      `remote host '${host}' cannot reach the Switch endpoint ${apiEndpoint}: ${
-        error instanceof Error ? error.message : String(error)
-      }. The sidecar polls from the host, so it needs network egress to Switch.`
+      `Host '${host}' could not reach Switch at ${apiEndpoint}. The sidecar polls Switch from the host, so '${host}' itself needs network access to that address — reaching it from this machine is not enough. Check the host's outbound access and that the endpoint is correct for it. (probe: ${detail})`
     );
   }
 }

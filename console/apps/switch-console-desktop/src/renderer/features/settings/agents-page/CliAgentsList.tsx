@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useAgents } from '@renderer/lib/stores/use-agents';
 import { Label } from '@renderer/lib/ui/label';
-import { Separator } from '@renderer/lib/ui/separator';
 import { AgentDetailSheet } from './AgentDetailSheet';
 import { AgentRow } from './AgentRow';
 
@@ -18,8 +17,6 @@ const SectionLabel: React.FC<{ children: React.ReactNode; totalCount: number }> 
 );
 
 export type AgentFilter = 'all' | 'installed' | 'uninstalled';
-
-const RECOMMENDED_IDS = new Set(['claude', 'codex', 'gemini', 'pi']);
 
 type CliAgentsListProps = {
   searchQuery?: string;
@@ -40,7 +37,7 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
       (agentPayloads ?? [])
         // Only Switch-supported agent types are shown for now; the others aren't
         // usable in Switch yet, so surfacing them here would be misleading.
-        .filter((a) => a.capabilities.switchSetup.kind === 'cli')
+        .filter((a) => a.capabilities.switchSetup.kind !== 'none')
         .filter((a) => !normalizedQuery || a.name.toLowerCase().includes(normalizedQuery))
         .sort((a, b) => a.name.localeCompare(b.name)),
     [agentPayloads, normalizedQuery]
@@ -50,94 +47,27 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
 
   const uninstalled = useMemo(() => allAgents.filter((a) => a.status !== 'available'), [allAgents]);
 
-  // "All" tab: recommended agents (any install status) + all others alphabetically
-  const allRecommended = useMemo(
-    () => allAgents.filter((a) => RECOMMENDED_IDS.has(a.id)),
-    [allAgents]
-  );
-  const allOthers = useMemo(() => allAgents.filter((a) => !RECOMMENDED_IDS.has(a.id)), [allAgents]);
+  const visible =
+    filter === 'installed' ? installed : filter === 'uninstalled' ? uninstalled : allAgents;
 
-  // "Uninstalled" tab: recommended uninstalled first, then the rest
-  const uninstalledRecommended = useMemo(
-    () => uninstalled.filter((a) => RECOMMENDED_IDS.has(a.id)),
-    [uninstalled]
-  );
-  const uninstalledRest = useMemo(
-    () => uninstalled.filter((a) => !RECOMMENDED_IDS.has(a.id)),
-    [uninstalled]
-  );
+  const sectionLabel =
+    filter === 'installed'
+      ? 'Installed'
+      : filter === 'uninstalled'
+        ? 'Not installed'
+        : 'All agents';
 
-  if (filter === 'all') {
-    return (
-      <div className="pb-4">
-        {allRecommended.length > 0 && (
-          <div className="pt-4">
-            <SectionLabel totalCount={allRecommended.length}>Recommended</SectionLabel>
-            {allRecommended.map((agent) => (
-              <div key={agent.id} className="w-full py-0.5">
-                <AgentRow agent={agent} onClick={() => setSelectedAgentId(agent.id)} />
-              </div>
-            ))}
-          </div>
-        )}
-        {allOthers.length > 0 && (
-          <div className="pt-4">
-            <SectionLabel totalCount={allOthers.length}>All agents</SectionLabel>
-            {allOthers.map((agent) => (
-              <div key={agent.id} className="w-full py-0.5">
-                <AgentRow agent={agent} onClick={() => setSelectedAgentId(agent.id)} />
-              </div>
-            ))}
-          </div>
-        )}
-        <AgentDetailSheet agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
-      </div>
-    );
-  }
-
-  if (filter === 'installed') {
-    return (
-      <div className="pb-4">
-        {installed.length > 0 && (
-          <div className="pt-4">
-            <SectionLabel totalCount={installed.length}>Installed</SectionLabel>
-            {installed.map((agent) => (
-              <div key={agent.id} className="w-full py-0.5">
-                <AgentRow agent={agent} onClick={() => setSelectedAgentId(agent.id)} />
-              </div>
-            ))}
-          </div>
-        )}
-        <AgentDetailSheet agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
-      </div>
-    );
-  }
-
-  // filter === 'uninstalled'
   return (
     <div className="pb-4">
-      {uninstalledRecommended.length > 0 && (
+      {visible.length > 0 && (
         <div className="pt-4">
-          <SectionLabel totalCount={uninstalledRecommended.length}>Recommended</SectionLabel>
-          {uninstalledRecommended.map((agent) => (
+          <SectionLabel totalCount={visible.length}>{sectionLabel}</SectionLabel>
+          {visible.map((agent) => (
             <div key={agent.id} className="w-full py-0.5">
               <AgentRow agent={agent} onClick={() => setSelectedAgentId(agent.id)} />
             </div>
           ))}
         </div>
-      )}
-      {uninstalledRest.length > 0 && (
-        <>
-          {uninstalledRecommended.length > 0 && <Separator />}
-          <div className="pt-4">
-            <SectionLabel totalCount={uninstalledRest.length}>Not installed</SectionLabel>
-            {uninstalledRest.map((agent) => (
-              <div key={agent.id} className="w-full py-0.5">
-                <AgentRow agent={agent} onClick={() => setSelectedAgentId(agent.id)} />
-              </div>
-            ))}
-          </div>
-        </>
       )}
       <AgentDetailSheet agentId={selectedAgentId} onClose={() => setSelectedAgentId(null)} />
     </div>

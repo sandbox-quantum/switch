@@ -1,9 +1,36 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { IExecutionContext } from '@main/core/execution-context/types';
 import {
   makeAgentTmuxSessionName as makeSidecarAgentTmuxSessionName,
   parseAgentTmuxSessionName,
 } from '../../../sidecar/vm-tmux';
-import { buildTmuxShellLine, makeAgentTmuxSessionName } from './tmux-session-name';
+import { buildTmuxShellLine, killTmuxSession, makeAgentTmuxSessionName } from './tmux-session-name';
+
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+afterEach(() => {
+  if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+});
+
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+}
+
+describe('killTmuxSession', () => {
+  it('does not shell out to tmux on Windows, which never started one', async () => {
+    setPlatform('win32');
+    const exec = vi.fn();
+    await killTmuxSession({ exec } as unknown as IExecutionContext, 'switchdash-abc');
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('kills the exact session elsewhere', async () => {
+    setPlatform('darwin');
+    const exec = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await killTmuxSession({ exec } as unknown as IExecutionContext, 'switchdash-abc');
+    expect(exec).toHaveBeenCalledWith('tmux', ['kill-session', '-t', '=switchdash-abc']);
+  });
+});
 
 describe('buildTmuxShellLine', () => {
   it('enables tmux mouse scrolling and deep history before attach', () => {

@@ -21,13 +21,19 @@ const SPEC: AgentLaunchSpec = {
   cwd: '/home/dev/repo',
   providerId: 'claude',
   deeplinkScheme: 'switchdash',
+  autoApprove: false,
+  autoTrustWorktrees: true,
 };
+
+/** This client install's deployer identity, as minted once and persisted locally. */
+const DEPLOYER_ID = 'install-under-test';
 
 const CONFIG: SidecarLaunchConfig = {
   repoDir: '/home/dev/repo',
   deeplinkScheme: 'switchdash',
   launchSpec: SPEC,
   credsSlug: 'claude-code.repo.me',
+  deployerId: DEPLOYER_ID,
 };
 
 /** The endpoint the launcher derives for CONFIG — sessions are pointed at this
@@ -38,7 +44,8 @@ const ENDPOINT = { port: 4321, token: 'tok-abc', endpointFile: ENDPOINT_FILE };
 const readyLine = (
   hash: string | undefined = 'hash-v1',
   epoch = 1,
-  version: string | undefined = SIDECAR_VERSION
+  version: string | undefined = SIDECAR_VERSION,
+  deployer: string | undefined = DEPLOYER_ID
 ): string =>
   `${JSON.stringify({
     event: 'ready',
@@ -47,6 +54,7 @@ const readyLine = (
     hash,
     epoch,
     version,
+    deployer,
   })}\n`;
 const noopLog = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -84,6 +92,8 @@ function makeHost(
     liveSessions?: number;
     /** Bundle hash the (already-running) sidecar's ready line reports. */
     readyHash?: string;
+    /** Install that deployed the running sidecar (undefined = predates the field). */
+    readyDeployer?: string;
     /** What `tail` of the sidecar log returns after a startup crash. */
     logTail?: string;
   } = {}
@@ -91,6 +101,7 @@ function makeHost(
   const existingSidecar = opts.existingSidecar ?? false;
   const readyHash = opts.readyHash ?? 'hash-v1';
   const readyVersion = 'readyVersion' in opts ? opts.readyVersion : SIDECAR_VERSION;
+  const readyDeployer = 'readyDeployer' in opts ? opts.readyDeployer : DEPLOYER_ID;
   const readyAfter = opts.readyAfter ?? 0;
   const diesAfter = opts.diesAfter ?? Infinity;
   const calls: ExecCall[] = [];
@@ -141,7 +152,7 @@ function makeHost(
           }));
           return { stdout: JSON.stringify({ version: '1', epoch, sessions }), stderr: '' };
         }
-        const line = readyLine(readyHash, epoch, readyVersion);
+        const line = readyLine(readyHash, epoch, readyVersion, readyDeployer);
         if (existingSidecar) return { stdout: line, stderr: '' };
         const n = catReads++;
         if (n < readyAfter) throw new Error('no such file');
@@ -395,6 +406,80 @@ describe('RemoteSidecarLauncher versioning', () => {
     await makeLauncher(host).deployAndLaunch();
 
     expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(true);
+  });
+
+  it('yields to another install’s build of the same version instead of replacing it', async () => {
+    // The residual half of CHOO-1937: version ordering separates two installs on
+    // different releases, but two dev builds of the SAME release differ only by
+    // hash — and a hash says which build, never whose. Each install read the
+    // other's as an upgrade and they traded the sidecar back and forth forever.
+    const { host, calls, puts } = makeHost({
+      existingSidecar: true,
+      readyHash: 'hash-theirs',
+      readyDeployer: 'some-other-install',
+    });
+
+    const endpoint = await makeLauncher(host).deployAndLaunch();
+
+    expect(endpoint).toEqual(ENDPOINT);
+    expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(false);
+    expect(puts).toHaveLength(0);
+  });
+
+  it('still replaces another install’s OLDER build — replacement stays version-ordered', async () => {
+    // Yielding applies only to the tie. Making it unconditional would be the
+    // blanket version gate `sidecar-version.ts` exists to argue against.
+    const { host, calls } = makeHost({
+      existingSidecar: true,
+      readyHash: 'hash-theirs',
+      readyDeployer: 'some-other-install',
+      readyVersion: '1.0.0',
+    });
+
+    await makeLauncher(host).deployAndLaunch();
+
+    expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(true);
+  });
+
+  it('replaces a same-version sidecar this very install deployed — the rebuild loop', async () => {
+    const { host, calls } = makeHost({
+      existingSidecar: true,
+      readyHash: 'hash-mine-but-older',
+      readyDeployer: DEPLOYER_ID,
+    });
+
+    await makeLauncher(host).deployAndLaunch();
+
+    expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(true);
+  });
+
+  it('replaces a sidecar deployed before installs identified themselves', async () => {
+    // Unknown is not foreign. One deploy stamps an id, so the trading ends after
+    // a single round rather than the host being frozen on an unowned sidecar.
+    const { host, calls } = makeHost({
+      existingSidecar: true,
+      readyHash: 'hash-old',
+      readyDeployer: undefined,
+    });
+
+    await makeLauncher(host).deployAndLaunch();
+
+    expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(true);
+  });
+
+  it('reports who deployed the running sidecar, and what this install is', async () => {
+    const { host } = makeHost({ existingSidecar: true, readyDeployer: 'some-other-install' });
+    const launcher = makeLauncher(host);
+
+    expect((await launcher.readStatus()).deployerId).toBe('some-other-install');
+    expect(launcher.localDeployerId()).toBe(DEPLOYER_ID);
+  });
+
+  it('stamps this install’s identity on the sidecar it launches', async () => {
+    const { host, calls } = makeHost();
+    await makeLauncher(host).deployAndLaunch();
+    const launch = calls.find((c) => c.command === 'tmux' && c.args[0] === 'new-session');
+    expect(launch!.args[6]).toContain(`SWITCHDASH_SIDECAR_DEPLOYER_ID='${DEPLOYER_ID}'`);
   });
 
   it('replaces an incompatible sidecar even when sessions are live', async () => {

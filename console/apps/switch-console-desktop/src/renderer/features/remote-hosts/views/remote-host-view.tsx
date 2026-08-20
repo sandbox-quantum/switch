@@ -23,6 +23,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -148,7 +149,7 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
               size="sm"
               variant="ghost"
               className="-ml-2"
-              onClick={() => navigate('remoteHosts')}
+              onClick={() => navigate('settings', { tab: 'remote-hosts' })}
             >
               <ArrowLeft className="size-4" /> All hosts
             </Button>
@@ -190,22 +191,22 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
           */}
             {installStep.isError && (
               <p className="text-destructive text-xs">
-                Could not install: {(installStep.error as Error).message}
+                {failureText(installStep.error, 'Could not install.')}
               </p>
             )}
             {updateStep.isError && (
               <p className="text-destructive text-xs">
-                Could not update: {(updateStep.error as Error).message}
+                {failureText(updateStep.error, 'Could not update.')}
               </p>
             )}
             {recheck.isError && (
               <p className="text-destructive text-xs">
-                Could not check this host: {(recheck.error as Error).message}
+                {failureText(recheck.error, 'Could not check this host.')}
               </p>
             )}
             {prepare.isError && (
               <p className="text-destructive text-xs">
-                Could not work out what this host needs: {(prepare.error as Error).message}
+                {failureText(prepare.error, 'Could not work out what this host needs.')}
               </p>
             )}
 
@@ -303,7 +304,7 @@ export const remoteHostView = {
         ? (params as { sshHost?: unknown }).sshHost
         : undefined;
     if (typeof sshHost !== 'string' || sshHost.length === 0) {
-      return { ok: false, redirect: 'remoteHosts' };
+      return { ok: false, redirect: 'settings', params: { tab: 'remote-hosts' } };
     }
     return { ok: true };
   },

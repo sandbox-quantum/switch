@@ -11,6 +11,7 @@ import {
 } from '@renderer/lib/commands/registry';
 import { wireExternalLinkRequests } from '@renderer/lib/external-link-requests';
 import { rpc } from '@renderer/lib/ipc';
+import { wireMouseNavigation } from '@renderer/lib/layout/mouse-navigation';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
 import { log } from '@renderer/utils/logger';
 import { initSoundPlayer } from '@renderer/utils/soundPlayer';
@@ -31,6 +32,7 @@ async function bootstrap() {
     rpc.viewState.getAll(),
     appState.locations.load(),
     prefetchAppSettingsKey('interface'),
+    prefetchAppSettingsKey('telemetry'),
   ]);
 
   viewStateCache.populate(allViewState as Record<string, unknown>);
@@ -39,6 +41,7 @@ async function bootstrap() {
   if (navResult) appState.navigation.restoreSnapshot(navResult);
   setupAppCommandProvider();
   setupViewCommandProvider(views as unknown as ViewCommandProviders);
+  wireMouseNavigation();
   if (sidebarResult) {
     appState.sidebar.restoreSnapshot(sidebarResult as Partial<SidebarSnapshot>);
   } else {

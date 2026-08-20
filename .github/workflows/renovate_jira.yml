@@ -17,9 +17,12 @@ permissions:
 
 jobs:
   create-ticket:
-    # Freshly-opened renovate/* PRs (not merges).
+    # Freshly-opened renovate/* PRs (not merges). Gated on the automation's
+    # identity (the app that opens these PRs), not just the branch name — a
+    # branch prefix is not an identity check (M4).
     if: >-
       github.event.action != 'closed' &&
+      github.event.pull_request.user.login == 'autofix-pr-bot[bot]' &&
       startsWith(github.event.pull_request.head.ref, 'renovate/')
     runs-on: ubuntu-latest
     steps:
@@ -50,9 +53,9 @@ jobs:
           JIRA_VULN_EPIC: ${{ vars.JIRA_VULN_EPIC }}
           JIRA_AISIM_ACCOUNT_ID: ${{ vars.JIRA_AISIM_ACCOUNT_ID }}
           JIRA_AISIM_USER: ${{ vars.JIRA_AISIM_USER }}
-          JIRA_AISIM_LABEL: "cg-aqtiveguard"
+          JIRA_AISIM_LABEL: ${{ vars.JIRA_AISIM_LABEL }}
           JIRA_AISIM_FIELD_ID: ${{ vars.JIRA_AISIM_FIELD_ID }}
-          JIRA_AISIM_FIELD_VALUE: "CG - AqtiveGuard"  # baked BU (org has no repo vars)
+          JIRA_AISIM_FIELD_VALUE: ${{ vars.JIRA_AISIM_FIELD_VALUE }}
         run: |
           set -euo pipefail
           if [ -z "${SBT_MACHINE_USER_JIRA_TOKEN:-}" ]; then
@@ -72,10 +75,12 @@ jobs:
           fi
 
   close-ticket:
-    # Merged renovate/* PRs -> close the ticket the automation created.
+    # Merged renovate/* PRs -> close the ticket the automation created. Same
+    # identity gate as create-ticket (M4).
     if: >-
       github.event.action == 'closed' &&
       github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login == 'autofix-pr-bot[bot]' &&
       startsWith(github.event.pull_request.head.ref, 'renovate/')
     runs-on: ubuntu-latest
     steps:

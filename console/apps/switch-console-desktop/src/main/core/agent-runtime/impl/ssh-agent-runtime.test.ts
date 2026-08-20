@@ -30,6 +30,10 @@ const resolveSshCommand = vi.hoisted(() => vi.fn(() => 'remote-cmd'));
 const deployAndLaunch = vi.hoisted(() => vi.fn(async () => ({ port: 9999, token: 'sidecar-tok' })));
 const sidecarStop = vi.hoisted(() => vi.fn(async () => {}));
 
+vi.mock('@main/core/settings/settings-service', () => ({
+  appSettingsService: { get: vi.fn(async () => ({ autoTrustWorktrees: true })) },
+}));
+
 vi.mock('./resolve-sidecar-bundle', () => ({
   resolveSidecarBundlePath: vi.fn(() => '/local/dist-sidecar/sidecar.mjs'),
 }));
@@ -83,6 +87,19 @@ vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: vi.fn(async () => ({ autoApprove: false })),
 }));
 
+// What to launch with is read from the agent's config file in its working
+// directory, which means resolving its location out of the database — and
+// these tests have no database. A test that cares states the values directly.
+vi.mock('@main/core/agents/agent-launch-config', () => ({
+  agentLaunchSpecialization: vi.fn(async () => undefined),
+}));
+
+// Same reason: this install's deployer identity is persisted in the DB, and the
+// sidecar launch path reads it to stamp whatever sidecar it starts.
+vi.mock('@main/core/sidecar/deployer-identity', () => ({
+  deployerIdentity: vi.fn(async () => 'install-under-test'),
+}));
+
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: vi.fn(defaultGetPlugin),
 }));
@@ -132,6 +149,7 @@ function emitReconnected(connectionId: string): void {
 
 const { events } = await import('@main/lib/events');
 const { getAgentById } = await import('@main/core/agents/getAgentById');
+const { agentLaunchSpecialization } = await import('@main/core/agents/agent-launch-config');
 const { getPlugin } = await import('@main/core/providers/plugin-registry');
 
 type ProviderState = {
@@ -153,10 +171,16 @@ function makeProxy(overrides: Partial<SshClientProxy> = {}): SshClientProxy {
   } as unknown as SshClientProxy;
 }
 
-/** A remote host with an empty home: the home-rooted read probe answers `0`
- *  ("no such file") and every other command exits quietly. */
+/** A remote host with an empty home: `uname -s` reports the Linux VM every
+ *  remote host is, the home-rooted read probe answers `0` ("no such file"),
+ *  and every other command exits quietly. */
 function makeCtx(): ConstructorParameters<typeof SshAgentRuntime>[0]['ctx'] {
-  return { exec: vi.fn(async () => ({ stdout: '0', stderr: '' })) } as never;
+  return {
+    exec: vi.fn(async (command: string) => ({
+      stdout: command === 'uname' ? 'Linux' : '0',
+      stderr: '',
+    })),
+  } as never;
 }
 
 /** A remote filesystem holding `files` (keyed by repo-relative path); anything
@@ -325,10 +349,10 @@ describe('SshAgentRuntime', () => {
           },
         }) as never
     );
+    vi.mocked(agentLaunchSpecialization).mockResolvedValue({ model: 'gpt-5.6-terra' });
     vi.mocked(getAgentById).mockResolvedValueOnce({
       autoApprove: false,
       name: 'codex-hoot',
-      providerConfig: { model: 'gpt-5.6-terra' },
     } as never);
     mockSpawn([]);
 
@@ -423,6 +447,45 @@ describe('SshAgentRuntime', () => {
       'SessionStart',
       'Stop',
     ]);
+  });
+
+  // The hook command runs on the VM, so it is the VM's shell that has to
+  // understand it. A Windows console that writes its own `cmd.exe /d /c
+  // "... powershell.exe ..."` into a Linux VM's hooks.json loses every event on
+  // that host, and the `|| true` on the POSIX form means nobody ever sees why.
+  it('writes POSIX hook commands onto a Linux VM even from a Windows console', async () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const ctx = makeCtx();
+    vi.mocked(getPlugin).mockImplementation(
+      (id: string) =>
+        ({
+          metadata: { id },
+          capabilities: {
+            hostDependency: { binaryNames: [id] },
+            hooks: { kind: 'config', scope: 'global', supportedEvents: ['stop'] },
+          },
+          behavior: {
+            prompt: { buildCommand: buildCommandMock },
+            hooks: pluginRegistry.get('codex')!.behavior.hooks,
+          },
+        }) as never
+    );
+    mockSpawn([]);
+
+    try {
+      await sshProvider({ ctx, tmux: true }).start(session());
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
+
+    const written = (vi.mocked(ctx.exec).mock.calls as unknown[][])
+      .map((call) => (call[1] as string[]) ?? [])
+      .find((args) => args.includes('.codex/hooks.json') && args[1]?.includes('base64 -d'));
+    const contents = Buffer.from(written!.at(-1)!, 'base64').toString('utf8');
+
+    expect(contents).toContain('curl -sf -X POST');
+    expect(contents).not.toContain('cmd.exe');
   });
 
   // Neither root fits a scope nobody has taught the remote path about, and the
@@ -775,6 +838,29 @@ describe('SshAgentRuntime', () => {
 
     expect(openSsh2Pty).toHaveBeenCalledTimes(1);
     expect(provider.isAttached()).toBe(true);
+  });
+
+  // Covers a re-open, where a size is already on record: the attach spawns at it
+  // rather than the 80x24 default. It does NOT cover a first open — nothing has
+  // measured the pane by then, and the fix for that is in the registry, which
+  // applies a late-arriving size when the pty registers (CHOO-2066).
+  it('attaches at a size already on record rather than the default', async () => {
+    mockSpawn([]);
+    const provider = sshProvider({ tmux: true });
+    const item = session();
+    const ptySessionId = makeAgentPtySessionId('location-1', item.id);
+
+    ptySessionRegistry.resize(ptySessionId, 203, 51);
+
+    await provider.ensureAttachable(item);
+    await provider.attach();
+
+    expect(openSsh2Pty).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cols: 203, rows: 51 })
+    );
+
+    ptySessionRegistry.unregister(ptySessionId);
   });
 
   it('does not report the agent as exited when a session is evicted', async () => {

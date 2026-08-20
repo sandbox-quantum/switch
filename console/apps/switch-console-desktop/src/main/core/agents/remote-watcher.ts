@@ -3,7 +3,7 @@ import { ensureAgentSidecar } from '@main/core/agent-runtime/impl/ensure-agent-s
 import { writeWatchEnabled } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { listAutoSessionAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { log } from '@main/lib/logger';
-import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
+import { agentLaunchSpecialization } from './agent-launch-config';
 import { getRemoteAgentLocation } from './agent-location';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
@@ -118,7 +118,7 @@ export async function ensureRemoteWatcher(agentId: string): Promise<void> {
     autoApprove: agent.autoApprove,
     credsSlug: agent.name ?? agent.id,
     agentName: agent.name ?? null,
-    specialization: toSwitchSpecialization(agent.providerConfig),
+    specialization: await agentLaunchSpecialization(agent.id),
     ctx,
     connectionId,
     host,

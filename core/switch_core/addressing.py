@@ -16,15 +16,31 @@ Model:
     empty list ``[]`` is the "none" value: it matches nothing. The sender is
     exactly one kind (user XOR agent), so a rule that should admit only humans
     sets ``agents: []`` and vice-versa.
+  - A rule additionally carries two *symbolic* subjects (CHOO-2137), resolved
+    at enforcement time rather than stored as ids, so they survive the owner
+    claiming a new platform identity, a bridge being recreated, or the agent
+    changing hands:
+      * `owner`        — the agent's own owner, whoever that currently is.
+                         Human senders only.
+      * `owner_agents` — any agent owned by that same person. Agent senders
+                         only. This is what keeps an owner's own orchestration
+                         working under an owner-scoped policy: the manager
+                         dispatching a worker is the owner acting through a
+                         program, and naming each agent by id would break the
+                         moment they register a new one.
+    Both are per-rule, so they carry that rule's room scoping like any other
+    dimension.
   - A rule *allows* an attempt when the context matches (room AND group) AND
-    the sender matches (its own kind's dimension). Addressing is permitted when
-    **any** rule allows it.
+    the sender matches (its own kind's dimension, or `owner` for a human).
+    Addressing is permitted when **any** rule allows it.
 
-Defaults / precedence (agreed on CHOO-1585):
-  - An agent with **no rules** preserves today's behaviour: anyone may address
-    it (allow-all). Enforcement only kicks in once at least one rule exists.
+Defaults / precedence:
+  - An agent with **no rules** is open: anyone may address it. This is what a
+    pre-CHOO-2137 agent carries, and it is preserved rather than migrated.
   - With rules present it is **deny-by-default**: only attempts matching a rule
     are permitted.
+  - Agents created from CHOO-2137 onwards start owner-only (see
+    `owner_only_policy`) rather than open.
 
 This module is deliberately pure (no DB, no I/O) so it is trivially testable
 and reusable from the receive path, the protocol service, and the gateway.
@@ -54,6 +70,8 @@ class AddressingRule(BaseModel):
     room_groups: Dimension = ANY
     users: Dimension = ANY
     agents: Dimension = ANY
+    owner: bool = False
+    owner_agents: bool = False
 
     @field_validator("rooms", "room_groups", "users", "agents")
     @classmethod
@@ -71,13 +89,53 @@ class AddressingRule(BaseModel):
         group_id: str | None,
         sender_kind: SenderKind,
         sender_id: str,
+        sender_user_ids: list[str],
+        sender_owner_user_id: str | None,
+        owner_user_id: str | None,
     ) -> bool:
         if not _dim_contains(self.rooms, room_id):
             return False
         if not _dim_contains(self.room_groups, group_id):
             return False
+        if sender_kind == "user" and self._is_owner(sender_user_ids, owner_user_id):
+            return True
+        if sender_kind == "agent" and self._is_owners_agent(
+            sender_owner_user_id, owner_user_id
+        ):
+            return True
         sender_dim = self.users if sender_kind == "user" else self.agents
         return _dim_contains(sender_dim, sender_id)
+
+    def _is_owner(self, sender_user_ids: list[str], owner_user_id: str | None) -> bool:
+        """Whether this rule admits the sender as the agent's owner.
+
+        A platform account may be claimed by several Switch users, so the
+        sender arrives as the set of users who say it is theirs; the owner
+        need only be among them. An ownerless agent has no owner to match, and
+        an unclaimed account resolves to nobody — both answer "not the owner"
+        rather than making a permissive guess.
+        """
+        if not self.owner:
+            return False
+        if owner_user_id is None:
+            return False
+        return owner_user_id in sender_user_ids
+
+    def _is_owners_agent(
+        self, sender_owner_user_id: str | None, owner_user_id: str | None
+    ) -> bool:
+        """Whether this rule admits the sender as an agent of the same owner.
+
+        Both sides must be owned for this to mean anything: two ownerless
+        agents are not each other's, and an ownerless target has nobody whose
+        agents these would be. Either one missing answers "no" rather than
+        letting an unowned agent inherit the fleet's trust.
+        """
+        if not self.owner_agents:
+            return False
+        if owner_user_id is None or sender_owner_user_id is None:
+            return False
+        return sender_owner_user_id == owner_user_id
 
 
 class AddressingPolicy(BaseModel):
@@ -96,10 +154,20 @@ class AddressingPolicy(BaseModel):
         group_id: str | None,
         sender_kind: SenderKind,
         sender_id: str,
+        sender_user_ids: list[str],
+        sender_owner_user_id: str | None,
+        owner_user_id: str | None,
     ) -> bool:
         """Whether an addressing attempt from this sender, in this room, is
         permitted. Allow-all when the policy is open; otherwise permitted iff
-        at least one rule matches."""
+        at least one rule matches.
+
+        `sender_user_ids` are the Switch users who have claimed a human
+        sender's platform account (empty when nobody has);
+        `sender_owner_user_id` is who owns an agent sender (None for a human
+        or an ownerless agent); `owner_user_id` is the addressed agent's
+        owner. Together they resolve the `owner` and `owner_agents` rules.
+        """
         if self.is_open():
             return True
         return any(
@@ -108,9 +176,21 @@ class AddressingPolicy(BaseModel):
                 group_id=group_id,
                 sender_kind=sender_kind,
                 sender_id=sender_id,
+                sender_user_ids=sender_user_ids,
+                sender_owner_user_id=sender_owner_user_id,
+                owner_user_id=owner_user_id,
             )
             for rule in self.rules
         )
+
+    def requires_owner_identity(self) -> bool:
+        """Whether any rule depends on resolving the owner's platform identity.
+
+        Used to warn an operator that an agent is unreachable until its owner
+        claims an identity on the bridges it works over — the difference
+        between a policy that is merely strict and one that admits nobody.
+        """
+        return any(rule.owner for rule in self.rules)
 
 
 def _dim_contains(dimension: Dimension, value: str | None) -> bool:
@@ -131,6 +211,49 @@ def parse_policy(raw: dict | None) -> AddressingPolicy:
     return AddressingPolicy.model_validate(raw)
 
 
+def owner_only_policy(allowed_agent_ids: list[str]) -> AddressingPolicy:
+    """Owner-only: the agent's owner anywhere, and nobody else.
+
+    No other human, and no agent except those explicitly granted.
+    `allowed_agent_ids` names individual dispatchers by id; empty means the
+    agent answers only to its owner, in person.
+    """
+    return AddressingPolicy(
+        rules=[
+            AddressingRule(
+                rooms=ANY,
+                room_groups=ANY,
+                users=[],
+                agents=list(allowed_agent_ids),
+                owner=True,
+            )
+        ]
+    )
+
+
+def owner_and_owner_agents_policy() -> AddressingPolicy:
+    """The owner, plus any agent that owner runs (CHOO-2137).
+
+    The default a Switch Console agent is created on. Strict owner-only is one
+    step too strict to be the thing everyone starts on: an owner's manager
+    agent dispatching their worker is still the owner acting, and an agent that
+    refuses its own owner's orchestration looks broken rather than private.
+    Somebody else's agent is admitted by neither.
+    """
+    return AddressingPolicy(
+        rules=[
+            AddressingRule(
+                rooms=ANY,
+                room_groups=ANY,
+                users=[],
+                agents=[],
+                owner=True,
+                owner_agents=True,
+            )
+        ]
+    )
+
+
 def can_address(
     policy: AddressingPolicy,
     *,
@@ -138,6 +261,9 @@ def can_address(
     group_id: str | None,
     sender_kind: SenderKind,
     sender_id: str,
+    sender_user_ids: list[str],
+    sender_owner_user_id: str | None,
+    owner_user_id: str | None,
 ) -> bool:
     """Convenience free function mirroring :meth:`AddressingPolicy.allows`."""
     return policy.allows(
@@ -145,4 +271,7 @@ def can_address(
         group_id=group_id,
         sender_kind=sender_kind,
         sender_id=sender_id,
+        sender_user_ids=sender_user_ids,
+        sender_owner_user_id=sender_owner_user_id,
+        owner_user_id=owner_user_id,
     )

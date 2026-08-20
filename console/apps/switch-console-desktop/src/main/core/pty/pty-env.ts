@@ -1,7 +1,7 @@
 import os from 'node:os';
+import { getWindowsEnvValue } from '@switch-console/core/exec';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { detectSshAuthSock } from '@main/utils/shellEnv';
-import { getWindowsEnvValue } from '@main/utils/windows-env';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
 
 export const AGENT_ENV_VARS = [

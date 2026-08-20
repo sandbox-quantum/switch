@@ -4,6 +4,7 @@ import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
 import type { InjectionSink } from './injection-sink';
 import type { SessionControl } from './session-control';
+import { buildSessionDeeplink } from './session-deeplink';
 import {
   formatEventForInjection,
   formatAttachmentAnnotation,
@@ -31,6 +32,12 @@ const BUSY_FALLBACK_MS = 60_000;
 // is typing into the pane. Short enough that delivery resumes promptly once
 // they pause.
 const HUMAN_GATE_RETRY_MS = 500;
+// How long to wait before looking again for a target to type into. A session
+// auto-started to answer a room message opens its room connection before its
+// terminal exists, so the very message it was started for arrives with nowhere
+// to go; without a retry of its own it waits for an unrelated event that on a
+// fresh session may never come.
+const NO_TARGET_RETRY_MS = 500;
 // Gap between steps of a multi-step control command (e.g. reset's `/clear` then
 // the reconnect prompt), so a TUI settles one before the next is typed.
 const CONTROL_STEP_GAP_MS = 600;
@@ -128,6 +135,13 @@ export interface RoomConnectionLogger {
   error(message: string, meta?: Record<string, unknown>): void;
 }
 
+/** Where the message that caused a spawn sits, so the session can report
+ * against it rather than at the room root. */
+export interface SpawnTurn {
+  threadId: string | null;
+  anchorId: string | null;
+}
+
 export interface RoomConnectionDeps {
   creds: SwitchCredentials;
   /**
@@ -152,6 +166,18 @@ export interface RoomConnectionDeps {
    * session exists to handle.
    */
   startCursor?: number;
+  /**
+   * The message this session was started to answer, when it was started by one.
+   *
+   * A session normally opens its turn when an addressed message is injected
+   * into it. A spawned one never gets that injection — the message travels in
+   * its opening prompt, because it arrives before there is a terminal to type
+   * into — so without this its first turn is the one turn that reports
+   * nothing: no working state, and on Mattermost no indicator and no typing.
+   * Holding the message's own position here lets the turn be opened when the
+   * session reaches the room instead, against the message that is waiting.
+   */
+  spawnTurn?: SpawnTurn | null;
   /** The Switch Console session id of the session this connection drives, so
    * the deeplink can resolve to the exact session on any client (the shared
    * session id is the same across clients; the local room mapping is not). */
@@ -254,6 +280,7 @@ export class RoomConnection {
   private activityTicker: ReturnType<typeof setInterval> | null = null;
   private busyFallback: ReturnType<typeof setTimeout> | null = null;
   private humanGateTimer: ReturnType<typeof setTimeout> | null = null;
+  private noTargetTimer: ReturnType<typeof setTimeout> | null = null;
   /** The push transport: one SSE stream plus one heartbeat, replacing the
    * long-poll and the three renew loops. */
   private stream: SwitchEventStream | null = null;
@@ -263,6 +290,9 @@ export class RoomConnection {
    * socket. */
   private readonly connectionId: string;
   private readonly startCursor: number | undefined;
+  /** Cleared once opened, so the turn is opened once and not on every
+   * reconnect or room change for the life of the session. */
+  private spawnTurn: SpawnTurn | null;
   /** Notified whenever the server tells us which room this session is in. */
   private readonly onRoomChanged: ((roomId: string | null) => void) | null;
   /**
@@ -299,6 +329,7 @@ export class RoomConnection {
     this.mediaDir = deps.mediaDir;
     this.connectionId = deps.connectionId;
     this.startCursor = deps.startCursor;
+    this.spawnTurn = deps.spawnTurn ?? null;
     this.onRoomChanged = deps.onRoomChanged ?? null;
     this.log = deps.log;
   }
@@ -334,7 +365,38 @@ export class RoomConnection {
     // session's `(Open in Switch Console)` link is available in the new room's
     // !status immediately on connect/switch — not only once the agent next
     // works. idle surfaces nothing on the bridge, so this posts no message.
-    if (this.roomId) void this.postRuntimeState('idle', null).catch(() => {});
+    if (this.roomId && !this.openSpawnTurn()) {
+      void this.postRuntimeState('idle', null).catch(() => {});
+    }
+  }
+
+  /**
+   * Report the turn a spawned session was started for, once it is in the room.
+   *
+   * Answers "is anything happening?" for the one turn that could not answer it:
+   * the message is already inside the session's opening prompt, so it is being
+   * worked on, but nothing had said so. Reported against the message itself, so
+   * the indicator and Mattermost's typing land where the asking happened rather
+   * than at the room root.
+   *
+   * Returns whether it opened one, so the caller can fall back to reporting
+   * idle — a session that owes nobody an answer should not look busy.
+   */
+  private openSpawnTurn(): boolean {
+    const turn = this.spawnTurn;
+    if (turn === null) return false;
+    this.spawnTurn = null;
+    this.roomTurnActive = true;
+    this.currentThreadId = turn.threadId;
+    this.currentAnchorId = turn.anchorId;
+    this.log.info('RoomConnection: reporting the turn this session was started for', {
+      event: 'switch_spawn_turn_opened',
+      roomId: this.roomId,
+      threadId: turn.threadId,
+      anchorId: turn.anchorId,
+    });
+    this.setRuntimeState('working');
+    return true;
   }
 
   /**
@@ -397,7 +459,9 @@ export class RoomConnection {
       roomId: next,
     });
     this.onRoomChanged?.(next);
-    if (next) void this.postRuntimeState('idle', null).catch(() => {});
+    if (next && !this.openSpawnTurn()) {
+      void this.postRuntimeState('idle', null).catch(() => {});
+    }
   }
 
   /** Stop the loops and clear any lingering runtime-state surface. */
@@ -417,6 +481,7 @@ export class RoomConnection {
     this.abort.abort();
     if (this.busyFallback) clearTimeout(this.busyFallback);
     if (this.humanGateTimer) clearTimeout(this.humanGateTimer);
+    if (this.noTargetTimer) clearTimeout(this.noTargetTimer);
     this.stopActivityTicker();
   }
 
@@ -437,15 +502,13 @@ export class RoomConnection {
    * it verbatim. Resolution is by room, so `server`/`agent` are advisory.
    */
   private sessionDeeplink(): string {
-    const params = new URLSearchParams({
-      server: this.creds.apiEndpoint,
-      agent: this.creds.agentId,
-      room: this.roomId ?? '',
-      // The shared session id resolves to the exact session on any client
-      // (a client that only adopted the session has no room mapping to match on).
-      session: this.sessionId,
+    return buildSessionDeeplink({
+      scheme: this.deeplinkScheme,
+      apiEndpoint: this.creds.apiEndpoint,
+      agentId: this.creds.agentId,
+      roomId: this.roomId,
+      sessionId: this.sessionId,
     });
-    return `${this.deeplinkScheme}://session?${params.toString()}`;
   }
 
   /**
@@ -561,9 +624,14 @@ export class RoomConnection {
         annotated = `${annotated}\n${annotation}`;
       }
     }
+    // The tally is cleared per delivered line, not per read: nothing here can
+    // observe the session calling read_context. So it counts what arrived since
+    // the previous line we surfaced, and the wording has to say that — an agent
+    // told "since your last read_context" would read the absence of a count as
+    // proof it was caught up, which this number cannot support.
     let body =
       this.missed > 0
-        ? `${annotated}\n(${this.missed} unread room message${this.missed === 1 ? '' : 's'} since your last read_context — call read_context to catch up.)`
+        ? `${annotated}\n(${this.missed} unaddressed room message${this.missed === 1 ? '' : 's'} arrived since the previous message you were sent — call read_context to catch up.)`
         : annotated;
     this.missed = 0;
     if (this.pendingGapReason !== null) {
@@ -661,6 +729,17 @@ export class RoomConnection {
   private enqueue(injection: QueuedInjection): void {
     if (this.stopped) return;
     this.queue.push(injection);
+    // Together with `switch_message_injected` below, these two say whether a
+    // message that reached the session ever made it into the pane — the
+    // question every "the agent ignored me" report comes down to.
+    this.log.info('RoomConnection: room message queued for the session', {
+      event: 'switch_message_queued',
+      roomId: this.roomId,
+      sessionId: this.sessionId,
+      messageId: injection.messageId,
+      addressed: injection.addressed,
+      queued: this.queue.length,
+    });
     this.tryFlush();
   }
 
@@ -833,12 +912,23 @@ export class RoomConnection {
 
     const target = this.sink.acquire();
     if (!target) {
-      // Target not live yet (or already gone); leave the message queued and
-      // retry on the next status change or poll event.
-      this.log.warn('RoomConnection: injection deferred — no live target for session', {
-        roomId: this.roomId,
-        queued: this.queue.length,
-      });
+      // Not ready to be typed into — the terminal is still starting, or the
+      // session's own opening prompt has not gone in yet. Keep the message and
+      // come back for it: an auto-started session receives the message it was
+      // started for before it has a terminal at all, and nothing else is
+      // guaranteed to drive the queue afterwards.
+      if (!this.noTargetTimer) {
+        this.log.warn('RoomConnection: injection deferred — no live target for session', {
+          event: 'switch_message_deferred',
+          roomId: this.roomId,
+          sessionId: this.sessionId,
+          queued: this.queue.length,
+        });
+        this.noTargetTimer = setTimeout(() => {
+          this.noTargetTimer = null;
+          this.tryFlush();
+        }, NO_TARGET_RETRY_MS);
+      }
       return;
     }
 
@@ -850,8 +940,11 @@ export class RoomConnection {
       // delivered. Writing both in one chunk makes TUIs (Claude) treat the
       // trailing Enter as part of the pasted input, leaving the text unsent.
       target.write(payload);
-      this.log.debug('RoomConnection: injected message into target', {
+      this.log.info('RoomConnection: injected message into target', {
+        event: 'switch_message_injected',
         roomId: this.roomId,
+        sessionId: this.sessionId,
+        messageId: item.messageId,
         addressed: item.addressed,
         queued: this.queue.length,
       });

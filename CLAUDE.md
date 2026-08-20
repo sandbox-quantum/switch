@@ -22,7 +22,7 @@ history — a later commit cannot take it back. Keep internal detail out of it:
 
 ## Project Overview
 
-Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost).
+Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
 
 The target architecture is documented in `docs/`.
 
@@ -80,7 +80,7 @@ just test -k "test_name"         # run specific test
 - `clients/` — Matrix clients (agent, user, resource manager, observe)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors)
-  - `collaboration/` — Collaboration Bridge (Slack, Mattermost adapters)
+  - `collaboration/` — Collaboration Bridge (Slack, Mattermost, Discord, Teams, Telegram adapters)
   - `observe/` — Observe Bridge (event sinks)
   - `resource/` — Resource Bridge (platform resource management)
 - `protect/` — Protection pipeline (checks, protect bridge, API)
@@ -94,8 +94,8 @@ just test -k "test_name"         # run specific test
 
 ## Connector plugins
 
-There are **two** connector plugins under `connectors/`, one per agent host, and
-each ships its own copy of the Switch room-workflow skill at
+There are **three** connector plugins under `connectors/`, one per agent host,
+and each ships its own copy of the Switch room-workflow skill at
 `skills/switch/SKILL.md`:
 
 - `connectors/claude-code-plugin/` — manifest `.claude-plugin/plugin.json`.
@@ -105,7 +105,10 @@ each ships its own copy of the Switch room-workflow skill at
   Switch Console imports the same package for its protocol client, so there is one
   implementation of the agent protocol rather than a copy per consumer.
 - `connectors/codex-plugin/` — manifest `.codex-plugin/plugin.json`. Ships the
-  skill plus its own MCP config, declared as `"mcpServers": "./.mcp.json"`, so a
+  room-workflow skill, a **`configure`** skill (the standalone setup path — it
+  registers the agent and supplies the bundled server's credentials so Codex
+  reaches Switch with no Switch Console involved), and its own MCP config,
+  declared as `"mcpServers": "./.mcp.json"`, so a
   Codex session gets the Switch tools from the plugin alone. Codex does not
   expand `${VAR}` in a bundled config, so the server names its variables under
   `env_vars` and Codex forwards them **by name** from its own environment — no
@@ -132,20 +135,54 @@ each ships its own copy of the Switch room-workflow skill at
   settings, and Codex caches an install per version, so an install on an older
   plugin has no Switch tools until it is upgraded.
 
+- `connectors/opencode-plugin/` — manifest `package.json` (OpenCode plugins are
+  npm modules, so that is its native manifest shape). Ships the skill, an MCP
+  config (`opencode.json`) and a reporting plugin (`plugin/`).
+
+  **It is written, not installed, and that is the one real difference between
+  it and the other two.** OpenCode has no plugin marketplace — its `plugin`
+  subcommand installs a single npm module and has no list, remove or version
+  verb — so there is nothing for the marketplace driver to drive. Switch Console
+  writes the files itself via `switchSetup: { kind: 'files' }`
+  (`console/packages/plugins/src/agents/impl/opencode/switch-connector.ts`), and
+  this directory is **not** registered in `.claude-plugin/marketplace.json`. The
+  user-facing surface is the same: install, update and uninstall on the agent's
+  card and in a remote host's setup.
+
+  Because the app writes the files it also **embeds** them, and the embedded
+  copies must not drift from this directory — `connector-assets.test.ts` fails
+  if they do. Edit the files here; the test names what to update. Nothing
+  fetched the install, so it has no version of its own to report: a status read
+  compares the app version that stamped it against the running one.
+
+  The MCP server is registered as a `local` (stdio) server, deliberately.
+  OpenCode spawns a local server with the parent environment, so the runtime
+  inherits `SWITCH_*` from the session and no credential is written into a
+  config file shared by every OpenCode session on the machine. OpenCode *does*
+  interpolate `{env:VAR}` and `{file:path}` (unlike Codex's name-forwarding and
+  Claude's `${VAR}`), so a remote server carrying a header would also have
+  worked; stdio was chosen because it needs no interpolation at all. Its config
+  rejects unknown keys on an MCP entry and fails the whole config with them,
+  which is why the install bookkeeping sits beside `opencode.json` rather than
+  inside it.
+
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, or anything an agent-facing client needs to know:
 
-- **Update both skills.** A room-workflow change must land in
-  `connectors/claude-code-plugin/skills/switch/SKILL.md` *and*
-  `connectors/codex-plugin/skills/switch/SKILL.md` so the documented workflow
-  matches actual behavior on both hosts.
+- **Update all three skills.** A room-workflow change must land in
+  `connectors/claude-code-plugin/skills/switch/SKILL.md`,
+  `connectors/codex-plugin/skills/switch/SKILL.md` *and*
+  `connectors/opencode-plugin/skills/switch/SKILL.md` so the documented workflow
+  matches actual behavior on every host.
+  `core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` asserts the
+  count, so it fails rather than letting a host quietly go undocumented.
 - **Bump the versions of whatever you changed, in the same commit.** Not at
   release time — it gets forgotten, and then a version number is a claim nobody
-  can trust. `console/AGENTS.md` has the table (both plugins, runtime package,
-  sidecar) and the rules for which digit moves.
-- **Diff the two skills after editing.** They are deliberately not identical
-  (host-specific wording for tool namespacing, event delivery and task
-  notifications, attachments, and MCP registration), so diff them to confirm
+  can trust. `console/AGENTS.md` has the table (all three plugins, runtime
+  package, sidecar) and the rules for which digit moves.
+- **Diff the skills against each other after editing.** They are deliberately not identical
+  (host-specific wording for tool namespacing, event delivery, attachments, and
+  MCP registration), so diff them to confirm
   every remaining difference is intentional rather than a fix that only landed
   on one side.
 - **Publishing the runtime is a tag**, not a merge:
@@ -197,7 +234,7 @@ exist:
   event stream, room slots, failure handling). Authoritative where it and
   `ARCHITECTURE.md` overlap
 - `docs/bridges/` — collaboration bridge setup: `README.md` plus one page each
-  for Slack, Mattermost, Discord, and Teams
+  for Slack, Mattermost, Discord, Teams, and Telegram
 
 There is no separate schema, room-design, HTTP-API or MCP-surface document. Read
 those from the code: `core/switch_core/db/models.py` for the schema,

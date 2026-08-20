@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel
 
 # Parent operational options a subagent inherits unless the caller overrides them.
-_INHERITED_OPTION_KEYS = ("channels_enabled", "repo_dir", "notify_user")
+_INHERITED_OPTION_KEYS = ("channels_enabled", "repo_dir")
 
 
 class DerivedSubagent(BaseModel):

@@ -99,6 +99,12 @@ class Agent(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    # Absolute https URL of the agent's icon (CHOO-2171). Switch stores the
+    # link, never image bytes: whatever produces the picture — a generated-
+    # avatar service, the operator's own host — is the client's concern. NULL
+    # means no icon was chosen, and the display layer supplies the fallback, so
+    # that fallback can change without touching stored rows.
+    icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_type: Mapped[str] = mapped_column(Text, nullable=False)
     connector_type: Mapped[str] = mapped_column(Text, nullable=False)
     integration_profile: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -498,6 +504,16 @@ class CollaborationBridge(Base):
     agent_greetings_enabled: Mapped[bool] = mapped_column(
         Boolean, server_default="true", nullable=False
     )
+    # Whether an operator permits this connection to create channels on the
+    # platform. Only ever narrows what the platform allows: a bridge whose
+    # adapter reports `supports_channel_creation = False` cannot be granted it
+    # by setting this true, so the effective answer is the two ANDed together.
+    # Kept per connection rather than per type because withholding it is a
+    # deployment's decision — the bot may hold no such permission, or the
+    # organisation may not want rooms appearing from Switch.
+    channel_creation_enabled: Mapped[bool] = mapped_column(
+        Boolean, server_default="true", nullable=False
+    )
     # The bridge new rooms land on when no bridge is named. At most one row may
     # be true; the partial unique index below is what actually enforces that,
     # so concurrent writers cannot produce two defaults.
@@ -552,6 +568,36 @@ class ExternalUser(Base):
     external_username: Mapped[str] = mapped_column(Text, nullable=False)
     client_id: Mapped[str] = mapped_column(
         Text, ForeignKey("clients.id"), nullable=False
+    )
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ExternalUserClaim(Base):
+    """A Switch user's claim that a platform account is theirs (CHOO-2137).
+
+    Deliberately many-to-many rather than a single owner per account: an
+    exclusive claim would let whoever claimed first keep everyone else from
+    ever being recognised on that account, which is a quiet way to break
+    someone. Several Switch users may claim the same account, and an
+    owner-scoped rule is satisfied when the agent's owner is among them.
+
+    An account with no claim at all satisfies no owner rule — unclaimed is
+    not "trusted by default".
+    """
+
+    __tablename__ = "external_user_claims"
+
+    external_user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("external_users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

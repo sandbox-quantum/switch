@@ -75,11 +75,9 @@ const config: Configuration = {
     // without it.
     maintainer: 'Louis Amaudruz <louis.amaudruz@sandboxaq.com>',
     syncDesktopName: true,
-    target: [
-      { target: 'AppImage', arch: ['x64'] },
-      { target: 'deb', arch: ['x64'] },
-      { target: 'rpm', arch: ['x64'] },
-    ],
+    // Arch comes from the CLI flag / host — see the base config for why naming
+    // both arches here produces a broken package.
+    target: ['AppImage', 'deb', 'rpm'],
   },
   deb: {
     packageName: APP_NAME_LOWER,
@@ -87,18 +85,16 @@ const config: Configuration = {
   rpm: {
     packageName: APP_NAME_LOWER,
   },
+  // Always unsigned: no workflow builds this channel, so the Azure OIDC login the
+  // stable config's signing depends on never runs here. Adding `azureSignOptions`
+  // without that login breaks the build outright rather than leaving it unsigned —
+  // see the `hasAzureSigning` comment in the base config.
   win: {
     icon: 'src/assets/images/switch-console/app-icon-canary.png',
     target: [
       { target: 'nsis', arch: ['x64'] },
       { target: 'msi', arch: ['x64'] },
     ],
-    azureSignOptions: {
-      publisherName: 'General Action, Inc.',
-      endpoint: 'https://eus.codesigning.azure.net/',
-      certificateProfileName: 'switch-console-public',
-      codeSigningAccountName: 'switch-console',
-    },
   },
   msi: {
     oneClick: false,

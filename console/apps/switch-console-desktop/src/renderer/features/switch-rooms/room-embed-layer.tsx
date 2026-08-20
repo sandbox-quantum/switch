@@ -2,6 +2,7 @@ import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -9,6 +10,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { RoomEmbed } from '@shared/core/switch-rooms/room-embed';
 import { openRoomChannel } from './room-links';
+import { roomTabStore } from './room-tab-store';
 import { currentMattermostTheme } from './theme-tokens';
 import { WEBVIEW_ALLOW_POPUPS } from './webview-attrs';
 
@@ -99,7 +101,10 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
         setStates((prev) =>
           new Map(prev).set(roomId, {
             phase: 'error',
-            message: cause instanceof Error ? cause.message : String(cause),
+            message: failureText(
+              cause,
+              'Could not show this room inside Switch Console. Open it in the messaging app instead.'
+            ),
           })
         );
       }
@@ -159,8 +164,11 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   // every live <webview> and reload Mattermost on the way back, which is the
   // exact cost this layer exists to avoid. Hide the whole layer instead —
   // display:none keeps the guests running and takes the layer out of both
-  // layout and hit-testing, so the view underneath behaves normally.
-  const visible = isRoomView && activeRoomId !== null;
+  // layout and hit-testing, so the view underneath behaves normally. The same
+  // applies to a room showing its settings: the conversation is still there,
+  // just not on screen.
+  const visible =
+    isRoomView && activeRoomId !== null && roomTabStore.tabFor(activeRoomId) === 'chat';
   const active = activeRoomId ? states.get(activeRoomId) : undefined;
 
   return (

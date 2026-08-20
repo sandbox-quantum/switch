@@ -5,6 +5,7 @@ import { hostDependencyStore } from '@main/core/dependencies/host-dependency-sto
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { providerOverrideSettings } from '@main/core/settings/provider-settings-service';
+import { appSettingsService } from '@main/core/settings/settings-service';
 import {
   type AgentLaunchSpec,
   INITIAL_PROMPT_PLACEHOLDER,
@@ -106,7 +107,10 @@ export async function generateAgentLaunchSpec(params: {
   return {
     command: agentCommand.command,
     args: agentCommand.args,
-    env: { ...agentCommand.env, ...(providerConfig?.env ?? {}) },
+    // The profile's env may name one of its own files, which needs the VM's home
+    // directory — unknown here. It carries the home placeholder instead and the
+    // sidecar substitutes its own home when it materializes the command.
+    env: { ...agentCommand.env, ...(switchProfile?.env ?? {}), ...(providerConfig?.env ?? {}) },
     cwd: remoteRepoDir,
     launchFiles: switchProfile?.files.map((file) => ({
       homeRelativePath: file.relativePath,
@@ -114,5 +118,9 @@ export async function generateAgentLaunchSpec(params: {
     })),
     providerId,
     deeplinkScheme,
+    autoApprove,
+    // Read here rather than passed in: it is one global app setting, not a
+    // per-call decision, and the sidecar has no way to reach it.
+    autoTrustWorktrees: (await appSettingsService.get('sessions')).autoTrustWorktrees,
   };
 }

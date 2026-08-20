@@ -1,5 +1,9 @@
 import type { PluginFs } from '@switch-console/core/agents/plugins';
-import type { CanonicalHookEvent, HookRegistration } from '@switch-console/core/agents/plugins';
+import type {
+  CanonicalHookEvent,
+  HookCommandOptions,
+  HookRegistration,
+} from '@switch-console/core/agents/plugins';
 import {
   baseName,
   buildNestedJsonHookConfig,
@@ -175,8 +179,12 @@ export function buildCodexHookConfig() {
 
   return {
     ...base,
-    async writeHooks(fs: PluginFs, hooks: HookRegistration[]): Promise<string[]> {
-      const paths = await base.writeHooks(fs, hooks);
+    async writeHooks(
+      fs: PluginFs,
+      hooks: HookRegistration[],
+      opts: HookCommandOptions
+    ): Promise<string[]> {
+      const paths = await base.writeHooks(fs, hooks, opts);
       await removeLegacyCodexNotify(fs);
       return paths;
     },

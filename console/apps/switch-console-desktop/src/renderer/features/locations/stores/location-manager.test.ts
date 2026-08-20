@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
   inspectLocationPath: vi.fn(),
   openLocation: vi.fn(),
   eventOn: vi.fn(),
+  refreshAfterOnboarding: vi.fn(async () => {}),
+}));
+
+vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
+  refreshSidebarRoomStateAfterOnboarding: mocks.refreshAfterOnboarding,
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -179,6 +184,30 @@ describe('LocationManagerStore agent onboarding', () => {
       expect(loc.phase).toBe('error');
       expect(loc.error).toBe('Sign in to Pilot before adding this agent.');
     }
+
+    expect(mocks.refreshAfterOnboarding).not.toHaveBeenCalled();
+  });
+
+  it('refreshes sidebar room state once the agent is onboarded', async () => {
+    const store = new LocationManagerStore();
+
+    const result = await store.startAgentOnboarding(
+      {
+        mode: 'pick',
+        name: 'Location',
+        path: '/location',
+        serverId: 'server-1',
+        providerId: 'claude',
+      },
+      { id: 'optimistic-location' }
+    );
+
+    expect(result.kind).toBe('creating');
+    if (result.kind === 'creating') await result.completion;
+
+    // The agent's rooms are written server-side after onboarding returns, so
+    // nothing would show them until the background reconcile without this.
+    expect(mocks.refreshAfterOnboarding).toHaveBeenCalledTimes(1);
   });
 });
 

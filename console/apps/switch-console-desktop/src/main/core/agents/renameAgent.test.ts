@@ -198,6 +198,38 @@ describe('renameAgent', () => {
     expect(h.writeDefinition).not.toHaveBeenCalled();
   });
 
+  it('refuses a name whose credentials belong to another Switch Console install', async () => {
+    // `agentNameTaken` queries this install's database, so a second install's
+    // agent in the same directory is invisible to it — and the move clobbers
+    // rather than merges, so its token would simply be gone (CHOO-1960).
+    const THEIRS = JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://their-switch.example.com',
+        SWITCH_API_TOKEN: 'their-token',
+        SWITCH_AGENT_ID: 'their-agent',
+      },
+    });
+    const fs = fakeFs({
+      [agentSettingsRelativePath('old-name')]: CREDS,
+      [agentSettingsRelativePath('new-name')]: THEIRS,
+    });
+    h.state.fs = fs;
+
+    const result = await renameAgent({ agentId: 'agent-1', newName: 'new-name' });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'credentials-conflict',
+        name: 'new-name',
+        endpoint: 'https://their-switch.example.com',
+      },
+    });
+    expect(await fs.read(agentSettingsRelativePath('new-name'))).toBe(THEIRS);
+    expect(await fs.read(agentSettingsRelativePath('old-name'))).toBe(CREDS);
+    expect(h.writeDefinition).not.toHaveBeenCalled();
+  });
+
   it('returns the renamed agent on success', async () => {
     h.state.fs = fakeFs({ [agentSettingsRelativePath('old-name')]: CREDS });
 

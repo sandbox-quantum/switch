@@ -54,15 +54,30 @@ export class AgentsStore {
     });
   }
 
-  /** One agent by id, across every location — the palette resolves an agent's
-   *  provider from a search hit this way, so it can show the same provider mark
-   *  the sidebar does. */
+  /** One agent by id, across every location — the palette resolves a search
+   *  hit's agent this way, so it can wear the same face and provider mark the
+   *  sidebar gives it. */
   agentById(agentId: string): Agent | null {
     for (const agents of this.byLocation.values()) {
       const found = agents.find((a) => a.id === agentId);
       if (found) return found;
     }
     return null;
+  }
+
+  /**
+   * The agent an agent page is routed to — its location plus its name, the pair
+   * every caller of the `location` view navigates with.
+   *
+   * A route carrying no name is answered only where there is nothing to guess
+   * between: a location holding exactly one agent resolves to it. Beyond that,
+   * null rather than a guess — picking one of several would put another agent's
+   * provider and identity above someone's session list.
+   */
+  agentAtLocation(locationId: string, agentName: string | undefined): Agent | null {
+    const agents = this.byLocation.get(locationId) ?? [];
+    if (agentName === undefined) return agents.length === 1 ? agents[0]! : null;
+    return agents.find((a) => a.name === agentName) ?? null;
   }
 
   /**

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { rpc } from '@renderer/lib/ipc';
 import { Field, FieldDescription, FieldTitle } from '@renderer/lib/ui/field';
 import { Switch } from '@renderer/lib/ui/switch';
@@ -36,7 +37,15 @@ export function AutoApproveSettingsSection({
   return (
     <Field>
       <div className="flex items-center justify-between gap-3">
-        <FieldTitle>Bypass permissions</FieldTitle>
+        <FieldTitle>
+          <span className="flex items-center gap-1.5">
+            Bypass permissions
+            <InfoTooltip
+              label="More info about bypassing permissions"
+              content="Sessions start with the provider's auto-approve flag, including ones started automatically. Turn it on only for agents you trust to run unattended."
+            />
+          </span>
+        </FieldTitle>
         {single && (
           <AutoApproveSwitch
             agentId={single.id}
@@ -46,9 +55,7 @@ export function AutoApproveSettingsSection({
         )}
       </div>
       <FieldDescription className="text-foreground-muted">
-        When on, Switch Console starts this agent&apos;s sessions with permission prompts bypassed
-        (the provider&apos;s auto-approve flag). Off by default; turn it on only for agents you
-        trust to run unattended.
+        Run this agent&apos;s sessions without permission prompts.
       </FieldDescription>
       {!single && (
         <div className="flex flex-col gap-2">

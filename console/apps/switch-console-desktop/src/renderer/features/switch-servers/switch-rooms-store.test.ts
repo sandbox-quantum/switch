@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 
 const listRemoteRooms = vi.hoisted(() => vi.fn());
@@ -312,31 +312,6 @@ describe('agent memberships', () => {
     expect(store.localMemberIds('gone')).toEqual([]);
   });
 
-  it('discloses members the server counts that this install cannot draw', async () => {
-    serversStore.servers = [{ id: 'srv-a', managed: true }];
-    serversStore.activeServerId = 'srv-a';
-    listRemoteRooms.mockImplementation(async () => [
-      room('shared', 'user-of-srv-a', { agentCount: 3 }),
-    ]);
-    listAgentRooms.mockImplementation(async () => [
-      { roomId: 'shared', roomName: 'r', archived: false, status: 'live', roomRole: null },
-    ]);
-    const store = new SwitchRoomsStore();
-
-    await store.loadRoomNames();
-    await store.ensureMembershipsFor([{ serverId: 'srv-a', switchAgentId: 'agent-1' }]);
-
-    // One member is drawable here; the other two exist but belong elsewhere.
-    expect(store.localMemberIds('shared')).toEqual(['agent-1']);
-    expect(store.undrawableMemberCount('shared')).toBe(1 + 1);
-  });
-
-  it('reports the undrawable count as unknown until the room list has loaded', () => {
-    const store = new SwitchRoomsStore();
-
-    expect(store.undrawableMemberCount('never-loaded')).toBeNull();
-  });
-
   it('re-reads every tracked agent on refresh, not just the ones already cached', async () => {
     // An agent created after the sidebar mounted has no cache entry, so a
     // refresh keyed on the cache would never fetch it.
@@ -399,7 +374,98 @@ describe('agent memberships', () => {
     ]);
 
     expect(store.roomsFor('srv-a', 'agent-1')).toBeUndefined();
-    expect(store.errorFor('srv-a', 'agent-1')).toBe('nope');
+    expect(store.errorFor('srv-a', 'agent-1')).toBe(
+      'Could not load the rooms this agent belongs to. (nope)'
+    );
     expect(store.roomsFor('srv-a', 'agent-2')?.[0].roomId).toBe('room-b');
+  });
+});
+
+describe('rooms offered to a picker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serversStore.servers = [{ id: 'srv-a' }];
+    serversStore.activeServerId = 'srv-a';
+  });
+
+  it('offers every room the server returned, not only the ones this user made', async () => {
+    // The sidebar deliberately lists a narrower set — see `listedRoomsOnServer`.
+    // A picker is a list you went looking for, so it must not hide a room you
+    // are entitled to join.
+    listRemoteRooms.mockResolvedValue([
+      room('mine', 'user-of-srv-a'),
+      room('someone-elses', 'user-of-someone-else'),
+      room('ownerless', null),
+    ]);
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.readableRoomsOnServer('srv-a').map((r) => r.id)).toEqual([
+      'mine',
+      'someone-elses',
+      'ownerless',
+    ]);
+    expect(store.listedRoomsOnServer('srv-a').map((r) => r.id)).toEqual(['mine']);
+  });
+
+  it('leaves out archived rooms, which are not joinable', async () => {
+    listRemoteRooms.mockResolvedValue([
+      room('live', 'user-of-someone-else'),
+      room('gone', 'user-of-someone-else', { archived: true }),
+    ]);
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.readableRoomsOnServer('srv-a').map((r) => r.id)).toEqual(['live']);
+  });
+
+  it('offers nothing for a server whose rooms were never read', () => {
+    expect(new SwitchRoomsStore().readableRoomsOnServer('srv-a')).toEqual([]);
+  });
+});
+
+describe('who may delete a room', () => {
+  const statusWithRole = (role: string | undefined) => (serverId: string) => ({
+    user: { id: `user-of-${serverId}`, role },
+  });
+  const originalStatusFor = serversStore.statusFor;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serversStore.servers = [{ id: 'srv-a' }];
+    serversStore.statusFor = statusWithRole(undefined);
+  });
+
+  afterEach(() => {
+    serversStore.statusFor = originalStatusFor;
+  });
+
+  it('lets the owner delete their own room', () => {
+    const store = new SwitchRoomsStore();
+    expect(store.canDeleteRoom('srv-a', room('r', 'user-of-srv-a'))).toBe(true);
+  });
+
+  it('refuses someone else’s room', () => {
+    const store = new SwitchRoomsStore();
+    expect(store.canDeleteRoom('srv-a', room('r', 'user-of-someone-else'))).toBe(false);
+  });
+
+  it('lets an admin delete a room they do not own, matching the gateway', () => {
+    serversStore.statusFor = statusWithRole('admin');
+    const store = new SwitchRoomsStore();
+    expect(store.canDeleteRoom('srv-a', room('r', 'user-of-someone-else'))).toBe(true);
+  });
+
+  it('refuses an ownerless room to a non-admin, rather than treating it as unclaimed', () => {
+    const store = new SwitchRoomsStore();
+    expect(store.canDeleteRoom('srv-a', room('r', null))).toBe(false);
+  });
+
+  it('refuses while signed out, when there is no one to compare against', () => {
+    serversStore.statusFor = () => ({ user: null }) as never;
+    const store = new SwitchRoomsStore();
+    expect(store.canDeleteRoom('srv-a', room('r', 'user-of-srv-a'))).toBe(false);
   });
 });

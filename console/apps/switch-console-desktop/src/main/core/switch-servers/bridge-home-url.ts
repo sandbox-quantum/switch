@@ -8,7 +8,7 @@ import type { RemoteBridge, SwitchServer } from '@shared/core/switch-servers/swi
  * Switch Console can reach over one the server merely knows about.
  *
  * The gateway builds `home_url` from the bridge's connection config, which is
- * right for Slack, Discord and Teams — public platforms whose URLs are the
+ * right for Slack, Discord, Teams and Telegram — public platforms whose URLs are the
  * same everywhere. It is *wrong* for a managed stack's bundled Mattermost: the
  * configured `url` is the in-compose `http://mattermost:8065`, unreachable from
  * the user's machine, and `public_url` is unset because the deployment does not

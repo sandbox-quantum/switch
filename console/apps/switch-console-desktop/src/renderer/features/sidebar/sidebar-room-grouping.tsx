@@ -1,11 +1,18 @@
-import { ChevronRight, DoorOpen, ExternalLink, Plus } from 'lucide-react';
+import { ChevronRight, DoorOpen, MoreVertical, Plus, Trash2 } from 'lucide-react';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
-import { openRoomChannel, openRoomGatewayPage } from '@renderer/features/switch-rooms/room-links';
+import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { appState } from '@renderer/lib/stores/app-state';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@renderer/lib/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import { SidebarItemMiniButton, SidebarMenuRow } from './sidebar-primitives';
@@ -35,10 +42,26 @@ export function isRoomNameKnown(roomKey: string): boolean {
   return switchRoomsStore.roomNameById(roomKey) !== null;
 }
 
-/** Open a room's detail page in the gateway web app (no-op for Unassigned). */
-export function openRoomInGateway(roomKey: string): void {
-  if (roomKey === UNASSIGNED_ROOM_KEY) return;
-  openRoomGatewayPage(roomKey);
+/**
+ * What a room row needs to offer deletion, or null when it must not offer it —
+ * because the row is the Unassigned bucket, because the room's server or
+ * summary has not loaded, or because this user is neither its owner nor an
+ * admin.
+ *
+ * Returning the target rather than a boolean keeps the confirmation's arguments
+ * and the decision to show it in one place; a row cannot end up with the button
+ * and no idea what it would delete.
+ */
+export function deleteRoomAction(
+  roomKey: string,
+  showDeleteRoomModal: (args: { serverId: string; roomId: string; roomName: string }) => void
+): (() => void) | null {
+  if (roomKey === UNASSIGNED_ROOM_KEY) return null;
+  const serverId = switchRoomsStore.roomServerId(roomKey);
+  const room = switchRoomsStore.roomSummaryById(roomKey);
+  if (!serverId || !room) return null;
+  if (!switchRoomsStore.canDeleteRoom(serverId, room)) return null;
+  return () => showDeleteRoomModal({ serverId, roomId: roomKey, roomName: room.name });
 }
 
 /** Show a room's conversation in the main panel (no-op for Unassigned, which
@@ -100,44 +123,44 @@ export function groupByRoom(
 }
 
 /**
- * A room header row. The leading icon doubles as the expand toggle — it shows
- * the bridged platform's logo (Slack, Mattermost, …) for bridged rooms, else a
- * generic door icon, and swaps to a chevron on hover (rotated when expanded).
- * Clicking the row body toggles expand/collapse; opening the room in the gateway
- * web app is scoped to the dedicated "go to" button (named rooms only).
+ * A room header row. It leads with the bridged platform's logo (Slack,
+ * Mattermost, …), or a generic door icon when the room is not bridged.
+ *
+ * Clicking the row opens the room; expanding and collapsing it belongs to the
+ * chevron at the far end and to nothing else, so reading a room never rearranges
+ * the tree underneath it. A row with no room behind it (Unassigned) has nothing
+ * to open and so is not clickable at all.
+ *
+ * Everything else a room can do sits behind one menu rather than a strip of
+ * icon buttons. A row that grows a button per capability spends the width it
+ * needs for the room's name on affordances most people never press.
  */
 export function RoomRow({
   label,
-  count,
+  hasChildren,
   expanded,
   onToggle,
-  onOpenGateway,
   onOpenChannel = null,
   onSelect = null,
   onAddAgent = null,
+  onDelete = null,
   isActive = false,
   depth = 0,
   bridgeType = null,
-  undrawableCount = null,
   nameKnown = true,
   nameBlockedBySignIn = false,
 }: {
   label: string;
-  count: number;
+  /** Whether there is anything under this room to unfold. */
+  hasChildren: boolean;
   /** False when `label` is a stand-in because the room's name has not loaded.
    * Rendered as visibly provisional rather than as the room's name. */
   nameKnown?: boolean;
   /** True when the name is missing because the room's server is signed out —
    * something to act on, not to wait for. */
   nameBlockedBySignIn?: boolean;
-  /** Members the server counts that this install cannot draw — agents
-   * registered on another Switch Console, plus any whose membership failed to load.
-   * Disclosed next to the count so a member that exists but cannot be shown is
-   * not read as a member that is not there. Null when unknown. */
-  undrawableCount?: number | null;
   expanded: boolean;
   onToggle: () => void;
-  onOpenGateway: () => void;
   /** Open the room's conversation in the main panel. Null for rows that have
    * no room behind them (Unassigned), which stay expand-only. */
   onSelect?: (() => void) | null;
@@ -149,44 +172,37 @@ export function RoomRow({
   /** Add an agent to this room. Null for rows with no room behind them
    * (Unassigned), or where membership is not editable from here. */
   onAddAgent?: (() => void) | null;
+  /** Delete the room. Null unless the signed-in user may — the gateway allows
+   * its owner and admins, and offering it to anyone else only earns a refusal. */
+  onDelete?: (() => void) | null;
   depth?: number;
   /** Bridge platform type (`slack`, `mattermost`, …) when the room is bridged. */
   bridgeType?: string | null;
 }) {
   const channelLinkable = onOpenChannel !== null && hasBridgeIcon(bridgeType);
+  const hasRoomActions = onAddAgent !== null || channelLinkable || onDelete !== null;
   return (
     <SidebarMenuRow
-      className="group/room flex h-8 items-center gap-1 px-1"
+      className={cn(
+        'group/room flex items-center gap-[9px]',
+        onSelect === null && 'cursor-default'
+      )}
       isActive={isActive}
-      style={depthIndent(depth)}
+      // Indent on the content below, not here, so the highlight still spans the
+      // sidebar's full width at every depth.
       onMouseDown={(e) => e.preventDefault()}
-      onClick={onSelect ?? onToggle}
+      onClick={onSelect ?? undefined}
     >
-      <SidebarItemMiniButton
-        type="button"
-        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-        className="relative"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle();
-        }}
+      <span
+        className="flex size-4 shrink-0 items-center justify-center"
+        style={{ marginLeft: depthIndent(depth).paddingLeft }}
       >
         {hasBridgeIcon(bridgeType) ? (
-          <BridgeIcon
-            bridgeType={bridgeType}
-            size={16}
-            className="absolute h-4 w-4 opacity-100 transition-opacity duration-150 group-hover/room:opacity-0"
-          />
+          <BridgeIcon bridgeType={bridgeType} size={16} className="h-4 w-4" />
         ) : (
-          <DoorOpen className="absolute h-4 w-4 text-foreground-muted opacity-100 transition-opacity duration-150 group-hover/room:opacity-0" />
+          <DoorOpen className="h-4 w-4 text-foreground-muted" />
         )}
-        <ChevronRight
-          className={cn(
-            'absolute h-4 w-4 opacity-0 transition-all duration-150 group-hover/room:opacity-100',
-            expanded && 'rotate-90'
-          )}
-        />
-      </SidebarItemMiniButton>
+      </span>
       {nameKnown ? (
         <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
       ) : (
@@ -205,77 +221,60 @@ export function RoomRow({
           </TooltipContent>
         </Tooltip>
       )}
-      {channelLinkable && (
-        <Tooltip>
-          <TooltipTrigger
+      {hasRoomActions && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
             render={
               <SidebarItemMiniButton
                 type="button"
-                aria-label={`Open ${label} in ${bridgePlatformLabel(bridgeType)}`}
-                className="opacity-0 transition-opacity duration-150 group-hover/room:opacity-100"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenChannel?.();
-                }}
+                aria-label={`Actions for ${label}`}
+                className="opacity-0 transition-opacity duration-150 group-hover/room:opacity-100 data-[popup-open]:opacity-100"
+                onClick={(e) => e.stopPropagation()}
               >
-                <BridgeIcon bridgeType={bridgeType} size={14} className="h-3.5 w-3.5" />
+                <MoreVertical className="h-3.5 w-3.5" />
               </SidebarItemMiniButton>
             }
           />
-          <TooltipContent>Open in {bridgePlatformLabel(bridgeType)}</TooltipContent>
-        </Tooltip>
+          <DropdownMenuContent align="end">
+            {onAddAgent && (
+              <DropdownMenuItem onClick={onAddAgent}>
+                <Plus className="size-4" />
+                Add an agent to this room
+              </DropdownMenuItem>
+            )}
+            {channelLinkable && (
+              <DropdownMenuItem onClick={() => onOpenChannel?.()}>
+                <BridgeIcon bridgeType={bridgeType} size={16} className="size-4" />
+                Open in {bridgePlatformLabel(bridgeType)}
+              </DropdownMenuItem>
+            )}
+            {onDelete && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                  <Trash2 className="size-4" />
+                  Delete room…
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
-      {onAddAgent && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <SidebarItemMiniButton
-                type="button"
-                aria-label={`Add an agent to ${label}`}
-                className="opacity-0 transition-opacity duration-150 group-hover/room:opacity-100"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAddAgent();
-                }}
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </SidebarItemMiniButton>
-            }
+      {hasChildren && (
+        <SidebarItemMiniButton
+          type="button"
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+          aria-expanded={expanded}
+          className="opacity-0 transition-opacity duration-150 group-hover/room:opacity-100 focus-visible:opacity-100"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+        >
+          <ChevronRight
+            className={cn('h-4 w-4 transition-transform duration-150', expanded && 'rotate-90')}
           />
-          <TooltipContent>Add an agent to this room</TooltipContent>
-        </Tooltip>
-      )}
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <SidebarItemMiniButton
-              type="button"
-              aria-label={`Open ${label} in gateway`}
-              className="opacity-0 transition-opacity duration-150 group-hover/room:opacity-100"
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenGateway();
-              }}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </SidebarItemMiniButton>
-          }
-        />
-        <TooltipContent>Open in gateway</TooltipContent>
-      </Tooltip>
-      <span className="shrink-0 text-xs text-foreground-tertiary-passive">{count}</span>
-      {undrawableCount !== null && undrawableCount > 0 && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span className="shrink-0 text-xs text-foreground-muted">+{undrawableCount}</span>
-            }
-          />
-          <TooltipContent>
-            {undrawableCount} more {undrawableCount === 1 ? 'member is' : 'members are'} in this
-            room but not on this copy of Switch Console, so they cannot be shown here
-          </TooltipContent>
-        </Tooltip>
+        </SidebarItemMiniButton>
       )}
     </SidebarMenuRow>
   );

@@ -20,16 +20,17 @@ class ContractRange(NamedTuple):
 # Where each artifact is. Says nothing about compatibility — that is
 # CONTRACTS below. The two must never be derived from one another.
 ARTIFACT_VERSIONS: Final[dict[str, str]] = {
-    "switch-core": "0.13.1",
-    "switch-console": "0.21.0",
-    "agent-runtime": "0.3.0",
-    "sidecar": "1.9.0",
-    "gateway": "0.13.1",
-    "setup": "0.13.1",
-    "helm-chart": "0.13.1",
-    "compose": "0.13.1",
-    "switch-connector": "0.8.1",
-    "switch-connector-codex": "0.2.3",
+    "switch-core": "0.17.3",
+    "switch-console": "0.27.4",
+    "agent-runtime": "0.3.2",
+    "sidecar": "1.9.4",
+    "gateway": "0.17.3",
+    "setup": "0.17.3",
+    "helm-chart": "0.17.3",
+    "compose": "0.17.3",
+    "switch-connector": "0.9.6",
+    "switch-connector-codex": "0.3.7",
+    "switch-connector-opencode": "0.1.4",
 }
 
 CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {

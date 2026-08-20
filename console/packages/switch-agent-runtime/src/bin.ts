@@ -21,12 +21,15 @@
  * from its own getppid(), so each session's hook reaches its own runtime
  * without any cross-session coordination.
  *
- * Identity is resolved in two steps, environment first. Switch Console puts the
- * `SWITCH_*` vars in the session's environment when it launches one itself, and
- * that path is taken whole whenever all three are present. Otherwise the local
- * agent store decides — the working tree says which agents are provisioned
- * here, `$HOME` holds their secrets — and where it names more than one, the
- * session picks with `select_agent` before anything else will answer.
+ * Identity is resolved from the environment and the local agent store together,
+ * environment first. Switch Console puts all three `SWITCH_*` vars in a session
+ * it launches itself, and that is taken whole. Short of that the environment is
+ * read as a pointer rather than a credential: an agent id with no token names
+ * the store entry to complete from disk, an endpoint narrows the store to one
+ * server, and neither is guessed past — an id matching nothing still refuses.
+ * The store is the working tree's `.switch/agents/`, one file per agent
+ * carrying its own token, and where it names more than one the session picks
+ * with `select_agent` before anything else will answer.
  *
  * Endpoints are the one ambiguity that cannot be deferred: the tool surface is
  * fetched before the handshake, so the server has to be known by then. A store
@@ -151,6 +154,28 @@ const ENV = {
   agentId: envValue(ENV_AGENT_ID),
 };
 
+const ENV_RAW: [string, string][] = [
+  ['SWITCH_API_ENDPOINT', ENV_ENDPOINT],
+  ['SWITCH_API_TOKEN', ENV_TOKEN],
+  ['SWITCH_AGENT_ID', ENV_AGENT_ID],
+];
+
+/**
+ * Variables a host left as `${VAR}` while expanding others.
+ *
+ * All of them unexpanded is Claude Code's pre-expansion spawn, which is
+ * ordinary and handled by treating the values as absent. *Some* of them is not:
+ * it means a templating step ran and one substitution did not resolve. Left
+ * alone that reads as "this variable was deliberately omitted", which for the
+ * token means quietly authenticating with whatever the store holds instead of
+ * the credential the environment was trying to supply.
+ */
+function partiallyUnresolved(): string[] {
+  const unresolved = ENV_RAW.filter(([, raw]) => looksUnresolved(raw));
+  const resolved = ENV_RAW.filter(([, raw]) => raw !== '' && !looksUnresolved(raw));
+  return unresolved.length > 0 && resolved.length > 0 ? unresolved.map(([name]) => name) : [];
+}
+
 /**
  * Agents provisioned here when startup could not pick between them.
  *
@@ -174,36 +199,98 @@ function bindIdentity(agent: { endpoint: string; token: string; agentId: string;
 /**
  * Work out who this process is.
  *
- * Environment first, unconditionally: switchdash launches the majority of
- * sessions and injects the identity it has already chosen for each one, and
- * that path predates the store. Only a session nobody configured that way falls
- * through to disk.
+ * A complete environment wins unconditionally: switchdash launches the majority
+ * of sessions and injects the identity it has already chosen for each one, and
+ * that path predates the store.
+ *
+ * Short of that, the environment is read as a *pointer* rather than a
+ * credential. An agent id with no token names an entry in the store to complete
+ * from disk; an endpoint on its own narrows the store to one server. Only an
+ * environment saying nothing at all leaves the choice entirely to the store.
  */
 function resolveIdentity(): void {
+  const stuck = partiallyUnresolved();
+  if (stuck.length > 0) {
+    return degrade(
+      `${stuck.join(' and ')} ${stuck.length > 1 ? 'are' : 'is'} still a literal \${...} while other SWITCH_* variables expanded, so a substitution step did not finish\n` +
+        `Resolving the rest from the agent store would authenticate as whatever is on disk and hide that, so this refuses instead.\n` +
+        `Fix the expansion, or unset ${stuck.join(' and ')} to use the store deliberately.`
+    );
+  }
+
   if (ENV.endpoint && ENV.token && ENV.agentId) {
     bindIdentity({ ...ENV, name: '' });
     return;
   }
 
-  // Half an identity is a broken config, not a reason to go looking on disk:
-  // silently authenticating as some other agent is worse than not starting.
-  if (ENV.token || ENV.agentId) {
+  // A token that names nobody is a broken config however the store looks, and
+  // it is not completed from disk the way a bare agent id is: the missing piece
+  // would be the endpoint, and inferring where to send a credential is a
+  // different order of risk from inferring which credential to send.
+  if (ENV.token) {
     return degrade(
-      `incomplete SWITCH_* environment — got ${[
-        ENV.endpoint ? 'endpoint' : null,
-        ENV.token ? 'token' : null,
-        ENV.agentId ? 'agent_id' : null,
-      ]
-        .filter(Boolean)
-        .join(' + ')}, need all three\n` +
+      `incomplete SWITCH_* environment — a token was supplied, so all three are required\n` +
         `  endpoint=${ENV.endpoint || 'MISSING'}\n` +
-        `  token=${ENV.token ? 'set' : 'MISSING'}\n` +
+        `  token=set\n` +
         `  agent_id=${ENV.agentId || 'MISSING'}\n` +
-        `Set the missing ones, or unset all three to use the local agent store instead.`
+        `Set the missing one, or unset SWITCH_API_TOKEN to resolve against the agent store instead.`
     );
   }
 
   const store = readAgentStore(process.cwd());
+
+  // An environment that names an agent but carries no token is not half a
+  // config, it is a pointer: a host settings file that says which agent this
+  // directory is while deliberately keeping the credential out of the working
+  // tree. Claude Code exports such a block into this process, so refusing it
+  // outright stranded exactly the sessions the store was built to serve.
+  //
+  // Completing it from disk keeps the guarantee the refusal was protecting.
+  // The agent id makes the lookup exact — the entry it matches is the agent the
+  // environment asked for, not one picked for it — so there is no way to end up
+  // authenticated as somebody else. A miss stays fatal for that same reason:
+  // falling through to a general store search could bind a different agent than
+  // the one named, which is the failure the check exists to prevent.
+  if (ENV.agentId) {
+    const byId = store.agents.filter((a) => a.agentId === ENV.agentId);
+    // An explicit endpoint narrows first, so it can break a tie rather than
+    // only confirming or rejecting a choice already made.
+    const claiming = ENV.endpoint
+      ? byId.filter((a) => normalizeEndpoint(a.endpoint) === normalizeEndpoint(ENV.endpoint))
+      : byId;
+
+    // Two files still claiming one agent hold two tokens, and nothing in the
+    // store says which is current. Refuse rather than take the first: the hook
+    // that mediates this session's tool calls refuses on exactly this
+    // condition, so binding here would produce a session that works while its
+    // governance is silently switched off — the worst outcome available.
+    if (claiming.length > 1) {
+      return degrade(
+        `SWITCH_AGENT_ID is ${ENV.agentId}, but ${claiming.length} entries in ${store.projectDir} claim it:\n` +
+          claiming.map((a) => `  ${a.slug}.json`).join('\n') +
+          `\nLeave exactly one of them, or set SWITCH_API_TOKEN to say which credential to use.`
+      );
+    }
+
+    if (claiming.length === 1) {
+      bindIdentity(claiming[0]);
+      return;
+    }
+
+    // "No agents" and "agents that could not be read" need different fixes, so
+    // the unusable entries are named rather than collapsed into "empty".
+    const unusable = store.unusable.length
+      ? `\nEntries found but unusable:\n${store.unusable.map((u) => `  ${u.slug}: ${u.reason}`).join('\n')}`
+      : '';
+
+    return degrade(
+      `SWITCH_AGENT_ID is ${ENV.agentId} and SWITCH_API_TOKEN is not set, so the token has to come from ${store.projectDir} — and no agent there matches\n` +
+        (byId.length > 0
+          ? `  ${byId.map((a) => `${a.name} has that id but belongs to ${normalizeEndpoint(a.endpoint)}`).join('\n  ')}, while SWITCH_API_ENDPOINT is ${normalizeEndpoint(ENV.endpoint)}\n`
+          : `  ${store.agents.length === 0 ? 'no usable agent is provisioned there' : `known: ${store.agents.map((a) => `${a.name} (${a.agentId})`).join(', ')}`}\n`) +
+        `Set SWITCH_API_TOKEN as well, or unset SWITCH_AGENT_ID to pick from the store, or run the connector's \`configure\` skill in this directory.${unusable}`
+    );
+  }
 
   if (store.agents.length === 0) {
     const unusable = store.unusable.length
@@ -468,7 +555,7 @@ const mcp = new Server(
       'If a notification carries a gap warning (a `gap` entry in its meta, and a line saying earlier events were dropped), some room events could not be replayed — call read_context before responding rather than assuming you have the full picture. A gap never arrives as a notification of its own; it is attached to the next event you receive.',
       '',
       'When you receive a message event:',
-      '1. Call read_context with the since parameter set to a timestamp a few minutes before the event timestamp to get recent conversation context without re-reading the full history.',
+      '1. Call read_context ONLY if you are missing context: missed_count is above 0, a gap warning arrived, the message joins a thread or discussion you have not been following, or a long time has passed since your last read. Set since to a few minutes before the event timestamp. When missed_count is 0 and you have been following the room, the event itself is enough — skip the read and answer.',
       '2. Understand what is being asked or discussed.',
       '3. Respond by calling post_message (or send_targeted_message if addressing a specific agent).',
       '',
@@ -481,14 +568,14 @@ const mcp = new Server(
       '',
       'When you receive a task_delegate event (only delivered if your integration profile has can_accept=true):',
       '1. Call accept_task with the task_id to move it to ongoing.',
-      '2. Call read_context with since to understand the conversation context.',
+      '2. Call read_context with since if the task summary and description do not tell you enough about the surrounding conversation.',
       '3. Perform the work described in the task. Optionally call update_task(task_id, update) with progress messages as you work — these are persisted.',
       '4. Call finalise_task(task_id, outcome) with a one-string description of what happened (success or failure).',
       '',
       'When you receive task_accept, task_update, or task_finalise events for tasks you delegated, review the progress/outcome and continue your work accordingly.',
       'When you receive a task_cancel event, the task is dead — do not finalise it.',
       '',
-      'You must be connected to the room (via connect_to_room) before calling read_context, post_message, send_targeted_message, or any task tool.',
+      'read_context, post_message, send_targeted_message and the task tools all act on the room you are connected to, so connect_to_room comes first — once. That connection then holds for the rest of the session: do not reconnect before each call. Call connect_to_room again only to switch rooms, to return after switching, or when a tool fails saying you are not connected.',
     ].join('\n'),
   }
 );

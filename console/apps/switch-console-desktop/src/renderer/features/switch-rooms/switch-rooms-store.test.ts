@@ -32,7 +32,13 @@ describe('session → room connections', () => {
     const store = new SwitchRoomsStore();
 
     store.ensureLoaded();
-    await vi.waitFor(() => expect(store.seedError).toBe('ipc down'));
+    // The banner says what could not be read; the raw reason is kept with it
+    // rather than being the whole message.
+    await vi.waitFor(() =>
+      expect(store.seedError).toBe(
+        'Could not read which Switch rooms these sessions are connected to. (ipc down)'
+      )
+    );
 
     getConnections.mockResolvedValue([{ sessionId: 'sess-2', roomId: 'room-b' }]);
     store.ensureLoaded();

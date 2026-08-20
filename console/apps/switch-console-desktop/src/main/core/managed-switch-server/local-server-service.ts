@@ -4,6 +4,8 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
+  CHECKOUT_IMAGE_TAG,
+  type CheckoutBuild,
   type DockerAvailability,
   type LocalServerStatus,
   type StartLocalServerResult,
@@ -13,6 +15,11 @@ import {
   localServerLogChannel,
   localServerStatusChannel,
 } from '@shared/events/localSwitchServerEvents';
+import {
+  findCoreCheckout,
+  isCheckoutBuildEnabled,
+  setCheckoutBuildEnabled,
+} from './checkout-build';
 import { isStackRunning } from './compose';
 import { LOCAL_SERVER_NAME } from './constants';
 import { readVersionStatus } from './deployed-version';
@@ -37,6 +44,7 @@ class LocalServerService {
     version: COMPATIBLE_SWITCH_VERSION,
     deployedVersion: null,
     drift: null,
+    checkoutBuild: null,
     message: null,
     error: null,
   };
@@ -57,6 +65,47 @@ class LocalServerService {
     events.emit(localServerStatusChannel, this.status);
   }
 
+  /**
+   * The dev-only checkout-build option for this machine, or null when it is not
+   * on offer: a released build, or a dev build that was not launched from a
+   * Switch checkout (so there are no Dockerfiles to build from).
+   */
+  private async readCheckoutBuild(host: ServerHost): Promise<CheckoutBuild | null> {
+    if (!import.meta.env.DEV) return null;
+    const root = findCoreCheckout();
+    if (!root) return null;
+    return { root, enabled: await isCheckoutBuildEnabled(host) };
+  }
+
+  /** The checkout the next start should build from, or null to pull the pinned
+   * released images. */
+  private checkoutRootForStart(): string | null {
+    const checkout = this.status.checkoutBuild;
+    return checkout?.enabled ? checkout.root : null;
+  }
+
+  /**
+   * Turn building from the local checkout on or off. Dev-only, and only when a
+   * checkout was found: anything else is a bug in the caller rather than a
+   * state to absorb quietly. Takes effect on the next start — the running
+   * containers are whatever the last start built or pulled.
+   */
+  async setCheckoutBuild(enabled: boolean): Promise<void> {
+    const checkout = this.status.checkoutBuild;
+    if (!checkout) {
+      throw new Error(
+        'Building from a local checkout is only available in a dev build launched from a Switch checkout.'
+      );
+    }
+    const host: ServerHost = new LocalServerHost();
+    try {
+      await setCheckoutBuildEnabled(host, enabled);
+      this.setStatus({ checkoutBuild: { ...checkout, enabled } });
+    } finally {
+      host.dispose();
+    }
+  }
+
   /** Reconcile status at boot so a stack that survived the last quit shows as
    * running without the user re-starting it, and so an app update that moved
    * the switch-core pin underneath it surfaces as drift instead of leaving the
@@ -68,12 +117,19 @@ class LocalServerService {
   async initialize(): Promise<void> {
     const host: ServerHost = new LocalServerHost();
     try {
+      this.setStatus({ checkoutBuild: await this.readCheckoutBuild(host) });
       const managed = await getManagedServer();
       if (!managed) return;
       if (await isStackRunning(host)) {
         this.setStatus({ phase: 'running', serverId: managed.id, message: null, error: null });
       }
-      this.setStatus(await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION));
+      const version = await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
+      // A checkout build is deliberately not a comparable version, so the pin
+      // comparison has nothing to say about it — the UI reports it as a
+      // checkout build instead of as unexplained drift.
+      this.setStatus(
+        version.deployedVersion === CHECKOUT_IMAGE_TAG ? { ...version, drift: null } : version
+      );
     } catch (error) {
       log.warn('local-switch-server: boot status reconcile failed', { error });
     } finally {
@@ -88,6 +144,7 @@ class LocalServerService {
     this.busy = true;
     this.startAbort = new AbortController();
     const host: ServerHost = new LocalServerHost();
+    const checkoutRoot = this.checkoutRootForStart();
     try {
       this.setStatus({ phase: 'starting', error: null, message: 'Checking Docker…' });
       const result = await startStack({
@@ -97,6 +154,7 @@ class LocalServerService {
         onMessage: (message) => this.setStatus({ message }),
         onLog: (line) => events.emit(localServerLogChannel, { line }),
         signal: this.startAbort.signal,
+        checkoutRoot,
       });
       if (result.kind === 'docker-unavailable') {
         this.setStatus({ phase: 'error', error: result.detail });
@@ -118,7 +176,7 @@ class LocalServerService {
           serverId: result.serverId,
           message: null,
           error: null,
-          deployedVersion: COMPATIBLE_SWITCH_VERSION,
+          deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
           drift: null,
         });
       }

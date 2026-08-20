@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,6 +27,25 @@ if TYPE_CHECKING:
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
+
+
+def _bridge_client_localpart(bridge_type: str, display_name: str) -> str:
+    """The Matrix localpart for a messaging app's own client.
+
+    The random tail is what makes disconnecting and reconnecting work. The
+    readable part is derived from the app's type and name, which an operator is
+    free to reuse — and the homeserver has no API for removing an account, so
+    the old one is still there when they do. Reusing the name meant either
+    colliding with it, or adopting an account whose password Switch no longer
+    holds: shared-secret registration reports an existing user as success
+    without applying the new one, so the second reads as a working connection
+    that can never log in.
+
+    A fresh name each time costs an abandoned account on the homeserver, which
+    is already the case and is logged on removal.
+    """
+    safe_name = re.sub(r"[^a-z0-9._=-]", "-", display_name.lower())[:16]
+    return f"switch-bridge-{bridge_type}-{safe_name}-{uuid4().hex[:8]}"
 
 
 class CollaborationBridgeLifecycleService:
@@ -84,6 +104,54 @@ class CollaborationBridgeLifecycleService:
         to know the platform specifics."""
         bridge = self._bridges.get(bridge_id)
         return bridge.adapter if bridge is not None else None
+
+    def supports_channel_creation(self, bridge_type: str) -> bool:
+        """Whether this platform can create a channel from Switch at all.
+
+        Answered from the registered adapter *class*, so it holds for a bridge
+        that is stopped and for a type nobody has registered a connection for
+        yet — both moments where an operator needs the answer. An unknown type
+        is reported as capable: the registration that follows rejects it by
+        name, which is a better error than a capability claim about a platform
+        Switch does not have."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return True
+        return adapter_cls.supports_channel_creation
+
+    def supports_directory_search(self, bridge_type: str) -> bool:
+        """Whether this platform has a user directory Switch can search.
+
+        Read from the adapter class for the same reason as
+        `supports_channel_creation`: the answer decides whether to even offer
+        someone the "which account is you" step while connecting, which is
+        before any connection exists. An unknown type is reported as
+        searchable — registration rejects it by name a moment later, which is a
+        better error than a capability claim about a platform Switch does not
+        have.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return True
+        return adapter_cls.supports_directory_search
+
+    def renders_custom_url_schemes(self, bridge_type: str) -> bool:
+        """Whether this platform makes a `switchdash://` link clickable.
+
+        Decides whether the "Open in Switch Console" deeplink is rewritten to
+        the gateway's https redirect. The redirect exists for platforms that
+        linkify only http(s) — a hop through the browser that lands in the same
+        place, but a hop. A platform that renders the scheme should be handed
+        the real link.
+
+        Read from the adapter class for the same reason as
+        `supports_channel_creation`. An unknown type is reported as rendering
+        it, matching the base class default.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return True
+        return adapter_cls.renders_custom_url_schemes
 
     def get_config_schema(self, bridge_type: str) -> dict[str, object]:
         config_cls = self._config_registry.get(bridge_type)
@@ -158,11 +226,19 @@ class CollaborationBridgeLifecycleService:
         bridge_type: str,
         display_name: str,
         connection_config: dict[str, object],
+        channel_creation_enabled: bool,
     ) -> CollaborationBridge:
         adapter_cls = self._adapter_registry.get(bridge_type)
         config_cls = self._config_registry.get(bridge_type)
         if adapter_cls is None or config_cls is None:
             raise ValueError(f"Unknown bridge type: {bridge_type}")
+
+        if channel_creation_enabled and not adapter_cls.supports_channel_creation:
+            raise ValueError(
+                f"{bridge_type} cannot create channels from Switch, so this "
+                "connection cannot be allowed to. Create the chat on the "
+                "platform and add the bot to it; Switch adopts it as a room."
+            )
 
         # Fill in what the adapter generates, validate the result, and persist
         # the validated form — not the raw request — so a value minted here is
@@ -180,11 +256,10 @@ class CollaborationBridgeLifecycleService:
         # orphan Matrix identity behind for a bridge that was never viable.
         await adapter_cls.verify_credentials(connection_config)
 
-        safe_name = re.sub(r"[^a-z0-9._=-]", "-", display_name.lower())[:16]
         bridge_client_record = await self._client_lifecycle.create_client(
             client_type="bridge",
             display_name=f"bridge-{bridge_type}-{display_name}",
-            localpart=f"switch-bridge-{bridge_type}-{safe_name}",
+            localpart=_bridge_client_localpart(bridge_type, display_name),
         )
 
         bridge = CollaborationBridge(
@@ -193,6 +268,7 @@ class CollaborationBridgeLifecycleService:
             connection_config=connection_config,  # type: ignore[arg-type]
             client_id=bridge_client_record.id,
             status="active",
+            channel_creation_enabled=channel_creation_enabled,
         )
         async with self._session_factory() as session:
             await self._bridge_store.create(session, bridge)
@@ -239,6 +315,20 @@ class CollaborationBridgeLifecycleService:
             lambda service_url: self._persist_service_url(bridge_id, service_url)
         )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
+
+        if (
+            not adapter_cls.renders_custom_url_schemes
+            and not self._config.gateway_public_url
+        ):
+            logger.warning(
+                "GATEWAY_PUBLIC_URL is not set and %s only renders http(s) links, "
+                "so the 'Open in Switch Console' deeplink cannot be clickable on "
+                "bridge %s — it is posted as copyable text instead. Set "
+                "GATEWAY_PUBLIC_URL to the Switch API's public origin (scheme + "
+                "host, no path) to turn it into a real link",
+                bridge.type,
+                bridge_id,
+            )
 
         async with self._session_factory() as session:
             bridge_client_record = await self._client_store.get(
@@ -332,8 +422,22 @@ class CollaborationBridgeLifecycleService:
             await self.stop(bridge_id)
 
     async def remove(self, bridge_id: str) -> None:
+        """Disconnect a messaging app and take its identities with it.
+
+        Everything Switch created to talk to this platform goes: the bridge's
+        own Matrix client, and the puppet client behind every person Switch saw
+        on it. Leaving those behind is not a tidiness problem — the bridge
+        client's Matrix name is derived from the app's type and display name,
+        so an operator who disconnects an app and reconnects one named the same
+        collided with the row left by the last one.
+
+        Order matters: the clients are children of nothing but the bridge and
+        external-user rows point at them, so those go first or the foreign keys
+        refuse.
+        """
         await self.stop(bridge_id)
         async with self._session_factory() as session:
+            bridge = await self._bridge_store.get(session, bridge_id)
             dependent_rooms = await self._room_store.get_by_bridge(session, bridge_id)
             if dependent_rooms:
                 logger.warning(
@@ -345,10 +449,29 @@ class CollaborationBridgeLifecycleService:
                 )
                 for room in dependent_rooms:
                     await self._room_store.clear_bridge(session, room.id)
+            puppets = await self._external_user_store.get_by_bridge(session, bridge_id)
+            puppet_client_ids = [u.client_id for u in puppets if u.client_id]
             await self._external_user_store.delete_by_bridge(session, bridge_id)
             await self._bridge_store.delete(session, bridge_id)
             await session.commit()
-        logger.info("Removed collaboration bridge %s", bridge_id)
+
+        removed = list(puppet_client_ids)
+        if bridge is not None:
+            removed.append(bridge.client_id)
+        for client_id in removed:
+            await self._client_lifecycle.remove(client_id)
+
+        # The Matrix accounts themselves outlive this: the homeserver offers no
+        # deprovisioning call Switch can make. Said out loud because it is the
+        # reason a reconnection cannot reuse the old name — see
+        # `_bridge_client_localpart`.
+        logger.info(
+            "Removed collaboration bridge %s and %d client identities; their "
+            "Matrix accounts remain on the homeserver, which has no API to "
+            "remove them",
+            bridge_id,
+            len(removed),
+        )
 
     def get(self, bridge_id: str) -> BridgeCore | None:
         return self._bridges.get(bridge_id)

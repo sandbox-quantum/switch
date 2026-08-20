@@ -2,6 +2,7 @@ import { useHotkey } from '@tanstack/react-hotkeys';
 import { ChevronDown } from 'lucide-react';
 import React, { useCallback, useMemo } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import {
   getEffectiveHotkey,
@@ -33,8 +34,7 @@ export const OpenInMenu: React.FC<OpenInMenuProps> = ({
   const { toast } = useToast();
   const { icons, labels, installedApps, availability, platform, loading } = useOpenInApps();
   const { value: openIn, update } = useAppSettingsKey('openIn');
-  const { value: keyboard } = useAppSettingsKey('keyboard');
-  const openInHotkey = getEffectiveHotkey('openInEditor', keyboard);
+  const openInHotkey = getEffectiveHotkey('openInEditor');
 
   const defaultApp: OpenInAppId | null =
     openIn?.default && isValidOpenInAppId(openIn.default) ? openIn.default : null;
@@ -58,17 +58,19 @@ export const OpenInMenu: React.FC<OpenInMenuProps> = ({
         });
         if (!res?.success) {
           toast({
-            title: `Open in ${label} failed`,
-            description: res?.error || 'Application not available.',
+            title: `Could not open this folder in ${label}`,
+            description:
+              res?.error ||
+              `${label} may not be installed, or its command-line launcher may not be on PATH.`,
             variant: 'destructive',
           });
         }
-      } catch (e: unknown) {
-        toast({
-          title: `Open in ${label} failed`,
-          description: e instanceof Error ? e.message : String(e),
-          variant: 'destructive',
-        });
+      } catch (cause: unknown) {
+        const { headline, detail } = describeFailure(
+          cause,
+          `Could not open this folder in ${label}.`
+        );
+        toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
       }
     },
     [isRemote, labels, path, sshConnectionId, toast]
@@ -111,7 +113,7 @@ export const OpenInMenu: React.FC<OpenInMenuProps> = ({
   const buttonAppLabel = buttonAppId ? (labels[buttonAppId] ?? buttonAppId) : null;
 
   useHotkey(
-    getHotkeyRegistration('openInEditor', keyboard),
+    getHotkeyRegistration('openInEditor'),
     () => {
       if (!buttonAppId) return;
       void triggerOpenIn(buttonAppId);

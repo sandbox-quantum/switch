@@ -43,7 +43,10 @@ describe('ResourceMonitorStore', () => {
   it('opens once and disposes idempotently with the same subscription', async () => {
     const { ResourceMonitorStore } = await import('./resource-monitor-store');
     const { rpc } = await import('@renderer/lib/ipc');
-    vi.mocked(rpc.resourceMonitor.getSnapshot).mockResolvedValue({ success: true, data: null });
+    vi.mocked(rpc.resourceMonitor.getSnapshot).mockResolvedValue({
+      success: true,
+      data: snapshot(1),
+    });
 
     const store = new ResourceMonitorStore();
     store.start();

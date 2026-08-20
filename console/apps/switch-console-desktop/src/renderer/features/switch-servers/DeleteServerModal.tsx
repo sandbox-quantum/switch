@@ -58,7 +58,7 @@ export const DeleteServerModal = observer(function DeleteServerModal({
     if (ok) {
       onSuccess();
     } else {
-      setError(switchServersStore.error ?? 'Failed to delete server.');
+      setError(switchServersStore.errorText ?? 'Could not delete the server.');
       setIsDeleting(false);
     }
   }, [server, typeConfirmed, serverId, onSuccess]);
@@ -67,7 +67,7 @@ export const DeleteServerModal = observer(function DeleteServerModal({
     return (
       <>
         <DialogHeader showCloseButton={false}>
-          <DialogTitle>Delete server</DialogTitle>
+          <DialogTitle>Remove server</DialogTitle>
         </DialogHeader>
         <DialogContentArea className="pt-0">
           <p className="text-sm text-foreground-muted">This server is no longer available.</p>
@@ -91,7 +91,9 @@ export const DeleteServerModal = observer(function DeleteServerModal({
       <DialogHeader showCloseButton={false}>
         <div className="flex items-center gap-2">
           <TriangleAlert className="size-4 text-red-500" />
-          <DialogTitle>Delete “{server.name}”?</DialogTitle>
+          <DialogTitle>
+            {managed ? `Delete “${server.name}”?` : `Disconnect from “${server.name}”?`}
+          </DialogTitle>
         </div>
       </DialogHeader>
       <DialogContentArea className="space-y-3 pt-0">
@@ -106,8 +108,8 @@ export const DeleteServerModal = observer(function DeleteServerModal({
           </p>
         ) : (
           <p className="text-sm text-foreground-muted">
-            This removes the server from Switch Console. The server itself isn’t touched — you can
-            add it again later.
+            This disconnects Switch Console from the server and signs you out of it. The server
+            itself isn’t touched — you can connect to it again later.
           </p>
         )}
         <p className="text-sm text-foreground-muted">{agentsNote}</p>
@@ -144,7 +146,13 @@ export const DeleteServerModal = observer(function DeleteServerModal({
           onClick={() => void handleDelete()}
           disabled={!typeConfirmed || isDeleting}
         >
-          {isDeleting ? 'Deleting…' : 'Delete server'}
+          {managed
+            ? isDeleting
+              ? 'Deleting…'
+              : 'Delete server'
+            : isDeleting
+              ? 'Disconnecting…'
+              : 'Disconnect'}
         </ConfirmButton>
       </DialogFooter>
     </>

@@ -24,6 +24,8 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   managedServerHostBlocked,
 }));
 vi.mock('./auth', () => ({ oidcLogin: vi.fn(), passwordLogin: vi.fn() }));
+// Reads this install's own agent rows, and through them the database client.
+vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
 vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));

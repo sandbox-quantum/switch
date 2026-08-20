@@ -44,6 +44,18 @@ async function adhocSignMac(context: AfterPackContext): Promise<void> {
 // the bundle at least launches on Apple Silicon.
 const hasDeveloperIdCert = Boolean(process.env.CSC_LINK);
 
+// Azure Artifact Signing credentials reach the build as an OIDC login performed
+// by the release workflow, which only happens on main and tags. Elsewhere — a
+// branch dispatch, a fork, a local build — there is nothing to sign with, so the
+// `win.azureSignOptions` key below must be absent rather than merely unusable:
+// electron-builder picks its signing backend from that key's presence alone and
+// never checks for credentials, so leaving it set would send every build down
+// the Azure path, which shells out to PowerShell and fails without them.
+// Omitting it selects the signtool backend, which finds no certificate and skips
+// signing rather than failing. Unsigned Windows builds warn via SmartScreen but
+// install (CHOO-1468).
+const hasAzureSigning = Boolean(process.env.AZURE_CLIENT_ID);
+
 const config: Configuration = {
   // Must run AFTER electron-builder applies @electron/fuses (which rewrites the
   // Electron Framework binary and would invalidate an earlier signature). afterSign
@@ -99,10 +111,12 @@ const config: Configuration = {
     hardenedRuntime: true,
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
-    target: [
-      { target: 'dmg', arch: ['arm64'] },
-      { target: 'zip', arch: ['arm64'] },
-    ],
+    // No `arch` here, for the same reason as `linux` below: naming an arch makes
+    // every invocation build it and ignore the `--x64` / `--arm64` flag, and
+    // `npmRebuild: false` means the package carries whatever native modules the
+    // earlier `pnpm rebuild` produced for the host. The release workflow builds
+    // each arch on a runner of that arch and passes the matching flag.
+    target: ['dmg', 'zip'],
     icon: 'src/assets/images/switch-console/switch-console-beta.icns',
     // electron-builder reads the App Store Connect API key from APPLE_API_KEY
     // (path to .p8) / APPLE_API_KEY_ID / APPLE_API_ISSUER when notarize is on.
@@ -127,11 +141,16 @@ const config: Configuration = {
     // space-free name avoids that and matches `desktopName` above.
     executableName: APP_NAME_LOWER,
     syncDesktopName: true,
-    target: [
-      { target: 'AppImage', arch: ['x64'] },
-      { target: 'deb', arch: ['x64'] },
-      { target: 'rpm', arch: ['x64'] },
-    ],
+    // No `arch` here on purpose: electron-builder then builds the HOST arch,
+    // or whichever `--x64` / `--arm64` the caller passes. Naming both arches
+    // in the target entries instead makes every invocation build both and
+    // ignore the flag — which is not merely slow. `npmRebuild: false` means
+    // the native modules (better-sqlite3, node-pty, @parcel/watcher) are
+    // whatever the earlier `pnpm rebuild` produced for the host, copied into
+    // every package unchanged, so the non-host arch comes out installable,
+    // launchable, and dead on the first require of a wrong-arch `.node`. The
+    // release workflow builds each arch on a runner of that arch.
+    target: ['AppImage', 'deb', 'rpm'],
   },
   // deb/rpm package names must be lowercase and space-free, so they are pinned
   // rather than derived from the display name (same as the canary channel).
@@ -147,12 +166,30 @@ const config: Configuration = {
       { target: 'nsis', arch: ['x64'] },
       { target: 'msi', arch: ['x64'] },
     ],
-    azureSignOptions: {
-      publisherName: 'General Action, Inc.',
-      endpoint: 'https://eus.codesigning.azure.net/',
-      certificateProfileName: 'switch-console-public',
-      codeSigningAccountName: 'switch-console',
-    },
+    // Off until the certificate's subject common name is known verbatim. This
+    // flag is what decides whether `publisherName` below is copied into
+    // app-update.yml, and electron-updater rejects any update whose signature
+    // does not match the name it finds there. A wrong name therefore breaks
+    // updating for everyone already installed, and does so silently and later —
+    // whereas leaving the field out of the manifest merely skips the check.
+    // Turn this on in the same change that sets the real name.
+    verifyUpdateCodeSignature: false,
+    ...(hasAzureSigning
+      ? {
+          azureSignOptions: {
+            endpoint: 'https://eus.codesigning.azure.net/',
+            codeSigningAccountName: 'cg-asa-basic-eastus',
+            certificateProfileName: 'cg-public',
+            // Required by electron-builder's schema, so it cannot be omitted, but
+            // it is stripped before the signing call and never reaches the
+            // certificate — the signature's real publisher comes from the
+            // certificate itself. Its only effect is on app-update.yml, which
+            // verifyUpdateCodeSignature: false above suppresses. Treat it as
+            // unverified until a signed build confirms the actual subject.
+            publisherName: 'SandboxAQ',
+          },
+        }
+      : {}),
   },
   msi: {
     oneClick: false,

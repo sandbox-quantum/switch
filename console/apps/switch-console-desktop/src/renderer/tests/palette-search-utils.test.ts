@@ -4,6 +4,7 @@ import {
   matchHosts,
   matchRooms,
   matchServers,
+  sectionResults,
 } from '@renderer/features/command-palette/search-utils';
 import type { SearchItem } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -204,5 +205,48 @@ describe('applyContextAffinity', () => {
     const items = [item({ id: 'b', score: -1 }), item({ id: 'a', score: -9 })];
     applyContextAffinity(items, {});
     expect(items.map((i) => i.id)).toEqual(['b', 'a']);
+  });
+});
+
+/**
+ * Every result must land in a section. The palette renders sections as cmdk
+ * groups, and a row outside one is appended after the last group — which is how
+ * agents and sessions came to sit under the "Servers" heading.
+ */
+describe('sectionResults', () => {
+  const item = (kind: SearchItem['kind'], id: string): SearchItem => ({
+    kind,
+    id,
+    locationId: null,
+    sessionId: null,
+    title: id,
+    subtitle: '',
+    score: 0,
+  });
+
+  it('splits the kinds the index emits into their own sections', () => {
+    const sections = sectionResults([
+      item('agent', 'a1'),
+      item('session', 's1'),
+      item('command', 'c1'),
+      item('agent', 'a2'),
+    ]);
+
+    expect(sections.agent.map((i) => i.id)).toEqual(['a1', 'a2']);
+    expect(sections.session.map((i) => i.id)).toEqual(['s1']);
+    expect(sections.command.map((i) => i.id)).toEqual(['c1']);
+  });
+
+  it('keeps a section for every kind, so none can go unrendered', () => {
+    const kinds: SearchItem['kind'][] = ['agent', 'session', 'command', 'room', 'server', 'host'];
+    const sections = sectionResults(kinds.map((kind) => item(kind, kind)));
+
+    for (const kind of kinds) expect(sections[kind].map((i) => i.id)).toEqual([kind]);
+  });
+
+  it('preserves the ranked order within a section', () => {
+    const sections = sectionResults([item('agent', 'first'), item('agent', 'second')]);
+
+    expect(sections.agent.map((i) => i.id)).toEqual(['first', 'second']);
   });
 });

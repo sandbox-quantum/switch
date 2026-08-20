@@ -9,6 +9,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { findServerByEndpoint, getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
+import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -131,6 +132,9 @@ async function resolveIdentity(
     // This path onboards `.claude/agents/*.md` definitions, so the identity is a
     // Claude Code one by construction.
     agentType: knownAgentTypeForProvider('claude'),
+    // Nobody is at a form to choose one, so it starts with the avatar its name
+    // generates — the same picture it would be shown with anyway.
+    iconUrl: agentAvatarUrlForName(name),
   });
   if (registered.kind !== 'created') {
     const message = 'message' in registered ? registered.message : '';

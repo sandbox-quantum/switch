@@ -81,9 +81,9 @@ jobs:
           JIRA_VULN_EPIC: ${{ vars.JIRA_VULN_EPIC }}
           JIRA_AISIM_ACCOUNT_ID: ${{ vars.JIRA_AISIM_ACCOUNT_ID }}
           JIRA_AISIM_USER: ${{ vars.JIRA_AISIM_USER }}
-          JIRA_AISIM_LABEL: "cg-aqtiveguard"
+          JIRA_AISIM_LABEL: ${{ vars.JIRA_AISIM_LABEL }}
           JIRA_AISIM_FIELD_ID: ${{ vars.JIRA_AISIM_FIELD_ID }}
-          JIRA_AISIM_FIELD_VALUE: "CG - AqtiveGuard"  # baked BU (org has no repo vars)
+          JIRA_AISIM_FIELD_VALUE: ${{ vars.JIRA_AISIM_FIELD_VALUE }}
         run: |
           if [ -z "${SBT_MACHINE_USER_JIRA_TOKEN:-}" ]; then
             echo "::warning::Jira creds not set; skipping ticketing."
@@ -94,9 +94,13 @@ jobs:
             --repo "${REPO}" --run-url "${RUN_URL}"
 
   gate:
-    # Non-blocking scan of the base image(s) a renovate/* PR bumps to.
+    # Non-blocking scan of the base image(s) a renovate/* PR bumps to. Gated on
+    # the automation's identity (the app that opens these PRs), not just the
+    # branch name — a branch prefix is not an identity, anyone opening a PR can
+    # name their branch renovate/anything (M4).
     if: >-
       github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login == 'autofix-pr-bot[bot]' &&
       startsWith(github.event.pull_request.head.ref, 'renovate/')
     runs-on: ubuntu-latest
     timeout-minutes: 30

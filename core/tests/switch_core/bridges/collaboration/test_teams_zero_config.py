@@ -333,6 +333,7 @@ async def test_register_prepares_then_verifies_before_touching_anything() -> Non
             bridge_type="recording",
             display_name="Recording",
             connection_config={"app_id": "a"},
+            channel_creation_enabled=True,
         )
 
     assert _RecordingAdapter.events == ["prepare", "verify"]
@@ -351,6 +352,7 @@ async def test_register_verifies_the_prepared_config_not_the_raw_request() -> No
             bridge_type="recording",
             display_name="Recording",
             connection_config={"app_id": "a"},
+            channel_creation_enabled=True,
         )
 
     assert _RecordingAdapter.seen_config["generated"] == "yes"
@@ -413,6 +415,7 @@ async def test_second_teams_bridge_on_the_same_port_is_refused() -> None:
             bridge_type="teams",
             display_name="Second Teams",
             connection_config=_raw_config(),
+            channel_creation_enabled=True,
         )
 
     message = str(excinfo.value)
@@ -441,6 +444,7 @@ async def test_a_second_bridge_on_its_own_port_is_allowed_through(
             bridge_type="teams",
             display_name="Second Teams",
             connection_config=_raw_config(listen_port=3979),
+            channel_creation_enabled=True,
         )
 
 
@@ -462,4 +466,5 @@ async def test_a_non_teams_bridge_is_not_blocked_by_a_teams_one(
             bridge_type="teams",
             display_name="Teams",
             connection_config=_raw_config(),
+            channel_creation_enabled=True,
         )

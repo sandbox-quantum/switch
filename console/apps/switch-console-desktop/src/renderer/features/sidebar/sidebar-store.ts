@@ -187,6 +187,16 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
   filterBridgeTypes = observable.set<string>();
   filterRoomHasLiveSession = false;
 
+  /** Whether the first-run setup checklist is collapsed to its header row. */
+  onboardingChecklistCollapsed = false;
+
+  /** Whether to hide the provider mark beside an agent's name, in the sidebar
+   * and in search alike — a reader who does not want to be told what an agent
+   * runs on does not want it in one list and not the other. Stated as "hide" so
+   * the default — showing it — is the falsy one, and a reader who never opens
+   * the menu keeps seeing what an agent runs on. */
+  hideProviderMark = false;
+
   constructor(private readonly locationManager: LocationManagerStore) {
     makeAutoObservable(this, {
       expandedLocationIds: false,
@@ -467,6 +477,8 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
       roomSortBy: this.roomSortBy,
       filterBridgeTypes: [...this.filterBridgeTypes],
       filterRoomHasLiveSession: this.filterRoomHasLiveSession,
+      onboardingChecklistCollapsed: this.onboardingChecklistCollapsed,
+      hideProviderMark: this.hideProviderMark,
     };
   }
 
@@ -512,6 +524,20 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     if (snapshot.filterRoomHasLiveSession !== undefined) {
       this.filterRoomHasLiveSession = snapshot.filterRoomHasLiveSession;
     }
+    if (snapshot.onboardingChecklistCollapsed !== undefined) {
+      this.onboardingChecklistCollapsed = snapshot.onboardingChecklistCollapsed;
+    }
+    if (snapshot.hideProviderMark !== undefined) {
+      this.hideProviderMark = snapshot.hideProviderMark;
+    }
+  }
+
+  toggleOnboardingChecklistCollapsed(): void {
+    this.onboardingChecklistCollapsed = !this.onboardingChecklistCollapsed;
+  }
+
+  setHideProviderMark(hidden: boolean): void {
+    this.hideProviderMark = hidden;
   }
 
   /** Called on first load when no snapshot exists — expand all known locations. */
@@ -519,6 +545,22 @@ export class SidebarStore implements Snapshottable<SidebarSnapshot> {
     for (const location of this.orderedLocations) {
       this.expandedLocationIds.add(location.id);
     }
+  }
+
+  /**
+   * Close every top-level branch of the tree on screen.
+   *
+   * The keys come from the caller because the trees, not the store, decide what
+   * they list — which agents are in scope, which rooms are worth a row. Group
+   * openness is tracked inverted (absence means open), so closing a branch means
+   * naming its key; there is nothing to clear.
+   *
+   * Second-level groups are left alone. They are hidden under a closed parent
+   * anyway, and reopening a parent to find its children as you left them is what
+   * a tree is expected to do.
+   */
+  collapseAll(topLevelKeys: readonly string[]): void {
+    for (const key of topLevelKeys) this.collapsedGroupKeys.add(key);
   }
 
   toggleLocationExpanded(locationId: string): void {

@@ -4,10 +4,11 @@ import asyncio
 import io
 import logging
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 import discord
 from discord import app_commands
@@ -29,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     ChannelType,
+    DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
@@ -65,6 +67,10 @@ class DiscordAdapter(CollaborationAdapter):
     Switch room is created by the bridge core on the first bridged message
     rather than eagerly for the whole guild.
     """
+
+    # Discord linkifies only http(s), so the `switchdash://` deeplink needs the
+    # https redirect (`GATEWAY_PUBLIC_URL`) to be clickable here.
+    renders_custom_url_schemes: ClassVar[bool] = False
 
     def __init__(self, *, config: DiscordConnectionConfig) -> None:
         super().__init__()
@@ -226,13 +232,6 @@ class DiscordAdapter(CollaborationAdapter):
             raise RuntimeError("Discord client not connected")
         return self._client
 
-    # ── Agent icon ───────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _get_agent_icon(agent_name: str) -> str:
-        name = agent_name.replace("_", "+")
-        return f"https://ui-avatars.com/api/?name={name}&background=random&size=128"
-
     # ── Messaging ────────────────────────────────────────────────────────────
 
     async def send_message(
@@ -278,12 +277,16 @@ class DiscordAdapter(CollaborationAdapter):
         kwargs: dict[str, Any] = {}
         if thread is not None:
             kwargs["thread"] = thread
+        # Resolved once here rather than inside the send callback: that callback
+        # is synchronous, and a chunked message would otherwise re-resolve per
+        # chunk and could split one message across two different avatars.
+        avatar_url = await self.agent_icon_url(sender_name)
         return await self._send_chunked(
             content,
             lambda part: webhook.send(
                 content=part,
                 username=sender_name,
-                avatar_url=self._get_agent_icon(sender_name),
+                avatar_url=avatar_url,
                 suppress_embeds=True,
                 wait=True,
                 **kwargs,
@@ -417,7 +420,7 @@ class DiscordAdapter(CollaborationAdapter):
             sent: Any = await webhook.send(
                 content=body,
                 username=sender_name,
-                avatar_url=self._get_agent_icon(sender_name),
+                avatar_url=await self.agent_icon_url(sender_name),
                 file=discord.File(io.BytesIO(data), filename=filename),
                 wait=True,
                 **kwargs,
@@ -455,6 +458,10 @@ class DiscordAdapter(CollaborationAdapter):
         *,
         message_type: str | None = None,
     ) -> str | None:
+        # Renders its own body: every caller of `admin_message` passes Switch
+        # Markdown, so the conversion belongs here rather than at each of
+        # them — one of them forgetting is how a notice reached a chat with
+        # its markup showing.
         # Admin/system messages post as the bot application itself — no
         # webhook username override — so they read as the platform speaking,
         # not an agent.
@@ -476,7 +483,7 @@ class DiscordAdapter(CollaborationAdapter):
             return None
 
         return await self._send_chunked(
-            content,
+            self.translate_outbound(content),
             lambda part: target.send(part, suppress_embeds=True),
             where=f"channel {channel_id}",
         )
@@ -565,10 +572,11 @@ class DiscordAdapter(CollaborationAdapter):
         agent_name: str,
         state: str,
         *,
-        notify_user: str | None,
+        mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
         detail: str | None = None,
+        trigger_thread_root_id: str | None = None,
     ) -> None:
         """Render runtime state as persistent, truly-deletable status messages.
 
@@ -594,11 +602,14 @@ class DiscordAdapter(CollaborationAdapter):
             ref = await self.send_message(channel_id, agent_name, body, thread_root_id)
             if ref is not None:
                 self._working_msg[key] = LiveRuntimeIndicator(
-                    message_ref=ref, body=body, thread_root_id=thread_root_id
+                    message_ref=ref,
+                    body=body,
+                    thread_root_id=thread_root_id,
+                    started_at=time.monotonic(),
                 )
         elif state == "awaiting-input":
             ref = await self._ping_operator(
-                channel_id, agent_name, notify_user, thread_root_id, deeplink_url
+                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -641,6 +652,48 @@ class DiscordAdapter(CollaborationAdapter):
             ),
         )
         return str(channel.id)
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """Find guild members whose username or nickname starts with `query`.
+
+        Asks Discord to do the matching rather than pulling the member list
+        and filtering here, so a large guild costs one request either way.
+        Discord matches on a prefix, so this searches by prefix — unlike the
+        Slack adapter, which has no server-side search and filters a full
+        listing on substrings.
+
+        Discord's bot API never exposes a member's email, so `email` is always
+        absent here — which is fine, since claiming an account identifies it
+        rather than proving who owns it.
+        """
+        term = query.strip()
+        if not term:
+            return []
+
+        guild = await self._get_guild()
+        try:
+            members = await guild.query_members(query=term, limit=100)
+        except (discord.HTTPException, discord.ClientException) as e:
+            raise RuntimeError(f"Discord member search failed: {e}") from e
+        except TimeoutError as e:
+            # A gateway query that never comes back would otherwise hang the
+            # request; surfacing it as a bridge failure gets the caller a 502.
+            raise RuntimeError("Discord member search timed out") from e
+
+        results = [
+            DirectoryUser(
+                external_user_id=str(member.id),
+                # `member.name` is what the inbound path records as the sender,
+                # so a claim made from this list matches messages that arrive.
+                username=str(member.name),
+                display_name=str(getattr(member, "display_name", None) or member.name),
+                email=None,
+            )
+            for member in members
+            if not getattr(member, "bot", False)
+        ]
+        results.sort(key=lambda u: u.display_name.lower())
+        return results
 
     async def create_dm_channel(
         self,

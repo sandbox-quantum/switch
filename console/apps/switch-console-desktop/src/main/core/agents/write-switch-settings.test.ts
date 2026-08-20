@@ -10,6 +10,9 @@ import {
   SWITCH_SETTINGS_RELATIVE_PATH,
 } from './switch-settings-paths';
 import {
+  ForeignAgentCredentialsError,
+  foreignCredentialsEndpoint,
+  foreignCredentialsOwnerFs,
   mergeSwitchApiEndpoint,
   mergeSwitchSettings,
   removeSwitchSettings,
@@ -171,6 +174,106 @@ describe('writeNeutralAgentSettingsFs', () => {
       SWITCH_AGENTS_GITIGNORE_RELATIVE,
       agentSettingsRelativePath('agent-abc'),
     ]);
+  });
+});
+
+describe('writeNeutralAgentSettingsFs, against another install of Switch Console', () => {
+  const otherInstall = {
+    env: {
+      SWITCH_API_ENDPOINT: 'https://other-switch.example.com',
+      SWITCH_API_TOKEN: 'their-token',
+      SWITCH_AGENT_ID: 'their-agent',
+    },
+  };
+
+  async function seed(slug: string, content: unknown): Promise<string> {
+    const relPath = agentSettingsRelativePath(slug);
+    await fs.mkdir(path.dirname(path.join(dir, relPath)), { recursive: true });
+    await fs.writeFile(path.join(dir, relPath), JSON.stringify(content), 'utf8');
+    return path.join(dir, relPath);
+  }
+
+  it('refuses a name whose credentials belong to a different Switch server, leaving them intact', async () => {
+    const filePath = await seed('shared-name', otherInstall);
+
+    await expect(
+      writeNeutralAgentSettingsFs(createPluginFs(dir), {
+        slug: 'shared-name',
+        apiEndpoint: 'https://switch.example.com',
+        apiToken: 'our-token',
+        agentId: 'our-agent',
+      })
+    ).rejects.toBeInstanceOf(ForeignAgentCredentialsError);
+
+    // The victim's token is minted once and stored nowhere else, so "not
+    // overwritten" is the whole point of the check.
+    expect(JSON.parse(await fs.readFile(filePath, 'utf8'))).toEqual(otherInstall);
+  });
+
+  it('still rewrites its own agent when the server matches, trailing slash and all', async () => {
+    await seed('ours', {
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.com/',
+        SWITCH_API_TOKEN: 'old-token',
+        SWITCH_AGENT_ID: 'old-agent',
+      },
+    });
+
+    await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+      slug: 'ours',
+      apiEndpoint: 'https://switch.example.com',
+      apiToken: 'new-token',
+      agentId: 'new-agent',
+    });
+
+    const raw = await fs.readFile(path.join(dir, agentSettingsRelativePath('ours')), 'utf8');
+    expect((JSON.parse(raw) as { env: Record<string, string> }).env).toEqual({
+      SWITCH_API_ENDPOINT: 'https://switch.example.com',
+      SWITCH_API_TOKEN: 'new-token',
+      SWITCH_AGENT_ID: 'new-agent',
+    });
+  });
+
+  it('reports the owning server through foreignCredentialsOwnerFs, for a caller checking before it registers', async () => {
+    await seed('shared-name', otherInstall);
+    const workspaceFs = createPluginFs(dir);
+
+    expect(
+      await foreignCredentialsOwnerFs(workspaceFs, 'shared-name', 'https://switch.example.com')
+    ).toBe('https://other-switch.example.com');
+    expect(
+      await foreignCredentialsOwnerFs(
+        workspaceFs,
+        'shared-name',
+        'https://other-switch.example.com'
+      )
+    ).toBeNull();
+    expect(await foreignCredentialsOwnerFs(workspaceFs, 'absent', 'https://switch.example.com')) //
+      .toBeNull();
+  });
+});
+
+describe('foreignCredentialsEndpoint', () => {
+  const ours = 'https://switch.example.com';
+
+  it('names the other server only when the file actually belongs to one', () => {
+    const withEndpoint = (endpoint: string) =>
+      JSON.stringify({ env: { SWITCH_API_ENDPOINT: endpoint } });
+
+    expect(foreignCredentialsEndpoint(withEndpoint('https://other.example.com'), ours)).toBe(
+      'https://other.example.com'
+    );
+    expect(foreignCredentialsEndpoint(withEndpoint(`${ours}//`), ours)).toBeNull();
+    expect(foreignCredentialsEndpoint(null, ours)).toBeNull();
+  });
+
+  it('treats a file that names no Switch server as free, however malformed', () => {
+    // Nothing here identifies an agent, so there is no identity to destroy — the
+    // writer's existing merge-or-replace behaviour is right for all of them.
+    expect(foreignCredentialsEndpoint('{not json', ours)).toBeNull();
+    expect(foreignCredentialsEndpoint('[]', ours)).toBeNull();
+    expect(foreignCredentialsEndpoint('{"env":{}}', ours)).toBeNull();
+    expect(foreignCredentialsEndpoint('{"env":{"SWITCH_API_ENDPOINT":"  "}}', ours)).toBeNull();
   });
 });
 

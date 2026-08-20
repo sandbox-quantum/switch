@@ -965,7 +965,11 @@ async def _cmd_run_cmd(
         role_known = role_obj is not None
 
     msg = spec.start_session_instructions(
-        options, agent, meta.name, assume_role=role if role_known else None
+        options,
+        agent,
+        meta.name,
+        await client.owner_handle_in(agent, meta.bridge_id),
+        assume_role=role if role_known else None,
     )
     if msg is None:
         await _reply(

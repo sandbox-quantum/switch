@@ -3,11 +3,16 @@ import { passwordLogin } from '@main/core/switch-servers/auth';
 import { ensureManagedServer, setActiveServerId } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
-import type { StartLocalServerResult } from '@shared/core/managed-switch-server/managed-switch-server';
+import {
+  CHECKOUT_IMAGE_TAG,
+  type StartLocalServerResult,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
 import { bundledComposeYaml } from './bundled-compose';
+import { checkoutBuildOverrideYaml } from './checkout-build';
 import { composeDown, composeUp } from './compose';
 import {
+  BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
   ENV_FILE_NAME,
   GHCR_REGISTRY,
@@ -40,6 +45,9 @@ export type StartStackOptions = {
   onLog: (line: string) => void;
   /** Aborts an in-flight health wait (stop/cancel/quit). */
   signal: AbortSignal;
+  /** Dev-only: root of the Switch checkout to build the stack's images from,
+   * instead of pulling this build's pinned images. Null is the released path. */
+  checkoutRoot: string | null;
 };
 
 /**
@@ -66,10 +74,26 @@ export type StartStackOptions = {
  * log has to make that difference visible to whoever reads it afterwards.
  */
 async function refuseDowngrade(
-  host: ServerHost
+  host: ServerHost,
+  checkoutRoot: string | null
 ): Promise<{ kind: 'version-downgrade'; deployed: string; expected: string } | null> {
   const deployed = await readDeployedVersion(host);
   if (deployed.kind === 'absent') return null;
+  if (checkoutRoot !== null) {
+    log.warn(
+      `managed-switch-server: starting ${host.label} from the checkout at ${checkoutRoot} — ` +
+        `the downgrade check is skipped, because a working tree carries no comparable version. ` +
+        `If the stack's database is ahead of that checkout, this start may strand it.`
+    );
+    return null;
+  }
+  if (deployed.kind === 'deployed' && deployed.version === CHECKOUT_IMAGE_TAG) {
+    log.warn(
+      `managed-switch-server: ${host.label} currently runs a local checkout build, so the ` +
+        `downgrade check cannot run; pointing it back at pinned switch-core ${COMPATIBLE_SWITCH_VERSION}.`
+    );
+    return null;
+  }
   if (deployed.kind === 'unreadable') {
     log.warn(`managed-switch-server: starting ${host.label} without a deployed-version check`, {
       reason: deployed.reason,
@@ -103,9 +127,13 @@ async function refuseDowngrade(
  * from this build every time, so `compose up -d` on an already-running stack
  * re-pulls the newly pinned tags and recreates only the changed containers,
  * leaving the data volumes in place for switch-core to migrate forward.
+ *
+ * With `checkoutRoot` set (dev only) the images are built from that working
+ * tree on every start instead of pulled, and tagged {@link CHECKOUT_IMAGE_TAG}
+ * so nothing downstream mistakes them for a release.
  */
 export async function startStack(opts: StartStackOptions): Promise<StartLocalServerResult> {
-  const { host, ref, serverName, onMessage, onLog, signal } = opts;
+  const { host, ref, serverName, onMessage, onLog, signal, checkoutRoot } = opts;
 
   const docker = await host.detectDocker();
   if (!docker.available) {
@@ -113,11 +141,14 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   }
 
   onMessage('Checking the deployed version…');
-  const downgrade = await refuseDowngrade(host);
+  const downgrade = await refuseDowngrade(host, checkoutRoot);
   if (downgrade) return downgrade;
 
   onMessage('Preparing configuration…');
   await host.writeFile(COMPOSE_FILE_NAME, bundledComposeYaml());
+  if (checkoutRoot !== null) {
+    await host.writeFile(BUILD_OVERRIDE_FILE_NAME, checkoutBuildOverrideYaml(checkoutRoot));
+  }
   const secrets = await loadOrCreateSecrets(host);
   const ports = await resolvePorts(host);
   const gatewayUrl = gatewayUrlFor(ports);
@@ -125,7 +156,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await host.writeFile(
     ENV_FILE_NAME,
     buildEnvFile({
-      version: COMPATIBLE_SWITCH_VERSION,
+      version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
       registry: GHCR_REGISTRY,
       namespace: RELEASE_REPO_OWNER,
       ports,
@@ -134,8 +165,12 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
     0o600
   );
 
-  onMessage('Starting containers (pulling images if needed)…');
-  await composeUp(host, onLog);
+  onMessage(
+    checkoutRoot !== null
+      ? `Building images from ${checkoutRoot} and starting containers…`
+      : 'Starting containers (pulling images if needed)…'
+  );
+  await composeUp(host, onLog, checkoutRoot !== null);
 
   // Make the published ports reachable from the desktop (no-op locally; a
   // mirrored SSH forward remotely) BEFORE the health probe, so the probe takes

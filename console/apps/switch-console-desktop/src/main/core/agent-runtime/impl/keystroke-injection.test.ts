@@ -50,9 +50,12 @@ function makePty(): {
   };
 }
 
+let onOpenForInjection: ReturnType<typeof vi.fn<() => void>>;
+
 describe('scheduleInitialPromptInjection', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    onOpenForInjection = vi.fn();
   });
 
   afterEach(() => {
@@ -66,6 +69,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('booting...');
@@ -77,6 +82,68 @@ describe('scheduleInitialPromptInjection', () => {
     expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
   });
 
+  it('stays shut while the session has not reported that it started', async () => {
+    const { pty, write, emitData } = makePty();
+    let reportStarted: (started: boolean) => void = () => {};
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: false,
+      awaitStartupSignal: () => new Promise<boolean>((resolve) => (reportStarted = resolve)),
+      onOpenForInjection,
+    });
+
+    // A pane parked on a startup prompt looks exactly like this: output, then
+    // quiet, then quiet for as long as you care to wait.
+    emitData('Do you trust this folder?');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(write).not.toHaveBeenCalled();
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+
+    reportStarted(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
+    expect(onOpenForInjection).toHaveBeenCalledOnce();
+  });
+
+  it('still waits for the pane to settle once the session reports', async () => {
+    const { pty, write, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: false,
+      awaitStartupSignal: () => Promise.resolve(true),
+      onOpenForInjection,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    emitData('painting the TUI');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(write).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(900);
+    expect(write).toHaveBeenCalledExactlyOnceWith('\x1b[200~Fix the bug \x1b[201~\r');
+  });
+
+  it('never opens the pane when the pty dies before reporting', async () => {
+    const { pty, write, emitExit } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: false,
+      awaitStartupSignal: () => Promise.resolve(false),
+      onOpenForInjection,
+    });
+
+    emitExit();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(write).not.toHaveBeenCalled();
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+  });
+
   it('falls back to a max wait when no output ever arrives', () => {
     const { pty, write } = makePty();
     scheduleInitialPromptInjection({
@@ -84,6 +151,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     vi.advanceTimersByTime(15_000);
@@ -97,6 +166,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'line one\nline two',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('ready');
@@ -111,6 +182,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('opencode'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('ready');
@@ -125,6 +198,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('grok'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('ready');
@@ -139,6 +214,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('claude'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('ready');
@@ -153,6 +230,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: true,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('ready');
@@ -167,6 +246,8 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: '   ',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('ready');
@@ -181,11 +262,174 @@ describe('scheduleInitialPromptInjection', () => {
       session: makeSession('hermes'),
       initialPrompt: 'Fix the bug',
       isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
     });
 
     emitData('starting');
     emitExit();
     vi.advanceTimersByTime(20_000);
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * When the pane becomes free for anything else to type into (CHOO-2173).
+ *
+ * A session auto-started to answer a room message races two writers at the same
+ * terminal: its own opening prompt, held back until the TUI is ready, and the
+ * room message its connection has already received. Nothing sequenced them, and
+ * a message typed into a booting TUI — or onto the end of the unsent opening
+ * prompt — reads as a message that never arrived.
+ */
+describe('the gate on typing into a starting session', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    onOpenForInjection = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stays shut while the opening prompt is still waiting for the TUI', () => {
+    const { pty, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'connect to switch room r-1',
+      isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    emitData('booting...');
+    vi.advanceTimersByTime(200);
+
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+  });
+
+  it('opens as the opening prompt goes in, and not before', () => {
+    const { pty, write, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'connect to switch room r-1',
+      isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    emitData('ready');
+    vi.advanceTimersByTime(200);
+    expect(write).not.toHaveBeenCalled();
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(800);
+
+    expect(write).toHaveBeenCalled();
+    expect(onOpenForInjection).toHaveBeenCalledTimes(1);
+  });
+
+  it('still waits for the TUI when the prompt went on the command line', () => {
+    // The bug the first attempt at this missed: Claude and Codex take their
+    // opening prompt as an argv flag, so there is nothing to type and the gate
+    // used to open the instant the pty registered — straight into a booting
+    // TUI, which is exactly the case that matters, since those are the
+    // providers auto-started sessions actually run.
+    const { pty, write, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('claude'),
+      initialPrompt: 'connect to switch room r-1',
+      isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+
+    emitData('booting...');
+    vi.advanceTimersByTime(200);
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(800);
+
+    expect(onOpenForInjection).toHaveBeenCalledTimes(1);
+    // Nothing typed — the prompt was already on the command line.
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('waits for the TUI when there is no opening prompt at all', () => {
+    const { pty, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: undefined,
+      isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    expect(onOpenForInjection).not.toHaveBeenCalled();
+
+    emitData('ready');
+    vi.advanceTimersByTime(800);
+
+    expect(onOpenForInjection).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the TUI when resuming, which sends no prompt', () => {
+    const { pty, write, emitData } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('hermes'),
+      initialPrompt: 'Fix the bug',
+      isResuming: true,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    emitData('ready');
+    vi.advanceTimersByTime(800);
+
+    expect(onOpenForInjection).toHaveBeenCalledTimes(1);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('opens on the long-stop when the TUI never says anything', () => {
+    // A pane that produces no output at all must not strand every room message
+    // for the life of the session.
+    const { pty } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('claude'),
+      initialPrompt: 'connect to switch room r-1',
+      isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    vi.advanceTimersByTime(15_000);
+
+    expect(onOpenForInjection).toHaveBeenCalledTimes(1);
+  });
+
+  it('never opens a pane whose process has gone', () => {
+    const { pty, emitData, emitExit } = makePty();
+    scheduleInitialPromptInjection({
+      pty,
+      session: makeSession('claude'),
+      initialPrompt: 'connect to switch room r-1',
+      isResuming: false,
+      awaitStartupSignal: null,
+      onOpenForInjection,
+    });
+
+    emitData('starting');
+    emitExit();
+    vi.advanceTimersByTime(20_000);
+
+    expect(onOpenForInjection).not.toHaveBeenCalled();
   });
 });

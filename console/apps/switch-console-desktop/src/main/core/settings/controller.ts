@@ -1,10 +1,5 @@
-import { reconcileResourceSampler } from '@main/core/resource-monitor/resource-sampler';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { appSettingsService, type AppSettings, type AppSettingsKey } from './settings-service';
-
-async function reconcileSettingsRuntimeState(key: AppSettingsKey): Promise<void> {
-  if (key === 'resourceMonitor') await reconcileResourceSampler();
-}
 
 export const appSettingsController = createRPCController({
   get: <T extends AppSettingsKey>(key: T): Promise<AppSettings[T]> => appSettingsService.get(key),
@@ -19,18 +14,11 @@ export const appSettingsController = createRPCController({
     overrides: Partial<AppSettings[T]>;
   }> => appSettingsService.getWithMeta(key),
 
-  update: async <T extends AppSettingsKey>(key: T, value: AppSettings[T]): Promise<void> => {
-    await appSettingsService.update(key, value);
-    await reconcileSettingsRuntimeState(key);
-  },
+  update: <T extends AppSettingsKey>(key: T, value: AppSettings[T]): Promise<void> =>
+    appSettingsService.update(key, value),
 
-  reset: async <T extends AppSettingsKey>(key: T): Promise<void> => {
-    await appSettingsService.reset(key);
-    await reconcileSettingsRuntimeState(key);
-  },
+  reset: <T extends AppSettingsKey>(key: T): Promise<void> => appSettingsService.reset(key),
 
-  resetField: async <T extends AppSettingsKey>(key: T, field: string): Promise<void> => {
-    await appSettingsService.resetField(key, field as keyof AppSettings[T]);
-    await reconcileSettingsRuntimeState(key);
-  },
+  resetField: <T extends AppSettingsKey>(key: T, field: string): Promise<void> =>
+    appSettingsService.resetField(key, field as keyof AppSettings[T]),
 });

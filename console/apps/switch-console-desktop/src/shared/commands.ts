@@ -65,14 +65,6 @@ export const APP_COMMAND_DEFS = defineCommandDefs([
     iconKey: 'square-plus',
   },
   {
-    id: 'app.giveFeedback',
-    label: 'Give Feedback',
-    description: 'Send feedback to the Switch Console team',
-    scope: 'app',
-    group: 'App',
-    iconKey: 'message-square-share',
-  },
-  {
     id: 'app.toggleTheme',
     label: 'Toggle Theme',
     description: 'Switch between light and dark themes',

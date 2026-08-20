@@ -54,8 +54,8 @@ async function getSessionName(sessionId: string | undefined): Promise<string | n
 
 export async function maybeShowNotification(event: AgentEvent, appFocused: boolean): Promise<void> {
   try {
-    const { enabled, osNotifications } = await appSettingsService.get('notifications');
-    if (!enabled || !osNotifications || appFocused || !Notification.isSupported()) return;
+    const { enabled } = await appSettingsService.get('notifications');
+    if (!enabled || appFocused || !Notification.isSupported()) return;
 
     const body = getNotificationBody(event);
     if (!body) return;

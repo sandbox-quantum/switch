@@ -56,7 +56,7 @@ export async function passwordLogin(
   } catch (cause) {
     return err({
       kind: 'failed',
-      message: `Could not reach ${server.gatewayUrl}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      message: `Could not reach ${server.gatewayUrl}. Check that the address is right and that the server is running. (${cause instanceof Error ? cause.message : String(cause)})`,
     });
   }
 
@@ -64,10 +64,14 @@ export async function passwordLogin(
     return err({ kind: 'invalid_credentials', message: 'Invalid email or password.' });
   }
   if (!response.ok) {
+    // A failing gateway may answer with an HTML error page rather than a
+    // sentence; unbounded, that lands in the form as a wall of markup.
     const detail = await response.text().catch(() => '');
     return err({
       kind: 'failed',
-      message: `Login failed (${response.status})${detail ? `: ${detail}` : ''}`,
+      message: `${server.gatewayUrl} rejected the sign-in with HTTP ${response.status}. That is a problem on the server, not with your credentials.${
+        detail ? ` (${detail.replace(/\s+/g, ' ').trim().slice(0, 200)})` : ''
+      }`,
     });
   }
 

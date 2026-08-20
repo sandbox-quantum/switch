@@ -181,10 +181,37 @@ Package desktop artifacts locally:
 
 ```bash
 pnpm run package
-pnpm run package:mac
-pnpm run package:linux
+pnpm run package:mac           # arm64
+pnpm run package:mac:x64
+pnpm run package:linux         # x64
+pnpm run package:linux:arm64
 pnpm run package:win
 ```
+
+Two things these scripts do NOT do for you:
+
+- **Build the workspace packages.** They package the app only, so on a fresh
+  clone the renderer build fails with `Failed to resolve entry for package
+  "@switch-console/shared"` — its `exports` point at a `dist/` that no one has
+  written yet. Run `pnpm run build` from the repo root (or
+  `pnpm -r --filter './packages/**' run build`) first.
+- **Rebuild the native modules.** `npmRebuild` is off, so whatever
+  `pnpm --filter @switch-console/desktop run rebuild` last produced is what
+  gets copied into the package.
+
+The macOS and Linux scripts name an arch for that second reason: the natives are
+built for the host, so packaging the other arch yields a package that installs,
+launches, and dies on the first wrong-arch `.node`. Build each arch on that arch
+— which is also why the release workflow runs macOS twice, on an Apple silicon
+runner and an Intel one, rather than passing both flags to one job.
+
+The two macOS builds share one auto-update channel file. electron-builder writes
+`latest-mac.yml` for every macOS arch (the per-arch suffix it gives Linux is
+Linux-only), so neither release job publishes its own — `merge-mac-manifest`
+combines them into one manifest listing both, which is what electron-updater
+reads and how it routes each Mac to its own build. Anything that changes macOS
+artifact names has to keep `arm64` in the Apple silicon file names: that
+substring is the whole of the updater's routing rule.
 
 Run formatting, linting, type checks, and tests:
 
@@ -367,30 +394,70 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- The app ships no telemetry or analytics; do not add tracking or phone-home behavior.
-  Logs are local-only: they leave the machine solely when the user attaches them to a
-  feedback report, via `getDiagnosticLogAttachment()`. Do not add any other path that
-  transmits log content.
+- The app sends no telemetry or analytics today, and nothing may start sending without
+  going through the consent gate below. Logs are local-only and no code path transmits
+  them off the machine. Do not add one. `getDiagnosticLogAttachment()` builds a redacted
+  export and is the only function intended to ever feed such a path; anything that ships
+  log content must go through it rather than reading the log itself.
+- **Telemetry consent is a gate, not a preference.** Anything that would send usage data
+  must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
+  emission and send nothing when it returns false. Do not read `telemetry.enabled` from
+  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
+  cache the answer across a send, since the user can revoke it at any time.
+- **What telemetry may contain, if it is ever built.** The consent toggle defaults to *on*,
+  which is only defensible for data that is not personal, so the payload is limited to
+  anonymous counters: feature-usage counts, error and crash counts, app version, operating
+  system. It must carry **no identifier of any kind** — no install id, machine id, user id,
+  or any other value that distinguishes one install from another — and no prompts, code,
+  file paths, or agent/room/project/server names. Adding an identifier makes the data
+  pseudonymous personal data under GDPR/nFADP, at which point an opt-out default is no
+  longer valid and the default has to flip to off. That is a decision for the product
+  owner, not a code change: if you need per-install numbers, raise it rather than adding
+  a field. The user-facing wording of this promise lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.
   - **Personal data** (home directories, IP and MAC addresses, emails) is deliberately
     *retained* in the local log file — it is what makes a user's own log debuggable —
     and is redacted by `redactDiagnosticLog()` in `getDiagnosticLogAttachment()`, the
-    single point at which content leaves the machine. Do not "fix" the local file by
-    scrubbing it on write; that reinstates the problem this split exists to solve.
+    single point at which content is prepared to leave the machine. Do not "fix" the
+    local file by scrubbing it on write; that reinstates the problem this split exists
+    to solve.
   - Anything contributed via `registerDiagnosticSection()` passes through the same
     export scrub. Never read the raw log file from outside `file-logger.ts`.
 - **An agent's Switch API token lives in exactly one file:**
   `<working dir>/.switch/agents/<slug>.json`, beside a generated `.gitignore`
-  containing `*`. `.claude/settings.local.json` carries the endpoint and agent
-  id only — it is Claude Code's own file, read by every session in the
-  directory, and does not need the credential. Do not add a token back to it:
-  two copies is how one goes stale and authenticates as the wrong agent.
-  - Three consumers read this layout: switchdash, the sidecar, and
-    `@sandboxaq/switch-agent-runtime` (which reads it directly when
-    nothing sets `SWITCH_*` in the environment). Changing the shape means
-    changing all three.
+  containing `*`. For the agents **Switch Console** manages it also writes
+  `.claude/settings.local.json` carrying the endpoint and agent id only — Claude
+  Code's own file, read by every session in the directory, which does not need
+  the credential. Do not add a token back to it: two copies is how one goes stale
+  and authenticates as the wrong agent.
+  - **That write is Switch Console's alone.** The connector's `configure` skill
+    deliberately writes no `SWITCH_*` into any settings file — a directory it
+    sets up carries the store and nothing else, which is the resolution path that
+    works on every runtime. Do not "restore" the env block there to match this
+    layout; the skill strips it on sight.
+  - **Where Switch Console does write it, Claude Code makes it live.** Its `env`
+    block becomes real process environment for everything a session spawns, the
+    Switch runtime and the connector's hooks included — so the agent id in it
+    decides who a hand-started session is, and an id naming no entry under
+    `.switch/agents/` fails every session in that directory rather than falling
+    back. Keep the two in step; changing one means changing the other.
+  - Four consumers read this layout: switchdash, the sidecar,
+    `@sandboxaq/switch-agent-runtime`, and the Claude connector's
+    `hooks/switch_hook.py`. The runtime and the hook read it whenever the
+    environment does not already carry a complete identity — including when it
+    carries a *partial* one, which is the ordinary case above. Changing the
+    shape means changing all four.
+  - The runtime and the hook are the same resolution written twice, in two
+    languages, over the same directory. They must agree: where they don't, a
+    session acts as one agent and is mediated as another, and nothing fails to
+    say so. The hook keys on the agent id the session recorded when it joined a
+    room — not on the settings file — so a directory holding several agents
+    still resolves exactly. Change one and change the other, and keep the paired
+    cases in `bin.handshake.test.ts` and `test_claude_connector_hook.py`
+    matching.
   - The token being in a working tree at all is a known exposure — a
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
@@ -443,8 +510,9 @@ forgotten and someone will debug a build they think is newer than it is.
 |---|---|---|
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
 | Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
-| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (it ships the skill and its own `.mcp.json`) — installs will not pick it up otherwise |
-| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and **both** connectors' `.mcp.json` pin the version sessions actually run. Nothing in the app pins it — the plugins register the runtime themselves — so those two files are the only pins |
+| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
+| OpenCode connector | `connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
+| Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and the marketplace connectors' `.mcp.json` pin the version sessions actually run. An agent type whose connector the app writes rather than installs is pinned by `SWITCH_AGENT_RUNTIME_PIN` in `packages/plugins/src/distribution.ts`, which `connectors/opencode-plugin/opencode.json` must match. `runtime-pin.test.ts` and `connector-assets.test.ts` fail if any of them disagree |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
 dependencies. A comment or a rename that changes nothing does not need one.
@@ -523,6 +591,18 @@ pnpm run test
   display metadata, and a mirror of each provider's argv shape. The mirror is
   descriptive: nothing reads it at spawn time, so change the plugin first and update the
   mirror to match. `provider-argv-parity.test.ts` pins Codex's.
+- **How an agent type gets its Switch connector** is the `switchSetup` capability
+  in `packages/core/src/agents/plugins/capabilities/switch-setup.ts`, and it has
+  two working shapes. `kind: 'cli'` drives the host's plugin-marketplace CLI, with
+  the per-host verbs and JSON shapes in
+  `src/main/core/switch-setup/switch-setup-cli-dialect.ts` (Claude Code, Codex).
+  `kind: 'files'` is for a host with no marketplace: the plugin supplies a
+  behavior that writes the connector itself, through a home-rooted `PluginFs` so
+  one implementation serves a local machine and an SSH host alike (OpenCode).
+  Both reach the same status / install / update / uninstall surface in
+  `switch-setup-service.ts` and `remote-switch-setup.ts`. A `files` connector has
+  no version of its own — it ships inside the app, so the app version stamps the
+  install and "update available" means an install written by an older build.
 - Provider detection lives in `src/main/core/dependencies/` (`dependency-managers.ts`,
   `registry.ts`), with remote detection in `remote-dependency-manager.ts`.
 - Provider PTY behavior and env passthrough live under `src/main/core/pty/`.
@@ -540,6 +620,33 @@ pnpm run test
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
   `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, and
   `SWITCHDASH_FAKE_UPDATE`.
+- **A hook command is built for the machine the session runs on, not for the one
+  building it.** `writeHooks(fs, hooks, { platform })` takes the target
+  platform: `process.platform` locally and in the sidecar, the VM's `uname -s`
+  in `SshAgentRuntime.installRemoteHooks`. A `makeStdinHookCommand(...)` returns
+  a builder, not a string, so nothing can freeze the wrong shell at import time.
+  Getting this wrong is silent — the POSIX form ends in `|| true` and agents
+  ignore hook exit codes, so the only symptom is a remote session whose provider
+  session id is never captured and whose room never stops saying "working on it".
+- **A Windows hook command carries no quotes of its own.** It is a bare
+  `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64>`,
+  never a `cmd.exe /d /c "…"` wrapper. Hosts wrap a `command` hook in a shell
+  before running it, and Claude Code's wrapping did not reliably survive the
+  inner double quotes: when they were lost, cmd.exe ignored its `/c` argument,
+  opened an interactive prompt and exited 0 — a hook that reported success
+  having never run. Because the marker then exists only inside the base64,
+  `isManagedHookEntry` decodes it; matching on the raw string would stop
+  recognising managed entries and append a duplicate on every launch.
+- The Codex Windows install list leads with the ChatGPT `install.ps1`, and npm's
+  option is stripped of the `recommended` flag `npmDependency` adds for every
+  platform — both `pickInstallOption` and the settings UI take the *first*
+  recommended option, so leaving it on npm steers Windows users there whatever
+  the order. The script ships no uninstaller, so the descriptor removes exactly
+  the two directories it creates (`%LOCALAPPDATA%\Programs\OpenAI\Codex` and
+  `%USERPROFILE%\.codex\packages\standalone`) and leaves the rest of
+  `~/.codex` — config, auth, sessions — alone. It is written without `$` or `%`
+  because the install runner's shell may be either PowerShell or cmd.exe, and
+  each would expand one of them before `powershell -c` ran.
 - An auto-approving Codex session launches with `-c approval_policy="never"` and
   nothing else. The sandbox is deliberately **not** overridden: "Bypass
   permissions" promises unattended approvals, not unattended filesystem and
@@ -565,6 +672,18 @@ pnpm run test
   duration. Nothing is downloaded or installed, and the harness cannot activate in
   a packaged build. Example:
   `SWITCHDASH_FAKE_UPDATE=available pnpm run dev`.
+- The managed local Switch server in dev: a dev build launched from a Switch
+  checkout shows a **"Build switch-core from this checkout"** toggle on the local
+  server's page. With it on, every start layers a generated build override on the
+  bundled compose file and runs `up -d --build`, so `switch`, `gateway` and
+  `setup` are built from the working tree and tagged `dev-checkout` instead of
+  pulling the pinned GHCR images. The choice persists in
+  `local-switch-server/checkout-build.json` under user-data and applies from the
+  next start. The compose file stays the bundled pinned one — re-sync it
+  (`pnpm run sync:compose`) if the checkout's own standalone compose has moved
+  on. Because the tag is not a semver, the downgrade guard cannot run against a
+  checkout build; it is skipped with a warning rather than silently.
+  See `src/main/core/managed-switch-server/checkout-build.ts`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

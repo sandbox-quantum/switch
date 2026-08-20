@@ -34,6 +34,7 @@ const PARAMS = {
     workspace_id: 'T123',
   },
   setAsDefault: false,
+  channelCreationEnabled: true,
 };
 
 /** A far-from-expiry JWT, so no renewal path is exercised here. */
@@ -88,6 +89,11 @@ describe('createBridgeOnServer', () => {
         status: 'active',
         isDefault: false,
         homeUrl: null,
+        // Absent on CREATED, same as home_url — a server predating the
+        // capability behaves as if every bridge could create a channel.
+        channelCreationSupported: true,
+        canCreateChannels: true,
+        directorySearchSupported: true,
       },
     });
   });
@@ -105,6 +111,36 @@ describe('createBridgeOnServer', () => {
       display_name: 'Acme Slack',
       connection_config: PARAMS.connectionConfig,
       set_as_default: true,
+      channel_creation_enabled: true,
+    });
+  });
+
+  it('states the choice explicitly even when off, rather than omitting the field', async () => {
+    fetchMock.mockResolvedValue(response(200, CREATED));
+
+    await createBridgeOnServer(SERVER, { ...PARAMS, channelCreationEnabled: false });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({ channel_creation_enabled: false });
+  });
+
+  it("reports a platform's own refusal to create channels as invalid, not forbidden", async () => {
+    // Registering `channel_creation_enabled: true` for a platform whose
+    // adapter cannot create channels at all returns 400 with a message
+    // naming the platform — a rejected argument, not an admin-only failure.
+    fetchMock.mockResolvedValue(
+      response(400, {
+        detail:
+          'telegram cannot create channels from Switch, so this connection cannot be allowed ' +
+          'to. Create the chat on the platform and add the bot to it; Switch adopts it as a room.',
+      })
+    );
+
+    await expect(createBridgeOnServer(SERVER, PARAMS)).resolves.toEqual({
+      kind: 'invalid',
+      message:
+        'telegram cannot create channels from Switch, so this connection cannot be allowed ' +
+        'to. Create the chat on the platform and add the bot to it; Switch adopts it as a room.',
     });
   });
 
@@ -272,6 +308,20 @@ describe('fetchBridgeTypes', () => {
   it('tolerates a type with no fields rather than throwing', async () => {
     fetchMock.mockResolvedValue(response(200, [{ key: 'stub', config_schema: {} }]));
 
-    await expect(fetchBridgeTypes(SERVER)).resolves.toEqual([{ key: 'stub', fields: [] }]);
+    // No `channel_creation_supported` in the fixture — a server predating the
+    // capability, which is the same "every platform could" default as the
+    // bridge list uses.
+    await expect(fetchBridgeTypes(SERVER)).resolves.toEqual([
+      { key: 'stub', fields: [], channelCreationSupported: true, directorySearchSupported: true },
+    ]);
+  });
+
+  it('reports a platform that cannot create channels at all', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, [{ key: 'telegram', config_schema: {}, channel_creation_supported: false }])
+    );
+
+    const [telegram] = await fetchBridgeTypes(SERVER);
+    expect(telegram.channelCreationSupported).toBe(false);
   });
 });

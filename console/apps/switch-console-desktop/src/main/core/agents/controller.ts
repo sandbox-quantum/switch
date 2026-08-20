@@ -5,7 +5,15 @@ import type { AgentProviderId } from '@shared/core/providers/agent-provider-regi
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { addAgent, type AddAgentParams } from './add-agent';
+import {
+  getAgentAdvancedFields,
+  getAgentAdvancedSurface,
+  readAgentAdvancedConfig,
+  updateAgentAdvancedConfig,
+} from './agent-advanced-config';
+import { readAgentInstructions, setAgentInstructions } from './agent-config';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
+import { getAgentModelCatalogue } from './agent-model-catalogue';
 import { assignAgentServer } from './assignAgentServer';
 import {
   attachConfiguredAgents,
@@ -28,6 +36,7 @@ import {
   setAgentAutoSession,
   type AgentAutoSessionParams,
 } from './setAgentAutoSession';
+import { setAgentProviderConfig, type AgentProviderConfigParams } from './setAgentProviderConfig';
 import { updateAgent, type UpdateAgentParams } from './updateAgent';
 
 export const agentsController = createRPCController({
@@ -38,6 +47,34 @@ export const agentsController = createRPCController({
   readAgentDefinition: (params: { agentId: string }) => readAgentDefinition(params.agentId),
   updateAgentDefinition: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentDefinition(params),
+  /**
+   * The per-agent advanced configuration, wherever the provider keeps it —
+   * a repo-agent definition (Claude) or a launch profile (Codex). One form,
+   * one editor; see `agent-advanced-config.ts`.
+   */
+  advancedFields: (params: { providerId: AgentProviderId }) =>
+    Promise.resolve(getAgentAdvancedFields(params.providerId)),
+  advancedSurface: (params: { providerId: AgentProviderId }) =>
+    Promise.resolve(getAgentAdvancedSurface(params.providerId)),
+  /**
+   * The models the agent's own host offers, for the advanced-configuration
+   * fields that declare a catalogue binding. Reports why it could not be read
+   * rather than throwing: the form degrades to plain text and says so.
+   */
+  modelCatalogue: (params: { providerId: AgentProviderId; sshHost: string | null; dir: string }) =>
+    getAgentModelCatalogue(params),
+  /**
+   * The agent's instructions — its system prompt, held in the committed config
+   * file in its working directory and rendered into whatever its provider
+   * reads. Separate from `readAdvancedConfig` because it is a main attribute of
+   * the agent rather than one of its provider's settings.
+   */
+  readInstructions: (params: { agentId: string }) => readAgentInstructions(params.agentId),
+  updateInstructions: (params: { agentId: string; instructions: string }): Promise<void> =>
+    setAgentInstructions(params).then(() => undefined),
+  readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),
+  updateAdvancedConfig: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
+    updateAgentAdvancedConfig(params),
   onboardAgent: (params: OnboardAgentParams) => onboardAgent(params),
   onboardLocationAgents: (params: OnboardLocationParams) => onboardLocationAgents(params),
   discoverLocationAgents: (params: {
@@ -62,6 +99,8 @@ export const agentsController = createRPCController({
     setAgentAutoSession(params),
   setAgentAutoApprove: (params: AgentAutoApproveParams): Promise<void> =>
     setAgentAutoApprove(params),
+  setAgentProviderConfig: (params: AgentProviderConfigParams): Promise<void> =>
+    setAgentProviderConfig(params),
   getAgentAutoSession: (params: { agentId: string }): Promise<boolean> =>
     getAgentAutoSession(params),
 });

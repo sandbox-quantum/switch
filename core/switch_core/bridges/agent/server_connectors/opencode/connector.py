@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 _SANITIZE_RE = re.compile(r"[^a-z0-9._-]")
 
+# OpenCode pauses a session until a permission request is answered. This
+# connector reports tool calls post-hoc and runs no pre-invocation mediation
+# (see _INTEGRATION_PROFILE), so permission requests are auto-approved to keep
+# the session from blocking. "always" so a given tool/pattern is not re-asked.
+_PERMISSION_RESPONSE = "always"
+
 _INTEGRATION_PROFILE = IntegrationProfile(
     connection_model="always_on",
     message_exchange=True,
@@ -168,6 +174,7 @@ class OpenCodeConnector(ServerSideConnector):
         reported_tool_ids: set[str] = set()
         notified_tool_ids: set[str] = set()
         sent_text_ids: set[str] = set()
+        responded_permission_ids: set[str] = set()
 
         async with self.client.subscribe_events() as events:
             async for event in events:
@@ -178,6 +185,32 @@ class OpenCodeConnector(ServerSideConnector):
                     props = event.get("properties", {})
                     if props.get("sessionID") == session_id:
                         break
+
+                if event_type == "permission.updated":
+                    props = event.get("properties") or event.get("data", {})
+                    if props.get("sessionID") != session_id:
+                        continue
+                    permission_id = props.get("id", "")
+                    if not permission_id or permission_id in responded_permission_ids:
+                        continue
+                    responded_permission_ids.add(permission_id)
+                    logger.info(
+                        "Auto-approving OpenCode permission %s (%s) for session %s",
+                        permission_id,
+                        props.get("type") or props.get("title", ""),
+                        session_id,
+                    )
+                    try:
+                        await self.client.respond_permission(
+                            session_id, permission_id, _PERMISSION_RESPONSE
+                        )
+                    except Exception:
+                        logger.error(
+                            "Failed to respond to OpenCode permission %s; session "
+                            "may block waiting for approval",
+                            permission_id,
+                        )
+                    continue
 
                 if event_type not in (
                     "message.part.updated",

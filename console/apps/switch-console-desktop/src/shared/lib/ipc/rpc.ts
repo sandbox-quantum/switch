@@ -1,4 +1,5 @@
 import { type IpcMain } from 'electron';
+import { isSerializedRpcError, RpcError, serializeRpcError } from './rpc-error';
 
 // oxlint-disable-next-line typescript/no-explicit-any
 type ProcedureMap = Record<string, (...args: any[]) => unknown>;
@@ -43,9 +44,16 @@ function registerHandlers(
 ): void {
   if (typeof value === 'function') {
     const handler = value as (...a: unknown[]) => unknown;
-    ipcMain.handle(prefix, (_event, ...args: unknown[]) =>
-      wrap ? wrap(prefix, args, () => handler(...args)) : handler(...args)
-    );
+    // Resolved, never rejected: a failure is returned as a serialized error so
+    // Electron does not rewrite the message around the channel name or discard
+    // the error's own fields. `createRPCClient` turns it back into a throw.
+    ipcMain.handle(prefix, async (_event, ...args: unknown[]) => {
+      try {
+        return await (wrap ? wrap(prefix, args, () => handler(...args)) : handler(...args));
+      } catch (error) {
+        return serializeRpcError(error);
+      }
+    });
   } else if (value !== null && typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) {
       registerHandlers(ipcMain, `${prefix}.${key}`, child, wrap);
@@ -81,7 +89,10 @@ function makeChannelProxy(
 ): unknown {
   return new Proxy(
     function (...args: unknown[]) {
-      return invoke(parts.join('.'), ...args);
+      return invoke(parts.join('.'), ...args).then((result) => {
+        if (isSerializedRpcError(result)) throw new RpcError(result);
+        return result;
+      });
     },
     {
       get(_, key: string) {

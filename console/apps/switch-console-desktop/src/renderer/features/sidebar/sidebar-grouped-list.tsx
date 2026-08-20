@@ -2,7 +2,6 @@ import { AlertTriangle } from 'lucide-react';
 import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -12,31 +11,20 @@ import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { AgentTree } from './agent-tree';
 import { RoomTree } from './room-tree';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
-import { switchIdentities } from './sidebar-tree-data';
+import { refreshSidebarRoomState } from './sidebar-tree-data';
 
 /**
  * How often the room state is reconciled against the servers while the window
- * is visible. Slow on purpose: it is a safety net for changes made outside this
- * app, not the primary path — mutations made here refresh immediately.
+ * is visible. A safety net for changes made outside this app, not the primary
+ * path — mutations made here refresh immediately. Kept short enough that a
+ * change nothing here initiated (a bridge adopting a channel, an agent joining
+ * a room server-side) does not sit invisible for a noticeable stretch.
  */
-const ROOM_STATE_RECONCILE_MS = 60_000;
+const ROOM_STATE_RECONCILE_MS = 20_000;
 
-/**
- * Re-read everything the sidebar's trees are built from: this install's agents,
- * their room membership, and the room catalogue.
- *
- * One function for every "catch up with the world" trigger — first paint, window
- * focus, signing in to a server, the background reconcile, the retry button. The
- * bug being fixed here is triggers refreshing different subsets, so they share
- * one.
- */
-async function loadSidebarState(force: boolean): Promise<void> {
-  await agentsStore.load();
-  await Promise.all([
-    switchRoomsStore.ensureMembershipsFor(switchIdentities(), { force }),
-    switchRoomsStore.loadRoomNames(),
-  ]);
-}
+/** @see refreshSidebarRoomState — shared so every trigger, including the
+ * mutations in other components, refreshes the same set. */
+const loadSidebarState = refreshSidebarRoomState;
 
 /**
  * The sidebar body: loads what both trees read, then hands over to whichever
@@ -104,11 +92,27 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
     sidebarStore.hasActiveFilters &&
     sidebarStore.filteredLocations.length === 0;
 
+  // A server with nothing on it yet left the panel blank, which reads as the
+  // list having failed to load rather than as there being nothing to list.
+  const showEmptyState =
+    !showFilterEmptyState &&
+    !sidebarStore.hasActiveFilters &&
+    switchServersStore.activeServerId !== null &&
+    sidebarStore.orderedLocations.length === 0 &&
+    switchRoomsStore.listedRoomsInActiveScope.length === 0;
+
   return (
-    <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-3 pt-1 pb-3">
+    <div
+      ref={scrollerRef}
+      className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto px-2 pt-0 pb-3"
+    >
       <RoomStateDisclosure />
       {showFilterEmptyState ? (
         <p className="px-2 py-3 text-xs text-foreground-muted">No agents match filters</p>
+      ) : showEmptyState ? (
+        <p className="px-2 py-3 text-xs text-foreground-muted">
+          No sessions running on this server.
+        </p>
       ) : sidebarStore.grouping === 'room' ? (
         <RoomTree />
       ) : (

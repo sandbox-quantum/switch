@@ -16,19 +16,17 @@ class TestInheritedParentOptions:
             "known_agent_options": {
                 "channels_enabled": False,
                 "repo_dir": "/repo",
-                "notify_user": "alice",
                 "subagent_name": "should-not-inherit",
             }
         }
         assert inherited_parent_options(md) == {
             "channels_enabled": False,
             "repo_dir": "/repo",
-            "notify_user": "alice",
         }
 
     def test_skips_none_values(self) -> None:
-        md = {"known_agent_options": {"repo_dir": None, "notify_user": "bob"}}
-        assert inherited_parent_options(md) == {"notify_user": "bob"}
+        md = {"known_agent_options": {"repo_dir": None, "channels_enabled": True}}
+        assert inherited_parent_options(md) == {"channels_enabled": True}
 
     def test_empty_when_metadata_missing_or_malformed(self) -> None:
         assert inherited_parent_options(None) == {}

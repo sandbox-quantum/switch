@@ -33,8 +33,13 @@ import { hostSetupStore } from './host-setup-store';
 const ICON = 'h-3.5 w-3.5 shrink-0 text-foreground-warning';
 
 /**
- * This agent type's steps that are installed but behind — its CLI, its Switch
- * connector, or both.
+ * This agent type's Switch connector, when it is installed but behind.
+ *
+ * The agent's own CLI is deliberately excluded. A newer release of it changes
+ * nothing about whether the agent works here, and an icon in the sidebar is a
+ * claim that something wants attention — which put a mark against hosts that
+ * were entirely fine. The connector is ours and worth chasing; the CLI is
+ * reported on the host's own page, where someone has gone to look.
  *
  * Only steps carrying a known newer version qualify. `updateAvailable` is never
  * set off a version we could not read, and it is additionally gated on the
@@ -44,7 +49,11 @@ const ICON = 'h-3.5 w-3.5 shrink-0 text-foreground-warning';
 function staleStepsFor(plan: HostSetupPlan | null, agentId: string): HostSetupStep[] {
   if (!plan) return [];
   return agentTypeSteps(plan, agentId).filter(
-    (step) => step.state === 'satisfied' && step.updateAvailable && step.latestVersion
+    (step) =>
+      step.kind === 'agent-plugin' &&
+      step.state === 'satisfied' &&
+      step.updateAvailable &&
+      step.latestVersion
   );
 }
 
@@ -100,10 +109,10 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
             other two icons mean "broken", a refresh glyph reads as "retrying".
             Same warning tone as those, so it belongs to the same family.
           */}
-          <CircleFadingArrowUp className={ICON} aria-label="Update available" />
+          <CircleFadingArrowUp className={ICON} aria-label="Connector update available" />
         </TooltipTrigger>
         <TooltipContent>
-          {`Update available on ${sshHost}: ${stale
+          {`Connector update available on ${sshHost}: ${stale
             .map((step) => `${step.name} ${step.latestVersion}`)
             .join(', ')}`}
         </TooltipContent>

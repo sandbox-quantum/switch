@@ -1,4 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type {
   RemoteAgentRoom,
@@ -84,14 +85,6 @@ export class SwitchRoomsStore {
     return this.roomServerById.get(roomId) ?? null;
   }
 
-  /** Display name of the server a room belongs to, for the room titlebar's
-   * breadcrumb. Null while rooms are still loading. */
-  roomServerName(roomId: string): string | null {
-    const serverId = this.roomServerById.get(roomId);
-    if (!serverId) return null;
-    return switchServersStore.servers.find((s) => s.id === serverId)?.name ?? null;
-  }
-
   /**
    * URL of a room's detail page in the gateway web app, or null if the room's
    * owning server isn't known yet (names/servers are loaded by loadRoomNames).
@@ -135,14 +128,33 @@ export class SwitchRoomsStore {
     const serverIds = activeServerId
       ? [activeServerId]
       : [...new Set([...this.allRoomsByServer.keys(), ...this.ownedRoomsByServer.keys()])];
-    const listed = serverIds.flatMap((serverId) => {
-      const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
-      return (
-        (managed ? this.allRoomsByServer.get(serverId) : this.ownedRoomsByServer.get(serverId)) ??
-        []
-      );
-    });
+    const listed = serverIds.flatMap((serverId) => this.listedRoomsOnServer(serverId));
     return listed.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * The rooms one server contributes to the lists above, under the same scope
+   * rule. Named separately so a page about a single server asks for that
+   * server rather than for whichever one happens to be active.
+   */
+  listedRoomsOnServer(serverId: string): RemoteRoomSummary[] {
+    const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
+    return (
+      (managed ? this.allRoomsByServer.get(serverId) : this.ownedRoomsByServer.get(serverId)) ?? []
+    );
+  }
+
+  /**
+   * Every active room the signed-in user can see on a server — what the gateway
+   * returned, which is already scoped to rooms they may read.
+   *
+   * Wider than {@link listedRoomsOnServer} on purpose. A standing list has to
+   * earn its place on screen, so the sidebar shows only rooms with a claim on
+   * you; a picker is a list you went looking for, and one that hides rooms you
+   * have every right to join cannot be searched into showing them.
+   */
+  readableRoomsOnServer(serverId: string): RemoteRoomSummary[] {
+    return this.allRoomsByServer.get(serverId) ?? [];
   }
 
   /**
@@ -159,13 +171,7 @@ export class SwitchRoomsStore {
     const serverIds = [
       ...new Set([...this.allRoomsByServer.keys(), ...this.ownedRoomsByServer.keys()]),
     ];
-    const listed = serverIds.flatMap((serverId) => {
-      const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
-      return (
-        (managed ? this.allRoomsByServer.get(serverId) : this.ownedRoomsByServer.get(serverId)) ??
-        []
-      );
-    });
+    const listed = serverIds.flatMap((serverId) => this.listedRoomsOnServer(serverId));
     return listed.sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -193,6 +199,33 @@ export class SwitchRoomsStore {
     const serverId = this.roomServerById.get(roomId);
     if (!serverId) return null;
     return this.allRoomsByServer.get(serverId)?.find((room) => room.id === roomId) ?? null;
+  }
+
+  /**
+   * Whether the signed-in user may delete a room: they own it, or they are an
+   * admin on its server.
+   *
+   * This mirrors the gateway's own rule so the action is not offered where it
+   * would only be refused. It is not the check that protects anything — the
+   * server's is — and where ownership is unknown the answer is no, since
+   * showing a delete that fails is worse than not showing one.
+   */
+  canDeleteRoom(serverId: string, room: RemoteRoomSummary): boolean {
+    const user = switchServersStore.statusFor(serverId)?.user ?? null;
+    if (!user) return false;
+    return room.ownerId === user.id || user.role === 'admin';
+  }
+
+  /**
+   * Delete a room on its server, then re-read what is left.
+   *
+   * Throws on refusal rather than reporting a boolean: the caller is a
+   * confirmation dialog, and a delete that quietly did nothing would leave the
+   * room on screen with no account of why.
+   */
+  async deleteRoom(serverId: string, roomId: string): Promise<void> {
+    await rpc.switchServers.deleteRoom({ serverId, roomId });
+    await this.refreshRoomState();
   }
 
   /**
@@ -274,7 +307,7 @@ export class SwitchRoomsStore {
           runInAction(() => {
             this.roomListErrors.set(
               server.id,
-              cause instanceof Error ? cause.message : String(cause)
+              failureText(cause, `Could not load the rooms on ${server.name}.`)
             );
           });
         }
@@ -358,8 +391,9 @@ export class SwitchRoomsStore {
    * view that wants either reads this, so the two cannot disagree.
    *
    * Scope is deliberate. This install can only act on its own agents, so those
-   * are the only members the sidebar draws (see {@link undrawableMemberCount}
-   * for how the rest are disclosed).
+   * are the only members the sidebar can draw. A room's full membership, agents
+   * on other installs included, is the server's own count and is listed on the
+   * Your Rooms page.
    */
   get localMemberIdsByRoom(): Map<string, string[]> {
     const byRoom = new Map<string, string[]>();
@@ -378,22 +412,6 @@ export class SwitchRoomsStore {
   /** The Switch agent ids of this install's agents in a room. */
   localMemberIds(roomId: string): string[] {
     return this.localMemberIdsByRoom.get(roomId) ?? [];
-  }
-
-  /**
-   * Members the server counts for a room that this install cannot draw — agents
-   * registered elsewhere, plus any whose membership failed to load. Null when
-   * the room's server list has not loaded, so the difference is unknown rather
-   * than zero.
-   *
-   * This is never rendered as the member count. The count is the length of what
-   * is drawn; this only discloses the gap, so a member that exists but cannot be
-   * shown is not mistaken for a member that is not there.
-   */
-  undrawableMemberCount(roomId: string): number | null {
-    const total = this.roomSummaryById(roomId)?.agentCount ?? null;
-    if (total === null) return null;
-    return Math.max(0, total - this.localMemberIds(roomId).length);
   }
 
   /**
@@ -462,7 +480,7 @@ export class SwitchRoomsStore {
       return rooms;
     } catch (cause) {
       runInAction(() => {
-        this.errors.set(k, cause instanceof Error ? cause.message : String(cause));
+        this.errors.set(k, failureText(cause, 'Could not load the rooms this agent belongs to.'));
       });
       return null;
     } finally {

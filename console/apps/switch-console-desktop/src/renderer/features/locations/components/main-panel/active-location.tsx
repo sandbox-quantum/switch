@@ -1,4 +1,7 @@
 import { observer } from 'mobx-react-lite';
+import { AgentEditsProvider } from '@renderer/features/locations/components/main-panel/agent-edits';
+import { AgentPageHeader } from '@renderer/features/locations/components/main-panel/agent-page-header';
+import { AgentSaveBar } from '@renderer/features/locations/components/main-panel/agent-save-bar';
 import { SessionList } from '@renderer/features/locations/components/session-view/session-list';
 import { SettingsPanel } from '@renderer/features/locations/components/settings-view/settings-panel';
 import { SidecarPanel } from '@renderer/features/locations/components/settings-view/sidecar-panel';
@@ -6,46 +9,16 @@ import {
   asMounted,
   getLocationStore,
 } from '@renderer/features/locations/stores/location-selectors';
-import type { LocationView } from '@renderer/features/locations/stores/location-view';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { cn } from '@renderer/utils/utils';
 
-function LocationViewNav({
-  items,
-  activeView,
-  onChange,
-}: {
-  items: Array<{ id: LocationView; label: string }>;
-  activeView: LocationView;
-  onChange: (view: LocationView) => void;
-}) {
-  return (
-    <div className="py-10">
-      <nav className="flex min-h-0 w-52 flex-col gap-0.5 overflow-y-auto" aria-label="Location">
-        {items.map((item) => {
-          const isActive = item.id === activeView;
-
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onChange(item.id)}
-              aria-current={isActive ? 'page' : undefined}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-normal text-foreground-muted transition-colors hover:bg-background-1 hover:text-foreground',
-                isActive &&
-                  'bg-background-2 text-foreground hover:bg-background-2 hover:text-foreground'
-              )}
-            >
-              <span className="truncate text-left">{item.label}</span>
-            </button>
-          );
-        })}
-      </nav>
-    </div>
-  );
-}
-
+/**
+ * An agent, on one page: who it is, how it behaves, the process keeping it
+ * connected, and its sessions — read top to bottom.
+ *
+ * It used to be three tabs down a side nav, which asked the reader to know
+ * which of them held what before they could look at anything. The page is short
+ * enough to scroll instead.
+ */
 export const ActiveLocation = observer(function ActiveLocation() {
   const {
     params: { locationId },
@@ -57,36 +30,21 @@ export const ActiveLocation = observer(function ActiveLocation() {
   // The sidecar is a remote-only concern — a local agent runs no on-host process.
   const isRemote = store.data.sshHost !== null;
 
-  const items: Array<{ id: LocationView; label: string }> = [
-    { id: 'sessions', label: 'Sessions' },
-    { id: 'settings', label: 'Settings' },
-    ...(isRemote ? [{ id: 'sidecar' as const, label: 'Sidecar' }] : []),
-  ];
-
-  // Resolve the active view, falling back to Sessions for a retired ('subagents')
-  // or now-unavailable ('sidecar' on a local location) stored view.
-  const stored = store.view.activeView;
-  const activeView: LocationView =
-    stored === 'settings' || (stored === 'sidecar' && isRemote) ? stored : 'sessions';
-
   return (
-    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
-      <div className="mx-auto flex h-full min-h-0 w-full max-w-[1060px] flex-col gap-6 px-8">
-        <div className="grid min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] gap-8 overflow-hidden">
-          <LocationViewNav
-            items={items}
-            activeView={activeView}
-            onChange={(view) => store.view.setLocationView(view)}
-          />
-          <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-1 py-10">
-              {activeView === 'sessions' && <SessionList />}
-              {activeView === 'settings' && <SettingsPanel />}
-              {activeView === 'sidecar' && <SidecarPanel />}
-            </div>
+    <AgentEditsProvider>
+      <div className="flex min-h-0 w-full flex-1 flex-col">
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-[820px] flex-col gap-10 px-8 pb-20">
+            <AgentPageHeader />
+            <SettingsPanel />
+            {isRemote && <SidecarPanel />}
+            <SessionList />
           </div>
         </div>
+        {/* Outside the scroll area: an edit made at the top of the page should
+            not need scrolling to the bottom before it can be saved. */}
+        <AgentSaveBar />
       </div>
-    </div>
+    </AgentEditsProvider>
   );
 });

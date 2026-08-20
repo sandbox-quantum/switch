@@ -26,6 +26,14 @@ vi.mock('electron', () => ({
 const DISCORD_TOKEN_TAIL = 'abcdefghijklmnopqrstuvwxyz1';
 const DISCORD_TOKEN_SHAPE = ['MTA5NjE4NzQ5NDI4Nzk0MjA5', 'GhIjKl', DISCORD_TOKEN_TAIL].join('.');
 
+/**
+ * A Telegram-bot-token-shaped fixture, assembled at runtime for the same reason
+ * as the Discord one: `<bot id>:<hmac>` is matched on sight by push protection
+ * and by gitleaks' own telegram-bot-api-token rule.
+ */
+const TELEGRAM_TOKEN_TAIL = 'AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw';
+const TELEGRAM_TOKEN_SHAPE = ['110201543', TELEGRAM_TOKEN_TAIL].join(':');
+
 describe('redactDiagnosticLog', () => {
   it('redacts common secrets in free-form text', () => {
     const redacted = redactDiagnosticLog(
@@ -123,6 +131,18 @@ describe('redactDiagnosticLog', () => {
 
     expect(redacted).toContain('[REDACTED_SLACK_TOKEN]');
     expect(redacted).toContain('[REDACTED_DISCORD_TOKEN]');
+  });
+
+  it('redacts a bare Telegram bot token', () => {
+    // Structural, like Discord's: a Telegram token carries no vendor prefix, so
+    // it has to be caught on shape alone or it reaches the log whenever it is
+    // not sitting behind a `bot_token=` key.
+    const redacted = redactDiagnosticLog(
+      `polling failed for ${TELEGRAM_TOKEN_SHAPE} after 3 attempts`
+    );
+
+    expect(redacted).toContain('[REDACTED_TELEGRAM_TOKEN]');
+    expect(redacted).not.toContain(TELEGRAM_TOKEN_TAIL);
   });
 
   it('redacts the token after a Bot auth scheme, not just Bearer', () => {

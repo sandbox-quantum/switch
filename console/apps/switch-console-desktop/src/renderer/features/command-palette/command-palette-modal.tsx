@@ -1,32 +1,22 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Command } from 'cmdk';
-import {
-  Activity,
-  Bot,
-  DoorOpen,
-  Globe,
-  HardDrive,
-  type LucideIcon,
-  MessageSquare,
-  Server,
-} from 'lucide-react';
+import { Activity, DoorOpen, Globe, type LucideIcon, MessageSquare, Server } from 'lucide-react';
 import { observer, useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { getSessionStore } from '@renderer/features/sessions/stores/session-selectors';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { agentExpandKey } from '@renderer/features/sidebar/sidebar-store';
+import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { serverIcon } from '@renderer/features/switch-servers/server-icon';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { commandRegistry } from '@renderer/lib/commands/registry';
-import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { scopeToLocationServer, scopeToRoomServer } from '@renderer/lib/layout/scope-to-server';
+import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
 import { Shortcut } from '@renderer/lib/ui/shortcut';
@@ -34,11 +24,17 @@ import { cn } from '@renderer/utils/utils';
 import { ALL_COMMAND_DEFS, type CommandDef } from '@shared/commands';
 import type { SearchItem, SearchResult } from '@shared/core/search';
 import { getCommandIcon } from './command-icons';
+import { PaletteAgentItem } from './palette-agent-item';
 import { PALETTE_ITEM_CLASS } from './palette-item-styles';
-import { PaletteNotificationsGroup } from './palette-notifications-group';
 import { PaletteSessionItem } from './palette-session-item';
 import { ResourceMonitorView } from './resource-monitor-view';
-import { applyContextAffinity, matchHosts, matchRooms, matchServers } from './search-utils';
+import {
+  applyContextAffinity,
+  matchHosts,
+  matchRooms,
+  matchServers,
+  sectionResults,
+} from './search-utils';
 
 interface CommandPaletteProps {
   locationId?: string;
@@ -61,21 +57,16 @@ const MUTED_ICON = 'size-3.5 shrink-0 text-foreground/40';
  * The icon a result carries in the left sidebar.
  *
  * Deliberately not a static kind→glyph map: the sidebar's icons are conditional
- * — an agent shows its provider's mark, a room its bridge platform, a server its
- * management kind — so a flat map can only ever approximate them. Resolving from
- * the same stores the sidebar reads keeps the two in step instead of leaving a
- * second set of lookalikes to drift.
+ * — a room shows its bridge platform, a server its management kind — so a flat
+ * map can only ever approximate them. Resolving from the same stores the sidebar
+ * reads keeps the two in step instead of leaving a second set of lookalikes to
+ * drift.
+ *
+ * Agents are not here: they wear their own picture, which needs a query, so
+ * `PaletteAgentItem` draws the whole row.
  */
 const PaletteKindIcon = observer(function PaletteKindIcon({ item }: { item: SearchItem }) {
   switch (item.kind) {
-    case 'agent': {
-      const providerId = agentsStore.agentById(item.id)?.providerId;
-      return providerId ? (
-        <AgentIcon id={providerId} size={14} className="shrink-0" />
-      ) : (
-        <Bot className={MUTED_ICON} />
-      );
-    }
     case 'room': {
       const bridgeType = switchRoomsStore.roomBridgeTypeById(item.id);
       return hasBridgeIcon(bridgeType) ? (
@@ -86,12 +77,8 @@ const PaletteKindIcon = observer(function PaletteKindIcon({ item }: { item: Sear
     }
     case 'server': {
       const server = switchServersStore.servers.find((s) => s.id === item.id);
-      if (server?.managementKind === 'remote') return <Server className={MUTED_ICON} />;
-      return server?.managed ? (
-        <HardDrive className={MUTED_ICON} />
-      ) : (
-        <Globe className={MUTED_ICON} />
-      );
+      const Icon = server ? serverIcon(server) : Globe;
+      return <Icon className={MUTED_ICON} />;
     }
     case 'host':
       return <Server className={MUTED_ICON} />;
@@ -119,15 +106,9 @@ const SESSION_SUGGESTED = [
   'session.sidebarFiles',
   'session.toggleTerminalDrawer',
   'resource-monitor',
-  'app.giveFeedback',
 ];
-const LOCATION_SUGGESTED = [
-  'app.newSession',
-  'app.settings',
-  'resource-monitor',
-  'app.giveFeedback',
-];
-const APP_SUGGESTED = ['app.newLocation', 'app.settings', 'resource-monitor', 'app.giveFeedback'];
+const LOCATION_SUGGESTED = ['app.newSession', 'app.settings', 'resource-monitor'];
+const APP_SUGGESTED = ['app.newLocation', 'app.settings', 'resource-monitor'];
 
 function PaletteItem({
   value,
@@ -138,6 +119,9 @@ function PaletteItem({
   item: SearchItem | PaletteAction;
   onSelect: () => void;
 }) {
+  if (item.kind === 'agent') {
+    return <PaletteAgentItem item={item as SearchItem} value={value} onSelect={onSelect} />;
+  }
   const action = item.kind === 'action' ? (item as PaletteAction) : null;
   const ActionIcon = action?.icon;
   const iconNode = ActionIcon ? (
@@ -197,8 +181,6 @@ export function CommandPaletteModal({
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebounce(query, 100);
   const { navigate } = useNavigate();
-  const { value: resourceMonitor } = useAppSettingsKey('resourceMonitor');
-  const { value: keyboard } = useAppSettingsKey('keyboard');
   const queryClient = useQueryClient();
 
   const handleClose = onClose;
@@ -248,7 +230,7 @@ export function CommandPaletteModal({
           id: cmd.id,
           title: cmd.label,
           subtitle: cmd.description,
-          shortcut: cmd.shortcutKey ? getEffectiveHotkey(cmd.shortcutKey, keyboard) : null,
+          shortcut: cmd.shortcutKey ? getEffectiveHotkey(cmd.shortcutKey) : null,
           icon: getCommandIcon(def?.iconKey),
           execute: () => {
             handleClose();
@@ -258,21 +240,18 @@ export function CommandPaletteModal({
       })
   );
 
-  const resourceMonitorAction = useMemo<PaletteAction | null>(
-    () =>
-      resourceMonitor?.enabled
-        ? {
-            kind: 'action',
-            id: 'resource-monitor',
-            title: 'Resource Monitor',
-            subtitle: 'Show CPU and memory performance for running agents',
-            icon: Activity,
-            execute: () => {
-              setView('resource-monitor');
-            },
-          }
-        : null,
-    [resourceMonitor?.enabled]
+  const resourceMonitorAction = useMemo<PaletteAction>(
+    () => ({
+      kind: 'action',
+      id: 'resource-monitor',
+      title: 'Resource Monitor',
+      subtitle: 'Show CPU and memory performance for running agents',
+      icon: Activity,
+      execute: () => {
+        setView('resource-monitor');
+      },
+    }),
+    []
   );
 
   const actions = useMemo(() => {
@@ -282,10 +261,7 @@ export function CommandPaletteModal({
       : locationId
         ? LOCATION_SUGGESTED
         : APP_SUGGESTED;
-    const pool = resourceMonitorAction
-      ? [...registryActions, resourceMonitorAction]
-      : registryActions;
-    return pool
+    return [...registryActions, resourceMonitorAction]
       .filter((a) => suggestedIds.includes(a.id))
       .sort((a, b) => suggestedIds.indexOf(a.id) - suggestedIds.indexOf(b.id))
       .slice(0, 7);
@@ -313,13 +289,39 @@ export function CommandPaletteModal({
 
   const q = debouncedQuery.toLowerCase();
   const matchedResourceMonitor =
-    resourceMonitorAction &&
     q &&
     (resourceMonitorAction.title.toLowerCase().includes(q) ||
       resourceMonitorAction.subtitle?.toLowerCase().includes(q))
       ? resourceMonitorAction
       : null;
   const sessionResults = rankedDb.filter((r): r is SearchItem => r.kind === 'session');
+
+  // Sectioned only when the items actually answer the query. Under any other
+  // status they are recents or nothing, and rendering them as results is what
+  // made a too-short query look like a result set.
+  const indexed = sectionResults(searchResult.status === 'ok' ? rankedDb : []);
+
+  /** Indexed commands still registered and visible, paired with the live entry
+   *  that executes them. Built here so the group knows whether it has rows
+   *  before it renders a heading over none. */
+  const commandItems = indexed.command.flatMap((item) => {
+    const live = commandRegistry.findById(item.id);
+    if (!live || live.enabled === false || live.hideFromPalette) return [];
+    const def = ALL_COMMAND_DEFS.find((d) => d.id === item.id) as CommandDef | undefined;
+    const display: PaletteAction = {
+      kind: 'action',
+      id: item.id,
+      title: live.label,
+      subtitle: live.description,
+      shortcut: def?.shortcutKey ? getEffectiveHotkey(def.shortcutKey) : null,
+      icon: getCommandIcon(def?.iconKey),
+      execute: () => {
+        handleClose();
+        live.execute();
+      },
+    };
+    return [{ item: display, live }];
+  });
 
   const handleNavigateToSession = (item: SearchItem) => {
     if (!item.locationId) return;
@@ -350,7 +352,7 @@ export function CommandPaletteModal({
 
   const handleNavigateToRoom = (item: SearchItem) => {
     handleClose();
-    void scopeToRoomServer(item.id).then(() => navigate('room', { roomId: item.id }));
+    void openRoom(item.id);
   };
 
   const handleNavigateToServer = (item: SearchItem) => {
@@ -371,6 +373,30 @@ export function CommandPaletteModal({
     if (item.kind === 'room') return handleNavigateToRoom(item);
     if (item.kind === 'server') return handleNavigateToServer(item);
     if (item.kind === 'host') return handleNavigateToHost(item);
+  };
+
+  /** A session row, rendered from its live store when there is one so it carries
+   *  the same status as the sidebar; otherwise as a plain result. */
+  const renderSessionResult = (item: SearchItem) => {
+    const store = item.locationId ? getSessionStore(item.locationId, item.id) : null;
+    if (!store) {
+      return (
+        <PaletteItem
+          key={`session:${item.id}`}
+          value={`session:${item.id}`}
+          item={item}
+          onSelect={() => handleSelect(item)}
+        />
+      );
+    }
+    return (
+      <PaletteSessionItem
+        key={`session:${item.id}`}
+        sessionStore={store}
+        value={`session:${item.id}`}
+        onSelect={() => handleNavigateToSession(item)}
+      />
+    );
   };
 
   const handleResourceMonitorBack = useCallback(() => {
@@ -438,96 +464,55 @@ export function CommandPaletteModal({
               </div>
             )}
             <PaletteResultGroup
+              heading="Agents"
+              items={indexed.agent}
+              onSelect={handleNavigateToAgent}
+            />
+            {indexed.session.length > 0 && (
+              <Command.Group heading="Sessions" className={GROUP_CLASS}>
+                {indexed.session.map(renderSessionResult)}
+              </Command.Group>
+            )}
+            <PaletteResultGroup
               heading="Rooms"
-              items={roomResults}
+              items={[...roomResults, ...indexed.room]}
               onSelect={handleNavigateToRoom}
             />
             <PaletteResultGroup
               heading="Servers"
-              items={serverResults}
+              items={[...serverResults, ...indexed.server]}
               onSelect={handleNavigateToServer}
             />
             <PaletteResultGroup
               heading="Remote hosts"
-              items={hostResults}
+              items={[...hostResults, ...indexed.host]}
               onSelect={handleNavigateToHost}
             />
-            {matchedResourceMonitor && (
-              <PaletteItem
-                value={matchedResourceMonitor.id}
-                item={matchedResourceMonitor}
-                onSelect={matchedResourceMonitor.execute}
-              />
-            )}
-            {/* Only when the items actually answer the query. Under any other
-                status they are recents or nothing, and rendering them here is
-                what made a too-short query look like a result set. */}
-            {searchResult.status === 'ok' &&
-              rankedDb.map((item) => {
-                if (item.kind === 'command') {
-                  const live = commandRegistry.findById(item.id);
-                  if (!live || live.enabled === false || live.hideFromPalette) return null;
-                  const def = ALL_COMMAND_DEFS.find((d) => d.id === item.id) as
-                    | CommandDef
-                    | undefined;
-                  const shortcut = def?.shortcutKey
-                    ? getEffectiveHotkey(def.shortcutKey, keyboard)
-                    : null;
-                  const displayItem: PaletteAction = {
-                    kind: 'action',
-                    id: item.id,
-                    title: live.label,
-                    subtitle: live.description,
-                    shortcut,
-                    icon: getCommandIcon(def?.iconKey),
-                    execute: () => {
+            {(matchedResourceMonitor || commandItems.length > 0) && (
+              <Command.Group heading="Commands" className={GROUP_CLASS}>
+                {matchedResourceMonitor && (
+                  <PaletteItem
+                    value={matchedResourceMonitor.id}
+                    item={matchedResourceMonitor}
+                    onSelect={matchedResourceMonitor.execute}
+                  />
+                )}
+                {commandItems.map(({ item, live }) => (
+                  <PaletteItem
+                    key={item.id}
+                    value={item.id}
+                    item={item}
+                    onSelect={() => {
                       handleClose();
                       live.execute();
-                    },
-                  };
-                  return (
-                    <PaletteItem
-                      key={item.id}
-                      value={item.id}
-                      item={displayItem}
-                      onSelect={() => {
-                        handleClose();
-                        live.execute();
-                      }}
-                    />
-                  );
-                }
-                if (item.kind === 'session' && item.locationId) {
-                  const store = getSessionStore(item.locationId, item.id);
-                  if (store) {
-                    return (
-                      <PaletteSessionItem
-                        key={`session:${item.id}`}
-                        sessionStore={store}
-                        value={`session:${item.id}`}
-                        onSelect={() => handleNavigateToSession(item)}
-                      />
-                    );
-                  }
-                }
-                return (
-                  <PaletteItem
-                    key={`${item.kind}:${item.id}`}
-                    value={`${item.kind}:${item.id}`}
-                    item={item}
-                    onSelect={() => handleSelect(item)}
+                    }}
                   />
-                );
-              })}
+                ))}
+              </Command.Group>
+            )}
           </>
         ) : (
           <>
-            <PaletteNotificationsGroup
-              currentLocationId={locationId}
-              currentSessionId={sessionId}
-              onClose={handleClose}
-              navigate={navigate}
-            />
             {actionResults.length > 0 && (
               <Command.Group heading="Suggested Actions" className={GROUP_CLASS}>
                 {actionResults.map((item) => (

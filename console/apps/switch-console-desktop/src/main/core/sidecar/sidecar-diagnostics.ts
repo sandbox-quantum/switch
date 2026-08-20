@@ -1,11 +1,11 @@
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { readAgentSidecarLog } from '@main/core/agent-runtime/impl/ensure-agent-sidecar';
+import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { connectRemoteAgent } from '@main/core/agents/connect-remote-agent';
 import { getAgents } from '@main/core/agents/getAgents';
 import { registerDiagnosticSection } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
-import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 
 const DIAGNOSTIC_TAIL_LINES = 200;
@@ -55,7 +55,7 @@ async function collectForAgent(agent: Agent): Promise<string> {
         autoApprove: agent.autoApprove,
         credsSlug: agent.name ?? agent.id,
         agentName: agent.name ?? null,
-        specialization: toSwitchSpecialization(agent.providerConfig),
+        specialization: await agentLaunchSpecialization(agent.id),
         ctx: conn.ctx,
         connectionId: conn.connectionId,
         host: conn.host,

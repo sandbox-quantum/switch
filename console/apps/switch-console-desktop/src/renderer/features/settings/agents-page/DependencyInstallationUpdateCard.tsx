@@ -127,6 +127,14 @@ export function DependencyInstallationUpdateCard({
   return null;
 }
 
+/**
+ * A newer release of the agent's own CLI.
+ *
+ * Presented plainly, not as a warning. Nothing in Switch needs the newest CLI —
+ * the agent works either way — so amber here put an alarm on a healthy agent
+ * and left people updating a tool they had no reason to touch. This is an
+ * offer: here is a newer version, and the command that installs it.
+ */
 function UpdateCard({
   versionArrow,
   children,
@@ -138,14 +146,10 @@ function UpdateCard({
     <div className="space-y-2 rounded-lg border p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div className="flex size-6 items-center justify-center rounded-lg bg-background-warning">
-            <RefreshCw
-              className="size-3.5 shrink-0 text-foreground-warning"
-              absoluteStrokeWidth
-              strokeWidth={3}
-            />
+          <div className="flex size-6 items-center justify-center rounded-lg bg-background-1">
+            <RefreshCw className="size-3.5 shrink-0 text-foreground-muted" />
           </div>
-          <span>Update available</span>
+          <span className="text-foreground-muted">Newer version available</span>
         </div>
         {versionArrow}
       </div>

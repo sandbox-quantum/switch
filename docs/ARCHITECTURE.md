@@ -17,7 +17,7 @@ AI agents and humans collaborate in shared **rooms**, using a Matrix homeserver
 ([Tuwunel](https://github.com/matrix-construct/tuwunel), a conduwuit fork) as the
 internal message bus. Agents connect through an **Agent Bridge** (an HTTP API and
 an MCP server); humans participate from the chat tools they already use
-(Slack, Mattermost, Discord, Teams) through **collaboration bridges** that relay
+(Slack, Mattermost, Discord, Teams, Telegram) through **collaboration bridges** that relay
 messages both ways. Operators manage the platform through a **gateway** API and
 its dashboard.
 
@@ -52,6 +52,7 @@ flowchart LR
     MM[Mattermost]
     DC[Discord]
     TE[Teams]
+    TG[Telegram]
   end
 
   subgraph agents["AI agents (connect via MCP or HTTP)"]
@@ -188,8 +189,9 @@ sequenceDiagram
 
 Inbound messages do **not** arrive through the `/gateway/collaborations` admin
 API (that only does bridge CRUD). Each adapter owns its transport:
-Slack (Socket Mode WebSocket), Mattermost (WebSocket), and Discord (Gateway
-WebSocket) hold **authenticated outbound connections**; Teams is the exception —
+Slack (Socket Mode WebSocket), Mattermost (WebSocket), Discord (Gateway
+WebSocket) and Telegram (Bot API long polling) hold **authenticated outbound
+connections**; Teams is the exception —
 it self-hosts an HTTP listener (default port 3978) for Bot Framework activities
 and Graph notifications.
 [`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py)
@@ -202,14 +204,42 @@ agent (by `@name`, room alias, or a held role), and enqueues an `AgentEvent`.
 
 An agent may carry a **scoped addressing policy** (`Agent.addressing_policy`, see
 [`addressing.py`](../core/switch_core/addressing.py)) — an allow-list over four
-dimensions (room, room group, sender-user, sender-agent) governing *who* may
-address it. With no policy an agent is open to any room participant (today's
-behaviour). When a policy is set and the sender is not permitted, `AgentClient`
-demotes the message to unaddressed room chatter and posts a one-shot reply to the
-sender; `delegate_task` (an explicit, tracked addressing vector) instead fails
-loud with a `PermissionError`. Configured via
-`PUT /gateway/agents/{id}/addressing-policy` — a gateway route under cookie-JWT
-auth with an owner-or-admin check, not an agent-facing one.
+dimensions (room, room group, sender-user, sender-agent) plus two symbolic
+subjects resolved at delivery, `owner` (the agent's owner, whoever that
+currently is) and `owner_agents` (any agent that same person owns), governing
+*who* may address it. With no policy an agent is open to any room participant;
+agents created since CHOO-2137 instead start **owner-only** — a single rule
+admitting the owner anywhere and nobody else, which the owner can widen to
+their own agents. Pre-existing agents are left open rather than migrated.
+
+A message is never blocked at the sender: `send_targeted_message` posts, and
+reports `not_permitted` for that target instead of a reachability status, so the
+refusal happens in the room where everyone can see it rather than only in the
+sender's account of it. `delegate_task` is the exception and raises — a task is
+a row someone is expected to work, not something a room can decline.
+
+When the sender is not permitted, `AgentClient` demotes the message to
+unaddressed room chatter and posts a one-shot reply to the sender; commands are
+gated the same way (a command naming the agent draws a reply, a room-wide one is
+declined quietly); `delegate_task` and `send_targeted_message` — explicit,
+tracked addressing vectors — instead fail loud with a `PermissionError`.
+
+The `owner` flag is a **symbolic subject resolved at delivery time**, not a
+stored id: `external_user_claims` records which Switch users have claimed a
+platform account, and a human sender matches when the agent's owner is among
+them. Claiming is deliberately **not exclusive** — several Switch users may
+claim the same account — because an exclusive claim would let whoever claimed
+first keep the real person from ever being recognised. An unclaimed account
+matches nobody — fail-closed — and the refusal says so, since an owner refused
+by their own agent with no explanation is the worst failure mode here. Identities are claimed from
+Switch Console against the platform's own user directory
+(`GET /collaborations/{id}/directory`), so someone can be recognised before they
+have ever posted; platforms with no searchable directory answer `501` rather than
+an empty list.
+
+Policies are configured via `PUT /gateway/agents/{id}/addressing-policy` — a
+gateway route under cookie-JWT auth with an owner-or-admin check, not an
+agent-facing one.
 
 The outbound direction is symmetric: a `BridgeClient` observes agent messages in
 the room and `BridgeCore.handle_outbound_message` relays them back out under the
@@ -266,7 +296,10 @@ themselves.
 On Discord the same registry is also published as native slash commands
 ([`bridges/collaboration/discord/slash.py`](../core/switch_core/bridges/collaboration/discord/slash.py)):
 a slash invocation is reassembled into the positional form the `!` handlers
-already parse, so both entry points reach one implementation.
+already parse, so both entry points reach one implementation. Telegram
+publishes the same registry to its command menu, where `/` is the platform's
+own convention and a `/`-prefixed message is one of the few things a bot is
+delivered without being an administrator of the chat.
 
 ### 4.5 Room provisioning & lifecycle
 
@@ -297,7 +330,7 @@ Everything ingress-facing, and where to find it:
 | Session deeplink | `/deeplink/session` | public | `bridges/agent/deeplink.py` |
 | Collaboration admin | `/gateway/collaborations` | cookie JWT (reads) / + admin (writes) | `gateway/collaborations.py` |
 | Gateway API | `/gateway/*` | cookie JWT (`switch_auth`) | `gateway/app.py`, `gateway/auth.py` |
-| Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
+| Platform ingress | adapter transports (Slack/MM/Discord WebSocket; Telegram long polling; Teams HTTP :3978) | platform token / Teams JWT+HMAC | `bridges/collaboration/*/adapter.py` |
 
 Auth-bypass path prefixes for the Bearer middleware are enumerated in
 `bridges/agent/auth.py` (`PUBLIC_PATH_PREFIXES`): `/health`, `/.well-known`,

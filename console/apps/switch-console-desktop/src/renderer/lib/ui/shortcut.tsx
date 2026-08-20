@@ -1,6 +1,5 @@
 import { detectPlatform, parseHotkey, type Hotkey } from '@tanstack/react-hotkeys';
 import { useMemo } from 'react';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
   getEffectiveHotkey,
   type ShortcutSettingsKey,
@@ -83,8 +82,7 @@ interface BoundShortcutProps {
 
 /** Display a shortcut directly from an app shortcut settings key. */
 function BoundShortcut({ settingsKey, className, variant }: BoundShortcutProps) {
-  const { value: keyboard } = useAppSettingsKey('keyboard');
-  const hotkey = getEffectiveHotkey(settingsKey, keyboard);
+  const hotkey = getEffectiveHotkey(settingsKey);
 
   return <Shortcut hotkey={hotkey} className={className} variant={variant} />;
 }

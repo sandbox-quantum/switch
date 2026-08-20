@@ -5,10 +5,13 @@ import { cn } from '@renderer/utils/utils';
 export function AnimatedHeight({
   children,
   className,
+  style,
   onAnimatingChange,
 }: {
   children: React.ReactNode;
   className?: string;
+  // React sets custom properties happily; only the type omits them.
+  style?: React.CSSProperties & Record<`--${string}`, string>;
   onAnimatingChange?: (isAnimating: boolean) => void;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
@@ -34,14 +37,13 @@ export function AnimatedHeight({
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
-    // Skip the ResizeObserver's initial callback — the height was already
-    // captured synchronously above, so the first observation is never new.
-    let isFirstCallback = true;
+    // The observer's first delivery is not redundant with the measurement
+    // above: content that grows in between — a section that opens itself once
+    // a query settles — is reported there and nowhere else. Discarding it
+    // leaves the wrapper pinned too short, and its content then paints outside
+    // the box, under whatever follows. `lastHeightRef` is what keeps an
+    // unchanged first observation from animating.
     const ro = new ResizeObserver(() => {
-      if (isFirstCallback) {
-        isFirstCallback = false;
-        return;
-      }
       const next = el.offsetHeight;
       if (lastHeightRef.current === next) return;
       lastHeightRef.current = next;
@@ -60,6 +62,7 @@ export function AnimatedHeight({
     <motion.div
       animate={{ height: height ?? 'auto' }}
       transition={{ duration: 0.25, ease: 'easeInOut' }}
+      style={style}
       className={cn('w-full', isAnimating ? 'overflow-hidden' : 'overflow-visible', className)}
       onAnimationComplete={() => setIsAnimating(false)}
     >

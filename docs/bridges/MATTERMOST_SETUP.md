@@ -25,7 +25,7 @@ required**.
 ## 2. Onboard the bridge in Switch
 
 As a gateway admin, onboard the bridge from the **operator dashboard**:
-**Messaging Apps → Add bridge → Mattermost**, give it a display name (e.g. "Acme
+**Messaging Apps → Register messaging app → Mattermost**, give it a display name (e.g. "Acme
 Mattermost"), and fill in the fields below.
 
 Fields (`MattermostConnectionConfig`):

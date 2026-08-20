@@ -1,18 +1,12 @@
 """Tiny Jira REST client (stdlib only) for linking/creating vulnerability tickets.
 
-Uses REST API v3 with basic auth (email + API token) against the SandboxAQ Jira
-Cloud instance (sandboxquantum.atlassian.net): search via /rest/api/3/search/jql
-(with a legacy fallback), create with an ADF description, assign, comment, remote
-link and transition to Done. Stdlib-only so the CI step needs no extra pip install.
+Uses REST API v3 with basic auth (email + API token) against the Jira Cloud
+instance named by JIRA_BASE_URL: search via /rest/api/3/search/jql (with a legacy
+fallback), create with an ADF description, assign, comment, remote link and
+transition to Done. Stdlib-only so the CI step needs no extra pip install.
 
 Every network call degrades gracefully: on any error it logs and returns an empty
 result / None, so a Jira outage never fails the autofix run.
-
-Vendored from ``root/scripts/socket-autofix/jira_client.py`` so this tool is
-self-contained and independently mergeable (with one addition, ``field_value()``, for
-verify-after-set routing). Once both tools land, the shared stdlib helpers (this
-module, ``advisory.py``, ``codeowners.py``) should be extracted to a single
-``root/scripts/lib/`` and imported by both.
 """
 
 from __future__ import annotations
@@ -25,7 +19,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_BASE = "https://sandboxquantum.atlassian.net"
 # Vulnerabilities are tracked in the VULNMGMT project. Both search and create
 # default here; the driver overrides them from JIRA_VULN_PROJECT when set.
 SEARCH_PROJECTS = ("VULNMGMT",)
@@ -53,12 +46,11 @@ class JiraClient:
     def from_env(cls) -> JiraClient | None:
         email = os.environ.get("SBT_MACHINE_USER_EMAIL")
         token = os.environ.get("SBT_MACHINE_USER_JIRA_TOKEN")
-        # `or DEFAULT_BASE` (not a get default): the workflow sets
-        # JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}, which is the EMPTY STRING when
-        # the repo var is undefined. get(k, default) returns "" there (key present),
-        # leaving base="" and every request URL schemeless. Treat empty as unset.
-        base = os.environ.get("JIRA_BASE_URL") or DEFAULT_BASE
-        if not (email and token):
+        # The workflow sets JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}, which is the
+        # EMPTY STRING when the variable is undefined. Treat empty as unset and
+        # skip — there is no hardcoded fallback host, since this tree is public.
+        base = os.environ.get("JIRA_BASE_URL") or ""
+        if not (base and email and token):
             return None
         return cls(base, email, token)
 

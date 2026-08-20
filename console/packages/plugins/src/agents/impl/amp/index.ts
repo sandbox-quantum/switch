@@ -29,6 +29,7 @@ export const plugin = definePlugin(
       kind: 'plugin',
       scope: 'workspace',
       supportedEvents: ['start', 'stop'],
+      reportsSessionStart: false,
     },
     hostDependency: npmDependency({
       id: 'amp',

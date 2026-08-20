@@ -10,13 +10,15 @@ const launchArgs = vi.fn((dir: string, name: string) => [
   `${dir}/.switch/agents/${name}.json`,
 ]);
 
-const launchProfile = vi.fn((params: { slug: string; model?: string; instructions?: string }) =>
-  params.model || params.instructions
-    ? {
-        files: [{ relativePath: `.codex/${params.slug}.config.toml`, content: 'PROFILE' }],
-        args: ['--profile', params.slug],
-      }
-    : null
+const launchProfile = vi.fn(
+  (params: { slug: string; values: Record<string, string | undefined> }) =>
+    params.values.model || params.values.instructions
+      ? {
+          files: [{ relativePath: `.codex/${params.slug}.config.toml`, content: 'PROFILE' }],
+          args: ['--profile', params.slug],
+          env: { PROFILE_PATH: `__SWITCHDASH_HOME__/.codex/${params.slug}.config.toml` },
+        }
+      : null
 );
 /** Set per test: whether the mocked provider takes specialization from a file. */
 let mcpBehavior: { launchProfile?: typeof launchProfile } | undefined;
@@ -30,6 +32,10 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 vi.mock('@main/core/agent-runtime/impl/resolve-agent-executable', () => ({
   resolveAgentExecutable: vi.fn(async () => '/usr/bin/claude'),
 }));
+vi.mock('@main/core/settings/settings-service', () => ({
+  appSettingsService: { get: vi.fn(async () => ({ autoTrustWorktrees: true })) },
+}));
+
 vi.mock('@main/core/settings/provider-settings-service', () => ({
   providerOverrideSettings: { getItem: vi.fn(async () => undefined) },
 }));
@@ -47,6 +53,8 @@ const baseParams = {
   providerId: 'claude',
   remoteRepoDir: '/home/agent/repo',
   deeplinkScheme: 'switchdash',
+  autoApprove: false,
+  autoTrustWorktrees: true,
   agentName: null,
   credsSlug: 'hoot',
   ctx: {} as never,
@@ -113,6 +121,22 @@ describe('generateAgentLaunchSpec', () => {
     expect(spec.launchFiles).toEqual([
       { homeRelativePath: '.codex/hoot.config.toml', content: 'PROFILE' },
     ]);
+  });
+
+  it("bakes a profile's env with the home placeholder left for the sidecar", async () => {
+    // A provider that names its config through the environment (OpenCode) needs
+    // an absolute path, and this runs on the desktop, which does not know the
+    // VM's home. The placeholder survives into the spec deliberately; the
+    // sidecar substitutes it where it writes the file.
+    mcpBehavior = { launchProfile };
+
+    const spec = await generateAgentLaunchSpec({
+      ...baseParams,
+      autoApprove: false,
+      specialization: { model: 'gpt-5.6-terra' },
+    });
+
+    expect(spec.env.PROFILE_PATH).toBe('__SWITCHDASH_HOME__/.codex/hoot.config.toml');
   });
 
   it('bakes a profile that carries no credential and registers no server', async () => {
@@ -221,11 +245,14 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
         cwd: '/home/agent/repo',
         providerId: 'codex',
         deeplinkScheme: 'switchdash',
+        autoApprove: false,
+        autoTrustWorktrees: true,
       },
       {
         sessionId: 's1',
         initialPrompt: 'connect to switch room room-x',
         extraEnv: {},
+        homeDir: '/home/agent',
       }
     );
 
@@ -245,11 +272,14 @@ describe('generateAgentLaunchSpec against real provider command builders', () =>
         cwd: '/home/agent/repo',
         providerId: 'claude',
         deeplinkScheme: 'switchdash',
+        autoApprove: false,
+        autoTrustWorktrees: true,
       },
       {
         sessionId: 's1',
         initialPrompt: 'p',
         extraEnv: {},
+        homeDir: '/home/agent',
       }
     );
 

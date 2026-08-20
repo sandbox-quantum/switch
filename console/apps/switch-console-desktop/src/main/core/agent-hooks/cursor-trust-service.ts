@@ -1,8 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { appSettingsService } from '@main/core/settings/settings-service';
-import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { canonicalTrustPath, type TrustServiceDeps } from './trust-config-io';
 
 const CURSOR_PROVIDER_ID: AgentProviderId = 'cursor';
 const CURSOR_DATA_DIR_NAME = '.cursor';
@@ -10,11 +9,7 @@ const CURSOR_PROJECTS_DIR_NAME = 'projects';
 const CURSOR_TRUST_MARKER_NAME = '.workspace-trusted';
 
 export class CursorTrustService {
-  constructor(
-    private readonly deps: {
-      getSessionSettings: () => Promise<{ autoTrustWorktrees: boolean }>;
-    }
-  ) {}
+  constructor(private readonly deps: TrustServiceDeps) {}
 
   async maybeAutoTrustLocal({
     providerId,
@@ -30,7 +25,7 @@ export class CursorTrustService {
     if (!cwd) return;
     if (!(await this.shouldAutoTrust(providerId, force))) return;
 
-    const workspacePath = path.resolve(cwd);
+    const workspacePath = await canonicalTrustPath(cwd);
     const dataDir = path.join(homedir, CURSOR_DATA_DIR_NAME);
     const markerPath = path.join(
       cursorLocationDir(workspacePath, dataDir, path),
@@ -63,7 +58,7 @@ export class CursorTrustService {
 
       await io.write(JSON.stringify(createTrustMarker(workspacePath), null, 2) + '\n');
     } catch (error: unknown) {
-      log.warn('CursorTrustService: failed to auto-trust worktree', {
+      this.deps.log.warn('CursorTrustService: failed to auto-trust worktree', {
         path: workspacePath,
         markerPath,
         error: String(error),
@@ -71,10 +66,6 @@ export class CursorTrustService {
     }
   }
 }
-
-export const cursorTrustService = new CursorTrustService({
-  getSessionSettings: () => appSettingsService.get('sessions'),
-});
 
 function createTrustMarker(workspacePath: string): Record<string, string> {
   return {

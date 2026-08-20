@@ -105,6 +105,10 @@ class AgentStatus(StrEnum):
     # actively watching (global "watching" heartbeat) — it will spin up a
     # session on demand when addressed.
     DORMANT = "dormant"
+    # Reachable, but its addressing policy does not admit this sender, so it
+    # will decline in the room rather than act. Not a connectivity state: the
+    # message is still delivered and still answered, just with a refusal.
+    NOT_PERMITTED = "not_permitted"
 
 
 class SendTargetedResult(BaseModel):

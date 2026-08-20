@@ -29,6 +29,17 @@ export interface DependencyState {
 
 export type DependencyStatusMap = Record<string, DependencyState>;
 
+/**
+ * What to run for an install / update / uninstall.
+ *
+ * A plain string is a shell line straight from a descriptor's installCommands
+ * (`brew install claude`) and must stay one, since it may contain pipes and
+ * `&&`. An argv pair is a command Switch Console assembled itself from a resolved
+ * binary path; keeping it as argv is what stops `C:\Program Files\nodejs\npm.cmd`
+ * from being split at the space.
+ */
+export type InstallCommandSpec = string | { command: string; args: string[] };
+
 export type InstallCommandError =
   | { type: 'permission-denied'; message: string; output: string; exitCode?: number }
   | { type: 'command-failed'; message: string; output: string; exitCode?: number }

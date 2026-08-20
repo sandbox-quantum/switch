@@ -6,8 +6,11 @@ import { prepareAgentLaunchProfile, resolveAgentLaunchProfile } from './agent-la
 
 type Plugin = ReturnType<typeof getPlugin>;
 
-/** The real Codex plugin — the only one that takes specialization from a file. */
+/** The real Codex plugin: specialization in a file, loaded with `--profile`. */
 const codexPlugin = pluginRegistry.get('codex')! as unknown as Plugin;
+
+/** The real OpenCode plugin: specialization in files, loaded from the env. */
+const opencodePlugin = pluginRegistry.get('opencode')! as unknown as Plugin;
 
 /** A provider that takes its specialization on argv, as Claude's does. */
 const claudeLikePlugin = { behavior: { mcp: {} } } as unknown as Plugin;
@@ -89,7 +92,7 @@ describe('resolveAgentLaunchProfile', () => {
     const profile = resolveAgentLaunchProfile(codexPlugin, {
       slug: 'codex-hoot',
       workingDir: WD,
-      specialization: { model: 'gpt-5.6-terra', reasoningEffort: 'high', instructions: 'be terse' },
+      specialization: { model: 'gpt-5.6-terra', effort: 'high', instructions: 'be terse' },
     })!;
     expect(profile.files).toHaveLength(1);
     expect(profile.files[0].content).toContain('model = "gpt-5.6-terra"');
@@ -141,10 +144,13 @@ describe('resolveAgentLaunchProfile', () => {
 });
 
 describe('prepareAgentLaunchProfile', () => {
+  const HOME = '/home/agent';
+
   it('writes the profile under ~/.codex and returns the --profile argv', async () => {
     const fs = memoryFs();
-    const args = await prepareAgentLaunchProfile(codexPlugin, {
+    const { args } = await prepareAgentLaunchProfile(codexPlugin, {
       homeFs: fs,
+      homeDir: HOME,
       slug: 'codex-hoot',
       workingDir: WD,
       specialization: SPECIALIZED,
@@ -155,8 +161,9 @@ describe('prepareAgentLaunchProfile', () => {
 
   it('writes the system prompt into the profile and no companion file', async () => {
     const fs = memoryFs();
-    const args = await prepareAgentLaunchProfile(codexPlugin, {
+    const { args } = await prepareAgentLaunchProfile(codexPlugin, {
       homeFs: fs,
+      homeDir: HOME,
       slug: 'codex-hoot',
       workingDir: WD,
       specialization: { instructions: 'be terse' },
@@ -168,14 +175,16 @@ describe('prepareAgentLaunchProfile', () => {
     );
   });
 
-  it('writes nothing and returns [] for an agent that specializes nothing', async () => {
+  it('writes nothing for an agent that specializes nothing', async () => {
     const fs = memoryFs();
-    const args = await prepareAgentLaunchProfile(codexPlugin, {
-      homeFs: fs,
-      slug: 'x',
-      workingDir: WD,
-    });
-    expect(args).toEqual([]);
+    expect(
+      await prepareAgentLaunchProfile(codexPlugin, {
+        homeFs: fs,
+        homeDir: HOME,
+        slug: 'x',
+        workingDir: WD,
+      })
+    ).toEqual({ args: [], env: {} });
     expect(fs.files.size).toBe(0);
   });
 
@@ -184,11 +193,32 @@ describe('prepareAgentLaunchProfile', () => {
     expect(
       await prepareAgentLaunchProfile(claudeLikePlugin, {
         homeFs: fs,
+        homeDir: HOME,
         slug: 'x',
         workingDir: WD,
         specialization: SPECIALIZED,
       })
-    ).toEqual([]);
+    ).toEqual({ args: [], env: {} });
     expect(fs.files.size).toBe(0);
+  });
+
+  it("resolves the home placeholder in a profile's env and file content", async () => {
+    // OpenCode names its config by absolute path in `OPENCODE_CONFIG`, and that
+    // config names its instructions file the same way. Neither can be formed by
+    // the pure profile builder, so both arrive with the placeholder in them.
+    const fs = memoryFs();
+    const { env } = await prepareAgentLaunchProfile(opencodePlugin, {
+      homeFs: fs,
+      homeDir: HOME,
+      slug: 'oc-hoot',
+      workingDir: WD,
+      specialization: { model: 'anthropic/claude-sonnet-4-5', instructions: 'be terse' },
+    });
+
+    expect(env.OPENCODE_CONFIG?.startsWith(`${HOME}/.config/opencode/switch/`)).toBe(true);
+    const config = fs.files.get(env.OPENCODE_CONFIG!.slice(HOME.length + 1));
+    expect(config).toBeDefined();
+    expect(config).not.toContain('__SWITCHDASH_');
+    expect(JSON.parse(config!).instructions[0].startsWith(`${HOME}/`)).toBe(true);
   });
 });

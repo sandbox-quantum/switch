@@ -151,6 +151,13 @@ function parseClaudeHookEvent(
 export function buildClaudeHookConfig() {
   return {
     ...buildNestedJsonHookConfig(CLAUDE_SETTINGS_PATH, [
+      // Fires once the session is up, before any turn. Until this arrives a
+      // spawned session may still be parked on a startup prompt (trust,
+      // first-run setup, the bypass warning) with nobody to answer it, and
+      // UserPromptSubmit cannot tell the difference — it never fires either
+      // way. Also captures the provider session id at start rather than at the
+      // first prompt.
+      { hookKey: 'SessionStart', command: makeStdinHookCommand('session-start') },
       { hookKey: 'UserPromptSubmit', command: makeStdinHookCommand('start') },
       { hookKey: 'Notification', command: makeStdinHookCommand('notification') },
       { hookKey: 'Stop', command: makeStdinHookCommand('stop') },

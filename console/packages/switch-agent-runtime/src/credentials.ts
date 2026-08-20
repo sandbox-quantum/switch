@@ -2,9 +2,11 @@
  * The local agent store: who this machine can be, and the credentials to prove
  * it.
  *
- * A session switchdash launched gets its identity from the environment and never
- * reaches any of this. Everything else — a connector plugin installed by hand, a
- * Codex session started from a shell — has only what is on disk.
+ * A session Switch Console launched gets all three `SWITCH_*` vars injected and
+ * never reaches any of this. Everything else — a connector plugin installed by
+ * hand, a Codex session started from a shell — needs the disk, either for the
+ * whole identity or to complete an environment that names an agent without
+ * carrying its token.
  *
  * One file per agent, in the working directory switchdash already writes to, in
  * the shape it already writes. Keeping the token out of the working tree is a
@@ -123,9 +125,21 @@ export function readAgentStore(projectDir: string): AgentStore {
   return { agents, unusable, projectDir: dir };
 }
 
-/** Compare endpoints without tripping over a trailing slash. */
+/**
+ * Compare endpoints without tripping over a trailing slash or the casing of the
+ * parts that are defined to be case-insensitive.
+ *
+ * Scheme and host fold; the path does not, because it is case-sensitive and
+ * folding it would call two different resources the same. This decides whether
+ * an identity binds, not just how endpoints are grouped for display, so a
+ * cosmetic difference must not read as a different server.
+ */
 export function normalizeEndpoint(endpoint: string): string {
-  return endpoint.trim().replace(/\/+$/, '');
+  const trimmed = endpoint.trim().replace(/\/+$/, '');
+  return trimmed.replace(
+    /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)/,
+    (_all, scheme, authority) => `${scheme.toLowerCase()}${authority.toLowerCase()}`
+  );
 }
 
 /** The distinct Switch endpoints a set of agents belongs to. */

@@ -22,6 +22,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'global',
       supportedEvents: ['notification', 'stop', 'session', 'start'],
+      reportsSessionStart: false,
     },
     hostDependency: {
       id: 'grok',

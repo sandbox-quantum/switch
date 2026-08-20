@@ -129,7 +129,35 @@ describe('the update indicator', () => {
   it('appears when this agent’s connector is behind', async () => {
     stores.plans.set('dev-vm', healthyPlan({ latestVersion: '0.8.0', updateAvailable: true }));
 
-    expect(shows(await render(indicator()), 'Update available')).toBe(true);
+    expect(shows(await render(indicator()), 'Connector update available')).toBe(true);
+  });
+
+  it('ignores the agent CLI being behind, which is not a problem here', async () => {
+    // A newer `claude` does not stop the agent working on this host, and a mark
+    // in the sidebar reads as something needing attention.
+    stores.plans.set(
+      'dev-vm',
+      plan([
+        step({}),
+        step({
+          id: 'claude',
+          kind: 'agent-cli',
+          name: 'Claude Code',
+          version: '2.1.0',
+          latestVersion: '2.2.0',
+          updateAvailable: true,
+        }),
+        step({
+          id: 'claude:plugin',
+          kind: 'agent-plugin',
+          name: 'Switch connector',
+          version: '0.7.7',
+          dependsOn: ['claude'],
+        }),
+      ])
+    );
+
+    expect(icons(await render(indicator()))).toBe(0);
   });
 
   it('stays away when everything is current', async () => {

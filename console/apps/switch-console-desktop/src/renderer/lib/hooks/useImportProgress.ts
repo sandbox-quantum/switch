@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 
 const PROGRESS_DURATION_MS = 4000;
 const COMPLETE_DELAY_MS = 1000;
@@ -101,7 +102,7 @@ export function useImportProgress() {
       maybeScheduleComplete(options.onComplete);
     } catch (err) {
       cancelAnimation();
-      setError(err instanceof Error ? err.message : 'Import failed');
+      setError(failureText(err, 'The import did not finish.'));
       setIsImporting(false);
       setProgress(0);
     }

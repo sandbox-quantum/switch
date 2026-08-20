@@ -1,6 +1,5 @@
 import { detectPlatform, normalizeHotkey } from '@tanstack/hotkeys';
 import { useEffect, useMemo } from 'react';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import {
   APP_SHORTCUTS,
   getEffectiveHotkey,
@@ -24,7 +23,6 @@ function isMonacoFocused(): boolean {
  * bubbling-phase handling takes over unchanged.
  */
 export function MonacoKeyboardBridge() {
-  const { value: keyboard } = useAppSettingsKey('keyboard');
   const ignoredHotkeys = useMemo(() => {
     const platform = detectPlatform();
     const next = new Set<string>();
@@ -35,12 +33,12 @@ export function MonacoKeyboardBridge() {
 
     for (const [key, def] of shortcuts) {
       if (!def.ignoreWhenMonacoFocused) continue;
-      const hotkey = getEffectiveHotkey(key, keyboard);
+      const hotkey = getEffectiveHotkey(key);
       if (hotkey !== null) next.add(normalizeHotkey(hotkey, platform));
     }
 
     return next;
-  }, [keyboard]);
+  }, []);
 
   useEffect(() => {
     const platform = detectPlatform();

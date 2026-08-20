@@ -2,8 +2,12 @@ import { parse as parseTOML } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
 import {
   buildCodexProfileToml,
+  CODEX_PROFILE_SETTING_KEYS,
   CODEX_REASONING_EFFORTS,
+  CODEX_REASONING_SUMMARIES,
+  CODEX_VERBOSITY_LEVELS,
   codexLaunchProfile,
+  codexLaunchProfileFields,
   codexProfileName,
   codexProfileRelativePath,
 } from './profile';
@@ -17,7 +21,7 @@ describe('buildCodexProfileToml', () => {
     // ("invalid transport"), taking the session with it.
     const toml = buildCodexProfileToml({
       model: 'gpt-5.6-terra',
-      reasoningEffort: 'high',
+      effort: 'high',
       instructions: 'be terse',
     });
 
@@ -42,7 +46,7 @@ describe('buildCodexProfileToml', () => {
     const parsed = parseTOML(
       buildCodexProfileToml({
         model: 'gpt-5.6-terra',
-        reasoningEffort: 'high',
+        effort: 'high',
         instructions: 'be terse',
       })
     ) as Record<string, unknown>;
@@ -101,7 +105,7 @@ describe('codexLaunchProfile', () => {
     const profile = codexLaunchProfile({
       slug: 'codex-hoot',
       workingDir: WD,
-      model: 'gpt-5.6-terra',
+      values: { model: 'gpt-5.6-terra' },
     });
     expect(profile).not.toBeNull();
     expect(profile!.args).toEqual(['--profile', codexProfileName('codex-hoot', WD)]);
@@ -124,7 +128,7 @@ describe('codexLaunchProfile', () => {
     const profile = codexLaunchProfile({
       slug: 'codex-hoot',
       workingDir: WD,
-      instructions,
+      values: { instructions },
     })!;
 
     expect(profile.files).toHaveLength(1);
@@ -136,7 +140,11 @@ describe('codexLaunchProfile', () => {
   });
 
   it('returns a profile for specialization alone', () => {
-    const profile = codexLaunchProfile({ slug: 'a', workingDir: WD, model: 'gpt-5.6-terra' });
+    const profile = codexLaunchProfile({
+      slug: 'a',
+      workingDir: WD,
+      values: { model: 'gpt-5.6-terra' },
+    });
     expect(profile).not.toBeNull();
     expect(profile!.files[0].content).toContain('model = "gpt-5.6-terra"');
     expect(profile!.files[0].content).not.toContain('mcp_servers');
@@ -145,11 +153,11 @@ describe('codexLaunchProfile', () => {
   it('returns null when there is nothing to specialize, rather than an empty profile', () => {
     // An agent on the defaults needs no file. Writing an empty one would still
     // put `--profile <name>` on the command line, pointing at nothing.
-    expect(codexLaunchProfile({ slug: 'a', workingDir: WD })).toBeNull();
+    expect(codexLaunchProfile({ slug: 'a', workingDir: WD, values: {} })).toBeNull();
   });
 
   it('exposes the stable reasoning-effort levels', () => {
-    expect(CODEX_REASONING_EFFORTS).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(CODEX_REASONING_EFFORTS).toEqual(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
   });
 });
 
@@ -179,12 +187,79 @@ describe('codexProfileName', () => {
     const profile = codexLaunchProfile({
       slug,
       workingDir: WD,
-      instructions: 'be terse',
+      values: { instructions: 'be terse' },
     })!;
     const name = codexProfileName(slug, WD);
 
     expect(profile.args).toEqual(['--profile', name]);
     expect(profile.files.map((file) => file.relativePath)).toEqual([`.codex/${name}.config.toml`]);
     expect(profile.files[0].content).toContain('developer_instructions = "be terse"');
+  });
+});
+
+describe('codexLaunchProfileFields', () => {
+  it('declares exactly the advanced keys the profile builder consumes', () => {
+    expect(codexLaunchProfileFields().map((field) => field.key)).toEqual([
+      'model',
+      'effort',
+      'verbosity',
+      'reasoningSummary',
+      'webSearch',
+    ]);
+  });
+
+  it('does not offer instructions as an advanced setting', () => {
+    // Instructions are a main attribute of the agent, collected once for every
+    // provider. Offering them here too would be two boxes for one value.
+    expect(codexLaunchProfileFields().map((field) => field.key)).not.toContain('instructions');
+    // Still written into the profile, since Codex reads only its own file.
+    expect(CODEX_PROFILE_SETTING_KEYS).toContain('instructions');
+  });
+
+  it('offers every reasoning effort the profile accepts, plus an unset default', () => {
+    const effort = codexLaunchProfileFields().find((field) => field.key === 'effort');
+
+    expect(effort?.options?.map((option) => option.value)).toEqual([
+      '',
+      ...CODEX_REASONING_EFFORTS,
+    ]);
+  });
+
+  it('writes every declared setting, so one cannot be collected and then dropped', () => {
+    const filled = Object.fromEntries(
+      CODEX_PROFILE_SETTING_KEYS.map((key) => [key, key === 'webSearch' ? 'true' : 'x'])
+    );
+
+    const toml = parseTOML(buildCodexProfileToml(filled));
+
+    expect(Object.keys(toml).sort()).toEqual([
+      'developer_instructions',
+      'model',
+      'model_reasoning_effort',
+      'model_reasoning_summary',
+      'model_verbosity',
+      'tools',
+    ]);
+    expect((toml.tools as Record<string, unknown>).web_search).toBe(true);
+  });
+
+  it('offers only the verbosity and summary values Codex accepts', () => {
+    const optionsFor = (key: string) =>
+      codexLaunchProfileFields()
+        .find((field) => field.key === key)
+        ?.options?.map((option) => option.value);
+
+    expect(optionsFor('verbosity')).toEqual(['', ...CODEX_VERBOSITY_LEVELS]);
+    expect(optionsFor('reasoningSummary')).toEqual(['', ...CODEX_REASONING_SUMMARIES]);
+  });
+
+  it('turns web search off explicitly, which is not the same as leaving it unset', () => {
+    const off = parseTOML(buildCodexProfileToml({ webSearch: 'false' }));
+    expect((off.tools as Record<string, unknown>).web_search).toBe(false);
+
+    // Unset writes nothing at all, so the user's own config still decides.
+    // An empty profile still stringifies to a newline, which is why the
+    // no-profile check in `codexLaunchProfile` tests the trimmed result.
+    expect(buildCodexProfileToml({ webSearch: '' }).trim()).toBe('');
   });
 });

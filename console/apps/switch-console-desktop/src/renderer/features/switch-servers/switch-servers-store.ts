@@ -1,6 +1,8 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
+import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { appState } from '@renderer/lib/stores/app-state';
 import type {
   ServerConnectionStatus,
   SwitchAuthConfig,
@@ -37,14 +39,26 @@ export class SwitchServersStore {
   readonly unreachable = new Set<string>();
 
   loadingServers = false;
+  /** Whether the list has been read at least once. Until it has, an empty
+   * `servers` means "not asked yet", not "no such server" — the difference
+   * matters to the server view's guard, which runs at startup before anything
+   * has mounted to call {@link init}. */
+  loaded = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
+  /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
-  /** Whether the sidebar "Servers" section is expanded. */
-  serversExpanded = true;
+  /** Diagnostics for the same failure, rendered under `error` rather than in it. */
+  errorDetail: string | null = null;
 
   constructor() {
     makeAutoObservable(this);
+  }
+
+  /** Headline and detail as one string, for the modals that have a single slot. */
+  get errorText(): string | null {
+    if (!this.error) return null;
+    return this.errorDetail ? `${this.error} (${this.errorDetail})` : this.error;
   }
 
   /** Whether this server is managed on a host the reachability manager has
@@ -57,10 +71,6 @@ export class SwitchServersStore {
 
   get activeServer(): SwitchServer | null {
     return this.servers.find((s) => s.id === this.activeServerId) ?? null;
-  }
-
-  toggleServersExpanded(): void {
-    this.serversExpanded = !this.serversExpanded;
   }
 
   statusFor(serverId: string): ServerConnectionStatus | null {
@@ -84,6 +94,7 @@ export class SwitchServersStore {
     runInAction(() => {
       this.loadingServers = true;
       this.error = null;
+      this.errorDetail = null;
     });
     try {
       const [servers, activeServerId] = await Promise.all([
@@ -93,20 +104,38 @@ export class SwitchServersStore {
       runInAction(() => {
         this.servers = servers;
         this.activeServerId = activeServerId;
+        this.loaded = true;
       });
-      // The sidebar scopes its whole view to the active server, so one must
-      // always be selected when any server exists. Default to the first.
-      if (!this.activeServerId && servers.length > 0) {
-        await this.setActive(servers[0].id);
-      }
+      // A page restored onto a server that has since been deleted can only be
+      // judged once the list is known, and startup restores navigation before
+      // anything asks for it.
+      appState.navigation.revalidate();
+      await this.ensureActiveServer();
       await this.refreshAllStatuses();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not load your Switch servers.');
     } finally {
       runInAction(() => {
         this.loadingServers = false;
       });
     }
+  }
+
+  /**
+   * A server is a workspace: the switcher, the sidebar and the sessions under
+   * it all read the active one, so one must be selected whenever any server
+   * exists. Nothing on the main side picks it — adding the first server leaves
+   * the active id null — so every path that changes the list ends here.
+   *
+   * A stored id that no longer names a server counts as no selection. It is not
+   * hypothetical: removing the active server and adding another leaves the id
+   * pointing at the removed one, and treating that as a selection left the app
+   * with no workspace at all — no switcher, no sidebar tree, no way back.
+   */
+  private async ensureActiveServer(): Promise<void> {
+    if (this.activeServerId && this.servers.some((s) => s.id === this.activeServerId)) return;
+    const first = this.servers[0];
+    if (first) await this.setActive(first.id);
   }
 
   async refreshAllStatuses(): Promise<void> {
@@ -223,10 +252,11 @@ export class SwitchServersStore {
         this.servers = servers;
         this.activeServerId = activeServerId;
       });
+      await this.ensureActiveServer();
       await this.refreshStatus(created.id);
       return created;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not add the server.');
       return null;
     }
   }
@@ -246,7 +276,7 @@ export class SwitchServersStore {
       });
       return result;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not save the server.');
       return null;
     }
   }
@@ -261,7 +291,7 @@ export class SwitchServersStore {
       });
       return true;
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not rename the server.');
       return false;
     }
   }
@@ -288,7 +318,7 @@ export class SwitchServersStore {
         }
       }
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not shut down the server’s stack, so it was not deleted.');
       return false;
     }
     await this.removeServer(serverId);
@@ -311,12 +341,13 @@ export class SwitchServersStore {
         this.authConfigWanted.delete(serverId);
         this.unreachable.delete(serverId);
       });
-      // Keep a server scoped when any remain (the sidebar scopes to it).
-      if (!this.activeServerId && servers.length > 0) {
-        await this.setActive(servers[0].id);
-      }
+      // The removed id also sits in the server view's saved params, where it
+      // outlives the record and would be read back — as a page for a server
+      // that is gone, and as gateway calls for an id nothing can resolve.
+      appState.navigation.revalidate();
+      await this.ensureActiveServer();
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not remove the server.');
     }
   }
 
@@ -328,7 +359,7 @@ export class SwitchServersStore {
         this.activeServerId = serverId;
       });
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not switch to that server.');
     }
   }
 
@@ -338,6 +369,7 @@ export class SwitchServersStore {
     if (!result.success) {
       runInAction(() => {
         this.error = result.error.message;
+        this.errorDetail = null;
       });
       return false;
     }
@@ -353,6 +385,7 @@ export class SwitchServersStore {
       if (result.error.kind !== 'cancelled') {
         runInAction(() => {
           this.error = result.error.message;
+          this.errorDetail = null;
         });
       }
       return false;
@@ -367,19 +400,28 @@ export class SwitchServersStore {
       await rpc.switchServers.logout(serverId);
       await this.refreshStatus(serverId);
     } catch (cause) {
-      this.setError(cause);
+      this.setError(cause, 'Could not sign out of the server.');
     }
   }
 
   private clearError(): void {
     runInAction(() => {
       this.error = null;
+      this.errorDetail = null;
     });
   }
 
-  private setError(cause: unknown): void {
+  /**
+   * `error` is rendered directly in banners and modals, so it goes through the
+   * shared boundary rather than carrying whatever was thrown. The fallback is
+   * per-action: the store knows which request failed, and the failure itself
+   * usually does not.
+   */
+  private setError(cause: unknown, fallback: string): void {
+    const { headline, detail } = describeFailure(cause, fallback);
     runInAction(() => {
-      this.error = cause instanceof Error ? cause.message : String(cause);
+      this.error = headline;
+      this.errorDetail = detail;
     });
   }
 }

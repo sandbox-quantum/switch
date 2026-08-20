@@ -7,6 +7,7 @@ import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-s
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
@@ -29,11 +30,11 @@ import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
 import { log } from '@main/lib/logger';
-import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { makePtyId } from '@shared/core/pty/ptyId';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
 import type { Session } from '@shared/core/sessions/sessions';
+import { sessionStartupWatch } from '../desktop-session-startup-watch';
 import { scheduleInitialPromptInjection } from './keystroke-injection';
 import { resolveAgentExecutable } from './resolve-agent-executable';
 
@@ -185,11 +186,12 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       // under `~/.codex` carrying model / effort / instructions, loaded with
       // `--profile <slug>`. The Switch MCP server is not written here — the
       // connector plugin registers it from its own bundled `.mcp.json`.
-      const launchProfileArgs = await prepareAgentLaunchProfile(plugin, {
+      const launchProfile = await prepareAgentLaunchProfile(plugin, {
         homeFs: createPluginFs(homedir()),
+        homeDir: homedir(),
         slug: agentCredsSlug(session),
         workingDir: this.sessionPath,
-        specialization: toSwitchSpecialization(agentRecord?.providerConfig),
+        specialization: await agentLaunchSpecialization(session.agentId),
       });
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({
@@ -201,7 +203,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
           ...(session.agentName && repoAgents
             ? repoAgents.launchArgs(this.sessionPath, session.agentName)
             : []),
-          ...launchProfileArgs,
+          ...launchProfile.args,
         ],
         autoApprove,
         initialPrompt: agentSession.isResuming ? undefined : initialPrompt,
@@ -212,7 +214,11 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       });
 
       const customEnv = providerConfig?.env ?? {};
-      const providerVars: Record<string, string> = { ...agentCommand.env, ...customEnv };
+      const providerVars: Record<string, string> = {
+        ...agentCommand.env,
+        ...launchProfile.env,
+        ...customEnv,
+      };
 
       const tmuxSessionName = this.tmux ? makeAgentTmuxSessionName(this.sessionId) : undefined;
 
@@ -268,6 +274,16 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         sessionId: ptySessionId,
       });
 
+      const reportsSessionStart =
+        plugin.capabilities.hooks.kind !== 'none' && plugin.capabilities.hooks.reportsSessionStart;
+      if (reportsSessionStart) {
+        sessionStartupWatch.begin({
+          ptyId,
+          sessionId: this.sessionId,
+          providerId: session.providerId,
+        });
+      }
+
       const pty = spawnLocalPty({
         id: ptySessionId,
         command: resolved.command,
@@ -279,6 +295,7 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
       });
 
       pty.onExit((info) => {
+        sessionStartupWatch.end(ptyId);
         const decision = this.supervisor.handleExit(pty);
         if (decision.kind === 'stale') return;
         const replacementSize = ptySessionRegistry.getLastSize(ptySessionId) ?? spawnSize;
@@ -327,6 +344,14 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         session,
         initialPrompt,
         isResuming: agentSession.isResuming,
+        // Where the provider can say when its session is really up, wait for
+        // that instead of guessing from terminal output: the pane may be
+        // sitting on a startup prompt, which goes quiet exactly like a session
+        // that is ready.
+        awaitStartupSignal: reportsSessionStart
+          ? () => sessionStartupWatch.waitForStart(ptyId)
+          : null,
+        onOpenForInjection: () => ptySessionRegistry.markOpenForInjection(ptySessionId),
       });
       // If this session was connected to a Switch room before an app restart,
       // resume polling that room — the connect_to_room hook only fires on a

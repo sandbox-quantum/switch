@@ -7,6 +7,7 @@ const listServers = vi.hoisted(() => vi.fn());
 const getActiveServerId = vi.hoisted(() => vi.fn());
 const setActiveServer = vi.hoisted(() => vi.fn());
 const removeServer = vi.hoisted(() => vi.fn());
+const addServer = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
@@ -20,11 +21,16 @@ vi.mock('@renderer/lib/ipc', () => ({
       getActiveServerId,
       setActiveServer,
       removeServer,
+      addServer,
     },
   },
 }));
 vi.mock('@renderer/features/remote-hosts/host-reachability-store', () => ({
   hostReachabilityStore: { isBlocked: (sshHost: string) => blockedHosts.has(sshHost) },
+}));
+const revalidate = vi.hoisted(() => vi.fn());
+vi.mock('@renderer/lib/stores/app-state', () => ({
+  appState: { navigation: { revalidate } },
 }));
 
 const { SwitchServersStore } = await import('./switch-servers-store');
@@ -168,6 +174,31 @@ describe('recovering when connectivity returns', () => {
   });
 });
 
+describe('a page left on a server that is gone', () => {
+  it('is revalidated when the server is removed', async () => {
+    const store = newStore([server('srv-a')]);
+    listServers.mockResolvedValue([]);
+    getActiveServerId.mockResolvedValue(null);
+    removeServer.mockResolvedValue(undefined);
+
+    await store.removeServer('srv-a');
+
+    expect(revalidate).toHaveBeenCalled();
+  });
+
+  it('is revalidated once the list is known, not before', async () => {
+    const store = new SwitchServersStore();
+    expect(store.loaded).toBe(false);
+
+    listServers.mockResolvedValue([server('srv-a')]);
+    getActiveServerId.mockResolvedValue('srv-a');
+    await store.init();
+
+    expect(store.loaded).toBe(true);
+    expect(revalidate).toHaveBeenCalled();
+  });
+});
+
 describe('a server on an unreachable host', () => {
   it('skips the doomed fetch without raising the error banner', async () => {
     blockedHosts.add('host-1');
@@ -263,6 +294,92 @@ describe('a server that cannot be reached', () => {
 
     expect(store.isUnreachable('srv-a')).toBe(true);
     expect(store.isUnreachable('srv-b')).toBe(false);
+  });
+});
+
+/**
+ * A server is a workspace: the switcher, the sidebar and the sessions under it
+ * all read the active one, so "servers exist but none is active" is a state the
+ * UI cannot render. Nothing on the main side picks one, so the store must.
+ */
+describe('keeping a server active', () => {
+  it('selects the first server when nothing was active', async () => {
+    listServers.mockResolvedValue([server('srv-a'), server('srv-b')]);
+    getActiveServerId.mockResolvedValue(null);
+    const store = new SwitchServersStore();
+
+    await store.init();
+
+    expect(store.activeServerId).toBe('srv-a');
+  });
+
+  it('keeps the server the user last chose', async () => {
+    listServers.mockResolvedValue([server('srv-a'), server('srv-b')]);
+    getActiveServerId.mockResolvedValue('srv-b');
+    const store = new SwitchServersStore();
+
+    await store.init();
+
+    expect(store.activeServerId).toBe('srv-b');
+  });
+
+  it('re-selects when the stored server no longer exists', async () => {
+    // Removing the active server and adding another leaves the stored id
+    // naming the removed one. Reading that as a selection left the app with no
+    // workspace at all — no switcher, no destinations, no sidebar tree — while
+    // a perfectly good server sat in the list.
+    listServers.mockResolvedValue([server('srv-b')]);
+    getActiveServerId.mockResolvedValue('srv-gone');
+    const store = new SwitchServersStore();
+
+    await store.init();
+
+    expect(store.activeServerId).toBe('srv-b');
+    expect(store.activeServer?.id).toBe('srv-b');
+  });
+
+  it('activates the first server added, which nothing else does', async () => {
+    // Adding a server does not set it active on the main side, so without this
+    // the very first one left the app with no workspace to show — the sidebar
+    // stayed on "Add a server" until the next launch.
+    listServers.mockResolvedValue([]);
+    getActiveServerId.mockResolvedValue(null);
+    const store = new SwitchServersStore();
+    await store.init();
+
+    const created = server('srv-new');
+    addServer.mockResolvedValue(created);
+    listServers.mockResolvedValue([created]);
+
+    await store.addServer('New', created.gatewayUrl, created.apiUrl);
+
+    expect(store.activeServerId).toBe('srv-new');
+  });
+
+  it('does not move the workspace when a second server is added', async () => {
+    listServers.mockResolvedValue([server('srv-a')]);
+    getActiveServerId.mockResolvedValue('srv-a');
+    const store = new SwitchServersStore();
+    await store.init();
+
+    const created = server('srv-b');
+    addServer.mockResolvedValue(created);
+    listServers.mockResolvedValue([server('srv-a'), created]);
+
+    await store.addServer('B', created.gatewayUrl, created.apiUrl);
+
+    expect(store.activeServerId).toBe('srv-a');
+  });
+
+  it('leaves nothing active when there are no servers at all', async () => {
+    listServers.mockResolvedValue([]);
+    getActiveServerId.mockResolvedValue(null);
+    const store = new SwitchServersStore();
+
+    await store.init();
+
+    expect(store.activeServerId).toBeNull();
+    expect(store.activeServer).toBeNull();
   });
 });
 

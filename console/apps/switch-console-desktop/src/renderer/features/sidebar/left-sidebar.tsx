@@ -1,13 +1,17 @@
-import { FolderInput, Server, Settings } from 'lucide-react';
+import { ArrowUpRight, BookOpen, FolderInput, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
+import { SidebarOnboardingChecklist } from '@renderer/features/onboarding/sidebar-onboarding-checklist';
 import { isCurrentView, useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
+import { openExternalUrl } from '@renderer/lib/open-external';
+import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
-import { ServersSidebarSection } from '../switch-servers/ServersSidebarSection';
-import { LocationsGroupLabel } from './locations-group-label';
+import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
+import { WorkspaceSwitcher } from '../switch-servers/workspace-switcher';
 import { SidebarPinnedSessionList } from './pinned-session-list';
+import { SessionsSectionHeader } from './sessions-section-header';
 import { SidebarGroupedList } from './sidebar-grouped-list';
 import {
   SidebarContainer,
@@ -22,6 +26,7 @@ import { SidebarSearchTrigger } from './sidebar-search-trigger';
 import { SidebarSpace } from './sidebar-space';
 import { UpdateSection } from './update-section';
 import { useSidebarDrop } from './use-sidebar-drop';
+import { WorkspaceNav } from './workspace-nav';
 
 export const LeftSidebar: React.FC = observer(function LeftSidebar() {
   const { navigate } = useNavigate();
@@ -32,7 +37,7 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
   return (
     <div
       className={cn(
-        'relative flex flex-col h-full bg-background-tertiary text-foreground-tertiary-muted transition-colors',
+        'relative flex flex-col h-full text-foreground-tertiary-muted transition-colors',
         isDragOver && 'bg-accent/10 ring-2 ring-inset ring-accent/50'
       )}
       onDragOver={onDragOver}
@@ -50,9 +55,16 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
       <SidebarContainer className="min-h-0 w-full flex-1 border-r-0">
         <SidebarContent className="flex flex-col">
           <SidebarPinnedSessionList />
-          <ServersSidebarSection />
-          <SidebarGroup className="mb-0 flex min-h-0 flex-1 flex-col">
-            <LocationsGroupLabel />
+          {/* The sidebar reads as three blocks — which server, that server's
+              pages, then its sessions. The switcher and the nav under it are
+              one block, 8px apart, which the nav owns as its own top padding;
+              the sessions section sets the larger gap that separates it. */}
+          <div className="flex flex-col">
+            <WorkspaceSwitcher />
+            <WorkspaceNav />
+          </div>
+          <SidebarGroup className="mt-0 mb-0 flex min-h-0 flex-1 flex-col">
+            <SessionsSectionHeader />
             <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
               <SidebarMenu className="flex min-h-0 flex-1 flex-col">
                 <SidebarGroupedList />
@@ -60,25 +72,14 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
+        <SidebarOnboardingChecklist />
         <SidebarFooter>
           <SidebarMenu>
             <SidebarSearchTrigger />
             <SidebarMenuButton
               isActive={
-                isCurrentView(currentView, 'remoteHosts') ||
-                isCurrentView(currentView, 'remoteHost')
+                isCurrentView(currentView, 'settings') || isCurrentView(currentView, 'remoteHost')
               }
-              onClick={() => navigate('remoteHosts')}
-              aria-label="Remote hosts"
-              className="w-full justify-between"
-            >
-              <span className="flex items-center gap-2">
-                <Server className="h-5 w-5 sm:h-4 sm:w-4" />
-                Remote hosts
-              </span>
-            </SidebarMenuButton>
-            <SidebarMenuButton
-              isActive={isCurrentView(currentView, 'settings')}
               onClick={() => navigate('settings')}
               aria-label="Settings"
               className="w-full justify-between"
@@ -89,9 +90,33 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
               </span>
               <BoundShortcut settingsKey="settings" />
             </SidebarMenuButton>
+            <SidebarMenuButton
+              onClick={() =>
+                openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation')
+              }
+              aria-label="Docs"
+              className="w-full justify-between"
+            >
+              <span className="flex items-center gap-2">
+                <BookOpen className="h-5 w-5 sm:h-4 sm:w-4" />
+                Docs
+              </span>
+              <ArrowUpRight className="size-3 text-foreground-muted" />
+            </SidebarMenuButton>
           </SidebarMenu>
         </SidebarFooter>
-        <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+        <div className="flex items-center justify-between gap-2 px-3 py-2">
+          {/* The mark doubles as the way back to the welcome screen — the one
+              view with no other entry point once you have navigated away. */}
+          <button
+            type="button"
+            onClick={() => navigate('home')}
+            aria-label="Go to home"
+            title="Home"
+            className="rounded-md text-[var(--fg-passive)] transition-colors hover:text-foreground"
+          >
+            <SwitchConsoleMark size={18} />
+          </button>
           <UpdateSection />
         </div>
       </SidebarContainer>

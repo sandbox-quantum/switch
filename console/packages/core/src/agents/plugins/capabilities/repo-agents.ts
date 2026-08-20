@@ -64,6 +64,26 @@ export type RepoAgentFieldType = 'text' | 'textarea' | 'select' | 'list' | 'numb
 export type RepoAgentFieldOption = { value: string; label: string };
 
 /**
+ * Ties a field to the host's model catalogue (`mcp.launchProfileModels`), for a
+ * setting whose valid values live on the machine the agent runs on rather than
+ * in this descriptor.
+ *
+ * - `model` — the field names a model. What was typed is checked against the
+ *   catalogue and flagged when it is not there.
+ * - `model-variant` — the field's choices are the variants of the model named by
+ *   `modelField`, so choosing a model decides them. A model that declares none
+ *   leaves the field with nothing to offer, which is worth saying rather than
+ *   accepting a value the host will ignore.
+ *
+ * Declared rather than inferred so the renderer stays generic: it knows "this
+ * field is a model" and "this one follows that one", not which providers or
+ * which key names.
+ */
+export type RepoAgentFieldCatalogue =
+  | { kind: 'model' }
+  | { kind: 'model-variant'; modelField: string };
+
+/**
  * One editable attribute of an agent, declared by the agent provider. The
  * renderer builds the create/edit form from these descriptors, so the set of
  * attributes — and how they are presented — is provider-specific. `key` is the
@@ -80,6 +100,12 @@ export type RepoAgentField = {
   help?: string;
   /** Choices for `select`. Include an empty-value option to mean "unset". */
   options?: RepoAgentFieldOption[];
+  /**
+   * Bind this field to the host's model catalogue. The field keeps its declared
+   * `type` as the fallback: when the catalogue cannot be read, it renders as
+   * declared and says why, rather than blocking on values it cannot check.
+   */
+  catalogue?: RepoAgentFieldCatalogue;
 };
 
 /** A single attribute value; shape depends on the field's `type`. */
@@ -114,6 +140,17 @@ export type IRepoAgentsBehavior = {
   /** The attribute fields this provider supports, in display order. Drives the
    * create/edit form; the first two are always `name` and `description`. */
   attributeFields(): RepoAgentField[];
+  /**
+   * The definition file's exact text for these attributes, without writing it.
+   *
+   * Must be deterministic: the same attributes always produce the same bytes.
+   * The config-file sync tells "someone hand-edited the definition" from "the
+   * config moved on" by comparing the file against what was last generated, so
+   * a render that varied run to run would report every file as hand-edited.
+   */
+  renderDefinition(attributes: RepoAgentAttributes): string;
+  /** The definition file's path, relative to the working directory. */
+  definitionPath(name: string): string;
   /** Create or overwrite a named agent's on-disk definition from its attributes
    * (workspace scope). `attributes.name` selects the agent. */
   writeDefinition(workspaceFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;

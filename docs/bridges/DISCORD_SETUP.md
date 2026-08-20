@@ -63,7 +63,7 @@ the server icon → **Copy Server ID**. This is the `guild_id`.
 ## 5. Onboard the bridge in Switch
 
 As a gateway admin, onboard the bridge from the **operator dashboard**:
-**Messaging Apps → Add bridge → Discord**, give it a display name (e.g. "Acme
+**Messaging Apps → Register messaging app → Discord**, give it a display name (e.g. "Acme
 Discord"), and fill in the fields below.
 
 Fields (`DiscordConnectionConfig`):
@@ -112,7 +112,8 @@ bridge fixes it.
 ## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
 
 Discord only linkifies `http(s)`, so a raw `switchdash://session?…` deeplink
-renders as plain text. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
+renders as plain text; the bridge logs a warning at startup when it is running
+without this set. Set **`GATEWAY_PUBLIC_URL`** on switch-core to the Switch
 API's public origin — scheme + host only, **no path** — the same host Switch Console
 reports as its `server` (distinct from the operator UI):
 

@@ -108,6 +108,10 @@
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+  /* Dialogs, popovers and bordered cards sit one step above the 8px of
+     buttons and rows. Without this `rounded-xl` falls back to Tailwind's
+     12px, which reads as the panel's radius rather than an elevated one. */
+  --radius-xl: var(--radius-elevated);
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
@@ -176,6 +180,13 @@
 }
 
 @layer base {
+  /* `:root` carries the light values as well as `.emlight` so the tokens
+     resolve before ThemeProvider's layout effect puts a theme class on
+     <html>. Without it `cssVar()` returns '' during that first paint, and a
+     terminal created in it comes up with an empty theme. `.emdark` matches the
+     same element at equal specificity and is declared later, so it still wins
+     in dark mode. */
+  :root,
   .emlight {
     /* ── Color palette (Radix P3) ──────────────────────────────── */
 
@@ -386,6 +397,48 @@
     --ring: hsl(0 0% 3.9%);
     --radius: 0.5rem;
 
+    /* The window is one material surface. The sidebar has no fill of its own —
+       it is this showing through — and the content panel is an inset card of
+       `--surface` on top of it, so the gap and the radius separate the two
+       rather than a divider. `--material` is the vibrancy colour flattened:
+       until the window itself is translucent there is nothing behind it to
+       blur, and the translucent form composites against whatever desktop
+       happens to be there. */
+    --material: #f7f6f2;
+    --material-vibrant: rgb(247 246 242 / 0.78);
+    --surface: #ffffff;
+    --surface-2: #f9f9f9;
+
+    --hair: rgb(0 0 0 / 0.14);
+    --hair-strong: rgb(0 0 0 / 0.18);
+    --hair-soft: rgb(0 0 0 / 0.06);
+
+    /* Row selection and hover. Distinct from `--selection`, which is the
+       browser's text-selection colour and unrelated. Both are translucent so
+       they tint the material rather than punching an opaque patch through the
+       vibrancy. */
+    --sel: rgb(36 58 49 / 0.12);
+    --sel-soft: rgb(36 58 49 / 0.1);
+
+    --fill: #f0f0f0;
+    --fill-2: #e8e8e8;
+    --fill-3: #d4d4d4;
+    --btn-1: #ffffff;
+    --accent-solid: #243a31;
+
+    /* The existing `--foreground-passive` is the design's *faint* step, which
+       is too weak for a label that has to be readable without hovering. This
+       is the design's passive step, one stop darker. */
+    --fg-passive: #8d8d8d;
+
+    /* The segmented control's track. Its own token rather than `--hair-soft`,
+       which in dark lands within a couple of levels of the raised segment and
+       leaves the active option indistinguishable from the inactive one. */
+    --segment-track: rgb(0 0 0 / 0.06);
+
+    --panel-radius: 12px;
+    --radius-elevated: 11px;
+
     --selection: var(--blue-6);
     --selection-foreground: var(--blue-12);
 
@@ -420,6 +473,33 @@
     --xterm-cursor-accent: var(--foreground-inverse);
     --xterm-selection-bg: color(display-p3 0.004 0.502 0.984 / 0.212);
     --xterm-selection-fg: var(--blue-12);
+
+    /* The 16 ANSI colors xterm resolves SGR 30-37 / 90-97 against. Without
+       them xterm falls back to its built-in Tango palette, which is tuned for
+       a black background: on white, its bright tones are unreadable as text
+       and its black is a near-black block.
+
+       Solarized Light (Ethan Schoonover's published 16-color terminal
+       palette). Colors 7 and 15 are its base2/base3 background tones by
+       design, so an agent that paints body text as bright-white — a
+       dark-terminal assumption — still reads faintly; that is a property of
+       the agent, not of the palette. */
+    --xterm-ansi-black: #073642;
+    --xterm-ansi-red: #dc322f;
+    --xterm-ansi-green: #859900;
+    --xterm-ansi-yellow: #b58900;
+    --xterm-ansi-blue: #268bd2;
+    --xterm-ansi-magenta: #d33682;
+    --xterm-ansi-cyan: #2aa198;
+    --xterm-ansi-white: #eee8d5;
+    --xterm-ansi-bright-black: #002b36;
+    --xterm-ansi-bright-red: #cb4b16;
+    --xterm-ansi-bright-green: #586e75;
+    --xterm-ansi-bright-yellow: #657b83;
+    --xterm-ansi-bright-blue: #839496;
+    --xterm-ansi-bright-magenta: #6c71c4;
+    --xterm-ansi-bright-cyan: #93a1a1;
+    --xterm-ansi-bright-white: #fdf6e3;
 
     --foreground-diff-added: var(--green-9);
     --foreground-diff-modified: var(--amber-9);
@@ -661,6 +741,35 @@
     --ring: hsl(0 0% 3.9%);
     --radius: 0.5rem;
 
+    /* Inverted against light: the panel is darker than the material it sits on,
+       not lighter. */
+    --material: #1a1a1a;
+    --material-vibrant: rgb(24 24 24 / 0.72);
+    --surface: #111111;
+    --surface-2: #191919;
+
+    --hair: rgb(255 255 255 / 0.12);
+    --hair-strong: rgb(255 255 255 / 0.18);
+    --hair-soft: rgb(255 255 255 / 0.07);
+
+    --sel: rgb(255 255 255 / 0.11);
+    --sel-soft: rgb(255 255 255 / 0.08);
+
+    --fill: #222222;
+    --fill-2: #2a2a2a;
+    --fill-3: #3a3a3a;
+    --btn-1: #2c2c2c;
+    --accent-solid: #33513f;
+
+    --fg-passive: #8d8d8d;
+
+    /* Darker than the material rather than lighter, so the raised segment
+       reads as sitting on top of the track instead of merging into it. */
+    --segment-track: rgb(0 0 0 / 0.32);
+
+    --panel-radius: 12px;
+    --radius-elevated: 11px;
+
     --selection: var(--blue-9);
     --selection-foreground: var(--blue-12);
 
@@ -699,6 +808,25 @@
     --xterm-cursor-accent: var(--foreground-inverse);
     --xterm-selection-bg: color(display-p3 0.224 0.557 1 / 0.475);
     --xterm-selection-fg: var(--blue-11);
+
+    /* xterm's own default palette (Tango), spelled out rather than left to the
+       fallback so both themes resolve the same tokens. */
+    --xterm-ansi-black: #2e3436;
+    --xterm-ansi-red: #cc0000;
+    --xterm-ansi-green: #4e9a06;
+    --xterm-ansi-yellow: #c4a000;
+    --xterm-ansi-blue: #3465a4;
+    --xterm-ansi-magenta: #75507b;
+    --xterm-ansi-cyan: #06989a;
+    --xterm-ansi-white: #d3d7cf;
+    --xterm-ansi-bright-black: #555753;
+    --xterm-ansi-bright-red: #ef2929;
+    --xterm-ansi-bright-green: #8ae234;
+    --xterm-ansi-bright-yellow: #fce94f;
+    --xterm-ansi-bright-blue: #729fcf;
+    --xterm-ansi-bright-magenta: #ad7fa8;
+    --xterm-ansi-bright-cyan: #34e2e2;
+    --xterm-ansi-bright-white: #eeeeec;
 
     --foreground-diff-added: var(--green-10);
     --foreground-diff-modified: var(--amber-9);
@@ -743,7 +871,26 @@
     overflow: hidden;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: var(--material);
+  }
+  /* Set by the pre-paint script in index.html where the compositor is actually
+     blurring behind the window. */
+  html.has-vibrancy body {
+    background: var(--material-vibrant);
+  }
+
+  /* Tailwind's reset gives buttons the arrow cursor, on the reasoning that a
+     native app's controls do not use a hand. This app is full of controls that
+     look like nothing until you hover them — sidebar rows, icon buttons, menu
+     entries — so the hand is the only thing distinguishing what can be clicked
+     from what is only being displayed. Sits in `base` so any `cursor-*`
+     utility on the element still wins. */
+  button:not(:disabled),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  label[for] {
+    cursor: pointer;
   }
 
   ::selection {

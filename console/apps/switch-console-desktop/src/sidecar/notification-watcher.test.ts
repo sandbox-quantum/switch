@@ -27,10 +27,17 @@ afterEach(() => {
 
 // spawnForRoom / handleNotification are private; reach them to test the spawn
 // decision in isolation from the long-poll loop.
-function handle(watcher: NotificationWatcher, roomId: string, sequence?: number): void {
+function handle(
+  watcher: NotificationWatcher,
+  roomId: string,
+  sequence?: number,
+  requesterName: string | null = null
+): void {
   (
-    watcher as unknown as { handleNotification: (r: string, s?: number) => void }
-  ).handleNotification(roomId, sequence);
+    watcher as unknown as {
+      handleNotification: (r: string, who: string | null, s?: number) => void;
+    }
+  ).handleNotification(roomId, requesterName, sequence);
 }
 
 describe('NotificationWatcher spawn decision', () => {
@@ -49,7 +56,7 @@ describe('NotificationWatcher spawn decision', () => {
     const spawner = makeSpawner();
     handle(makeWatcher(spawner), 'room-x');
     await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
-    expect(spawner.launch).toHaveBeenCalledWith('room-x', undefined);
+    expect(spawner.launch).toHaveBeenCalledWith('room-x', null, undefined);
   });
 
   // The watcher consumed the triggering event to decide to spawn, so the
@@ -59,14 +66,14 @@ describe('NotificationWatcher spawn decision', () => {
     const spawner = makeSpawner();
     handle(makeWatcher(spawner), 'room-x', 42);
     await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
-    expect(spawner.launch).toHaveBeenCalledWith('room-x', 41);
+    expect(spawner.launch).toHaveBeenCalledWith('room-x', null, 41);
   });
 
   it('does not rewind past the start of the stream', async () => {
     const spawner = makeSpawner();
     handle(makeWatcher(spawner), 'room-x', 0);
     await vi.waitFor(() => expect(spawner.launch).toHaveBeenCalledTimes(1));
-    expect(spawner.launch).toHaveBeenCalledWith('room-x', 0);
+    expect(spawner.launch).toHaveBeenCalledWith('room-x', null, 0);
   });
 
   it('does not launch when a live session already attends the room', async () => {
@@ -129,6 +136,23 @@ describe('NotificationWatcher spawn decision', () => {
     const [url, init] = fetchMock.mock.calls.at(-1)!;
     expect(String(url)).toContain('/agents/switch-agent-1/message');
     expect(String((init as RequestInit).body)).toContain('start a session');
+  }, 10_000);
+
+  // A notice nobody is pinged by scrolls past in a channel the person who asked
+  // may not be watching, which defeats the point of saying nobody is coming.
+  it('addresses the spawn-failure notice to whoever asked', async () => {
+    const launch = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const fetchMock = vi.fn(
+      async (_url: string | URL, _init?: RequestInit) => new Response(null, { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    handle(makeWatcher(makeSpawner({ launch })), 'room-x', undefined, 'louis.amaudruz');
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled(), { timeout: 8000 });
+    const [, init] = fetchMock.mock.calls.at(-1)!;
+    expect(String((init as RequestInit).body)).toContain('@louis.amaudruz');
   }, 10_000);
 });
 

@@ -26,6 +26,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'workspace',
       supportedEvents: ['stop', 'session', 'notification'],
+      reportsSessionStart: false,
     },
     hostDependency: npmDependency({ id: 'copilot', package: '@github/copilot' }),
     mcp: {

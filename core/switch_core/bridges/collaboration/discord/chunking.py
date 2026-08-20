@@ -1,7 +1,8 @@
 """Split outbound text to fit Discord's per-message character limit.
 
 Discord caps a message at 2,000 characters and rejects anything longer with a
-400 — an order of magnitude tighter than Slack, Mattermost or Teams, and well
+400 — an order of magnitude tighter than Slack, Mattermost, Teams or
+Telegram, and well
 under what an agent writes when it answers a real question. Without splitting,
 the adapter's `HTTPException` handler logs the rejection and returns, so the
 message never reaches the channel and the user is shown nothing at all.

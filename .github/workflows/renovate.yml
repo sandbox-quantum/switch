@@ -1,7 +1,7 @@
 name: Renovate
 # Self-hosted Renovate for the ecosystems Socket does NOT cover (containers, GitHub
 # Actions, CircleCI orbs). Policy lives in renovate.json5 at the repo root; see
-# root/scripts/renovate-security/README.md for the rationale (security-focused,
+# .github/renovate-security/README.md for the rationale (security-focused,
 # minimally invasive, minimumReleaseAge guard, one PR per project+ecosystem).
 #
 # Terraform PROVIDER security is a separate job (tf_provider_security.yml). VULNMGMT

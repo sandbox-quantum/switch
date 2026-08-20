@@ -2,11 +2,44 @@ from __future__ import annotations
 
 from switch_core.deeplinks import (
     DEEPLINK_REDIRECT_PATH,
+    deeplink_for_platform,
     gateway_query_to_switchdash,
     switchdash_to_gateway,
 )
 
 _DEEPLINK = "switchdash://session?server=https%3A%2F%2Fs&agent=a&room=r&session=x"
+
+
+class TestDeeplinkForPlatform:
+    """Which form of the link a platform is given (CHOO-2173).
+
+    The gateway redirect exists for platforms that will not linkify a custom
+    scheme — Discord, Telegram. It was being handed to every platform on any
+    deployment that configured a gateway URL, which every managed stack does,
+    so Mattermost was sending readers through the browser to reach a link its
+    own client would have opened.
+    """
+
+    def test_a_platform_that_renders_the_scheme_gets_the_real_link(self) -> None:
+        assert deeplink_for_platform(_DEEPLINK, "https://gw.example", True) == _DEEPLINK
+
+    def test_a_platform_that_does_not_gets_the_redirect(self) -> None:
+        assert deeplink_for_platform(_DEEPLINK, "https://gw.example", False) == (
+            "https://gw.example/deeplink/session"
+            "?server=https%3A%2F%2Fs&agent=a&room=r&session=x"
+        )
+
+    def test_without_a_gateway_url_there_is_nothing_to_rewrite_to(self) -> None:
+        assert deeplink_for_platform(_DEEPLINK, None, False) == _DEEPLINK
+
+    def test_no_deeplink_stays_no_deeplink(self) -> None:
+        assert deeplink_for_platform(None, "https://gw.example", False) is None
+
+    def test_a_link_that_is_not_a_session_deeplink_is_left_alone(self) -> None:
+        assert (
+            deeplink_for_platform("https://elsewhere/x", "https://gw.example", False)
+            == "https://elsewhere/x"
+        )
 
 
 class TestSwitchdashToGateway:

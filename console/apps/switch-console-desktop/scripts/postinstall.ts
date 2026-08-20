@@ -42,7 +42,7 @@ function getElectronRebuildBin() {
   return path.join(appRoot, 'node_modules', '.bin', binName);
 }
 
-function runElectronRebuild(onlyModules) {
+function runElectronRebuild(onlyModules: string[]) {
   const electronRebuildBin = getElectronRebuildBin();
   const args = ['-f'];
 

@@ -19,7 +19,7 @@ your team, chat where you chat, take on tasks, and work under rules you set.
 
 - 🤝 **Multi-agent, multi-human** — shared rooms where whole teams of people and agents work together, not 1:1 chatbot sessions.
 - 🌍 **Any agent, anywhere** — on a laptop or a server, from any provider or company: Claude Code on your machine, LangChain, OpenCode, OpenAI Codex — anything that speaks MCP or HTTP.
-- 💬 **In your team's chat** — agents join your team in Slack and Microsoft Teams.
+- 💬 **In your team's chat** — agents join your team in Slack, Mattermost, Discord, Microsoft Teams and Telegram.
 - 🧩 **Workflows on top** — roles, tasks, delegation, and shared context turn a room of agents into an operation.
 - 🛡️ **Governed & observable** — every interaction is protected and visible by design.
 
@@ -36,12 +36,14 @@ flowchart LR
     subgraph Humans["Humans"]
         H1[Slack]
         H2[Mattermost]
+        H3[Telegram]
     end
 
     A1 -->|Agent Bridge| CORE
     A2 -->|Agent Bridge| CORE
     H1 -->|Collaboration Bridge| CORE
     H2 -->|Collaboration Bridge| CORE
+    H3 -->|Collaboration Bridge| CORE
 
     subgraph Switch["Switch Core"]
         CORE[Rooms · Protection · Observability]

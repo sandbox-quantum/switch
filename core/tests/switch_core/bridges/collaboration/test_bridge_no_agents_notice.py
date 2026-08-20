@@ -8,6 +8,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.telegram.adapter import (
+    TelegramAdapter,
+    TelegramConnectionConfig,
+)
 
 # When the Switch app is invited to (or addressed in) a bridged channel that has
 # no room yet, a room is auto-created even if no agent can be associated with it
@@ -141,6 +145,24 @@ def test_each_adapter_advertises_a_syntax_it_actually_accepts() -> None:
     assert "agent:agent-name" in hint
     assert "Discord slash command" in hint
     assert "@agent-name" not in hint
+
+    telegram_adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="t", bot_username="b")
+    )
+    telegram_hint = telegram_adapter.slash_invite_hint()
+    # Telegram passes a command's whole tail through as text, so the argument is
+    # spelled exactly as in the `!` form — no named fields.
+    assert telegram_hint is not None
+    assert "Telegram slash command" in telegram_hint
+    # The underscore spelling leads, because it is the only one Telegram will
+    # register and therefore the only one its menu offers. Advertising the
+    # hyphenated form first sent people to the one spelling the client will not
+    # autocomplete.
+    assert "`/invite_agent @agent-name`" in telegram_hint
+    assert telegram_hint.index("/invite_agent") < telegram_hint.index("/invite-agent")
+    # Both are still named, since the hyphenated form is what every other
+    # platform and the docs use, and Telegram does accept it when typed.
+    assert "`/invite-agent`" in telegram_hint
 
 
 async def test_auto_create_with_agents_posts_no_notice() -> None:

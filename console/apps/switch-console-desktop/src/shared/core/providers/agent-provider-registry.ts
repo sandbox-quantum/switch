@@ -34,6 +34,18 @@ export const AGENT_PROVIDER_IDS = [
 
 export type AgentProviderId = (typeof AGENT_PROVIDER_IDS)[number];
 
+/**
+ * Narrow a provider id that arrived as an opaque string — from a database row
+ * or a launch spec read off disk — to a registered one.
+ *
+ * Throws rather than passing it through: every consumer dispatches on this
+ * value, so an unregistered id silently selects no behaviour at all.
+ */
+export function asAgentProviderId(value: string): AgentProviderId {
+  if ((AGENT_PROVIDER_IDS as readonly string[]).includes(value)) return value as AgentProviderId;
+  throw new Error(`unknown agent provider '${value}'`);
+}
+
 export type AgentProviderDefinition = {
   id: AgentProviderId;
   name: string;
@@ -698,6 +710,17 @@ export function isValidProviderId(value: unknown): value is AgentProviderId {
 export function isValidProviderSessionId(providerId: string, providerSessionId: string): boolean {
   if (providerId === 'opencode') return providerSessionId.startsWith('ses');
   return true;
+}
+
+/**
+ * What a provider is called in the interface — "Claude Code", not the `claude`
+ * we key it by. An id this build does not know is returned as it stands: it
+ * came from a real agent row, and showing it is more use than showing nothing.
+ */
+export function providerDisplayName(id: string | null | undefined): string | null {
+  if (!id) return null;
+  if (!isValidProviderId(id)) return id;
+  return PROVIDER_MAP.get(id)?.name ?? id;
 }
 
 export function getDescriptionForProvider(id: AgentProviderId): string | null {

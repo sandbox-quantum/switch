@@ -28,6 +28,7 @@ export const plugin = definePlugin(
       kind: 'config',
       scope: 'workspace',
       supportedEvents: [
+        'session',
         'start',
         'notification',
         'stop',
@@ -37,6 +38,7 @@ export const plugin = definePlugin(
         'subagent',
         'subagent-done',
       ],
+      reportsSessionStart: true,
     },
     hostDependency: {
       id: 'claude',

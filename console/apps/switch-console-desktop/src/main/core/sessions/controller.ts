@@ -6,6 +6,7 @@ import { dehydrateSession } from './operations/dehydrateSession';
 import { getSession } from './operations/getSession';
 import { hydrateSession } from './operations/hydrateSession';
 import { markSessionSeen } from './operations/markSessionSeen';
+import { restartSessionAgent } from './operations/restartSessionAgent';
 import { sessionService } from './session-service';
 
 export const sessionController = createRPCController({
@@ -63,6 +64,13 @@ export const sessionController = createRPCController({
   },
   async stopAgent(sessionId: string) {
     return sessionService.stopAgent(sessionId);
+  },
+  /**
+   * Restart a session's agent process in place, so a setting only read at spawn
+   * (the Codex launch profile) reaches a session that is already running.
+   */
+  async restartAgent(sessionId: string) {
+    return restartSessionAgent(sessionId);
   },
   async provisionSession(sessionId: string) {
     return sessionService.provisionSession(sessionId);

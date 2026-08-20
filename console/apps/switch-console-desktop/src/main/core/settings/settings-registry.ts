@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { DEFAULT_BROWSER_PROFILE_ID, DEFAULT_BROWSER_PROFILES } from '@shared/browser';
 import type { AppSettings, AppSettingsKey } from '@shared/core/app-settings';
 import { TERMINAL_FONT_SIZE_DEFAULT } from '@shared/core/terminals/terminal-settings';
-import type { OpenInAppId } from '@shared/openInApps';
 import { getDefaultLocalWorktreeDirectory } from './worktree-defaults';
 
 export const DEFAULT_AGENT_ID = 'claude';
@@ -24,15 +23,12 @@ export const SETTINGS_DEFAULTS = {
   sessions: {
     autoGenerateName: true,
     autoTrustWorktrees: true,
-    createBranchAndWorktree: true,
     preserveNameCapitalization: false,
-    includeIssueContextByDefault: true,
   },
   notifications: {
     enabled: true,
     sound: true,
     customSoundPath: '',
-    osNotifications: true,
     soundFocusMode: 'always' as const,
   },
   terminal: {
@@ -43,19 +39,12 @@ export const SETTINGS_DEFAULTS = {
   },
   theme: null,
   defaultAgent: DEFAULT_AGENT_ID,
-  keyboard: {},
   openIn: {
     default: 'terminal' as const,
-    hidden: [] as OpenInAppId[],
   },
   interface: {
     sessionHoverAction: 'delete' as const,
     autoRightSidebarBehavior: false,
-    showLeftSidebarLineChanges: true,
-    showLeftSidebarPrStatus: true,
-    showLeftSidebarTimestamps: true,
-    confirmTabClose: false,
-    hideContextBar: false,
   },
   browserPreview: {
     enabled: true,
@@ -65,16 +54,20 @@ export const SETTINGS_DEFAULTS = {
     relaxCorsForLocalhost: false,
     profiles: DEFAULT_BROWSER_PROFILES,
   },
-  resourceMonitor: {
-    enabled: false,
-  },
   remote: {
     maxAttachedSessionsPerHost: 4,
+  },
+  onboarding: {
+    showChecklist: true,
   },
   changesViewMode: {
     unstaged: 'flat' as const,
     staged: 'flat' as const,
     pr: 'flat' as const,
+  },
+  telemetry: {
+    enabled: true,
+    askedAt: null,
   },
 } satisfies SettingsDefaultsMap;
 

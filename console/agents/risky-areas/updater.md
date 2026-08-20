@@ -4,8 +4,8 @@
 
 - `src/main/core/updates/update-service.ts`
 - `src/main/core/updates/controller.ts`
-- `src/main/core/updates/github-token.ts` — the updater's `gh` CLI token
 - `src/main/core/updates/dev-harness.ts` — `SWITCHDASH_FAKE_UPDATE` replay
+- `scripts/merge-mac-update-manifest.ts` — the merged macOS channel manifest
 - `build/`
 - `package.json`
 - `electron-builder.config.ts`
@@ -46,14 +46,43 @@ The workflow does **not** let electron-builder publish (`--publish never`). Inst
    electron-updater — `/releases/latest` skips drafts — so no client can see a
    half-uploaded release.
 2. Each platform job builds, then `gh release upload`s its installers **and** its
-   electron-updater channel manifest.
+   electron-updater channel manifest — except macOS, whose two jobs upload installers
+   only and leave the manifest to `merge-mac-manifest` (see below).
 3. `publish-release` runs last. It **verifies every expected channel manifest is
    present** and refuses to publish if any is missing, leaving the release a draft with
-   an error naming what's absent.
+   an error naming what's absent. For macOS it also checks the manifest names both
+   architectures, since presence alone cannot tell a merged manifest from a
+   single-arch one.
 
 That last step is the guard worth knowing about: binaries published against a stale or
 missing channel manifest produce sha512 checksum failures on client download, so the
 pipeline would rather stay a draft than publish an inconsistent release.
+
+### macOS: one manifest, two architectures
+
+macOS ships two builds, arm64 and x64, and they share a **single** channel file.
+electron-builder suffixes the channel file per architecture on Linux only
+(`latest-linux-arm64.yml`); on macOS every architecture writes `latest-mac.yml`.
+There is no `latest-mac-x64.yml` to reach for, and giving one architecture its own
+`channel` would not help either — `update-service.ts` calls `setFeedURL` with a bare
+provider descriptor, so whatever channel the packaged `app-update.yml` carries is
+discarded at runtime.
+
+So the release workflow builds each architecture on a runner of that architecture,
+neither job publishes a manifest, and `merge-mac-manifest` combines the two into one
+`latest-mac.yml` listing both. That is the shape electron-updater expects: its mac path
+filters the manifest's `files` by whether the file name contains `arm64` — Intel drops
+those entries, Apple silicon (including under Rosetta) prefers them.
+
+Two consequences worth holding on to:
+
+- **`arm64` in the file name is the routing rule.** Rename the macOS artifacts without
+  it and every Mac is offered the wrong build.
+- **The failure mode is silent.** An architecture missing from the manifest still passes
+  the version check and only fails at download, with
+  `ERR_UPDATER_NO_FILES_PROVIDED` — which a background check surfaces as a tinted
+  sidebar indicator and nothing else. Hence the both-architectures check in
+  `publish-release` rather than trusting the upload steps.
 
 ### `UPDATE_CHANNEL` is a log label, not a feed selector
 
@@ -86,5 +115,7 @@ one until the app restarts.
 
 ## Current Notes
 
-- macOS and Linux release builds rebuild native modules for the target Electron version
+- macOS and Linux release builds rebuild native modules for the target Electron version,
+  on a runner of the architecture they are building for — `npmRebuild` is off, so a
+  cross-built package carries the build machine's `.node` files and dies on first use
 - changelog and auto-update behavior are separate but related surfaces in the app

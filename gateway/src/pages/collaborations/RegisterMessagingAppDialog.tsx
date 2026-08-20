@@ -1,14 +1,17 @@
 import {
   Alert,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   MenuItem,
   Stack,
   TextField,
+  Typography,
 } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
 import { type BridgeDetail, createBridge } from "../../data/api";
@@ -34,6 +37,7 @@ export default function RegisterMessagingAppDialog({
   const [selectedType, setSelectedType] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
+  const [channelCreationEnabled, setChannelCreationEnabled] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,11 +46,15 @@ export default function RegisterMessagingAppDialog({
     [bridgeTypes, selectedType],
   );
   const configSchema = selectedTypeInfo?.config_schema;
+  // Unknown until the type list has loaded; assume supported so the checkbox
+  // isn't forced off while that request is in flight.
+  const channelCreationSupported = selectedTypeInfo?.channel_creation_supported ?? true;
 
   const handleTypeChange = useCallback((key: string) => {
     // Switching type clears any fields entered for the previous one.
     setSelectedType(key);
     setConfig({});
+    setChannelCreationEnabled(true);
     setError(null);
   }, []);
 
@@ -54,6 +62,7 @@ export default function RegisterMessagingAppDialog({
     setSelectedType("");
     setDisplayName("");
     setConfig({});
+    setChannelCreationEnabled(true);
     setError(null);
   }, []);
 
@@ -74,7 +83,12 @@ export default function RegisterMessagingAppDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const bridge = await createBridge(selectedType, displayName.trim(), config);
+      const bridge = await createBridge(
+        selectedType,
+        displayName.trim(),
+        config,
+        channelCreationSupported && channelCreationEnabled,
+      );
       onSuccess(bridge);
       reset();
       onClose();
@@ -83,7 +97,17 @@ export default function RegisterMessagingAppDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [canSubmit, selectedType, displayName, config, onSuccess, reset, onClose]);
+  }, [
+    canSubmit,
+    selectedType,
+    displayName,
+    config,
+    channelCreationSupported,
+    channelCreationEnabled,
+    onSuccess,
+    reset,
+    onClose,
+  ]);
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
@@ -121,6 +145,25 @@ export default function RegisterMessagingAppDialog({
                 fullWidth
                 required
               />
+              <Stack spacing={0.5}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={channelCreationSupported && channelCreationEnabled}
+                      disabled={!channelCreationSupported}
+                      onChange={(e) => setChannelCreationEnabled(e.target.checked)}
+                    />
+                  }
+                  label="Allow creating channels from Switch"
+                />
+                {!channelCreationSupported && (
+                  <Typography variant="caption" color="text.secondary">
+                    {humanize(selectedType)} has no way to create channels from
+                    Switch, so this connection can only be used with existing
+                    channels.
+                  </Typography>
+                )}
+              </Stack>
               {configSchema &&
                 Object.entries(configSchema.properties).map(([field, prop]) => (
                   <TextField

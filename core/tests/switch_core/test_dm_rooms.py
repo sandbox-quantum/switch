@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 # A DM room is a 1:1 "direct" room provisioned outbound onto a bridge (on Slack,
@@ -107,12 +108,32 @@ class _FakeLifecycle:
         return self._bridges.get(bridge_id)
 
 
-def _dm_service(*, known_users: dict[str, str]) -> tuple[RoomService, _FakeBridge]:
+class _FakeBridgeStore:
+    """Reports a connection an operator has left able to create channels, so
+    these tests exercise the DM path rather than the capability guard."""
+
+    def __init__(self, *, channel_creation_enabled: bool) -> None:
+        self._enabled = channel_creation_enabled
+
+    async def get(self, session: Any, bridge_id: str) -> Any:
+        return SimpleNamespace(
+            id=bridge_id,
+            display_name=bridge_id,
+            channel_creation_enabled=self._enabled,
+        )
+
+
+def _dm_service(
+    *, known_users: dict[str, str], channel_creation_enabled: bool = True
+) -> tuple[RoomService, _FakeBridge]:
     bridge = _FakeBridge(known_users)
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._agent_store = _FakeAgentStore({"a1": "agent.bot"})  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle({"bridge-1": bridge})  # type: ignore[assignment]
+    svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
+        channel_creation_enabled=channel_creation_enabled
+    )
     return svc, bridge
 
 
@@ -126,15 +147,31 @@ async def test_create_dm_room_fails_when_user_unknown_to_bridge() -> None:
     assert bridge.dm_calls == []
 
 
+async def test_create_dm_room_refused_when_operator_withheld_channel_creation() -> None:
+    # Opening a DM makes a conversation on the platform just as a channel does,
+    # so the operator's switch governs it too.
+    svc, bridge = _dm_service(
+        known_users={"alice": "U1"}, channel_creation_enabled=False
+    )
+
+    with pytest.raises(ChannelCreationUnsupported, match="turned off"):
+        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["alice"]))
+
+    assert bridge.dm_calls == []
+
+
 # ── Base adapter (non-Slack platforms) ───────────────────────────────────────
 
 
 async def test_base_adapter_rejects_dm_channel_creation() -> None:
     # The default raises so platforms whose DMs are user-initiated (Mattermost)
-    # fail loud rather than silently no-op.
-    with pytest.raises(NotImplementedError, match="cannot create DM channels"):
+    # fail loud rather than silently no-op. The refusal reaches whoever asked
+    # for the room, so it names the platform rather than its adapter class.
+    with pytest.raises(
+        ChannelCreationUnsupported, match="Mattermost cannot create DM channels"
+    ):
         await CollaborationAdapter.create_dm_channel(
-            SimpleNamespace(),
+            SimpleNamespace(platform_name="Mattermost"),
             agent_name="a",
             user_name="u",
             user_external_id="U1",

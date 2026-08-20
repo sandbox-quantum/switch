@@ -162,6 +162,21 @@ export function hasSessionError(locationId: string): boolean {
   return false;
 }
 
+/**
+ * Returns true if this location's error comes from a session that failed to be
+ * created. A provision error is reachable — that session is registered, so it
+ * is listed in the sidebar and its view offers a retry. A create error is not:
+ * nothing lists it, so discarding it is the only way to clear the badge.
+ */
+export function hasDiscardableSessionError(locationId: string): boolean {
+  const manager = getSessionManagerStore(locationId);
+  if (!manager) return false;
+  for (const session of manager.sessions.values()) {
+    if (isUnregistered(session) && session.phase === 'create-error') return true;
+  }
+  return false;
+}
+
 /** Returns the mount error message for the location. */
 export function locationMountErrorMessage(locationId: string): string {
   const store = getLocationManagerStore().locations.get(locationId);

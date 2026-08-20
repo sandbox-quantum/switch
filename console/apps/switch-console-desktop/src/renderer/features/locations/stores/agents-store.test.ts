@@ -70,3 +70,54 @@ describe('AgentsStore server scoping', () => {
     expect(agentsStore.locationHasAgentsOnServer('orphan', 'server-1')).toBe(false);
   });
 });
+
+/**
+ * Which agent an agent page is about (CHOO-2173).
+ *
+ * The route identifies one by location *and* name. Creating an agent used to
+ * navigate with the location alone, and with nothing to resolve, every surface
+ * on the page fell back to the directory's name — so a new agent opened under
+ * the folder's name and an avatar generated from it.
+ */
+describe('resolving the agent a location route is about', () => {
+  afterEach(() => {
+    agentsStore.byLocation.clear();
+    agentsStore.optimisticServerByLocation.clear();
+  });
+
+  it('picks the named agent out of a shared directory', () => {
+    agentsStore.byLocation.set('dir', [
+      agent('dir', 'server-1', 'charlie'),
+      agent('dir', 'server-1', 'delta'),
+    ]);
+
+    expect(agentsStore.agentAtLocation('dir', 'charlie')?.name).toBe('charlie');
+    expect(agentsStore.agentAtLocation('dir', 'delta')?.name).toBe('delta');
+  });
+
+  it('resolves an unnamed route when the directory holds exactly one agent', () => {
+    // Nothing to choose between, so there is nothing to get wrong.
+    agentsStore.byLocation.set('dir', [agent('dir', 'server-1', 'charlie')]);
+
+    expect(agentsStore.agentAtLocation('dir', undefined)?.name).toBe('charlie');
+  });
+
+  it('refuses to guess between several agents', () => {
+    agentsStore.byLocation.set('dir', [
+      agent('dir', 'server-1', 'charlie'),
+      agent('dir', 'server-1', 'delta'),
+    ]);
+
+    expect(agentsStore.agentAtLocation('dir', undefined)).toBeNull();
+  });
+
+  it('is null for a name that is not there, rather than the first agent', () => {
+    agentsStore.byLocation.set('dir', [agent('dir', 'server-1', 'charlie')]);
+
+    expect(agentsStore.agentAtLocation('dir', 'nobody')).toBeNull();
+  });
+
+  it('is null for a directory with no agents at all', () => {
+    expect(agentsStore.agentAtLocation('empty', undefined)).toBeNull();
+  });
+});

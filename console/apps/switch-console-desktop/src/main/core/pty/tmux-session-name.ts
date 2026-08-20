@@ -78,6 +78,9 @@ export function makeAgentTmuxSessionName(sessionId: string): string {
 }
 
 export async function killTmuxSession(ctx: IExecutionContext, sessionName: string): Promise<void> {
+  // Windows never starts a tmux session (resolveLocalPtySpawn warns and ignores
+  // the request), so the teardown would only ever produce a phantom ENOENT.
+  if (process.platform === 'win32') return;
   try {
     await ctx.exec('tmux', ['kill-session', '-t', exactTmuxTarget(sessionName)]);
   } catch (err) {

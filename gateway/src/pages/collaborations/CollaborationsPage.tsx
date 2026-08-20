@@ -1,3 +1,4 @@
+import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
@@ -13,6 +14,7 @@ import {
   IconButton,
   Stack,
   Switch,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
@@ -22,6 +24,7 @@ import { type BridgeDetail, deleteBridge, updateBridge } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges } from "../../data/hooks";
 import { formatDate, titleCase } from "../../theme/hootFormat";
+import AddToChatDialog from "./AddToChatDialog";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
 
 type BridgeRow = BridgeDetail & { id: string };
@@ -40,6 +43,7 @@ export default function CollaborationsPage() {
   const [deleting, setDeleting] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -54,6 +58,16 @@ export default function CollaborationsPage() {
     async (bridgeId: string, enabled: boolean) => {
       setSavingId(bridgeId);
       await updateBridge(bridgeId, { agent_greetings_enabled: enabled });
+      setSavingId(null);
+      refetch();
+    },
+    [refetch],
+  );
+
+  const handleToggleChannelCreation = useCallback(
+    async (bridgeId: string, enabled: boolean) => {
+      setSavingId(bridgeId);
+      await updateBridge(bridgeId, { channel_creation_enabled: enabled });
       setSavingId(null);
       refetch();
     },
@@ -106,6 +120,32 @@ export default function CollaborationsPage() {
         ),
       },
       {
+        field: "channel_creation_enabled",
+        headerName: "Channel creation",
+        width: 160,
+        sortable: false,
+        renderCell: ({ row }: { row: BridgeRow }) => {
+          const control = (
+            <Switch
+              size="small"
+              checked={row.channel_creation_supported && row.channel_creation_enabled}
+              disabled={
+                !isAdmin || savingId === row.bridge_id || !row.channel_creation_supported
+              }
+              onChange={(e) =>
+                handleToggleChannelCreation(row.bridge_id, e.target.checked)
+              }
+            />
+          );
+          if (row.channel_creation_supported) return control;
+          return (
+            <Tooltip title={`${row.display_name} cannot create channels from Switch.`}>
+              <span>{control}</span>
+            </Tooltip>
+          );
+        },
+      },
+      {
         field: "created_at",
         headerName: "Created",
         width: 140,
@@ -116,19 +156,42 @@ export default function CollaborationsPage() {
             {
               field: "actions" as const,
               headerName: "",
-              width: 60,
+              width: 110,
               sortable: false,
               filterable: false,
+              // Right-aligned and bottom-anchored to the same edge on every
+              // row: rows carry one icon or two depending on whether the
+              // platform offers an install link, and without this the delete
+              // buttons sit at different x positions down the column.
+              align: "right" as const,
               renderCell: ({ row }: { row: BridgeRow }) => (
-                <IconButton size="small" onClick={() => setDeleteTarget(row)}>
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  alignItems="center"
+                  justifyContent="flex-end"
+                  height="100%"
+                >
+                  {(row.install_links ?? []).length > 0 && (
+                    <Tooltip title="Add this app to a chat">
+                      <IconButton
+                        size="small"
+                        onClick={() => setInstallTarget(row)}
+                      >
+                        <AddLinkOutlined fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                  <IconButton size="small" onClick={() => setDeleteTarget(row)}>
+                    <DeleteOutline fontSize="small" />
+                  </IconButton>
+                </Stack>
               ),
             },
           ]
         : []),
     ],
-    [isAdmin, savingId, handleToggleGreetings],
+    [isAdmin, savingId, handleToggleGreetings, handleToggleChannelCreation],
   );
 
   const rows = useMemo<BridgeRow[]>(
@@ -162,6 +225,11 @@ export default function CollaborationsPage() {
         open={registerOpen}
         onClose={() => setRegisterOpen(false)}
         onSuccess={() => refetch()}
+      />
+
+      <AddToChatDialog
+        bridge={installTarget}
+        onClose={() => setInstallTarget(null)}
       />
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>

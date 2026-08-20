@@ -138,7 +138,7 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
       name: 'reviewer',
       description: 'Reviews diffs',
       model: 'opus',
-      prompt: 'You are a careful reviewer.',
+      instructions: 'You are a careful reviewer.',
     });
 
     const raw = await workspaceFs.read(defRel('reviewer'));
@@ -153,9 +153,54 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
       name: 'reviewer',
       description: 'Reviews diffs',
       model: 'opus',
-      prompt: 'You are a careful reviewer.',
+      instructions: 'You are a careful reviewer.',
       tools: [],
     });
+  });
+
+  it('falls back to the description for the body when there are no instructions', async () => {
+    const workspaceFs = fakeFs({});
+    await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
+      name: 'reviewer',
+      description: 'Reviews diffs',
+    });
+
+    // Claude Code reads the body as the system prompt, so it cannot be empty.
+    expect(await workspaceFs.read(defRel('reviewer'))).toBe(
+      '---\nname: reviewer\ndescription: Reviews diffs\n---\n\nReviews diffs\n'
+    );
+  });
+
+  it('does not read the description stand-in back as instructions', async () => {
+    // Otherwise the round trip invents a prompt the user never wrote, and the
+    // next write pins it as if they had.
+    const workspaceFs = fakeFs({});
+    await claudeRepoAgentsBehavior.writeDefinition(workspaceFs, {
+      name: 'reviewer',
+      description: 'Reviews diffs',
+    });
+
+    const attrs = await claudeRepoAgentsBehavior.readDefinition(workspaceFs, 'reviewer');
+    expect(attrs?.instructions).toBe('');
+  });
+
+  it('generates the same bytes for the same attributes', async () => {
+    // The two-way sync tells "someone edited this" from "the config moved on"
+    // by comparing bytes against what was last generated, so generating has to
+    // be repeatable or every write looks like a hand edit.
+    const attributes = {
+      name: 'reviewer',
+      description: 'Reviews diffs',
+      model: 'opus',
+      tools: ['Read', 'Grep'],
+      instructions: 'Be careful.',
+    };
+    const first = fakeFs({});
+    const second = fakeFs({});
+    await claudeRepoAgentsBehavior.writeDefinition(first, attributes);
+    await claudeRepoAgentsBehavior.writeDefinition(second, attributes);
+
+    expect(await first.read(defRel('reviewer'))).toBe(await second.read(defRel('reviewer')));
   });
 
   it('always merges the Switch connector tools into a non-empty tools list', async () => {
@@ -164,7 +209,7 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
       name: 'reviewer',
       description: 'Reviews diffs',
       tools: ['Read', 'Grep'],
-      prompt: 'body',
+      instructions: 'body',
     });
 
     const raw = (await workspaceFs.read(defRel('reviewer'))) ?? '';
@@ -208,7 +253,7 @@ describe('claudeRepoAgentsBehavior.writeDefinition / readDefinition', () => {
       maxTurns: 5,
       background: true,
       permissionMode: '',
-      prompt: 'do work',
+      instructions: 'do work',
     });
 
     const raw = (await workspaceFs.read(defRel('worker'))) ?? '';

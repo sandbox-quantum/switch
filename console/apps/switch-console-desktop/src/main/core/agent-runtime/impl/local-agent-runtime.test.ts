@@ -1,7 +1,7 @@
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_FRESH_RECOVERY_GRACE_MS } from '@main/core/agent-runtime/agent-runtime-supervisor';
-import { getAgentById } from '@main/core/agents/getAgentById';
+import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import type { Pty, PtyExitInfo } from '@main/core/pty/pty';
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
@@ -69,6 +69,13 @@ vi.mock('@main/core/switch-rooms/switch-credentials', () => ({
 // DB client, which has no database in this unit test.
 vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: vi.fn(async () => null),
+}));
+
+// What to launch with is read from the agent's config file in its working
+// directory, which means resolving its location out of the database — and
+// these tests have no database. A test that cares states the values directly.
+vi.mock('@main/core/agents/agent-launch-config', () => ({
+  agentLaunchSpecialization: vi.fn(async () => undefined),
 }));
 
 // Reads the app's userData path and shells out to `gh`; neither exists here,
@@ -304,9 +311,7 @@ describe('local agent runtime respawn state', () => {
   it('writes the Codex profile to the home dir and loads it on argv', async () => {
     const exitHandlers: Array<(info: PtyExitInfo) => void> = [];
     spawnLocalPty.mockReturnValue(fakePty(exitHandlers));
-    vi.mocked(getAgentById).mockResolvedValueOnce({
-      providerConfig: { model: 'gpt-5.6-terra' },
-    } as unknown as Awaited<ReturnType<typeof getAgentById>>);
+    vi.mocked(agentLaunchSpecialization).mockResolvedValueOnce({ model: 'gpt-5.6-terra' });
     vi.mocked(readAgentSwitchEnvFromFs).mockResolvedValueOnce({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_API_TOKEN: 'tok-123',

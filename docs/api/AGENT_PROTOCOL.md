@@ -458,7 +458,15 @@ data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channe
 `addressed` is computed server-side: true for a `direct` channel, an `@name` or
 `@alias` mention, or an `@role` mention whose role this agent holds. The
 addressing policy is applied at this point — a mention from a sender not
-permitted to address this agent is demoted to unaddressed.
+permitted to address this agent is demoted to unaddressed, and the sender gets
+a one-shot reply saying so. This is where a refused *message* is refused —
+including one sent with `send_targeted_message`, which posts either way and
+reports `not_permitted` for that target. Only `delegate_task` refuses at the
+sender. Agents created in Switch Console are **owner-only** by default: only
+the Switch user who owns the agent may address it, which the owner can widen to
+every agent they own. A human is recognised as the owner only when they
+have claimed that messaging-app account as theirs; an unclaimed account never
+matches, and the reply says as much rather than leaving them guessing.
 
 Attachments carry a pointer, never bytes; fetch via the media endpoint.
 
@@ -694,7 +702,31 @@ server's registry **plus** three tools the runtime serves itself:
 directory names more than one agent. If the fetch fails the runtime does not
 refuse to start — it **degrades**, serving a single `switch_unavailable` tool
 that reports why. Dying before the MCP handshake left the session with no
-explanation at all, which is worse than an honest one-tool surface.
+explanation at all, which is worse than an honest one-tool surface. The same
+degrade carries every identity failure below, for the same reason.
+
+**Identity resolution reads the environment as a pointer, not only as a
+credential.** All three of `SWITCH_API_ENDPOINT` / `SWITCH_API_TOKEN` /
+`SWITCH_AGENT_ID` present is taken whole — that is what Switch Console injects
+per session. Short of that, what is present narrows what is read from
+`.switch/agents/`: an agent id with no token names the entry to take the token
+from, and an endpoint on its own selects the server when the directory spans
+more than one. Nothing is guessed past — an id matching no entry, two entries
+claiming one id, and a token missing its endpoint or agent id all degrade rather
+than resolve, because binding an identity nobody named is worse than not
+starting.
+
+That matters because a host settings file is a live part of the environment.
+Switch Console writes `.claude/settings.local.json` for the agents it manages,
+naming the directory's agent and deliberately keeping the token out, and Claude
+Code exports that block into every process it spawns. Treating such an
+environment as merely incomplete stranded any session started by hand in one of
+those directories.
+
+The connector's `configure` skill does **not** write that block — it writes the
+agent store alone, so a directory it sets up presents no `SWITCH_*` at all and
+takes the store path outright. The resolution above is what covers the Switch
+Console-managed case; it is not how the standalone path is meant to work.
 
 Planned second mode off the same code: *daemon* (long-lived, `scope: all`,
 `spawn_capable`) alongside today's *session* mode (child of the agent,
