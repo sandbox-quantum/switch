@@ -109,6 +109,34 @@ Details that turn out to matter:
   that. Posting fresh root-level status banners was tried and rejected; it recreates exactly
   the noise the pattern exists to remove.
 
+### `shape/build-it-from-inside-a-room`
+You do not have to construct a multi-room setup by hand. **An agent already in a room with
+you can create rooms, roles, links, groups, nicknames and references** — so the setup can be
+built by describing it to an agent that is present, rather than clicking through it.
+
+Worth designing for: it means the "front door" of a setup can be a single channel where
+someone says what they want, and the structure appears. It also means a setup can grow
+itself — a coordinator that creates a room per item is doing exactly this.
+
+**Agents cannot create agents.** That is the boundary. Identity, credentials and running an
+agent happen in Switch Console on someone's machine, so any design that needs a new agent
+has a human step in it. Arranging agents that already exist has none.
+
+Confirm before creating. A room is a real side effect and usually a real channel in
+someone's workspace.
+
+### `shape/the-channel-is-the-control-surface`
+Most room administration is done by typing in the channel, not in an app.
+
+- Inviting the **Switch app** to a channel creates a Switch room and links the two.
+- `!invite-agent @agent-name` in the channel adds an existing agent to it; Slack, Discord
+  and Telegram also register a slash-command form.
+- Nicknames, roster, roles, references and status are all in-channel commands; `!help`
+  lists them.
+
+Design consequence: onboarding someone onto a setup can be two lines they type where they
+already are. Do not build a process around a settings screen when the channel will do.
+
 ### `shape/links-and-groups`
 Directed pointers between related rooms, and folders to organise them. Both are navigation
 only — a link does not grant access, and following one means leaving the room you are in.

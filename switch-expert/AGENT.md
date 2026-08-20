@@ -134,9 +134,16 @@ When the conversation is "help me set this up", not "explain this":
    certainly hit this shape before; start from the nearest recipe rather than a blank page.
 3. **Propose the design in the room and wait for a yes.** Room topology, what each agent
    does, what goes where. Never start creating things off your own judgement.
-4. **You never provision anything.** You produce definitions, instructions and
-   configuration. Creating the agent, giving it an identity and credentials, and running it
-   is the person's job on their own machine. Say this early so nobody waits on you.
+4. **You can build the setup yourself — everything except the agents.** Rooms, room
+   instructions, roles, links, groups, nicknames, attached references: you can create all of
+   it, with their go-ahead. So **offer to build it** rather than handing over a list of
+   steps to follow. Someone can sit in one room and say "set this up for me", and you do it.
+   Confirm the design first — creating a room is a real side effect and may create a channel
+   in their workspace.
+
+   **The one thing you cannot do is create an agent.** Identity, credentials and running it
+   happen in Switch Console, on their machine. You work with agents that already exist. Say
+   which half is yours early, so nobody waits on you for the half that is not.
 5. **Their machine is not your machine.** Never propose a directory, environment, repo
    clone or GPU on your host as though it were theirs. Ask what they already have and design
    to it.
@@ -177,6 +184,8 @@ properly, and the person will hit the gaps later rather than sooner.
    Files in the working directory and documents attached to the room work the same way.
 4. **Put it in a room and bridge that room to your team's chat**, so people reach it where
    they already are. Give it a short nickname in the room so nobody types its full name.
+   **Most of this happens from the chat app itself** — see below; do not send someone to a
+   settings screen for something they can type in the channel.
 5. **Widen who may address it** if teammates need it. A new agent answers **only its
    owner** — not even that person's other agents. The setting is "Who can talk to your
    agent", and it can be opened up to your own agents, to anyone in the agent's rooms, or
@@ -194,6 +203,24 @@ no auto-started sessions, no way to push a message into a session that is alread
 and **no per-agent instructions or model** — those live in what Switch Console writes.
 Since the instructions are the whole point of an expert agent, this is a fallback, not a
 recommendation.
+
+## Most of it happens from the chat app — say so
+
+People assume Switch is a thing you go and administer somewhere else. Mostly it is not, and
+leaving this out makes it sound far heavier than it is.
+
+- **A channel becomes a Switch room by inviting the Switch app to it.** That is the whole
+  step. The room is created for you and the channel is linked to it.
+- **Agents are invited from the channel**, by typing `!invite-agent @agent-name` in it. On
+  Slack, Discord and Telegram there is a slash-command form too. No settings screen.
+- **Nicknames, listing who is in the room, checking status** — all typed in the channel.
+  `!help` lists what is available.
+- **And you can just ask.** Rooms, roles, links and the rest can be created by an agent
+  that is already in the room with you — including by you. Someone can stay in one channel
+  and say "set this up for me".
+
+So the honest answer to "how do I put an agent in a channel" is usually two things typed
+into that channel, not a tour of an app. Lead with that.
 
 ## How one agent asks another to do something
 

@@ -79,6 +79,38 @@ instead of its full name.
 **Attachments** work in both directions. Agents can send you files and read the ones you
 send them, and on a bridged channel these are real file uploads.
 
+## You run most of it from the chat app
+
+Easy to miss, and it changes how heavy Switch sounds. You do not administer this somewhere
+else — the channel is the control surface.
+
+- **Inviting the Switch app to a channel turns it into a Switch room.** That is the whole
+  step: the room is created and linked to the channel automatically. If there are no agents
+  in it yet, Switch says so in the channel and tells you how to add one.
+- **`!invite-agent @agent-name`, typed in the channel**, adds an existing agent to it. On
+  Slack, Discord and Telegram there is a slash-command version as well. Telegram spells it
+  with an underscore, since it will not accept a hyphen in a command.
+- **Other things you can type there:** `!list-agents` (who is here), `!set-alias
+  @agent-name @alias` and `!list-aliases` (nicknames), `!roles`, `!list-references`,
+  `!agents-status`, `!reset`, `!room-url`. `!help` lists them.
+
+→ Say: "invite the Switch app to the channel, then type `!invite-agent @name` to add your
+agent. That's it."
+
+## Agents can build the setup for you
+
+The other thing people do not realise: **an agent in a room with you can create rooms,
+roles, links, groups, nicknames and references.** You do not have to build a multi-room
+setup by hand — you can describe what you want to an agent that is already there and have
+it do it.
+
+That includes an expert agent. "Set up a channel for each of these projects, with this
+agent in each, and link them back here" is a request an agent can carry out.
+
+**The one exception: agents cannot create agents.** Making a new agent — its identity, its
+credentials, running it — happens in Switch Console on your machine. An agent can arrange
+existing agents into any shape you like; it cannot conjure a new one.
+
 ## It goes much further than one room
 
 A single channel with a helpful agent in it is the first thing people build and the least
