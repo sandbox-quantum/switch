@@ -44,6 +44,9 @@ spec:
     - {{ if $teams.ingress.host }}host: {{ $teams.ingress.host | quote }}
       {{ end }}http:
         paths:
+          {{- /* This shared list is this Ingress's entire public surface — the
+                 point of `dedicated` is that it carries these two paths and
+                 nothing else, so widening it widens what is exposed. */}}
           {{- range $path := $.Values.ingress.teamsPaths }}
           - path: {{ $path | quote }}
             pathType: Prefix

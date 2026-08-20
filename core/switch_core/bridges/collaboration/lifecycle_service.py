@@ -276,7 +276,7 @@ class CollaborationBridgeLifecycleService:
         # Fill in what the adapter generates, validate the result, and persist
         # the validated form — not the raw request — so a value minted here is
         # stored once and never re-derived.
-        connection_config = adapter_cls.prepare_config(connection_config)
+        connection_config = await adapter_cls.prepare_config(connection_config)
         validated = config_cls.model_validate(connection_config)
         connection_config = validated.model_dump(mode="json")
 

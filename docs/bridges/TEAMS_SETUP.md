@@ -106,9 +106,9 @@ secret.**
 Record the **Value** column — see [the warning above](#1-the-client-secret-is-the-value-not-the-secret-id).
 This becomes `app_password`.
 
-Note the expiry you choose. When it lapses the bridge fails exactly as it does
-with a wrong secret, with the same `AADSTS7000215`-family error — so record the
-date somewhere you will see it.
+Note the expiry you choose. When it lapses the bridge stops authenticating and
+fails the way a wrong secret does, though Azure reports it with its own error
+code — so record the date somewhere you will see it.
 
 ### 1.3 Azure Bot resource
 
@@ -346,9 +346,12 @@ configured by annotation, say — so the install output warns instead:
 If nothing upstream is terminating TLS, that warning is the only notice you get
 before the bridge goes quietly deaf.
 
-For `dedicated` and `shared` that output also prints the exact origin to paste
-into `public_base_url` in Part 3, derived from the mode and its TLS setting so
-it matches what is served. Under `external` the chart cannot know it and says so.
+Where the chart knows the hostname — `dedicated` with a `host`, or `shared` —
+that output prints the exact origin to paste into `public_base_url` in Part 3.
+It is always `https`, whatever `tls.enabled` says: that flag governs whether
+this Ingress carries the certificate, not what Microsoft dials, and Graph
+refuses plaintext. Under `external`, or `dedicated` with no host, the public
+name belongs to something in front and the chart says so rather than guess.
 
 ### Checking it with `helm test`
 
@@ -554,9 +557,10 @@ The bridge crashed during startup and was dropped; it is not retried until
 switch-core restarts. Look for `Bridge <id> crashed` in the logs.
 
 On Teams the classic cause was `address already in use` on 3978 — a second Teams
-bridge cannot bind the same port. Registering one is now refused outright, so
-this should only appear for bridges created before that check existed. Delete
-the duplicate, then restart switch-core to bring the survivor up.
+bridge cannot bind the same port. That is now caught before it happens, both at
+registration and again at startup, so instead of a bind error you get a message
+naming the bridge that holds the port. Delete the duplicate and restart
+switch-core to bring the survivor up.
 
 **`Authorization_RequestDenied` from Graph**
 A permission is present but not admin-consented, or you granted a delegated

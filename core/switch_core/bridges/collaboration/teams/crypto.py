@@ -100,9 +100,13 @@ def generate_encryption_keypair() -> tuple[str, str]:
     subject = x509.Name(
         [x509.NameAttribute(NameOID.COMMON_NAME, "switch-teams-bridge")]
     )
-    # Graph rejects a subscription whose certificate is outside its validity
-    # window, so this has to outlive the bridge in practice. Rotation replaces
-    # the pair rather than renewing it.
+    # Anchored in the past rather than at `now` so a clock skewed backwards on
+    # the node that mints it cannot produce a not-yet-valid certificate, and run
+    # long because Graph rejects a subscription whose certificate is outside its
+    # validity window and nothing renews this one. Rotation is replacement:
+    # generate a new pair, which today means re-creating the bridge. That means
+    # there is no expiry prompting anyone to do it — worth revisiting if these
+    # keys ever need a lifecycle of their own.
     not_before = datetime(2000, 1, 1, tzinfo=UTC)
     not_after = not_before + timedelta(days=365 * 100)
     cert = (

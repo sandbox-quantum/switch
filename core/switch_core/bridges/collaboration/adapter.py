@@ -129,7 +129,9 @@ class CollaborationAdapter(ABC):
         self._max_attachment_bytes = max_bytes
 
     @classmethod
-    def prepare_config(cls, connection_config: dict[str, object]) -> dict[str, object]:
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
         """Fill in values the operator should not have to supply, at create time.
 
         Called once, when a bridge is registered — never on start, so a value
@@ -137,6 +139,9 @@ class CollaborationAdapter(ABC):
         adapter that generates key material must do it here rather than in a
         model default, or every restart would mint a fresh one and quietly
         invalidate whatever the last one signed or encrypted.
+
+        Async because generating key material is CPU-bound and this runs on
+        the event loop that carries every live Matrix session.
         """
         return connection_config
 
@@ -148,6 +153,9 @@ class CollaborationAdapter(ABC):
         Returning None — the default — means a bridge of this type can be run
         alongside any number of its own kind, which is true of every adapter
         that only dials out.
+
+        The returned string is quoted verbatim in the refusal shown to whoever
+        registers the second bridge, so it must not embed credential material.
 
         The point is to refuse the second one at registration, with a sentence
         saying what clashed. Without it the collision surfaces as whatever the

@@ -59,15 +59,20 @@ and NOT to the API port:
 Set the bridge's public_base_url to exactly:
 
   {{ $origin }}
+{{- $tlsHere := ternary $teams.ingress.tls.enabled .Values.ingress.tls.enabled (eq $teams.ingress.mode "dedicated") }}
+{{- if not $tlsHere }}
+
+⚠  https, even though TLS is disabled on this Ingress — Graph refuses a
+   plaintext URL, so that host has to be served over HTTPS by something in
+   front (a CDN, or a load balancer configured by annotation). If nothing is,
+   the bridge will create channels and then silently receive nothing.
+{{- end }}
 {{- else }}
 Set the bridge's public_base_url to the public HTTPS origin Microsoft will call
 — scheme and host only, no path.
 
-This chart cannot tell you what that is: TLS is not enabled on this Ingress, so
-something upstream terminates it and owns the public name. Use that name, not
-this Ingress's. Graph refuses a plaintext URL outright, so if nothing upstream
-is terminating TLS, the bridge will create channels and then silently receive
-nothing.
+This Ingress has no host of its own, so the chart cannot tell you: the public
+name belongs to whatever sits in front of it.
 {{- end }}
 
 Then verify from OUTSIDE the cluster, which is the part that usually fails:

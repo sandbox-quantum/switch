@@ -222,7 +222,9 @@ class TeamsAdapter(CollaborationAdapter):
     """
 
     @classmethod
-    def prepare_config(cls, connection_config: dict[str, object]) -> dict[str, object]:
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
         """Mint the clientState secret and the Graph encryption trio.
 
         Here rather than as model defaults because this runs only at
@@ -243,7 +245,9 @@ class TeamsAdapter(CollaborationAdapter):
         )
         if any(prepared.get(k) for k in keys):
             return prepared
-        cert_pem, key_pem = generate_encryption_keypair()
+        # RSA keygen is CPU-bound and switch-core runs every live Matrix
+        # session on this loop, so it does not run on it.
+        cert_pem, key_pem = await asyncio.to_thread(generate_encryption_keypair)
         prepared["encryption_certificate_id"] = f"switch-teams-{secrets.token_hex(8)}"
         prepared["encryption_public_certificate"] = cert_pem
         prepared["encryption_private_key"] = key_pem

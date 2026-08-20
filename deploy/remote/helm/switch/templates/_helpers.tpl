@@ -119,22 +119,24 @@ Other service hostnames (used in env vars and init containers).
 {{- end }}
 
 {{/*
-Public origin of the Teams bridge listener — ONLY when the chart can know it for
-certain, which means this Ingress terminates TLS itself on a known host.
+Public origin of the Teams bridge listener: the value the bridge's
+public_base_url must be set to.
 
-Empty otherwise, and the caller must then tell the operator to supply it rather
-than print a guess. With TLS off, something upstream terminates it (a CDN, a
-reverse proxy, an ALB configured by annotation) and owns the public name; the
-scheme and host here are the *origin* side, not what Microsoft will call.
-Printing `http://<this host>` as the answer would be confidently wrong, and
-Graph refuses a plaintext URL — the exact silent failure the rest of this work
-exists to prevent.
+Always https, whatever `tls.enabled` says. That flag governs whether *this*
+Ingress carries a certificate, not what Microsoft dials — and Graph refuses a
+plaintext URL, so http is never the answer. Deriving the scheme from the flag
+printed `http://<host>` as the value to use whenever TLS terminated upstream,
+which is the documented ALB pattern.
+
+Empty only when the host is genuinely unknown to the chart: a host-less rule
+behind a CDN that owns the public name. The caller must then ask the operator
+rather than print a guess.
 */}}
 {{- define "switch.teamsPublicOrigin" -}}
 {{- $teams := .Values.switchCore.teamsBridge -}}
-{{- if and (eq $teams.ingress.mode "dedicated") $teams.ingress.host $teams.ingress.tls.enabled -}}
+{{- if and (eq $teams.ingress.mode "dedicated") $teams.ingress.host -}}
 {{- printf "https://%s" $teams.ingress.host -}}
-{{- else if and (eq $teams.ingress.mode "shared") .Values.ingress.host .Values.ingress.tls.enabled -}}
+{{- else if and (eq $teams.ingress.mode "shared") .Values.ingress.host -}}
 {{- printf "https://%s" .Values.ingress.host -}}
 {{- end -}}
 {{- end }}

@@ -45,16 +45,16 @@ def _raw_config(**overrides: Any) -> dict[str, Any]:
 # ── Generated values ─────────────────────────────────────────────────────────
 
 
-def test_client_state_is_generated_and_unguessable() -> None:
-    first = TeamsAdapter.prepare_config(_raw_config())
-    second = TeamsAdapter.prepare_config(_raw_config())
+async def test_client_state_is_generated_and_unguessable() -> None:
+    first = await TeamsAdapter.prepare_config(_raw_config())
+    second = await TeamsAdapter.prepare_config(_raw_config())
 
     assert len(str(first["client_state"])) >= 32
     assert first["client_state"] != second["client_state"]
 
 
-def test_client_state_supplied_by_caller_wins() -> None:
-    prepared = TeamsAdapter.prepare_config(_raw_config(client_state="mine"))
+async def test_client_state_supplied_by_caller_wins() -> None:
+    prepared = await TeamsAdapter.prepare_config(_raw_config(client_state="mine"))
 
     assert prepared["client_state"] == "mine"
 
@@ -65,8 +65,8 @@ def test_a_config_with_no_client_state_is_rejected_not_filled_in() -> None:
         TeamsConnectionConfig.model_validate(_raw_config())
 
 
-def test_prepare_config_generates_a_usable_encryption_trio() -> None:
-    prepared = TeamsAdapter.prepare_config(_raw_config())
+async def test_prepare_config_generates_a_usable_encryption_trio() -> None:
+    prepared = await TeamsAdapter.prepare_config(_raw_config())
 
     assert prepared["encryption_certificate_id"]
     # The certificate has to survive the exact round trip the subscription path
@@ -86,9 +86,9 @@ def test_generated_certificate_matches_its_private_key() -> None:
     assert cert.public_key().public_numbers() == key.public_key().public_numbers()
 
 
-def test_prepare_config_leaves_a_supplied_trio_alone() -> None:
+async def test_prepare_config_leaves_a_supplied_trio_alone() -> None:
     cert_pem, key_pem = generate_encryption_keypair()
-    prepared = TeamsAdapter.prepare_config(
+    prepared = await TeamsAdapter.prepare_config(
         _raw_config(
             encryption_certificate_id="mine",
             encryption_public_certificate=cert_pem,
@@ -100,21 +100,21 @@ def test_prepare_config_leaves_a_supplied_trio_alone() -> None:
     assert prepared["encryption_public_certificate"] == cert_pem
 
 
-def test_prepare_config_does_not_mutate_its_argument() -> None:
+async def test_prepare_config_does_not_mutate_its_argument() -> None:
     raw = _raw_config()
-    TeamsAdapter.prepare_config(raw)
+    await TeamsAdapter.prepare_config(raw)
 
     assert "encryption_private_key" not in raw
 
 
-def test_validating_a_stored_config_never_regenerates_key_material() -> None:
+async def test_validating_a_stored_config_never_regenerates_key_material() -> None:
     """The pair is minted once, at registration.
 
     Regenerating on every validate would mean a fresh certificate each restart
     while Graph kept encrypting to the previous one, and capture would fail to
     decrypt with nothing to point at.
     """
-    stored = TeamsAdapter.prepare_config(_raw_config())
+    stored = await TeamsAdapter.prepare_config(_raw_config())
 
     first = TeamsConnectionConfig.model_validate(stored)
     second = TeamsConnectionConfig.model_validate(stored)
@@ -186,7 +186,9 @@ def fake_http(monkeypatch: pytest.MonkeyPatch) -> Any:
 async def test_verify_credentials_requests_both_scopes(fake_http: Any) -> None:
     client = fake_http(200, {"access_token": "tok", "expires_in": 3600})
 
-    await TeamsAdapter.verify_credentials(TeamsAdapter.prepare_config(_raw_config()))
+    await TeamsAdapter.verify_credentials(
+        await TeamsAdapter.prepare_config(_raw_config())
+    )
 
     assert client.calls == [
         "https://graph.microsoft.com/.default",
@@ -254,7 +256,9 @@ class _RecordingAdapter(CollaborationAdapter):
     fail_verification = False
 
     @classmethod
-    def prepare_config(cls, connection_config: dict[str, object]) -> dict[str, object]:
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
         cls.events.append("prepare")
         return {**connection_config, "generated": "yes"}
 
@@ -362,7 +366,7 @@ async def test_register_verifies_the_prepared_config_not_the_raw_request() -> No
 # ── Refusing a second Teams bridge ───────────────────────────────────────────
 
 
-def test_exclusive_resource_is_the_listener_port() -> None:
+async def test_exclusive_resource_is_the_listener_port() -> None:
     assert TeamsAdapter.exclusive_resource(_raw_config(client_state="s")) == "tcp/3978"
     assert (
         TeamsAdapter.exclusive_resource(_raw_config(client_state="s", listen_port=3979))
@@ -398,18 +402,20 @@ def _service_with_existing(existing: list[Any]) -> CollaborationBridgeLifecycleS
     return service
 
 
-def _stored_bridge(**overrides: Any) -> Any:
+async def _stored_bridge(**overrides: Any) -> Any:
     bridge = MagicMock()
     bridge.id = overrides.pop("id", "existing-id")
     bridge.type = overrides.pop("type", "teams")
     bridge.display_name = overrides.pop("display_name", "SandboxAQ Teams")
-    bridge.connection_config = TeamsAdapter.prepare_config(_raw_config(**overrides))
+    bridge.connection_config = await TeamsAdapter.prepare_config(
+        _raw_config(**overrides)
+    )
     return bridge
 
 
 async def test_second_teams_bridge_on_the_same_port_is_refused() -> None:
     """The failure this replaces was a bind error in a background task."""
-    service = _service_with_existing([_stored_bridge()])
+    service = _service_with_existing([await _stored_bridge()])
 
     with pytest.raises(ValueError) as excinfo:
         await service.register(
@@ -432,7 +438,7 @@ async def test_a_second_bridge_on_its_own_port_is_allowed_through(
     Getting past this check is not the same as working — the chart publishes one
     Teams port — but that is the operator's deliberate choice to make.
     """
-    service = _service_with_existing([_stored_bridge()])
+    service = _service_with_existing([await _stored_bridge()])
     monkeypatch.setattr(
         TeamsAdapter, "verify_credentials", AsyncMock(return_value=None)
     )
@@ -452,7 +458,7 @@ async def test_a_second_bridge_on_its_own_port_is_allowed_through(
 async def test_a_non_teams_bridge_is_not_blocked_by_a_teams_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    slack = _stored_bridge(id="slack-id", type="slack")
+    slack = await _stored_bridge(id="slack-id", type="slack")
     slack.connection_config = {"bot_token": "x"}
     service = _service_with_existing([slack])
     monkeypatch.setattr(
@@ -508,7 +514,9 @@ async def test_a_200_that_is_not_json_is_a_credential_error(
         await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
 
 
-async def test_concurrent_registration_cannot_take_the_same_port_twice() -> None:
+async def test_concurrent_registration_cannot_take_the_same_port_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Two bridges registered at once must not both pass the exclusivity check.
 
     The check reads the stored bridges and the winner is not written until
@@ -546,7 +554,9 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice() -> None
         config=MagicMock(),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
-    TeamsAdapter.verify_credentials = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        TeamsAdapter, "verify_credentials", AsyncMock(return_value=None)
+    )
 
     client = MagicMock()
     client.id = "client-id"
@@ -578,3 +588,42 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice() -> None
     assert len(refused) == 1, f"expected exactly one refusal, got {results}"
     assert "tcp/3978" in str(refused[0])
     assert len(stored) == 1
+
+
+async def test_start_refuses_a_second_bridge_already_holding_the_port() -> None:
+    """The startup guard, which covers rows that predate the registration check.
+
+    Registration cannot create a colliding pair any more, but two already exist
+    on some instances, and `start_all` walks straight into them.
+    """
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+
+    stored = await _stored_bridge(id="second-id")
+    store = MagicMock()
+    store.get = AsyncMock(return_value=stored)
+
+    service = CollaborationBridgeLifecycleService(
+        bridge_store=store,
+        external_user_store=MagicMock(),
+        bridge_message_map_store=MagicMock(),
+        room_store=MagicMock(),
+        agent_store=MagicMock(),
+        client_store=MagicMock(),
+        client_lifecycle=MagicMock(),
+        room_service=MagicMock(),
+        matrix_admin=MagicMock(),
+        session_factory=MagicMock(return_value=session),
+        config=MagicMock(),
+    )
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+    # A bridge already running and holding the port.
+    service._held_resources["first-id"] = "tcp/3978"
+
+    with pytest.raises(ValueError) as excinfo:
+        await service.start("second-id")
+
+    message = str(excinfo.value)
+    assert "tcp/3978" in message
+    assert "first-id" in message
