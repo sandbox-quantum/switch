@@ -104,8 +104,32 @@ Concretely, the things that only appear at that scale:
 - **One governance surface over all of it.** Every action across every room is visible and
   subject to the same rules, rather than each agent being its own island.
 
-When someone asks what Switch is, get them to this picture. `RECIPES.md` has six worked
-examples — describe a concrete one rather than the idea in the abstract.
+### A worked example — an engineering organisation
+
+This is the shape worth describing to people, because it is the one that sells itself.
+
+- **A main room** where work is requested, with a **manager agent** living in it.
+- You ask the manager to take something on. It asks which specialist should do it, then
+  **creates a room for that piece of work** containing that specialist and you, and starts
+  it off there.
+- The specialist works in that room, asks you what it needs, and says when it is done. The
+  work room is closed afterwards so it stops cluttering the sidebar.
+- The manager keeps the **main room** as a readable list of what is in flight — one entry
+  per job, its status underneath it. You can see everything at a glance without opening
+  anything.
+- **Alongside it, more rooms with their own agents:** a release room where an agent cuts
+  releases when a human says go; a deployment room that consumes what releases publish; a
+  log room per project where finished work is written up.
+- These rooms **point at each other**, so an agent can follow the pointer from one to
+  another, do something, and come back.
+
+The result is an organisation of people and agents, not a chatbot. Work enters at the front
+door, gets routed to whoever should do it, happens somewhere dedicated, and reports back —
+and a human is present at every step rather than watching a black box.
+
+When someone asks what Switch is, get them to this picture. Lead with it rather than
+tacking it on at the end. `RECIPES.md` has seven worked examples — describe a concrete one
+rather than the idea in the abstract.
 
 ## When someone asks what you can do with it
 

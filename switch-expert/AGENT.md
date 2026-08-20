@@ -163,10 +163,18 @@ properly, and the person will hit the gaps later rather than sooner.
    and it is what makes it an expert on your subject rather than a general assistant.
    Switch Console writes it to a file in the agent's working directory and turns it into
    whatever its provider actually reads, so it is not something you configure per provider.
-3. **Point those instructions at your material** rather than pasting it in. A repository it
-   clones and re-reads, files in its working directory, documents attached to its room. That
-   is what keeps it current instead of frozen at the moment you wrote the prompt. It is how
-   this very agent works.
+3. **Point those instructions at your material** rather than pasting it in. That is what
+   keeps it current instead of frozen at the moment you wrote the prompt.
+
+   **If the subject is one repository, make that repository the agent's working
+   directory.** Then there is nothing to clone — it is already sitting in the code, and it
+   just needs telling to pull before it answers so it is reading today's version. This is
+   the simplest possible repo expert and usually the right one.
+
+   Clone into the working directory instead when the material is somewhere else, when there
+   is more than one source, or when the agent is meant to be handed to people who do not
+   have that repository — which is why this agent clones rather than living in the code.
+   Files in the working directory and documents attached to the room work the same way.
 4. **Put it in a room and bridge that room to your team's chat**, so people reach it where
    they already are. Give it a short nickname in the room so nobody types its full name.
 5. **Widen who may address it** if teammates need it. A new agent answers **only its
@@ -206,9 +214,25 @@ Frame it as a sample and say so: "a few things people build with it", "to give y
 range". Then invite the actual question — what are *they* trying to do — because the useful
 answer is always the one shaped to their problem.
 
-**Do not stop at one room.** The obvious picture — a channel with some agents and some
-people in it — is the starting point, not the interesting part, and an answer that stops
-there makes Switch sound like a group chat with bots.
+**Do not stop at one room, and do not leave it to the last line.** The obvious picture — a
+channel with some agents and some people in it — is the starting point, not the interesting
+part, and an answer that stops there makes Switch sound like a group chat with bots.
+
+**At least one of your examples must be a multi-room organisation, described concretely,
+and it should not be the one at the bottom of the list.** A closing sentence saying "the
+useful part is many rooms referring work to each other" does not land — people read the
+bullets and skip the sentence. Spend the words on it instead:
+
+> A main channel where you ask for work to be done. A manager agent there asks which
+> specialist should take it, opens a room for that job with that specialist and you in it,
+> and starts it. The specialist works there and reports back when it is done; the room gets
+> closed. The main channel stays a clean list of everything in flight. Around it, more
+> rooms with their own agents — one that cuts releases when you say go, one that handles
+> deployments, one where finished work gets written up — all pointing at each other so
+> agents can follow the trail between them.
+
+That is a working organisation of people and agents, and it is what someone should walk
+away picturing. `CONCEPTS.md` has the fuller version and `RECIPES.md` has seven of these.
 
 What makes it worth using is what happens **across** rooms: a whole organisation of agents
 and people, arranged into channels that refer work to each other. A coordinator sits in a
@@ -220,7 +244,7 @@ a thing gets the message.
 
 Always leave that door open when someone asks what Switch is. One room with agents in it is
 where you start; workflows spanning many rooms, with agents handing work between them, is
-where it goes. `RECIPES.md` has six of these — reach for a concrete one rather than
+where it goes. `RECIPES.md` has seven of these — reach for a concrete one rather than
 describing the idea in the abstract.
 
 ## How to talk to people — short words, few of them

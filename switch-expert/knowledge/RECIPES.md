@@ -2,7 +2,7 @@
 
 _Last checked against: 2026-08-20._
 
-Six setups that have actually been built and run, described generically. Find the nearest
+Seven setups that have actually been built and run, described generically. Find the nearest
 one to what someone is asking for and adapt it — that is almost always better than starting
 from a blank page.
 
@@ -10,7 +10,42 @@ Each recipe names the patterns it uses; read those in `PATTERNS.md` before propo
 
 ---
 
-## 1. Request hub with a room per piece of work
+## 1. An expert on one repository
+
+**Use when** someone wants an agent that knows a codebase, a product or a project that has
+a repository behind it. This is the most common request by a distance.
+
+**Shape.** One agent, one room. **Make the repository itself the agent's working
+directory** — then there is nothing to clone or copy, it is already sitting in the code.
+Its instructions tell it what the project is, who asks about it, and how to answer.
+
+**The one rule that makes it work:** it must **pull before it answers** and read the actual
+files, rather than answering from what it absorbed once. A checkout lies, and an expert
+that has stopped reading is just a confident memory of last month.
+
+**Where things live.** The brief goes in the agent's instructions. Anything specific to the
+team using it — who to escalate to, which branch is the real one, what is out of scope —
+goes in the room's instructions, so the same brief works for another team.
+
+**Say what it does not know.** Give it an explicit instruction to say so plainly and offer
+to go and look, rather than producing something plausible. Someone asking about a codebase
+they do not know cannot tell a good answer from a confident wrong one.
+
+**Variations:**
+- **More than one source** — docs in another repository, a wiki, a folder of specs: give it
+  a working directory of its own and have it clone or read each source from there.
+- **Meant to be handed around** — if people who do not have the repository will run their
+  own copy, ship the brief and have it clone. That is how this agent works.
+- **Should it be able to write?** Decide deliberately. An agent whose working directory is
+  your repository can edit it. If you only want answers, say so in the instructions; if you
+  want changes, have it work on a branch and open a pull request rather than committing.
+
+**Patterns:** `knowledge/procedure-vs-bindings` · `verify/fetch-before-citing-source` ·
+`verify/an-empty-result-proves-nothing` · `run/idle-until-addressed`
+
+---
+
+## 2. Request hub with a room per piece of work
 
 **Use when** a team has a stream of discrete work items and wants them picked up, tracked
 and closed without losing track of what is in flight.
@@ -44,7 +79,7 @@ second, contextless copy of it.
 
 ---
 
-## 2. Guided one-to-one help
+## 3. Guided one-to-one help
 
 **Use when** people need walking through something individually and repeatedly — getting
 set up, learning a tool, a support queue.
@@ -81,7 +116,7 @@ them.
 
 ---
 
-## 3. A gated, audited operation in one room
+## 4. A gated, audited operation in one room
 
 **Use when** something has a blast radius and needs a human to say go: releases, deploys,
 production changes.
@@ -108,7 +143,7 @@ match the version file. Pull first, verify the preconditions, then act.
 
 ---
 
-## 4. A tracker that accumulates institutional memory
+## 5. A tracker that accumulates institutional memory
 
 **Use when** a project's decisions and history are scattered across chat and meeting notes
 and nobody can reconstruct why something was decided.
@@ -137,7 +172,7 @@ silently caps what the agent can see.
 
 ---
 
-## 5. A recurring digest or newsletter
+## 6. A recurring digest or newsletter
 
 **Use when** someone hand-writes a regular summary from scattered sources.
 
@@ -159,7 +194,7 @@ so corrections to tone survive into the next edition instead of being re-explain
 
 ---
 
-## 6. A heavy job run on a remote machine
+## 7. A heavy job run on a remote machine
 
 **Use when** the work needs a GPU, a large dataset, or an environment that already exists on
 some other box.
