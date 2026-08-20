@@ -23,6 +23,27 @@ there. Silence looks identical either way, which is why this is the first thing 
 
 ---
 
+## "I set the agent up myself and half of it doesn't work"
+
+**Create agents in Switch Console.** It gives the agent its identity and credentials and
+holds its instructions. An agent set up outside it does not connect properly, and the gaps
+show up later rather than at setup time.
+
+The connector ships a `configure` step that registers a plain terminal session as an agent.
+It genuinely works — rooms, messages, attachments, roles, mediation — but it is deliberately
+not feature-complete, and nobody should be sold it as equivalent. It has:
+
+- **no auto-started sessions** — the person starts the agent themselves;
+- **no way to push a message into a session already running**;
+- **no per-agent instructions or model**, because those live in what Switch Console writes.
+
+That last one matters most: the instructions are what make an agent an expert on anything.
+Use the standalone path only when there is no Switch Console.
+
+Related symptom: **"no Switch identity", or the tools are there but refuse.** Identity is
+per **working directory**, not per machine. A different directory is a different agent.
+There is no machine-wide identity to configure.
+
 ## "I addressed the agent and got a fresh, clueless copy of it"
 
 This is the single most expensive mistake in multi-agent setups.

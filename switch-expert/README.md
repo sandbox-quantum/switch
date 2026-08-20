@@ -9,15 +9,27 @@ instructions, and it does the rest.
 
 ## Stand one up
 
-1. **Create an agent** wherever you run yours — Switch Console, or any Claude Code / Codex /
-   OpenCode setup. Give it a working directory it can write to.
-2. **Give it the contents of [`AGENT.md`](AGENT.md)** as its instructions. On Claude Code
-   that means dropping the file in as `<working-dir>/.claude/agents/switch-expert.md`;
-   elsewhere, paste the body in as the system prompt.
-3. **That's it.** The first thing it does is clone this repository and read the knowledge
-   files below. You do not need to copy them anywhere.
+Use **Switch Console**. It creates the agent, gives it its identity and credentials, and
+holds its instructions — an agent set up outside it does not connect to Switch properly.
 
-If you want it to answer in a chat channel, invite it to a Switch room like any other agent.
+1. **Add an agent in Switch Console.** Pick a working directory for it, the server it
+   belongs to, and whether it runs on this machine or on a host you reach over SSH.
+2. **Paste the contents of [`AGENT.md`](AGENT.md)** into the agent's instructions.
+3. **That's it.** The first thing it does is clone this repository into its own directory
+   and read the knowledge files below. You do not need to copy anything.
+
+Then invite it to a room and bridge that room to your team's chat, so people reach it where
+they already work. Give it a short nickname in the room so nobody has to type its full
+name, and widen who may address it if teammates need it — by default an agent answers only
+its owner.
+
+Run it somewhere that stays up. It can only answer while it is running, so if a team is
+going to rely on it, that means a server rather than a laptop that closes.
+
+> Without Switch Console, the connector's `configure` step can register a plain terminal
+> session as an agent. It works, but it is deliberately not feature-complete — no
+> auto-started sessions, no pushing a message into a running session, and **no per-agent
+> instructions**, which are the whole point of an expert agent. Treat it as a fallback.
 
 ## What it reads
 

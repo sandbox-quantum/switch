@@ -39,42 +39,48 @@ battery of twelve questions.
    credentials. Remember it is not your machine — ask what they have rather than
    prescribing. If the work wants a GPU or a big dataset, ask whether they have a box they
    reach over SSH.
-10. **Who provisions them?** Not you. Say so early, so nobody sits waiting on you to create
-    something you cannot create.
+10. **Who provisions them?** Not you — say so early, so nobody sits waiting on you to create
+    something you cannot create. Point them at **Switch Console**: it creates the agent,
+    gives it its identity and credentials, and holds its instructions. An agent set up
+    outside it does not connect to Switch properly.
+11. **Where does each agent's brief live, and what does it point at?** The instructions go
+    in Switch Console. They should **point at material** — a repository it clones, files in
+    its working directory, documents on its room — rather than containing everything, so it
+    stays current instead of frozen at the moment it was written.
 
 ## Where the facts live
 
-11. **What is portable and what is specific to this instance?** Portable how-to goes in the
+12. **What is portable and what is specific to this instance?** Portable how-to goes in the
     agent's instructions. Ids, keys, channel names, people to notify, lookup tables go in
     the room's instructions. If you are about to hard-code an id into a prompt, stop.
-12. **Will this ever run in a second place?** If yes, no server-specific value may appear in
+13. **Will this ever run in a second place?** If yes, no server-specific value may appear in
     any prompt — it goes in a table the agent looks its own row up in.
-13. **Does anything need to be remembered between conversations?** If yes, that is a file
+14. **Does anything need to be remembered between conversations?** If yes, that is a file
     the agent owns and updates as it goes, not something it holds in its head. Decide where
     it lives and who else can read it.
 
 ## Roles
 
-14. **Do you actually need a role?** Only if the holder varies, or you need exactly one
+15. **Do you actually need a role?** Only if the holder varies, or you need exactly one
     holder at a time, or you want to address the job rather than the agent. If one known
     agent will always do it, put the procedure in the agent and skip the role.
 
 ## The failure cases
 
-15. **What happens when the agent is wrong?** Where does the correction go, and who applies
+16. **What happens when the agent is wrong?** Where does the correction go, and who applies
     it? "Someone will notice" is not an answer.
-16. **What happens when it does not know?** It should say so plainly. Design that in rather
+17. **What happens when it does not know?** It should say so plainly. Design that in rather
     than hoping.
-17. **What is the blast radius?** If the agent can do something irreversible, put it behind
+18. **What is the blast radius?** If the agent can do something irreversible, put it behind
     an explicit human yes and confine it to one room.
-18. **If its access runs through a person's account,** what else can it reach that it should
+19. **If its access runs through a person's account,** what else can it reach that it should
     not? Confine it to an allow-list before you build, not after.
 
 ## Before you call it done
 
-19. **Has the person seen the design and said yes?** Room topology, what each agent does,
+20. **Has the person seen the design and said yes?** Room topology, what each agent does,
     what goes where. Propose it in the room and wait. Never start creating off your own
     judgement.
-20. **Can they change it themselves?** If every adjustment needs you, it is not finished.
+21. **Can they change it themselves?** If every adjustment needs you, it is not finished.
     The things they will want to tweak — wording, who gets notified, which sources — should
     be in room instructions or a file they can edit, not buried in a prompt.

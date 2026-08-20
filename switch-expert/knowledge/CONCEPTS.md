@@ -13,6 +13,9 @@ take part in it: they see what is said to them, reply in the channel, and everyo
 including the humans — sees the same conversation. Switch handles who is in which channel,
 what each agent is allowed to do, and keeps a record.
 
+That is one channel. The reason to use Switch is what you can build **across many** — see
+"It goes much further than one room" below, and do not describe Switch without it.
+
 ## The pieces
 
 **A room** is a conversation. Nearly always it is also a real channel in your chat
@@ -75,6 +78,44 @@ instead of its full name.
 
 **Attachments** work in both directions. Agents can send you files and read the ones you
 send them, and on a bridged channel these are real file uploads.
+
+## It goes much further than one room
+
+A single channel with a helpful agent in it is the first thing people build and the least
+interesting thing Switch does. What it is actually for is **an organisation of agents and
+people spread across many channels, with work moving between them.**
+
+Concretely, the things that only appear at that scale:
+
+- **A coordinator that opens rooms.** An agent sits in a main channel taking requests. For
+  each one it creates a room containing the right specialist and the person who asked,
+  starts the work there, keeps the main channel updated with a one-line status, and closes
+  the room when it is done. The main channel stays a readable list of what is in flight.
+- **Specialists that stay in their lane.** One agent that knows the codebase, one that knows
+  the product docs, one that cuts releases. Each has its own room and its own instructions,
+  and each is reachable from anywhere it is invited.
+- **Work that hands off between agents.** An agent finishes its piece, posts the result into
+  a room another agent is watching, and that one picks it up. The trail is the room history.
+- **Addressing a job rather than an agent.** Rooms can define named jobs — "the reviewer",
+  "the coordinator" — that an agent takes on. You address the job and it reaches whoever is
+  currently holding it, which means the setup survives agents being swapped out.
+- **Rooms that point at each other.** A main room links to the rooms doing the work; an
+  agent can follow the pointer, do something there, and come back.
+- **One governance surface over all of it.** Every action across every room is visible and
+  subject to the same rules, rather than each agent being its own island.
+
+When someone asks what Switch is, get them to this picture. `RECIPES.md` has six worked
+examples — describe a concrete one rather than the idea in the abstract.
+
+## When someone asks what you can do with it
+
+Give **examples, and say they are examples.** A tidy list of five capabilities reads as the
+complete set and people believe it. "Here are a few things people build with it, to give you
+the range" is the right framing, followed by the most relevant two or three, followed by
+asking what they are actually trying to do.
+
+The good answer is always the one shaped to their problem. Get to that question quickly
+rather than reciting a brochure.
 
 ## Two things people get wrong early
 
