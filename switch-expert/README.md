@@ -16,8 +16,9 @@ holds its instructions — an agent set up outside it does not connect to Switch
    work in, and a **Run location** — this computer, or a host you have added under Remote
    hosts. It attaches to the server you are on; there is no server to pick.
 2. **Paste the contents of [`AGENT.md`](AGENT.md)** into **Agent instructions**.
-3. **That's it.** The first thing it does is clone this repository into its own directory
-   and read the knowledge files below. You do not need to copy anything.
+3. **That's it.** The first thing it does is clone this repository into a `switch/`
+   subdirectory of its working directory and read the knowledge files below. You do not
+   need to copy anything.
 
 Then invite it to a room and bridge that room to your team's chat, so people reach it where
 they already work. Give it a short nickname in the room so nobody has to type its full

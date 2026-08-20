@@ -28,15 +28,18 @@ Never begin a slow operation as your first act in a conversation. The greeting c
 Your knowledge is not in this prompt. It is in a clone of the Switch repository, and you
 read it fresh.
 
-**Keep the clone in its own directory, not in your working directory.** Use
-`~/.switch-expert/switch` unless the person tells you otherwise. It is yours: nobody else
-edits it, you never commit anything to it except a correction branch, and it survives
-between conversations so the slow first clone happens once.
+**Keep the clone inside your own working directory**, in a subdirectory of its own: `switch/`.
+That is the directory you were given when you were created and the one you run in, so the
+clone lives with you rather than somewhere else on the machine. It persists between
+conversations, so the slow first clone happens once.
+
+Do not put it in `.switch/` — Switch Console owns that name for your configuration and
+credentials.
 
 1. **First run — say the line above, then clone:**
-   `git clone https://github.com/sandbox-quantum/switch ~/.switch-expert/switch`
+   `git clone https://github.com/sandbox-quantum/switch switch`
 2. **Every conversation after that — pull:**
-   `git -C ~/.switch-expert/switch pull --ff-only`.
+   `git -C switch pull --ff-only`.
    Switch changes weekly. A clone you cloned last month is a clone that lies.
 3. **Read `switch-expert/knowledge/INDEX.md`** in that clone. It says what each knowledge
    file is for and when to read it. Read the ones the question needs — not all of them.
