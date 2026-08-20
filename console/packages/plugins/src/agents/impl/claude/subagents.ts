@@ -45,16 +45,24 @@ const SWITCH_RULES: readonly string[] = RECOGNISED_SWITCH_CONNECTOR_TOOL_RULES;
 
 const MD_SUFFIX = '.md';
 
-/** The `prompt` attribute is the markdown body (system prompt), not frontmatter. */
-const BODY_KEY = 'prompt';
+/**
+ * The markdown body is the subagent's system prompt, and it is written from
+ * the agent's provider-agnostic `instructions` (CHOO-2228) rather than from a
+ * Claude-specific field. Every provider renders that one attribute into
+ * whatever it reads — for Claude Code, this body; for Codex, its developer
+ * instructions — so the key here is the canonical one, not `prompt`.
+ */
+const BODY_KEY = 'instructions';
 const LIST_KEYS = new Set(['tools', 'disallowedTools']);
 const NUMBER_KEYS = new Set(['maxTurns']);
 const BOOLEAN_KEYS = new Set(['background']);
 
 /** Attribute fields Claude Code subagents support, in form display order. The
- * field keys match the `.claude/agents/<name>.md` frontmatter keys verbatim
- * (`prompt` being the body). hooks / mcpServers / skills are intentionally
- * omitted — they are nested/block-list YAML, edit the `.md` directly for those. */
+ * field keys match the `.claude/agents/<name>.md` frontmatter keys verbatim.
+ * The system prompt is not among them: it is the agent's `instructions`, a
+ * main attribute alongside name and description rather than an advanced
+ * setting. hooks / mcpServers / skills are intentionally omitted — they are
+ * nested/block-list YAML, edit the `.md` directly for those. */
 const CLAUDE_SUBAGENT_FIELDS: RepoAgentField[] = [
   {
     key: 'name',
@@ -72,13 +80,6 @@ const CLAUDE_SUBAGENT_FIELDS: RepoAgentField[] = [
     required: true,
     placeholder: 'Reviews diffs for correctness and style.',
     help: 'When the parent should delegate to this subagent.',
-  },
-  {
-    key: 'prompt',
-    label: 'System prompt',
-    type: 'textarea',
-    placeholder: 'Defaults to the description. Add instructions to specialise the subagent.',
-    help: "The subagent's system prompt (the markdown body).",
   },
   {
     key: 'model',
@@ -304,6 +305,10 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
   }
 
   lines.push('---');
+  // An agent with no instructions still needs a body — Claude Code reads it as
+  // the system prompt — so the description stands in, as it always has. The
+  // read-back below undoes exactly this, so the substitution never comes back
+  // as instructions the user never wrote.
   const body = toScalar(attributes[BODY_KEY]) || description;
   return body.length > 0 ? `${lines.join('\n')}\n\n${body}\n` : `${lines.join('\n')}\n`;
 }
@@ -476,6 +481,14 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     return CLAUDE_SUBAGENT_FIELDS;
   },
 
+  renderDefinition(attributes: RepoAgentAttributes): string {
+    return serializeDefinition(attributes);
+  },
+
+  definitionPath(name: string): string {
+    return definitionRelPath(name);
+  },
+
   async writeDefinition(workspaceFs, attributes: RepoAgentAttributes): Promise<void> {
     const name = toScalar(attributes.name);
     await workspaceFs.write(definitionRelPath(name), serializeDefinition(attributes));
@@ -486,10 +499,16 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     if (content === null) return null;
     const fields = parseFrontmatterFields(content);
 
+    const description = fields.description ?? '';
+    // A body that is just the description is the stand-in `serializeDefinition`
+    // writes for an agent with no instructions of its own. Reading it back as
+    // instructions would invent a prompt on the round trip, and then pin it.
+    const body = extractBody(content);
+
     const attributes: RepoAgentAttributes = {
       name: fields.name ?? name,
-      description: fields.description ?? '',
-      [BODY_KEY]: extractBody(content),
+      description,
+      [BODY_KEY]: body === description ? '' : body,
     };
     for (const key of FRONTMATTER_FIELD_KEYS) {
       const raw = fields[key.toLowerCase()];

@@ -21,7 +21,7 @@ function configOf(profile: NonNullable<ReturnType<typeof opencodeLaunchProfile>>
 }
 
 describe('opencodeLaunchProfileFields', () => {
-  it('declares exactly the keys the config builder consumes', () => {
+  it('declares exactly the advanced keys the config builder consumes', () => {
     expect(opencodeLaunchProfileFields().map((field) => field.key)).toEqual([
       'model',
       'variant',
@@ -30,8 +30,13 @@ describe('opencodeLaunchProfileFields', () => {
       'maxSteps',
       'webSearch',
       'smallModel',
-      'instructions',
     ]);
+  });
+
+  it('does not offer instructions as an advanced setting', () => {
+    // Instructions are a main attribute of the agent, collected once for every
+    // provider. Offering them here too would be two boxes for one value.
+    expect(opencodeLaunchProfileFields().map((field) => field.key)).not.toContain('instructions');
   });
 
   it('offers no Codex-only setting, which OpenCode has no key for', () => {

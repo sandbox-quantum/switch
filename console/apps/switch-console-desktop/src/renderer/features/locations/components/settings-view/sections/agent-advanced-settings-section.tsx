@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   advancedFields,
   attributesFromForm,
@@ -16,6 +16,7 @@ import {
   fieldWithCatalogue,
   type ModelCatalogueResult,
 } from '@renderer/features/locations/components/agent-model-catalogue';
+import { useAgentEdit } from '@renderer/features/locations/components/main-panel/agent-edits';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -147,6 +148,12 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     resetSave();
   }, [agentId, resetSave]);
 
+  const saveMutation = save.mutateAsync;
+  const onSave = useCallback(async () => {
+    await saveMutation();
+  }, [saveMutation]);
+  const onRevert = useCallback(() => setForm(savedForm), [savedForm]);
+
   const [restartFailed, setRestartFailed] = useState<string[]>([]);
   const restart = useMutation({
     mutationFn: async () => {
@@ -184,14 +191,26 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     },
   });
 
-  if (!editable || fields.length === 0) return null;
-
   const dirty =
+    editable &&
+    fields.length > 0 &&
     JSON.stringify(attributesFromForm(fields, form)) !==
-    JSON.stringify(attributesFromForm(fields, savedForm));
+      JSON.stringify(attributesFromForm(fields, savedForm));
 
   const setField = (key: string, value: FormValue) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  // Saved from the page's bar rather than a button here: an edit to these and an
+  // edit to the instructions above are one set of pending changes to the reader.
+  useAgentEdit({
+    id: 'agent-advanced-config',
+    order: 1,
+    dirty,
+    save: onSave,
+    revert: onRevert,
+  });
+
+  if (!editable || fields.length === 0) return null;
 
   // A launch profile is read once, when the session starts, so a change cannot
   // reach a running session without one — and a resume carries the new profile,
@@ -212,8 +231,8 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
       />
       <div className={cn('flex flex-col gap-4 pt-3', !open && 'hidden')}>
         <FieldDescription className="text-foreground-muted">
-          The agent&apos;s model, reasoning effort, tools, and system prompt. The agent name is
-          fixed.
+          The agent&apos;s model, reasoning effort and tools. Its instructions are above, and its
+          name is fixed.
         </FieldDescription>
         {fields.map((field) => {
           const catalogueState = fieldCatalogueState(field, form, catalogue);
@@ -246,17 +265,6 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
             </Field>
           );
         })}
-        <div className="flex justify-end">
-          <Button
-            type="button"
-            size="sm"
-            disabled={!dirty || save.isPending}
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? 'Saving...' : 'Save'}
-          </Button>
-        </div>
-
         {showStaleNotice && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
             <p className="text-xs text-foreground-muted">

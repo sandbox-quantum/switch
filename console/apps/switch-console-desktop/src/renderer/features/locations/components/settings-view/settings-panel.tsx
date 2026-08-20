@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
+import { AgentInstructionsSection } from '@renderer/features/locations/components/main-panel/agent-instructions-section';
 import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { AddressingPolicySettingsSection } from '@renderer/features/locations/components/settings-view/sections/addressing-policy-settings-section';
 import { AgentAdvancedSettingsSection } from '@renderer/features/locations/components/settings-view/sections/agent-advanced-settings-section';
@@ -40,6 +41,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
 
   return (
     <div className="flex flex-col gap-10">
+      <AgentInstructionsSection locationId={locationId} agentId={agentId} />
       <section className="flex flex-col gap-6">
         <SectionLabel>General</SectionLabel>
         <AutoSessionSettingsSection locationId={locationId} agentId={agentId} />

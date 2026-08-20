@@ -227,6 +227,12 @@ export const APP_SHORTCUTS = defineShortcuts({
     description: 'Confirm the current dialog action',
     category: 'Navigation',
   },
+  saveChanges: {
+    defaultHotkey: 'Mod+S',
+    label: 'Save Changes',
+    description: 'Save the unsaved edits on the current page',
+    category: 'Navigation',
+  },
   navigateBack: {
     defaultHotkey: 'Mod+[',
     label: 'Go Back',

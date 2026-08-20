@@ -93,6 +93,13 @@ const DENY = 'deny';
  */
 type OpencodeSetting = {
   field: RepoAgentField;
+  /**
+   * True for a setting that is a main attribute of the agent rather than an
+   * advanced one. It is still rendered into the profile — OpenCode only reads
+   * its own files — but it is collected once, provider-agnostically, so it is
+   * not offered again in this provider's advanced form.
+   */
+  topLevel?: boolean;
   path?: string;
   scope?: 'agent' | 'config';
   toValue?: (raw: string) => unknown;
@@ -208,12 +215,13 @@ const OPENCODE_SETTINGS: OpencodeSetting[] = [
       placeholder: "Extra guidance for this agent, e.g. 'You are a careful reviewer…'",
       help: "Added to OpenCode's own instructions, the way an AGENTS.md is. Blank keeps OpenCode defaults.",
     },
+    topLevel: true,
   },
 ];
 
 /** The fields the "advanced configuration" form renders for an OpenCode agent. */
 export function opencodeLaunchProfileFields(): RepoAgentField[] {
-  return OPENCODE_SETTINGS.map((setting) => setting.field);
+  return OPENCODE_SETTINGS.filter((setting) => !setting.topLevel).map((setting) => setting.field);
 }
 
 /** Set a dotted path within an object, creating the intermediate objects. */

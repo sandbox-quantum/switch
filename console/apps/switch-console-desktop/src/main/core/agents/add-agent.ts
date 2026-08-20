@@ -11,6 +11,8 @@ import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-con
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { basenameFromAnyPath } from '@shared/path-name';
+import { writeAgentConfigFile } from './agent-config-file';
+import { syncAgentConfig } from './agent-config-sync';
 import { foreignCredentialsOwner } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
@@ -41,9 +43,13 @@ export type AddAgentParams = {
   iconUrl: string | null;
   autoSession: boolean;
   autoApprove: boolean;
-  /** Provider-specific definition attributes (model, effort, tools, prompt, …),
-   * keyed by the provider's attribute fields. `name`/`description` are set from
-   * the params above. */
+  /** The agent's system prompt, provider-agnostic. Rendered into whatever the
+   * provider reads — a Claude Code subagent body, Codex's developer
+   * instructions. Empty for an agent with none. */
+  instructions: string;
+  /** Provider-specific definition attributes (model, effort, tools, …), keyed
+   * by the provider's attribute fields. `name`/`description` are set from the
+   * params above, and the system prompt is `instructions`. */
   definitionAttributes: RepoAgentAttributes;
   /** Per-agent provider config folded into the agent's launch (Codex model /
    * effort / instructions). Distinct from `definitionAttributes`, which is the
@@ -126,13 +132,18 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
       apiToken: registered.apiKey,
       agentId: registered.id,
     });
-    if (behavior) {
-      await behavior.writeDefinition(workspace.fs, {
-        ...params.definitionAttributes,
-        name: params.name,
-        description: params.description,
-      });
-    }
+    // The config file is the agent's configuration; the provider's own file is
+    // generated from it, here and on every later edit.
+    await writeAgentConfigFile(workspace.fs, params.name, {
+      instructions: params.instructions,
+      settings: params.definitionAttributes,
+    });
+    await syncAgentConfig({
+      workspaceFs: workspace.fs,
+      repoAgents: behavior ?? null,
+      name: params.name,
+      description: params.description,
+    });
   } finally {
     workspace.close();
   }

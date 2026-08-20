@@ -14,6 +14,7 @@ import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldGroup, FieldLabel, FieldTitle } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Switch } from '@renderer/lib/ui/switch';
+import { Textarea } from '@renderer/lib/ui/textarea';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
 import type { ConfigureAgentFormState } from './modes';
 
@@ -233,6 +234,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
 export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
   const nameId = useId();
   const descriptionId = useId();
+  const instructionsId = useId();
   return (
     <FieldGroup>
       {/* Above the name, because it is the first thing the finished agent is
@@ -290,6 +292,19 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
         <span className="text-xs text-foreground-muted">
           Helps other people and agents understand what this agent is for.
         </span>
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor={instructionsId}>
+          Agent instructions <span className="text-foreground-muted">(optional)</span>
+        </FieldLabel>
+        <Textarea
+          id={instructionsId}
+          rows={4}
+          placeholder="How this agent should work"
+          value={form.instructions}
+          onChange={(e) => form.setInstructions(e.target.value)}
+        />
       </Field>
     </FieldGroup>
   );

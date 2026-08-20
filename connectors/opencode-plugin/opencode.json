@@ -3,7 +3,7 @@
   "mcp": {
     "switch": {
       "type": "local",
-      "command": ["npx", "-y", "@sandboxaq/switch-agent-runtime@0.3.1"],
+      "command": ["npx", "-y", "@sandboxaq/switch-agent-runtime@0.3.2"],
       "enabled": true,
       "timeout": 60000
     }

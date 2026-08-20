@@ -14,9 +14,9 @@ import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import { sessionDeletedChannel } from '@shared/core/sessions/sessionEvents';
+import { agentLaunchSpecialization } from './agent-launch-config';
 import { getRemoteAgentLocation } from './agent-location';
 import { connectRemoteAgent } from './connect-remote-agent';
 import { getAgentById } from './getAgentById';
@@ -49,7 +49,7 @@ async function fetchSidecarSessionIds(agent: Agent, conn: RemoteConn): Promise<s
       autoApprove: agent.autoApprove,
       credsSlug: agent.name ?? agent.id,
       agentName: agent.name ?? null,
-      specialization: toSwitchSpecialization(agent.providerConfig),
+      specialization: await agentLaunchSpecialization(agent.id),
       ctx: conn.ctx,
       connectionId: conn.connectionId,
       host: conn.host,

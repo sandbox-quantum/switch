@@ -44,6 +44,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.17.3] - 2026-08-19
+
+#### Fixed
+- The Mattermost bridge now bridges the channels a new bot is already a member
+  of. A bot's websocket opens only after Mattermost has added it to the team's
+  default channels, so it never witnessed its own joins — the first agent on an
+  instance bridged nothing, and creating a second adopted Town Square and
+  Off-Topic late and attributed to the wrong action. Current membership is now
+  reconciled on connect rather than relying on live join broadcasts alone
+  (CHOO-2203).
+
 ### [0.17.2] - 2026-08-18
 
 #### Fixed
@@ -659,8 +670,37 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.27.3] - 2026-08-19
+
+#### Added
+
+- Set an agent's **instructions** — what it is for, addressed to the agent
+  itself — as a first-class field edited from its page, applied to whichever
+  mechanism its provider uses (a Claude repo-agent, a Codex or OpenCode launch
+  profile) rather than being a per-provider setting only (CHOO-2228).
+- **Build switch-core from your checkout** for the managed local stack. A dev
+  build launched from a Switch checkout can run switch/gateway/setup from the
+  working tree (`up -d --build`) instead of this build's pinned GHCR images, via
+  a toggle on the local server's page. Dev builds only, and only when an ancestor
+  of the app's directory carries the Dockerfiles and `core/pyproject.toml` (#258).
+
+#### Changed
+
+- Local-server mode now bundles and pulls **switch-core `0.17.3`** (was
+  `0.17.2`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
+  current core release.
+
 #### Fixed
 
+- CLI first-run prompts that leave a spawned session alive but never answering
+  are now cleared or detected before the session starts — Claude Code auto-trust
+  (silently broken since a config-key rename), its first-run setup wizard, and
+  the bypass-permissions warning (CHOO-2213).
+- @mentions in the embedded Mattermost view are readable in the light theme
+  again — the link/mention colour pointed at the text-selection-highlight
+  background and rendered at ~1.4:1 on the white channel (CHOO-2203).
+- A newly onboarded agent's default Mattermost rooms show in the sidebar without
+  waiting for a background reconcile to happen to fire (CHOO-2203).
 - **Sign-in details** for a managed server's bundled chat now stays open. The
   dialog was rendered inside the messaging app's dropdown menu, so the same
   click that opened it closed the menu — and the menu took the dialog with it,
@@ -1881,6 +1921,8 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.3.2] - 2026-08-19
+
 #### Fixed
 - An environment naming an agent but carrying no token now resolves against the
   local agent store instead of refusing to start. Any partial `SWITCH_*`
@@ -1988,6 +2030,14 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.4]
+
+#### Fixed
+- The remote session spawner clears the CLI first-run prompts that would
+  otherwise leave a spawned session alive but never answering, matching the
+  desktop-side fix (CHOO-2213). Behavior change only — the client↔sidecar wire
+  (ready line, endpoints, on-disk layout) is unchanged, so the major stays `1`.
+
 ### [1.9.3]
 
 #### Added
@@ -2062,6 +2112,13 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.6] - 2026-08-19
+
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.2` (was `0.3.1`) — picks up the
+  runtime's store-based credential resolution (CHOO-1862); the plugin version
+  bumps so installs re-download.
 
 #### Fixed
 - **The `configure` skill no longer breaks the standalone path it exists to set
@@ -2250,6 +2307,16 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.7] - 2026-08-19
+
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.2` (was `0.3.1`) — picks up the
+  runtime's store-based credential resolution (CHOO-1862); the plugin version
+  bumps so installs re-download.
+- The room-workflow skill lists the full set of reasons `switch_unavailable` can
+  be the only tool, and points at the `configure` skill as the remedy for the
+  ones it can fix (CHOO-1862).
+
 ### [0.3.6] - 2026-08-18
 
 #### Changed
@@ -2387,6 +2454,14 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.4] - 2026-08-19
+
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.2` (was `0.3.1`) — picks up the
+  runtime's store-based credential resolution (CHOO-1862). The pin lives in
+  `distribution.ts` and `opencode.json`; the version bumps so a re-written
+  install is stamped fresh.
 
 ### [0.1.3] - 2026-08-18
 

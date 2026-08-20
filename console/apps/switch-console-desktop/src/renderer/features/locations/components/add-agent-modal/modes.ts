@@ -45,6 +45,10 @@ export type PickModeState = ReturnType<typeof usePickMode>;
 export function useConfigureAgentForm() {
   const [agentName, setAgentName] = useState('');
   const [description, setDescription] = useState('');
+  // What the agent is for, in its own words (CHOO-2228). Optional: an agent
+  // with none runs on its provider's defaults, and the description stands in
+  // where a provider needs a prompt.
+  const [instructions, setInstructions] = useState('');
   const [autoSession, setAutoSession] = useState(true);
   const [autoApprove, setAutoApproveRaw] = useState(false);
   const [autoApproveTouched, setAutoApproveTouched] = useState(false);
@@ -89,6 +93,8 @@ export function useConfigureAgentForm() {
     nameIsValid,
     description,
     setDescription,
+    instructions,
+    setInstructions,
     autoSession,
     setAutoSession,
     autoApprove,

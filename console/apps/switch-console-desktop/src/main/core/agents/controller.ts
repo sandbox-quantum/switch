@@ -11,6 +11,7 @@ import {
   readAgentAdvancedConfig,
   updateAgentAdvancedConfig,
 } from './agent-advanced-config';
+import { readAgentInstructions, setAgentInstructions } from './agent-config';
 import { readAgentDefinition, updateAgentDefinition } from './agent-definition';
 import { getAgentModelCatalogue } from './agent-model-catalogue';
 import { assignAgentServer } from './assignAgentServer';
@@ -62,6 +63,15 @@ export const agentsController = createRPCController({
    */
   modelCatalogue: (params: { providerId: AgentProviderId; sshHost: string | null; dir: string }) =>
     getAgentModelCatalogue(params),
+  /**
+   * The agent's instructions — its system prompt, held in the committed config
+   * file in its working directory and rendered into whatever its provider
+   * reads. Separate from `readAdvancedConfig` because it is a main attribute of
+   * the agent rather than one of its provider's settings.
+   */
+  readInstructions: (params: { agentId: string }) => readAgentInstructions(params.agentId),
+  updateInstructions: (params: { agentId: string; instructions: string }): Promise<void> =>
+    setAgentInstructions(params).then(() => undefined),
   readAdvancedConfig: (params: { agentId: string }) => readAgentAdvancedConfig(params.agentId),
   updateAdvancedConfig: (params: { agentId: string; attributes: RepoAgentAttributes }) =>
     updateAgentAdvancedConfig(params),

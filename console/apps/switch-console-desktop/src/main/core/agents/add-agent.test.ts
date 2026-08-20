@@ -24,17 +24,30 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
 // simulate a provider without repo-agent definitions (e.g. Codex).
 const h = vi.hoisted(() => {
   const writeDefinition = vi.fn(async () => {});
+  // A faithful-enough stand-in for a repo-agents provider: the config sync
+  // renders the definition and writes it through the workspace fs, so the mock
+  // has to answer where it goes and what it looks like.
+  const repoAgents = {
+    writeDefinition,
+    definitionPath: (name: string) => `.claude/agents/${name}.md`,
+    renderDefinition: (attributes: Record<string, unknown>) =>
+      `---\nname: ${String(attributes.name)}\ndescription: ${String(attributes.description)}\n---\n\n${String(
+        attributes.instructions || attributes.description
+      )}\n`,
+    readDefinition: async () => null,
+  };
   const state: {
     workspace: PluginFs | null;
     repoAgents: object | null;
     nameTaken: boolean;
   } = {
     workspace: null,
-    repoAgents: { writeDefinition },
+    repoAgents,
     nameTaken: false,
   };
   return {
     state,
+    repoAgents,
     writeDefinition,
     agentNameTaken: vi.fn(async () => state.nameTaken),
     registerAgentIdentity: vi.fn(async () => ({
@@ -88,6 +101,7 @@ function params(overrides: Record<string, unknown> = {}) {
     iconUrl: null,
     autoSession: false,
     autoApprove: false,
+    instructions: '',
     definitionAttributes: {},
     ...overrides,
   };
@@ -103,7 +117,7 @@ describe('addAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.state.nameTaken = false;
-    h.state.repoAgents = { writeDefinition: h.writeDefinition };
+    h.state.repoAgents = h.repoAgents;
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
   });
@@ -123,7 +137,7 @@ describe('addAgent', () => {
       SWITCH_API_TOKEN: 'tok-123',
       SWITCH_AGENT_ID: 'sw-1',
     });
-    expect(h.writeDefinition).not.toHaveBeenCalled();
+    expect(await fs.read('.claude/agents/codex-hoot.md')).toBeNull();
   });
 
   it('writes both credentials and an on-disk definition for a repo-agents provider', async () => {
@@ -132,10 +146,20 @@ describe('addAgent', () => {
     await addAgent(params({ providerId: 'claude', name: 'cc-hoot' }));
 
     expect((await credsOf(fs, 'cc-hoot')).SWITCH_API_TOKEN).toBe('tok-123');
-    expect(h.writeDefinition).toHaveBeenCalledWith(
-      fs,
-      expect.objectContaining({ name: 'cc-hoot', description: 'Codex running in repo' })
-    );
+    const definition = await fs.read('.claude/agents/cc-hoot.md');
+    expect(definition).toContain('name: cc-hoot');
+    expect(definition).toContain('description: Codex running in repo');
+  });
+
+  it('records the agent’s instructions in its committed config file', async () => {
+    const fs = h.state.workspace as PluginFs;
+
+    await addAgent(params({ providerId: 'claude', name: 'cc-hoot', instructions: 'Be careful.' }));
+
+    const config = JSON.parse((await fs.read('.switch/config/cc-hoot.json')) ?? '{}');
+    expect(config.instructions).toBe('Be careful.');
+    // And it reaches the provider's own file, which is what actually runs.
+    expect(await fs.read('.claude/agents/cc-hoot.md')).toContain('Be careful.');
   });
 
   it('git-ignores the credentials directory so the token never enters VCS', async () => {

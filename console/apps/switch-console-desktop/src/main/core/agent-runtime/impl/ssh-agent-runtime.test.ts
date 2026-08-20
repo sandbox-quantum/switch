@@ -87,6 +87,13 @@ vi.mock('@main/core/agents/getAgentById', () => ({
   getAgentById: vi.fn(async () => ({ autoApprove: false })),
 }));
 
+// What to launch with is read from the agent's config file in its working
+// directory, which means resolving its location out of the database — and
+// these tests have no database. A test that cares states the values directly.
+vi.mock('@main/core/agents/agent-launch-config', () => ({
+  agentLaunchSpecialization: vi.fn(async () => undefined),
+}));
+
 // Same reason: this install's deployer identity is persisted in the DB, and the
 // sidecar launch path reads it to stamp whatever sidecar it starts.
 vi.mock('@main/core/sidecar/deployer-identity', () => ({
@@ -142,6 +149,7 @@ function emitReconnected(connectionId: string): void {
 
 const { events } = await import('@main/lib/events');
 const { getAgentById } = await import('@main/core/agents/getAgentById');
+const { agentLaunchSpecialization } = await import('@main/core/agents/agent-launch-config');
 const { getPlugin } = await import('@main/core/providers/plugin-registry');
 
 type ProviderState = {
@@ -341,10 +349,10 @@ describe('SshAgentRuntime', () => {
           },
         }) as never
     );
+    vi.mocked(agentLaunchSpecialization).mockResolvedValue({ model: 'gpt-5.6-terra' });
     vi.mocked(getAgentById).mockResolvedValueOnce({
       autoApprove: false,
       name: 'codex-hoot',
-      providerConfig: { version: '2', providerId: 'codex', values: { model: 'gpt-5.6-terra' } },
     } as never);
     mockSpawn([]);
 

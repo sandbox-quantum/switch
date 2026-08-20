@@ -285,6 +285,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         providerId: pickState.providerId,
         serverId: pickState.serverId,
         description: form.description.trim(),
+        instructions: form.instructions,
         iconUrl: form.iconUrl,
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,

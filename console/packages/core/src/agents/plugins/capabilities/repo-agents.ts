@@ -140,6 +140,17 @@ export type IRepoAgentsBehavior = {
   /** The attribute fields this provider supports, in display order. Drives the
    * create/edit form; the first two are always `name` and `description`. */
   attributeFields(): RepoAgentField[];
+  /**
+   * The definition file's exact text for these attributes, without writing it.
+   *
+   * Must be deterministic: the same attributes always produce the same bytes.
+   * The config-file sync tells "someone hand-edited the definition" from "the
+   * config moved on" by comparing the file against what was last generated, so
+   * a render that varied run to run would report every file as hand-edited.
+   */
+  renderDefinition(attributes: RepoAgentAttributes): string;
+  /** The definition file's path, relative to the working directory. */
+  definitionPath(name: string): string;
   /** Create or overwrite a named agent's on-disk definition from its attributes
    * (workspace scope). `attributes.name` selects the agent. */
   writeDefinition(workspaceFs: PluginFs, attributes: RepoAgentAttributes): Promise<void>;

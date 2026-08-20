@@ -2,6 +2,7 @@ import { parse as parseTOML } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
 import {
   buildCodexProfileToml,
+  CODEX_PROFILE_SETTING_KEYS,
   CODEX_REASONING_EFFORTS,
   CODEX_REASONING_SUMMARIES,
   CODEX_VERBOSITY_LEVELS,
@@ -197,15 +198,22 @@ describe('codexProfileName', () => {
 });
 
 describe('codexLaunchProfileFields', () => {
-  it('declares exactly the keys the profile builder consumes', () => {
+  it('declares exactly the advanced keys the profile builder consumes', () => {
     expect(codexLaunchProfileFields().map((field) => field.key)).toEqual([
       'model',
       'effort',
       'verbosity',
       'reasoningSummary',
       'webSearch',
-      'instructions',
     ]);
+  });
+
+  it('does not offer instructions as an advanced setting', () => {
+    // Instructions are a main attribute of the agent, collected once for every
+    // provider. Offering them here too would be two boxes for one value.
+    expect(codexLaunchProfileFields().map((field) => field.key)).not.toContain('instructions');
+    // Still written into the profile, since Codex reads only its own file.
+    expect(CODEX_PROFILE_SETTING_KEYS).toContain('instructions');
   });
 
   it('offers every reasoning effort the profile accepts, plus an unset default', () => {
@@ -217,12 +225,9 @@ describe('codexLaunchProfileFields', () => {
     ]);
   });
 
-  it('writes every declared field, so a field cannot be collected and then dropped', () => {
+  it('writes every declared setting, so one cannot be collected and then dropped', () => {
     const filled = Object.fromEntries(
-      codexLaunchProfileFields().map((field) => [
-        field.key,
-        field.key === 'webSearch' ? 'true' : 'x',
-      ])
+      CODEX_PROFILE_SETTING_KEYS.map((key) => [key, key === 'webSearch' ? 'true' : 'x'])
     );
 
     const toml = parseTOML(buildCodexProfileToml(filled));

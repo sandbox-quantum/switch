@@ -64,3 +64,29 @@ export function agentSettingsRelativePath(slug: string): string {
 export function agentSettingsPath(dir: string, slug: string): string {
   return path.join(dir, agentSettingsRelativePath(slug));
 }
+
+/**
+ * Directory, relative to a location's working directory, holding one committed
+ * config file per agent (CHOO-2228). Deliberately a sibling of
+ * {@link SWITCH_AGENTS_DIR_RELATIVE} rather than a file inside it: that
+ * directory is gitignored wholesale because its files carry
+ * `SWITCH_API_TOKEN`, so anything written there cannot travel with the
+ * repository. This one holds no secrets and is meant to be committed, which is
+ * what lets an agent's instructions follow its working directory to another
+ * machine instead of living only in one Switch Console's database.
+ */
+export const SWITCH_AGENT_CONFIG_DIR_RELATIVE = '.switch/config';
+
+/**
+ * Relative path (from a location dir) to an agent's committed config file.
+ * `slug` is the same per-agent key as {@link agentSettingsRelativePath}, so an
+ * agent's credentials and its config are found by one name.
+ */
+export function agentConfigRelativePath(slug: string): string {
+  return `${SWITCH_AGENT_CONFIG_DIR_RELATIVE}/${slug}.json`;
+}
+
+/** Absolute path to an agent's committed config file under `dir`. */
+export function agentConfigPath(dir: string, slug: string): string {
+  return path.join(dir, agentConfigRelativePath(slug));
+}

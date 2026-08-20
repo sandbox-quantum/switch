@@ -17,6 +17,7 @@ import type { AttachableRuntime } from '@main/core/agent-runtime/attachment/type
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
+import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { reapStaleSidecarsForAgent } from '@main/core/agents/reap-stale-sidecars';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
@@ -37,7 +38,6 @@ import { readAgentSwitchEnvFromFs } from '@main/core/switch-rooms/switch-credent
 import { events } from '@main/lib/events';
 import { runWithLogContext } from '@main/lib/log-context';
 import { log } from '@main/lib/logger';
-import { toSwitchSpecialization } from '@shared/core/agents/agent-provider-config';
 import type { AgentSessionConfig } from '@shared/core/providers/agent-session';
 import { agentSessionExitedChannel } from '@shared/core/providers/agentEvents';
 import { buildAgentHookEnv } from '@shared/core/pty/hookEnv';
@@ -411,6 +411,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     const agent = await getAgentById(session.agentId);
     const host = this.createSidecarHost();
     const credsSlug = agentCredsSlug(session);
+    const specialization = await agentLaunchSpecialization(session.agentId);
     // Every session in this dir would otherwise re-run the same deploy+launch on
     // startup; coalesce so one host sees one ensure, not one per session.
     const endpoint = await dedupeInFlight(
@@ -424,7 +425,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
           autoApprove: agent?.autoApprove ?? false,
           credsSlug,
           agentName: agent?.name ?? session.agentName ?? null,
-          specialization: toSwitchSpecialization(agent?.providerConfig),
+          specialization,
           ctx: this.ctx,
           connectionId: this.connectionId,
           host,
@@ -581,7 +582,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
           autoApprove: agent?.autoApprove ?? false,
           credsSlug,
           agentName: agent?.name ?? session.agentName ?? null,
-          specialization: toSwitchSpecialization(agent?.providerConfig),
+          specialization: await agentLaunchSpecialization(session.agentId),
           ctx: this.ctx,
           connectionId: this.connectionId,
           host: this.createSidecarHost(),
@@ -724,7 +725,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
       const launchProfile = await this.writeRemoteLaunchProfile(
         plugin,
         agentCredsSlug(session),
-        toSwitchSpecialization(agentRecord?.providerConfig)
+        await agentLaunchSpecialization(session.agentId)
       );
 
       const agentCommand = plugin.behavior.prompt!.buildCommand({
