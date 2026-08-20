@@ -128,6 +128,57 @@ class CollaborationAdapter(ABC):
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
 
+    @classmethod
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
+        """Fill in values the operator should not have to supply, at create time.
+
+        Called once, when a bridge is registered — never on start, so a value
+        minted here is persisted and stable for the life of the bridge. An
+        adapter that generates key material must do it here rather than in a
+        model default, or every restart would mint a fresh one and quietly
+        invalidate whatever the last one signed or encrypted.
+
+        Async because generating key material is CPU-bound and this runs on
+        the event loop that carries every live Matrix session.
+        """
+        return connection_config
+
+    @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """Name a host resource this bridge needs to itself, if any.
+
+        Two bridges returning the same string cannot coexist in one process.
+        Returning None — the default — means a bridge of this type can be run
+        alongside any number of its own kind, which is true of every adapter
+        that only dials out.
+
+        The returned string is quoted verbatim in the refusal shown to whoever
+        registers the second bridge, so it must not embed credential material.
+
+        The point is to refuse the second one at registration, with a sentence
+        saying what clashed. Without it the collision surfaces as whatever the
+        underlying resource does when contended, which for a TCP port is a bind
+        error inside a background task, minutes later and nowhere near the
+        operator who caused it.
+        """
+        return None
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Prove the credentials work, before the bridge is persisted.
+
+        Raise :class:`BridgeCredentialError` with a message fit for an operator
+        to read. Adapters start in a background task whose exceptions are logged
+        and swallowed, so without this a wrong password looks like success and
+        surfaces hours later as an unrelated-looking failure.
+
+        The default accepts anything: an adapter that cannot check cheaply
+        should not pretend to.
+        """
+        return None
+
     @abstractmethod
     async def start(
         self,

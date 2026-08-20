@@ -187,7 +187,7 @@ The operator dashboard frontend lives in [`gateway/`](gateway/)
 | `gateway/` | Operator dashboard frontend (Node/Vite) |
 | `console/` | The Switch Console desktop app |
 | `connectors/` | Agent connectors (`claude-code-plugin`, `codex-plugin`) |
-| `deploy/` | Deployment assets — Docker Compose stacks (`local/`) and shared resources |
+| `deploy/` | Deployment assets — Docker Compose stacks (`local/`), the Kubernetes Helm chart (`remote/helm/switch/`, see its [README](deploy/remote/helm/switch/README.md)) and shared resources |
 | `justfile` | Repo-root task runner (drives all three code trees) |
 
 ## Testing

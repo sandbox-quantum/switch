@@ -68,8 +68,19 @@ class TeamsTokenProvider:
                 f"AAD token request for scope {scope} failed "
                 f"({resp.status_code}): {resp.text}"
             )
-        payload = resp.json()
-        access_token = str(payload["access_token"])
+        # A 200 whose body is not the token response we expect — an HTML error
+        # page from a proxy in front of AAD, or a shape change — must fail the
+        # same way a 401 does. Left to raise on its own it surfaces as KeyError
+        # or a JSON decode error, which callers looking for a credential problem
+        # do not catch, and the save-time check turns into a 500.
+        try:
+            payload = resp.json()
+            access_token = str(payload["access_token"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"AAD token request for scope {scope} returned "
+                f"{resp.status_code} with an unusable body: {resp.text[:500]}"
+            ) from exc
         expires_in = float(payload.get("expires_in", 3600))
         self._cache[scope] = (access_token, now + expires_in)
         return access_token

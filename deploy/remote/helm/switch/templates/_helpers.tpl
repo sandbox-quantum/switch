@@ -119,6 +119,66 @@ Other service hostnames (used in env vars and init containers).
 {{- end }}
 
 {{/*
+Public origin of the Teams bridge listener: the value the bridge's
+public_base_url must be set to.
+
+Always https, whatever `tls.enabled` says. That flag governs whether *this*
+Ingress carries a certificate, not what Microsoft dials — and Graph refuses a
+plaintext URL, so http is never the answer. Deriving the scheme from the flag
+printed `http://<host>` as the value to use whenever TLS terminated upstream,
+which is the documented ALB pattern.
+
+Empty only when the host is genuinely unknown to the chart: a host-less rule
+behind a CDN that owns the public name. The caller must then ask the operator
+rather than print a guess.
+*/}}
+{{- define "switch.teamsPublicOrigin" -}}
+{{- $teams := .Values.switchCore.teamsBridge -}}
+{{- if and (eq $teams.ingress.mode "dedicated") $teams.ingress.host -}}
+{{- printf "https://%s" $teams.ingress.host -}}
+{{- else if and (eq $teams.ingress.mode "shared") .Values.ingress.host -}}
+{{- printf "https://%s" .Values.ingress.host -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Reject Teams bridge configurations that would deploy a listener nothing can
+reach. Publishing the port without routing it produces a bridge that creates
+channels and posts fine while silently receiving nothing, which is the exact
+failure this block exists to prevent — so these are render-time errors rather
+than something you discover hours later at Graph subscription time.
+*/}}
+{{- define "switch.validateTeamsBridge" -}}
+{{- $teams := .Values.switchCore.teamsBridge -}}
+{{- $mode := $teams.ingress.mode -}}
+{{- $modes := list "dedicated" "shared" "external" -}}
+{{- if not $teams.enabled -}}
+{{- if $mode -}}
+{{- fail (printf "switchCore.teamsBridge.ingress.mode is %q but switchCore.teamsBridge.enabled is false: nothing publishes port %v for it to route to. Set enabled=true, or clear the mode." $mode $teams.port) -}}
+{{- end -}}
+{{- else -}}
+{{- if not $mode -}}
+{{- fail "switchCore.teamsBridge.enabled is true but switchCore.teamsBridge.ingress.mode is unset. Microsoft calls the Teams listener from the public internet, so publishing the port is only half the job — choose how the two callback paths are routed: \"dedicated\" (the chart renders an Ingress for them on their own host), \"shared\" (add them to the chart's managed Ingress), or \"external\" (you route them yourself; see samples/ingress.example.yaml)." -}}
+{{- end -}}
+{{- if not (has $mode $modes) -}}
+{{- fail (printf "switchCore.teamsBridge.ingress.mode must be one of dedicated, shared or external — got %q." $mode) -}}
+{{- end -}}
+{{- if and (eq $mode "shared") (ne .Values.ingress.mode "managed") -}}
+{{- fail (printf "switchCore.teamsBridge.ingress.mode is \"shared\" but ingress.mode is %q: there is no chart-managed Ingress to add the Teams paths to. Set ingress.mode=managed, or use teamsBridge.ingress.mode=dedicated to give Teams its own Ingress, or \"external\" to route it yourself." .Values.ingress.mode) -}}
+{{- end -}}
+{{- if and (eq $mode "shared") (not .Values.ingress.host) -}}
+{{- fail "switchCore.teamsBridge.ingress.mode is \"shared\" but ingress.host is empty. Microsoft resolves the notification URL from public DNS, so the Ingress needs a real hostname rather than a catch-all rule." -}}
+{{- end -}}
+{{- if and (ne $mode "external") (not .Values.ingress.teamsPaths) -}}
+{{- fail "ingress.teamsPaths is empty, so the Teams Ingress would render a rule with no paths — which Helm accepts and the Kubernetes API rejects at apply time. Restore the two callback paths, or set switchCore.teamsBridge.ingress.mode=external if you route them yourself." -}}
+{{- end -}}
+{{- if and (eq $mode "dedicated") (not $teams.ingress.host) $teams.ingress.tls.enabled -}}
+{{- fail "switchCore.teamsBridge.ingress.mode is \"dedicated\" with TLS enabled but switchCore.teamsBridge.ingress.host is empty: a host-less rule cannot carry a TLS certificate. Either set the host, or set tls.enabled=false if something upstream terminates TLS and owns the public name (a CDN or reverse proxy — then public_base_url is that name, not this Ingress's)." -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Prepend the global image registry if set.
 Usage: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
 */}}

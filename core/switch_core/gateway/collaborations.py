@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.models import BridgeInstallLink, DirectoryUser
+from switch_core.bridges.collaboration.models import (
+    BridgeCredentialError,
+    BridgeInstallLink,
+    DirectoryUser,
+)
 from switch_core.db.models import CollaborationBridge, ExternalUser, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -169,6 +173,10 @@ async def create_bridge(
             connection_config=dict(req.connection_config),
             channel_creation_enabled=req.channel_creation_enabled,
         )
+    except BridgeCredentialError as exc:
+        # The platform's own words, verbatim — it knows what is wrong with the
+        # credentials and we do not.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:

@@ -80,6 +80,22 @@ class CollaborationBridgeLifecycleService:
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
         self._bridges: dict[str, BridgeCore] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # bridge_id -> the host resource it holds exclusively while running
+        # (see CollaborationAdapter.exclusive_resource). Lets a second
+        # claimant be refused by name instead of failing on the resource.
+        self._held_resources: dict[str, str] = {}
+        # Serialises registration. The exclusivity check reads the stored
+        # bridges and the winner is not written until several awaits later,
+        # so two concurrent registrations would both see a free resource and
+        # both take it — the very collision the check exists to refuse.
+        #
+        # A process-wide lock is sufficient *because* switch-core is a
+        # singleton: the chart fails the render for replicaCount != 1, since
+        # it holds live Matrix sessions in memory. If that ever changes, this
+        # has to become a database constraint — the way the single-default
+        # bridge invariant already is — because a lock in one process would
+        # then be guarding nothing.
+        self._register_lock = asyncio.Lock()
 
     def register_adapter(
         self,
@@ -166,7 +182,78 @@ class CollaborationBridgeLifecycleService:
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge.id)
 
+    async def _reject_resource_conflict(
+        self,
+        bridge_type: str,
+        connection_config: dict[str, object],
+        *,
+        exclude_bridge_id: str | None = None,
+    ) -> None:
+        """Refuse a bridge that would contend for a resource another one holds.
+
+        Checked against every stored bridge rather than the running set, so the
+        answer does not depend on whether the incumbent happens to be up.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return
+        wanted = adapter_cls.exclusive_resource(connection_config)
+        if wanted is None:
+            return
+
+        async with self._session_factory() as session:
+            existing = await self._bridge_store.get_all(session)
+        for other in existing:
+            # Guard the None case explicitly: an unflushed row has no id yet, and
+            # `other.id == exclude_bridge_id` would then be None == None and skip
+            # a bridge that genuinely holds the resource.
+            if exclude_bridge_id is not None and other.id == exclude_bridge_id:
+                continue
+            if other.type != bridge_type:
+                continue
+            other_cls = self._adapter_registry.get(other.type)
+            if other_cls is None:
+                continue
+            try:
+                held = other_cls.exclusive_resource(other.connection_config or {})
+            except Exception:
+                # A stored config we can no longer parse should not block a new
+                # bridge — it is its own problem, and it is already logged when
+                # that bridge tries to start.
+                logger.warning(
+                    "Could not read the exclusive resource of bridge %s (%s)",
+                    other.id,
+                    other.type,
+                    exc_info=True,
+                )
+                continue
+            if held == wanted:
+                raise ValueError(
+                    f"'{other.display_name}' already uses {wanted} on this "
+                    f"instance, and two {bridge_type} bridges cannot share it. "
+                    "Delete that bridge first, or give this one a different "
+                    "listen_port in its connection_config — noting the Helm "
+                    "chart publishes only one Teams port, so a second one needs "
+                    "its own Service port and route."
+                )
+
     async def register(
+        self,
+        *,
+        bridge_type: str,
+        display_name: str,
+        connection_config: dict[str, object],
+        channel_creation_enabled: bool,
+    ) -> CollaborationBridge:
+        async with self._register_lock:
+            return await self._register_locked(
+                bridge_type=bridge_type,
+                display_name=display_name,
+                connection_config=connection_config,
+                channel_creation_enabled=channel_creation_enabled,
+            )
+
+    async def _register_locked(
         self,
         *,
         bridge_type: str,
@@ -186,7 +273,21 @@ class CollaborationBridgeLifecycleService:
                 "platform and add the bot to it; Switch adopts it as a room."
             )
 
-        config_cls.model_validate(connection_config)
+        # Fill in what the adapter generates, validate the result, and persist
+        # the validated form — not the raw request — so a value minted here is
+        # stored once and never re-derived.
+        connection_config = await adapter_cls.prepare_config(connection_config)
+        validated = config_cls.model_validate(connection_config)
+        connection_config = validated.model_dump(mode="json")
+
+        await self._reject_resource_conflict(bridge_type, connection_config)
+
+        # Before anything is written. The adapter runs in a background task
+        # whose failures are logged and swallowed, so credentials that are wrong
+        # would otherwise be stored, reported as success, and only surface later
+        # as an unrelated-looking error. Failing here also avoids leaving an
+        # orphan Matrix identity behind for a bridge that was never viable.
+        await adapter_cls.verify_credentials(connection_config)
 
         bridge_client_record = await self._client_lifecycle.create_client(
             client_type="bridge",
@@ -226,6 +327,20 @@ class CollaborationBridgeLifecycleService:
         config_cls = self._config_registry.get(bridge.type)
         if adapter_cls is None or config_cls is None:
             raise ValueError(f"Unknown bridge type: {bridge.type}")
+
+        # Registration refuses a conflicting bridge, but rows predating that
+        # check still exist, and start_all would otherwise walk into the bind
+        # error one of them causes. Say which bridge holds it instead.
+        wanted = adapter_cls.exclusive_resource(bridge.connection_config or {})
+        if wanted is not None:
+            for other_id, held in self._held_resources.items():
+                if held == wanted and other_id != bridge_id:
+                    raise ValueError(
+                        f"Cannot start bridge {bridge_id} ({bridge.type}): "
+                        f"{wanted} is already held by bridge {other_id}. Only "
+                        "one of them can run; delete one, or give it a "
+                        "different listen_port."
+                    )
 
         typed_config = config_cls.model_validate(bridge.connection_config or {})
         adapter = adapter_cls(config=typed_config)  # type: ignore[call-arg]
@@ -294,6 +409,8 @@ class CollaborationBridgeLifecycleService:
         )
         self._bridges[bridge_id] = bridge_core
         self._tasks[bridge_id] = task
+        if wanted is not None:
+            self._held_resources[bridge_id] = wanted
 
         logger.info("Started collaboration bridge %s (%s)", bridge_id, bridge.type)
 
@@ -317,6 +434,7 @@ class CollaborationBridgeLifecycleService:
             logger.exception("Bridge %s crashed", bridge_id)
             self._bridges.pop(bridge_id, None)
             self._tasks.pop(bridge_id, None)
+            self._held_resources.pop(bridge_id, None)
 
     async def stop(self, bridge_id: str) -> None:
         bridge_core = self._bridges.get(bridge_id)
@@ -328,6 +446,7 @@ class CollaborationBridgeLifecycleService:
             task.cancel()
 
         self._bridges.pop(bridge_id, None)
+        self._held_resources.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
 
     async def stop_all(self) -> None:

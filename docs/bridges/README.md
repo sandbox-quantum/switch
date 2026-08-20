@@ -107,5 +107,8 @@ are deployment-level environment config on switch-core:
   `/gateway` mount — so front it with a proxy that routes the API root, not only
   `/gateway/*`. Leave unset to post the raw `switchdash://` deeplink (the
   disclosed fallback). Applies to every platform but matters most for Discord.
-- **Teams** additionally needs public HTTPS ingress to the bridge's listener —
-  see [`TEAMS_SETUP.md`](TEAMS_SETUP.md).
+- **Teams** additionally needs public HTTPS ingress to the bridge's listener, on
+  its own port — it is the only bridge Switch does not reach outbound. See
+  [`TEAMS_SETUP.md`](TEAMS_SETUP.md) for the bridge side, and the Helm chart's
+  [README](../../deploy/remote/helm/switch/README.md) for which Switch surfaces
+  have to be reachable from where.

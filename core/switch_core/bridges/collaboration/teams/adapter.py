@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import re
+import secrets
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -14,6 +16,7 @@ from urllib.parse import quote
 
 import httpx
 from aiohttp import web
+from pydantic import model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.collaboration.adapter import (
@@ -22,6 +25,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     InboundAgentJoin,
@@ -41,6 +45,7 @@ from switch_core.bridges.collaboration.teams.cards import (
 from switch_core.bridges.collaboration.teams.connector import BotConnectorClient
 from switch_core.bridges.collaboration.teams.crypto import (
     decrypt_resource_data,
+    generate_encryption_keypair,
     load_certificate_der_b64,
 )
 from switch_core.bridges.collaboration.teams.graph import GraphClient
@@ -84,6 +89,30 @@ def _strip_leading_mention(text: str) -> str:
     return _LEADING_MENTION_TAG.sub("", text, count=1)
 
 
+def _aad_failure_message(exc: Exception) -> str:
+    """Reduce an AAD token failure to the sentence an operator can act on.
+
+    The raw failure carries the whole OAuth error body — trace ids, correlation
+    ids, timestamps — wrapped around one useful sentence. Microsoft writes that
+    sentence well (it names the client-secret value-vs-ID mix-up outright), so
+    surface it and drop the rest. Falls back to the full text if the body is not
+    the shape we expect, rather than losing the detail.
+    """
+    text = str(exc)
+    start = text.find("{")
+    if start != -1:
+        try:
+            body = json.loads(text[start:])
+        except json.JSONDecodeError:
+            body = None
+        if isinstance(body, dict):
+            description = body.get("error_description")
+            if isinstance(description, str) and description:
+                sentence = description.split("Trace ID:")[0].strip().rstrip(".")
+                return f"Microsoft rejected these credentials — {sentence}."
+    return f"Microsoft rejected these credentials — {text}"
+
+
 # Channel-message subscriptions with resource data live at most 60 minutes; we
 # request 55 and proactively renew well before expiry.
 _SUBSCRIPTION_TTL = timedelta(minutes=55)
@@ -124,17 +153,29 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
 
     # Graph change-notification resource-data encryption. Graph encrypts message
     # bodies with the public certificate; the private key decrypts them on
-    # delivery. Required once channel-message subscriptions are enabled.
-    encryption_certificate_id: str | None = None
-    encryption_public_certificate: str | None = None
-    encryption_private_key: str | None = None
+    # delivery. Required once channel-message subscriptions are enabled, so the
+    # trio is generated on creation rather than asked for — an operator pasting
+    # PEMs into a form is three chances to disable channel capture silently, and
+    # the certificate is key transport that Graph never validates against a trust
+    # store, so there is nothing an operator-supplied one would buy. Hidden from
+    # the gateway form; supplying your own through the API still wins.
+    encryption_certificate_id: SkipJsonSchema[str | None] = None
+    encryption_public_certificate: SkipJsonSchema[str | None] = None
+    encryption_private_key: SkipJsonSchema[str | None] = None
 
     # Shared secret echoed back in every change notification and validated on
-    # receipt. Required, and the ONLY control that authenticates a notification's
-    # origin: Graph resource-data encryption proves integrity but NOT origin (the
-    # wrapping key is the public certificate, which anyone can encrypt to), so
-    # without clientState the notification endpoint is spoofable.
-    client_state: str
+    # receipt. The ONLY control that authenticates a notification's origin: Graph
+    # resource-data encryption proves integrity but NOT origin (the wrapping key
+    # is the public certificate, which anyone can encrypt to), so without
+    # clientState the notification endpoint is spoofable.
+    #
+    # Generated, not asked for: it is a secret with no external meaning, so
+    # prompting an operator to invent one only invites a weak or reused value.
+    # Required rather than defaulted, and minted in prepare_config at
+    # registration — a default here would mint a fresh secret every time a stored
+    # config was validated, and every live subscription would start failing its
+    # origin check with nothing to point at.
+    client_state: SkipJsonSchema[str]
 
     # Bot Connector serviceUrl (the per-tenant outbound endpoint). It is learned
     # from inbound Bot Framework activities and persisted here so outbound
@@ -147,6 +188,27 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     # hidden from the gateway config form (SkipJsonSchema).
     service_url: SkipJsonSchema[str | None] = None
 
+    @model_validator(mode="after")
+    def _encryption_material_is_all_or_nothing(self) -> TeamsConnectionConfig:
+        """A half-supplied encryption trio is a mistake, not a partial request.
+
+        Completing it for them would pair someone's certificate with a private
+        key they do not hold, and the only symptom would be channel capture that
+        never decrypts.
+        """
+        supplied = [
+            self.encryption_certificate_id,
+            self.encryption_public_certificate,
+            self.encryption_private_key,
+        ]
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "encryption_certificate_id, encryption_public_certificate and "
+                "encryption_private_key must be supplied together, or all left "
+                "unset to have them generated"
+            )
+        return self
+
 
 class TeamsAdapter(CollaborationAdapter):
     """Microsoft Teams collaboration adapter.
@@ -158,6 +220,77 @@ class TeamsAdapter(CollaborationAdapter):
     aiohttp listener. Full (non-@mention) channel-message capture via Microsoft
     Graph subscriptions is layered on in a later phase.
     """
+
+    @classmethod
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
+        """Mint the clientState secret and the Graph encryption trio.
+
+        Here rather than as model defaults because this runs only at
+        registration, so what it produces is persisted once and never re-derived.
+        A default on the model would mint fresh values every time a stored config
+        was validated — a new certificate and a new shared secret on every
+        restart, while Graph carried on encrypting to the old certificate and
+        echoing the old secret. Capture would fail its origin check and its
+        decryption, with nothing in the logs pointing at why.
+        """
+        prepared = dict(connection_config)
+        if not prepared.get("client_state"):
+            prepared["client_state"] = secrets.token_urlsafe(32)
+        keys = (
+            "encryption_certificate_id",
+            "encryption_public_certificate",
+            "encryption_private_key",
+        )
+        if any(prepared.get(k) for k in keys):
+            return prepared
+        # RSA keygen is CPU-bound and switch-core runs every live Matrix
+        # session on this loop, so it does not run on it.
+        cert_pem, key_pem = await asyncio.to_thread(generate_encryption_keypair)
+        prepared["encryption_certificate_id"] = f"switch-teams-{secrets.token_hex(8)}"
+        prepared["encryption_public_certificate"] = cert_pem
+        prepared["encryption_private_key"] = key_pem
+        return prepared
+
+    @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """The inbound listener's TCP port, which one process can hold once.
+
+        Teams is push-based, so each bridge runs an HTTP server; two on the same
+        port means the second never binds. Declaring it here turns that into a
+        refusal at registration naming the port, rather than a bind error in a
+        background task that leaves the bridge silently dropped.
+        """
+        config = TeamsConnectionConfig.model_validate(connection_config)
+        return f"tcp/{config.listen_port}"
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Ask Azure AD for both tokens the bridge will need.
+
+        This is the call that fails on a wrong client secret, and Microsoft's
+        error names the mistake precisely — including the classic case of the
+        secret's ID being pasted instead of its value. Getting that to the
+        operator at save time is the whole point.
+        """
+        config = TeamsConnectionConfig.model_validate(connection_config)
+        async with httpx.AsyncClient(timeout=30) as http:
+            tokens = TeamsTokenProvider(
+                tenant_id=config.tenant_id,
+                app_id=config.app_id,
+                app_password=config.app_password,
+                http=http,
+            )
+            try:
+                await tokens.graph_token()
+                await tokens.bot_token()
+            except RuntimeError as exc:
+                raise BridgeCredentialError(_aad_failure_message(exc)) from exc
+            except httpx.HTTPError as exc:
+                raise BridgeCredentialError(
+                    f"Could not reach Microsoft to verify these credentials: {exc}"
+                ) from exc
 
     def __init__(self, *, config: TeamsConnectionConfig) -> None:
         super().__init__()

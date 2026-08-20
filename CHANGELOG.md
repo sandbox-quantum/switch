@@ -44,6 +44,80 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- The Helm chart can publish and route the Microsoft Teams bridge listener. The
+  Teams adapter serves Bot Framework activities and Graph change notifications
+  from its own HTTP server on port 3978, separate from the API on 8000, and
+  nothing in the chart exposed it — so a Teams bridge could create channels and
+  post while receiving nothing back, looking healthy throughout. Set
+  `switchCore.teamsBridge.enabled=true` to publish the container and Service
+  port, and `switchCore.teamsBridge.ingress.mode` to say how the two callback
+  paths are routed: `dedicated` renders a second Ingress carrying only those
+  paths on their own host and certificate, so Microsoft can reach them while the
+  gateway stays internal; `shared` adds them to the chart's managed Ingress;
+  `external` leaves the routing to you (see `samples/ingress.example.yaml`).
+  Off by default, because bridges are created at runtime and the chart cannot
+  detect one.
+- The Teams Ingress supports sitting behind a CDN or reverse proxy: leave its
+  `host` empty and TLS off, and it renders a host-less rule that answers
+  whatever `Host` arrives. That is the shape needed when the public name belongs
+  to something upstream, and it is the only option that needs no domain of your
+  own — the setup doc carries the CloudFront recipe, including the two settings
+  (forward query strings, do not cache) without which Graph's subscription
+  handshake fails. Empty `host` with TLS enabled is still rejected, since a
+  host-less rule cannot carry a certificate.
+- The chart now refuses to render a Teams bridge that nothing can reach —
+  enabled with no routing mode, `shared` without a managed Ingress, or either
+  managed mode without a hostname. Publishing the port without a route is the
+  silent half-failure the rest of this work exists to prevent, so it is a
+  render-time error rather than something found days later.
+- `helm test` checks the Teams listener, running Graph's own validation
+  handshake against the Service. It proves the listener is bound and the port
+  published; it runs in-cluster, so it deliberately does not claim anything
+  about public reachability, and says so.
+- Post-install notes print the exact `public_base_url` to paste into the bridge,
+  and warn when its Ingress has TLS disabled — Graph only calls HTTPS it trusts.
+- The Helm chart has a `README.md`, covering which of Switch's three network
+  surfaces have to be reachable from where. Only the Teams listener needs the
+  public internet; every other bridge connects outbound.
+- Registering a bridge that would contend with an existing one for a host
+  resource is refused, naming what clashed. Teams is the case that has one: its
+  inbound listener needs a TCP port, and a second bridge on the same port failed
+  to bind inside a background task, was dropped from the running set, and never
+  retried — surfacing much later as `Bridge not running: <id>` with no stated
+  cause. Adapters declare this by implementing `exclusive_resource`; those that
+  only dial out declare nothing and are unaffected. The same check runs at
+  startup, so rows predating it get a clear error instead of a bind failure.
+- Bridge credentials are verified before a bridge is saved. Adapters start in a
+  background task whose exceptions are logged and swallowed, so credentials that
+  the platform rejects used to be stored, reported as success, and surface hours
+  later as an unrelated-looking failure. Registering a Teams bridge now asks
+  Azure for both tokens it will need first, and a refusal comes back as a 400
+  carrying Microsoft's own explanation — which names the mistake outright,
+  including the client secret **value** vs secret **ID** mix-up. Adapters opt in
+  by implementing `verify_credentials`; the default still accepts anything,
+  because an adapter that cannot check cheaply should not pretend to.
+
+#### Changed
+- A Teams bridge is five fields instead of nine. The `clientState` shared secret
+  and the Graph encryption certificate, public key and private key are generated
+  when the bridge is created rather than asked for: they are values the operator
+  invents rather than gets from Microsoft, and asking meant an invented secret,
+  an `openssl` invocation, and three PEM fields whose only symptom when pasted
+  wrong is channel capture that silently never decrypts. Supplying your own
+  through the API still wins, all three or none. Existing bridges are untouched,
+  including any left without encryption material.
+- The Teams Graph private key is no longer typed into a plaintext form field.
+  The gateway decides which inputs to mask by matching the field name against
+  `token|password|secret|api_key`, which `encryption_private_key` does not match;
+  generating it removes the field from the form entirely.
+- `docs/bridges/TEAMS_SETUP.md` rewritten. It now walks through Azure setup
+  value by value and says where each one comes from, documents the deployment
+  and public-ingress requirements (previously absent), and adds verification and
+  troubleshooting sections keyed to the errors these failures actually produce —
+  starting with the client secret **value** vs secret **ID** mix-up, which
+  surfaces only as an opaque `AADSTS7000215` at the first Graph call.
+
 ### [0.17.3] - 2026-08-19
 
 #### Fixed
