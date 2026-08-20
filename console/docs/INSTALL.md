@@ -117,23 +117,22 @@ Pick the format your distro uses:
 2. Choose an install location if you want a non-default one, and finish the
    installer.
 
-### First launch — SmartScreen warning
+### Code signing
 
-Windows builds are **not code signed** — there is no Authenticode certificate for
-this app yet (CHOO-1468). Windows therefore shows a full-screen blue **"Windows
-protected your PC"** prompt the first time you run the installer:
+Windows builds from **0.27.2** onwards are Authenticode signed, via Azure Trusted
+Signing, as `SandboxAQ`. The installer no longer trips the blue **"Windows
+protected your PC"** SmartScreen prompt, and AppLocker / WDAC policies that block
+unsigned binaries no longer refuse it outright (CHOO-1468).
 
-1. Click **More info**.
-2. Click **Run anyway**.
+Two caveats:
 
-This is expected, and it recurs for each new version until the app is signed. Two
-consequences worth knowing:
-
-- Antivirus software occasionally quarantines unsigned Electron installers. If
-  the download vanishes, check your AV quarantine.
-- **Managed / corporate Windows may refuse to install it outright.** AppLocker
-  and WDAC policies commonly block unsigned binaries, and there is no
-  click-through for that — the install simply fails. Signing is the only fix.
+- **0.27.1 and earlier are unsigned.** They still show the SmartScreen prompt —
+  click **More info**, then **Run anyway** — and managed Windows may refuse them.
+  Installing a current version is the fix.
+- SmartScreen also weighs a certificate's reputation, so a brand-new one can
+  still warn on early downloads. That fades as installs accumulate; it is not a
+  sign the signature is missing. To check one yourself: right-click the `.exe` →
+  **Properties** → **Digital Signatures**.
 
 The `.msi` supports the usual `msiexec` flow if you would rather not run the
 installer interactively.
