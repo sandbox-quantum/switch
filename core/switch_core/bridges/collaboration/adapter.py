@@ -74,6 +74,23 @@ class CollaborationAdapter(ABC):
         return connection_config
 
     @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """Name a host resource this bridge needs to itself, if any.
+
+        Two bridges returning the same string cannot coexist in one process.
+        Returning None — the default — means a bridge of this type can be run
+        alongside any number of its own kind, which is true of every adapter
+        that only dials out.
+
+        The point is to refuse the second one at registration, with a sentence
+        saying what clashed. Without it the collision surfaces as whatever the
+        underlying resource does when contended, which for a TCP port is a bind
+        error inside a background task, minutes later and nowhere near the
+        operator who caused it.
+        """
+        return None
+
+    @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Prove the credentials work, before the bridge is persisted.
 

@@ -77,7 +77,14 @@ version of their own to them without also giving them a release of their own.
 - The Helm chart has a `README.md`, covering which of Switch's three network
   surfaces have to be reachable from where. Only the Teams listener needs the
   public internet; every other bridge connects outbound.
-
+- Registering a bridge that would contend with an existing one for a host
+  resource is refused, naming what clashed. Teams is the case that has one: its
+  inbound listener needs a TCP port, and a second bridge on the same port failed
+  to bind inside a background task, was dropped from the running set, and never
+  retried — surfacing much later as `Bridge not running: <id>` with no stated
+  cause. Adapters declare this by implementing `exclusive_resource`; those that
+  only dial out declare nothing and are unaffected. The same check runs at
+  startup, so rows predating it get a clear error instead of a bind failure.
 - Bridge credentials are verified before a bridge is saved. Adapters start in a
   background task whose exceptions are logged and swallowed, so credentials that
   the platform rejects used to be stored, reported as success, and surface hours

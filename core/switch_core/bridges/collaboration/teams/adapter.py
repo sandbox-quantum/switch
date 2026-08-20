@@ -248,6 +248,18 @@ class TeamsAdapter(CollaborationAdapter):
         return prepared
 
     @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """The inbound listener's TCP port, which one process can hold once.
+
+        Teams is push-based, so each bridge runs an HTTP server; two on the same
+        port means the second never binds. Declaring it here turns that into a
+        refusal at registration naming the port, rather than a bind error in a
+        background task that leaves the bridge silently dropped.
+        """
+        config = TeamsConnectionConfig.model_validate(connection_config)
+        return f"tcp/{config.listen_port}"
+
+    @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Ask Azure AD for both tokens the bridge will need.
 

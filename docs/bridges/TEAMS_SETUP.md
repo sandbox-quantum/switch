@@ -374,9 +374,26 @@ Teams bridge on the same port will keep it from binding.
 
 ### Running more than one Teams bridge
 
-One Teams bridge per listener port. A second bridge on the same host needs a
-distinct `listen_port` in its stored `connection_config`, its own Service port
-and its own ingress route.
+**One Teams bridge per listener port, and Switch enforces it.** Registering a
+second bridge on a port another one already uses is refused, naming the bridge
+that holds it:
+
+```
+'SandboxAQ Teams' already uses tcp/3978 on this instance, and two teams
+bridges cannot share it. Delete that bridge first, or give this one a
+different listen_port in its connection_config …
+```
+
+That refusal exists because the alternative is worse: two adapters racing for
+one port means the loser fails to bind inside a background task, gets dropped
+from the running set, and is never retried. The only symptom is
+`Bridge not running: <id>` the next time you use it — nowhere near the cause.
+
+A genuinely separate second bridge needs a distinct `listen_port` in its stored
+`connection_config`, **plus its own Service port and ingress route**. The chart
+publishes only one Teams port, so the second is yours to wire by hand. Consider
+whether you need it: one Azure app can serve one tenant's team, and most
+deployments want exactly one.
 
 ---
 
@@ -534,10 +551,12 @@ TLS trust, or an auth proxy in front.
 
 **`Bridge not running: <bridge id>`** when adding a room
 The bridge crashed during startup and was dropped; it is not retried until
-switch-core restarts. Look for `Bridge <id> crashed` in the logs. On Teams the
-usual cause is `address already in use` on 3978 — a second Teams bridge cannot
-bind the same port. Delete the old bridge, then restart switch-core to bring the
-survivor up.
+switch-core restarts. Look for `Bridge <id> crashed` in the logs.
+
+On Teams the classic cause was `address already in use` on 3978 — a second Teams
+bridge cannot bind the same port. Registering one is now refused outright, so
+this should only appear for bridges created before that check existed. Delete
+the duplicate, then restart switch-core to bring the survivor up.
 
 **`Authorization_RequestDenied` from Graph**
 A permission is present but not admin-consented, or you granted a delegated

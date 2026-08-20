@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -354,3 +354,112 @@ async def test_register_verifies_the_prepared_config_not_the_raw_request() -> No
         )
 
     assert _RecordingAdapter.seen_config["generated"] == "yes"
+
+
+# ── Refusing a second Teams bridge ───────────────────────────────────────────
+
+
+def test_exclusive_resource_is_the_listener_port() -> None:
+    assert TeamsAdapter.exclusive_resource(_raw_config(client_state="s")) == "tcp/3978"
+    assert (
+        TeamsAdapter.exclusive_resource(_raw_config(client_state="s", listen_port=3979))
+        == "tcp/3979"
+    )
+
+
+def test_outbound_only_adapters_claim_nothing() -> None:
+    """Slack, Discord and Mattermost dial out; any number can coexist."""
+    assert CollaborationAdapter.exclusive_resource({}) is None
+
+
+def _service_with_existing(existing: list[Any]) -> CollaborationBridgeLifecycleService:
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    store = MagicMock()
+    store.get_all = AsyncMock(return_value=existing)
+    service = CollaborationBridgeLifecycleService(
+        bridge_store=store,
+        external_user_store=MagicMock(),
+        bridge_message_map_store=MagicMock(),
+        room_store=MagicMock(),
+        agent_store=MagicMock(),
+        client_store=MagicMock(),
+        client_lifecycle=MagicMock(),
+        room_service=MagicMock(),
+        matrix_admin=MagicMock(),
+        session_factory=MagicMock(return_value=session),
+        config=MagicMock(),
+    )
+    service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
+    return service
+
+
+def _stored_bridge(**overrides: Any) -> Any:
+    bridge = MagicMock()
+    bridge.id = overrides.pop("id", "existing-id")
+    bridge.type = overrides.pop("type", "teams")
+    bridge.display_name = overrides.pop("display_name", "SandboxAQ Teams")
+    bridge.connection_config = TeamsAdapter.prepare_config(_raw_config(**overrides))
+    return bridge
+
+
+async def test_second_teams_bridge_on_the_same_port_is_refused() -> None:
+    """The failure this replaces was a bind error in a background task."""
+    service = _service_with_existing([_stored_bridge()])
+
+    with pytest.raises(ValueError) as excinfo:
+        await service.register(
+            bridge_type="teams",
+            display_name="Second Teams",
+            connection_config=_raw_config(),
+        )
+
+    message = str(excinfo.value)
+    assert "SandboxAQ Teams" in message
+    assert "tcp/3978" in message
+
+
+async def test_a_second_bridge_on_its_own_port_is_allowed_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refuse the collision, not the configuration.
+
+    Getting past this check is not the same as working — the chart publishes one
+    Teams port — but that is the operator's deliberate choice to make.
+    """
+    service = _service_with_existing([_stored_bridge()])
+    monkeypatch.setattr(
+        TeamsAdapter, "verify_credentials", AsyncMock(return_value=None)
+    )
+    service._client_lifecycle.create_client = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("stop here — past the conflict check")
+    )
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        await service.register(
+            bridge_type="teams",
+            display_name="Second Teams",
+            connection_config=_raw_config(listen_port=3979),
+        )
+
+
+async def test_a_non_teams_bridge_is_not_blocked_by_a_teams_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slack = _stored_bridge(id="slack-id", type="slack")
+    slack.connection_config = {"bot_token": "x"}
+    service = _service_with_existing([slack])
+    monkeypatch.setattr(
+        TeamsAdapter, "verify_credentials", AsyncMock(return_value=None)
+    )
+    service._client_lifecycle.create_client = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("stop here — past the conflict check")
+    )
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        await service.register(
+            bridge_type="teams",
+            display_name="Teams",
+            connection_config=_raw_config(),
+        )
