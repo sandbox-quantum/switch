@@ -67,6 +67,10 @@ _TEAMS_ID = re.compile(
 )
 # A newline with no newline either side of it.
 _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
+# Both prefixes reach the same dispatcher. `!` is Switch's own; `/` is what a
+# Teams command list types into the compose box when someone picks a command,
+# and what anyone who has used Slack will try first.
+_COMMAND_PREFIXES = ("!", "/")
 
 
 def _handle_for(user: dict[str, Any]) -> str:
@@ -1157,6 +1161,23 @@ class TeamsAdapter(CollaborationAdapter):
         self._sender_handles[sender_id] = handle
         return handle
 
+    @staticmethod
+    def _command_name(token: str) -> str:
+        """The command a leading `!name` or `/name` token names.
+
+        Teams has no server-registered slash commands — a bot's command list
+        is declared in its app manifest and, when picked, simply types the text
+        into the compose box. So `/help` reaches us as an ordinary message and
+        the two prefixes are the same thing by the time we see them.
+        """
+        return token.lstrip("!/")
+
+    def slash_invite_hint(self) -> str | None:
+        # Only worth advertising once the operator has declared the commands in
+        # the app manifest, which the setup guide covers; the `!` form works
+        # regardless, and both reach the same dispatcher.
+        return "`/invite-agent @agent-name` — if the Switch commands are in your Teams app manifest"
+
     def is_placeholder_username(self, username: str) -> bool:
         # Every id Teams hands out for a person is one of two shapes: a
         # channel-account id, prefixed with digits and a colon (`29:1AbC…`,
@@ -1331,7 +1352,7 @@ class TeamsAdapter(CollaborationAdapter):
             is_channel=channel_type in ("channel_public", "channel_private"),
         )
         command_probe = (command_text if command_text is not None else text).strip()
-        if command_probe.startswith("!") and self._on_command is not None:
+        if command_probe[:1] in _COMMAND_PREFIXES and self._on_command is not None:
             parts = command_probe.split(None, 1)
             await self._on_command(
                 InboundCommand(
@@ -1339,7 +1360,7 @@ class TeamsAdapter(CollaborationAdapter):
                     channel_type=channel_type,
                     sender_id=sender_id,
                     sender_name=sender_name,
-                    command=parts[0].lstrip("!"),
+                    command=self._command_name(parts[0]),
                     args=parts[1].strip() if len(parts) > 1 else "",
                     message_ref=message_ref,
                     root_id=root_id,

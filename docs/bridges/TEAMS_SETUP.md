@@ -634,23 +634,50 @@ never accepted an inbound activity — see the `serviceUrl` entry in
 
 ---
 
-## In-channel commands
+## Commands
 
-Switch's `!` commands work in a Teams channel, but the bot must be mentioned
-for the message to reach Switch at all:
+Both `!list-agents` and `/list-agents` work, and reach the same place. In a
+**channel** the bot must be mentioned for the message to reach Switch at all:
 
 ```text
-@YourBot !list-agents
+@YourBot /list-agents
 ```
 
-The mention is stripped before the command is parsed, so `@YourBot !help`,
+The mention is stripped before the command is parsed, so `@YourBot /help`,
 `@YourBot !invite-agent @agent-name` and the rest behave as they do elsewhere.
-A bare `!list-agents` with no mention only works where Graph channel capture is
-live ([1.4](#14-graph-api-permissions)), because without it the Bot Framework
-never delivers the message.
+A bare command with no mention only works where Graph channel capture is live
+([1.4](#14-graph-api-permissions)); without it the Bot Framework never delivers
+the message. In a 1:1 chat no mention is needed.
 
-Teams has no native slash commands in Switch — unlike Slack, Discord and
-Telegram, which declare them to the platform. Use the `!` form.
+### Putting the commands in the Teams UI
+
+Teams has no server-registered slash commands the way Slack does. What it has
+is a **command list**, declared in your app manifest ([1.6](#16-teams-app-package)),
+which shows the commands above the compose box; picking one types it in and
+sends it. Add this to your manifest's `bots[0]`:
+
+```json
+"commandLists": [
+  {
+    "scopes": ["team", "groupChat", "personal"],
+    "commands": [
+      { "title": "/help", "description": "List the commands Switch understands" },
+      { "title": "/list-agents", "description": "Agents in this room" },
+      { "title": "/invite-agent", "description": "Add an agent by name: /invite-agent @agent-name" },
+      { "title": "/status", "description": "What the agents here are working on" }
+    ]
+  }
+]
+```
+
+Two things to know. The list is **presentation only** — Teams sends the text
+and Switch parses it, so a command missing from the manifest still works if
+someone types it, and a command in the manifest that Switch does not know
+returns the usual "unknown command". And in a channel the command still needs
+the bot mentioned, so the menu inserts `/list-agents` and you add `@YourBot` in
+front.
+
+`!` remains available everywhere and needs no manifest at all.
 
 ---
 

@@ -165,3 +165,28 @@ def test_send_message_does_not_translate_again() -> None:
     assert activity["attachments"][0]["content"]["body"][-1]["text"] == already
     assert "<at><at>" not in already
     assert "\n\n\n" not in already
+
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+
+def test_both_command_prefixes_name_the_same_command() -> None:
+    # Teams has no server-registered slash commands: a manifest command list
+    # types the text into the compose box, so `/help` arrives as an ordinary
+    # message. By the time we see it the two prefixes are the same thing.
+    assert TeamsAdapter._command_name("!list-agents") == "list-agents"
+    assert TeamsAdapter._command_name("/list-agents") == "list-agents"
+
+
+def test_a_bare_word_is_not_mistaken_for_a_command_name() -> None:
+    assert TeamsAdapter._command_name("list-agents") == "list-agents"
+
+
+def test_the_invite_hint_names_the_slash_form_and_its_condition() -> None:
+    hint = _adapter().slash_invite_hint()
+
+    assert hint is not None
+    assert "/invite-agent" in hint
+    # Advertising it unconditionally would send people to a menu they have not
+    # declared in their app manifest yet.
+    assert "manifest" in hint
