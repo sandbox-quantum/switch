@@ -369,6 +369,9 @@ class TeamsAdapter(CollaborationAdapter):
         # AAD object id -> the handle we know that person by, so a directory
         # read happens once per sender rather than once per message.
         self._sender_handles: dict[str, str] = {}
+        # channel id -> the post the bridge last saw a message in there, so a
+        # reply that names no thread lands under what it is answering.
+        self._last_post: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
@@ -598,6 +601,32 @@ class TeamsAdapter(CollaborationAdapter):
     def _thread_conversation(channel_id: str, root_id: str) -> str:
         return f"{channel_id};messageid={root_id}"
 
+    def _post_to_answer_in(
+        self, channel_id: str, thread_root_id: str | None
+    ) -> str | None:
+        """Which post a channel reply belongs under.
+
+        A Teams channel is a list of posts, not a stream of messages: posting
+        at the root starts a new conversation. So an agent answering a question
+        must land under the question, and an answer that arrives as a fresh
+        post reads as a non-sequitur — the reply and what it replies to end up
+        in different places.
+
+        A caller that named a thread knows better than we do and wins. What
+        this covers is the caller that named none, which is any agent whose
+        reply was not itself threaded in Matrix: answer in the post the bridge
+        last saw this channel speak in, rather than opening a new one.
+
+        The limitation, stated because it is real: "last" is per channel, so
+        two conversations running in the same channel at the same moment can
+        cross. Teams gives no better signal on an untied reply, and landing in
+        the wrong post beats starting a fresh one every time. Chats and group
+        chats are untouched — they have no posts to be wrong about.
+        """
+        if thread_root_id is not None or not self._is_channel(channel_id):
+            return thread_root_id
+        return self._last_post.get(channel_id)
+
     async def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
         icon_url = await self.agent_icon_url(sender_name)
         mentions = self._mention_entities(body)
@@ -630,6 +659,7 @@ class TeamsAdapter(CollaborationAdapter):
         # `translate_outbound` first, and rendering again here put the body
         # through the conversion twice.
         activity = await self._message_activity(sender_name, content)
+        thread_root_id = self._post_to_answer_in(channel_id, thread_root_id)
 
         if self._is_channel(channel_id) and thread_root_id is None:
             conversation_id, msg_id = await self._connector.create_channel_thread(
@@ -668,6 +698,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         service_url = self._service_url_for(channel_id)
         body = self.translate_outbound(content)
+        thread_root_id = self._post_to_answer_in(channel_id, thread_root_id)
         activity: dict[str, Any] = {"type": "message", "text": body}
         mentions = self._mention_entities(body)
         if mentions:
@@ -1257,6 +1288,11 @@ class TeamsAdapter(CollaborationAdapter):
         used only to detect and parse ``!``-commands (a channel command arrives as
         ``@Bot !cmd``), while ``text`` — mention intact — is what a plain message
         is bridged as. Defaults to ``text`` when the caller has nothing to strip."""
+        if channel_type in ("channel_public", "channel_private"):
+            # The post this message sits in — itself, when it opened the post.
+            # Remembered so an untied reply lands under the question rather
+            # than starting a conversation of its own; see _post_to_answer_in.
+            self._last_post[channel_id] = root_id or message_ref
         command_probe = (command_text if command_text is not None else text).strip()
         if command_probe.startswith("!") and self._on_command is not None:
             parts = command_probe.split(None, 1)

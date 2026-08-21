@@ -119,6 +119,14 @@ version of their own to them without also giving them a release of their own.
   surfaces only as an opaque `AADSTS7000215` at the first Graph call.
 
 #### Fixed
+- An agent answering in a Teams channel replies inside the post it was asked
+  in. A channel is a list of posts rather than a stream, so posting at the root
+  opens a new conversation — the question sat in one post and the answer
+  appeared as a fresh one below it. A reply that names no thread now goes to
+  the post the bridge last saw that channel speak in. Per channel, so two
+  conversations at once in the same channel can still cross; Teams offers no
+  better signal on an untied reply, and the wrong post beats a new one every
+  time. Chats and group chats are unaffected.
 - Teams messages are rendered for Teams. Shared bridge code emitted Slack's
   `<@id>` mention form on every platform, so a Teams user was told they had
   tagged `<@28:f52a8fbb-…>`; an `@name` was inert text, because Teams needs
