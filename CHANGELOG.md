@@ -119,6 +119,34 @@ version of their own to them without also giving them a release of their own.
   surfaces only as an opaque `AADSTS7000215` at the first Graph call.
 
 #### Fixed
+- Teams messages are rendered for Teams. Shared bridge code emitted Slack's
+  `<@id>` mention form on every platform, so a Teams user was told they had
+  tagged `<@28:f52a8fbb-…>`; an `@name` was inert text, because Teams needs
+  `<at>` markup *and* a matching entity and the adapter emitted neither, so an
+  agent could never notify its owner; and single line breaks vanished, because
+  an Adaptive Card text block follows Markdown in treating one newline as
+  whitespace. Outbound bodies were also being rendered twice — callers of
+  `send_message` render first by contract, and Slack and Teams rendered again,
+  which Slack's real conversion has been quietly suffering.
+- A Teams sender with no name attached is looked up rather than filed under
+  their id. Teams omits the sender's name from some activities — 1:1 chats
+  especially — and the raw `29:…` id became that person's name in the room
+  title, on their Matrix account and in every reply addressing them. The
+  directory and the message paths now also agree on one handle (the local part
+  of the principal name) instead of storing a principal name from one and a
+  display name from the other. Existing records keep the name they were
+  created with.
+- Directory search matches on user principal name, so confirming a claim finds
+  the person who was just picked from the list. It searched display name and
+  mail only, then re-searched by principal name to confirm — a 404 for anyone
+  whose mail differs from their UPN or who has none. `User.ReadBasic.All` is
+  also now documented; without it the search fails and nobody can link an
+  account at all.
+- The "Open in Switch Console" link no longer renders as empty brackets on
+  Teams. Teams strips a link whose scheme is not http(s) — label included —
+  and the console deeplink is `switchdash://`. Teams now declares that, so the
+  URL is rewritten to the gateway redirect as it already was for Discord and
+  Telegram, and a deployment missing `GATEWAY_PUBLIC_URL` is told at startup.
 - Adding a room to a bridge no longer answers `500` when the platform refuses
   to create the channel. Graph says exactly what is wrong — which permission is
   missing, which value it will not take — and that sentence went to the log

@@ -11,7 +11,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 import httpx
@@ -61,6 +61,25 @@ _MENTION_NAME = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
 _AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
 # A newline with no newline either side of it.
 _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
+
+
+def _handle_for(user: dict[str, Any]) -> str:
+    """The handle Switch knows a Teams person by.
+
+    The local part of their user principal name — `louis.amaudruz` from
+    `louis.amaudruz@contoso.com`. Unique within a tenant, and unlike a display
+    name it survives being written as `@handle`, which is how someone is
+    addressed in a room and how an outbound mention is matched back to them.
+
+    Every path that meets a person must agree on this, or the same human gets
+    two records: the directory used to yield the whole principal name while
+    inbound messages yielded the display name, and whichever arrived first won.
+    """
+    principal = str(user.get("userPrincipalName") or "")
+    if principal:
+        return principal.split("@", 1)[0]
+    display = str(user.get("displayName") or "")
+    return display or str(user.get("id") or "")
 
 
 def _hard_wrap(text: str) -> str:
@@ -246,6 +265,13 @@ class TeamsAdapter(CollaborationAdapter):
     Graph subscriptions is layered on in a later phase.
     """
 
+    # Teams keeps only http(s) anchors: a link on any other scheme is stripped
+    # whole, label and all, so a `switchdash://` deeplink left the literal
+    # brackets around it and rendered as "()". It needs the https redirect,
+    # which means `GATEWAY_PUBLIC_URL` must be set — and declaring this is what
+    # makes the lifecycle say so at startup when it is not.
+    renders_custom_url_schemes: ClassVar[bool] = False
+
     @classmethod
     async def prepare_config(
         cls, connection_config: dict[str, object]
@@ -340,6 +366,9 @@ class TeamsAdapter(CollaborationAdapter):
         self._channel_type: dict[str, ChannelType] = {}
         # casefolded username -> AAD object id, for rendering real @mentions.
         self._mention_targets: dict[str, str] = {}
+        # AAD object id -> the handle we know that person by, so a directory
+        # read happens once per sender rather than once per message.
+        self._sender_handles: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
@@ -890,7 +919,7 @@ class TeamsAdapter(CollaborationAdapter):
         results = [
             DirectoryUser(
                 external_user_id=str(user.get("id")),
-                username=str(user.get("userPrincipalName") or user.get("id") or ""),
+                username=_handle_for(user),
                 display_name=str(
                     user.get("displayName") or user.get("userPrincipalName") or ""
                 ),
@@ -1036,6 +1065,40 @@ class TeamsAdapter(CollaborationAdapter):
             )
         return entities
 
+    async def _sender_handle(self, sender_id: str, offered_name: str) -> str:
+        """The handle to file an inbound sender under.
+
+        Teams omits the sender's name from some activities — 1:1 chats above
+        all — and the fallback was the raw id, so `29:1fRClM25SXVf…` became a
+        person's name: in the room title, on their Matrix account, and in the
+        text of every agent reply that addressed them. An id is never a name,
+        so look one up instead, and only give up when Graph cannot say either.
+
+        Cached per sender: it is one directory read per person, on a value that
+        does not change between messages.
+        """
+        cached = self._sender_handles.get(sender_id)
+        if cached is not None:
+            return cached
+        handle = ""
+        # A name Teams itself offered is good enough and costs nothing; only an
+        # id masquerading as one sends us to Graph.
+        if offered_name and offered_name != sender_id:
+            handle = offered_name
+        elif self._graph is not None and sender_id:
+            try:
+                handle = _handle_for(await self._graph.get_user(user_id=sender_id))
+            except Exception:
+                logger.warning(
+                    "Could not resolve a name for Teams sender %s; falling back "
+                    "to their id",
+                    sender_id,
+                    exc_info=True,
+                )
+        handle = handle or sender_id
+        self._sender_handles[sender_id] = handle
+        return handle
+
     def render_app_mention(self, token: str) -> str:
         # Teams' handle for the app is an id, not a name, and it has no inline
         # syntax that turns one into a mention — so name nobody and read
@@ -1132,7 +1195,9 @@ class TeamsAdapter(CollaborationAdapter):
 
         sender = activity.get("from") or {}
         sender_id = str(sender.get("aadObjectId") or sender.get("id") or "")
-        sender_name = str(sender.get("name") or sender_id)
+        sender_name = await self._sender_handle(
+            sender_id, str(sender.get("name") or "")
+        )
 
         raw_text = str(activity.get("text", ""))
         text = self._clean_text(raw_text)
@@ -1250,12 +1315,15 @@ class TeamsAdapter(CollaborationAdapter):
                         )
                     )
             elif self._on_user_joined is not None:
+                joiner_id = str(member.get("aadObjectId") or member_id)
                 await self._on_user_joined(
                     InboundUserJoin(
                         channel_id=channel_id,
                         channel_type=channel_type,
-                        external_user_id=str(member.get("aadObjectId") or member_id),
-                        external_username=str(member.get("name") or member_id),
+                        external_user_id=joiner_id,
+                        external_username=await self._sender_handle(
+                            joiner_id, str(member.get("name") or "")
+                        ),
                         channel_name=channel_name,
                     )
                 )
@@ -1569,7 +1637,9 @@ class TeamsAdapter(CollaborationAdapter):
         else:
             user = sender.get("user") or {}
             sender_id = str(user.get("id", ""))
-            sender_name = str(user.get("displayName") or sender_id)
+            sender_name = await self._sender_handle(
+                sender_id, str(user.get("displayName") or "")
+            )
 
         identity = chat_message.get("channelIdentity") or {}
         channel_id = str(identity.get("channelId", ""))

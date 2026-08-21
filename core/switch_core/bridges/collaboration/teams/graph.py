@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -168,7 +169,15 @@ class GraphClient:
         resp = await self._http.get(
             f"{GRAPH_BASE}/users",
             params={
-                "$search": f'"displayName:{escaped}" OR "mail:{escaped}"',
+                # userPrincipalName is searched as well as name and mail
+                # because it is the handle Switch stores and later searches
+                # back for when a claim is confirmed. Without it, a tenant
+                # whose mail differs from its UPN — or has none — 404s on
+                # someone the user just picked out of this very list.
+                "$search": (
+                    f'"displayName:{escaped}" OR "mail:{escaped}" '
+                    f'OR "userPrincipalName:{escaped}"'
+                ),
                 "$select": "id,displayName,userPrincipalName,mail",
                 "$top": str(top),
             },
@@ -179,6 +188,23 @@ class GraphClient:
         payload: dict[str, Any] = resp.json()
         users: list[dict[str, Any]] = payload.get("value", []) or []
         return users
+
+    async def get_user(self, *, user_id: str) -> dict[str, Any]:
+        """One directory user by AAD object id.
+
+        Teams leaves the sender's name off some activities — 1:1 chats in
+        particular — and an id is not a name, however much the shape of the
+        code lets it stand in for one.
+        """
+        resp = await self._http.get(
+            f"{GRAPH_BASE}/users/{quote(user_id, safe='')}",
+            params={"$select": "id,displayName,userPrincipalName,mail"},
+            headers=await self._headers(),
+        )
+        if resp.status_code >= 300:
+            raise _graph_error(f"get user {user_id}", resp)
+        result: dict[str, Any] = resp.json()
+        return result
 
     async def add_channel_member(
         self, *, team_id: str, channel_id: str, user_aad_id: str

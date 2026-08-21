@@ -142,6 +142,12 @@ with no signed-in user.
 | `ChannelMessage.Read.Group` (RSC, preferred) or `ChannelMessage.Read.All` | Full channel-message capture |
 | `Channel.Create` | Creating a channel when a Switch room is added to the bridge |
 | `TeamMember.ReadWrite.All` / `ChannelMember.ReadWrite.All` | Adding members to provisioned channels |
+| `User.ReadBasic.All` | Finding people in the directory, so they can link their account — and resolving a sender's name when Teams omits it |
+
+Do not skip the last one because nobody is linking accounts yet. Without it,
+Switch cannot look up who sent a message when Teams does not say, and falls
+back to their raw id — which then becomes their name in room titles and in
+every reply that addresses them.
 
 Prefer the RSC (resource-specific consent) variant where possible: it is scoped
 to the teams the app is installed in, rather than tenant-wide.
@@ -600,6 +606,14 @@ switch-core to bring the survivor up.
 **`Authorization_RequestDenied` from Graph**
 A permission is present but not admin-consented, or you granted a delegated
 permission where an application permission is required. See 1.4.
+
+**Nobody can link their account: the people search errors, or says the person
+does not exist right after you picked them from the list**
+Directory search reads `User.ReadBasic.All`, which was missing from this page
+for a while — see 1.4. Without it the search fails outright; the message you
+get names neither the permission nor Graph. Until someone is linked, an agent
+has no way to @-mention its owner, so this looks like "the agent ignores me"
+rather than a setup step.
 
 ---
 
