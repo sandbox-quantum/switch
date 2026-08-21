@@ -119,6 +119,15 @@ version of their own to them without also giving them a release of their own.
   surfaces only as an opaque `AADSTS7000215` at the first Graph call.
 
 #### Fixed
+- A Graph permission granted while the bridge is running takes effect on the
+  next call instead of within the hour. An app's roles are stamped into its
+  access token when it is issued, so consent granted afterwards is invisible
+  for the token's lifetime — Graph keeps answering `Authorization_RequestDenied`
+  on a permission the operator can see plainly granted in Azure, which sends
+  them back to look at it again. A `401` or `403` from Graph now discards the
+  cached token and retries once with a fresh one. Once, and only when the token
+  was old enough to have missed the grant, so a genuine denial costs one extra
+  round trip rather than looping.
 - An agent answering in a Teams channel replies inside the post it was asked
   in. A channel is a list of posts rather than a stream, so posting at the root
   opens a new conversation — the question sat in one post and the answer

@@ -7,11 +7,14 @@ from urllib.parse import quote
 import httpx
 
 from switch_core.bridges.collaboration.models import BridgeOperationError
-from switch_core.bridges.collaboration.teams.auth import TeamsTokenProvider
+from switch_core.bridges.collaboration.teams.auth import GRAPH_SCOPE, TeamsTokenProvider
 
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+# How old our token must be before an authorization refusal is worth re-minting
+# it for. A token issued seconds ago cannot have missed a grant.
+_TOKEN_RETRY_AGE = 30.0
 
 
 class GraphError(BridgeOperationError):
@@ -50,9 +53,51 @@ class GraphClient:
         self._tokens = tokens
         self._http = http
 
-    async def _headers(self) -> dict[str, str]:
+    async def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         token = await self._tokens.graph_token()
-        return {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}"}
+        if extra:
+            headers.update(extra)
+        return headers
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        extra_headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Make a Graph call, retrying once if the token predates a new grant.
+
+        Graph roles are carried in the token, not looked up per call, so a
+        permission consented after ours was issued does nothing until the token
+        is replaced — the refusal names a permission the operator can see is
+        granted, and says it for as long as the token lives. When Graph refuses
+        on authorization we therefore drop the token and ask once more with a
+        newly minted one.
+
+        Exactly once, and only if the token was old enough to have missed the
+        grant, so a genuine denial costs one extra round trip rather than
+        looping.
+        """
+        resp = await self._http.request(
+            method, url, headers=await self._headers(extra_headers), **kwargs
+        )
+        if resp.status_code not in (401, 403):
+            return resp
+        if not self._tokens.invalidate(GRAPH_SCOPE, min_age_seconds=_TOKEN_RETRY_AGE):
+            return resp
+        logger.info(
+            "Graph refused %s %s with %d; retrying once with a freshly issued "
+            "token, in case a permission was granted since the last one",
+            method,
+            url,
+            resp.status_code,
+        )
+        return await self._http.request(
+            method, url, headers=await self._headers(extra_headers), **kwargs
+        )
 
     async def create_subscription(
         self,
@@ -82,9 +127,7 @@ class GraphClient:
             "clientState": client_state,
             "expirationDateTime": expiration_iso,
         }
-        resp = await self._http.post(
-            f"{GRAPH_BASE}/subscriptions", json=body, headers=await self._headers()
-        )
+        resp = await self._send("POST", f"{GRAPH_BASE}/subscriptions", json=body)
         if resp.status_code >= 300:
             raise _graph_error(f"create subscription for {resource}", resp)
         result: dict[str, Any] = resp.json()
@@ -93,26 +136,23 @@ class GraphClient:
     async def renew_subscription(
         self, *, subscription_id: str, expiration_iso: str
     ) -> None:
-        resp = await self._http.patch(
+        resp = await self._send(
+            "PATCH",
             f"{GRAPH_BASE}/subscriptions/{subscription_id}",
             json={"expirationDateTime": expiration_iso},
-            headers=await self._headers(),
         )
         if resp.status_code >= 300:
             raise _graph_error(f"renew subscription {subscription_id}", resp)
 
     async def delete_subscription(self, *, subscription_id: str) -> None:
-        resp = await self._http.delete(
-            f"{GRAPH_BASE}/subscriptions/{subscription_id}",
-            headers=await self._headers(),
+        resp = await self._send(
+            "DELETE", f"{GRAPH_BASE}/subscriptions/{subscription_id}"
         )
         if resp.status_code >= 300 and resp.status_code != 404:
             raise _graph_error(f"delete subscription {subscription_id}", resp)
 
     async def list_subscriptions(self) -> list[dict[str, Any]]:
-        resp = await self._http.get(
-            f"{GRAPH_BASE}/subscriptions", headers=await self._headers()
-        )
+        resp = await self._send("GET", f"{GRAPH_BASE}/subscriptions")
         if resp.status_code >= 300:
             raise _graph_error("list subscriptions", resp)
         value: list[dict[str, Any]] = resp.json().get("value", [])
@@ -135,10 +175,8 @@ class GraphClient:
             "description": description,
             "membershipType": membership_type,
         }
-        resp = await self._http.post(
-            f"{GRAPH_BASE}/teams/{team_id}/channels",
-            json=body,
-            headers=await self._headers(),
+        resp = await self._send(
+            "POST", f"{GRAPH_BASE}/teams/{team_id}/channels", json=body
         )
         if resp.status_code >= 300:
             raise _graph_error(
@@ -148,9 +186,8 @@ class GraphClient:
         return result
 
     async def get_channel(self, *, team_id: str, channel_id: str) -> dict[str, Any]:
-        resp = await self._http.get(
-            f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}",
-            headers=await self._headers(),
+        resp = await self._send(
+            "GET", f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}"
         )
         if resp.status_code >= 300:
             raise _graph_error(f"get channel {channel_id}", resp)
@@ -164,10 +201,10 @@ class GraphClient:
         ConsistencyLevel header. Returns the raw Graph user objects.
         """
         escaped = query.replace('"', '\\"')
-        headers = await self._headers()
-        headers["ConsistencyLevel"] = "eventual"
-        resp = await self._http.get(
+        resp = await self._send(
+            "GET",
             f"{GRAPH_BASE}/users",
+            extra_headers={"ConsistencyLevel": "eventual"},
             params={
                 # userPrincipalName is searched as well as name and mail
                 # because it is the handle Switch stores and later searches
@@ -181,7 +218,6 @@ class GraphClient:
                 "$select": "id,displayName,userPrincipalName,mail",
                 "$top": str(top),
             },
-            headers=headers,
         )
         if resp.status_code >= 300:
             raise _graph_error(f"user search for {query!r}", resp)
@@ -196,10 +232,10 @@ class GraphClient:
         particular — and an id is not a name, however much the shape of the
         code lets it stand in for one.
         """
-        resp = await self._http.get(
+        resp = await self._send(
+            "GET",
             f"{GRAPH_BASE}/users/{quote(user_id, safe='')}",
             params={"$select": "id,displayName,userPrincipalName,mail"},
-            headers=await self._headers(),
         )
         if resp.status_code >= 300:
             raise _graph_error(f"get user {user_id}", resp)
@@ -215,10 +251,10 @@ class GraphClient:
             "roles": [],
             "user@odata.bind": (f"{GRAPH_BASE}/users('{user_aad_id}')"),
         }
-        resp = await self._http.post(
+        resp = await self._send(
+            "POST",
             f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/members",
             json=body,
-            headers=await self._headers(),
         )
         if resp.status_code >= 300 and resp.status_code != 409:
             raise _graph_error(
@@ -232,10 +268,8 @@ class GraphClient:
             "roles": [],
             "user@odata.bind": (f"{GRAPH_BASE}/users('{user_aad_id}')"),
         }
-        resp = await self._http.post(
-            f"{GRAPH_BASE}/teams/{team_id}/members",
-            json=body,
-            headers=await self._headers(),
+        resp = await self._send(
+            "POST", f"{GRAPH_BASE}/teams/{team_id}/members", json=body
         )
         if resp.status_code >= 300 and resp.status_code != 409:
             raise _graph_error(f"add member {user_aad_id} to team {team_id}", resp)

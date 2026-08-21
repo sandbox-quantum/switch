@@ -544,13 +544,14 @@ logged as `Capture recovered for Teams channel <id>`. Repeats of an unchanged
 failure are logged at debug to keep the log readable, but a **change** in the
 reason is logged — that is the interesting event.
 
-**Capture still failing on a permission you have already granted**
+**Still failing on a permission you have already granted**
 An app's Graph roles are fixed when its access token is issued, and tokens last
-about an hour. Consent granted while the bridge is running therefore changes
-nothing until the token is replaced, and Graph keeps answering `403` with
-`Roles on the request ''` — sending you back to Azure, where the permission is
-now plainly there. Restart switch-core to force a new token, or wait for the
-retry to pick one up after the current token expires.
+about an hour, so consent granted while the bridge is running does nothing
+until the token is replaced. Switch handles this: a Graph call refused with
+`401` or `403` throws the cached token away and tries once more with a freshly
+minted one, so a grant takes effect on the next attempt rather than at the next
+restart. If a refusal persists past that, the permission really is missing or
+unconsented — check 1.4.
 
 **`Failed to resolve domain <host>: No such host is known`** (inside that error)
 `public_base_url` points at a name Microsoft cannot resolve. A Tailscale or

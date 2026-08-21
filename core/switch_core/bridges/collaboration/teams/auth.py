@@ -45,8 +45,28 @@ class TeamsTokenProvider:
         self._app_id = app_id
         self._app_password = app_password
         self._http = http
-        # scope -> (access_token, expires_at_epoch)
-        self._cache: dict[str, tuple[str, float]] = {}
+        # scope -> (access_token, expires_at_epoch, issued_at_epoch)
+        self._cache: dict[str, tuple[str, float, float]] = {}
+
+    def invalidate(self, scope: str, *, min_age_seconds: float = 0.0) -> bool:
+        """Drop a cached token so the next call mints a fresh one.
+
+        An app's Graph roles are fixed when its token is issued, so a permission
+        consented while the bridge is running is invisible for as long as the
+        token lasts — about an hour of Graph insisting a permission is missing
+        while the operator looks at it plainly granted in Azure. Throwing the
+        token away on that refusal is what turns an hour into a second.
+
+        ``min_age_seconds`` guards the pathological case: a token minted moments
+        ago cannot have missed a grant, so re-minting it would only add a round
+        trip to every genuine denial. Returns whether anything was dropped, so a
+        caller can skip a retry that has nothing new to offer.
+        """
+        cached = self._cache.get(scope)
+        if cached is None or time.time() - cached[2] < min_age_seconds:
+            return False
+        del self._cache[scope]
+        return True
 
     async def token(self, scope: str) -> str:
         cached = self._cache.get(scope)
@@ -82,7 +102,7 @@ class TeamsTokenProvider:
                 f"{resp.status_code} with an unusable body: {resp.text[:500]}"
             ) from exc
         expires_in = float(payload.get("expires_in", 3600))
-        self._cache[scope] = (access_token, now + expires_in)
+        self._cache[scope] = (access_token, now + expires_in, now)
         return access_token
 
     async def bot_token(self) -> str:
