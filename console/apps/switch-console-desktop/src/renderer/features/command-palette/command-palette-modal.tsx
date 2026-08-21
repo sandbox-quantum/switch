@@ -19,9 +19,11 @@ import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { scopeToLocationServer } from '@renderer/lib/layout/scope-to-server';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState, sidebarStore } from '@renderer/lib/stores/app-state';
+import { report } from '@renderer/lib/telemetry/report';
 import { Shortcut } from '@renderer/lib/ui/shortcut';
 import { cn } from '@renderer/utils/utils';
 import { ALL_COMMAND_DEFS, type CommandDef } from '@shared/commands';
+import type { CommandId } from '@shared/commands';
 import type { SearchItem, SearchResult } from '@shared/core/search';
 import { getCommandIcon } from './command-icons';
 import { PaletteAgentItem } from './palette-agent-item';
@@ -234,6 +236,7 @@ export function CommandPaletteModal({
           icon: getCommandIcon(def?.iconKey),
           execute: () => {
             handleClose();
+            report('command_executed', { command_id: cmd.id as CommandId, invoked_by: 'palette' });
             cmd.execute();
           },
         };
@@ -317,6 +320,7 @@ export function CommandPaletteModal({
       icon: getCommandIcon(def?.iconKey),
       execute: () => {
         handleClose();
+        report('command_executed', { command_id: live.id as CommandId, invoked_by: 'palette' });
         live.execute();
       },
     };
@@ -504,6 +508,10 @@ export function CommandPaletteModal({
                     item={item}
                     onSelect={() => {
                       handleClose();
+                      report('command_executed', {
+                        command_id: live.id as CommandId,
+                        invoked_by: 'palette',
+                      });
                       live.execute();
                     }}
                   />

@@ -431,6 +431,16 @@ pnpm run lint
   agent, room, project, location or server names or ids. Widening this is a consent
   decision — the user-facing wording lives in
   `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step with it.
+- **The interface may report only through the one gate.** Almost everything is
+  reported from the main process, where a call site is type-checked against the
+  catalogue. The exceptions are moments that exist only in the UI — a screen
+  opened, a command run, a checklist abandoned — and they go through
+  `rpc.telemetry.track` into `src/main/core/telemetry/renderer-events.ts`, which
+  checks the event is one of the few permitted and every value against the set
+  the catalogue allows. That check is not ceremony: a type does not survive a
+  process boundary, so it is the only thing standing between a received value
+  and a payload. Do not add a second path, and if a moment can be observed from
+  the main process, observe it there.
 - **Telemetry never affects the user.** It is fire-and-forget with a short timeout and no
   retry: a send that fails is logged with an `errorCode` and dropped. It must never block,
   delay or fail an operation, and must never surface in the UI. It is off in a dev build,

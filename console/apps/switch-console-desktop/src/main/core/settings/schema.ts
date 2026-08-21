@@ -146,6 +146,16 @@ export const openInSettingsSchema = z.object({
  */
 export const onboardingSettingsSchema = z.object({
   showChecklist: z.boolean(),
+  /**
+   * When finishing the checklist was reported, or null.
+   *
+   * Completion is derived from what the app can see — a server exists, a room
+   * exists — so it is a condition rather than a moment: true on every render
+   * once it holds, and true again on every later launch. Without somewhere to
+   * remember that it has been reported, "finished onboarding" would be counted
+   * once per start-up for the rest of the install's life.
+   */
+  completedReportedAt: z.number().nullable(),
 });
 
 export const APP_SETTINGS_SCHEMA_MAP = {

@@ -734,6 +734,18 @@ version of their own to them without also giving them a release of their own.
   remote session's terminal and retrying a session that failed to set up are all
   reported now, each with whether it worked. Removing an agent distinguishes a
   person doing it from a server teardown sweeping every agent up with it.
+- Installing, updating and removing an agent's CLI is reported — the app's main
+  first-run wall, and previously invisible. So are creating and deleting rooms,
+  signing in and out, connecting a messaging app, setting up a remote host,
+  starting and stopping a managed server, and the update check and download.
+- Where people stop is now visible: the first-run checklist, the add-a-server
+  wizard, which screens get opened and which commands get run. Opening a link
+  from a message reports whether this copy of the app could find what the link
+  pointed at.
+- Turning usage sharing **on** is reported. Turning it off is not, and cannot
+  be: the check happens immediately before anything is sent, so the moment
+  someone declines is the moment nothing more is sent. The opt-out rate stays
+  unknown rather than being obtained that way.
 
 #### Fixed
 - Retrying a session that failed to set up now says whether it worked. The retry

@@ -142,6 +142,18 @@ export type TelemetryBridgePlatform =
   | 'other'
   | 'unknown';
 
+/**
+ * What asked for an update check.
+ *
+ * `startup` and `scheduled` are the app's own; `user` is a menu item or a button
+ * somebody pressed. Note a manual check that lands while an automatic one is
+ * already running joins it rather than starting a new one, so a small number of
+ * user checks are reported under the trigger that got there first.
+ */
+export type TelemetryUpdateTrigger = 'user' | 'startup' | 'scheduled';
+
+export type TelemetryBridgeFailure = 'none' | 'unauthenticated' | 'forbidden' | 'invalid' | 'error';
+
 export type TelemetryRoomCreateFailure =
   | 'none'
   | 'unauthenticated'
@@ -292,6 +304,65 @@ export type TelemetryEventMap = {
     agent_type: TelemetryAgentType;
     target: TelemetryLocationKind;
     outcome: 'success' | 'failure';
+  };
+  /**
+   * The app checked for an update. `trigger` separates a check someone asked for
+   * from the hourly one, because only the first says anything about intent.
+   */
+  update_checked: {
+    trigger: TelemetryUpdateTrigger;
+    result: 'available' | 'up_to_date' | 'failed';
+  };
+  update_downloaded: {
+    outcome: TelemetryOutcome;
+  };
+  /**
+   * An install was started — not finished.
+   *
+   * Deliberately named for what it can actually observe. A successful install
+   * quits the app, so there is no moment afterwards in which to report one; what
+   * this counts is the point the update was handed to the installer. Whether it
+   * worked is answered by the next `app_launched` and its version.
+   */
+  update_install_started: {
+    outcome: TelemetryOutcome;
+  };
+  /** A messaging platform was connected to a server. */
+  bridge_connected: {
+    bridge_platform: TelemetryBridgePlatform;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryBridgeFailure;
+  };
+  bridge_disconnected: {
+    bridge_platform: TelemetryBridgePlatform;
+  };
+  /** Someone linked their account on a messaging platform to their Switch user. */
+  bridge_identity_claimed: {
+    bridge_platform: TelemetryBridgePlatform;
+    outcome: TelemetryOutcome;
+  };
+  /**
+   * The connector was updated. `was_reinstall` separates a host with a single
+   * update verb from one where the connector must be removed and put back —
+   * Codex has no update verb, so for it every update has a window in the middle
+   * with nothing installed, and a failure there leaves the agent without one.
+   */
+  connector_updated: {
+    agent_type: TelemetryAgentType;
+    target: 'local' | 'remote';
+    outcome: TelemetryOutcome;
+    was_reinstall: boolean;
+  };
+  /**
+   * The connector was removed. The churn signal.
+   *
+   * Only ever `local`: there is no remote uninstall anywhere above the service,
+   * so a `remote` value here would be one that cannot occur.
+   */
+  connector_uninstalled: {
+    agent_type: TelemetryAgentType;
+    target: 'local';
+    outcome: TelemetryOutcome;
   };
   /**
    * An agent was removed. `delete_in_switch` says whether its identity on the
@@ -508,6 +579,14 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome'],
   connector_installed: ['agent_type', 'target', 'outcome'],
+  update_checked: ['trigger', 'result'],
+  update_downloaded: ['outcome'],
+  update_install_started: ['outcome'],
+  bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
+  bridge_disconnected: ['bridge_platform'],
+  bridge_identity_claimed: ['bridge_platform', 'outcome'],
+  connector_updated: ['agent_type', 'target', 'outcome', 'was_reinstall'],
+  connector_uninstalled: ['agent_type', 'target', 'outcome'],
   agent_removed: [
     'agent_type',
     'location',

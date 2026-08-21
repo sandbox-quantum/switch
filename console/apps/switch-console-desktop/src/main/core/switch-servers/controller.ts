@@ -22,6 +22,7 @@ import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryAuthMethod,
+  TelemetryBridgeFailure,
   TelemetryBridgePlatform,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
@@ -142,6 +143,22 @@ async function requireReachableServer(serverId: string): Promise<SwitchServer> {
   const blocked = managedServerHostBlocked(server);
   if (blocked) throw new HostUnreachableError(blocked);
   return server;
+}
+
+/** A bridge result's discriminant as a code. Never the message beside it. */
+function bridgeFailureReason(kind: string): TelemetryBridgeFailure {
+  switch (kind) {
+    case 'created':
+      return 'none';
+    case 'unauthenticated':
+      return 'unauthenticated';
+    case 'forbidden':
+      return 'forbidden';
+    case 'invalid':
+      return 'invalid';
+    default:
+      return 'error';
+  }
 }
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
@@ -349,13 +366,30 @@ export const switchServersController = createRPCController({
    */
   createBridge: async (params: CreateBridgeParams): Promise<CreateBridgeResult> => {
     const server = await requireReachableServer(params.serverId);
-    return createBridgeOnServer(server, {
-      bridgeType: params.bridgeType,
-      displayName: params.displayName,
-      connectionConfig: params.connectionConfig,
-      setAsDefault: params.setAsDefault,
-      channelCreationEnabled: params.channelCreationEnabled,
+    const platform = bridgePlatformOfType(params.bridgeType);
+    let result: CreateBridgeResult;
+    try {
+      result = await createBridgeOnServer(server, {
+        bridgeType: params.bridgeType,
+        displayName: params.displayName,
+        connectionConfig: params.connectionConfig,
+        setAsDefault: params.setAsDefault,
+        channelCreationEnabled: params.channelCreationEnabled,
+      });
+    } catch (error) {
+      trackEvent('bridge_connected', {
+        bridge_platform: platform,
+        outcome: 'failure',
+        failure_reason: 'error',
+      });
+      throw error;
+    }
+    trackEvent('bridge_connected', {
+      bridge_platform: platform,
+      outcome: result.kind === 'created' ? 'success' : 'failure',
+      failure_reason: bridgeFailureReason(result.kind),
     });
+    return result;
   },
 
   /**
@@ -377,8 +411,15 @@ export const switchServersController = createRPCController({
    * `deleteBridge`. The renderer owns the confirmation; by the time this runs
    * the rooms are being given up deliberately.
    */
-  deleteBridge: async (params: DeleteBridgeParams): Promise<DeleteBridgeResult> =>
-    deleteBridge(await requireReachableServer(params.serverId), params.bridgeId),
+  deleteBridge: async (params: DeleteBridgeParams): Promise<DeleteBridgeResult> => {
+    const server = await requireReachableServer(params.serverId);
+    // Looked up before the delete: this takes a bridge id, and afterwards there
+    // is no bridge left to read a platform from.
+    const platform = await bridgePlatformOf(server, params.bridgeId);
+    const result = await deleteBridge(server, params.bridgeId);
+    trackEvent('bridge_disconnected', { bridge_platform: platform });
+    return result;
+  },
 
   /**
    * Create a room on the chosen server, owned by the signed-in user. Room
@@ -517,12 +558,20 @@ export const switchServersController = createRPCController({
     ),
 
   /** Claim a messaging-app account as the signed-in Switch user's own. */
-  claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> =>
-    claimIdentityOnServer(await requireReachableServer(params.serverId), {
+  claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
+    const server = await requireReachableServer(params.serverId);
+    const platform = await bridgePlatformOf(server, params.bridgeId);
+    const result = await claimIdentityOnServer(server, {
       bridgeId: params.bridgeId,
       externalUserId: params.externalUserId,
       username: params.username,
-    }),
+    });
+    trackEvent('bridge_identity_claimed', {
+      bridge_platform: platform,
+      outcome: result.kind === 'claimed' ? 'success' : 'failure',
+    });
+    return result;
+  },
 
   /** Give up a claim on a messaging-app account, leaving any other user's claim
    * on it in place. `userId` is whose claim to drop — null for the signed-in

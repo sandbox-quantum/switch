@@ -1,4 +1,3 @@
-import { rpc } from '@renderer/lib/ipc';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 
 /**
@@ -11,10 +10,17 @@ import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-ev
  *
  * What may be reported, and which values each event accepts, is decided in the
  * main process. This is only the way to ask.
+ *
+ * The channel is imported when something is actually reported, not when this
+ * module is loaded. The renderer's client reads `window` as it initialises, so a
+ * static import would drag a browser global into every module that might one day
+ * report — including the ones exercised without a DOM.
  */
 export function report<K extends keyof RendererTelemetryEvents>(
   name: K,
   properties: RendererTelemetryEvents[K]
 ): void {
-  void rpc.telemetry.track({ name, properties }).catch(() => {});
+  void import('@renderer/lib/ipc')
+    .then(({ rpc }) => rpc.telemetry.track({ name, properties }))
+    .catch(() => {});
 }

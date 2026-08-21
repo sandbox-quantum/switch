@@ -77,8 +77,9 @@ export function handleDeeplinkUrl(rawUrl: string): void {
   focusWindow();
   const win = getMainWindow();
   if (win && !win.webContents.isLoading()) {
-    events.emit(sessionDeeplinkChannel, parsed);
+    events.emit(sessionDeeplinkChannel, { ...parsed, coldStart: false });
   } else {
+    // Buffered because there is no window yet — which is what a cold start is.
     pending = parsed;
   }
 }
@@ -86,7 +87,7 @@ export function handleDeeplinkUrl(rawUrl: string): void {
 /** Emit any deeplink buffered during a cold start, once the window has loaded. */
 export function flushPendingDeeplink(): void {
   if (pending === null) return;
-  events.emit(sessionDeeplinkChannel, pending);
+  events.emit(sessionDeeplinkChannel, { ...pending, coldStart: true });
   pending = null;
 }
 

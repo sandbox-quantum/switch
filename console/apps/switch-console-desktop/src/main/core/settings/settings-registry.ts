@@ -59,6 +59,7 @@ export const SETTINGS_DEFAULTS = {
   },
   onboarding: {
     showChecklist: true,
+    completedReportedAt: null,
   },
   changesViewMode: {
     unstaged: 'flat' as const,

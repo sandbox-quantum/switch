@@ -6,6 +6,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { report } from '@renderer/lib/telemetry/report';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -19,6 +20,10 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import type {
+  AddServerChoiceName,
+  AddServerStepName,
+} from '@shared/core/switch-servers/add-server-steps';
 import type {
   ServerApiUrlPropagation,
   SwitchServer,
@@ -75,6 +80,18 @@ type Props = BaseModalProps<void> & {
 type Step = 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
 
 /**
+ * This wizard's steps and the shared list of step names say the same thing.
+ *
+ * The list is what a drop-off is reported against and cannot import a component.
+ * Asserted both ways, so adding a step without naming it there — or leaving a
+ * name behind after removing one — fails to compile.
+ */
+const _stepsAreExhaustive: AddServerStepName extends Step ? true : never = true;
+const _stepsAreComplete: Step extends AddServerStepName ? true : never = true;
+void _stepsAreExhaustive;
+void _stepsAreComplete;
+
+/**
  * How many steps connecting to a server someone else runs takes: choose that
  * path, point at the server, sign in, then say which messaging account is you.
  *
@@ -95,9 +112,43 @@ const CONNECT_STEPS = 4;
  * those two steps follow in the same dialog rather than waiting on the server's
  * page to be discovered (CHOO-2164).
  */
+/**
+ * The path each step belongs to. `none` for the chooser and for steps that
+ * inherit whatever was chosen before them.
+ */
+const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName> = {
+  choose: 'none',
+  local: 'local',
+  remoteHost: 'remoteHost',
+  external: 'external',
+  signIn: 'none',
+  linkAccounts: 'none',
+};
+
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;
   const [step, setStep] = useState<Step>(isEdit ? 'external' : (props.mode ?? 'choose'));
+  // Which path was taken at the chooser, carried so every later step can be
+  // attributed to it. `none` while still on the chooser, which is what makes a
+  // drop-off before choosing distinguishable from one after.
+  const [choice, setChoice] = useState<AddServerChoiceName>(
+    isEdit ? 'external' : CHOICE_FOR_STEP[props.mode ?? 'choose']
+  );
+
+  /**
+   * Move to a step, and report reaching it.
+   *
+   * One function rather than nine `setStep` calls: the wizard's back buttons go
+   * through the same state, so instrumenting each site would count returning to
+   * the chooser as reaching it again and make the funnel read as if people
+   * restarted rather than gave up.
+   */
+  const goToStep = (next: Step) => {
+    const nextChoice = CHOICE_FOR_STEP[next] === 'none' ? choice : CHOICE_FOR_STEP[next];
+    setChoice(nextChoice);
+    setStep(next);
+    report('add_server_step', { step: next, choice: nextChoice });
+  };
   // The server the wizard just created, and the subject of every step after
   // it. Null in edit mode and on the two managed paths, which is what
   // distinguishes the standalone edit form from step 2 of the wizard.
@@ -122,9 +173,9 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'choose') {
     return (
       <ChooseStep
-        onLocal={() => setStep('local')}
-        onRemoteHost={() => setStep('remoteHost')}
-        onExternal={() => setStep('external')}
+        onLocal={() => goToStep('local')}
+        onRemoteHost={() => goToStep('remoteHost')}
+        onExternal={() => goToStep('external')}
         onClose={props.onClose}
       />
     );
@@ -132,7 +183,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'local') {
     return (
       <LocalSetupStep
-        onBack={isEdit ? undefined : () => setStep('choose')}
+        onBack={isEdit ? undefined : () => goToStep('choose')}
         onDone={finish}
         onClose={props.onClose}
       />
@@ -141,7 +192,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'remoteHost') {
     return (
       <RemoteHostSetupStep
-        onBack={() => setStep('choose')}
+        onBack={() => goToStep('choose')}
         onDone={finish}
         onClose={props.onClose}
       />
@@ -151,9 +202,9 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     return (
       <SignInStep
         server={connected}
-        onBack={() => setStep('external')}
+        onBack={() => goToStep('external')}
         onClose={props.onClose}
-        onSignedIn={() => setStep('linkAccounts')}
+        onSignedIn={() => goToStep('linkAccounts')}
       />
     );
   }
@@ -173,10 +224,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       {...props}
       isEdit={isEdit}
       existing={connected}
-      onBack={isEdit ? undefined : () => setStep('choose')}
+      onBack={isEdit ? undefined : () => goToStep('choose')}
       onConnected={(server) => {
         setConnected(server);
-        setStep('signIn');
+        goToStep('signIn');
       }}
     />
   );

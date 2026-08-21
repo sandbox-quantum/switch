@@ -1,10 +1,13 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-switch-setup';
+import { report } from '@renderer/lib/telemetry/report';
 import {
   deriveOnboardingSteps,
   isOnboardingComplete,
@@ -40,6 +43,8 @@ export type OnboardingChecklist = {
   complete: boolean;
   /** Opens whatever that step asks for — a dialog, or the settings tab. */
   startStep: (id: OnboardingStepId) => void;
+  /** Hide the checklist. Routed through here so both dismiss buttons agree. */
+  dismiss: () => void;
 };
 
 /**
@@ -49,6 +54,7 @@ export type OnboardingChecklist = {
  */
 export function useOnboardingChecklist(): OnboardingChecklist {
   const progress = useOnboardingProgress();
+  const { value: onboarding } = useAppSettingsKey('onboarding');
   const showAddServerModal = useShowModal('addServerModal');
   const showAddAgentModal = useShowModal('addAgentModal');
   const showCreateRoomModal = useShowModal('createRoomModal');
@@ -56,6 +62,7 @@ export function useOnboardingChecklist(): OnboardingChecklist {
 
   const startStep = useCallback(
     (id: OnboardingStepId) => {
+      report('onboarding_step_started', { step_id: id });
       switch (id) {
         case 'addServer':
           showAddServerModal({});
@@ -74,9 +81,30 @@ export function useOnboardingChecklist(): OnboardingChecklist {
     [showAddServerModal, showAddAgentModal, showCreateRoomModal, navigate]
   );
 
+  const complete = isOnboardingComplete(progress);
+
+  const dismiss = useCallback(() => {
+    if (!onboarding) return;
+    report('onboarding_checklist_dismissed', {});
+    void rpc.appSettings.update('onboarding', { ...onboarding, showChecklist: false });
+  }, [onboarding]);
+
+  // Completion is a condition, not an event: it becomes true during a render and
+  // is true again on every later launch. Reported once, and the fact that it was
+  // reported is written down, or every start-up would count another finish.
+  useEffect(() => {
+    if (!onboarding || !complete || onboarding.completedReportedAt !== null) return;
+    report('onboarding_completed', {});
+    void rpc.appSettings.update('onboarding', {
+      ...onboarding,
+      completedReportedAt: Date.now(),
+    });
+  }, [complete, onboarding]);
+
   return {
     steps: deriveOnboardingSteps(progress),
-    complete: isOnboardingComplete(progress),
+    complete,
+    dismiss,
     startStep,
   };
 }
