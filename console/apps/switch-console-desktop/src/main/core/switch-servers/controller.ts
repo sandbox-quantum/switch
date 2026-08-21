@@ -26,6 +26,7 @@ import type {
   TelemetryBridgePlatform,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
+  TelemetryServerKind,
   TelemetrySignInFailure,
 } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
@@ -200,22 +201,57 @@ function roomCreateFailureReason(result: CreateRoomResult): TelemetryRoomCreateF
 /**
  * Which platform a bridge id is on.
  *
- * A lookup rather than a field: rooms are created with a bridge id and the type
- * only appears on the room that comes back, which on a failure does not exist.
- * Best-effort — an unreachable server reports `unknown` rather than failing the
- * create it is only describing.
+ * A lookup rather than a field: these operations take a bridge id, and the type
+ * either never appears (a delete) or appears only on success (a room). Best
+ * effort — an unreachable server yields `unknown` rather than failing the
+ * operation it is only describing.
+ *
+ * **Never awaited by a caller doing real work.** It asks the gateway, and making
+ * someone wait on a network round trip so we can describe what they did would
+ * put reporting in the path of the thing being reported. `reportWithBridge` is
+ * how the answer is used once it arrives.
  */
-async function bridgePlatformOf(
+function bridgePlatformOf(
   server: SwitchServer,
   bridgeId: string | null | undefined
 ): Promise<TelemetryBridgePlatform> {
-  if (!bridgeId) return 'unknown';
-  try {
-    const bridges = await fetchBridges(server);
-    return bridgePlatformOfType(bridges.find((b) => b.id === bridgeId)?.type);
-  } catch {
-    return 'unknown';
+  if (!bridgeId) return Promise.resolve('unknown');
+  return fetchBridges(server)
+    .then((bridges) => bridgePlatformOfType(bridges.find((b) => b.id === bridgeId)?.type))
+    .catch((): TelemetryBridgePlatform => 'unknown');
+}
+
+/**
+ * Report once the platform is known, without anyone waiting for it.
+ *
+ * The event arrives a moment after the action rather than with it, which costs
+ * nothing: it carries its own timestamp, taken when the work happened.
+ */
+function reportWithBridge(
+  platform: Promise<TelemetryBridgePlatform>,
+  emit: (platform: TelemetryBridgePlatform) => void
+): void {
+  void platform.then(emit).catch(() => {});
+}
+
+/** The same, for a room create whose other properties are already known. */
+function reportRoomCreated(
+  server: SwitchServer,
+  bridgeId: string | null | undefined,
+  rest: {
+    server_kind: TelemetryServerKind;
+    agent_count: number;
+    has_instructions: boolean;
+    failure_reason: TelemetryRoomCreateFailure;
   }
+): void {
+  reportWithBridge(bridgePlatformOf(server, bridgeId), (bridge_platform) =>
+    trackEvent('room_created', {
+      ...rest,
+      bridge_platform,
+      outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
+    })
+  );
 }
 
 export const switchServersController = createRPCController({
@@ -413,11 +449,13 @@ export const switchServersController = createRPCController({
    */
   deleteBridge: async (params: DeleteBridgeParams): Promise<DeleteBridgeResult> => {
     const server = await requireReachableServer(params.serverId);
-    // Looked up before the delete: this takes a bridge id, and afterwards there
-    // is no bridge left to read a platform from.
-    const platform = await bridgePlatformOf(server, params.bridgeId);
+    // Started before the delete, because afterwards there is no bridge left to
+    // read a platform from — but never waited on: see `reportWithBridge`.
+    const platform = bridgePlatformOf(server, params.bridgeId);
     const result = await deleteBridge(server, params.bridgeId);
-    trackEvent('bridge_disconnected', { bridge_platform: platform });
+    reportWithBridge(platform, (bridge_platform) =>
+      trackEvent('bridge_disconnected', { bridge_platform })
+    );
     return result;
   },
 
@@ -428,13 +466,8 @@ export const switchServersController = createRPCController({
    */
   createRoom: async (params: CreateRoomParams): Promise<CreateRoomResult> => {
     const server = await requireReachableServer(params.serverId);
-    // Resolved before the create rather than read off the result, because the
-    // failure worth watching is the bridge refusing — and on that path there is
-    // no room to read a platform from.
-    const platform = await bridgePlatformOf(server, params.bridgeId);
     const shape = {
       server_kind: serverKindOf(server),
-      bridge_platform: platform,
       agent_count: params.agentIds.length,
       has_instructions: (params.instructions?.trim().length ?? 0) > 0,
     };
@@ -449,13 +482,12 @@ export const switchServersController = createRPCController({
         agentIds: params.agentIds,
       });
     } catch (error) {
-      trackEvent('room_created', { ...shape, outcome: 'failure', failure_reason: 'error' });
+      reportRoomCreated(server, params.bridgeId, { ...shape, failure_reason: 'error' });
       throw error;
     }
 
-    trackEvent('room_created', {
+    reportRoomCreated(server, params.bridgeId, {
       ...shape,
-      outcome: result.kind === 'created' ? 'success' : 'failure',
       failure_reason: roomCreateFailureReason(result),
     });
     return result;
@@ -560,16 +592,17 @@ export const switchServersController = createRPCController({
   /** Claim a messaging-app account as the signed-in Switch user's own. */
   claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
     const server = await requireReachableServer(params.serverId);
-    const platform = await bridgePlatformOf(server, params.bridgeId);
     const result = await claimIdentityOnServer(server, {
       bridgeId: params.bridgeId,
       externalUserId: params.externalUserId,
       username: params.username,
     });
-    trackEvent('bridge_identity_claimed', {
-      bridge_platform: platform,
-      outcome: result.kind === 'claimed' ? 'success' : 'failure',
-    });
+    reportWithBridge(bridgePlatformOf(server, params.bridgeId), (bridge_platform) =>
+      trackEvent('bridge_identity_claimed', {
+        bridge_platform,
+        outcome: result.kind === 'claimed' ? 'success' : 'failure',
+      })
+    );
     return result;
   },
 

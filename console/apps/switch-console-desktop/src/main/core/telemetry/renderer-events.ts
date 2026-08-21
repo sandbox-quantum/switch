@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { KV } from '@main/db/kv';
 import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS, type CommandId } from '@shared/commands';
 import { ONBOARDING_STEP_IDS } from '@shared/core/onboarding/checklist';
@@ -100,6 +101,42 @@ export type RendererTelemetryRequest = {
 };
 
 /**
+ * Events that describe a state rather than a moment, and so are reported once
+ * for the life of an install.
+ *
+ * Finishing onboarding is the case this exists for: it is derived from a server
+ * and a room existing, so it is true from the instant it becomes true and true
+ * again on every later launch. Without this it would be counted once per
+ * start-up forever, and "people who finished setting up" would grow without
+ * anyone finishing anything.
+ *
+ * The record lives here, beside the emitter, rather than in the user's settings:
+ * it is our bookkeeping, and writing it as a setting would report a setting the
+ * user never changed.
+ */
+const ONCE_PER_INSTALL = new Set<RendererTelemetryEvent>(['onboarding_completed']);
+
+const reportedOnce = new KV<Record<string, boolean>>('telemetry:reported');
+
+/**
+ * Whether this once-only event has already been sent, claiming it if not.
+ *
+ * The in-memory guard matters as much as the stored one: the renderer can ask
+ * several times in the same tick — a condition becoming true re-renders
+ * everything watching it — and the database write does not land in time to stop
+ * the second caller.
+ */
+const claimedThisRun = new Set<RendererTelemetryEvent>();
+
+async function claimOnce(name: RendererTelemetryEvent): Promise<boolean> {
+  if (claimedThisRun.has(name)) return false;
+  claimedThisRun.add(name);
+  if ((await reportedOnce.get(name)) === true) return false;
+  await reportedOnce.set(name, true);
+  return true;
+}
+
+/**
  * Report an event the interface observed, if it is one it may report.
  *
  * A request naming an event that is not on the list, or carrying a value that is
@@ -130,5 +167,18 @@ export function trackFromRenderer(request: RendererTelemetryRequest): void {
     return;
   }
 
-  trackEvent(request.name, parsed.data as TelemetryEventMap[RendererTelemetryEvent]);
+  const properties = parsed.data as TelemetryEventMap[RendererTelemetryEvent];
+  if (!ONCE_PER_INSTALL.has(request.name)) {
+    trackEvent(request.name, properties);
+    return;
+  }
+
+  void claimOnce(request.name)
+    .then((first) => {
+      if (first) trackEvent(request.name, properties);
+    })
+    .catch(() => {
+      // A record we cannot read is not a reason to report a second time: the
+      // duplicate is the failure mode this exists to prevent.
+    });
 }

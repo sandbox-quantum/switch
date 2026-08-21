@@ -21,14 +21,19 @@ import { sessionService } from './session-service';
  * cancelled because the transport dropped — one failure for the whole host, not
  * one per session queued behind it.
  */
-async function reportAttach(sessionId: string, state: AttachState): Promise<void> {
+function reportAttach(sessionId: string, state: AttachState): void {
   if (state !== 'attached' && state !== 'failed') return;
 
-  const session = await getSession(sessionId);
-  trackEvent('session_attached', {
-    agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
-    outcome: state === 'attached' ? 'success' : 'failure',
-  });
+  // Not awaited: describing the attach needs a read the person attaching should
+  // not be waiting on, and a failure to describe it must not fail the attach.
+  void getSession(sessionId)
+    .then((session) => {
+      trackEvent('session_attached', {
+        agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
+        outcome: state === 'attached' ? 'success' : 'failure',
+      });
+    })
+    .catch(() => {});
 }
 
 export const sessionController = createRPCController({
@@ -49,7 +54,7 @@ export const sessionController = createRPCController({
   /** Attach a session's terminal on request — the detached state's Attach button. */
   async attachSession(sessionId: string) {
     const state = await remoteAttachmentPool.requestAttach(sessionId, 'user');
-    await reportAttach(sessionId, state);
+    reportAttach(sessionId, state);
     return state;
   },
   /** Close a session's terminal, leaving its agent running on the VM. */

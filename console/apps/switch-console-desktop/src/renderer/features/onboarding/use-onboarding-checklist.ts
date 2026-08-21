@@ -90,16 +90,13 @@ export function useOnboardingChecklist(): OnboardingChecklist {
   }, [onboarding]);
 
   // Completion is a condition, not an event: it becomes true during a render and
-  // is true again on every later launch. Reported once, and the fact that it was
-  // reported is written down, or every start-up would count another finish.
+  // is true again on every later launch. Asking more than once is harmless —
+  // the main process keeps the record of whether it has already been reported,
+  // because that record is our bookkeeping and not one of the user's settings.
   useEffect(() => {
-    if (!onboarding || !complete || onboarding.completedReportedAt !== null) return;
+    if (!complete) return;
     report('onboarding_completed', {});
-    void rpc.appSettings.update('onboarding', {
-      ...onboarding,
-      completedReportedAt: Date.now(),
-    });
-  }, [complete, onboarding]);
+  }, [complete]);
 
   return {
     steps: deriveOnboardingSteps(progress),

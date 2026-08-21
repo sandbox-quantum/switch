@@ -76,22 +76,24 @@ const SESSION_START_FAILURE_REASON: Record<
  * are comparable; when it cannot be found, which is itself one of the failures,
  * the shape is honestly `unknown` rather than guessed.
  */
-async function reportFailedSessionStart(
-  params: CreateSessionParams,
-  error: CreateSessionError
-): Promise<void> {
-  const agent = await getAgentById(params.agentId);
+function reportFailedSessionStart(params: CreateSessionParams, error: CreateSessionError): void {
+  // Not awaited: the reads that describe the attempt are ours, not the caller's,
+  // and the person whose session failed should hear about it no later for our
+  // having asked what kind it was.
+  void (async () => {
+    const agent = await getAgentById(params.agentId);
 
-  trackEvent('session_started', {
-    agent_type: agent ? agentTypeOf(agent.providerId) : 'unknown',
-    location: agent ? await locationKindOf(agent.locationId) : 'unknown',
-    outcome: 'failure',
-    failure_reason: SESSION_START_FAILURE_REASON[error.type],
-    entry_point: params.entryPoint ?? 'unknown',
-    start_source: params.startSource ?? 'user',
-    has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
-    connected_to_room: switchNotificationPoller.hasIntendedRoom(params.id),
-  });
+    trackEvent('session_started', {
+      agent_type: agent ? agentTypeOf(agent.providerId) : 'unknown',
+      location: agent ? await locationKindOf(agent.locationId) : 'unknown',
+      outcome: 'failure',
+      failure_reason: SESSION_START_FAILURE_REASON[error.type],
+      entry_point: params.entryPoint ?? 'unknown',
+      start_source: params.startSource ?? 'user',
+      has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
+      connected_to_room: switchNotificationPoller.hasIntendedRoom(params.id),
+    });
+  })().catch(() => {});
 }
 
 /**
@@ -102,21 +104,25 @@ async function reportFailedSessionStart(
  * for its shape, and reports `unknown` rather than a guess when it has gone —
  * which is one of the ways a provision fails.
  */
-async function reportProvisionRetry(
+function reportProvisionRetry(
   sessionId: string,
   trigger: SessionProvisionTrigger,
   outcome: TelemetryOutcome
-): Promise<void> {
+): void {
   if (trigger === 'initial') return;
 
-  const session = await getSession(sessionId);
-  const agent = session ? await getAgentById(session.agentId) : null;
-  trackEvent('session_provision_retried', {
-    agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
-    location: agent ? await locationKindOf(agent.locationId) : 'unknown',
-    trigger,
-    outcome,
-  });
+  // Not awaited: this is two database reads on the path that hands a session
+  // back to the person waiting for it.
+  void (async () => {
+    const session = await getSession(sessionId);
+    const agent = session ? await getAgentById(session.agentId) : null;
+    trackEvent('session_provision_retried', {
+      agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
+      location: agent ? await locationKindOf(agent.locationId) : 'unknown',
+      trigger,
+      outcome,
+    });
+  })().catch(() => {});
 }
 
 /**
@@ -146,7 +152,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     if (result.success) {
       this.notifySessionCreated(result.data.session, params);
     } else {
-      await reportFailedSessionStart(params, result.error);
+      reportFailedSessionStart(params, result.error);
     }
     return result;
   }
@@ -201,10 +207,10 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
   ): Promise<Result<ProvisionResult, ProvisionSessionError>> {
     try {
       const result = await this._provision(sessionId);
-      await reportProvisionRetry(sessionId, trigger, 'success');
+      reportProvisionRetry(sessionId, trigger, 'success');
       return ok(result);
     } catch (error) {
-      await reportProvisionRetry(sessionId, trigger, 'failure');
+      reportProvisionRetry(sessionId, trigger, 'failure');
       return err(toProvisionError(error));
     }
   }

@@ -9,10 +9,15 @@ export const searchController = createRPCController({
   // outright — are answered by the outcome and the count alone.
   commandPalette: (query: CommandPaletteQuery) => {
     const result = searchService.search(query);
-    trackEvent('search_performed', {
-      status: result.status,
-      result_count: result.items.length,
-    });
+    // Only a search someone actually ran. Opening the palette asks for recents
+    // with an empty query, and reporting that would count a search nobody
+    // performed — once per open, which would quickly outnumber the real ones.
+    if (result.status !== 'recents') {
+      trackEvent('search_performed', {
+        status: result.status,
+        result_count: result.items.length,
+      });
+    }
     return result;
   },
 });

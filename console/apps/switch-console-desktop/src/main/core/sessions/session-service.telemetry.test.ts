@@ -65,6 +65,14 @@ const PARAMS = {
   entryPoint: 'sidebar',
 } as const;
 
+/**
+ * Let the deferred report run.
+ *
+ * Reporting is deliberately not awaited by the operation — it does database
+ * reads the caller must not wait on — so a test has to give it a turn.
+ */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 function failWith(type: string, extra: Record<string, unknown> = {}) {
   hoisted.createSession.mockResolvedValue({ success: false, error: { type, ...extra } });
 }
@@ -81,6 +89,8 @@ describe('a session start that fails', () => {
     failWith('spawn-failed', { message: 'boom' });
 
     await sessionService.createSession({ ...PARAMS });
+
+    await settle();
 
     expect(hoisted.trackEvent).toHaveBeenCalledWith(
       'session_started',
@@ -99,6 +109,8 @@ describe('a session start that fails', () => {
 
     await sessionService.createSession({ ...PARAMS });
 
+    await settle();
+
     expect(JSON.stringify(hoisted.trackEvent.mock.calls)).not.toContain('secret-project');
   });
 
@@ -110,6 +122,8 @@ describe('a session start that fails', () => {
     failWith('agent-not-found');
 
     await sessionService.createSession({ ...PARAMS });
+
+    await settle();
 
     expect(hoisted.trackEvent).toHaveBeenCalledWith(
       'session_started',
@@ -130,6 +144,8 @@ describe('a session start that fails', () => {
       initialPrompt: 'connect to room alpha and audit the deploy',
     });
 
+    await settle();
+
     const [, properties] = hoisted.trackEvent.mock.calls[0] as [string, Record<string, unknown>];
     expect(properties.has_initial_prompt).toBe(true);
     expect(properties.connected_to_room).toBe(true);
@@ -141,6 +157,8 @@ describe('a session start that fails', () => {
 
     await sessionService.createSession({ ...PARAMS, initialPrompt: '   ' });
 
+    await settle();
+
     expect(hoisted.trackEvent).toHaveBeenCalledWith(
       'session_started',
       expect.objectContaining({ has_initial_prompt: false })
@@ -151,6 +169,8 @@ describe('a session start that fails', () => {
     failWith('already-exists');
 
     await sessionService.createSession({ ...PARAMS, startSource: 'adopted' });
+
+    await settle();
 
     expect(hoisted.trackEvent).toHaveBeenCalledWith(
       'session_started',
@@ -166,6 +186,8 @@ describe('a session start that fails', () => {
     });
 
     await sessionService.createSession({ ...PARAMS });
+
+    await settle();
 
     expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
@@ -186,13 +208,16 @@ describe('provisioning a session again', () => {
     // Nearly every session is provisioned once. Counting those would bury the
     // thing worth knowing, which is whether a second attempt worked.
     await sessionService.provisionSession('s-1');
+    await settle();
 
     expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
 
   it('separates a retry someone asked for from one the view made on its own', async () => {
     await sessionService.provisionSession('s-1', 'retry_button');
+    await settle();
     await sessionService.provisionSession('s-1', 'auto');
+    await settle();
 
     const triggers = hoisted.trackEvent.mock.calls
       .filter(([name]) => name === 'session_provision_retried')
@@ -204,6 +229,7 @@ describe('provisioning a session again', () => {
     // The whole point: the failure used to be thrown, so nothing could report
     // it and the renderer's error branch was unreachable.
     await sessionService.provisionSession('s-1', 'retry_button');
+    await settle();
 
     expect(hoisted.trackEvent).toHaveBeenCalledWith(
       'session_provision_retried',
@@ -213,6 +239,7 @@ describe('provisioning a session again', () => {
 
   it('hands the failure back as a value the caller can act on', async () => {
     const result = await sessionService.provisionSession('s-1', 'retry_button');
+    await settle();
 
     expect(result.success).toBe(false);
   });
@@ -221,6 +248,8 @@ describe('provisioning a session again', () => {
     hoisted.loadSession.mockRejectedValue(new Error('/Users/someone/secret-project is gone'));
 
     await sessionService.provisionSession('s-1', 'auto');
+
+    await settle();
 
     expect(JSON.stringify(hoisted.trackEvent.mock.calls)).not.toContain('secret-project');
   });
