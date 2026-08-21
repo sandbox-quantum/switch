@@ -5,7 +5,9 @@ import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
+import { entryPointOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
@@ -94,11 +96,11 @@ function reportFailedCreate(params: AddAgentParams, result: AddAgentResult): Add
   if (result.kind === 'created') return result;
 
   trackEvent('agent_created', {
-    agent_type: params.providerId,
+    agent_type: agentTypeOf(params.providerId),
     location: params.sshHost === null ? 'local' : 'remote',
     outcome: 'failure',
     failure_reason: ADD_AGENT_FAILURE_REASON[result.kind],
-    entry_point: params.entryPoint,
+    entry_point: entryPointOf(params.entryPoint),
   });
   return result;
 }

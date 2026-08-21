@@ -5,6 +5,7 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryOutcome, TelemetrySessionStartFailure } from '@main/core/telemetry/events';
+import { entryPointOf, startSourceOf } from '@main/core/telemetry/narrow';
 import { locationKindOf } from '@main/core/telemetry/shape';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
@@ -88,8 +89,8 @@ function reportFailedSessionStart(params: CreateSessionParams, error: CreateSess
       location: agent ? await locationKindOf(agent.locationId) : 'unknown',
       outcome: 'failure',
       failure_reason: SESSION_START_FAILURE_REASON[error.type],
-      entry_point: params.entryPoint ?? 'unknown',
-      start_source: params.startSource ?? 'user',
+      entry_point: entryPointOf(params.entryPoint),
+      start_source: startSourceOf(params.startSource),
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
       connected_to_room: switchNotificationPoller.hasIntendedRoom(params.id),
     });

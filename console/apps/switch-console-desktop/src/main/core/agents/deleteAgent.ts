@@ -18,6 +18,7 @@ import type {
   TelemetryAgentRemoveTrigger,
   TelemetryLocationKind,
 } from '@main/core/telemetry/events';
+import { agentRemoveTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
@@ -203,7 +204,7 @@ export async function deleteAgent(agentId: string, options: DeleteAgentOptions):
     agent_type: agent ? agentTypeOf(agent.providerId) : ('unknown' as const),
     location: locationKindOfRow(location),
     delete_in_switch: options.deleteInSwitch,
-    trigger: options.trigger,
+    trigger: agentRemoveTriggerOf(options.trigger),
   };
 
   try {

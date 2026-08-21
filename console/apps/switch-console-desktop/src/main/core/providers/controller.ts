@@ -8,6 +8,7 @@ import type {
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { cliFailureReason } from '@main/core/telemetry/cli-failure';
 import type { TelemetryCliAction } from '@main/core/telemetry/events';
+import { installMethodOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -47,7 +48,7 @@ function reportCliAction(
   trackEvent('agent_cli_action', {
     agent_type: agentTypeOf(id),
     target: 'local',
-    install_method: method ?? 'unspecified',
+    install_method: installMethodOf(method),
     action,
     outcome: result.success ? 'success' : 'failure',
     failure_reason: cliFailureReason(result),

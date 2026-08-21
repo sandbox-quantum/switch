@@ -58,3 +58,21 @@ export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
 export const SESSION_PROVISION_TRIGGERS = ['initial', 'auto', 'retry_button'] as const;
 
 export type SessionProvisionTrigger = (typeof SESSION_PROVISION_TRIGGERS)[number];
+
+/**
+ * What removed an agent: a person, or a server teardown sweeping every agent on
+ * it. Declared here for the same reason as the rest — the renderer names it.
+ */
+export const AGENT_REMOVE_TRIGGERS = ['user', 'server_teardown'] as const;
+
+export type AgentRemoveTrigger = (typeof AGENT_REMOVE_TRIGGERS)[number];
+
+/** Which way round agents and rooms were joined. */
+export const ROOM_AGENTS_DIRECTIONS = ['agents_to_room', 'room_to_agents'] as const;
+
+export type RoomAgentsDirection = (typeof ROOM_AGENTS_DIRECTIONS)[number];
+
+/** What asked for an update check. */
+export const UPDATE_TRIGGERS = ['user', 'startup', 'scheduled'] as const;
+
+export type UpdateTrigger = (typeof UPDATE_TRIGGERS)[number];

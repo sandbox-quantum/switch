@@ -43,8 +43,12 @@ export const appSettingsController = createRPCController({
   // here rather than from each screen that offers one. The key only — several of
   // these values are free text.
   update: async <T extends AppSettingsKey>(key: T, value: AppSettings[T]): Promise<void> => {
+    // Read before the write, because telling a first agreement from a later one
+    // needs the old value — but never allowed to fail the write. This is the one
+    // setting where a telemetry read blocking the write would stop someone
+    // turning telemetry OFF, which is the last thing reporting may ever do.
     const previousTelemetry =
-      key === 'telemetry' ? await appSettingsService.get('telemetry') : null;
+      key === 'telemetry' ? await appSettingsService.get('telemetry').catch(() => null) : null;
 
     await appSettingsService.update(key, value);
 

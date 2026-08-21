@@ -29,6 +29,7 @@ import type {
   TelemetryServerKind,
   TelemetrySignInFailure,
 } from '@main/core/telemetry/events';
+import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -318,8 +319,9 @@ export const switchServersController = createRPCController({
   },
 
   logout: async (serverId: string): Promise<void> => {
-    // Read before the cookie goes, so the kind of server is still knowable.
-    const server = await getServer(serverId);
+    // Read before the cookie goes, so the kind of server is still knowable — and
+    // caught, because nobody should be unable to sign out because of it.
+    const server = await getServer(serverId).catch(() => null);
     await deleteSessionCookie(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },
@@ -544,7 +546,7 @@ export const switchServersController = createRPCController({
     );
     trackEvent('room_agents_added', {
       agent_count: params.agentIds.length,
-      direction: params.direction,
+      direction: roomAgentsDirectionOf(params.direction),
     });
   },
 

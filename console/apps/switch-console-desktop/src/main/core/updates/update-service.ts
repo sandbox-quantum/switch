@@ -6,6 +6,7 @@ import _electronUpdater, {
 } from 'electron-updater';
 import { resolveAppVersion } from '@main/core/app/utils';
 import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
+import { updateTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -258,13 +259,13 @@ class UpdateService implements IInitializable, IDisposable {
     this.currentCheckPromise = this._performCheck()
       .then((info) => {
         trackEvent('update_checked', {
-          trigger,
+          trigger: updateTriggerOf(trigger),
           result: info ? 'available' : 'up_to_date',
         });
         return info;
       })
       .catch((error: unknown) => {
-        trackEvent('update_checked', { trigger, result: 'failed' });
+        trackEvent('update_checked', { trigger: updateTriggerOf(trigger), result: 'failed' });
         throw error;
       })
       .finally(() => {

@@ -7,6 +7,7 @@ import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notific
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentTypeOf } from './agent-type';
 import type { TelemetryEventMap, TelemetryLocationKind } from './events';
+import { entryPointOf, startSourceOf } from './narrow';
 import { locationKindOf } from './shape';
 import { trackEvent } from './telemetry-service';
 
@@ -103,7 +104,7 @@ export function registerTelemetryListeners(): void {
       location: await locationKindOf(agent.locationId),
       outcome: 'success',
       failure_reason: 'none',
-      entry_point: entryPoint,
+      entry_point: entryPointOf(entryPoint),
     });
   });
 
@@ -125,8 +126,8 @@ export function registerTelemetryListeners(): void {
       ...shape,
       outcome: 'success',
       failure_reason: 'none',
-      entry_point: params.entryPoint ?? 'unknown',
-      start_source: params.startSource ?? 'user',
+      entry_point: entryPointOf(params.entryPoint),
+      start_source: startSourceOf(params.startSource),
       // The same test `createSession` itself applies, so the reported flag and
       // the prompt the session actually launched with cannot disagree.
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,

@@ -220,8 +220,9 @@ export async function renameServer(params: RenameServerParams): Promise<SwitchSe
 }
 
 export async function removeServer(id: string): Promise<void> {
-  // Read before the row goes: nothing afterwards can say what kind it was.
-  const server = await getServer(id);
+  // Read before the row goes, since nothing afterwards can say what kind it was
+  // — but a read that exists only to describe the removal must not prevent it.
+  const server = await getServer(id).catch(() => null);
 
   await deleteSessionCookie(id);
   // Unlink agents explicitly: SQLite's ALTER TABLE ADD COLUMN can't carry an

@@ -16,6 +16,7 @@ import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-swit
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { cliFailureReason } from '@main/core/telemetry/cli-failure';
 import type { TelemetryCliAction } from '@main/core/telemetry/events';
+import { installMethodOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
@@ -106,7 +107,7 @@ function reportRemoteCliAction(
   trackEvent('agent_cli_action', {
     agent_type: agentTypeOf(id),
     target: 'remote',
-    install_method: method ?? 'unspecified',
+    install_method: installMethodOf(method),
     action,
     outcome: result.success ? 'success' : 'failure',
     failure_reason: cliFailureReason(result),
@@ -154,14 +155,14 @@ export const remoteHostsController = createRPCController({
     if (!test.ok) {
       trackEvent('host_onboarded', {
         outcome: 'failure',
-        picked_from_ssh_config: params.pickedFromSshConfig,
+        picked_from_ssh_config: params.pickedFromSshConfig === true,
       });
       throw new Error(`Cannot reach ${params.sshHost}: ${test.message}`);
     }
     const host = await upsertRemoteHost({ sshHost: params.sshHost, name: params.name });
     trackEvent('host_onboarded', {
       outcome: 'success',
-      picked_from_ssh_config: params.pickedFromSshConfig,
+      picked_from_ssh_config: params.pickedFromSshConfig === true,
     });
     return host;
   },
