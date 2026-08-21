@@ -12,12 +12,12 @@ import {
   GatewayError,
 } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type {
   TelemetryAgentRemoveFailure,
   TelemetryAgentRemoveTrigger,
   TelemetryLocationKind,
 } from '@main/core/telemetry/events';
-import { agentTypeOf } from '@main/core/telemetry/shape';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';

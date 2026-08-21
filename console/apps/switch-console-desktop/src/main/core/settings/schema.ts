@@ -1,6 +1,7 @@
 import z from 'zod';
 import { BROWSER_ISOLATED_PROFILE_ID } from '@shared/browser';
 import { AGENT_PROVIDER_IDS } from '@shared/core/providers/agent-provider-registry';
+import type { AppSettingsKeyName } from '@shared/core/settings/setting-keys';
 import {
   TERMINAL_FONT_SIZE_MAX,
   TERMINAL_FONT_SIZE_MIN,
@@ -164,6 +165,22 @@ export const APP_SETTINGS_SCHEMA_MAP = {
   onboarding: onboardingSettingsSchema,
   telemetry: telemetrySettingsSchema,
 } as const;
+
+/**
+ * The schema map and the shared list of setting names say the same thing.
+ *
+ * The list is what a setting change is reported against and cannot import this
+ * file. Asserted both ways, so adding a group without naming it there — or
+ * leaving a name behind after removing one — fails to compile.
+ */
+const _settingKeysAreExhaustive: AppSettingsKeyName extends keyof typeof APP_SETTINGS_SCHEMA_MAP
+  ? true
+  : never = true;
+const _settingKeysAreComplete: keyof typeof APP_SETTINGS_SCHEMA_MAP extends AppSettingsKeyName
+  ? true
+  : never = true;
+void _settingKeysAreExhaustive;
+void _settingKeysAreComplete;
 
 export const appSettingsSchema = z.object({
   localLocation: localLocationSettingsSchema,

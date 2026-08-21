@@ -1,4 +1,9 @@
+import type { InstallMethod } from '@switch-console/core/deps';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { HostSetupStepKind } from '@shared/core/remote-hosts/setup';
+import type { SearchStatus } from '@shared/core/search';
+import type { AppSettingsKeyName } from '@shared/core/settings/setting-keys';
+import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import type {
   SessionProvisionTrigger,
   SessionStartSource,
@@ -89,6 +94,106 @@ export type TelemetryAgentResetFailure =
  */
 export type TelemetryAgentRemoveTrigger = 'user' | 'server_teardown';
 
+/** Installing, updating or removing an agent's own CLI. */
+export type TelemetryCliAction = 'install' | 'update' | 'uninstall';
+
+/**
+ * How a CLI was installed. The installer capability's own closed set, plus
+ * `unspecified` for the callers that do not name one — the parameter is optional
+ * on every one of these paths.
+ */
+export type TelemetryInstallMethod = InstallMethod | 'unspecified';
+
+/**
+ * Why installing, updating or removing a CLI failed.
+ *
+ * The union of the three operations' own error types, which share most of their
+ * cases and differ at the ends. `error` covers a throw, which these paths are
+ * not supposed to do but can.
+ */
+export type TelemetryCliFailure =
+  | 'none'
+  | 'unknown_dependency'
+  | 'no_install_command'
+  | 'no_update_strategy'
+  | 'no_uninstall_strategy'
+  | 'no_uninstall_command'
+  | 'permission_denied'
+  | 'command_failed'
+  | 'pty_open_failed'
+  | 'not_detected_after_install'
+  | 'not_detected_after_update'
+  | 'still_present'
+  | 'error';
+
+/**
+ * Which messaging platform a room or bridge is on.
+ *
+ * The server names the platform as free text, so this is narrowed at the emitter
+ * rather than trusted — the same treatment provider ids get. `other` is a
+ * platform we do not know about, `unknown` is one we could not read.
+ */
+export type TelemetryBridgePlatform =
+  | 'slack'
+  | 'mattermost'
+  | 'discord'
+  | 'teams'
+  | 'telegram'
+  | 'other'
+  | 'unknown';
+
+export type TelemetryRoomCreateFailure =
+  | 'none'
+  | 'unauthenticated'
+  | 'bridge_unavailable'
+  | 'invalid'
+  | 'unreachable'
+  | 'error';
+
+/** How someone signed in. Not a setting — which of the two forms they used. */
+export type TelemetryAuthMethod = 'password' | 'oidc';
+
+/**
+ * Why a sign-in failed. `cancelled` is the browser window being closed on the
+ * single-sign-on path, which is someone changing their mind rather than a fault.
+ */
+export type TelemetrySignInFailure =
+  | 'none'
+  | 'invalid_credentials'
+  | 'cancelled'
+  | 'failed'
+  | 'unreachable';
+
+/** What was done to a step of a remote host's setup. */
+export type TelemetryHostSetupAction = 'install' | 'update' | 'skip';
+
+export type TelemetryManagedServerAction = 'start' | 'stop' | 'reset';
+
+export type TelemetryManagedServerFailure =
+  | 'none'
+  | 'docker_not_installed'
+  | 'docker_daemon_down'
+  | 'version_downgrade'
+  | 'error';
+
+/**
+ * Whether Docker was usable.
+ *
+ * `unknown` is honest rather than lazy: only starting a stack probes for Docker,
+ * so stopping or resetting one genuinely does not know, and answering `available`
+ * there would be a guess indistinguishable from a reading.
+ */
+export type TelemetryDockerAvailability = 'available' | 'unavailable' | 'unknown';
+
+/**
+ * Which way round agents and rooms were joined.
+ *
+ * The same operation serves both screens, and one of them loops it once per
+ * room — so without this, adding one agent to five rooms is indistinguishable
+ * from five separate one-agent adds.
+ */
+export type TelemetryRoomAgentsDirection = 'agents_to_room' | 'room_to_agents';
+
 /**
  * Which control the user reached the action from, and who started a session.
  *
@@ -100,6 +205,18 @@ export type TelemetrySessionStartSource = SessionStartSource;
 
 /** A retry's trigger, minus `initial`, which is not a retry and is not sent. */
 export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial'>;
+
+/** Which setting was changed. The keys of the app's settings, and nothing else. */
+export type TelemetrySettingKey = AppSettingsKeyName;
+
+/** How a search ended. The search's own union, reused rather than restated. */
+export type TelemetrySearchStatus = SearchStatus;
+
+/** The kinds of server this install can hold. Named once, used by five events. */
+export type TelemetryServerKind = 'local' | 'remote_managed' | 'external';
+
+/** A setup step's kind, reused from the remote-host model rather than restated. */
+export type TelemetryHostSetupStepKind = HostSetupStepKind;
 
 /**
  * Every event the app may send, and everything each one may carry.
@@ -233,6 +350,136 @@ export type TelemetryEventMap = {
     agent_type: TelemetryAgentType;
     outcome: TelemetryOutcome;
   };
+  /**
+   * An agent's own CLI was installed, updated or removed — not the Switch
+   * connector, which `connector_installed` and friends report.
+   *
+   * The single biggest wall a new user hits, and until now entirely uncounted.
+   */
+  agent_cli_action: {
+    agent_type: TelemetryAgentType;
+    target: 'local' | 'remote';
+    install_method: TelemetryInstallMethod;
+    action: TelemetryCliAction;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryCliFailure;
+  };
+  /**
+   * A room was created on a server. `bridge_unavailable` is the failure worth
+   * watching: it means the messaging platform, not the app, refused.
+   */
+  room_created: {
+    server_kind: TelemetryServerKind;
+    bridge_platform: TelemetryBridgePlatform;
+    agent_count: number;
+    has_instructions: boolean;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryRoomCreateFailure;
+  };
+  room_deleted: {
+    server_kind: TelemetryServerKind;
+    outcome: TelemetryOutcome;
+  };
+  room_agents_added: {
+    agent_count: number;
+    direction: TelemetryRoomAgentsDirection;
+  };
+  /** Someone signed in to a server. */
+  server_sign_in: {
+    auth_method: TelemetryAuthMethod;
+    server_kind: TelemetryServerKind;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetrySignInFailure;
+  };
+  server_sign_out: {
+    server_kind: TelemetryServerKind;
+  };
+  /**
+   * A step of a remote host's setup was run.
+   *
+   * A skip is worth counting separately from a failure: it is someone deciding
+   * to go on without the thing, which is an abandonment signal rather than a
+   * fault.
+   */
+  host_setup_step: {
+    step_kind: TelemetryHostSetupStepKind;
+    agent_type: TelemetryAgentType;
+    action: TelemetryHostSetupAction;
+    outcome: TelemetryOutcome;
+  };
+  host_onboarded: {
+    outcome: TelemetryOutcome;
+    /** Whether the host was picked from the machine's SSH config or typed in. */
+    picked_from_ssh_config: boolean;
+  };
+  host_removed: {
+    outcome: TelemetryOutcome;
+  };
+  /**
+   * A managed Switch server was started, stopped or reset.
+   *
+   * Docker missing or refusing is the classic first-run wall, and starting one
+   * already probes for it — so the dimension that explains the failure comes
+   * free on the path where it matters.
+   */
+  managed_server_action: {
+    action: TelemetryManagedServerAction;
+    target: 'local' | 'remote';
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryManagedServerFailure;
+    docker_available: TelemetryDockerAvailability;
+  };
+  /**
+   * The four events below are reported by the interface, through the one gate in
+   * `./renderer-events`. They are here because they are catalogue events like
+   * any other — the same consent check, the same property filter — and only the
+   * place they are observed differs.
+   */
+  view_opened: RendererTelemetryEvents['view_opened'];
+  command_executed: RendererTelemetryEvents['command_executed'];
+  deeplink_opened: RendererTelemetryEvents['deeplink_opened'];
+  onboarding_step_started: RendererTelemetryEvents['onboarding_step_started'];
+  onboarding_checklist_dismissed: RendererTelemetryEvents['onboarding_checklist_dismissed'];
+  onboarding_completed: RendererTelemetryEvents['onboarding_completed'];
+  add_server_step: RendererTelemetryEvents['add_server_step'];
+  /** A screen failed. A count, with nothing of what failed or where. */
+  renderer_crashed: RendererTelemetryEvents['renderer_crashed'];
+  /**
+   * A setting was changed. **The key only, never the value.** Several settings
+   * hold free text — a sound file, a default directory, a font, a browser
+   * profile — and the useful question is which settings people touch, which the
+   * key answers on its own.
+   */
+  setting_changed: {
+    setting_key: TelemetrySettingKey;
+  };
+  /**
+   * A search ran. Never the query: what is asked for is the user's, and the
+   * answerable questions are whether search finds anything and what people open.
+   */
+  search_performed: {
+    /**
+     * The search's own outcome union, which already separates the four cases
+     * that matter — including a search that failed, which is not the same as one
+     * that found nothing.
+     */
+    status: TelemetrySearchStatus;
+    result_count: number;
+  };
+  /**
+   * Consent to share usage data was switched **on**.
+   *
+   * Only on. Turning it off cannot be reported — the gate is read immediately
+   * before every send, so by the time the setting is written the event is
+   * already blocked — and reporting a refusal would mean transmitting something
+   * from someone at the moment they asked us not to. So the opt-out rate is
+   * deliberately unknown rather than obtained that way, and this counts the
+   * agreements only. `first_run` is the prompt on first launch; `settings` is
+   * someone turning it on later of their own accord.
+   */
+  telemetry_consent_changed: {
+    source: 'first_run' | 'settings';
+  };
 };
 
 export type TelemetryEventName = keyof TelemetryEventMap;
@@ -272,6 +519,41 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   agent_reset: ['agent_type', 'outcome', 'failure_reason'],
   server_removed: ['server_kind'],
   session_provision_retried: ['agent_type', 'location', 'trigger', 'outcome'],
+  setting_changed: ['setting_key'],
+  search_performed: ['status', 'result_count'],
+  agent_cli_action: [
+    'agent_type',
+    'target',
+    'install_method',
+    'action',
+    'outcome',
+    'failure_reason',
+  ],
+  room_created: [
+    'server_kind',
+    'bridge_platform',
+    'agent_count',
+    'has_instructions',
+    'outcome',
+    'failure_reason',
+  ],
+  room_deleted: ['server_kind', 'outcome'],
+  room_agents_added: ['agent_count', 'direction'],
+  server_sign_in: ['auth_method', 'server_kind', 'outcome', 'failure_reason'],
+  server_sign_out: ['server_kind'],
+  host_setup_step: ['step_kind', 'agent_type', 'action', 'outcome'],
+  host_onboarded: ['outcome', 'picked_from_ssh_config'],
+  host_removed: ['outcome'],
+  managed_server_action: ['action', 'target', 'outcome', 'failure_reason', 'docker_available'],
+  view_opened: ['view_id'],
+  command_executed: ['command_id', 'invoked_by'],
+  deeplink_opened: ['resolved', 'cold_start'],
+  onboarding_step_started: ['step_id'],
+  onboarding_checklist_dismissed: [],
+  onboarding_completed: [],
+  add_server_step: ['step', 'choice'],
+  renderer_crashed: [],
+  telemetry_consent_changed: ['source'],
   session_attached: ['agent_type', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 

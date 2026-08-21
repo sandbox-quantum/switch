@@ -5,8 +5,9 @@ import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { agentTypeOf } from './agent-type';
 import type { TelemetryEventMap, TelemetryLocationKind } from './events';
-import { agentTypeOf, locationKindOf } from './shape';
+import { locationKindOf } from './shape';
 import { trackEvent } from './telemetry-service';
 
 type SessionShape = {

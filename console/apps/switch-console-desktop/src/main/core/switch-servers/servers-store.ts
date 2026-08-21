@@ -237,7 +237,9 @@ export async function removeServer(id: string): Promise<void> {
 }
 
 /** The reported kind of a server, in the same terms `server_added` uses. */
-function serverKindOf(server: SwitchServer): TelemetryEventMap['server_added']['server_kind'] {
+export function serverKindOf(
+  server: SwitchServer
+): TelemetryEventMap['server_added']['server_kind'] {
   if (!server.managed) return 'external';
   return server.managementKind === 'remote' ? 'remote_managed' : 'local';
 }

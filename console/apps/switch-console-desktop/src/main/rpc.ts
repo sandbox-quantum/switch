@@ -19,6 +19,7 @@ import { sidecarController } from './core/sidecar/controller';
 import { switchRoomsController } from './core/switch-rooms/controller';
 import { switchServersController } from './core/switch-servers/controller';
 import { switchSetupController } from './core/switch-setup/controller';
+import { telemetryController } from './core/telemetry/controller';
 import { updateController } from './core/updates/controller';
 import { viewStateController } from './core/view-state/controller';
 
@@ -44,6 +45,7 @@ export const rpcRouter = createRPCRouter({
   remoteSwitchServer: remoteSwitchServerController,
   remoteHosts: remoteHostsController,
   sidecar: sidecarController,
+  telemetry: telemetryController,
   fs: createRPCNamespace({
     watch: filesController,
   }),

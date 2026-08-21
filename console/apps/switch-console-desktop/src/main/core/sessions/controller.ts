@@ -1,6 +1,6 @@
 import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
 import type { AttachState } from '@main/core/agent-runtime/attachment/types';
-import { agentTypeOf } from '@main/core/telemetry/shape';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';

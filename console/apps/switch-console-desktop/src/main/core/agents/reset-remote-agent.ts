@@ -10,8 +10,8 @@ import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-ht
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentResetFailure } from '@main/core/telemetry/events';
-import { agentTypeOf } from '@main/core/telemetry/shape';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';

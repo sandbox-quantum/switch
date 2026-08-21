@@ -5,6 +5,10 @@ import type {
   HostDependencySelection,
   InstallOverride,
 } from '@switch-console/core/deps/runtime';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import { cliFailureReason } from '@main/core/telemetry/cli-failure';
+import type { TelemetryCliAction } from '@main/core/telemetry/events';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -25,6 +29,30 @@ const enrichHostDep = (
   id: DependencyId,
   hostDep: Parameters<typeof agentUpdateService.enrichHostDependency>[1]
 ) => agentUpdateService.enrichHostDependency(id, hostDep);
+
+/**
+ * Report installing, updating or removing an agent's CLI.
+ *
+ * `target` is always local here. This controller accepts a connection id and
+ * discards it — `getDependencyManager` returns the local manager whatever it is
+ * given — so nothing reached through it runs anywhere else. The genuinely remote
+ * equivalents live on the remote-hosts controller and report themselves.
+ */
+function reportCliAction(
+  action: TelemetryCliAction,
+  id: string,
+  method: InstallMethod | undefined,
+  result: { success: boolean; error?: { type?: string } }
+): void {
+  trackEvent('agent_cli_action', {
+    agent_type: agentTypeOf(id),
+    target: 'local',
+    install_method: method ?? 'unspecified',
+    action,
+    outcome: result.success ? 'success' : 'failure',
+    failure_reason: cliFailureReason(result),
+  });
+}
 
 export const providersController = createRPCController({
   // ── Metadata ────────────────────────────────────────────────────────────────
@@ -70,6 +98,7 @@ export const providersController = createRPCController({
   install: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
     const result = await mgr.install(id, method);
+    reportCliAction('install', id, method, result);
     if (result.success) {
       // Persist the chosen method as an override, or clear to auto when no method was chosen.
       // Do NOT auto-promote the inferred method — that would freeze a heuristic guess.
@@ -82,12 +111,16 @@ export const providersController = createRPCController({
 
   update: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
-    return mgr.update(id, method);
+    const result = await mgr.update(id, method);
+    reportCliAction('update', id, method, result);
+    return result;
   },
 
   uninstall: async (id: AgentProviderId, connectionId?: string, method?: InstallMethod) => {
     const mgr = await getDependencyManager(connectionId);
-    return mgr.uninstall(id, method);
+    const result = await mgr.uninstall(id, method);
+    reportCliAction('uninstall', id, method, result);
+    return result;
   },
 
   // ── Settings ─────────────────────────────────────────────────────────────────

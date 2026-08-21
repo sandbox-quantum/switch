@@ -5,6 +5,10 @@ import {
   getRemoteManagedServer,
   listManagedServers,
 } from '@main/core/switch-servers/servers-store';
+import {
+  reportManagedServerOutcome,
+  reportManagedServerStart,
+} from '@main/core/telemetry/managed-server';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
@@ -202,13 +206,16 @@ class RemoteServerService {
           drift: null,
         });
       }
+      reportManagedServerStart('remote', result);
       return result;
     } catch (error) {
       host?.dispose();
       const message = error instanceof Error ? error.message : String(error);
       log.error(`remote-switch-server: start failed for ${sshHost}`, { error });
       this.setStatus(sshHost, { phase: 'error', error: message });
-      return { kind: 'error', message };
+      const thrown: StartLocalServerResult = { kind: 'error', message };
+      reportManagedServerStart('remote', thrown);
+      return thrown;
     } finally {
       this.busy.delete(sshHost);
       this.startAborts.delete(sshHost);
@@ -225,11 +232,13 @@ class RemoteServerService {
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host);
       this.setStatus(sshHost, { phase: 'stopped', message: null, error: null });
+      reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
+      reportManagedServerOutcome('stop', 'remote', 'failure');
       throw error;
     } finally {
       host.dispose();
@@ -256,11 +265,13 @@ class RemoteServerService {
       this.setStatus(sshHost, { phase: 'stopping', message: 'Destroying containers and data…' });
       await resetStack(host);
       this.setStatus(sshHost, { phase: 'stopped', message: null, error: null });
+      reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
+      reportManagedServerOutcome('reset', 'remote', 'failure');
       throw error;
     } finally {
       host.dispose();

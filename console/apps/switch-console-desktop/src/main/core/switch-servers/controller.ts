@@ -19,6 +19,14 @@ import {
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
+import type {
+  TelemetryAuthMethod,
+  TelemetryBridgePlatform,
+  TelemetryRoomAgentsDirection,
+  TelemetryRoomCreateFailure,
+  TelemetrySignInFailure,
+} from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -110,6 +118,7 @@ import {
   renameServer,
   setActiveServerId,
   updateServer,
+  serverKindOf,
 } from './servers-store';
 import { updateBridgeOnServer } from './update-bridge';
 
@@ -133,6 +142,63 @@ async function requireReachableServer(serverId: string): Promise<SwitchServer> {
   const blocked = managedServerHostBlocked(server);
   if (blocked) throw new HostUnreachableError(blocked);
   return server;
+}
+
+/** A sign-in's own error union, as a reportable code. Never its message. */
+const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
+  invalid_credentials: 'invalid_credentials',
+  cancelled: 'cancelled',
+  failed: 'failed',
+};
+
+function reportSignIn(
+  method: TelemetryAuthMethod,
+  server: SwitchServer,
+  result: Result<unknown, LoginError>
+): void {
+  trackEvent('server_sign_in', {
+    auth_method: method,
+    server_kind: serverKindOf(server),
+    outcome: result.success ? 'success' : 'failure',
+    failure_reason: result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind],
+  });
+}
+
+/** A room-create result's discriminant as a code. */
+function roomCreateFailureReason(result: CreateRoomResult): TelemetryRoomCreateFailure {
+  switch (result.kind) {
+    case 'created':
+      return 'none';
+    case 'unauthenticated':
+      return 'unauthenticated';
+    case 'bridge-unavailable':
+      return 'bridge_unavailable';
+    case 'invalid':
+      return 'invalid';
+    default:
+      return 'error';
+  }
+}
+
+/**
+ * Which platform a bridge id is on.
+ *
+ * A lookup rather than a field: rooms are created with a bridge id and the type
+ * only appears on the room that comes back, which on a failure does not exist.
+ * Best-effort — an unreachable server reports `unknown` rather than failing the
+ * create it is only describing.
+ */
+async function bridgePlatformOf(
+  server: SwitchServer,
+  bridgeId: string | null | undefined
+): Promise<TelemetryBridgePlatform> {
+  if (!bridgeId) return 'unknown';
+  try {
+    const bridges = await fetchBridges(server);
+    return bridgePlatformOfType(bridges.find((b) => b.id === bridgeId)?.type);
+  } catch {
+    return 'unknown';
+  }
 }
 
 export const switchServersController = createRPCController({
@@ -181,15 +247,29 @@ export const switchServersController = createRPCController({
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>
     fetchAuthConfig(await requireReachableServer(serverId)),
 
+  // Reported here rather than in `auth.ts`: the same functions are used to
+  // re-authenticate a managed server on its own and to log in while starting a
+  // stack, and neither of those is a person signing in.
   passwordLogin: async (params: PasswordLoginParams) => {
     const server = await requireReachableServer(params.serverId);
-    return passwordLogin(server, params.email, params.password);
+    const result = await passwordLogin(server, params.email, params.password);
+    reportSignIn('password', server, result);
+    return result;
   },
 
-  oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> =>
-    oidcLogin(await requireReachableServer(serverId)),
+  oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> => {
+    const server = await requireReachableServer(serverId);
+    const result = await oidcLogin(server);
+    reportSignIn('oidc', server, result);
+    return result;
+  },
 
-  logout: (serverId: string): Promise<void> => deleteSessionCookie(serverId),
+  logout: async (serverId: string): Promise<void> => {
+    // Read before the cookie goes, so the kind of server is still knowable.
+    const server = await getServer(serverId);
+    await deleteSessionCookie(serverId);
+    if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
+  },
 
   /**
    * Open a gateway web page (operator dashboard). For the managed local server —
@@ -307,13 +387,37 @@ export const switchServersController = createRPCController({
    */
   createRoom: async (params: CreateRoomParams): Promise<CreateRoomResult> => {
     const server = await requireReachableServer(params.serverId);
-    return createRoomOnServer(server, {
-      name: params.name,
-      description: params.description,
-      instructions: params.instructions,
-      bridgeId: params.bridgeId,
-      agentIds: params.agentIds,
+    // Resolved before the create rather than read off the result, because the
+    // failure worth watching is the bridge refusing — and on that path there is
+    // no room to read a platform from.
+    const platform = await bridgePlatformOf(server, params.bridgeId);
+    const shape = {
+      server_kind: serverKindOf(server),
+      bridge_platform: platform,
+      agent_count: params.agentIds.length,
+      has_instructions: (params.instructions?.trim().length ?? 0) > 0,
+    };
+
+    let result: CreateRoomResult;
+    try {
+      result = await createRoomOnServer(server, {
+        name: params.name,
+        description: params.description,
+        instructions: params.instructions,
+        bridgeId: params.bridgeId,
+        agentIds: params.agentIds,
+      });
+    } catch (error) {
+      trackEvent('room_created', { ...shape, outcome: 'failure', failure_reason: 'error' });
+      throw error;
+    }
+
+    trackEvent('room_created', {
+      ...shape,
+      outcome: result.kind === 'created' ? 'success' : 'failure',
+      failure_reason: roomCreateFailureReason(result),
     });
+    return result;
   },
 
   listAgentRooms: async (params: {
@@ -352,8 +456,24 @@ export const switchServersController = createRPCController({
     serverId: string;
     roomId: string;
     agentIds: string[];
-  }): Promise<void> =>
-    addRoomAgents(await requireReachableServer(params.serverId), params.roomId, params.agentIds),
+    /**
+     * Which screen this came from. The same call serves both, and the
+     * one-agent-to-many-rooms screen loops it once per room — so without this,
+     * adding an agent to five rooms is indistinguishable from five people each
+     * adding one agent.
+     */
+    direction: TelemetryRoomAgentsDirection;
+  }): Promise<void> => {
+    await addRoomAgents(
+      await requireReachableServer(params.serverId),
+      params.roomId,
+      params.agentIds
+    );
+    trackEvent('room_agents_added', {
+      agent_count: params.agentIds.length,
+      direction: params.direction,
+    });
+  },
 
   /** Remove one agent from a room. Membership only — the agent is not deleted. */
   removeRoomAgent: async (params: {
@@ -364,8 +484,16 @@ export const switchServersController = createRPCController({
     removeRoomAgent(await requireReachableServer(params.serverId), params.roomId, params.agentId),
 
   /** Delete a room and everything in it. The gateway enforces who may. */
-  deleteRoom: async (params: { serverId: string; roomId: string }): Promise<void> =>
-    deleteRoom(await requireReachableServer(params.serverId), params.roomId),
+  deleteRoom: async (params: { serverId: string; roomId: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    try {
+      await deleteRoom(server, params.roomId);
+    } catch (error) {
+      trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome: 'failure' });
+      throw error;
+    }
+    trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome: 'success' });
+  },
 
   listRemoteRoomGroups: async (serverId: string): Promise<RemoteRoomGroup[]> =>
     fetchRoomGroups(await requireServer(serverId)),
