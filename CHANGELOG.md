@@ -730,8 +730,18 @@ version of their own to them without also giving them a release of their own.
   A session start also records which button it came from, whether a room and an
   opening prompt were chosen, and whether the app started the session or found
   it already running on a remote host — never the room, the prompt or the host.
+- Removing an agent, resetting a remote agent, removing a server, attaching a
+  remote session's terminal and retrying a session that failed to set up are all
+  reported now, each with whether it worked. Removing an agent distinguishes a
+  person doing it from a server teardown sweeping every agent up with it.
 
 #### Fixed
+- Retrying a session that failed to set up now says whether it worked. The retry
+  reported failure by throwing, which nothing was listening for, so a second
+  attempt that failed left the session sitting on "setting up" with no error and
+  no explanation.
+- Deleting an agent left its sessions counted as still running. The sessions were
+  removed by the database itself, so nothing in the app was told they had ended.
 - The OpenCode connector the app writes carries its own copy of the
   room-workflow skill, so it picked up the same wrong claim that a Telegram DM
   is adopted like Mattermost's. Corrected alongside the connector directory

@@ -1,5 +1,9 @@
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
+import type {
+  SessionProvisionTrigger,
+  SessionStartSource,
+  UiEntryPoint,
+} from '@shared/core/telemetry/reporting';
 
 /**
  * Where the thing being reported ran: this machine, or an SSH host.
@@ -52,6 +56,40 @@ export type TelemetrySessionStartFailure =
   | 'spawn_failed';
 
 /**
+ * Why removing an agent failed.
+ *
+ * The path signals failure by throwing rather than by returning a union, so the
+ * codes come from the errors' own types: `GatewayError.kind` for the three
+ * gateway cases, and a dedicated class for an agent with no identity to delete.
+ * `error` is the honest bucket for everything not separated out; widening it
+ * means naming a new case, never passing a message through.
+ */
+export type TelemetryAgentRemoveFailure =
+  | 'none'
+  | 'not_linked_to_switch'
+  | 'gateway_unauthorized'
+  | 'gateway_http'
+  | 'gateway_network'
+  | 'error';
+
+/** Why resetting a remote agent failed. Also named rather than derived. */
+export type TelemetryAgentResetFailure =
+  | 'none'
+  | 'agent_not_found'
+  | 'not_remote'
+  | 'connect'
+  | 'error';
+
+/**
+ * What removed an agent.
+ *
+ * Wiping a managed server deletes every agent on it, through the same function
+ * a person uses to delete one. Without this, one click on Reset looks
+ * identical to a dozen people giving up on their agents.
+ */
+export type TelemetryAgentRemoveTrigger = 'user' | 'server_teardown';
+
+/**
  * Which control the user reached the action from, and who started a session.
  *
  * Both are declared in `@shared` because the renderer names them and the main
@@ -59,6 +97,9 @@ export type TelemetrySessionStartFailure =
  */
 export type TelemetryEntryPoint = UiEntryPoint;
 export type TelemetrySessionStartSource = SessionStartSource;
+
+/** A retry's trigger, minus `initial`, which is not a retry and is not sent. */
+export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial'>;
 
 /**
  * Every event the app may send, and everything each one may carry.
@@ -135,6 +176,63 @@ export type TelemetryEventMap = {
     target: TelemetryLocationKind;
     outcome: 'success' | 'failure';
   };
+  /**
+   * An agent was removed. `delete_in_switch` says whether its identity on the
+   * server went with it, which is the difference between leaving the app and
+   * leaving the organisation.
+   */
+  agent_removed: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+    delete_in_switch: boolean;
+    trigger: TelemetryAgentRemoveTrigger;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryAgentRemoveFailure;
+  };
+  /**
+   * A remote agent was reset — every one of its panes on the host killed and the
+   * agent brought back up. Remote-only, and a real SSH operation, so unlike most
+   * of this catalogue it fails for reasons outside the app.
+   */
+  agent_reset: {
+    agent_type: TelemetryAgentType;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryAgentResetFailure;
+  };
+  /**
+   * A server was removed from this install.
+   *
+   * It carries no count of agents removed with it, because removing a server
+   * removes none: it unlinks them. The deletion that does remove them is a
+   * separate operation the UI runs first, and nothing on this side sees both —
+   * so a count here would always be zero, which reads as an answer.
+   */
+  server_removed: {
+    server_kind: 'local' | 'remote_managed' | 'external';
+  };
+  /**
+   * A session whose setup had not completed was provisioned again.
+   *
+   * The first attempt for a session is not reported: what is worth knowing is
+   * whether a second one worked, and whether anyone had to ask for it.
+   */
+  session_provision_retried: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+    trigger: TelemetrySessionProvisionTrigger;
+    outcome: TelemetryOutcome;
+  };
+  /**
+   * A remote session's terminal was attached, or could not be.
+   *
+   * Reported only for an attach a person waited on. A transport drop cancels
+   * every queued attach at once, which is one failure rather than a host's
+   * worth, so a cancelled attach is not reported as one.
+   */
+  session_attached: {
+    agent_type: TelemetryAgentType;
+    outcome: TelemetryOutcome;
+  };
 };
 
 export type TelemetryEventName = keyof TelemetryEventMap;
@@ -163,6 +261,18 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome'],
   connector_installed: ['agent_type', 'target', 'outcome'],
+  agent_removed: [
+    'agent_type',
+    'location',
+    'delete_in_switch',
+    'trigger',
+    'outcome',
+    'failure_reason',
+  ],
+  agent_reset: ['agent_type', 'outcome', 'failure_reason'],
+  server_removed: ['server_kind'],
+  session_provision_retried: ['agent_type', 'location', 'trigger', 'outcome'],
+  session_attached: ['agent_type', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 
 /** Which events, if any, declare a property the emitter also adds. */

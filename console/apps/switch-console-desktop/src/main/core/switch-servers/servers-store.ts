@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
+import type { TelemetryEventMap } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
 import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema';
@@ -219,6 +220,9 @@ export async function renameServer(params: RenameServerParams): Promise<SwitchSe
 }
 
 export async function removeServer(id: string): Promise<void> {
+  // Read before the row goes: nothing afterwards can say what kind it was.
+  const server = await getServer(id);
+
   await deleteSessionCookie(id);
   // Unlink agents explicitly: SQLite's ALTER TABLE ADD COLUMN can't carry an
   // ON DELETE clause, so the FK's set-null isn't enforced by the engine.
@@ -227,6 +231,15 @@ export async function removeServer(id: string): Promise<void> {
   if ((await getActiveServerId()) === id) {
     await db.delete(kv).where(eq(kv.key, ACTIVE_SERVER_KV_KEY));
   }
+
+  // Removing an already-absent server is not a server being removed.
+  if (server) trackEvent('server_removed', { server_kind: serverKindOf(server) });
+}
+
+/** The reported kind of a server, in the same terms `server_added` uses. */
+function serverKindOf(server: SwitchServer): TelemetryEventMap['server_added']['server_kind'] {
+  if (!server.managed) return 'external';
+  return server.managementKind === 'remote' ? 'remote_managed' : 'local';
 }
 
 export async function getActiveServerId(): Promise<string | null> {

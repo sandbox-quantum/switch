@@ -16,6 +16,8 @@ const { hoisted } = vi.hoisted(() => ({
     getLocationById: vi.fn(),
     trackEvent: vi.fn(),
     hasIntendedRoom: vi.fn(() => false),
+    getSession: vi.fn(),
+    loadSession: vi.fn(),
   },
 }));
 
@@ -45,6 +47,10 @@ vi.mock('./operations/archiveSession', () => ({ archiveSession: vi.fn() }));
 vi.mock('./operations/deleteSession', () => ({ deleteSession: vi.fn() }));
 vi.mock('./operations/ensureSessionAttachable', () => ({ ensureSessionAttachable: vi.fn() }));
 vi.mock('./operations/getSessions', () => ({ getSessions: vi.fn() }));
+vi.mock('./operations/getSession', () => ({ getSession: hoisted.getSession }));
+// Provisioning reads the session through this; rejecting it is the simplest
+// way to exercise the failure path end to end.
+vi.mock('../session-join', () => ({ loadSessionWithAgent: hoisted.loadSession }));
 vi.mock('./operations/renameSession', () => ({ renameSession: vi.fn() }));
 vi.mock('./operations/restoreSession', () => ({ restoreSession: vi.fn() }));
 vi.mock('./operations/setSessionPinned', () => ({ setSessionPinned: vi.fn() }));
@@ -162,5 +168,60 @@ describe('a session start that fails', () => {
     await sessionService.createSession({ ...PARAMS });
 
     expect(hoisted.trackEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('provisioning a session again', () => {
+  beforeEach(() => {
+    hoisted.getSession.mockResolvedValue({
+      id: 's-1',
+      agentId: 'agent-1',
+      providerId: 'codex',
+      agentLocationId: 'loc',
+    });
+    hoisted.loadSession.mockRejectedValue(new Error('nope'));
+  });
+
+  it('says nothing for a first attempt, which is not a retry', async () => {
+    // Nearly every session is provisioned once. Counting those would bury the
+    // thing worth knowing, which is whether a second attempt worked.
+    await sessionService.provisionSession('s-1');
+
+    expect(hoisted.trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('separates a retry someone asked for from one the view made on its own', async () => {
+    await sessionService.provisionSession('s-1', 'retry_button');
+    await sessionService.provisionSession('s-1', 'auto');
+
+    const triggers = hoisted.trackEvent.mock.calls
+      .filter(([name]) => name === 'session_provision_retried')
+      .map(([, p]) => (p as Record<string, unknown>).trigger);
+    expect(triggers).toEqual(['retry_button', 'auto']);
+  });
+
+  it('reports a retry that failed rather than throwing it away', async () => {
+    // The whole point: the failure used to be thrown, so nothing could report
+    // it and the renderer's error branch was unreachable.
+    await sessionService.provisionSession('s-1', 'retry_button');
+
+    expect(hoisted.trackEvent).toHaveBeenCalledWith(
+      'session_provision_retried',
+      expect.objectContaining({ outcome: 'failure', agent_type: 'codex', location: 'local' })
+    );
+  });
+
+  it('hands the failure back as a value the caller can act on', async () => {
+    const result = await sessionService.provisionSession('s-1', 'retry_button');
+
+    expect(result.success).toBe(false);
+  });
+
+  it('never puts the failure message in the payload', async () => {
+    hoisted.loadSession.mockRejectedValue(new Error('/Users/someone/secret-project is gone'));
+
+    await sessionService.provisionSession('s-1', 'auto');
+
+    expect(JSON.stringify(hoisted.trackEvent.mock.calls)).not.toContain('secret-project');
   });
 });

@@ -16,6 +16,9 @@ const { h } = vi.hoisted(() => ({
     hookEmit: vi.fn(),
     ipcEmit: vi.fn(),
     teardownSession: vi.fn(async () => {}),
+    trackEvent: vi.fn(),
+    remoteLocation: { id: 'loc' } as { id: string } | null,
+    connect: null as null | (() => never),
   },
 }));
 
@@ -32,6 +35,7 @@ vi.mock('@main/core/sessions/session-hooks', () => ({
   sessionHooks: { _emit: h.hookEmit },
 }));
 vi.mock('@main/lib/events', () => ({ events: { emit: h.ipcEmit } }));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
 vi.mock('@main/core/sessions/session-runtime-manager', () => ({
   sessionRuntimeManager: { teardownSession: h.teardownSession },
 }));
@@ -53,16 +57,21 @@ vi.mock('./getAgentById', () => ({
     autoApprove: false,
   })),
 }));
-vi.mock('./agent-location', () => ({ getRemoteAgentLocation: vi.fn(async () => ({ id: 'loc' })) }));
+vi.mock('./agent-location', () => ({
+  getRemoteAgentLocation: vi.fn(async () => h.remoteLocation),
+}));
 vi.mock('./agent-launch-config', () => ({ agentLaunchSpecialization: vi.fn(async () => null) }));
 vi.mock('./connect-remote-agent', () => ({
-  connectRemoteAgent: vi.fn(async () => ({
-    host: { exec: vi.fn(async () => {}) },
-    remoteRepoDir: '/srv/repo',
-    ctx: {},
-    connectionId: 'c-1',
-    proxy: { forwardOut: vi.fn() },
-  })),
+  connectRemoteAgent: vi.fn(async () => {
+    if (h.connect) h.connect();
+    return {
+      host: { exec: vi.fn(async () => {}) },
+      remoteRepoDir: '/srv/repo',
+      ctx: {},
+      connectionId: 'c-1',
+      proxy: { forwardOut: vi.fn() },
+    };
+  }),
 }));
 vi.mock('./remote-session-reconciler', () => ({ remoteSessionReconciler: { stop: vi.fn() } }));
 vi.mock('./remote-watcher', () => ({
@@ -86,6 +95,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.sessionRows = [{ id: 's-1' }];
   h.deletedChanges = 1;
+  h.remoteLocation = { id: 'loc' };
+  h.connect = null;
 });
 
 describe('resetting a remote agent', () => {
@@ -101,7 +112,9 @@ describe('resetting a remote agent', () => {
 
     await resetRemoteAgent('agent-1');
 
-    expect(h.hookEmit.mock.calls.map(([, id]) => id).sort()).toEqual(['s-1', 's-2', 's-3']);
+    expect(
+      h.hookEmit.mock.calls.map(([, id]) => id as string).toSorted((a, b) => a.localeCompare(b))
+    ).toEqual(['s-1', 's-2', 's-3']);
   });
 
   it('says nothing for a row that was already gone', async () => {
@@ -113,5 +126,44 @@ describe('resetting a remote agent', () => {
 
     expect(h.hookEmit).not.toHaveBeenCalled();
     expect(h.ipcEmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('what a reset reports', () => {
+  it('reports a reset that completed', async () => {
+    await resetRemoteAgent('agent-1');
+
+    expect(h.trackEvent).toHaveBeenCalledWith('agent_reset', {
+      agent_type: 'codex',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
+  });
+
+  it('reports a local agent as the reason it cannot be reset', async () => {
+    h.remoteLocation = null;
+
+    await expect(resetRemoteAgent('agent-1')).rejects.toThrow();
+
+    expect(h.trackEvent).toHaveBeenCalledWith(
+      'agent_reset',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'not_remote' })
+    );
+  });
+
+  it('reports an unreachable host as a plain error, never its message', async () => {
+    // The remote failure's own text is not ours to enumerate, and never ours
+    // to send.
+    h.connect = () => {
+      throw new Error('ssh: connect to host /Users/someone/secret-project failed');
+    };
+
+    await expect(resetRemoteAgent('agent-1')).rejects.toThrow();
+
+    expect(h.trackEvent).toHaveBeenCalledWith(
+      'agent_reset',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'error' })
+    );
+    expect(JSON.stringify(h.trackEvent.mock.calls)).not.toContain('secret-project');
   });
 });

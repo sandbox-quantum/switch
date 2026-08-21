@@ -19,6 +19,7 @@ import type {
   Session,
   SessionLifecycleStatus,
 } from '@shared/core/sessions/sessions';
+import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { sessionAgentRegistry } from './session-agent-registry';
 import {
   createUnprovisionedSession,
@@ -272,7 +273,10 @@ export class SessionManagerStore {
     await this.provisionSession(params.id);
   }
 
-  async provisionSession(sessionId: string): Promise<void> {
+  async provisionSession(
+    sessionId: string,
+    trigger: SessionProvisionTrigger = 'initial'
+  ): Promise<void> {
     await getLocationManagerStore().mountLocation(this.locationId);
     await this.loadSessions();
 
@@ -286,7 +290,7 @@ export class SessionManagerStore {
       session.phase = 'provision';
     });
 
-    const promise = this._doProvision(sessionId).finally(() => {
+    const promise = this._doProvision(sessionId, trigger).finally(() => {
       this._provisionPromises.delete(sessionId);
     });
 
@@ -294,12 +298,12 @@ export class SessionManagerStore {
     return promise;
   }
 
-  private async _doProvision(sessionId: string): Promise<void> {
+  private async _doProvision(sessionId: string, trigger: SessionProvisionTrigger): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session || !isUnprovisioned(session)) return;
 
     // Single-phase provision: session bootstrap + session provider construction + registration.
-    const result = await rpc.sessions.provisionSession(sessionId);
+    const result = await rpc.sessions.provisionSession({ sessionId, trigger });
     if (!result.success) {
       const message = result.error.message;
       runInAction(() => {

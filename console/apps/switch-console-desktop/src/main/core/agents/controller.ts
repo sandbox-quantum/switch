@@ -90,7 +90,10 @@ export const agentsController = createRPCController({
   getAgentById: (agentId: string) => getAgentById(agentId),
   renameAgent: (params: RenameAgentParams) => renameAgent(params),
   deleteAgent: (params: { agentId: string } & DeleteAgentOptions) =>
-    deleteAgent(params.agentId, { deleteInSwitch: params.deleteInSwitch }),
+    deleteAgent(params.agentId, {
+      deleteInSwitch: params.deleteInSwitch,
+      trigger: params.trigger,
+    }),
   resetRemoteAgent: (params: { agentId: string }) => resetRemoteAgent(params.agentId),
   updateAgent: (params: UpdateAgentParams) => updateAgent(params),
   assignServer: (params: { agentId: string; serverId: string }): Promise<AgentVerifyResult> =>

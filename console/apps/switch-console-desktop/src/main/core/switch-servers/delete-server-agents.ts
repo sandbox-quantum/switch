@@ -40,7 +40,7 @@ export async function deleteAgentsForServer(
 
   for (const row of rows) {
     try {
-      await deleteAgent(row.id, { deleteInSwitch: false });
+      await deleteAgent(row.id, { deleteInSwitch: false, trigger: 'server_teardown' });
       deleted.push(row.id);
     } catch (error) {
       failed.push({ agentId: row.id, error: String(error) });

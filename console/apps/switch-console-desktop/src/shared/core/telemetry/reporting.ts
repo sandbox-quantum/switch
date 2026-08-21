@@ -45,3 +45,16 @@ export type UiEntryPoint = (typeof UI_ENTRY_POINTS)[number];
 export const SESSION_START_SOURCES = ['user', 'adopted'] as const;
 
 export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
+
+/**
+ * What asked for a session to be provisioned.
+ *
+ * `initial` is the first attempt for a session and is not reported — only a
+ * retry answers "did it work the second time". The other two are both retries
+ * of a session that is already sitting there unprovisioned: `retry_button` is
+ * someone pressing it, `auto` is the view trying again on its own when the
+ * session is opened. They are counted apart because only the first is intent.
+ */
+export const SESSION_PROVISION_TRIGGERS = ['initial', 'auto', 'retry_button'] as const;
+
+export type SessionProvisionTrigger = (typeof SESSION_PROVISION_TRIGGERS)[number];

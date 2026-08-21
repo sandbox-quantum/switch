@@ -186,6 +186,46 @@ describe('servers-store: rename & delete', () => {
   });
 
   describe('removeServer', () => {
+    it('reports the kind of server that was removed', async () => {
+      await fixture.db.insert(switchServers).values({
+        id: 'srv-ext',
+        name: 'External',
+        gatewayUrl: 'https://gw.example.com',
+        apiUrl: 'https://api.example.com',
+      });
+
+      await removeServer('srv-ext');
+
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_removed', {
+        server_kind: 'external',
+      });
+    });
+
+    it('reports a managed server by the kind it was managed as', async () => {
+      await fixture.db.insert(switchServers).values({
+        id: 'srv-rm',
+        name: 'Remote',
+        gatewayUrl: 'https://gw2.example.com',
+        apiUrl: 'https://api2.example.com',
+        managed: true,
+        managementKind: 'remote',
+        sshHost: 'build-box',
+      });
+
+      await removeServer('srv-rm');
+
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_removed', {
+        server_kind: 'remote_managed',
+      });
+    });
+
+    it('reports nothing for a server that was already gone', async () => {
+      // A no-op remove is not a server being removed.
+      await removeServer('srv-missing');
+
+      expect(telemetryMocks.trackEvent).not.toHaveBeenCalled();
+    });
+
     it('unlinks the server’s agents (keeps them), deletes the row, and clears the active pointer', async () => {
       await fixture.db
         .insert(locations)
