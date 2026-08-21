@@ -106,7 +106,10 @@ are deployment-level environment config on switch-core:
   at `/deeplink/session` on the API root (the agent-bridge app), **not** under the
   `/gateway` mount — so front it with a proxy that routes the API root, not only
   `/gateway/*`. Leave unset to post the raw `switchdash://` deeplink (the
-  disclosed fallback). Applies to every platform but matters most for Discord.
+  disclosed fallback). Applies to every platform, and is **required** on
+  Discord, Telegram and Teams, which render only http(s) links — Teams goes
+  further and strips a link on any other scheme entirely, label included, so
+  without this the deeplink renders as empty brackets.
 - **Teams** additionally needs public HTTPS ingress to the bridge's listener, on
   its own port — it is the only bridge Switch does not reach outbound. See
   [`TEAMS_SETUP.md`](TEAMS_SETUP.md) for the bridge side, and the Helm chart's

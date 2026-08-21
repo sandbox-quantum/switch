@@ -66,8 +66,8 @@ _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
 def _handle_for(user: dict[str, Any]) -> str:
     """The handle Switch knows a Teams person by.
 
-    The local part of their user principal name — `louis.amaudruz` from
-    `louis.amaudruz@contoso.com`. Unique within a tenant, and unlike a display
+    The local part of their user principal name — `ada.lovelace` from
+    `ada.lovelace@contoso.com`. Unique within a tenant, and unlike a display
     name it survives being written as `@handle`, which is how someone is
     addressed in a room and how an outbound mention is matched back to them.
 
@@ -261,8 +261,8 @@ class TeamsAdapter(CollaborationAdapter):
     agent, and per-agent presentation is done with Adaptive Card sender labels
     rather than a bot account per agent. Outbound messages are delivered through
     the Bot Framework connector; inbound activities arrive at a self-hosted
-    aiohttp listener. Full (non-@mention) channel-message capture via Microsoft
-    Graph subscriptions is layered on in a later phase.
+    aiohttp listener. Full (non-@mention) channel-message capture goes through
+    Microsoft Graph change-notification subscriptions.
     """
 
     # Teams keeps only http(s) anchors: a link on any other scheme is stripped
@@ -1100,7 +1100,7 @@ class TeamsAdapter(CollaborationAdapter):
         """The handle to file an inbound sender under.
 
         Teams omits the sender's name from some activities — 1:1 chats above
-        all — and the fallback was the raw id, so `29:1fRClM25SXVf…` became a
+        all — and the fallback was the raw id, so `29:1AbCdEf…` became a
         person's name: in the room title, on their Matrix account, and in the
         text of every agent reply that addressed them. An id is never a name,
         so look one up instead, and only give up when Graph cannot say either.

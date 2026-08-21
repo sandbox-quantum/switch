@@ -17,6 +17,41 @@ internet or the bridge only half-works.
 
 ---
 
+## Prerequisites
+
+Have these before you start. Two of them involve someone who may not be you,
+and both are on the critical path.
+
+**In Microsoft Entra ID / Azure**
+
+- Rights to create an **app registration** and a client secret on it.
+- Someone who can **grant admin consent** for Graph application permissions
+  (see [1.4](#14-graph-api-permissions)). Tenant-wide consent is usually a
+  Global Administrator or Privileged Role Administrator. If that is not you,
+  line them up now: nothing in Part 4 works until consent is granted.
+- Rights to **install a Teams app into a team** — either sideloading enabled
+  for you, or an admin who can upload to the organisation's app catalogue.
+
+**In your deployment**
+
+- A **public DNS name** resolvable from the internet, and **HTTPS** on it that
+  Microsoft will trust. Teams is push-based: Microsoft calls you. A VPN-only or
+  tailnet name cannot work, and neither can plain HTTP.
+- Administrator access to the Switch dashboard, and a running switch-core you
+  can deploy chart changes to.
+
+**Decide one thing up front: the public hostname of the Teams listener.** It
+goes into the Azure Bot's messaging endpoint in [1.3](#13-azure-bot-resource),
+into `public_base_url` in [Part 3](#part-3-onboard-the-bridge-in-switch), and
+into your ingress in [Part 2](#part-2-deployment) — and changing it later means
+editing all three. It need not be the name that serves the dashboard, and
+usually should not be.
+
+**Time.** An hour if you have all of the above and the consent is quick;
+longer if you are waiting on an administrator.
+
+---
+
 ## Read this first: the two mistakes that cost the most time
 
 Both produce confusing failures. Neither is obvious from the error you see.
@@ -115,7 +150,8 @@ code — so record the date somewhere you will see it.
 **Create an Azure Bot** resource backed by the app registration above.
 
 - **Messaging endpoint:** `https://<your-public-host>/api/messages`
-- **Channels:** enable **Microsoft Teams**
+- **Channels** (the Azure Bot blade of that name — not Teams channels):
+  enable **Microsoft Teams**
 
 **Back it by the app registration from 1.1 — not a new one.** The create form
 will happily make you a fresh app registration, and everything then looks
@@ -124,41 +160,67 @@ inbound activities with the bot's id and Switch rejects every one of them. Check
 **Configuration → Microsoft App ID** on the finished resource and confirm it is
 the id from 1.1.
 
-The messaging endpoint must be the same origin you configure as
-`public_base_url` in Part 3, with `/api/messages` on the end — the listener's
-host, which is not necessarily the one serving the gateway. If you follow
-[Part 2](#part-2-deployment)'s recommended `mode: dedicated`, both are the Teams
-host. Deciding that hostname now, before you create the bot, saves editing it
-later.
+The messaging endpoint is the hostname you settled on in
+[Prerequisites](#prerequisites), with `/api/messages` on the end. It must be
+the same origin you give as `public_base_url` in
+[Part 3](#part-3-onboard-the-bridge-in-switch) — the listener's host, which is
+not necessarily the one serving the dashboard. Under
+[Part 2](#part-2-deployment)'s recommended `mode: dedicated`, both are the
+Teams host.
 
 ### 1.4 Graph API permissions
 
-**App registration → API permissions.** These are *application* permissions
-(not delegated), and all require **admin consent** — the bridge acts as itself,
-with no signed-in user.
+**App registration → API permissions → Add a permission → Microsoft Graph →
+Application permissions.**
 
-| Permission | Needed for |
+Application permissions, not delegated: the bridge acts as itself, with no
+signed-in user. Every one of them needs **Grant admin consent** afterwards — a
+permission added but not consented behaves exactly as if it were absent, and
+Graph reports it as `Authorization_RequestDenied` rather than as anything to do
+with consent.
+
+Grant all six. The table says what each one buys so you can tell what is broken
+when one is missing, not so you can pick and choose:
+
+| Permission | Without it |
 | --- | --- |
-| `ChannelMessage.Read.Group` (RSC, preferred) or `ChannelMessage.Read.All` | Full channel-message capture |
-| `Channel.Create` | Creating a channel when a Switch room is added to the bridge |
-| `TeamMember.ReadWrite.All` / `ChannelMember.ReadWrite.All` | Adding members to provisioned channels |
-| `User.ReadBasic.All` | Finding people in the directory, so they can link their account — and resolving a sender's name when Teams omits it |
+| `ChannelMessage.Read.All`<br>(or `ChannelMessage.Read.Group`, see below) | No channel capture. The bridge sees only messages that @mention the bot, so plain channel conversation, and bare `!commands`, never reach Switch. |
+| `Channel.Create` | Adding a room to the bridge fails: Switch cannot provision the room's channel. |
+| `Channel.ReadBasic.All` | Binding a room to a channel that **already exists** fails (see [Adopting an existing channel](#adopting-an-existing-channel)) — Switch reads the channel to learn whether it is standard or private, and provisions membership differently for each. |
+| `TeamMember.ReadWrite.All` | People named on a room are not added to a **standard** channel. A standard channel inherits the team's membership, so they are added to the team. |
+| `ChannelMember.ReadWrite.All` | The same, for a **private** channel, which carries its own membership. |
+| `User.ReadBasic.All` | Nobody can link their Switch account to their Teams account, so no agent can @mention its owner. Switch also cannot resolve a sender's name when Teams omits it — 1:1 chats especially — and falls back to their raw id, which then becomes their name in room titles and in every reply that addresses them. |
 
-Do not skip the last one because nobody is linking accounts yet. Without it,
-Switch cannot look up who sent a message when Teams does not say, and falls
-back to their raw id — which then becomes their name in room titles and in
-every reply that addresses them.
+Two of these are easy to skip and expensive to omit. **`Channel.ReadBasic.All`**
+looks redundant next to `Channel.Create` and is not: creating a channel and
+adopting an existing one are different paths, and only the second reads.
+**`User.ReadBasic.All`** looks like it only matters once someone links an
+account, and does not — without it, everyone in Teams is an opaque id to
+Switch from the first message.
 
-Prefer the RSC (resource-specific consent) variant where possible: it is scoped
-to the teams the app is installed in, rather than tenant-wide.
+**About the RSC variant.** `ChannelMessage.Read.Group` is resource-specific
+consent: scoped to the teams your app is installed in rather than tenant-wide,
+and preferable where your organisation will accept it. Two consequences. It is
+declared in the Teams app manifest ([1.6](#16-teams-app-package)) as well as
+granted in the portal, so it is not a drop-in substitution for a checkbox. And
+it applies only to teams the app is installed in — so if capture works in one
+team and not another, that is the first thing to check.
 
-Click **Grant admin consent** afterwards. Permissions that are added but not
-consented behave as if absent, and the resulting Graph errors say
-`Authorization_RequestDenied` rather than anything about consent.
+> **Teams protected APIs.** Microsoft gates change notifications carrying Teams
+> message content behind a separate access request, and may attach billing to
+> them. If subscriptions are refused on a tenant where the permissions above are
+> plainly granted and consented, this is the likely reason — check the current
+> Microsoft Graph documentation for "protected APIs for Microsoft Teams", since
+> the terms have changed more than once.
 
-> Graph resource-data subscriptions count against a **shared per-tenant Teams
-> subscription quota**. A tenant already using Graph subscriptions heavily can
-> hit that ceiling.
+> **Subscription quota.** Graph resource-data subscriptions count against a
+> shared per-tenant Teams quota. A tenant already using Graph subscriptions
+> heavily can hit that ceiling.
+
+Nothing in this section is needed for the Bot Framework side. Messages that
+@mention the bot arrive over the Bot Connector, authenticated by the app
+registration itself, and need no Graph permission at all — which is why a
+bridge with none of the above still looks half-alive.
 
 ### 1.5 Encryption certificate — nothing to do
 
@@ -182,10 +244,32 @@ Rotating means creating a new bridge, which mints a new pair.
 
 ### 1.6 Teams app package
 
-Build a Teams app manifest that includes the bot, and install it into the target
-team. Without this the bot cannot be added to channels or post proactively.
+An Azure Bot is reachable but not yet *present* in Teams. A Teams app package
+puts it in a team, and without one the bot cannot be added to channels or post
+proactively — so this step is a hard prerequisite for Part 4, not a formality.
 
-Record the **team id** — the AAD group id of the team new channels are created
+Build the manifest in the **Teams Developer Portal**
+(`dev.teams.microsoft.com` → Apps → New app), or hand-write `manifest.json` and
+upload it. Either way, four fields carry the setup you did above:
+
+| Field | Value |
+| --- | --- |
+| `bots[0].botId` | The `app_id` from [1.1](#11-app-registration) |
+| `bots[0].scopes` | `team` at minimum. Add `personal` and `groupChat` for 1:1 and group-chat capture. |
+| `webApplicationInfo.id` | The same `app_id` — this is what ties the app to your Entra registration |
+| `validDomains` | The host of your `public_base_url` |
+
+If you are taking the resource-specific consent route for channel capture
+([1.4](#14-graph-api-permissions)), the RSC permission is declared in this
+manifest as well as granted in the portal.
+
+**Then install it into the target team.** That needs either sideloading
+permission on your account (Teams admin centre → Setup policies → *Upload
+custom apps*) or an administrator to publish it to the organisation's app
+catalogue. This is the step most likely to need someone else, which is why it
+is in [Prerequisites](#prerequisites).
+
+Record the **team id** — the Entra group id of the team new channels are created
 in. This becomes `team_id`. The simplest way to read it: open the team in Teams
 on the web and copy the `groupId` query parameter from the URL.
 
@@ -349,15 +433,19 @@ calls only an HTTPS URL whose certificate it trusts. Setting it `false` is *not*
 an error: TLS may terminate upstream where the chart cannot see it — an AWS ALB
 configured by annotation, say — so the install output warns instead:
 
-```
-⚠  TLS is disabled on this Ingress. Microsoft Graph only calls an HTTPS URL
-   whose certificate it trusts, so this works only if TLS terminates upstream
-   (e.g. an AWS ALB configured by annotation). If it does not, the bridge will
-   create channels and then silently receive nothing.
+```text
+⚠  https, even though TLS is disabled on this Ingress — Graph refuses a
+   plaintext URL, so that host has to be served over HTTPS by something in
+   front (a CDN, or a load balancer configured by annotation). If nothing is,
+   the bridge will create channels and then silently receive nothing.
 ```
 
-If nothing upstream is terminating TLS, that warning is the only notice you get
-before the bridge goes quietly deaf.
+**That warning only prints when the chart knows the public origin** — that is,
+`dedicated` with a `host`, or `shared`. Under the CDN shape recommended below
+(`dedicated` with an empty `host`) the chart cannot know the public name, so it
+prints no TLS warning at all. In that configuration nothing will tell you the
+origin is unreachable or plaintext; verifying it is on you, and
+[Part 4](#part-4-verify) step 4 is how.
 
 Where the chart knows the hostname — `dedicated` with a `host`, or `shared` —
 that output prints the exact origin to paste into `public_base_url` in Part 3.
@@ -395,7 +483,7 @@ second bridge on a port another one already uses is refused, naming the bridge
 that holds it:
 
 ```
-'SandboxAQ Teams' already uses tcp/3978 on this instance, and two teams
+'Contoso Teams' already uses tcp/3978 on this instance, and two teams
 bridges cannot share it. Delete that bridge first, or give this one a
 different listen_port in its connection_config …
 ```
@@ -428,10 +516,20 @@ There are five, and every one is a value Azure gave you in Part 1:
 | `team_id` | AAD group id of the team new channels go into | 1.6 |
 | `public_base_url` | Public HTTPS origin **of the listener** — scheme + host, no path. Under `mode: dedicated` that is the Teams host (`https://teams.example.com`), not the gateway's; a Helm install prints the exact value to use | Part 2 |
 
+Alongside them the dialog carries a display name and an **Allow creating
+channels from Switch** toggle, on by default. Leave it on unless you want rooms
+to be bound only to channels that already exist — with it off, adding a room
+that would provision a channel is refused, and the refusal says so.
+
 **Switch checks these before saving.** It requests both Azure tokens the bridge
 needs, and if Microsoft refuses, the form fails with Microsoft's own
 explanation instead of accepting the values and going quiet. So a wrong secret
 is a red message in front of you, not a mystery hours later.
+
+Note what that check can and cannot tell you: a token proves the credentials
+are good, not that the app may *do* anything. Permissions are only tested when
+Graph is first called, which is why a bridge can save cleanly and then fail on
+its first room — see [1.4](#14-graph-api-permissions).
 
 That also means creating a bridge requires Switch to reach
 `login.microsoftonline.com`. On a restricted network, allow that egress first.
@@ -453,6 +551,27 @@ values**, including no encryption material at all — in which case channel
 capture stays off and an error is logged. There is no way to edit a bridge's
 credentials, so adopting the generated ones means deleting it and creating it
 again.
+
+### Adopting an existing channel
+
+A room does not have to bring a new channel with it. Adding a room to the
+bridge normally provisions one, but you can instead point the room at a channel
+that already exists in the team — useful when a conversation is already
+happening somewhere and you want agents in it.
+
+Two things differ from the provisioning path, and both have bitten people:
+
+- **Switch reads the channel** to learn whether it is standard or private,
+  because membership is granted differently for each. That read needs
+  `Channel.ReadBasic.All` ([1.4](#14-graph-api-permissions)), which the
+  provisioning path never uses — so a bridge that has been creating channels
+  happily for weeks can fail the first time you adopt one.
+- **Capture is set up when the room is bound**, the same as for a channel
+  Switch created. If the notification endpoint is unreachable at that moment
+  the subscription fails, and the bridge retries in the background rather than
+  giving up — see [Troubleshooting](#troubleshooting).
+
+The channel's Switch-side id is its Teams thread id (`19:…@thread.tacv2`).
 
 ---
 
@@ -506,6 +625,62 @@ Note that steps 5 and 6 fail independently: provisioning is outbound and needs
 only working credentials, while capture needs the public route. A bridge that
 passes 5 and fails 6 is the signature of unreachable ingress.
 
+**7. An agent posts back.** Add an agent to the room and address it from the
+channel. Its reply should arrive as a card headed with the agent's name and
+avatar, under the post you asked in. This is the one step that exercises the
+outbound path end to end, and the first thing that fails if the bridge has
+never accepted an inbound activity — see the `serviceUrl` entry in
+[Troubleshooting](#troubleshooting).
+
+---
+
+## In-channel commands
+
+Switch's `!` commands work in a Teams channel, but the bot must be mentioned
+for the message to reach Switch at all:
+
+```text
+@YourBot !list-agents
+```
+
+The mention is stripped before the command is parsed, so `@YourBot !help`,
+`@YourBot !invite-agent @agent-name` and the rest behave as they do elsewhere.
+A bare `!list-agents` with no mention only works where Graph channel capture is
+live ([1.4](#14-graph-api-permissions)), because without it the Bot Framework
+never delivers the message.
+
+Teams has no native slash commands in Switch — unlike Slack, Discord and
+Telegram, which declare them to the platform. Use the `!` form.
+
+---
+
+## Clickable "Open in Switch Console" links (`GATEWAY_PUBLIC_URL`)
+
+Teams renders only `http(s)` links, and it does not merely leave others as
+plain text: it **strips the whole link, label included**, so a raw
+`switchdash://session?…` deeplink arrives as empty brackets. Set
+**`GATEWAY_PUBLIC_URL`** on switch-core to the Switch API's public origin —
+scheme + host only, **no path**:
+
+```dotenv
+# .env / deployment env
+GATEWAY_PUBLIC_URL=https://switch-api.example.com
+```
+
+Switch then posts `https://<switch-api-host>/deeplink/session?…` instead, a
+page that opens Switch Console and then tries to close itself. The bridge logs
+a warning at startup when Teams is running without this set.
+
+Two Teams-specific notes:
+
+- This is the **Switch API** host, not the Teams listener host and not the
+  dashboard. It has to be reachable from wherever people click the link.
+- Microsoft Defender for Office 365 may rewrite the link through **Safe Links**,
+  which adds an interstitial before your page. That is expected. If the tab is
+  left on "Verifying link…" after Switch Console has opened, it is a stale
+  deployment — the handoff page replaced a bare redirect precisely because a
+  redirect left that interstitial on screen.
+
 ---
 
 ## Troubleshooting
@@ -540,7 +715,8 @@ The bridge keeps retrying, backing off to every few minutes, so a cause that
 clears on its own needs no intervention: the two common ones are a load
 balancer that has not yet started serving a newly-started pod, and a Graph
 permission consented after the bridge was running (see below). Recovery is
-logged as `Capture recovered for Teams channel <id>`. Repeats of an unchanged
+logged as `Capture recovered for Teams channel <id> messages (subscription
+<sub-id>)`. Repeats of an unchanged
 failure are logged at debug to keep the log readable, but a **change** in the
 reason is logged — that is the interesting event.
 
@@ -559,11 +735,13 @@ other VPN-internal hostname does this: it resolves for you and not for them, so
 Graph rejects the subscription before ever sending traffic. It must be public
 DNS.
 
-**`Cannot subscribe to channel <id> messages: encryption certificate not
-configured on the Teams bridge`**
-The bridge has no encryption material. Switch generates it at creation, so this
-means a bridge created before it did — or one deliberately registered without
-it. There is no way to add it to an existing bridge; delete and re-create.
+**`Failed to create Graph subscription for channel <id> (encryption
+certificate not configured on the Teams bridge)`**
+The same log line as above, with a different reason in the brackets: the bridge
+has no encryption material. Switch generates it at creation, so this means a
+bridge created before it did — or one deliberately registered without it. There
+is no way to add it to an existing bridge; delete and re-create. Retrying will
+not help this one, and the retry cannot tell.
 
 **`no Bot Connector serviceUrl known for channel <id> — the bot has not yet
 received an activity from this tenant`**
@@ -610,11 +788,11 @@ permission where an application permission is required. See 1.4.
 
 **Nobody can link their account: the people search errors, or says the person
 does not exist right after you picked them from the list**
-Directory search reads `User.ReadBasic.All`, which was missing from this page
-for a while — see 1.4. Without it the search fails outright; the message you
-get names neither the permission nor Graph. Until someone is linked, an agent
-has no way to @-mention its owner, so this looks like "the agent ignores me"
-rather than a setup step.
+Directory search reads `User.ReadBasic.All` — see [1.4](#14-graph-api-permissions).
+Without it the search fails outright, and the message names neither the
+permission nor Graph. Until someone is linked, an agent has no way to @-mention
+its owner, so this reads as "the agent ignores me" rather than as a setup step
+left undone.
 
 ---
 
@@ -635,11 +813,22 @@ them; Microsoft cannot satisfy it, and Graph's validation handshake will fail.
 
 ## Known limitations / follow-ups
 
-- **Switch-initiated DM rooms** are user-initiated (as on Mattermost);
-  bootstrapping one bot-side needs proactive app installation via Graph.
-- **Attachments** (inbound media and outbound files) are currently **disclosed,
-  not relayed** — the text bridges and a note names the un-relayed media.
-- **Real outbound `@mentions`** are not yet emitted (needs a display-name → AAD
-  id directory); mention text bridges as plain `@name`.
+- **A DM has to be started from Teams** (as on Mattermost). Switch cannot open
+  one; doing it bot-side would need proactive app installation via Graph.
+- **Attachments are disclosed, not relayed.** The message text is bridged, and
+  a note names the media that did not come with it.
+- **An `@mention` only becomes a real mention for someone Switch can address.**
+  That means a person who has linked their Teams account
+  ([Part 3](#part-3-onboard-the-bridge-in-switch)) and whose directory id
+  Switch therefore holds. Everyone else — and every agent, which is not a Teams
+  user at all — renders as plain `@name` text, which is what Switch's own
+  addressing matches on.
+- **A reply with no thread of its own lands in the post the channel last spoke
+  in.** A Teams channel is a list of posts rather than a stream, so replying at
+  the channel root would start a new conversation instead of answering under
+  the question. The bridge therefore answers in the most recent post it saw —
+  which is right almost always, and can put a reply under the wrong post when
+  two conversations are running in one channel at the same moment. Teams offers
+  nothing better to key on for a reply that is not explicitly threaded.
 - **One Teams bridge per listener port** — run multiple on distinct ports (and
   ingress routes) if needed.

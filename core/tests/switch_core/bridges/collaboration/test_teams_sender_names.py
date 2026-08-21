@@ -1,7 +1,7 @@
 """CHOO-2067 — a Teams id is not a person's name.
 
 Teams leaves the sender's name off some activities, 1:1 chats above all, and
-the fallback was the raw id. `29:1fRClM25SXVf6GS_YpA375_N6GHy…` then became a
+the fallback was the raw id. `29:1AbCdEf…` then became a
 person's name everywhere it was used: the auto-created room's title, their
 Matrix account, and the text of every agent reply that addressed them. All
 three were visible in one screenshot from switch-dev.
@@ -22,7 +22,7 @@ from switch_core.bridges.collaboration.teams.adapter import (
     _handle_for,
 )
 
-_AAD_ID = "29:1fRClM25SXVf6GS_YpA375_N6GHy7Ei5WIhUupdnCYvc"
+_AAD_ID = "29:1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 
 
 def _run(coro: Any) -> Any:
@@ -66,23 +66,23 @@ def _adapter(graph: _Graph | None = None) -> TeamsAdapter:
 
 
 def test_the_handle_is_the_local_part_of_the_principal_name() -> None:
-    # Not the whole UPN: `@louis.amaudruz@contoso.com` does not survive being
+    # Not the whole UPN: `@ada.lovelace@contoso.com` does not survive being
     # written as a mention, and being addressable is the point of a handle.
     assert (
         _handle_for(
             {
                 "id": "aad-1",
-                "userPrincipalName": "louis.amaudruz@contoso.com",
-                "displayName": "Louis Amaudruz",
+                "userPrincipalName": "ada.lovelace@contoso.com",
+                "displayName": "Ada Lovelace",
             }
         )
-        == "louis.amaudruz"
+        == "ada.lovelace"
     )
 
 
 def test_the_display_name_is_used_when_there_is_no_principal_name() -> None:
-    assert _handle_for({"id": "aad-1", "displayName": "Louis Amaudruz"}) == (
-        "Louis Amaudruz"
+    assert _handle_for({"id": "aad-1", "displayName": "Ada Lovelace"}) == (
+        "Ada Lovelace"
     )
 
 
@@ -94,12 +94,12 @@ def test_the_id_is_the_last_resort_only() -> None:
 
 
 def test_a_missing_name_is_looked_up_rather_than_replaced_by_the_id() -> None:
-    graph = _Graph({"userPrincipalName": "louis.amaudruz@contoso.com"})
+    graph = _Graph({"userPrincipalName": "ada.lovelace@contoso.com"})
     adapter = _adapter(graph)
 
     handle = _run(adapter._sender_handle(_AAD_ID, ""))
 
-    assert handle == "louis.amaudruz"
+    assert handle == "ada.lovelace"
     assert graph.lookups == [_AAD_ID]
 
 
@@ -107,22 +107,22 @@ def test_a_name_teams_offered_is_taken_without_asking_graph() -> None:
     graph = _Graph({"userPrincipalName": "someone.else@contoso.com"})
     adapter = _adapter(graph)
 
-    handle = _run(adapter._sender_handle(_AAD_ID, "Louis Amaudruz"))
+    handle = _run(adapter._sender_handle(_AAD_ID, "Ada Lovelace"))
 
-    assert handle == "Louis Amaudruz"
+    assert handle == "Ada Lovelace"
     assert graph.lookups == []
 
 
 def test_a_name_that_is_really_the_id_is_not_believed() -> None:
     # The shape of the old bug: Teams "offers" a name that is the id.
-    graph = _Graph({"userPrincipalName": "louis.amaudruz@contoso.com"})
+    graph = _Graph({"userPrincipalName": "ada.lovelace@contoso.com"})
     adapter = _adapter(graph)
 
-    assert _run(adapter._sender_handle(_AAD_ID, _AAD_ID)) == "louis.amaudruz"
+    assert _run(adapter._sender_handle(_AAD_ID, _AAD_ID)) == "ada.lovelace"
 
 
 def test_the_lookup_happens_once_per_person() -> None:
-    graph = _Graph({"userPrincipalName": "louis.amaudruz@contoso.com"})
+    graph = _Graph({"userPrincipalName": "ada.lovelace@contoso.com"})
     adapter = _adapter(graph)
 
     _run(adapter._sender_handle(_AAD_ID, ""))

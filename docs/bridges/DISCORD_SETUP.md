@@ -123,8 +123,8 @@ GATEWAY_PUBLIC_URL=https://switch-api.acme.com
 ```
 
 When set, Switch rewrites the deeplink to a clickable
-`https://<switch-api-host>/deeplink/session?…` redirect (a `302` back to the
-`switchdash://` scheme) at runtime-state ingestion — so both the bridged
+`https://<switch-api-host>/deeplink/session?…` link (a page that hands off to
+the `switchdash://` scheme) at runtime-state ingestion — so both the bridged
 working/awaiting-input status message **and** the `!agents-status` command surface a
 clickable link, on every platform at once. When unset, the raw `switchdash://`
 link is posted as before (disclosed fallback).

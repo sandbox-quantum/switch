@@ -253,7 +253,7 @@ class CollaborationAdapter(ABC):
         notice in shared bridge code, which for a long time emitted Slack's
         ``<@id>`` form everywhere. Slack renders that as the app's name; Teams
         prints it verbatim, so a user was told they had tagged
-        ``<@28:f52a8fbb-…>``. Override wherever that form is not what the
+        ``<@28:11111111-…>``. Override wherever that form is not what the
         platform reads.
         """
         return f"<@{token}>"

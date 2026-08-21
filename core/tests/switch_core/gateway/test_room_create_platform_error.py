@@ -24,7 +24,7 @@ from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
 
 _GRAPH_REFUSAL = (
-    "create channel 'Switch Test Room' in team f7cddb93 failed (403): "
+    "create channel 'Switch Test Room' in team team-1 failed (403): "
     "Forbidden: Missing role permissions on the request. API requires one of "
     "'Channel.Create, Teamwork.Migrate.All'."
 )

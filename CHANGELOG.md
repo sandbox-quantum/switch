@@ -147,7 +147,7 @@ version of their own to them without also giving them a release of their own.
   time. Chats and group chats are unaffected.
 - Teams messages are rendered for Teams. Shared bridge code emitted Slack's
   `<@id>` mention form on every platform, so a Teams user was told they had
-  tagged `<@28:f52a8fbb-…>`; an `@name` was inert text, because Teams needs
+  tagged `<@28:11111111-…>`; an `@name` was inert text, because Teams needs
   `<at>` markup *and* a matching entity and the adapter emitted neither, so an
   agent could never notify its owner; and single line breaks vanished, because
   an Adaptive Card text block follows Markdown in treating one newline as

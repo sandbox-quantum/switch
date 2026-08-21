@@ -46,8 +46,8 @@ def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
 
 class GraphClient:
     """Async client for the Microsoft Graph endpoints the Teams bridge needs:
-    change-notification subscriptions (this phase) and, later, channel/user
-    provisioning. Every call carries an app-only Graph token."""
+    change-notification subscriptions, channel and membership provisioning, and
+    directory lookups. Every call carries an app-only Graph token."""
 
     def __init__(self, *, tokens: TeamsTokenProvider, http: httpx.AsyncClient) -> None:
         self._tokens = tokens

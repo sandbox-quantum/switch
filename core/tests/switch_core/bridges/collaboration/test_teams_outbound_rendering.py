@@ -1,7 +1,7 @@
 """CHOO-2067 — what an agent's message looks like once it reaches Teams.
 
 Three faults, all seen in one screenshot from switch-dev: a Slack-shaped
-`<@28:f52a8fbb-…>` printed at the reader, an `@name` that highlighted nobody,
+`<@28:11111111-…>` printed at the reader, an `@name` that highlighted nobody,
 and a heading running into the line beneath it.
 """
 
@@ -106,12 +106,12 @@ def test_a_card_with_no_mentions_carries_no_msteams_block() -> None:
 
 
 def test_the_app_is_named_in_words_not_in_slack_syntax() -> None:
-    # This is the `<@28:f52a8fbb-…>` from the screenshot. Teams has no inline
+    # This is the `<@28:11111111-…>` from the screenshot. Teams has no inline
     # syntax that turns its app id into a mention, so printing one at the
     # reader is strictly worse than saying "me".
     adapter = _adapter()
 
-    rendered = adapter.render_app_mention("28:f52a8fbb-2680-4c3e-8371-ae7ac07531e9")
+    rendered = adapter.render_app_mention("28:11111111-2222-3333-4444-555555555555")
 
     assert rendered == "me"
     assert "<@" not in rendered

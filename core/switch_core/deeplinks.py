@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 _DEEPLINK_SCHEME = "switchdash"
 _DEEPLINK_HOST = "session"
 
-# Gateway path that 302-redirects to the reconstructed `switchdash://` deeplink.
+# Gateway path that hands the browser off to the reconstructed `switchdash://`
+# deeplink.
 # Kept here so the route and the rewrite agree on a single source of truth.
 DEEPLINK_REDIRECT_PATH = "/deeplink/session"
 
@@ -19,7 +20,7 @@ def switchdash_to_gateway(deeplink_url: str, gateway_public_url: str) -> str | N
 
     Platforms like Discord only linkify http(s), so the raw custom-scheme
     deeplink renders as plain text. The gateway serves an HTTP endpoint
-    (`DEEPLINK_REDIRECT_PATH`) that 302-redirects to the deeplink; posting that
+    (`DEEPLINK_REDIRECT_PATH`) that hands off to the deeplink; posting that
     https URL makes the "Open in Switch Console" link clickable everywhere.
 
     The query string is carried across verbatim (server/agent/room/session and
@@ -62,10 +63,10 @@ def deeplink_for_platform(
 def gateway_query_to_switchdash(query: str) -> str:
     """Reconstruct the `switchdash://session?…` deeplink the redirect targets.
 
-    The inverse of `switchdash_to_gateway`: the redirect endpoint hands the
-    incoming query string here to build the Location it 302s to. Scheme and host
-    are fixed constants, so the endpoint can never be coerced into redirecting to
-    an arbitrary target.
+    The inverse of `switchdash_to_gateway`: the handoff endpoint hands the
+    incoming query string here to build the link it sends the browser to. Scheme
+    and host are fixed constants, so the endpoint can never be coerced into
+    pointing at an arbitrary target.
     """
     suffix = f"?{query}" if query else ""
     return f"{_DEEPLINK_SCHEME}://{_DEEPLINK_HOST}{suffix}"

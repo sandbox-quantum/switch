@@ -406,7 +406,7 @@ async def _stored_bridge(**overrides: Any) -> Any:
     bridge = MagicMock()
     bridge.id = overrides.pop("id", "existing-id")
     bridge.type = overrides.pop("type", "teams")
-    bridge.display_name = overrides.pop("display_name", "SandboxAQ Teams")
+    bridge.display_name = overrides.pop("display_name", "Contoso Teams")
     bridge.connection_config = await TeamsAdapter.prepare_config(
         _raw_config(**overrides)
     )
@@ -426,7 +426,7 @@ async def test_second_teams_bridge_on_the_same_port_is_refused() -> None:
         )
 
     message = str(excinfo.value)
-    assert "SandboxAQ Teams" in message
+    assert "Contoso Teams" in message
     assert "tcp/3978" in message
 
 
