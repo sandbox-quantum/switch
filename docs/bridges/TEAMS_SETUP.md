@@ -523,12 +523,28 @@ the reason; look for `create channel '<name>' in team <id> failed (<status>)`.
 Common causes: bad or expired secret; `Channel.Create` missing or unconsented;
 wrong `team_id`; the Teams app not installed in that team.
 
-**`Failed to create Graph subscription for channel <id>`**
+**`Failed to create Graph subscription for channel <id> (…); capture is
+degraded and will be retried`**
 Channel provisioning succeeded but capture setup did not, so the channel exists
-and only `@mentions` will arrive. Usually the notification URL is not publicly
-reachable ([Part 2](#part-2-deployment)), or its TLS is not trusted. This is
-logged and does not fail the operation. Read the `GraphError` on the same line —
-Graph says which it was.
+and only `@mentions` arrive. Usually the notification URL is not publicly
+reachable ([Part 2](#part-2-deployment)), or its TLS is not trusted. Read the
+reason on the same line — Graph says which it was.
+
+The bridge keeps retrying, backing off to every few minutes, so a cause that
+clears on its own needs no intervention: the two common ones are a load
+balancer that has not yet started serving a newly-started pod, and a Graph
+permission consented after the bridge was running (see below). Recovery is
+logged as `Capture recovered for Teams channel <id>`. Repeats of an unchanged
+failure are logged at debug to keep the log readable, but a **change** in the
+reason is logged — that is the interesting event.
+
+**Capture still failing on a permission you have already granted**
+An app's Graph roles are fixed when its access token is issued, and tokens last
+about an hour. Consent granted while the bridge is running therefore changes
+nothing until the token is replaced, and Graph keeps answering `403` with
+`Roles on the request ''` — sending you back to Azure, where the permission is
+now plainly there. Restart switch-core to force a new token, or wait for the
+retry to pick one up after the current token expires.
 
 **`Failed to resolve domain <host>: No such host is known`** (inside that error)
 `public_base_url` points at a name Microsoft cannot resolve. A Tailscale or

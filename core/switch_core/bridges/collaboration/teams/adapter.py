@@ -117,6 +117,12 @@ def _aad_failure_message(exc: Exception) -> str:
 # request 55 and proactively renew well before expiry.
 _SUBSCRIPTION_TTL = timedelta(minutes=55)
 _RENEWAL_INTERVAL_SECONDS = 40 * 60
+# How soon, and how rarely, to re-attempt a channel that has no live
+# subscription. The floor is short because the common failure clears in about a
+# minute (a load balancer registering a newly-started pod); the ceiling keeps a
+# permanently broken channel from hammering Graph for the life of the process.
+_REPAIR_MIN_INTERVAL_SECONDS = 30
+_REPAIR_MAX_INTERVAL_SECONDS = 5 * 60
 
 
 class TeamsConnectionConfig(BridgeConnectionConfig):
@@ -322,11 +328,19 @@ class TeamsAdapter(CollaborationAdapter):
 
         # channel id -> Graph subscription id, for channels we capture.
         self._subscriptions: dict[str, str] = {}
+        # Channels that should be captured, whether or not they currently are.
+        # Kept apart from `_subscriptions` so a failed attempt is remembered as
+        # work still owed rather than forgotten the moment it fails.
+        self._capture_wanted: set[str] = set()
+        # channel id -> last failure, so the repair loop can retry quietly and
+        # still speak up when the reason changes.
+        self._capture_failures: dict[str, str] = {}
         # channel id -> AAD team id, learned from bot-join activities so a
         # channel-message subscription can be created for it.
         self._team_of_channel: dict[str, str] = {}
         self._sub_lock = asyncio.Lock()
         self._renewal_task: asyncio.Task[None] | None = None
+        self._repair_task: asyncio.Task[None] | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -373,6 +387,7 @@ class TeamsAdapter(CollaborationAdapter):
         )
         await self._adopt_existing_subscriptions()
         self._renewal_task = asyncio.create_task(self._renewal_loop())
+        self._repair_task = asyncio.create_task(self._repair_loop())
 
     @property
     def _notification_url(self) -> str:
@@ -464,14 +479,21 @@ class TeamsAdapter(CollaborationAdapter):
                     channel_id,
                 )
 
+    @staticmethod
+    async def _cancel(task: asyncio.Task[None] | None) -> None:
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     async def stop(self) -> None:
-        if self._renewal_task is not None:
-            self._renewal_task.cancel()
-            try:
-                await self._renewal_task
-            except asyncio.CancelledError:
-                pass
-            self._renewal_task = None
+        await self._cancel(self._renewal_task)
+        self._renewal_task = None
+        await self._cancel(self._repair_task)
+        self._repair_task = None
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
@@ -1241,21 +1263,19 @@ class TeamsAdapter(CollaborationAdapter):
         """
         if channel_id in self._subscriptions or self._graph is None:
             return
+        self._capture_wanted.add(channel_id)
         if not (
             self._config.encryption_public_certificate
             and self._config.encryption_certificate_id
         ):
-            logger.error(
-                "Cannot subscribe to channel %s messages: encryption certificate "
-                "not configured on the Teams bridge",
+            self._note_capture_failure(
                 channel_id,
+                "encryption certificate not configured on the Teams bridge",
             )
             return
         team_id = self._team_of_channel.get(channel_id) or self._config.team_id
         if not team_id:
-            logger.warning(
-                "Cannot subscribe to channel %s: team id unknown", channel_id
-            )
+            self._note_capture_failure(channel_id, "team id unknown")
             return
 
         async with self._sub_lock:
@@ -1274,17 +1294,79 @@ class TeamsAdapter(CollaborationAdapter):
                     encryption_certificate=cert_der,
                     encryption_certificate_id=self._config.encryption_certificate_id,
                 )
-            except Exception:
-                logger.exception(
-                    "Failed to create Graph subscription for channel %s", channel_id
-                )
+            except Exception as exc:
+                self._note_capture_failure(channel_id, f"{type(exc).__name__}: {exc}")
                 return
             self._subscriptions[channel_id] = str(sub.get("id", ""))
+            recovered = self._capture_failures.pop(channel_id, None) is not None
             logger.info(
-                "Subscribed to Teams channel %s messages (subscription %s)",
+                "%s Teams channel %s messages (subscription %s)",
+                "Capture recovered for" if recovered else "Subscribed to",
                 channel_id,
                 self._subscriptions[channel_id],
             )
+
+    def _note_capture_failure(self, channel_id: str, summary: str) -> None:
+        """Record that a channel still has no capture, logging without repeating.
+
+        ``_repair_loop`` retries for as long as the bridge runs, so a channel
+        that can never be subscribed would otherwise write the same error
+        forever. The first failure is logged in full; after that only a *change*
+        in what Graph says is worth a line, and it is worth a lot — a 403
+        turning into a 400 is a permission problem turning into an unreachable
+        endpoint, which is the one thing a reader needs to know.
+        """
+        previous = self._capture_failures.get(channel_id)
+        self._capture_failures[channel_id] = summary
+        if previous is None:
+            logger.error(
+                "Failed to create Graph subscription for channel %s (%s); "
+                "capture is degraded and will be retried",
+                channel_id,
+                summary,
+            )
+        elif previous != summary:
+            logger.warning(
+                "Graph subscription for channel %s is still failing, now with: %s",
+                channel_id,
+                summary,
+            )
+        else:
+            logger.debug(
+                "Graph subscription for channel %s still failing: %s",
+                channel_id,
+                summary,
+            )
+
+    async def _repair_loop(self) -> None:
+        """Keep retrying channels that should be captured and are not.
+
+        A subscription can fail for reasons that pass on their own, and the two
+        that bite are both startup: Graph validates the notification URL by
+        calling it, which a load balancer will refuse for the first minute or so
+        after a new pod starts, and an app's Graph roles are fixed when its token
+        is issued, so consent granted while the bridge is running is invisible
+        until the token is replaced. Both used to leave capture dead until
+        someone restarted the process — and a restart is what caused the first
+        one, so it could just as easily fail again.
+
+        Backs off while a channel keeps failing so a genuinely broken one does
+        not hammer Graph, and returns to the short interval as soon as something
+        succeeds.
+        """
+        delay = _REPAIR_MIN_INTERVAL_SECONDS
+        while True:
+            await asyncio.sleep(delay)
+            missing = [c for c in self._capture_wanted if c not in self._subscriptions]
+            if not missing:
+                delay = _REPAIR_MIN_INTERVAL_SECONDS
+                continue
+            for channel_id in missing:
+                await self._ensure_channel_subscription(channel_id)
+            if any(c not in self._subscriptions for c in missing):
+                delay = min(delay * 2, _REPAIR_MAX_INTERVAL_SECONDS)
+            else:
+                delay = _REPAIR_MIN_INTERVAL_SECONDS
 
     async def _handle_http_notifications(self, request: web.Request) -> web.Response:
         # Subscription-creation handshake: Graph calls the endpoint with a

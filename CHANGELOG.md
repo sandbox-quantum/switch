@@ -119,6 +119,23 @@ version of their own to them without also giving them a release of their own.
   surfaces only as an opaque `AADSTS7000215` at the first Graph call.
 
 #### Fixed
+- Adding a room to a bridge no longer answers `500` when the platform refuses
+  to create the channel. Graph says exactly what is wrong — which permission is
+  missing, which value it will not take — and that sentence went to the log
+  while the operator got an unhandled exception. Platform refusals are now
+  `BridgeOperationError`, the counterpart to `BridgeCredentialError` for
+  everything after the credentials are accepted, and room creation returns a
+  `502` quoting the platform. Registering a bridge only proves it will issue a
+  token, so this class of failure always surfaces after setup has reported
+  success. Only the Teams adapter raises it so far.
+- A Teams channel subscription that fails is retried instead of leaving capture
+  dead until someone restarts the process. Graph validates a notification URL
+  by calling it, and the bridge asks for its subscriptions seconds after
+  binding its port — behind a load balancer that is precisely when nothing
+  answers yet, so the first attempt after *every* restart was refused and the
+  restart that broke capture was also the only thing that could fix it. The
+  retry backs off to a few minutes and says so when capture recovers; repeats
+  of an unchanged failure are quiet, but a change of reason is not.
 - Binding a room to a collaboration channel that already exists now establishes
   message capture for it. Capture was only ever set up as a side effect of
   *creating* a channel, so a room pointed at an existing one — on creation, on
