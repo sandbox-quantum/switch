@@ -163,9 +163,9 @@ describe('codexLaunchProfile', () => {
 
 describe('codexProfileName', () => {
   it('rewrites a dotted Switch agent name onto the alphabet Codex accepts', () => {
-    const name = codexProfileName('codex.yak.cmcdermott', WD);
+    const name = codexProfileName('codex.yak.alice', WD);
     expect(name).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(name).toContain('codex-yak-cmcdermott');
+    expect(name).toContain('codex-yak-alice');
   });
 
   it('gives two agents that share a name in different dirs distinct profiles', () => {
@@ -183,7 +183,7 @@ describe('codexProfileName', () => {
   });
 
   it('drives the profile file and the --profile argv from the same name', () => {
-    const slug = 'codex.yak.cmcdermott';
+    const slug = 'codex.yak.alice';
     const profile = codexLaunchProfile({
       slug,
       workingDir: WD,

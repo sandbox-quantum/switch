@@ -1098,7 +1098,7 @@ def test_translate_inbound_unknown_piped_mention_falls_back_to_id() -> None:
     # The bridge bot's own id is not in the user cache; it must fall back to the
     # raw id (its room-alias key) rather than being dropped, so alias routing
     # still resolves for an aliased app mention.
-    assert adapter.translate_inbound("<@U0B1BF0JP6H|agent switch>") == "@U0B1BF0JP6H"
+    assert adapter.translate_inbound("<@U012ABCDEF|agent switch>") == "@U012ABCDEF"
 
 
 def test_slash_command_without_channel_is_ignored() -> None:

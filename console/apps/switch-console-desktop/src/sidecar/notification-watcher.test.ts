@@ -148,11 +148,11 @@ describe('NotificationWatcher spawn decision', () => {
       async (_url: string | URL, _init?: RequestInit) => new Response(null, { status: 200 })
     );
     vi.stubGlobal('fetch', fetchMock);
-    handle(makeWatcher(makeSpawner({ launch })), 'room-x', undefined, 'louis.amaudruz');
+    handle(makeWatcher(makeSpawner({ launch })), 'room-x', undefined, 'ada.lovelace');
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled(), { timeout: 8000 });
     const [, init] = fetchMock.mock.calls.at(-1)!;
-    expect(String((init as RequestInit).body)).toContain('@louis.amaudruz');
+    expect(String((init as RequestInit).body)).toContain('@ada.lovelace');
   }, 10_000);
 });
 

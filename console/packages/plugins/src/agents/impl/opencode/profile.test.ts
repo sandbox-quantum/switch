@@ -254,9 +254,9 @@ describe('opencodeProfileName', () => {
   });
 
   it('rewrites a dotted Switch agent name into a plain filename stem', () => {
-    const name = opencodeProfileName('opencode.yak.cmcdermott', WD);
+    const name = opencodeProfileName('opencode.yak.alice', WD);
     expect(name).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(name).toContain('opencode-yak-cmcdermott');
+    expect(name).toContain('opencode-yak-alice');
   });
 });
 

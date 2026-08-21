@@ -64,7 +64,7 @@ class _FakeGuild:
 
 
 def test_members_map_to_directory_users() -> None:
-    guild = _FakeGuild([_FakeMember(11, "louisa", "Louis A")])
+    guild = _FakeGuild([_FakeMember(11, "louisa", "Louisa A")])
     found = _run(_adapter(guild).search_directory_users("lou"))
 
     assert len(found) == 1
@@ -73,7 +73,7 @@ def test_members_map_to_directory_users() -> None:
     # sender, or a claim made here would never match an arriving message.
     assert person.external_user_id == "11"
     assert person.username == "louisa"
-    assert person.display_name == "Louis A"
+    assert person.display_name == "Louisa A"
     # Discord's bot API never discloses a member's email.
     assert person.email is None
 
