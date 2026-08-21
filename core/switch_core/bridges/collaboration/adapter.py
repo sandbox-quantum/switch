@@ -245,6 +245,24 @@ class CollaborationAdapter(ABC):
     def _bridge_display_name(self) -> str:
         return "Switch"
 
+    def is_placeholder_username(self, username: str) -> bool:
+        """Whether a stored name for a person is really one of this platform's
+        opaque ids, recorded because nothing better was available at the time.
+
+        Switch files a person under the name it first sees, and some platforms
+        do not always supply one — Teams omits it from a 1:1 chat activity. The
+        id then becomes that person's name everywhere: their Matrix account,
+        the title of any room auto-created for them, and every agent reply that
+        addresses them. Fixing the resolution stops it happening to the next
+        person and does nothing for the ones already recorded, so an adapter
+        that can recognise its own ids says so here and the name is repaired
+        the next time they speak.
+
+        Default False: on a platform whose handles are handles, there is
+        nothing to recognise and nothing to repair.
+        """
+        return False
+
     def render_app_mention(self, token: str) -> str:
         """Render a mention of the Switch app itself, given the platform's own
         handle for it.

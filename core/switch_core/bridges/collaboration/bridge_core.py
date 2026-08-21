@@ -417,6 +417,7 @@ class BridgeCore:
             if mention_target is None:
                 await self._maybe_guide_self_mention(msg, room_id)
 
+        await self._repair_placeholder_username(msg.sender_id, msg.sender_name)
         puppet = await self._ensure_user_in_matrix_room(
             external_user_id=msg.sender_id,
             external_username=msg.sender_name,
@@ -990,6 +991,61 @@ class BridgeCore:
         )
 
     # ── Puppet lifecycle ─────────────────────────────────────────────────────
+
+    async def _repair_placeholder_username(
+        self, external_user_id: str, resolved_username: str
+    ) -> None:
+        """Replace a stored name that is really a platform id, now we have one.
+
+        Switch files someone under the name it first saw, and a platform that
+        supplied none left its own id there — which then reads as that person's
+        name in the room title, on their Matrix account and in every agent
+        reply that addresses them. Repairing only on the way past means it costs
+        nothing on the overwhelmingly common path where the stored name is fine,
+        and needs no migration for the rows already written.
+
+        Deliberately one-way: an id is replaced by a name, never the reverse,
+        and a name is never replaced by another name. Renaming someone people
+        have been addressing for weeks because a platform changed its mind about
+        their display name would be worse than the problem.
+        """
+        if not resolved_username or not external_user_id:
+            return
+        if self._adapter.is_placeholder_username(resolved_username):
+            return
+        async with self._session_factory() as session:
+            existing = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            if existing is None or existing.external_username == resolved_username:
+                return
+            if not self._adapter.is_placeholder_username(existing.external_username):
+                return
+            logger.info(
+                "Renaming external user %s from its %s id to '%s'",
+                external_user_id,
+                self._bridge_type,
+                resolved_username,
+            )
+            await self._external_user_store.rename(
+                session, existing.id, resolved_username
+            )
+            await session.commit()
+            client_id = existing.client_id
+        # The Matrix account keeps its localpart — that is an address, and
+        # changing it would orphan the history — but its display name is what
+        # people read.
+        puppet = self._client_lifecycle.get(client_id)
+        if puppet is not None:
+            try:
+                await puppet.set_display_name(resolved_username)
+            except Exception:
+                logger.warning(
+                    "Renamed external user %s but could not update the display "
+                    "name of its Matrix account",
+                    external_user_id,
+                    exc_info=True,
+                )
 
     async def ensure_external_user(
         self, *, external_user_id: str, external_username: str

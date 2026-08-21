@@ -59,6 +59,12 @@ _BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
 # the other adapters use, so what counts as a name does not vary by platform.
 _MENTION_NAME = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
 _AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
+# A Teams identifier standing where a person's name should be: a channel
+# account (`29:…`, `8:orgid:…`) or a bare Entra object id.
+_TEAMS_ID = re.compile(
+    r"^(?:\d+:\S+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
 # A newline with no newline either side of it.
 _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
 
@@ -372,6 +378,9 @@ class TeamsAdapter(CollaborationAdapter):
         # channel id -> the post the bridge last saw a message in there, so a
         # reply that names no thread lands under what it is answering.
         self._last_post: dict[str, str] = {}
+        # channel id -> its display name; "" records that Graph was asked and
+        # could not say, so it is not asked again on every message.
+        self._channel_names: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
@@ -601,6 +610,22 @@ class TeamsAdapter(CollaborationAdapter):
     def _thread_conversation(channel_id: str, root_id: str) -> str:
         return f"{channel_id};messageid={root_id}"
 
+    def _remember_post(
+        self, channel_id: str, post_id: str, *, is_channel: bool | None = None
+    ) -> None:
+        """Note the post a channel's conversation is currently in.
+
+        Set from both directions. Inbound, so a reply lands under the question.
+        Outbound too, because the first thing an agent says in a channel has no
+        question to answer — it opens a post — and everything it says next
+        belongs in that post rather than in a fresh one each time. Without this
+        an agent greeting itself into a channel produced a column of one-line
+        posts.
+        """
+        threaded = self._is_channel(channel_id) if is_channel is None else is_channel
+        if threaded and post_id:
+            self._last_post[channel_id] = post_id
+
     def _post_to_answer_in(
         self, channel_id: str, thread_root_id: str | None
     ) -> str | None:
@@ -679,6 +704,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         if msg_id:
             self._sent[msg_id] = (service_url, conversation_id)
+            self._remember_post(channel_id, thread_root_id or msg_id)
             return msg_id
         return None
 
@@ -724,6 +750,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         if msg_id:
             self._sent[msg_id] = (service_url, conversation_id)
+            self._remember_post(channel_id, thread_root_id or msg_id)
             return msg_id
         return None
 
@@ -1130,6 +1157,12 @@ class TeamsAdapter(CollaborationAdapter):
         self._sender_handles[sender_id] = handle
         return handle
 
+    def is_placeholder_username(self, username: str) -> bool:
+        # Every id Teams hands out for a person is one of two shapes: a
+        # channel-account id, prefixed with digits and a colon (`29:1AbC…`,
+        # `8:orgid:…`), or a bare Entra object id. Neither is anybody's name.
+        return bool(_TEAMS_ID.match(username.strip()))
+
     def render_app_mention(self, token: str) -> str:
         # Teams' handle for the app is an id, not a name, and it has no inline
         # syntax that turns one into a mention — so name nobody and read
@@ -1250,7 +1283,7 @@ class TeamsAdapter(CollaborationAdapter):
             if thread_root and thread_root != activity_id:
                 root_id = thread_root
 
-        channel_name = self._channel_name(activity)
+        channel_name = await self._resolve_channel_name(activity, channel_id)
 
         await self._deliver(
             channel_id=channel_id,
@@ -1288,11 +1321,15 @@ class TeamsAdapter(CollaborationAdapter):
         used only to detect and parse ``!``-commands (a channel command arrives as
         ``@Bot !cmd``), while ``text`` — mention intact — is what a plain message
         is bridged as. Defaults to ``text`` when the caller has nothing to strip."""
-        if channel_type in ("channel_public", "channel_private"):
-            # The post this message sits in — itself, when it opened the post.
-            # Remembered so an untied reply lands under the question rather
-            # than starting a conversation of its own; see _post_to_answer_in.
-            self._last_post[channel_id] = root_id or message_ref
+        # The post this message sits in — itself, when it opened the post.
+        # Remembered so an untied reply lands under the question rather than
+        # starting a conversation of its own; see _post_to_answer_in.
+        self._remember_post(
+            channel_id,
+            root_id or message_ref,
+            # The caller was told the type; do not re-derive it from the id.
+            is_channel=channel_type in ("channel_public", "channel_private"),
+        )
         command_probe = (command_text if command_text is not None else text).strip()
         if command_probe.startswith("!") and self._on_command is not None:
             parts = command_probe.split(None, 1)
@@ -1332,7 +1369,7 @@ class TeamsAdapter(CollaborationAdapter):
         members_added = activity.get("membersAdded") or []
         recipient = activity.get("recipient") or {}
         bot_id = str(recipient.get("id", ""))
-        channel_name = self._channel_name(activity)
+        channel_name = await self._resolve_channel_name(activity, channel_id)
 
         for member in members_added:
             member_id = str(member.get("id", ""))
@@ -1366,10 +1403,58 @@ class TeamsAdapter(CollaborationAdapter):
 
     @staticmethod
     def _channel_name(activity: dict[str, Any]) -> str | None:
+        """The channel's name as the activity gives it, if it gives it.
+
+        Prefer the channel's own name over the team's: the team's is the same
+        for every channel in it, which makes a poor room title. Teams omits
+        both more often than not — see `_resolve_channel_name`.
+        """
         channel_data = activity.get("channelData") or {}
+        channel = channel_data.get("channel") or {}
         team = channel_data.get("team") or {}
-        name = team.get("name")
+        name = channel.get("name") or team.get("name")
         return str(name) if name else None
+
+    async def _resolve_channel_name(
+        self, activity: dict[str, Any], channel_id: str
+    ) -> str | None:
+        """The channel's name, asking Graph when the activity does not say.
+
+        Without this the caller has nothing to name an auto-created room after
+        and falls back to the channel id, so a room ends up titled
+        `19:7641f9de326b4…` — in the room list, in the sidebar, and in every
+        session opened against it. Graph knows the name; one read per channel,
+        cached, is a cheap price for a room somebody can recognise.
+        """
+        name = self._channel_name(activity)
+        if name:
+            return name
+        cached = self._channel_names.get(channel_id)
+        if cached is not None:
+            return cached or None
+        if self._graph is None or not self._is_channel(channel_id):
+            return None
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            return None
+        try:
+            channel = await self._graph.get_channel(
+                team_id=team_id, channel_id=channel_id
+            )
+        except Exception:
+            logger.warning(
+                "Could not read the name of Teams channel %s; a room created "
+                "for it will be named after its id",
+                channel_id,
+                exc_info=True,
+            )
+            # Cached as "asked and failed", so a channel Graph will not name
+            # is not re-read on every message.
+            self._channel_names[channel_id] = ""
+            return None
+        resolved = str(channel.get("displayName") or "")
+        self._channel_names[channel_id] = resolved
+        return resolved or None
 
     def _self_mention_token(self, activity: dict[str, Any]) -> str | None:
         recipient = activity.get("recipient") or {}

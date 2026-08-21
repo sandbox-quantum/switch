@@ -16,6 +16,19 @@ class ExternalUserStore:
     async def get(self, session: AsyncSession, user_id: str) -> ExternalUser | None:
         return await session.get(ExternalUser, user_id)
 
+    async def rename(
+        self, session: AsyncSession, user_id: str, external_username: str
+    ) -> None:
+        """Correct the name a person is filed under on their bridge.
+
+        Their `external_user_id` is what identifies them and does not change,
+        so claims and room membership are untouched; this is only the label —
+        which matters because it is what agents address them by.
+        """
+        user = await session.get(ExternalUser, user_id)
+        if user is not None:
+            user.external_username = external_username
+
     async def get_by_external_id(
         self, session: AsyncSession, bridge_id: str, external_user_id: str
     ) -> ExternalUser | None:

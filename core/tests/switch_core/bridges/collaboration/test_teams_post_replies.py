@@ -143,3 +143,48 @@ def test_the_post_follows_the_conversation_as_it_moves() -> None:
         f"{_CHANNEL};messageid=post-1",
         f"{_CHANNEL};messageid=post-2",
     ]
+
+
+def test_an_agent_speaking_first_keeps_its_own_post() -> None:
+    # Nothing to answer under, so the first message opens a post — but the
+    # second must join it. Otherwise an agent greeting itself into a channel
+    # produces a column of one-line posts, which is what it did.
+    adapter, connector = _adapter()
+
+    _run(adapter.send_message(_CHANNEL, "james", "Hi! I'm here and connected."))
+    _run(adapter.send_message(_CHANNEL, "james", "What can I help with?"))
+
+    assert connector.new_posts == [_CHANNEL]
+    assert connector.replies == [f"{_CHANNEL};messageid=msg-new"]
+
+
+def test_an_admin_notice_joins_the_conversation_too() -> None:
+    adapter, connector = _adapter()
+    _run(_seen(adapter, root_id=None, ref="post-1"))
+
+    _run(adapter.admin_message(_CHANNEL, "Added james to this room."))
+
+    assert connector.new_posts == []
+    assert connector.replies == [f"{_CHANNEL};messageid=post-1"]
+
+
+def test_an_inbound_message_still_wins_over_the_agents_own_post() -> None:
+    # Someone asking a new question moves the conversation; the agent should
+    # follow them rather than keep talking in the post it opened earlier.
+    adapter, connector = _adapter()
+    _run(adapter.send_message(_CHANNEL, "james", "good morning"))
+    _run(_seen(adapter, root_id=None, ref="post-2"))
+
+    _run(adapter.send_message(_CHANNEL, "james", "answering you"))
+
+    assert connector.replies == [f"{_CHANNEL};messageid=post-2"]
+
+
+def test_a_group_chat_records_no_post() -> None:
+    adapter, connector = _adapter()
+
+    _run(adapter.send_message(_CHAT, "james", "hello"))
+    _run(adapter.send_message(_CHAT, "james", "again"))
+
+    assert connector.new_posts == []
+    assert connector.replies == [_CHAT, _CHAT]

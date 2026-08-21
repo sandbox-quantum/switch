@@ -75,7 +75,12 @@ def _fake_bridge() -> SimpleNamespace:
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
 
+    async def _repair_placeholder_username(*_args: Any, **_kwargs: Any) -> None:
+        # Correcting a name recorded as a platform id; nothing these tests turn on.
+        return None
+
     ns = SimpleNamespace(
+        _repair_placeholder_username=_repair_placeholder_username,
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
         _is_registered_agent=_is_registered_agent,

@@ -30,6 +30,11 @@ MATRIX_ROOM_ID = "!matrix:switch.local"
 APP_SENDER_ID = "BDATADOG"
 
 
+async def _noop_repair(*_args: object, **_kwargs: object) -> None:
+    """Correcting a name recorded as a platform id — not what these tests turn on."""
+    return None
+
+
 class _FakePuppet:
     """Stands in for a ClientBase puppet whose join lands after the invite."""
 
@@ -74,6 +79,7 @@ def _bridge(
         return "client-new"
 
     bridge = SimpleNamespace(
+        _repair_placeholder_username=_noop_repair,
         _user_puppets={"ext-alice": "client-1"}
         if known_puppets is None
         else known_puppets,
@@ -180,6 +186,7 @@ async def test_first_message_from_app_sender_is_relayed() -> None:
         return await BridgeCore._ensure_user_in_matrix_room(inner, **kwargs)  # type: ignore[arg-type]
 
     bridge = SimpleNamespace(
+        _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _record_message_map=_record_message_map,
@@ -221,6 +228,7 @@ async def test_first_message_from_unknown_member_is_relayed() -> None:
         relayed.append((kwargs["matrix_event_id"], kwargs["external_post_id"]))
 
     bridge = SimpleNamespace(
+        _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _record_message_map=_record_message_map,

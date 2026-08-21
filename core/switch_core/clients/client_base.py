@@ -13,6 +13,7 @@ from nio import (
     JoinedRoomsError,
     LoginError,
     MatrixRoom,
+    ProfileSetDisplayNameError,
     ReactionEvent,
     RoomMemberEvent,
     RoomMessageMedia,
@@ -118,6 +119,20 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def wait_ready(self) -> None:
         await self._ready.wait()
+
+    async def set_display_name(self, display_name: str) -> None:
+        """Change the name this client shows under in Matrix.
+
+        The user id is an address and stays put; this is the label rooms
+        render. Used to correct a puppet filed under a platform id before the
+        platform would say who the person was.
+        """
+        resp = await self.client.set_displayname(display_name)
+        if isinstance(resp, ProfileSetDisplayNameError):
+            raise RuntimeError(
+                f"Could not set the display name of {self.matrix_user_id}: {resp}"
+            )
+        self.display_name = display_name
 
     def _joined_event(self, room_id: str) -> asyncio.Event:
         event = self._room_joined_events.get(room_id)
