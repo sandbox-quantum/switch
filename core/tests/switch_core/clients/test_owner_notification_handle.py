@@ -44,28 +44,28 @@ def _agent(owner_id: str | None) -> SimpleNamespace:
 
 class TestResolvingTheOwnersHandle:
     async def test_the_owners_account_on_this_bridge(self) -> None:
-        client = _client([_claimed("slack-1", "ada.lovelace")])
+        client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         handle = await AgentClient.owner_handle_in(client, _agent("u1"), "slack-1")
 
-        assert handle == "ada.lovelace"
+        assert handle == "louis.amaudruz"
 
     async def test_the_right_one_when_they_are_on_several_platforms(self) -> None:
         # The whole reason a single configured handle could not work: this
         # person is one name on Slack and another on Telegram.
         client = _client(
-            [_claimed("slack-1", "ada.lovelace"), _claimed("telegram-1", "adal")]
+            [_claimed("slack-1", "louis.amaudruz"), _claimed("telegram-1", "louisa")]
         )
 
         assert (
             await AgentClient.owner_handle_in(client, _agent("u1"), "telegram-1")
-            == "adal"
+            == "louisa"
         )
 
     async def test_nobody_when_the_owner_has_claimed_nothing_here(self) -> None:
         # Claimed on Slack, but this room is on Telegram. Naming the Slack
         # handle here would @ a stranger or nobody at all.
-        client = _client([_claimed("slack-1", "ada.lovelace")])
+        client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
             await AgentClient.owner_handle_in(client, _agent("u1"), "telegram-1")
@@ -73,7 +73,7 @@ class TestResolvingTheOwnersHandle:
         )
 
     async def test_nobody_for_an_ownerless_agent(self) -> None:
-        client = _client([_claimed("slack-1", "ada.lovelace")])
+        client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert (
             await AgentClient.owner_handle_in(client, _agent(None), "slack-1") is None
@@ -81,7 +81,7 @@ class TestResolvingTheOwnersHandle:
 
     async def test_nobody_for_a_room_with_no_bridge(self) -> None:
         # An internal-only room has no platform to mention anyone on.
-        client = _client([_claimed("slack-1", "ada.lovelace")])
+        client = _client([_claimed("slack-1", "louis.amaudruz")])
 
         assert await AgentClient.owner_handle_in(client, _agent("u1"), None) is None
 

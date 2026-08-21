@@ -1353,7 +1353,7 @@ def test_an_agent_name_is_not_turned_into_a_mention() -> None:
     adapter = _adapter()
     adapter.prime_mention_targets({"alice": "12345"})
 
-    assert adapter.translate_outbound("@switch.alice") == "@switch.alice"
+    assert adapter.translate_outbound("@switch.cmcdermott") == "@switch.cmcdermott"
 
 
 def test_priming_ignores_entries_that_are_not_numeric_ids() -> None:

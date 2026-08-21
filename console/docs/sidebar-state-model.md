@@ -163,7 +163,7 @@ replacing the render-time inversion:
 
 ### 3.1b One state, many writers, one reader
 
-Agreed: the room state is written from several directions
+Agreed with louis.amaudruz: the room state is written from several directions
 but read from exactly one place.
 
 Writers, all through the same store API rather than into private caches:
@@ -245,12 +245,12 @@ collapses to an empty array and renders as a confident zero.
    The alternative is to fix 3.2 and 3.4 only, which kills the two reported
    symptoms and the silent-empty class, but leaves membership agent-keyed and
    leaves case 2 (non-local agents) unfixable. Worth doing the full thing?
-2. ~~**Non-local agents.**~~ **Decided.** Both the room's
+2. ~~**Non-local agents.**~~ **Decided (louis.amaudruz).** Both the room's
    member list and the invite picker are restricted to agents that exist on this
    Switch Console — the sidebar only shows what it can act on. Consequences: a
    server-side agent cannot be invited from Switch Console at all, and the room row
    discloses the count it cannot draw so a hidden member is not mistaken for an
    absent one.
-3. ~~**Polling.**~~ **Decided.** Add a slow background
+3. ~~**Polling.**~~ **Decided (louis.amaudruz).** Add a slow background
    reconcile so externally-originated changes converge on their own rather than
    only on window focus.

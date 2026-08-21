@@ -113,7 +113,7 @@ describe('the per-row re-check', () => {
     // point in the past, and it is the only way to find out short of re-probing
     // the entire host.
     const el = await render(
-      row(step({ state: 'satisfied', outcome: 'satisfied', version: 'not-a-version' }))
+      row(step({ state: 'satisfied', outcome: 'satisfied', version: 'amaudruz' }))
     );
 
     expect(recheckButton(el)).not.toBeNull();

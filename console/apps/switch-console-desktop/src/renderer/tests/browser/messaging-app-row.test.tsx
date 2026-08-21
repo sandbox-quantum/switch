@@ -66,7 +66,7 @@ const IDENTITY: LinkedIdentity = {
   bridgeDisplayName: 'Slack Test',
   bridgeType: 'slack',
   externalUserId: 'U1',
-  externalUsername: 'lovelace.ada',
+  externalUsername: 'amaudruz.louis',
 };
 
 function row(
@@ -116,8 +116,8 @@ describe('the identity column', () => {
     // neither sits a mis-click from the other.
     const el = await render(row({ identities: [IDENTITY] }));
 
-    expect(el.textContent).toContain('@lovelace.ada');
-    expect(buttonLabels(el).filter((l) => l.includes('lovelace.ada'))).toEqual([]);
+    expect(el.textContent).toContain('@amaudruz.louis');
+    expect(buttonLabels(el).filter((l) => l.includes('amaudruz.louis'))).toEqual([]);
   });
 
   it('cannot unlink straight from the row', async () => {
@@ -177,13 +177,13 @@ describe('the row menu', () => {
   it('is where unlinking lives, and only when there is a link to undo', async () => {
     const el = await render(row({ identities: [IDENTITY] }));
 
-    expect(await openMenu(el)).toContain('Unlink @lovelace.ada');
+    expect(await openMenu(el)).toContain('Unlink @amaudruz.louis');
   });
 
   it('offers no unlink when nothing is linked', async () => {
     const el = await render(row({ identities: [] }));
 
-    expect(await openMenu(el)).not.toContain('Unlink @lovelace.ada');
+    expect(await openMenu(el)).not.toContain('Unlink @amaudruz.louis');
   });
 
   it('offers disconnecting the app to an admin', async () => {

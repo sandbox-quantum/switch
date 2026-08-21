@@ -949,7 +949,7 @@ class BridgeCore:
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged
-        channel (e.g. someone adds a teammate to a Mattermost channel via the
+        channel (e.g. someone adds louisa to a Mattermost channel via the
         Mattermost UI). Auto-creates the Switch room if the channel isn't
         mapped yet (same as the lazy inbound-message path), then ensures
         the puppet exists and is joined to the Matrix room."""
