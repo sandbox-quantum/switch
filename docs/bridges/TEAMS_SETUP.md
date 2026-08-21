@@ -117,6 +117,13 @@ code — so record the date somewhere you will see it.
 - **Messaging endpoint:** `https://<your-public-host>/api/messages`
 - **Channels:** enable **Microsoft Teams**
 
+**Back it by the app registration from 1.1 — not a new one.** The create form
+will happily make you a fresh app registration, and everything then looks
+correct: Graph runs on 1.1's id and creates channels, while Microsoft signs
+inbound activities with the bot's id and Switch rejects every one of them. Check
+**Configuration → Microsoft App ID** on the finished resource and confirm it is
+the id from 1.1.
+
 The messaging endpoint must be the same origin you configure as
 `public_base_url` in Part 3, with `/api/messages` on the end — the listener's
 host, which is not necessarily the one serving the gateway. If you follow
@@ -542,6 +549,18 @@ fault and is not: the address Switch posts to is per-tenant and Microsoft only
 ever hands it over inside an *inbound* activity, which is then persisted. If
 nothing has ever reached the listener, there is nothing to send to. **Fix
 inbound and outbound starts working too** — no separate action.
+
+**`Rejected inbound Teams activity: … addressed to app id '<x>', but this
+bridge is configured with app id '<y>'`** (with a `401` on `POST /api/messages`)
+Microsoft is reaching the listener — the public route is fine — and the activity
+is signed by a genuine Bot Connector token, but for a different bot. The Azure
+Bot resource's **Microsoft App ID** is not the app registration the bridge was
+registered with. See 1.3. Nothing in the outbound direction notices, because
+Graph runs on the registered id, so channel creation keeps working throughout.
+
+Worth knowing when you fix it: the bridge learns its outbound address from the
+first *accepted* inbound activity, so until one gets past this, agents cannot
+reply either — see the `serviceUrl` entry above.
 
 **Bot creates channels, but nothing from Teams ever arrives, and agents cannot
 reply either**
