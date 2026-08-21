@@ -153,6 +153,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
                       locationId: agent.locationId,
                       agentName: agent.name,
                       roomId,
+                      entryPoint: 'room_row',
                     });
                   }}
                 >

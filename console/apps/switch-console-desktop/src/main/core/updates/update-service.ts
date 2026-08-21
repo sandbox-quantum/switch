@@ -5,6 +5,9 @@ import _electronUpdater, {
   type Logger as UpdaterLogger,
 } from 'electron-updater';
 import { resolveAppVersion } from '@main/core/app/utils';
+import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
+import { updateTriggerOf } from '@main/core/telemetry/narrow';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
@@ -236,20 +239,39 @@ class UpdateService implements IInitializable, IDisposable {
     }
     this.updateState.nextCheck = new Date(Date.now() + delay);
     this.checkTimer = setTimeout(() => {
-      this.checkForUpdates().catch((e) => {
+      this.checkForUpdates('scheduled').catch((e) => {
         log.error('Scheduled update check failed:', e);
       });
     }, delay);
   }
 
-  async checkForUpdates(): Promise<UpdateInfo | null> {
+  /**
+   * Check for an update.
+   *
+   * `trigger` says who asked. A check that arrives while one is already running
+   * joins it rather than starting a second, so it is reported under the trigger
+   * of the check that actually ran — the alternative is counting one check twice.
+   */
+  async checkForUpdates(trigger: TelemetryUpdateTrigger = 'user'): Promise<UpdateInfo | null> {
     if (!this.active) return null;
     if (this.currentCheckPromise) return this.currentCheckPromise;
 
-    this.currentCheckPromise = this._performCheck().finally(() => {
-      this.currentCheckPromise = null;
-      this.scheduleNextCheck();
-    });
+    this.currentCheckPromise = this._performCheck()
+      .then((info) => {
+        trackEvent('update_checked', {
+          trigger: updateTriggerOf(trigger),
+          result: info ? 'available' : 'up_to_date',
+        });
+        return info;
+      })
+      .catch((error: unknown) => {
+        trackEvent('update_checked', { trigger: updateTriggerOf(trigger), result: 'failed' });
+        throw error;
+      })
+      .finally(() => {
+        this.currentCheckPromise = null;
+        this.scheduleNextCheck();
+      });
 
     return this.currentCheckPromise;
   }
@@ -297,7 +319,9 @@ class UpdateService implements IInitializable, IDisposable {
     try {
       if (this.fake) await this.fake.download();
       else await autoUpdater.downloadUpdate();
+      trackEvent('update_downloaded', { outcome: 'success' });
     } catch (error: unknown) {
+      trackEvent('update_downloaded', { outcome: 'failure' });
       const errorMessage = formatUpdaterError(error);
       log.error('Update download failed:', errorMessage, error);
 
@@ -345,6 +369,10 @@ class UpdateService implements IInitializable, IDisposable {
 
     const rollback = (reason: string) => {
       clearGuard();
+      // The install did not take. Reported here because the success case cannot
+      // be: a working install quits the app, so the only thing observable from
+      // inside it is the attempt and the ways it fails to leave.
+      trackEvent('update_install_started', { outcome: 'failure' });
       this.installRequested = false;
       this.updateState.status = 'downloaded';
       if (this.updateState.availableVersion) {
@@ -362,6 +390,9 @@ class UpdateService implements IInitializable, IDisposable {
       }, FAKE_INSTALL_ROLLBACK_MS);
       return;
     }
+
+    // Sent before handing over, while there is still a process to send from.
+    trackEvent('update_install_started', { outcome: 'success' });
 
     this.installRestartGuardTimer = setTimeout(() => {
       rollback('quitAndInstall timed out before app quit; allowing retry');

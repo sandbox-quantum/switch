@@ -4,10 +4,22 @@ import {
   killSidecarSession,
 } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { setAutoSessionAgent } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
-import { deleteAgent as gatewayDeleteAgent } from '@main/core/switch-servers/gateway-client';
+import {
+  deleteAgent as gatewayDeleteAgent,
+  GatewayError,
+} from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import type {
+  TelemetryAgentRemoveFailure,
+  TelemetryAgentRemoveTrigger,
+  TelemetryLocationKind,
+} from '@main/core/telemetry/events';
+import { agentRemoveTriggerOf } from '@main/core/telemetry/narrow';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
 import { agents, sessions } from '@main/db/schema';
@@ -32,7 +44,36 @@ export type DeleteAgentOptions = {
    * left registered on the server.
    */
   deleteInSwitch: boolean;
+  /**
+   * Whether a person removed this agent or a server teardown swept it up.
+   *
+   * Required, because the same function serves both: wiping a managed server
+   * deletes every agent on it one at a time, and a default here would file that
+   * as a room full of people deleting their agents at once.
+   */
+  trigger: TelemetryAgentRemoveTrigger;
 };
+
+/**
+ * The agent has no Switch identity to delete.
+ *
+ * A class rather than a message, so the reason can be reported as a code
+ * without matching on prose that a later edit would quietly change.
+ */
+class AgentNotLinkedToSwitchError extends Error {}
+
+/** What went wrong, as a code taken from the error's own type. */
+function removeFailureReason(error: unknown): TelemetryAgentRemoveFailure {
+  if (error instanceof AgentNotLinkedToSwitchError) return 'not_linked_to_switch';
+  if (error instanceof GatewayError) return `gateway_${error.kind}`;
+  return 'error';
+}
+
+/** Where the agent runs, from a row already read. `unknown` when it has gone. */
+function locationKindOfRow(location: Location | null): TelemetryLocationKind {
+  if (!location) return 'unknown';
+  return location.sshHost ? 'remote' : 'local';
+}
 
 /**
  * Delete this agent's own identity on the Switch server — and ONLY this one.
@@ -48,12 +89,14 @@ export type DeleteAgentOptions = {
  */
 async function deleteAgentInSwitch(agent: Agent): Promise<void> {
   if (!agent.serverId || !agent.switchAgentId) {
-    throw new Error(
+    throw new AgentNotLinkedToSwitchError(
       `Agent ${agent.id} is not linked to a Switch server, so it cannot be deleted in Switch.`
     );
   }
   const server = await getServer(agent.serverId);
-  if (!server) throw new Error(`No Switch server with id ${agent.serverId}`);
+  if (!server) {
+    throw new AgentNotLinkedToSwitchError(`No Switch server with id ${agent.serverId}`);
+  }
 
   await gatewayDeleteAgent(server, agent.switchAgentId);
 }
@@ -155,7 +198,34 @@ async function killRemoteSidecar(agent: Agent): Promise<void> {
 export async function deleteAgent(agentId: string, options: DeleteAgentOptions): Promise<void> {
   const agent = await getAgentById(agentId);
   const location = agent ? await getAgentLocation(agent).catch(() => null) : null;
+  // Captured before the row goes: after the delete below there is nothing left
+  // to describe what was removed.
+  const shape = {
+    agent_type: agent ? agentTypeOf(agent.providerId) : ('unknown' as const),
+    location: locationKindOfRow(location),
+    delete_in_switch: options.deleteInSwitch,
+    trigger: agentRemoveTriggerOf(options.trigger),
+  };
 
+  try {
+    await removeAgent(agentId, agent, location, options);
+  } catch (error) {
+    trackEvent('agent_removed', {
+      ...shape,
+      outcome: 'failure',
+      failure_reason: removeFailureReason(error),
+    });
+    throw error;
+  }
+  trackEvent('agent_removed', { ...shape, outcome: 'success', failure_reason: 'none' });
+}
+
+async function removeAgent(
+  agentId: string,
+  agent: Agent | undefined,
+  location: Location | null,
+  options: DeleteAgentOptions
+): Promise<void> {
   // Gateway cascade first: fail loud before touching local state so a failure
   // never leaves the row deleted but the Switch identity orphaned.
   if (options.deleteInSwitch && agent) {
@@ -194,5 +264,10 @@ export async function deleteAgent(agentId: string, options: DeleteAgentOptions):
   }
 
   await db.delete(agents).where(eq(agents.id, agentId));
+  // The session rows go with it, by a foreign key rather than by any code here,
+  // so nothing else announces their end. Without this every session an agent
+  // owned reports a start and no finish — the row is gone and no later pass can
+  // notice it left.
+  for (const row of sessionRows) sessionHooks._emit('session:deleted', row.id);
   agentEvents._emit('agent:deleted', agentId);
 }

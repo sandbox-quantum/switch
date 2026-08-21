@@ -2,6 +2,7 @@ import { makeAutoObservable, toJS } from 'mobx';
 import { type GuardResult, type ViewId, type WrapParams } from '@renderer/app/view-registry';
 import type { NonSettingsViewId } from '@renderer/lib/layout/navigation-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
+import { report } from '@renderer/lib/telemetry/report';
 import type { NavigationSnapshot } from '@shared/view-state';
 import { appState } from './app-state';
 import type { Snapshottable } from './snapshottable';
@@ -68,6 +69,10 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
     }
 
     if (viewId !== this.currentViewId) {
+      // Inside the changed check: re-navigating to the screen you are already on
+      // is not opening it, and counting it would make the busiest view the one
+      // people revisit rather than the one they use.
+      report('view_opened', { view_id: viewId });
       this.currentViewId = viewId;
       if (viewId !== 'settings') {
         this.lastNonSettingsView = viewId;

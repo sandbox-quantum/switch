@@ -6,6 +6,12 @@ export const TEARDOWN_SCRIPT_WAIT_MS = 10_000;
 
 export type ProvisionSessionError =
   | { type: 'timeout'; message: string; timeout: number; step: ProvisionStep | null }
+  /**
+   * The session's agent is not open, so there is nowhere to provision it. The
+   * one failure here a user can act on, and the reason it is separated from
+   * `error`: it is undone by reopening the agent, not by retrying.
+   */
+  | { type: 'location-not-open'; message: string }
   | { type: 'error'; message: string };
 
 export type TeardownSessionError =
@@ -30,7 +36,7 @@ export function toTeardownError(e: unknown): TeardownSessionError {
 export function isProvisionSessionError(e: unknown): e is ProvisionSessionError {
   if (!e || typeof e !== 'object' || !('type' in e)) return false;
   const type = (e as { type?: string }).type;
-  return type === 'timeout' || type === 'error';
+  return type === 'timeout' || type === 'location-not-open' || type === 'error';
 }
 
 export function formatTeardownSessionError(error: TeardownSessionError): string {
@@ -46,6 +52,7 @@ export function formatProvisionSessionError(error: ProvisionSessionError): strin
   switch (error.type) {
     case 'timeout':
       return error.step ? `${error.message} (step: ${error.step})` : error.message;
+    case 'location-not-open':
     case 'error':
       return error.message;
   }

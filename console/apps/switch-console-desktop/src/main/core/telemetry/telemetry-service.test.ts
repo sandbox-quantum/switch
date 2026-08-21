@@ -82,7 +82,13 @@ describe('the consent gate', () => {
   it('sends once consent is given', async () => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
 
-    await telemetryService.track('agent_created', { agent_type: 'codex', location: 'remote' });
+    await telemetryService.track('agent_created', {
+      agent_type: 'codex',
+      location: 'remote',
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: 'sidebar',
+    });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
@@ -138,7 +144,16 @@ describe('the payload', () => {
   it('identifies the install, and no user', async () => {
     // The relay reads this as Amplitude's device id. It sets a user id only
     // for a caller that sends one, which this is not.
-    await telemetryService.track('session_started', { agent_type: 'claude', location: 'local' });
+    await telemetryService.track('session_started', {
+      agent_type: 'claude',
+      location: 'local',
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: 'sidebar',
+      start_source: 'user',
+      has_initial_prompt: false,
+      connected_to_room: false,
+    });
 
     expect(sentResource()['flint.client_id']).toBe('install-abc');
     expect(sentResource()).not.toHaveProperty('flint.user_id');

@@ -5,6 +5,7 @@ import { createRemoteHomePluginFs } from '@main/core/agent-runtime/impl/remote-h
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { isNewerVersion } from '@main/lib/semver';
@@ -425,29 +426,57 @@ export class RemoteSwitchSetupService {
    * would otherwise fail it after the uninstall has already succeeded.
    */
   async update(agentId: string): Promise<SwitchSetupResult> {
+    if (getPlugin(agentId).capabilities.switchSetup.kind === 'none') {
+      return { success: false, message: 'Switch setup is not supported for this agent.' };
+    }
+    const { result, wasReinstall } = await this.runUpdate(agentId);
+    trackEvent('connector_updated', {
+      agent_type: agentTypeOf(agentId),
+      target: 'remote',
+      outcome: result.success ? 'success' : 'failure',
+      was_reinstall: wasReinstall,
+    });
+    return result;
+  }
+
+  private async runUpdate(
+    agentId: string
+  ): Promise<{ result: SwitchSetupResult; wasReinstall: boolean }> {
     // Installing overwrites in place, so update is the same operation — there
     // is no removed-but-not-reinstalled window to report on.
     if (getPlugin(agentId).capabilities.switchSetup.kind === 'files') {
       const version = connectorVersion(agentId);
-      return this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
+      const result = await this.runFiles(agentId, (files, fs) => files.install(fs, { version }));
+      return { result, wasReinstall: false };
     }
     const resolved = await this.resolve(agentId);
-    if (!resolved)
-      return { success: false, message: 'Switch setup is not supported for this agent.' };
+    if (!resolved) {
+      return {
+        result: { success: false, message: 'Switch setup is not supported for this agent.' },
+        wasReinstall: false,
+      };
+    }
     const { descriptor, bin, ref, marketplaceSource, rules } = resolved;
 
     try {
       await this.ensureMarketplace(bin, descriptor.marketplaceName, marketplaceSource, rules);
     } catch (err) {
-      return { success: false, message: `Could not add marketplace: ${String(err)}` };
+      return {
+        result: { success: false, message: `Could not add marketplace: ${String(err)}` },
+        wasReinstall: false,
+      };
     }
 
     const updateArgs = rules.updateArgs(ref, descriptor.scope);
     if (updateArgs) {
       const res = await this.run(bin, updateArgs);
-      return res.code === 0
-        ? { success: true }
-        : { success: false, message: res.stderr.trim() || 'Update failed.' };
+      return {
+        result:
+          res.code === 0
+            ? { success: true }
+            : { success: false, message: res.stderr.trim() || 'Update failed.' },
+        wasReinstall: false,
+      };
     }
 
     // No per-plugin update verb (Codex): remove then re-add. A failed re-add
@@ -455,19 +484,26 @@ export class RemoteSwitchSetupService {
     const removed = await this.run(bin, rules.uninstallArgs(ref, descriptor.scope));
     if (removed.code !== 0) {
       return {
-        success: false,
-        message: removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
+        result: {
+          success: false,
+          message: removed.stderr.trim() || 'Update failed: could not remove the installed plugin.',
+        },
+        wasReinstall: true,
       };
     }
     const added = await this.run(bin, rules.installArgs(ref, descriptor.scope));
-    return added.code === 0
-      ? { success: true }
-      : {
-          success: false,
-          message:
-            added.stderr.trim() ||
-            'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
-        };
+    return {
+      result:
+        added.code === 0
+          ? { success: true }
+          : {
+              success: false,
+              message:
+                added.stderr.trim() ||
+                'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
+            },
+      wasReinstall: true,
+    };
   }
 
   /** Status of every Switch-supported agent type's connector plugin on this host. */

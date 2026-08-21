@@ -32,7 +32,7 @@ const SessionViewWrapperWithProviders = observer(function SessionViewWrapperWith
     if (sessionStore && 'archivedAt' in sessionStore.data && sessionStore.data.archivedAt) return;
 
     getSessionManagerStore(locationId)
-      ?.provisionSession(sessionId)
+      ?.provisionSession(sessionId, 'auto')
       .catch(() => {});
   }, [kind, locationId, sessionId, sessionStore]);
 

@@ -194,7 +194,11 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
                   className="opacity-0 transition-opacity duration-150 group-hover/row:opacity-100"
                   onClick={(e) => {
                     e.stopPropagation();
-                    showCreateSessionModal({ locationId: agent.locationId, agentName });
+                    showCreateSessionModal({
+                      locationId: agent.locationId,
+                      agentName,
+                      entryPoint: 'sidebar',
+                    });
                   }}
                 >
                   <Plus className="h-4 w-4" />

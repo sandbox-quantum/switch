@@ -13,8 +13,8 @@ import { useOnboardingChecklist } from './use-onboarding-checklist';
  * turn green is the point of having it).
  */
 export const SidebarOnboardingChecklist = observer(function SidebarOnboardingChecklist() {
-  const { value, update, isLoading } = useAppSettingsKey('onboarding');
-  const { steps, complete, startStep } = useOnboardingChecklist();
+  const { value, isLoading } = useAppSettingsKey('onboarding');
+  const { steps, complete, startStep, dismiss } = useOnboardingChecklist();
 
   // Render nothing until the setting is known, rather than flashing a checklist
   // at someone who dismissed it three launches ago.
@@ -27,7 +27,7 @@ export const SidebarOnboardingChecklist = observer(function SidebarOnboardingChe
       collapsed={appState.sidebar.onboardingChecklistCollapsed}
       onStart={startStep}
       onToggleCollapsed={() => appState.sidebar.toggleOnboardingChecklistCollapsed()}
-      onDismiss={() => update({ showChecklist: false })}
+      onDismiss={dismiss}
     />
   );
 });

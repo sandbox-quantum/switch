@@ -86,9 +86,11 @@ vi.mock('./setAgentAutoSession', () => ({
   reconcileAgentAutoSessionFromGateway: vi.fn(async () => {}),
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 const { addAgent } = await import('./add-agent');
+const { trackEvent } = await import('@main/core/telemetry/telemetry-service');
 
 function params(overrides: Record<string, unknown> = {}) {
   return {
@@ -103,6 +105,7 @@ function params(overrides: Record<string, unknown> = {}) {
     autoApprove: false,
     instructions: '',
     definitionAttributes: {},
+    entryPoint: 'unknown' as const,
     ...overrides,
   };
 }
@@ -227,5 +230,71 @@ describe('addAgent', () => {
     expect((await addAgent(params())).kind).toBe('name-conflict');
     expect(h.registerAgentIdentity).not.toHaveBeenCalled();
     expect(h.createAgent).not.toHaveBeenCalled();
+  });
+
+  describe('what it reports', () => {
+    beforeEach(() => {
+      vi.mocked(trackEvent).mockClear();
+    });
+
+    it('reports a creation that failed, with the reason as a code', async () => {
+      // The success is reported from the `agent:created` hook, which by
+      // definition never fires here — so without this the entire failure
+      // population is missing rather than merely unexplained.
+      h.registerAgentIdentity.mockResolvedValue({ kind: 'unauthenticated' } as never);
+
+      await addAgent(params({ entryPoint: 'command_palette' }));
+
+      expect(trackEvent).toHaveBeenCalledWith('agent_created', {
+        agent_type: 'codex',
+        location: 'local',
+        outcome: 'failure',
+        failure_reason: 'unauthenticated',
+        entry_point: 'command_palette',
+      });
+    });
+
+    it('reports a refusal that happens before anything is minted', async () => {
+      h.state.nameTaken = true;
+
+      await addAgent(params({ entryPoint: 'sidebar' }));
+
+      expect(trackEvent).toHaveBeenCalledWith(
+        'agent_created',
+        expect.objectContaining({ outcome: 'failure', failure_reason: 'name_conflict' })
+      );
+    });
+
+    it('describes a remote failure as remote, from what was asked for', async () => {
+      // There is no row to read the location from — the agent was never
+      // created. The parameters are the only account of what was attempted.
+      h.registerAgentIdentity.mockResolvedValue({ kind: 'unauthenticated' } as never);
+
+      await addAgent(params({ sshHost: 'build-box', entryPoint: 'server_page' }));
+
+      expect(trackEvent).toHaveBeenCalledWith(
+        'agent_created',
+        expect.objectContaining({ location: 'remote' })
+      );
+    });
+
+    it('reports nothing itself when the agent is created', async () => {
+      // Reporting here as well as from the hook would double-count every
+      // successful creation.
+      await addAgent(params());
+
+      expect(trackEvent).not.toHaveBeenCalled();
+    });
+
+    it('never puts the failure message in the payload', async () => {
+      h.registerAgentIdentity.mockResolvedValue({
+        kind: 'error',
+        message: '/Users/someone/secret-project is not writable',
+      } as never);
+
+      await addAgent(params());
+
+      expect(JSON.stringify(vi.mocked(trackEvent).mock.calls)).not.toContain('secret-project');
+    });
   });
 });

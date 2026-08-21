@@ -10,6 +10,7 @@ import {
   SWITCH_SUBAGENTS_DIR_RELATIVE,
 } from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
+import { formatProvisionSessionError } from '@main/core/sessions/provision-session-error';
 import { sessionService } from '@main/core/sessions/session-service';
 import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
@@ -699,13 +700,16 @@ class AutoSessionWatcher {
           // (it never reconciles to ready). provisionSession is idempotent
           // (fast-paths on the already-registered runtime) and emits the
           // provisioned event the renderer needs.
-          await sessionService.provisionSession(result.data.session.id).catch((error) => {
+          // The failure is a value now, not a rejection: a `.catch` here would
+          // never run and the failure would pass in silence.
+          const provisioned = await sessionService.provisionSession(result.data.session.id);
+          if (!provisioned.success) {
             log.warn('AutoSessionWatcher: post-spawn provision-reconcile failed', {
               roomId,
               sessionId: result.data.session.id,
-              error: String(error),
+              error: formatProvisionSessionError(provisioned.error),
             });
-          });
+          }
           return;
         }
         lastError = JSON.stringify(result.error);

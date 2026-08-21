@@ -72,11 +72,35 @@ export type TelemetryContext = {
   timeMs: number;
 };
 
-type OtlpAttribute = { key: string; value: { stringValue: string } };
+/**
+ * What a catalogued property may be, once it is data rather than a type.
+ *
+ * The three kinds the catalogue allows: an enumerated string, a count, and a
+ * yes/no. Not an object, not an array, not null — anything else is a bug in a
+ * call site rather than a value to find an encoding for.
+ */
+type TelemetryValue = string | number | boolean;
 
-/** Everything sent is a string; nothing in the catalogue is anything else. */
-function attributes(values: Record<string, string>): OtlpAttribute[] {
-  return Object.entries(values).map(([key, value]) => ({ key, value: { stringValue: value } }));
+type OtlpValue = { stringValue: string } | { boolValue: boolean } | { doubleValue: number };
+
+type OtlpAttribute = { key: string; value: OtlpValue };
+
+/**
+ * A property in the shape OTLP carries it.
+ *
+ * Numbers go as `doubleValue` rather than `intValue`: OTLP's int64 is a string
+ * in JSON, which invites a receiver to treat a count as text and makes it
+ * useless to average. Every count in the catalogue is small and exact as a
+ * double, so nothing is lost by not distinguishing the two.
+ */
+function otlpValue(value: TelemetryValue): OtlpValue {
+  if (typeof value === 'boolean') return { boolValue: value };
+  if (typeof value === 'number') return { doubleValue: value };
+  return { stringValue: value };
+}
+
+function attributes(values: Record<string, TelemetryValue>): OtlpAttribute[] {
+  return Object.entries(values).map(([key, value]) => ({ key, value: otlpValue(value) }));
 }
 
 /**
@@ -90,18 +114,25 @@ function attributes(values: Record<string, string>): OtlpAttribute[] {
 function allowedProperties<K extends TelemetryEventName>(
   name: K,
   properties: TelemetryEventMap[K]
-): Record<string, string> {
-  const allowed: Record<string, string> = {};
+): Record<string, TelemetryValue> {
+  const allowed: Record<string, TelemetryValue> = {};
   for (const key of TELEMETRY_EVENT_PROPERTIES[name]) {
     const value = (properties as Record<string, unknown>)[key];
     // Coercing a missing property would send the string "undefined" as though
     // it were data. Refusing means the event is dropped and the mismatch is
-    // logged, which is the lesser of the two.
-    if (typeof value !== 'string') {
+    // logged, which is the lesser of the two. `null` and `undefined` both fail
+    // here, as does anything structured — an object reaching a payload is how a
+    // field nobody catalogued gets sent.
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
       throw new TelemetrySendError(
         'unexpected',
         `Event ${name} is missing the catalogued property ${key}`
       );
+    }
+    // A number that is not a real number has no meaning at the far end and
+    // would serialise to `null`, silently turning a count into an absence.
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new TelemetrySendError('unexpected', `Event ${name} has a non-finite value for ${key}`);
     }
     allowed[key] = value;
   }

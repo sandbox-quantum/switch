@@ -1,13 +1,14 @@
 import { app, shell } from 'electron';
+import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
 import { updateService } from '@main/core/updates/update-service';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { SWITCH_CONSOLE_RELEASES_URL } from '@shared/urls';
 import { formatUpdaterError } from './utils';
 
 export const updateController = createRPCController({
-  check: async () => {
+  check: async (trigger: TelemetryUpdateTrigger = 'user') => {
     try {
-      const result = await updateService.checkForUpdates();
+      const result = await updateService.checkForUpdates(trigger);
       return { success: true, result: result ?? null };
     } catch (error) {
       return { success: false, error: formatUpdaterError(error) };

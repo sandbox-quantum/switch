@@ -1,9 +1,14 @@
 import { HookCore, type Hookable } from '@main/lib/hookable';
 import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 
 export type AgentCrudHooks = {
-  'agent:created': (agent: Agent) => void | Promise<void>;
+  /**
+   * `entryPoint` is where the user started from, for reporting. Creators with
+   * no user behind them pass `'unknown'` rather than inventing one.
+   */
+  'agent:created': (agent: Agent, entryPoint: UiEntryPoint) => void | Promise<void>;
   'agent:updated': (agent: Agent) => void | Promise<void>;
   'agent:deleted': (agentId: string) => void | Promise<void>;
 };

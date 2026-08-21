@@ -42,6 +42,23 @@ function logAttributes(payload: Record<string, unknown>): Record<string, string>
   return Object.fromEntries(attributes.map((a) => [a.key, a.value.stringValue]));
 }
 
+/** The attribute values as OTLP actually carries them, kind and all. */
+function rawLogAttributes(payload: Record<string, unknown>): Record<string, unknown> {
+  const attributes = logRecord(payload).attributes as { key: string; value: unknown }[];
+  return Object.fromEntries(attributes.map((a) => [a.key, a.value]));
+}
+
+const SESSION_STARTED = {
+  agent_type: 'codex',
+  location: 'local',
+  outcome: 'success',
+  failure_reason: 'none',
+  entry_point: 'sidebar',
+  start_source: 'user',
+  has_initial_prompt: false,
+  connected_to_room: false,
+} as const;
+
 describe('the record that gets built', () => {
   it('carries the client id the relay requires, as a resource attribute', () => {
     // Without it the relay drops the whole payload — and still answers 200.
@@ -63,11 +80,7 @@ describe('the record that gets built', () => {
   });
 
   it('names the event under this product, since one project holds them all', () => {
-    const payload = buildOtlpPayload(
-      'session_started',
-      { agent_type: 'codex', location: 'local' },
-      CONTEXT
-    );
+    const payload = buildOtlpPayload('session_started', SESSION_STARTED, CONTEXT);
 
     expect(logAttributes(payload)['event.name']).toBe('switch_console.session_started');
   });
@@ -139,6 +152,34 @@ describe('the record that gets built', () => {
     expect(() => buildOtlpPayload('session_ended', incomplete, CONTEXT)).toThrow(
       /missing the catalogued property/
     );
+  });
+
+  it('carries a yes/no as a boolean, not as the word "false"', () => {
+    // A string "false" is truthy everywhere it lands, so a flag sent that way
+    // reads as always-true in the one place anybody looks at it.
+    const payload = buildOtlpPayload('session_started', SESSION_STARTED, CONTEXT);
+
+    expect(rawLogAttributes(payload).has_initial_prompt).toEqual({ boolValue: false });
+    expect(rawLogAttributes(payload).connected_to_room).toEqual({ boolValue: false });
+  });
+
+  it('carries a count as a number, so it can be summed at the far end', () => {
+    const payload = buildOtlpPayload(
+      'session_started',
+      { ...SESSION_STARTED, has_initial_prompt: true },
+      CONTEXT
+    );
+
+    expect(rawLogAttributes(payload).has_initial_prompt).toEqual({ boolValue: true });
+    expect(rawLogAttributes(payload).entry_point).toEqual({ stringValue: 'sidebar' });
+  });
+
+  it('refuses a count that is not a real number rather than sending null', () => {
+    // NaN and Infinity both serialise to `null` in JSON, which at the far end
+    // is indistinguishable from a property that was never sent.
+    const broken = { ...SESSION_STARTED, has_initial_prompt: Number.NaN } as never;
+
+    expect(() => buildOtlpPayload('session_started', broken, CONTEXT)).toThrow(/non-finite/);
   });
 
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {

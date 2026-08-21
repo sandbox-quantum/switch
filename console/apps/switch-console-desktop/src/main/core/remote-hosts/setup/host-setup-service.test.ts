@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getUpdateInfo: vi.fn(),
 }));
 
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
 vi.mock('@main/core/switch-setup/remote-switch-setup', () => ({
   getRemoteSwitchSetupService: () =>
     Promise.resolve({

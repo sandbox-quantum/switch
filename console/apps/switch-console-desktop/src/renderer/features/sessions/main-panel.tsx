@@ -54,7 +54,7 @@ export const SessionMainPanel = observer(function SessionMainPanel() {
       if (kind === 'location-error') {
         void getLocationManagerStore().mountLocation(locationId);
       } else {
-        void getSessionManagerStore(locationId)?.provisionSession(sessionId);
+        void getSessionManagerStore(locationId)?.provisionSession(sessionId, 'retry_button');
       }
     };
     return (

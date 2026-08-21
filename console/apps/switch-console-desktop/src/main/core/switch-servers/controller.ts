@@ -19,6 +19,18 @@ import {
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
+import type {
+  TelemetryAuthMethod,
+  TelemetryBridgeFailure,
+  TelemetryBridgePlatform,
+  TelemetryRoomAgentsDirection,
+  TelemetryRoomCreateFailure,
+  TelemetryServerKind,
+  TelemetrySignInFailure,
+} from '@main/core/telemetry/events';
+import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -109,6 +121,7 @@ import {
   renameServer,
   setActiveServerId,
   updateServer,
+  serverKindOf,
 } from './servers-store';
 import { updateBridgeOnServer } from './update-bridge';
 
@@ -134,11 +147,133 @@ async function requireReachableServer(serverId: string): Promise<SwitchServer> {
   return server;
 }
 
+/** A bridge result's discriminant as a code. Never the message beside it. */
+function bridgeFailureReason(kind: string): TelemetryBridgeFailure {
+  switch (kind) {
+    case 'created':
+      return 'none';
+    case 'unauthenticated':
+      return 'unauthenticated';
+    case 'forbidden':
+      return 'forbidden';
+    case 'invalid':
+      return 'invalid';
+    default:
+      return 'error';
+  }
+}
+
+/** A sign-in's own error union, as a reportable code. Never its message. */
+const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
+  invalid_credentials: 'invalid_credentials',
+  cancelled: 'cancelled',
+  failed: 'failed',
+};
+
+function reportSignIn(
+  method: TelemetryAuthMethod,
+  server: SwitchServer,
+  result: Result<unknown, LoginError>
+): void {
+  trackEvent('server_sign_in', {
+    auth_method: method,
+    server_kind: serverKindOf(server),
+    outcome: result.success ? 'success' : 'failure',
+    failure_reason: result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind],
+  });
+}
+
+/** A room-create result's discriminant as a code. */
+function roomCreateFailureReason(result: CreateRoomResult): TelemetryRoomCreateFailure {
+  switch (result.kind) {
+    case 'created':
+      return 'none';
+    case 'unauthenticated':
+      return 'unauthenticated';
+    case 'bridge-unavailable':
+      return 'bridge_unavailable';
+    case 'invalid':
+      return 'invalid';
+    default:
+      return 'error';
+  }
+}
+
+/**
+ * Which platform a bridge id is on.
+ *
+ * A lookup rather than a field: these operations take a bridge id, and the type
+ * either never appears (a delete) or appears only on success (a room). Best
+ * effort — an unreachable server yields `unknown` rather than failing the
+ * operation it is only describing.
+ *
+ * **Never awaited by a caller doing real work.** It asks the gateway, and making
+ * someone wait on a network round trip so we can describe what they did would
+ * put reporting in the path of the thing being reported. `reportWithBridge` is
+ * how the answer is used once it arrives.
+ */
+function bridgePlatformOf(
+  server: SwitchServer,
+  bridgeId: string | null | undefined
+): Promise<TelemetryBridgePlatform> {
+  if (!bridgeId) return Promise.resolve('unknown');
+  return fetchBridges(server)
+    .then((bridges) => bridgePlatformOfType(bridges.find((b) => b.id === bridgeId)?.type))
+    .catch((): TelemetryBridgePlatform => 'unknown');
+}
+
+/**
+ * Report once the platform is known, without anyone waiting for it.
+ *
+ * The event arrives a moment after the action rather than with it, which costs
+ * nothing: it carries its own timestamp, taken when the work happened.
+ */
+function reportWithBridge(
+  platform: Promise<TelemetryBridgePlatform>,
+  emit: (platform: TelemetryBridgePlatform) => void
+): void {
+  void platform.then(emit).catch(() => {});
+}
+
+/** The same, for a room create whose other properties are already known. */
+function reportRoomCreated(
+  server: SwitchServer,
+  bridgeId: string | null | undefined,
+  rest: {
+    server_kind: TelemetryServerKind;
+    agent_count: number;
+    has_instructions: boolean;
+    failure_reason: TelemetryRoomCreateFailure;
+  }
+): void {
+  reportWithBridge(bridgePlatformOf(server, bridgeId), (bridge_platform) =>
+    trackEvent('room_created', {
+      ...rest,
+      bridge_platform,
+      outcome: rest.failure_reason === 'none' ? 'success' : 'failure',
+    })
+  );
+}
+
 export const switchServersController = createRPCController({
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
+  // The success is reported by the store, at the insert that is the server
+  // actually being added. Only the failure is reported here, because this is
+  // where registering a URL stops being an action and becomes an exception —
+  // and without it the whole failure population is invisible.
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
-    const server = await addServer(params);
+    let server: SwitchServer;
+    try {
+      server = await addServer(params);
+    } catch (error) {
+      trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+      throw error;
+    }
+    // Outside the catch on purpose. The store reports the success the moment the
+    // row lands, and this reconciliation is a separate step: if it fails the
+    // server has still been added, and reporting a failure here would file one
+    // click as both a success and a failure.
     await resolveAgentServers();
     return server;
   },
@@ -171,15 +306,30 @@ export const switchServersController = createRPCController({
   getAuthConfig: async (serverId: string): Promise<SwitchAuthConfig> =>
     fetchAuthConfig(await requireReachableServer(serverId)),
 
+  // Reported here rather than in `auth.ts`: the same functions are used to
+  // re-authenticate a managed server on its own and to log in while starting a
+  // stack, and neither of those is a person signing in.
   passwordLogin: async (params: PasswordLoginParams) => {
     const server = await requireReachableServer(params.serverId);
-    return passwordLogin(server, params.email, params.password);
+    const result = await passwordLogin(server, params.email, params.password);
+    reportSignIn('password', server, result);
+    return result;
   },
 
-  oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> =>
-    oidcLogin(await requireReachableServer(serverId)),
+  oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> => {
+    const server = await requireReachableServer(serverId);
+    const result = await oidcLogin(server);
+    reportSignIn('oidc', server, result);
+    return result;
+  },
 
-  logout: (serverId: string): Promise<void> => deleteSessionCookie(serverId),
+  logout: async (serverId: string): Promise<void> => {
+    // Read before the cookie goes, so the kind of server is still knowable — and
+    // caught, because nobody should be unable to sign out because of it.
+    const server = await getServer(serverId).catch(() => null);
+    await deleteSessionCookie(serverId);
+    if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
+  },
 
   /**
    * Open a gateway web page (operator dashboard). For the managed local server —
@@ -259,13 +409,30 @@ export const switchServersController = createRPCController({
    */
   createBridge: async (params: CreateBridgeParams): Promise<CreateBridgeResult> => {
     const server = await requireReachableServer(params.serverId);
-    return createBridgeOnServer(server, {
-      bridgeType: params.bridgeType,
-      displayName: params.displayName,
-      connectionConfig: params.connectionConfig,
-      setAsDefault: params.setAsDefault,
-      channelCreationEnabled: params.channelCreationEnabled,
+    const platform = bridgePlatformOfType(params.bridgeType);
+    let result: CreateBridgeResult;
+    try {
+      result = await createBridgeOnServer(server, {
+        bridgeType: params.bridgeType,
+        displayName: params.displayName,
+        connectionConfig: params.connectionConfig,
+        setAsDefault: params.setAsDefault,
+        channelCreationEnabled: params.channelCreationEnabled,
+      });
+    } catch (error) {
+      trackEvent('bridge_connected', {
+        bridge_platform: platform,
+        outcome: 'failure',
+        failure_reason: 'error',
+      });
+      throw error;
+    }
+    trackEvent('bridge_connected', {
+      bridge_platform: platform,
+      outcome: result.kind === 'created' ? 'success' : 'failure',
+      failure_reason: bridgeFailureReason(result.kind),
     });
+    return result;
   },
 
   /**
@@ -287,8 +454,17 @@ export const switchServersController = createRPCController({
    * `deleteBridge`. The renderer owns the confirmation; by the time this runs
    * the rooms are being given up deliberately.
    */
-  deleteBridge: async (params: DeleteBridgeParams): Promise<DeleteBridgeResult> =>
-    deleteBridge(await requireReachableServer(params.serverId), params.bridgeId),
+  deleteBridge: async (params: DeleteBridgeParams): Promise<DeleteBridgeResult> => {
+    const server = await requireReachableServer(params.serverId);
+    // Started before the delete, because afterwards there is no bridge left to
+    // read a platform from — but never waited on: see `reportWithBridge`.
+    const platform = bridgePlatformOf(server, params.bridgeId);
+    const result = await deleteBridge(server, params.bridgeId);
+    reportWithBridge(platform, (bridge_platform) =>
+      trackEvent('bridge_disconnected', { bridge_platform })
+    );
+    return result;
+  },
 
   /**
    * Create a room on the chosen server, owned by the signed-in user. Room
@@ -297,13 +473,31 @@ export const switchServersController = createRPCController({
    */
   createRoom: async (params: CreateRoomParams): Promise<CreateRoomResult> => {
     const server = await requireReachableServer(params.serverId);
-    return createRoomOnServer(server, {
-      name: params.name,
-      description: params.description,
-      instructions: params.instructions,
-      bridgeId: params.bridgeId,
-      agentIds: params.agentIds,
+    const shape = {
+      server_kind: serverKindOf(server),
+      agent_count: params.agentIds.length,
+      has_instructions: (params.instructions?.trim().length ?? 0) > 0,
+    };
+
+    let result: CreateRoomResult;
+    try {
+      result = await createRoomOnServer(server, {
+        name: params.name,
+        description: params.description,
+        instructions: params.instructions,
+        bridgeId: params.bridgeId,
+        agentIds: params.agentIds,
+      });
+    } catch (error) {
+      reportRoomCreated(server, params.bridgeId, { ...shape, failure_reason: 'error' });
+      throw error;
+    }
+
+    reportRoomCreated(server, params.bridgeId, {
+      ...shape,
+      failure_reason: roomCreateFailureReason(result),
     });
+    return result;
   },
 
   listAgentRooms: async (params: {
@@ -342,8 +536,24 @@ export const switchServersController = createRPCController({
     serverId: string;
     roomId: string;
     agentIds: string[];
-  }): Promise<void> =>
-    addRoomAgents(await requireReachableServer(params.serverId), params.roomId, params.agentIds),
+    /**
+     * Which screen this came from. The same call serves both, and the
+     * one-agent-to-many-rooms screen loops it once per room — so without this,
+     * adding an agent to five rooms is indistinguishable from five people each
+     * adding one agent.
+     */
+    direction: TelemetryRoomAgentsDirection;
+  }): Promise<void> => {
+    await addRoomAgents(
+      await requireReachableServer(params.serverId),
+      params.roomId,
+      params.agentIds
+    );
+    trackEvent('room_agents_added', {
+      agent_count: params.agentIds.length,
+      direction: roomAgentsDirectionOf(params.direction),
+    });
+  },
 
   /** Remove one agent from a room. Membership only — the agent is not deleted. */
   removeRoomAgent: async (params: {
@@ -354,8 +564,16 @@ export const switchServersController = createRPCController({
     removeRoomAgent(await requireReachableServer(params.serverId), params.roomId, params.agentId),
 
   /** Delete a room and everything in it. The gateway enforces who may. */
-  deleteRoom: async (params: { serverId: string; roomId: string }): Promise<void> =>
-    deleteRoom(await requireReachableServer(params.serverId), params.roomId),
+  deleteRoom: async (params: { serverId: string; roomId: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    try {
+      await deleteRoom(server, params.roomId);
+    } catch (error) {
+      trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome: 'failure' });
+      throw error;
+    }
+    trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome: 'success' });
+  },
 
   listRemoteRoomGroups: async (serverId: string): Promise<RemoteRoomGroup[]> =>
     fetchRoomGroups(await requireServer(serverId)),
@@ -379,12 +597,21 @@ export const switchServersController = createRPCController({
     ),
 
   /** Claim a messaging-app account as the signed-in Switch user's own. */
-  claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> =>
-    claimIdentityOnServer(await requireReachableServer(params.serverId), {
+  claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
+    const server = await requireReachableServer(params.serverId);
+    const result = await claimIdentityOnServer(server, {
       bridgeId: params.bridgeId,
       externalUserId: params.externalUserId,
       username: params.username,
-    }),
+    });
+    reportWithBridge(bridgePlatformOf(server, params.bridgeId), (bridge_platform) =>
+      trackEvent('bridge_identity_claimed', {
+        bridge_platform,
+        outcome: result.kind === 'claimed' ? 'success' : 'failure',
+      })
+    );
+    return result;
+  },
 
   /** Give up a claim on a messaging-app account, leaving any other user's claim
    * on it in place. `userId` is whose claim to drop — null for the signed-in

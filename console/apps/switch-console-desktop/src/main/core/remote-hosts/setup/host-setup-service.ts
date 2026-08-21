@@ -17,9 +17,13 @@ import {
 } from '@main/core/dependencies/remote-dependency-manager';
 import { listPlugins } from '@main/core/providers/plugin-registry';
 import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import type { TelemetryHostSetupAction, TelemetryOutcome } from '@main/core/telemetry/events';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
+  agentIdForStep,
   hostSetupActivityEventChannel,
   hostSetupPlanEventChannel,
   type HostSetupPlan,
@@ -399,12 +403,56 @@ export async function recheckSetupStep(sshHost: string, stepId: string): Promise
   }
 }
 
+/** Whether the step ended in the state the action was trying to reach. */
+function stepOutcome(plan: HostSetupPlan, stepId: string): TelemetryOutcome {
+  const step = plan.steps.find((s) => s.id === stepId);
+  return step?.state === 'satisfied' ? 'success' : 'failure';
+}
+
+/**
+ * Report what a setup step did.
+ *
+ * The outcome is read back off the step in the returned plan rather than from
+ * the call returning at all: these runners resolve with a plan whether or not
+ * the step succeeded, so "it did not throw" is not the same as "it worked".
+ * A step that is not in the returned plan, which should not happen, is reported
+ * as a failure rather than silently as a success.
+ */
+function reportSetupStep(
+  plan: HostSetupPlan,
+  stepId: string,
+  action: TelemetryHostSetupAction,
+  outcome: TelemetryOutcome
+): void {
+  const step = plan.steps.find((s) => s.id === stepId);
+  trackEvent('host_setup_step', {
+    step_kind: step?.kind ?? 'core-dependency',
+    // Null for a host-level dependency, which belongs to no agent.
+    agent_type: agentTypeOf(step ? (agentIdForStep(step) ?? '') : ''),
+    action,
+    outcome,
+  });
+}
+
+/** The same, for a run that threw before it could produce a plan. */
+function reportSetupStepThrew(action: TelemetryHostSetupAction): void {
+  trackEvent('host_setup_step', {
+    step_kind: 'core-dependency',
+    agent_type: 'unknown',
+    action,
+    outcome: 'failure',
+  });
+}
+
 export async function installSetupStep(sshHost: string, stepId: string): Promise<HostSetupPlan> {
   const plan = await ensureSetupPlan(sshHost);
   const manager = await getRemoteDependencyManager(sshHost);
   try {
-    return await runnerFor(sshHost, manager).runSingleStep(plan, stepId);
+    const next = await runnerFor(sshHost, manager).runSingleStep(plan, stepId);
+    reportSetupStep(next, stepId, 'install', stepOutcome(next, stepId));
+    return next;
   } catch (error) {
+    reportSetupStepThrew('install');
     log.warn('[HostSetup] step install stopped', {
       event: 'host-setup-step-install-stopped',
       sshHost,
@@ -420,8 +468,11 @@ export async function updateSetupStep(sshHost: string, stepId: string): Promise<
   const plan = await ensureSetupPlan(sshHost);
   const manager = await getRemoteDependencyManager(sshHost);
   try {
-    return await runnerFor(sshHost, manager).updateStep(plan, stepId);
+    const next = await runnerFor(sshHost, manager).updateStep(plan, stepId);
+    reportSetupStep(next, stepId, 'update', stepOutcome(next, stepId));
+    return next;
   } catch (error) {
+    reportSetupStepThrew('update');
     log.warn('[HostSetup] step update stopped', {
       event: 'host-setup-step-update-stopped',
       sshHost,
@@ -437,7 +488,12 @@ export async function skipSetupStep(sshHost: string, stepId: string): Promise<Ho
   const plan = await getSetupPlan(sshHost);
   if (!plan) throw new Error(`No setup plan exists for ${sshHost}`);
   const manager = await getRemoteDependencyManager(sshHost);
-  return await runnerFor(sshHost, manager).skip(plan, stepId);
+  const next = await runnerFor(sshHost, manager).skip(plan, stepId);
+  // A skip always succeeds at what it is for — moving past the step. Whether the
+  // dependency is satisfied is a different question, and the point of counting
+  // skips is that someone decided to go on without it.
+  reportSetupStep(next, stepId, 'skip', 'success');
+  return next;
 }
 
 /** Drop a host's plan and its runner — called when the host is removed. */

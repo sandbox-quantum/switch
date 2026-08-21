@@ -171,6 +171,6 @@ export async function attachConfiguredAgents(
   }
 
   await locationManager.openLocation(location);
-  for (const agent of created) agentEvents._emit('agent:created', agent);
+  for (const agent of created) agentEvents._emit('agent:created', agent, 'onboarding');
   return ok(created);
 }

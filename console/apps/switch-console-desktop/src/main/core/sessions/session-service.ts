@@ -1,7 +1,13 @@
-import { ok, type Result } from '@switch-console/shared';
+import { err, ok, type Result } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
+import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import type { TelemetryOutcome, TelemetrySessionStartFailure } from '@main/core/telemetry/events';
+import { entryPointOf, startSourceOf } from '@main/core/telemetry/narrow';
+import { locationKindOf } from '@main/core/telemetry/shape';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -19,16 +25,22 @@ import type {
   RenameSessionSuccess,
   Session,
 } from '@shared/core/sessions/sessions';
+import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { archiveSession } from './operations/archiveSession';
 import { createSession } from './operations/createSession';
 import { deleteSession } from './operations/deleteSession';
 import { ensureSessionAttachable } from './operations/ensureSessionAttachable';
+import { getSession } from './operations/getSession';
 import { getSessions } from './operations/getSessions';
 import { renameSession } from './operations/renameSession';
 import { restoreSession } from './operations/restoreSession';
 import { setSessionPinned } from './operations/setSessionPinned';
 import { updateSessionStatus } from './operations/updateSessionStatus';
-import type { TeardownSessionError } from './provision-session-error';
+import {
+  toProvisionError,
+  type ProvisionSessionError,
+  type TeardownSessionError,
+} from './provision-session-error';
 import { provisionSessionRuntime, type SessionRuntimeResult } from './session-builder';
 import { sessionRuntimeManager } from './session-runtime-manager';
 import { mapSessionRowToSession } from './utils/utils';
@@ -45,6 +57,74 @@ export type SessionLifecycleHooks = {
   'session:deleted': (sessionId: string) => void | Promise<void>;
   'session:runtime-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
 };
+
+/** The error's discriminant as a reportable code. Never its message. */
+const SESSION_START_FAILURE_REASON: Record<
+  CreateSessionError['type'],
+  TelemetrySessionStartFailure
+> = {
+  'agent-not-found': 'agent_not_found',
+  'already-exists': 'already_exists',
+  'spawn-failed': 'spawn_failed',
+};
+
+/**
+ * Report a session that did not start.
+ *
+ * At this call site rather than from a hook, because `session:created` fires
+ * only when one did — which is exactly the blind spot. The agent is read back
+ * to describe the attempt in the same terms as a success, so the two populations
+ * are comparable; when it cannot be found, which is itself one of the failures,
+ * the shape is honestly `unknown` rather than guessed.
+ */
+function reportFailedSessionStart(params: CreateSessionParams, error: CreateSessionError): void {
+  // Not awaited: the reads that describe the attempt are ours, not the caller's,
+  // and the person whose session failed should hear about it no later for our
+  // having asked what kind it was.
+  void (async () => {
+    const agent = await getAgentById(params.agentId);
+
+    trackEvent('session_started', {
+      agent_type: agent ? agentTypeOf(agent.providerId) : 'unknown',
+      location: agent ? await locationKindOf(agent.locationId) : 'unknown',
+      outcome: 'failure',
+      failure_reason: SESSION_START_FAILURE_REASON[error.type],
+      entry_point: entryPointOf(params.entryPoint),
+      start_source: startSourceOf(params.startSource),
+      has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
+      connected_to_room: switchNotificationPoller.hasIntendedRoom(params.id),
+    });
+  })().catch(() => {});
+}
+
+/**
+ * Report a provision that was a retry.
+ *
+ * The first attempt for a session is not one, and reporting it would drown the
+ * signal: nearly every session is provisioned once. The session is read back
+ * for its shape, and reports `unknown` rather than a guess when it has gone —
+ * which is one of the ways a provision fails.
+ */
+function reportProvisionRetry(
+  sessionId: string,
+  trigger: SessionProvisionTrigger,
+  outcome: TelemetryOutcome
+): void {
+  if (trigger === 'initial') return;
+
+  // Not awaited: this is two database reads on the path that hands a session
+  // back to the person waiting for it.
+  void (async () => {
+    const session = await getSession(sessionId);
+    const agent = session ? await getAgentById(session.agentId) : null;
+    trackEvent('session_provision_retried', {
+      agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
+      location: agent ? await locationKindOf(agent.locationId) : 'unknown',
+      trigger,
+      outcome,
+    });
+  })().catch(() => {});
+}
 
 /**
  * A session cannot start while its agent's location is closed. The condition is
@@ -72,6 +152,8 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     const result = await createSession(params);
     if (result.success) {
       this.notifySessionCreated(result.data.session, params);
+    } else {
+      reportFailedSessionStart(params, result.error);
     }
     return result;
   }
@@ -110,14 +192,38 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     }
   }
 
+  /**
+   * Bring a session's runtime up, reporting the outcome rather than throwing it.
+   *
+   * It used to declare a `Result` and never return the error branch: every
+   * failure threw, so the renderer's error branch was unreachable and the
+   * rejection was swallowed by callers that could not act on it. A provision
+   * that failed therefore left the session sitting on "setting up" with nothing
+   * said. The failure is now a value, which is also the only way a retry can
+   * report whether it worked.
+   */
   async provisionSession(
-    sessionId: string
-  ): Promise<Result<ProvisionResult, TeardownSessionError>> {
+    sessionId: string,
+    trigger: SessionProvisionTrigger = 'initial'
+  ): Promise<Result<ProvisionResult, ProvisionSessionError>> {
+    try {
+      const result = await this._provision(sessionId);
+      reportProvisionRetry(sessionId, trigger, 'success');
+      return ok(result);
+    } catch (error) {
+      reportProvisionRetry(sessionId, trigger, 'failure');
+      return err(toProvisionError(error));
+    }
+  }
+
+  private async _provision(sessionId: string): Promise<ProvisionResult> {
     const session = await this._loadSession(sessionId);
     const location = locationManager.getLocation(session.agentLocationId);
     // Recoverable in one click, so say which agent and what to do rather than
     // handing the user the location's id, which appears nowhere they can act on.
-    if (!location) throw new Error(notOpenMessage(session.session.agentName));
+    if (!location) {
+      throw { type: 'location-not-open', message: notOpenMessage(session.session.agentName) };
+    }
 
     // Idempotency: session is already live — return current state.
     if (sessionRuntimeManager.getAgent(sessionId)) {
@@ -128,7 +234,7 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
       await this._makeAttachable(sessionId);
       this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);
       events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
-      return ok(provisionResult);
+      return provisionResult;
     }
 
     const built = await provisionSessionRuntime(session.session, location);
@@ -138,10 +244,10 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     const provisionResult: ProvisionResult = { path: built.path, locationId: built.locationId };
     this._hooks.callHookBackground('session:runtime-ready', sessionId, provisionResult);
     events.emit(sessionProvisionedChannel, { sessionId, ...provisionResult });
-    return ok(provisionResult);
+    return provisionResult;
   }
 
-  async launch(sessionId: string): Promise<Result<ProvisionResult, TeardownSessionError>> {
+  async launch(sessionId: string): Promise<Result<ProvisionResult, ProvisionSessionError>> {
     return this.provisionSession(sessionId);
   }
 
