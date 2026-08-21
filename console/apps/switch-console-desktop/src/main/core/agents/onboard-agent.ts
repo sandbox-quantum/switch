@@ -177,6 +177,6 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   });
 
   await locationManager.openLocation(location);
-  agentEvents._emit('agent:created', agent);
+  agentEvents._emit('agent:created', agent, 'onboarding');
   return ok(agent);
 }

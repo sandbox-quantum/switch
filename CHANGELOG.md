@@ -724,6 +724,12 @@ version of their own to them without also giving them a release of their own.
 - Events go to a relay we run, which forwards them on. The analytics services
   therefore never see your network address, and the app itself ships no
   credential — there is nothing in it to leak.
+- Creating an agent, starting a session and adding a server now report whether
+  they worked, and an enumerated reason when they did not. Previously only the
+  ones that succeeded were counted, so nothing showed where people got stuck.
+  A session start also records which button it came from, whether a room and an
+  opening prompt were chosen, and whether the app started the session or found
+  it already running on a remote host — never the room, the prompt or the host.
 
 #### Fixed
 - The OpenCode connector the app writes carries its own copy of the

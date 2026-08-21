@@ -32,6 +32,12 @@ vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: vi.fn() }));
 vi.mock('@main/core/locations/store', () => ({ getLocationById: vi.fn() }));
 vi.mock('@main/core/sessions/operations/getSession', () => ({ getSession: vi.fn() }));
 vi.mock('./telemetry-service', () => ({ trackEvent: vi.fn() }));
+// Reached only for the yes/no of whether a room was declared. Importing the
+// real one pulls the database in at module load, which this project has no
+// Electron app to resolve a path from.
+vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
+  switchNotificationPoller: { hasIntendedRoom: vi.fn(() => false) },
+}));
 
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getLocationById } from '@main/core/locations/store';
@@ -57,8 +63,23 @@ function onLocation(kind: 'local' | 'remote' | 'missing') {
 
 function startSession(id: string, providerId = 'claude') {
   vi.mocked(getAgentById).mockResolvedValue({ id: 'agent', locationId: 'loc' } as never);
-  return emit('sessionService', 'session:created', { id, agentId: 'agent', providerId });
+  return emit(
+    'sessionService',
+    'session:created',
+    { id, agentId: 'agent', providerId },
+    { id, agentId: 'agent', title: 'Session', entryPoint: 'sidebar' }
+  );
 }
+
+/** What every session start reports beyond the two dimensions under test. */
+const SESSION_START_CONTEXT = {
+  outcome: 'success',
+  failure_reason: 'none',
+  entry_point: 'sidebar',
+  start_source: 'user',
+  has_initial_prompt: false,
+  connected_to_room: false,
+} as const;
 
 registerTelemetryListeners();
 
@@ -70,22 +91,28 @@ describe('agent_created', () => {
   it('reports where the agent runs', async () => {
     onLocation('remote');
 
-    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'loc' });
+    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'loc' }, 'sidebar');
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
       location: 'remote',
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: 'sidebar',
     });
   });
 
   it('says unknown rather than guessing when the location has gone', async () => {
     onLocation('missing');
 
-    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'gone' });
+    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'gone' }, 'sidebar');
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
       location: 'unknown',
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: 'sidebar',
     });
   });
 
@@ -94,14 +121,19 @@ describe('agent_created', () => {
     // value would otherwise become free text in a payload.
     onLocation('local');
 
-    await emit('agents', 'agent:created', {
-      providerId: '/Users/someone/custom-agent',
-      locationId: 'loc',
-    });
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: '/Users/someone/custom-agent', locationId: 'loc' },
+      'sidebar'
+    );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'unknown',
       location: 'local',
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: 'sidebar',
     });
   });
 });
@@ -113,6 +145,7 @@ describe('a session ending', () => {
     expect(trackEvent).toHaveBeenCalledWith('session_started', {
       agent_type: 'claude',
       location: 'local',
+      ...SESSION_START_CONTEXT,
     });
 
     await emit('sessionService', 'session:archived', 's-normal');

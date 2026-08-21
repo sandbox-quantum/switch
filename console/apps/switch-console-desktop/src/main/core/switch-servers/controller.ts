@@ -19,6 +19,7 @@ import {
   managedServerHostBlocked,
 } from '@main/core/managed-switch-server/managed-server-status';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -137,10 +138,19 @@ async function requireReachableServer(serverId: string): Promise<SwitchServer> {
 export const switchServersController = createRPCController({
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
+  // The success is reported by the store, at the insert that is the server
+  // actually being added. Only the failure is reported here, because this is
+  // where registering a URL stops being an action and becomes an exception —
+  // and without it the whole failure population is invisible.
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
-    const server = await addServer(params);
-    await resolveAgentServers();
-    return server;
+    try {
+      const server = await addServer(params);
+      await resolveAgentServers();
+      return server;
+    } catch (error) {
+      trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+      throw error;
+    }
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {

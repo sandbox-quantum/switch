@@ -1,14 +1,12 @@
 import { agentEvents } from '@main/core/agents/agent-events';
 import { getAgentById } from '@main/core/agents/getAgentById';
-import { getLocationById } from '@main/core/locations/store';
 import { getSession } from '@main/core/sessions/operations/getSession';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
-import {
-  isValidProviderId,
-  type AgentProviderId,
-} from '@shared/core/providers/agent-provider-registry';
+import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
+import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { TelemetryEventMap, TelemetryLocationKind } from './events';
+import { agentTypeOf, locationKindOf } from './shape';
 import { trackEvent } from './telemetry-service';
 
 type SessionShape = {
@@ -37,17 +35,6 @@ const liveSessions = new Map<string, SessionShape>();
  * same session counts as both a failure and a normal end.
  */
 const endedSessions = new Set<string>();
-
-/** A provider id straight from the database is typed, not validated. */
-function agentTypeOf(providerId: string): AgentProviderId | 'unknown' {
-  return isValidProviderId(providerId) ? providerId : 'unknown';
-}
-
-async function locationKindOf(locationId: string): Promise<TelemetryLocationKind> {
-  const location = await getLocationById(locationId);
-  if (!location) return 'unknown';
-  return location.sshHost ? 'remote' : 'local';
-}
 
 function rememberEnded(sessionId: string): void {
   endedSessions.add(sessionId);
@@ -109,14 +96,17 @@ async function rememberSession(sessionId: string, locationId: string): Promise<v
  * connector being installed — call `trackEvent` at their own site.
  */
 export function registerTelemetryListeners(): void {
-  agentEvents.on('agent:created', async (agent) => {
+  agentEvents.on('agent:created', async (agent, entryPoint) => {
     trackEvent('agent_created', {
       agent_type: agentTypeOf(agent.providerId),
       location: await locationKindOf(agent.locationId),
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: entryPoint,
     });
   });
 
-  sessionService.on('session:created', async (session) => {
+  sessionService.on('session:created', async (session, params) => {
     const agent = await getAgentById(session.agentId);
     const shape: SessionShape = {
       agent_type: agentTypeOf(session.providerId),
@@ -130,7 +120,19 @@ export function registerTelemetryListeners(): void {
     if (endedSessions.has(session.id)) return;
 
     liveSessions.set(session.id, shape);
-    trackEvent('session_started', shape);
+    trackEvent('session_started', {
+      ...shape,
+      outcome: 'success',
+      failure_reason: 'none',
+      entry_point: params.entryPoint ?? 'unknown',
+      start_source: params.startSource ?? 'user',
+      // The same test `createSession` itself applies, so the reported flag and
+      // the prompt the session actually launched with cannot disagree.
+      has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
+      // Declared by the create-session form before the session exists, so it is
+      // already recorded by the time this runs.
+      connected_to_room: switchNotificationPoller.hasIntendedRoom(session.id),
+    });
   });
 
   sessionService.on('session:runtime-ready', async (sessionId, result) => {

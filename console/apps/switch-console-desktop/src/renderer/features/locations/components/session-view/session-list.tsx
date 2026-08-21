@@ -152,7 +152,9 @@ export const SessionList = observer(function SessionList() {
           variant="ghost"
           size="icon-xs"
           aria-label="New session"
-          onClick={() => showCreateSessionModal({ locationId, agentName })}
+          onClick={() =>
+            showCreateSessionModal({ locationId, agentName, entryPoint: 'session_list' })
+          }
         >
           <Plus className="size-4" />
         </Button>

@@ -19,6 +19,7 @@ vi.mock('@main/core/app/service', () => ({ appService: { openExternal: vi.fn() }
 vi.mock('@main/core/fs/impl/ssh-fs', () => ({ SshFileSystem: vi.fn() }));
 vi.mock('@main/core/locations/location-transport', () => ({ sshConnectionIdForHost: vi.fn() }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
   managedServerHostBlocked,

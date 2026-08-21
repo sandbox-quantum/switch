@@ -2,6 +2,10 @@ import { ok, type Result } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
+import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
+import type { TelemetrySessionStartFailure } from '@main/core/telemetry/events';
+import { agentTypeOf, locationKindOf } from '@main/core/telemetry/shape';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { events } from '@main/lib/events';
@@ -46,6 +50,43 @@ export type SessionLifecycleHooks = {
   'session:runtime-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
 };
 
+/** The error's discriminant as a reportable code. Never its message. */
+const SESSION_START_FAILURE_REASON: Record<
+  CreateSessionError['type'],
+  TelemetrySessionStartFailure
+> = {
+  'agent-not-found': 'agent_not_found',
+  'already-exists': 'already_exists',
+  'spawn-failed': 'spawn_failed',
+};
+
+/**
+ * Report a session that did not start.
+ *
+ * At this call site rather than from a hook, because `session:created` fires
+ * only when one did — which is exactly the blind spot. The agent is read back
+ * to describe the attempt in the same terms as a success, so the two populations
+ * are comparable; when it cannot be found, which is itself one of the failures,
+ * the shape is honestly `unknown` rather than guessed.
+ */
+async function reportFailedSessionStart(
+  params: CreateSessionParams,
+  error: CreateSessionError
+): Promise<void> {
+  const agent = await getAgentById(params.agentId);
+
+  trackEvent('session_started', {
+    agent_type: agent ? agentTypeOf(agent.providerId) : 'unknown',
+    location: agent ? await locationKindOf(agent.locationId) : 'unknown',
+    outcome: 'failure',
+    failure_reason: SESSION_START_FAILURE_REASON[error.type],
+    entry_point: params.entryPoint ?? 'unknown',
+    start_source: params.startSource ?? 'user',
+    has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
+    connected_to_room: switchNotificationPoller.hasIntendedRoom(params.id),
+  });
+}
+
 /**
  * A session cannot start while its agent's location is closed. The condition is
  * a normal one — the user closed the agent — and is undone by reopening it, so
@@ -72,6 +113,8 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
     const result = await createSession(params);
     if (result.success) {
       this.notifySessionCreated(result.data.session, params);
+    } else {
+      await reportFailedSessionStart(params, result.error);
     }
     return result;
   }

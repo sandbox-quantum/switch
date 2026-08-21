@@ -1,6 +1,7 @@
 import z from 'zod';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
+import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
 export const MAX_SESSION_TITLE_LENGTH = 100;
@@ -85,6 +86,17 @@ export type CreateSessionParams = {
    * relay) but gets no PTY until someone views it.
    */
   attach?: boolean;
+  /**
+   * Which control the user started the session from, for reporting. Omitted by
+   * callers with no user behind them, which report as `unknown`.
+   */
+  entryPoint?: UiEntryPoint;
+  /**
+   * Whether this app started the session or is catching up with one already
+   * running on a remote host. Omitted means `user`; only the reconciler adopting
+   * a session it discovered passes `adopted`.
+   */
+  startSource?: SessionStartSource;
 };
 
 export type CreateSessionError =

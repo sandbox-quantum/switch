@@ -64,7 +64,7 @@ export function useOnboardingChecklist(): OnboardingChecklist {
           navigate('settings', { tab: 'clis-models' });
           return;
         case 'onboardAgents':
-          showAddAgentModal({});
+          showAddAgentModal({ entryPoint: 'onboarding' });
           return;
         case 'createRoom':
           showCreateRoomModal({});

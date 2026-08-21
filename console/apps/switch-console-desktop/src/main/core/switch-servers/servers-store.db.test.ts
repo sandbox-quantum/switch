@@ -129,6 +129,7 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
         server_kind: 'local',
+        outcome: 'success',
       });
     });
 
@@ -145,6 +146,7 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
         server_kind: 'remote_managed',
+        outcome: 'success',
       });
     });
 
@@ -178,6 +180,7 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
         server_kind: 'external',
+        outcome: 'success',
       });
     });
   });

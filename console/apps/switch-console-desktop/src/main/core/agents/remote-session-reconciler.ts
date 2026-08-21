@@ -508,6 +508,10 @@ class RemoteSessionReconciler {
       // opens the session — a first sync against a busy host would otherwise
       // spawn one PTY per adopted session in a single pass.
       attach: false,
+      // Nobody started this here: the agent was already running on the VM and
+      // this row is catching up with it, so it is reported apart from the
+      // sessions this app actually started.
+      startSource: 'adopted',
     });
     if (!result.success) {
       if (result.error.type === 'already-exists') {

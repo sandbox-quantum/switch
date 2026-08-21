@@ -65,7 +65,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-[14px]">
         <button
           type="button"
-          onClick={() => showAddAgentModal({})}
+          onClick={() => showAddAgentModal({ entryPoint: 'server_page' })}
           className="flex min-h-[184px] cursor-pointer items-center justify-center rounded-[11px] border border-dashed border-border text-foreground-muted transition-colors hover:border-border-1 hover:bg-[var(--sel-soft)] hover:text-foreground"
           aria-label="Add agent"
         >

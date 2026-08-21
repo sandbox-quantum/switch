@@ -160,6 +160,7 @@ export async function ensureManagedServer(
   // already exists, and that is not a server being added.
   trackEvent('server_added', {
     server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
+    outcome: 'success',
   });
   return mapRow(row);
 }
@@ -184,7 +185,7 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
-  trackEvent('server_added', { server_kind: 'external' });
+  trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
   return mapRow(row);
 }
 

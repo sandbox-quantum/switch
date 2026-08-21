@@ -5,11 +5,14 @@ import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
 import { syncAgentConfig } from './agent-config-sync';
@@ -55,6 +58,8 @@ export type AddAgentParams = {
    * effort / instructions). Distinct from `definitionAttributes`, which is the
    * repo-agent definition surface Codex does not use. */
   providerConfig?: AgentProviderConfig | null;
+  /** Which control the user opened the add-agent form from, for reporting. */
+  entryPoint: UiEntryPoint;
 };
 
 export type AddAgentResult =
@@ -64,6 +69,39 @@ export type AddAgentResult =
   | { kind: 'credentials-conflict'; endpoint: string }
   | { kind: 'invalid-name'; message: string }
   | { kind: 'error'; message: string };
+
+/** The result's discriminant as a reportable code. Never its message. */
+const ADD_AGENT_FAILURE_REASON: Record<
+  Exclude<AddAgentResult['kind'], 'created'>,
+  TelemetryAgentCreateFailure
+> = {
+  unauthenticated: 'unauthenticated',
+  'name-conflict': 'name_conflict',
+  'credentials-conflict': 'credentials_conflict',
+  'invalid-name': 'invalid_name',
+  error: 'error',
+};
+
+/**
+ * Report a creation that did not happen, and hand the result back unchanged.
+ *
+ * Wrapped around every failing return rather than reported from the
+ * `agent:created` hook, which by definition only fires when one succeeded. The
+ * location is read from the parameters, not the database: no row exists to look
+ * it up from, and the parameters are what the user asked for.
+ */
+function reportFailedCreate(params: AddAgentParams, result: AddAgentResult): AddAgentResult {
+  if (result.kind === 'created') return result;
+
+  trackEvent('agent_created', {
+    agent_type: params.providerId,
+    location: params.sshHost === null ? 'local' : 'remote',
+    outcome: 'failure',
+    failure_reason: ADD_AGENT_FAILURE_REASON[result.kind],
+    entry_point: params.entryPoint,
+  });
+  return result;
+}
 
 /**
  * Add a new agent to a location: mint its Switch identity on the gateway, write
@@ -80,18 +118,26 @@ export type AddAgentResult =
  */
 export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> {
   if (params.sshHost === null && !checkIsValidDirectory(params.dir)) {
-    return { kind: 'error', message: `Invalid directory: ${params.dir}` };
+    return reportFailedCreate(params, {
+      kind: 'error',
+      message: `Invalid directory: ${params.dir}`,
+    });
   }
 
   const server = await getServer(params.serverId);
-  if (!server) return { kind: 'error', message: `No Switch server with id ${params.serverId}` };
+  if (!server) {
+    return reportFailedCreate(params, {
+      kind: 'error',
+      message: `No Switch server with id ${params.serverId}`,
+    });
+  }
 
   // Before minting an identity: the gateway's uniqueness check is scoped to the
   // Switch server, so it cannot see a name already taken in this directory. Two
   // same-named agents here would share one `.switch/agents/<name>.json`.
   const existingLocation = await getLocationByHostDir(params.sshHost, params.dir);
   if (existingLocation && (await agentNameTaken(existingLocation.id, params.name, null))) {
-    return { kind: 'name-conflict' };
+    return reportFailedCreate(params, { kind: 'name-conflict' });
   }
 
   // And the check above only sees agents THIS install manages. A second Switch
@@ -106,7 +152,12 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
     params.name,
     server.apiUrl
   );
-  if (foreignEndpoint !== null) return { kind: 'credentials-conflict', endpoint: foreignEndpoint };
+  if (foreignEndpoint !== null) {
+    return reportFailedCreate(params, {
+      kind: 'credentials-conflict',
+      endpoint: foreignEndpoint,
+    });
+  }
 
   const registered = await registerAgentIdentity(server, {
     name: params.name,
@@ -116,7 +167,7 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
     agentType: knownAgentTypeForProvider(params.providerId),
     iconUrl: params.iconUrl ?? agentAvatarUrlForName(params.name),
   });
-  if (registered.kind !== 'created') return registered;
+  if (registered.kind !== 'created') return reportFailedCreate(params, registered);
 
   const behavior = getPlugin(params.providerId).behavior.repoAgents;
   const workspace = await resolveWorkspaceFsFor(params.sshHost, params.dir);
@@ -177,6 +228,6 @@ export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> 
   });
 
   await locationManager.openLocation(location);
-  agentEvents._emit('agent:created', agent);
+  agentEvents._emit('agent:created', agent, params.entryPoint);
   return { kind: 'created', agent };
 }
