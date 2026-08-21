@@ -138,20 +138,15 @@ _BU_PROJECTS = ("AQMQA", "ALGE", "CAQG", "CHOO", "INFOSEC", "QNV", "SAIGE")
 def _dedup_projects(
     client: jira_client.JiraClient, create_project: str
 ) -> tuple[str, ...]:
-    """Projects to scan when de-duplicating before create: the BU-split project
-    (VULNMGMT), the legacy full-scope VULN project, and the BU projects that our own
-    tickets end up in.
+    """Projects to scan when de-duplicating before create.
 
-    `_route_aisim` sets the Business Unit field on every ticket this tool creates, and
-    the Jira automation reacts by MOVING the issue into the owning BU project, changing
-    its key. Scanning VULNMGMT alone therefore cannot see the ticket the previous run
-    created, so the run files a duplicate.
+    A ticket does not always stay in the project it was created in, so this list also
+    holds the projects a created ticket can end up in. Probing visibility first avoids
+    a JQL error from a `project in (...)` clause that names a project the account
+    cannot browse, which would return nothing and let a duplicate through.
 
-    Probing visibility first avoids a JQL error from a `project in (...)` clause naming
-    a project the account can't browse (which would drop dedup to empty and dup
-    tickets); CI tokens routinely lack browse rights on some BU projects. Override the
-    legacy project via JIRA_LEGACY_PROJECT and the BU list via JIRA_BU_PROJECTS
-    (comma-separated); "" disables either."""
+    Override the legacy project via JIRA_LEGACY_PROJECT and the rest via
+    JIRA_BU_PROJECTS (comma-separated). "" disables either."""
     projects = [create_project]
     legacy = os.environ.get("JIRA_LEGACY_PROJECT")
     legacy = "VULN" if legacy is None else legacy
@@ -362,18 +357,18 @@ _REPORT_SEARCH_MAX = 100
 def _report_jql(engine: str, repo: str) -> str:
     """Every open standing ticket for one (engine, repo), oldest first.
 
-    Deliberately not scoped by project. `_route_aisim` moves each ticket we create into
-    the owning BU project and its key changes, so a `project in (...)` clause never
-    matches the ticket the previous run created. The three labels are written only by
-    this tool's create path, so they identify our tickets exactly and stay correct when
-    a new BU project appears.
+    Deliberately not scoped by project. A created ticket can move to another project
+    and take a new key, so a `project in (...)` clause does not reliably match the
+    ticket the previous run created. The labels are written only by this tool's create
+    path, so they identify its own tickets exactly and need no update when a new
+    project appears.
 
     The per-directory dimension is applied by the caller as an exact summary match,
     not here: directory keys like "." do not survive a JQL `text ~`, and nested keys
     (`a/b` under `a`) match each other's tickets when they do.
 
-    Oldest first because `report` refreshes the first hit. That preserves the age of
-    the finding, which the ISMS breached-open metric is computed from."""
+    Oldest first because `report` refreshes the first hit. That keeps the reported age
+    of a finding stable across runs."""
 
     def q(t: str) -> str:
         return '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"'
