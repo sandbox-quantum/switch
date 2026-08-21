@@ -132,20 +132,45 @@ def _tracking_section(
     return f"\n\n## Vulnerability tracking (VULNMGMT)\n\n{lines}\n{marker}\n"
 
 
+_BU_PROJECTS = ("AQMQA", "ALGE", "CAQG", "CHOO", "INFOSEC", "QNV", "SAIGE")
+
+
 def _dedup_projects(
     client: jira_client.JiraClient, create_project: str
 ) -> tuple[str, ...]:
     """Projects to scan when de-duplicating before create: the BU-split project
-    (VULNMGMT) plus the legacy full-scope VULN project when visible. Probing
-    visibility first avoids a JQL error from an `project in (...)` clause naming a
-    project the account can't browse (which would drop dedup to empty and dup tickets).
-    Override the legacy project via JIRA_LEGACY_PROJECT ("" disables it)."""
+    (VULNMGMT), the legacy full-scope VULN project, and the BU projects that our own
+    tickets end up in.
+
+    `_route_aisim` sets the Business Unit field on every ticket this tool creates, and
+    the Jira automation reacts by MOVING the issue into the owning BU project, changing
+    its key. Scanning VULNMGMT alone therefore cannot see the ticket the previous run
+    created, so the run files a duplicate.
+
+    Probing visibility first avoids a JQL error from a `project in (...)` clause naming
+    a project the account can't browse (which would drop dedup to empty and dup
+    tickets); CI tokens routinely lack browse rights on some BU projects. Override the
+    legacy project via JIRA_LEGACY_PROJECT and the BU list via JIRA_BU_PROJECTS
+    (comma-separated); "" disables either."""
     projects = [create_project]
     legacy = os.environ.get("JIRA_LEGACY_PROJECT")
     legacy = "VULN" if legacy is None else legacy
-    if legacy and legacy != create_project and client.project_exists(legacy):
+    if legacy:
         projects.append(legacy)
-    return tuple(projects)
+    env_bu = os.environ.get("JIRA_BU_PROJECTS")
+    bu = (
+        _BU_PROJECTS
+        if env_bu is None
+        else tuple(n.strip() for n in env_bu.split(",") if n.strip())
+    )
+    projects.extend(bu)
+    seen = {create_project}
+    out = [create_project]
+    for p in projects[1:]:
+        if p not in seen and client.project_exists(p):
+            seen.add(p)
+            out.append(p)
+    return tuple(out)
 
 
 def _route_aisim(
@@ -331,24 +356,34 @@ def reconcile(args) -> int:
     return 0
 
 
-def _report_jql(
-    projects: tuple[str, ...], engine_label: str, repo: str, path: str
-) -> str:
-    """Open standing tickets for one (engine, repo, path), scoped by our own labels so
-    close/refresh never touches unrelated issues. Scans VULNMGMT + legacy VULN."""
+_REPORT_SEARCH_MAX = 100
+
+
+def _report_jql(engine: str, repo: str) -> str:
+    """Every open standing ticket for one (engine, repo), oldest first.
+
+    Deliberately not scoped by project. `_route_aisim` moves each ticket we create into
+    the owning BU project and its key changes, so a `project in (...)` clause never
+    matches the ticket the previous run created. The three labels are written only by
+    this tool's create path, so they identify our tickets exactly and stay correct when
+    a new BU project appears.
+
+    The per-directory dimension is applied by the caller as an exact summary match,
+    not here: directory keys like "." do not survive a JQL `text ~`, and nested keys
+    (`a/b` under `a`) match each other's tickets when they do.
+
+    Oldest first because `report` refreshes the first hit. That preserves the age of
+    the finding, which the ISMS breached-open metric is computed from."""
 
     def q(t: str) -> str:
         return '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
-    jql = (
-        f"project in ({', '.join(projects)}) AND statusCategory != Done "
-        f"AND labels = {q(_REPORT_BASE_LABEL)} AND text ~ {q(engine_label)}"
-    )
+    jql = f"statusCategory != Done AND labels = {q(_REPORT_BASE_LABEL)}"
     if repo:
-        jql += f" AND text ~ {q(repo)}"
-    if path:
-        jql += f" AND text ~ {q(path)}"
-    return jql + " ORDER BY updated DESC"
+        jql += f" AND labels = {q(repo)}"
+    if engine:
+        jql += f" AND labels = {q(engine)}"
+    return jql + " ORDER BY created ASC"
 
 
 def report(args) -> int:
@@ -385,14 +420,14 @@ def report(args) -> int:
     aisim_label = os.environ.get("JIRA_AISIM_LABEL") or "aisim"
 
     created = refreshed = closed = 0
+    standing = client.search(
+        _report_jql(engine, repo_name), max_results=_REPORT_SEARCH_MAX
+    )
     for g in groups:
         directory = g.get("key", "")
         count = int(g.get("findings_count", 0))
-        existing = client.search(
-            _report_jql(
-                _dedup_projects(client, project), engine_label, repo_name, directory
-            )
-        )
+        summary = f"[{repo_name}] {g.get('title', 'security findings')}"
+        existing = [i for i in standing if i.summary == summary[:250]]
         if count > 0:
             if existing:
                 key = existing[0].key
@@ -409,7 +444,6 @@ def report(args) -> int:
                 refreshed += 1
                 print(f"  jira {key}: refreshed ({directory})")
                 continue
-            summary = f"[{repo_name}] {g.get('title', 'security findings')}"
             desc = (
                 f"Automated by renovate-security ({engine_label} scan).\n\n"
                 f"{_strip_md(g.get('body', ''))}\n\nRepo: {repo_name}\nPath: "
