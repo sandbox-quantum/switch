@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.collaboration.teams.auth import TeamsTokenProvider
 
 logger = logging.getLogger(__name__)
@@ -12,8 +13,31 @@ logger = logging.getLogger(__name__)
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
-class GraphError(RuntimeError):
+class GraphError(BridgeOperationError):
     """A Microsoft Graph REST call returned a non-success status."""
+
+
+def _graph_error(operation: str, resp: httpx.Response) -> GraphError:
+    """A ``GraphError`` for a failed call, leading with Graph's own explanation.
+
+    Graph answers a refusal with ``{"error": {"code", "message"}}``, and that
+    message is the only part anyone can act on — it names the permission that
+    was not consented, the host it could not resolve, the value it would not
+    take. Passing the raw body on instead buries it in JSON, and the raw body is
+    what reaches the operator once this becomes an API response.
+
+    A body that is not that shape is passed through verbatim: better an
+    unfriendly error that is true than a tidy one that guesses.
+    """
+    detail = resp.text
+    try:
+        error = resp.json()["error"]
+        message = str(error["message"])
+        code = str(error.get("code") or "").strip()
+        detail = f"{code}: {message}" if code else message
+    except (ValueError, KeyError, TypeError):
+        pass
+    return GraphError(f"{operation} failed ({resp.status_code}): {detail}")
 
 
 class GraphClient:
@@ -61,10 +85,7 @@ class GraphClient:
             f"{GRAPH_BASE}/subscriptions", json=body, headers=await self._headers()
         )
         if resp.status_code >= 300:
-            raise GraphError(
-                f"create subscription for {resource} failed "
-                f"({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error(f"create subscription for {resource}", resp)
         result: dict[str, Any] = resp.json()
         return result
 
@@ -77,10 +98,7 @@ class GraphClient:
             headers=await self._headers(),
         )
         if resp.status_code >= 300:
-            raise GraphError(
-                f"renew subscription {subscription_id} failed "
-                f"({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error(f"renew subscription {subscription_id}", resp)
 
     async def delete_subscription(self, *, subscription_id: str) -> None:
         resp = await self._http.delete(
@@ -88,19 +106,14 @@ class GraphClient:
             headers=await self._headers(),
         )
         if resp.status_code >= 300 and resp.status_code != 404:
-            raise GraphError(
-                f"delete subscription {subscription_id} failed "
-                f"({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error(f"delete subscription {subscription_id}", resp)
 
     async def list_subscriptions(self) -> list[dict[str, Any]]:
         resp = await self._http.get(
             f"{GRAPH_BASE}/subscriptions", headers=await self._headers()
         )
         if resp.status_code >= 300:
-            raise GraphError(
-                f"list subscriptions failed ({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error("list subscriptions", resp)
         value: list[dict[str, Any]] = resp.json().get("value", [])
         return value
 
@@ -127,9 +140,8 @@ class GraphClient:
             headers=await self._headers(),
         )
         if resp.status_code >= 300:
-            raise GraphError(
-                f"create channel '{display_name}' in team {team_id} failed "
-                f"({resp.status_code}): {resp.text}"
+            raise _graph_error(
+                f"create channel '{display_name}' in team {team_id}", resp
             )
         result: dict[str, Any] = resp.json()
         return result
@@ -140,9 +152,7 @@ class GraphClient:
             headers=await self._headers(),
         )
         if resp.status_code >= 300:
-            raise GraphError(
-                f"get channel {channel_id} failed ({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error(f"get channel {channel_id}", resp)
         result: dict[str, Any] = resp.json()
         return result
 
@@ -165,9 +175,7 @@ class GraphClient:
             headers=headers,
         )
         if resp.status_code >= 300:
-            raise GraphError(
-                f"user search for {query!r} failed ({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error(f"user search for {query!r}", resp)
         payload: dict[str, Any] = resp.json()
         users: list[dict[str, Any]] = payload.get("value", []) or []
         return users
@@ -187,9 +195,8 @@ class GraphClient:
             headers=await self._headers(),
         )
         if resp.status_code >= 300 and resp.status_code != 409:
-            raise GraphError(
-                f"add member {user_aad_id} to channel {channel_id} failed "
-                f"({resp.status_code}): {resp.text}"
+            raise _graph_error(
+                f"add member {user_aad_id} to channel {channel_id}", resp
             )
 
     async def add_team_member(self, *, team_id: str, user_aad_id: str) -> None:
@@ -205,7 +212,4 @@ class GraphClient:
             headers=await self._headers(),
         )
         if resp.status_code >= 300 and resp.status_code != 409:
-            raise GraphError(
-                f"add member {user_aad_id} to team {team_id} failed "
-                f"({resp.status_code}): {resp.text}"
-            )
+            raise _graph_error(f"add member {user_aad_id} to team {team_id}", resp)

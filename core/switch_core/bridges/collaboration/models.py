@@ -161,3 +161,23 @@ class BridgeCredentialError(Exception):
     surfaced verbatim rather than being reduced to "invalid configuration" —
     the platform's own explanation is almost always the actionable part.
     """
+
+
+class BridgeOperationError(RuntimeError):
+    """A platform refused an operation the bridge asked it to perform.
+
+    The counterpart to :class:`BridgeCredentialError` for everything after the
+    credentials are accepted: a permission not granted, a name not allowed, a
+    resource that is gone. A token proves only that the platform will talk to
+    us, so these arrive long after registration reported success, and the
+    platform's wording is again the actionable part — it names the permission
+    to consent to, or the value to change.
+
+    Distinct from :class:`ChannelCreationUnsupported`, which is Switch
+    declining before it calls out at all. This one has been out to the platform
+    and come back with an answer, which is why it is carried to the caller
+    rather than logged behind an opaque 500.
+
+    A ``RuntimeError`` so that callers already distinguishing "the request was
+    wrong" (``ValueError``) from "the attempt failed" keep working unchanged.
+    """

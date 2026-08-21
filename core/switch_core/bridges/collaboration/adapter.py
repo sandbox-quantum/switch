@@ -547,7 +547,18 @@ class CollaborationAdapter(ABC):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str: ...
+    ) -> str:
+        """Provision a channel on the platform and return its external id.
+
+        When the platform *refuses* — a permission not consented, a name it
+        will not take — raise :class:`BridgeOperationError` carrying what the
+        platform said. Room creation turns that into a 502 quoting it, so the
+        operator who asked for the room learns why it failed; anything else
+        becomes an opaque 500 and the explanation stays in the log. Raise
+        :class:`ChannelCreationUnsupported` instead when declining without
+        asking the platform at all.
+        """
+        ...
 
     async def create_dm_channel(
         self,

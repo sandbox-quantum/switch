@@ -8,7 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Action, Principal, can, require
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.bridges.collaboration.models import ChannelType
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    ChannelType,
+)
 from switch_core.db.models import Room, RoomGroup, User
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -347,6 +350,12 @@ async def create_room(
         result = await room_service.create_room(config)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except BridgeOperationError as e:
+        # The platform refused to provision the channel and said why. Its
+        # wording names the permission to grant or the value to change, and
+        # the operator who clicked the button is the only one who can act on
+        # it — so it goes back to them rather than into the log alone.
+        raise HTTPException(status_code=502, detail=str(e)) from e
     fresh = await room_store.get(session, result.room.id)
     if fresh is None:
         raise HTTPException(status_code=500, detail="Room missing after create")
@@ -375,6 +384,8 @@ async def create_room_from_yaml(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
+    except BridgeOperationError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.get("/{room_id}/yaml")
