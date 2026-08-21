@@ -55,6 +55,25 @@ logger = logging.getLogger(__name__)
 _MENTION_TAG = re.compile(r"<at\b[^>]*>(.*?)</at>", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+# An `@name` we might be able to turn into a real Teams mention. Same shape as
+# the other adapters use, so what counts as a name does not vary by platform.
+_MENTION_NAME = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
+_AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
+# A newline with no newline either side of it.
+_LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
+
+
+def _hard_wrap(text: str) -> str:
+    """Make single line breaks survive into Teams.
+
+    An Adaptive Card TextBlock follows Markdown's rule that one newline is
+    whitespace, so a heading and the line under it arrive as one run-on
+    sentence. Doubling a lone newline gives the break back. Existing blank
+    lines are left alone — doubling those too would stretch every paragraph
+    gap — and list items keep their own lines, which is why this is done here
+    rather than by splitting the body into separate blocks.
+    """
+    return _LONE_NEWLINE.sub("\n\n", text)
 
 
 def _render_mentions(text: str) -> str:
@@ -319,6 +338,8 @@ class TeamsAdapter(CollaborationAdapter):
         self._persist_service_url: Callable[[str], Awaitable[None]] | None = None
         # channel/chat id -> ChannelType, learned from inbound activities.
         self._channel_type: dict[str, ChannelType] = {}
+        # casefolded username -> AAD object id, for rendering real @mentions.
+        self._mention_targets: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
@@ -550,13 +571,16 @@ class TeamsAdapter(CollaborationAdapter):
 
     async def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
         icon_url = await self.agent_icon_url(sender_name)
+        mentions = self._mention_entities(body)
         return {
             "type": "message",
             # Notification/preview text; without it Teams renders a
             # "cards.unsupported" placeholder in toasts, mobile, and link previews.
             "summary": f"{sender_name}: {body}",
             "attachments": [
-                card_attachment(agent_message_card(sender_name, body, icon_url))
+                card_attachment(
+                    agent_message_card(sender_name, body, icon_url, mentions=mentions)
+                )
             ],
         }
 
@@ -573,9 +597,10 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Cannot send message: Teams adapter not started")
 
         service_url = self._service_url_for(channel_id)
-        activity = await self._message_activity(
-            sender_name, self.translate_outbound(content)
-        )
+        # `content` arrives rendered: every caller of `send_message` runs
+        # `translate_outbound` first, and rendering again here put the body
+        # through the conversion twice.
+        activity = await self._message_activity(sender_name, content)
 
         if self._is_channel(channel_id) and thread_root_id is None:
             conversation_id, msg_id = await self._connector.create_channel_thread(
@@ -613,7 +638,13 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError("Cannot post admin message: Teams adapter not started")
 
         service_url = self._service_url_for(channel_id)
-        activity = {"type": "message", "text": self.translate_outbound(content)}
+        body = self.translate_outbound(content)
+        activity: dict[str, Any] = {"type": "message", "text": body}
+        mentions = self._mention_entities(body)
+        if mentions:
+            # A plain-text activity carries its mention entities directly; only
+            # a card puts them under `msteams`.
+            activity["entities"] = mentions
 
         if self._is_channel(channel_id) and thread_root_id is None:
             conversation_id, msg_id = await self._connector.create_channel_thread(
@@ -661,7 +692,7 @@ class TeamsAdapter(CollaborationAdapter):
             service_url=service_url,
             conversation_id=conversation_id,
             activity_id=message_ref,
-            activity={"type": "message", "text": self.translate_outbound(new_content)},
+            activity={"type": "message", "text": new_content},
         )
 
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
@@ -949,8 +980,67 @@ class TeamsAdapter(CollaborationAdapter):
 
     # ── Translation ──────────────────────────────────────────────────────────
 
+    def prime_mention_targets(self, targets: dict[str, str]) -> None:
+        """Learn ``username -> AAD object id`` so an ``@name`` can become a real
+        Teams mention. Without it every ``@name`` goes out as inert text and the
+        person it names is never notified."""
+        self._mention_targets.update(
+            {name.casefold(): external_id for name, external_id in targets.items()}
+        )
+
     def translate_outbound(self, content: str) -> str:
-        return content
+        return _hard_wrap(self._mark_mentions(content))
+
+    def _mark_mentions(self, content: str) -> str:
+        """Wrap ``@name`` in Teams' ``<at>`` markup for people we can address.
+
+        Only names we hold an AAD id for: the markup is half of a mention and
+        the entity built from it in ``_mention_entities`` is the other, so
+        marking a name we cannot pair would render a mention that highlights
+        nobody. Agent names are deliberately among those left alone — an agent
+        is not a Teams user, and ``@agent`` is Switch's own addressing, which
+        wants the plain text.
+        """
+
+        def _replace(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name.casefold() not in self._mention_targets:
+                return match.group(0)
+            return f"<at>{html.escape(name)}</at>"
+
+        return _MENTION_NAME.sub(_replace, content)
+
+    def _mention_entities(self, text: str) -> list[dict[str, Any]]:
+        """Bot Framework mention entities for the ``<at>`` markup in ``text``.
+
+        Teams needs both halves and rejects neither: markup with no entity is
+        plain text, an entity with no markup does nothing. Built from the
+        rendered body so the two cannot drift.
+        """
+        entities: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for escaped_name in _AT_TAG.findall(text):
+            if escaped_name in seen:
+                continue
+            name = html.unescape(escaped_name)
+            external_id = self._mention_targets.get(name.casefold())
+            if external_id is None:
+                continue
+            seen.add(escaped_name)
+            entities.append(
+                {
+                    "type": "mention",
+                    "text": f"<at>{escaped_name}</at>",
+                    "mentioned": {"id": external_id, "name": name},
+                }
+            )
+        return entities
+
+    def render_app_mention(self, token: str) -> str:
+        # Teams' handle for the app is an id, not a name, and it has no inline
+        # syntax that turns one into a mention — so name nobody and read
+        # naturally instead of printing `<@28:…>` at someone.
+        return "me"
 
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message

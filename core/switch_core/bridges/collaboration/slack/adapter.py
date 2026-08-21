@@ -156,7 +156,7 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=self.translate_outbound(content),
+                text=content,
                 username=sender_name,
                 icon_url=await self.agent_icon_url(sender_name),
                 thread_ts=thread_ts,

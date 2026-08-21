@@ -245,6 +245,19 @@ class CollaborationAdapter(ABC):
     def _bridge_display_name(self) -> str:
         return "Switch"
 
+    def render_app_mention(self, token: str) -> str:
+        """Render a mention of the Switch app itself, given the platform's own
+        handle for it.
+
+        Mention syntax is per-platform and the caller is not: this is used by a
+        notice in shared bridge code, which for a long time emitted Slack's
+        ``<@id>`` form everywhere. Slack renders that as the app's name; Teams
+        prints it verbatim, so a user was told they had tagged
+        ``<@28:f52a8fbb-…>``. Override wherever that form is not what the
+        platform reads.
+        """
+        return f"<@{token}>"
+
     def slash_invite_hint(self) -> str | None:
         """How to run `invite-agent` as a native slash command here, if at all.
 

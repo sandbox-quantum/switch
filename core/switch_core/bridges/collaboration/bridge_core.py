@@ -297,7 +297,7 @@ class BridgeCore:
                 if agent is not None:
                     agents.append((agent.name, agent.description))
 
-        app_mention = f"<@{token}>"
+        app_mention = self._adapter.render_app_mention(token)
         if agents:
             agent_list = "\n".join(
                 f"• @{name} — {description}" for name, description in agents

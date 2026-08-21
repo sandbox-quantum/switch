@@ -52,6 +52,12 @@ def _fake_bridge(*, alias_agent: str | None, agents: dict[str, SimpleNamespace])
             return agents.get(aid)
 
     class _Adapter:
+        def render_app_mention(self, token: str) -> str:
+            # Slack's form, which is what the base class renders and what these
+            # assertions are written against. A platform that reads it
+            # differently overrides it — that is the point of the hook.
+            return f"<@{token}>"
+
         async def admin_message(
             self,
             channel_id: str,
