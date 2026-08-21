@@ -119,6 +119,15 @@ version of their own to them without also giving them a release of their own.
   surfaces only as an opaque `AADSTS7000215` at the first Graph call.
 
 #### Fixed
+- Following an "Open in Switch Console" link no longer strands the browser tab.
+  The gateway answered the click with a bare `302` to the `switchdash://`
+  deeplink; the browser hands that to the desktop app without loading a page,
+  so the tab kept whatever it last rendered — on Teams, Defender's Safe Links
+  interstitial, still saying "Verifying link . . ." after Switch Console had
+  opened, which reads as a link that hung. It now serves a page that opens the
+  app, tries to close itself, and — since browsers only let a script close a
+  window a script opened — otherwise says the handover worked and the tab can
+  be closed.
 - A Graph permission granted while the bridge is running takes effect on the
   next call instead of within the hour. An app's roles are stamped into its
   access token when it is issued, so consent granted afterwards is invisible

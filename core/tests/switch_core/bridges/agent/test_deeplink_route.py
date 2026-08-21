@@ -27,26 +27,67 @@ def _client_with_auth() -> TestClient:
     return TestClient(app, follow_redirects=False)
 
 
-class TestDeeplinkRedirect:
-    def test_302_redirects_to_switchdash_deeplink(self) -> None:
+class TestDeeplinkHandoff:
+    """The click lands here and has to reach the desktop app.
+
+    It used to be a bare 302. A browser handing off to a desktop app leaves the
+    tab on whatever it last rendered, and a 302 renders nothing — so on Teams
+    the tab sat on Defender's "Verifying link . . ." interstitial long after
+    Switch Console had opened, reading as a link that hung.
+    """
+
+    def test_the_page_points_at_the_switchdash_deeplink(self) -> None:
         resp = _client().get(
             "/deeplink/session",
             params={"server": "https://s", "agent": "a", "room": "r", "session": "x"},
         )
-        assert resp.status_code == 302
-        location = resp.headers["location"]
-        assert location.startswith("switchdash://session?")
-        assert "room=r" in location
-        assert "agent=a" in location
 
-    def test_no_query_redirects_to_bare_deeplink(self) -> None:
+        assert resp.status_code == 200
+        assert "switchdash://session?" in resp.text
+        assert "room=r" in resp.text
+        assert "agent=a" in resp.text
+
+    def test_no_query_still_reaches_the_bare_deeplink(self) -> None:
         resp = _client().get("/deeplink/session")
-        assert resp.status_code == 302
-        assert resp.headers["location"] == "switchdash://session"
+
+        assert resp.status_code == 200
+        assert 'href="switchdash://session"' in resp.text
+
+    def test_it_tries_to_close_the_tab_and_says_so_when_it_cannot(self) -> None:
+        # Browsers only let a script close a window a script opened, and this
+        # one was opened by a click in Teams — so the close usually fails and
+        # the page has to end on a true statement rather than a spinner.
+        resp = _client().get("/deeplink/session", params={"room": "r"})
+
+        assert "window.close()" in resp.text
+        assert "You can close this tab" in resp.text
+
+    def test_a_manual_link_survives_without_javascript(self) -> None:
+        resp = _client().get("/deeplink/session", params={"room": "r"})
+
+        assert 'id="target" href="switchdash://session?room=r"' in resp.text
+
+
+class TestDeeplinkQueryIsEscaped:
+    """The endpoint is public and its query comes from whoever clicked it, so
+    the target now lands in HTML rather than a Location header."""
+
+    def test_a_quote_in_the_query_cannot_break_out_of_the_attribute(self) -> None:
+        resp = _client().get('/deeplink/session?room="><script>alert(1)</script>')
+
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text or "%3Cscript%3E" in resp.text
+
+    def test_the_scheme_cannot_be_changed_by_the_caller(self) -> None:
+        resp = _client().get("/deeplink/session?room=javascript:alert(1)")
+
+        # The anchor is anchored: scheme and host are constants prepended here.
+        assert 'href="switchdash://session?' in resp.text
+        assert 'href="javascript:' not in resp.text
 
 
 class TestDeeplinkIsPublic:
-    """The redirect must bypass the agent-bridge Bearer auth — it is clicked
+    """The handoff must bypass the agent-bridge Bearer auth — it is clicked
     from an external channel with no token (the 401 CHOO-1588 originally hit)."""
 
     def test_deeplink_session_path_is_public(self) -> None:
@@ -58,11 +99,12 @@ class TestDeeplinkIsPublic:
     def test_unrelated_path_is_not_public(self) -> None:
         assert _is_public_path("/agents/x") is False
 
-    def test_redirect_works_through_bearer_middleware_without_token(self) -> None:
+    def test_handoff_works_through_bearer_middleware_without_token(self) -> None:
         # The exact CHOO-1588 regression: a no-token click returned 401
         # "Missing or invalid Authorization header" before /deeplink was public.
         resp = _client_with_auth().get(
             "/deeplink/session", params={"server": "https://s", "room": "r"}
         )
-        assert resp.status_code == 302
-        assert resp.headers["location"].startswith("switchdash://session?")
+
+        assert resp.status_code == 200
+        assert "switchdash://session?" in resp.text
