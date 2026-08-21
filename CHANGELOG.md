@@ -118,6 +118,20 @@ version of their own to them without also giving them a release of their own.
   starting with the client secret **value** vs secret **ID** mix-up, which
   surfaces only as an opaque `AADSTS7000215` at the first Graph call.
 
+#### Fixed
+- Binding a room to a collaboration channel that already exists now establishes
+  message capture for it. Capture was only ever set up as a side effect of
+  *creating* a channel, so a room pointed at an existing one — on creation, on
+  linking a bridge to an internal room, or on moving a room between bridges —
+  heard nothing but the messages that @mentioned it. Invisible on bridges whose
+  capture is one bridge-wide stream, and on Teams it survived only until the
+  next restart happened to reconcile it.
+- A Teams activity rejected for the wrong audience says which audience it
+  carried and which one the bridge expects. The rejection is almost always the
+  Azure Bot resource and the registered app registration having different app
+  ids, and the message it replaced — `Audience doesn't match` — named neither,
+  so the one fact needed to fix it was the one fact not logged.
+
 ### [0.17.3] - 2026-08-19
 
 #### Fixed

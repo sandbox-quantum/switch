@@ -178,8 +178,40 @@ def test_validator_rejects_wrong_audience() -> None:
     priv, pub = _keypair()
     validator = _validator(pub, app_id="app-1")
 
-    with pytest.raises(jwt.InvalidAudienceError):
+    with pytest.raises(PermissionError) as excinfo:
         validator.validate(f"Bearer {_token(priv, aud='someone-else')}")
+
+    # A mismatch is a misconfiguration, and the operator cannot fix it without
+    # both halves: the app id Azure addressed the activity to, and the one this
+    # bridge was registered with.
+    message = str(excinfo.value)
+    assert "someone-else" in message
+    assert "app-1" in message
+
+
+def test_audience_mismatch_message_survives_an_unreadable_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mismatch message reads the audience back out of the token. A token
+    that decodes for verification but not for inspection must still produce the
+    rejection, not a second error on top of it."""
+    priv, pub = _keypair()
+    validator = _validator(pub, app_id="app-1")
+    token = _token(priv, aud="someone-else")
+
+    original = jwt.decode
+
+    def _decode(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("options", {}).get("verify_signature") is False:
+            raise jwt.DecodeError("unreadable")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jwt, "decode", _decode)
+
+    with pytest.raises(PermissionError) as excinfo:
+        validator.validate(f"Bearer {token}")
+
+    assert "app-1" in str(excinfo.value)
 
 
 def test_validator_rejects_expired_token() -> None:

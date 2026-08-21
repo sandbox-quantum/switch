@@ -122,14 +122,38 @@ class InboundActivityValidator:
             raise PermissionError("missing bearer token on inbound Teams activity")
         token = auth_header.split(" ", 1)[1].strip()
         signing_key = self._ensure_jwks().get_signing_key_from_jwt(token)
-        jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=self._app_id,
-            issuer=_BOTFRAMEWORK_ISSUER,
-            options={"require": ["exp", "iss", "aud"]},
-        )
+        try:
+            jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=self._app_id,
+                issuer=_BOTFRAMEWORK_ISSUER,
+                options={"require": ["exp", "iss", "aud"]},
+            )
+        except jwt.InvalidAudienceError as exc:
+            raise PermissionError(
+                f"inbound Teams activity is addressed to {self._describe_audience(token)}, "
+                f"but this bridge is configured with app id {self._app_id!r}. "
+                "The Azure Bot resource's Microsoft App ID must be the app id "
+                "registered on the bridge."
+            ) from exc
+
+    @staticmethod
+    def _describe_audience(token: str) -> str:
+        """The audience the token actually carries, for a mismatch message.
+
+        Read without verifying — the signature has already been checked by the
+        caller, and this only ever reaches a log line explaining a rejection.
+        The audience of a Bot Connector token is an application id, not a
+        secret; the token itself is never logged.
+        """
+        try:
+            claims = jwt.decode(token, options={"verify_signature": False})
+        except jwt.PyJWTError:
+            return "an unreadable audience"
+        aud = claims.get("aud")
+        return f"app id {aud!r}" if aud else "no audience"
 
     def close(self) -> None:
         self._http.close()

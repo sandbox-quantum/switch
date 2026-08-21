@@ -21,6 +21,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.matrix_admin import MatrixAdmin
 
 if TYPE_CHECKING:
+    from switch_core.bridges.collaboration.bridge_core import BridgeCore
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -344,6 +345,26 @@ class RoomService:
             "allow channel creation for this connection."
         )
 
+    @staticmethod
+    async def _ensure_channel_capture(
+        bridge_core: BridgeCore,
+        external_channel_id: str,
+        channel_type: ChannelType,
+    ) -> None:
+        """Establish server-side message capture for a channel bound to a room.
+
+        Provisioning a channel subscribes to it on the way past, but binding one
+        that already exists does not — and on a bridge whose capture is a
+        per-channel subscription (Teams, via Graph) that leaves the room
+        receiving only what @mentions the bot, until the bridge next restarts
+        and its startup reconciliation notices. A no-op for adapters whose
+        capture is a single bridge-wide stream, and idempotent for those where
+        it is not.
+        """
+        await bridge_core.adapter.ensure_channel_subscriptions(
+            [(external_channel_id, channel_type)]
+        )
+
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
@@ -464,6 +485,11 @@ class RoomService:
         finally:
             if bridge_core and external_channel_id:
                 bridge_core.end_provisioning(external_channel_id)
+
+        if bridge_core and external_channel_id:
+            await self._ensure_channel_capture(
+                bridge_core, external_channel_id, channel_type
+            )
 
         # Invite the bridge client before the agent clients so it is joined (and
         # thus replicating) before any agent can post — otherwise messages sent
@@ -819,6 +845,9 @@ class RoomService:
             bridge_core.add_room_mapping(
                 room.id, room.matrix_room_id, external_channel_id
             )
+            await self._ensure_channel_capture(
+                bridge_core, external_channel_id, channel_type
+            )
 
         logger.info("Linked bridge %s to room %s", bridge_id, room_id)
 
@@ -924,6 +953,10 @@ class RoomService:
             new_bridge.add_room_mapping(room_id, matrix_room_id, external_channel_id)
         finally:
             new_bridge.end_provisioning(external_channel_id)
+
+        await self._ensure_channel_capture(
+            new_bridge, external_channel_id, resolved_channel_type
+        )
         await self._matrix_admin.invite_to_room(
             matrix_room_id, new_bridge._bridge_client_matrix_user_id
         )
