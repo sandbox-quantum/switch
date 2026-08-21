@@ -45,6 +45,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- Teams accepts `/command` as well as `!command`, and the setup guide carries
+  the app-manifest snippet that puts the commands above the compose box. Teams
+  has no server-registered slash commands: a manifest command list types the
+  text and the bot parses it, so the two prefixes are the same thing by the
+  time Switch sees them — but people arriving from Slack try `/` first, and
+  until now got nothing.
+
 - The Helm chart can publish and route the Microsoft Teams bridge listener. The
   Teams adapter serves Bot Framework activities and Graph change notifications
   from its own HTTP server on port 3978, separate from the API on 8000, and
@@ -137,6 +144,22 @@ version of their own to them without also giving them a release of their own.
   cached token and retries once with a fresh one. Once, and only when the token
   was old enough to have missed the grant, so a genuine denial costs one extra
   round trip rather than looping.
+- A person recorded under a Teams id gets their name back on their next
+  message. Switch files someone under the name it is first given, and Teams
+  often gives none — a 1:1 activity carries no sender name — so its own id went
+  in and then read as that person's name in room titles, on their Matrix
+  account and in every agent reply addressing them. Resolving names properly
+  helped only people met afterwards; this repairs the records already written,
+  without a migration. One-way by design: an id becomes a name, never the
+  reverse, and one name never replaces another.
+- A Teams channel with no name in its activity is looked up in Graph rather
+  than falling back to its id, so an auto-created room is called something a
+  person recognises instead of `19:7641f9de326b4…`. Cached, including the
+  "asked and could not say" case.
+- An agent's first message in a Teams channel opens a post and everything it
+  says next joins that post. It used to open a fresh one each time, so an agent
+  introducing itself produced a column of one-line posts rather than a
+  conversation.
 - An agent answering in a Teams channel replies inside the post it was asked
   in. A channel is a list of posts rather than a stream, so posting at the root
   opens a new conversation — the question sat in one post and the answer
