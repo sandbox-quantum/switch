@@ -163,10 +163,10 @@ class TestStartSessionInstructions:
         # right on one platform.
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/x")
         msg = ClaudeCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "hub", "adalovelace"
+            opts, _agent({}), "hub", "louisa"
         )
         assert msg is not None
-        assert msg.startswith("@adalovelace\n\n")
+        assert msg.startswith("@louisa\n\n")
 
     def test_an_unlinked_owner_leaves_the_message_unmentioned(self) -> None:
         # Nobody to mention is not a reason to withhold the instructions.
@@ -178,14 +178,14 @@ class TestStartSessionInstructions:
         assert not msg.startswith("@")
 
     def test_passive_mentions_operator_inline(self) -> None:
-        # Passive message names the operator inline ("my operator @adalovelace")
+        # Passive message names the operator inline ("my operator @louisa")
         # rather than as a leading prefix, so they still get pinged to pull.
         opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="/x")
         msg = ClaudeCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "hub", "adalovelace"
+            opts, _agent({}), "hub", "louisa"
         )
         assert msg is not None
-        assert "my operator @adalovelace" in msg
+        assert "my operator @louisa" in msg
 
     def test_passive_without_a_linked_owner_says_my_operator(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=False, repo_dir="/x")

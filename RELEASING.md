@@ -108,13 +108,11 @@ the Linux build runs immediately, but the **signed + notarized macOS
 run**. The release is therefore **incomplete until approved**.
 
 **Mandatory step — ping the approver on tag push.** The moment a
-`switch-console-v*` tag is pushed, the releaser MUST send the **required
-reviewer for the `release` environment** a targeted message with the Actions
-run URL, stating the run is paused awaiting their approval, and asking them to
-approve. Do not wait silently — the macOS build cannot proceed until they do.
-Only after the run goes green are the notes finalised and the 🚀 banner posted.
-GitHub names the current reviewer on the paused run and under **Settings →
-Environments → release**.
+`switch-console-v*` tag is pushed, the releaser MUST send `louis.amaudruz` a
+targeted message with the Actions run URL, stating the run is paused awaiting
+his approval in the `release` environment, and asking him to approve. Do not
+wait silently — the macOS build cannot proceed until he approves. Only after
+the run goes green are the notes finalised and the 🚀 banner posted.
 switch-core releases are **not** gated and need no such ping.
 
 ## Where artifacts are published

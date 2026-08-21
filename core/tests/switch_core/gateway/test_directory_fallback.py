@@ -142,7 +142,7 @@ class TestAPlatformWithADirectoryIsUnaffected:
             DirectoryUser(
                 external_user_id="U1",
                 username="louis",
-                display_name="Ada L",
+                display_name="Louisa A",
                 email="l@example.com",
             )
         ]

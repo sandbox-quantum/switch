@@ -23,7 +23,7 @@ def _event(thread_id: str | None) -> CommandEvent:
         command="help",
         args="",
         user_id="u1",
-        user_name="adalovelace",
+        user_name="louisa",
         thread_id=thread_id,
     )
 
@@ -99,7 +99,7 @@ class TestDispatchPopulatesThreadId:
     async def test_top_level_command_gets_its_own_event_id(self) -> None:
         # No m.thread relation → the command roots its own thread.
         event = await self._dispatch(
-            {"command": "status", "args": "", "user_id": "u1", "user_name": "adalovelace"},
+            {"command": "status", "args": "", "user_id": "u1", "user_name": "louisa"},
             "$the-command-event",
         )
         assert event.thread_id == "$the-command-event"
@@ -112,7 +112,7 @@ class TestDispatchPopulatesThreadId:
                 "command": "status",
                 "args": "",
                 "user_id": "u1",
-                "user_name": "adalovelace",
+                "user_name": "louisa",
                 "m.relates_to": {
                     "rel_type": "m.thread",
                     "event_id": "$matrix-thread-root",

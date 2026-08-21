@@ -1,6 +1,6 @@
 # Agent Bridge Protocol
 
-Status: **Stages A and B implemented; Stage C outstanding**
+Status: **Stages A and B implemented; Stage C outstanding** (CHOO-1857, closed)
 
 This began as a design proposal and is now largely built. The connection model,
 scope/filter/room slots, the heartbeat and state machine, the event envelope and
@@ -61,7 +61,7 @@ than be told.
   memory). This design assumes one process and notes the seams where that
   assumption is load-bearing.
 - Replacing MCP. MCP remains the agent's tool surface.
-- AG-UI, which is being worked separately. This design should not
+- AG-UI (CHOO-1685), which is being worked separately. This design should not
   make it harder to land; it does not attempt it.
 
 ---
@@ -116,7 +116,7 @@ A session uses `single` + `all` — it needs unaddressed traffic for context and
 for missed-message counts. A daemon uses `all` + `addressed` — it is watching
 for a reason to start a session, not following conversations. This is what
 makes the separate `/notifications` endpoint and the second notification builder
- removable — neither has actually been removed yet.
+(CHOO-1810) removable — neither has actually been removed yet.
 
 ### 2.4 Room slots
 
@@ -146,7 +146,7 @@ naming the incumbent. The common cause is an accident (a stale process, a
 double launch) and rejecting surfaces it. An explicit takeover flag forces the
 claim, evicting the incumbent, which is told why.
 
-**`connect_to_room` takes over rather than rejecting**. A tool call
+**`connect_to_room` takes over rather than rejecting** (CHOO-1419). A tool call
 is not a client negotiating for a slot: it is a session that has already been
 started to work in this room and has nowhere else to go, so refusing it strands
 a live session instead of resolving the duplicate. It claims with takeover and
@@ -313,7 +313,7 @@ state as the first event.
 **The four declaration parameters are optional, and absent means _unknown_.** A
 client built before they existed says nothing, and unknown is a state the model
 carries deliberately — it is not incompatible, and such a client connects
-normally. `protocol` previously defaulted to the server's own value,
+normally (CHOO-1865). `protocol` previously defaulted to the server's own value,
 which read silence as agreement; since no shipped client sent it, the check had
 never once fired.
 
@@ -515,7 +515,7 @@ New, carried on the same stream:
 `gap` and `evicted` exist so that degradation is always visible. A client that
 has missed events must never appear healthy.
 
-**`connection_state` is where the server declares itself**. It is
+**`connection_state` is where the server declares itself** (CHOO-1865). It is
 the first frame of an already-authenticated stream, so no separate endpoint —
 and no unauthenticated one — is needed:
 
@@ -557,8 +557,7 @@ neither door owns. The HTTP endpoint dispatches into it; the MCP server
 registers its tools from it. An operation is therefore reachable through both
 doors the moment it exists, and **retiring a door is deleting a file** rather
 than refactoring everything underneath. This is what makes a local runtime
-possible at all (§9.1) and closes the overlap with the HTTP parity work
-(§14).
+possible at all (§9.1) and closes the overlap with CHOO-490.
 
 An operation is a plain async function taking its arguments and nothing else.
 Who is calling, and which connection or session they are bound to, comes from
@@ -880,8 +879,7 @@ A connection that has silently missed events must never appear healthy.
 
 4. HTTP operations front door (§7): every MCP tool reachable at
    `POST /ops/{operation}`, dispatched from the same registry so parity cannot
-   drift. Unblocks the local runtime and closes the overlap with the HTTP
-   parity work (§14).
+   drift. Unblocks the local runtime and closes the overlap with CHOO-490.
 
    **The two MCP servers are merged into one local runtime.** *(implemented)*
    `@sandboxaq/switch-agent-runtime` serves the tool surface over stdio —
@@ -947,7 +945,7 @@ three renews is unaffected and unaware.
 7. Remove the polling endpoints.
 
 Opportunistic, relevant to this work: the `DORMANT` display bug.
-`read_context`'s deep-history pagination is **done** — it follows
+`read_context`'s deep-history pagination is **done** (CHOO-2034) — it follows
 Matrix's continuation token, pages backwards for `before`, and reports
 `truncated` when it stops short, which matters now that "re-read context" is
 the documented recovery path for a gap.
@@ -959,13 +957,14 @@ versions must be updated when the agent-facing contract changes.
 
 ## 14. Related work
 
-- **HTTP protocol parity.** Delivered: the operation surface has an HTTP front
-  door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`) serving the
-  same registry as MCP.
-- **Two notification builders.** §2.3 shipped, but this is **not** closed: both
-  builders still exist, and `GET /agents/{id}/notifications` is still a live
-  route.
-- **AG-UI.** Being worked separately rather than here; the event envelope is
-  versioned and additive so it stays landable.
-- **Bugs caused by the polling model.** Useful as tests of whether this design
-  makes them impossible rather than merely fixed.
+- **CHOO-490** — HTTP protocol parity. Delivered: the operation surface has an
+  HTTP front door (`GET /agents/{id}/ops`, `POST /agents/{id}/ops/{operation}`)
+  serving the same registry as MCP.
+- **CHOO-1810** — two notification builders. §2.3 shipped, but this is **not**
+  closed: both builders still exist, and `GET /agents/{id}/notifications` is
+  still a live route.
+- **CHOO-1685** — AG-UI. Being worked separately rather than here; the event
+  envelope is versioned and additive so it stays landable.
+- **CHOO-1101 / CHOO-1366 / CHOO-1811** — bugs caused by the polling model.
+  Useful as tests of whether this design makes them impossible rather than
+  merely fixed.

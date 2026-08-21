@@ -17,7 +17,7 @@ def _event() -> CommandEvent:
         command="reset",
         args="",
         user_id="@u:server",
-        user_name="adalovelace",
+        user_name="louisa",
         thread_id=None,
     )
 
