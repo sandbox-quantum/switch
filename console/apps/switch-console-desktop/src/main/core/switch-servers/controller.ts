@@ -263,14 +263,19 @@ export const switchServersController = createRPCController({
   // where registering a URL stops being an action and becomes an exception —
   // and without it the whole failure population is invisible.
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
+    let server: SwitchServer;
     try {
-      const server = await addServer(params);
-      await resolveAgentServers();
-      return server;
+      server = await addServer(params);
     } catch (error) {
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
       throw error;
     }
+    // Outside the catch on purpose. The store reports the success the moment the
+    // row lands, and this reconciliation is a separate step: if it fails the
+    // server has still been added, and reporting a failure here would file one
+    // click as both a success and a failure.
+    await resolveAgentServers();
+    return server;
   },
 
   updateServer: async (params: UpdateServerParams): Promise<UpdateServerResult> => {
