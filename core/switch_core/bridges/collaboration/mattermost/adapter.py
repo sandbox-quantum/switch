@@ -772,14 +772,21 @@ class MattermostAdapter(CollaborationAdapter):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError(
                 "Cannot add users to channel: Mattermost client not connected"
             )
 
         loop = self._main_loop
-        for username in user_names:
+        failed: list[str] = []
+        # Mattermost resolves people by username and ignores the ids, and one
+        # internal caller (the default-member add) has only a name to give — so
+        # walk the names and reach for a paired id only if one was supplied.
+        for index, username in enumerate(user_names):
+            external_id = (
+                user_external_ids[index] if index < len(user_external_ids) else username
+            )
             try:
                 user = await loop.run_in_executor(
                     None, self._admin_driver.users.get_user_by_username, username
@@ -796,6 +803,8 @@ class MattermostAdapter(CollaborationAdapter):
                     username,
                     channel_id,
                 )
+                failed.append(external_id)
+        return failed
 
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the

@@ -907,7 +907,7 @@ class TeamsAdapter(CollaborationAdapter):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
         team_id = self._team_of_channel.get(channel_id, self._config.team_id)
@@ -930,11 +930,7 @@ class TeamsAdapter(CollaborationAdapter):
                     "Failed to add user %s to Teams channel %s", user_id, channel_id
                 )
                 failed.append(user_id)
-        if failed:
-            raise RuntimeError(
-                f"Failed to add {len(failed)} user(s) to Teams channel "
-                f"{channel_id}: {', '.join(failed)}"
-            )
+        return failed
 
     # ── Agent identity ───────────────────────────────────────────────────────
 

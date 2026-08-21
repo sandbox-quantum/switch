@@ -1019,18 +1019,19 @@ class TelegramAdapter(CollaborationAdapter):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         # The Bot API has no call that adds a member to a chat — a person joins
         # from a Telegram client or an invite link. Say so rather than reporting
         # a membership change that never happened.
         if not user_names:
-            return
+            return []
         logger.warning(
             "Cannot add %s to Telegram chat %s — the Bot API cannot add members; "
             "they must join from a Telegram client or an invite link",
             ", ".join(user_names),
             channel_id,
         )
+        return list(user_external_ids)
 
     # ── Agent identity ───────────────────────────────────────────────────────
 

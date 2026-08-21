@@ -346,6 +346,49 @@ class RoomService:
         )
 
     @staticmethod
+    async def _add_users_to_channel(
+        bridge_core: BridgeCore,
+        external_channel_id: str,
+        user_names: list[str],
+    ) -> list[dict[str, Any]]:
+        """Add the room's people to its channel; report who did not make it.
+
+        Returns ``failed_attachments``-shaped entries, because that is what this
+        is: a post-creation step that can partly fail without the room being
+        wrong. Two ways to miss — Switch not knowing the person on this bridge,
+        and the platform refusing to add them — and both used to disappear into
+        a log line, leaving a room that silently lacked the people it was asked
+        for.
+        """
+        resolved = await bridge_core.resolve_external_user_id_map(user_names)
+        failures: list[dict[str, Any]] = [
+            {
+                "kind": "user",
+                "id": name,
+                "error": "no account with this name is known on the bridge",
+            }
+            for name in user_names
+            if name not in resolved
+        ]
+        # Paired positionally by contract, so build both from the same mapping
+        # rather than passing the caller's full name list beside a shorter list
+        # of ids — an adapter that zips them would otherwise mis-attribute.
+        names = list(resolved)
+        failed_ids = await bridge_core.adapter.add_users_to_channel(
+            external_channel_id, names, [resolved[name] for name in names]
+        )
+        by_id = {resolved[name]: name for name in names}
+        failures.extend(
+            {
+                "kind": "user",
+                "id": by_id.get(external_id, external_id),
+                "error": "the platform would not add them to the channel",
+            }
+            for external_id in failed_ids
+        )
+        return failures
+
+    @staticmethod
     async def _ensure_channel_capture(
         bridge_core: BridgeCore,
         external_channel_id: str,
@@ -500,6 +543,7 @@ class RoomService:
                 matrix_room_id, bridge_core._bridge_client_matrix_user_id
             )
 
+        unreachable_users: list[dict[str, Any]] = []
         if (
             bridge_core
             and external_channel_id
@@ -510,9 +554,8 @@ class RoomService:
                 external_channel_id, agent_names
             )
             if config.user_names:
-                ext_ids = await bridge_core.resolve_external_user_ids(config.user_names)
-                await bridge_core.adapter.add_users_to_channel(
-                    external_channel_id, config.user_names, ext_ids
+                unreachable_users = await self._add_users_to_channel(
+                    bridge_core, external_channel_id, config.user_names
                 )
                 await bridge_core.ensure_users_in_room(
                     room.id, matrix_room_id, config.user_names
@@ -542,7 +585,9 @@ class RoomService:
             len(system_clients),
         )
 
-        failed_attachments = await self._attach_after_creation(room.id, config)
+        failed_attachments = unreachable_users + await self._attach_after_creation(
+            room.id, config
+        )
         if failed_attachments:
             logger.warning(
                 "Room %s created with %d attachment failure(s): %s",
@@ -778,10 +823,13 @@ class RoomService:
             await session.commit()
 
     async def add_users_to_room(self, room_id: str, user_names: list[str]) -> list[str]:
-        """Add users to a bridged room; returns the names that could not be
-        resolved on the room's bridge (added users are omitted from the
-        result). A name is unresolvable when the bridge has no external user
-        for it — e.g. the person has not yet signed into that workspace."""
+        """Add users to a bridged room; returns the names that did not make it
+        (added users are omitted from the result).
+
+        Two ways to miss. The bridge may have no external user for the name —
+        the person has not yet signed into that workspace — or the platform may
+        refuse to add someone it does know. Both come back here, because to the
+        caller they are the same fact: that person is not in the room."""
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -794,9 +842,11 @@ class RoomService:
         resolved = await bridge_core.resolve_external_user_id_map(user_names)
         unresolved = [name for name in user_names if name not in resolved]
         resolved_names = list(resolved.keys())
-        await bridge_core.adapter.add_users_to_channel(
+        failed_ids = await bridge_core.adapter.add_users_to_channel(
             room.external_channel_id, resolved_names, list(resolved.values())
         )
+        by_id = {resolved[name]: name for name in resolved_names}
+        unresolved.extend(by_id.get(fid, fid) for fid in failed_ids)
         await bridge_core.ensure_users_in_room(
             room.id, room.matrix_room_id, resolved_names
         )

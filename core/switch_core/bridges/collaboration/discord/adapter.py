@@ -784,13 +784,14 @@ class DiscordAdapter(CollaborationAdapter):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         channel = await self._get_channel(int(channel_id))
         if self._channel_type_of(channel) != "channel_private":
             # Public guild channels are visible to every member — there is no
             # per-channel membership to grant.
-            return
+            return []
         guild = channel.guild
+        failed: list[str] = []
         for user_name, user_id in zip(user_names, user_external_ids):
             try:
                 member = await self._get_member(guild, user_id)
@@ -803,6 +804,8 @@ class DiscordAdapter(CollaborationAdapter):
                     channel_id,
                     e,
                 )
+                failed.append(user_id)
+        return failed
 
     # ── Agent identity ───────────────────────────────────────────────────────
 

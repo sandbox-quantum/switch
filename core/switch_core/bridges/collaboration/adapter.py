@@ -656,7 +656,20 @@ class CollaborationAdapter(ABC):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None: ...
+    ) -> list[str]:
+        """Add the given people to a channel; return the ids that could not be.
+
+        ``user_names`` and ``user_external_ids`` are positionally paired.
+
+        A person who cannot be added is a poor reason to fail the whole
+        operation — the caller is usually creating a room, and abandoning it
+        over one guest account or one missing platform permission leaves a
+        half-provisioned room behind and tells the operator nothing. Nor should
+        it pass silently, which reports a room that quietly lacks the people
+        asked for. So: continue, and hand back who was left out for the caller
+        to disclose.
+        """
+        ...
 
     @abstractmethod
     async def create_agent_identity(
