@@ -7,6 +7,7 @@ import {
   writeWatchEnabled,
 } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-http';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
@@ -113,6 +114,11 @@ async function removeLocalSession(sessionId: string): Promise<void> {
   const deleted = await db.delete(sessions).where(eq(sessions.id, sessionId));
   await viewStateService.del(`session:${sessionId}`);
   if (deleted.changes === 0) return;
+  // The same pair the reconciler's remote-driven delete fires: the hook for
+  // anything in the main process that tracks a session's lifetime, and the IPC
+  // event so an open window drops the row. Firing only the second leaves a
+  // session that was reported as started and never as ended.
+  sessionHooks._emit('session:deleted', sessionId);
   events.emit(sessionDeletedChannel, { sessionId });
 }
 
