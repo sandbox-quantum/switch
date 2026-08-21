@@ -251,7 +251,7 @@ def _cmd_event(command: str, args: str = "") -> CommandEvent:
         command=command,
         args=args,
         user_id="u1",
-        user_name="louisa",
+        user_name="adalovelace",
         thread_id="$cmd",
     )
 

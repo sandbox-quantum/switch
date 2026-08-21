@@ -120,7 +120,7 @@ Pick the format your distro uses:
 ### First launch — SmartScreen warning
 
 Windows builds are **not code signed** — there is no Authenticode certificate for
-this app yet (CHOO-1468). Windows therefore shows a full-screen blue **"Windows
+this app yet. Windows therefore shows a full-screen blue **"Windows
 protected your PC"** prompt the first time you run the installer:
 
 1. Click **More info**.

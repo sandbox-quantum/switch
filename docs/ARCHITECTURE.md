@@ -208,7 +208,7 @@ dimensions (room, room group, sender-user, sender-agent) plus two symbolic
 subjects resolved at delivery, `owner` (the agent's owner, whoever that
 currently is) and `owner_agents` (any agent that same person owns), governing
 *who* may address it. With no policy an agent is open to any room participant;
-agents created since CHOO-2137 instead start **owner-only** — a single rule
+agents created since this became the default instead start **owner-only** — a single rule
 admitting the owner anywhere and nobody else, which the owner can widen to
 their own agents. Pre-existing agents are left open rather than migrated.
 

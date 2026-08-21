@@ -179,7 +179,7 @@ def _event(args: str) -> CommandEvent:
         command="run-cmd",
         args=args,
         user_id="u1",
-        user_name="louisa",
+        user_name="adalovelace",
     )
 
 

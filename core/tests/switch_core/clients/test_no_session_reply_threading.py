@@ -71,14 +71,14 @@ def _fake_self(
 
 
 def _event(thread_id: str | None, *, is_auto_reply: bool = False) -> SimpleNamespace:
-    content: dict[str, object] = {"sender_name": "louisa"}
+    content: dict[str, object] = {"sender_name": "adalovelace"}
     if thread_id is not None:
         content["m.relates_to"] = {"rel_type": "m.thread", "event_id": thread_id}
     if is_auto_reply:
         content[AUTO_REPLY_FLAG] = True
     return SimpleNamespace(
         body="@cc-bug-fixing can you help",
-        sender="@switch-mattermost-louisa:switch.local",
+        sender="@switch-mattermost-adalovelace:switch.local",
         event_id="$trigger",
         server_timestamp=0,
         source={"content": content},
@@ -96,9 +96,9 @@ async def test_no_session_reply_threads_under_triggering_mention() -> None:
     assert len(send_message.calls) == 1
     assert send_message.calls[0]["thread_root_id"] == "$thread-root"
     # The reply tags the sender so they get notified.
-    assert send_message.calls[0]["body"].startswith("@louisa ")
+    assert send_message.calls[0]["body"].startswith("@adalovelace ")
     assert send_message.calls[0]["mentions"] == [
-        "@switch-mattermost-louisa:switch.local"
+        "@switch-mattermost-adalovelace:switch.local"
     ]
     # The reply is stamped as an auto-reply so it can't re-trigger another one.
     assert send_message.calls[0]["extra_content"] == {AUTO_REPLY_FLAG: True}
@@ -124,12 +124,12 @@ async def test_no_session_reply_not_triggered_by_another_auto_reply() -> None:
 async def test_no_session_reply_does_not_double_tag_the_asker() -> None:
     # The known-agent reply may already lead with its own @mention (pinging the
     # configured operator). When that's the same person as the asker, we must
-    # tag them once, not "@louisa @louisa".
+    # tag them once, not "@adalovelace @adalovelace".
     send_message = _Recorder()
     room = SimpleNamespace(room_id="!matrix:server")
     await AgentClient.on_message(
         _fake_self(
-            send_message, unavailable_reply="@louisa\n\nmy operator should run …"
+            send_message, unavailable_reply="@adalovelace\n\nmy operator should run …"
         ),
         room,
         _event(thread_id=None),
@@ -137,8 +137,8 @@ async def test_no_session_reply_does_not_double_tag_the_asker() -> None:
 
     assert len(send_message.calls) == 1
     body = send_message.calls[0]["body"]
-    assert body.count("@louisa") == 1
-    assert body.startswith("@louisa")
+    assert body.count("@adalovelace") == 1
+    assert body.startswith("@adalovelace")
 
 
 @pytest.mark.asyncio
@@ -157,7 +157,7 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
 
     assert len(send_message.calls) == 1
     body = send_message.calls[0]["body"]
-    assert body.startswith("@louisa ")
+    assert body.startswith("@adalovelace ")
     assert "@operator" in body
 
 

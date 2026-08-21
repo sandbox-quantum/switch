@@ -211,8 +211,7 @@ version of their own to them without also giving them a release of their own.
   default channels, so it never witnessed its own joins — the first agent on an
   instance bridged nothing, and creating a second adopted Town Square and
   Off-Topic late and attributed to the wrong action. Current membership is now
-  reconciled on connect rather than relying on live join broadcasts alone
-  (CHOO-2203).
+  reconciled on connect rather than relying on live join broadcasts alone.
 
 ### [0.17.2] - 2026-08-18
 
@@ -226,7 +225,7 @@ version of their own to them without also giving them a release of their own.
   panel, a status left at the root is the one nobody opens. The typing indicator
   is reported against the trigger's actual location (channel vs thread) rather
   than the status's, so it shows where the person who addressed the agent is
-  watching (CHOO-2173).
+  watching.
 
 ### [0.17.1] - 2026-08-16
 
@@ -249,7 +248,7 @@ version of their own to them without also giving them a release of their own.
   icon and re-uploads it as the bot avatar. Because Switch itself dereferences
   the URL, it is validated to an absolute `https` address with no embedded
   credentials and refused when it names a local, private, loopback or
-  link-local host (CHOO-2171).
+  link-local host.
 
 #### Fixed
 
@@ -268,7 +267,7 @@ version of their own to them without also giving them a release of their own.
 - The bundled-stack **setup image** links the seeded Mattermost admin to its
   owner, so a freshly seeded managed deployment comes up already knowing which
   chat account the owner is — owner-only addressing then works without the owner
-  linking an account by hand first (CHOO-2172).
+  linking an account by hand first.
 
 ### [0.16.0] - 2026-08-15
 
@@ -287,19 +286,18 @@ version of their own to them without also giving them a release of their own.
   answer rather than a refusal, since refusing would leave owner-only
   addressing unusable on the platform for people Switch already knows. Claims
   are not exclusive: several Switch users may claim the same account, so nobody
-  can keep the real person from being recognised by claiming it first
-  (CHOO-2137).
+  can keep the real person from being recognised by claiming it first.
 - An addressing rule can name the agent's **owner**, or **any agent that owner
   runs**, rather than a list of identities. Both resolve when the message
   arrives, so they survive connecting a new workspace, recreating a bridge,
   registering another agent, or the agent changing hands. The second is what
   lets one person's manager agent keep dispatching their own workers under an
   owner-scoped policy — that is the owner acting through a program, where
-  someone else's agent is not (CHOO-2137).
+  someone else's agent is not.
 - `GET /agents` reports each agent's `addressing_policy`, which until now was
   only on `GET /agents/{id}`. So "which of these agents answers only its owner"
   is one list read rather than a read per agent — the shape a client needs to
-  ask that at all, instead of a request storm (CHOO-2137).
+  ask that at all, instead of a request storm.
 
 #### Changed
 
@@ -308,7 +306,7 @@ version of their own to them without also giving them a release of their own.
   for Telegram, where a bot can only name people who have messaged it. Read
   from the adapter class, so it is answerable before a connection of that type
   exists — which is when a client has to decide whether asking someone to pick
-  themselves out of a directory is a question worth putting (CHOO-2137).
+  themselves out of a directory is a question worth putting.
 - **Disconnecting a messaging app now removes the identities Switch made for
   it** — the app's own Matrix client and the puppet behind every person Switch
   saw on it. They were left behind, and the app's own client is not merely
@@ -322,7 +320,7 @@ version of their own to them without also giving them a release of their own.
   shared-secret registration reports an existing user as success without
   applying the new one, which reads as a working connection that can never
   connect. Abandoned homeserver accounts are logged on removal rather than
-  passed over in silence (CHOO-2137).
+  passed over in silence.
 - **An agent pings its owner, not a handle typed into its config.** The
   per-agent `notify_user` option is gone; who to @-mention when an agent needs
   input is now the agent's owner, resolved through the messaging account that
@@ -335,7 +333,7 @@ version of their own to them without also giving them a release of their own.
   the mention silently missing: a ping that reaches no one and an agent that
   never asked look identical otherwise. Existing `notify_user` values are
   ignored rather than migrated, and drop out of an agent's options the next
-  time they are written (CHOO-2137).
+  time they are written.
 - **Newly created agents are owner-only by default**: only their owner may
   address them, from any room, and no agent unless the owner says so. The
   default is applied where every registration path converges, so it holds
@@ -343,14 +341,13 @@ version of their own to them without also giving them a release of their own.
   bulk subagent registration alike. Existing agents are left open — the default
   is not applied retroactively, since that would mute every agent whose owner
   has not yet claimed an identity. Server-side connector agents opt out: they
-  are services a deployment offers everyone, not one person's assistant
-  (CHOO-2137).
+  are services a deployment offers everyone, not one person's assistant.
 - In-room commands are subject to the addressing policy, not just messages —
   `!reset`, `!interrupt` and `!compact` drive an agent as surely as a mention
   does, and previously reached a restricted agent from anyone in the room. A
   command naming the agent draws the same one-line refusal; a room-wide command
   is declined quietly rather than producing a refusal from every restricted
-  agent present (CHOO-2137).
+  agent present.
 - `send_targeted_message` reports a target whose policy forbids the sender as
   `not_permitted`, rather than as "live" for a message that will never move it.
   The message is still sent and the target still declines it in the room: a
@@ -358,16 +355,16 @@ version of their own to them without also giving them a release of their own.
   of it, and the same request should not succeed or fail depending on which
   tool carried it — a plain `@name` was never blocked. `delegate_task` remains
   the exception and fails at the sender, because a task is a row somebody is
-  expected to work rather than something a room can decline (CHOO-2137).
+  expected to work rather than something a room can decline.
 - An agent that refuses a sender because its owner cannot be identified says
   so, and points at linking the account in Switch Console — rather than giving
-  the owner the generic refusal from their own agent (CHOO-2137).
+  the owner the generic refusal from their own agent.
 
 ### [0.15.0] - 2026-08-14
 
 #### Added
 - Telegram collaboration bridge, at parity with Slack, Mattermost and Discord
-  (CHOO-1686). A single bot backs every agent — Telegram has no per-message
+ . A single bot backs every agent — Telegram has no per-message
   identity override — so an agent is named at the head of its messages, beside a
   stable colour derived from that name, which is the closest thing to a
   per-agent avatar Telegram allows. Inbound arrives by long polling, so no
@@ -644,8 +641,7 @@ version of their own to them without also giving them a release of their own.
 #### Security
 - Admin-gate every collaboration-bridge write: updating and deleting a bridge
   were ungated, so any authenticated user could toggle agent greetings or delete
-  a bridge (which cascades into deleting every room on it) — now admin-only
-.
+  a bridge (which cascades into deleting every room on it) — now admin-only.
 
 ### [0.12.2] - 2026-08-07
 
@@ -660,8 +656,7 @@ version of their own to them without also giving them a release of their own.
 #### Fixed
 - Runtime-indicator robustness: serialise refresh vs repositioning, and don't
   strand the indicator when a turn ends mid-move.
-- Discord: delete an agent's messages through the same webhook that posted them
-.
+- Discord: delete an agent's messages through the same webhook that posted them.
 - Agent bridge: clamp a resumed cursor to the in-memory buffer head on heartbeat,
   so a connection no longer silently skips events up to a stale cursor after a
   switch-core restart.
@@ -750,12 +745,10 @@ version of their own to them without also giving them a release of their own.
 #### Added
 - Microsoft Teams collaboration bridge — rooms can bridge to Teams channels,
   joining Slack, Mattermost, and Discord as supported platforms.
-- Discord bridge polish: deeplink redirect, room icon, and outbound image relay
-.
+- Discord bridge polish: deeplink redirect, room icon, and outbound image relay.
 
 #### Changed
-- Relicensed to Apache-2.0 + Commons Clause, with a CLA gate for contributions
-.
+- Relicensed to Apache-2.0 + Commons Clause, with a CLA gate for contributions.
 
 #### Fixed
 - Detach dependent rooms before removing a bridge, so bridge removal no longer
@@ -834,12 +827,11 @@ version of their own to them without also giving them a release of their own.
 #### Fixed
 - Search results show an agent's own icon rather than its provider logo, so two
   agents on the same provider are no longer the same picture; the provider mark
-  now follows the "Agent type mark" toggle in both the sidebar and the palette
-  (CHOO-2203).
+  now follows the "Agent type mark" toggle in both the sidebar and the palette.
 - A long instruction no longer takes over the agent page. Multi-line boxes cap
   at roughly a dozen lines and scroll inside themselves, and the agent's
   instructions field gains an Expand control for when you want the ceiling
-  lifted (CHOO-2203).
+  lifted.
 
 ### [0.27.3] - 2026-08-19
 
@@ -848,7 +840,7 @@ version of their own to them without also giving them a release of their own.
 - Set an agent's **instructions** — what it is for, addressed to the agent
   itself — as a first-class field edited from its page, applied to whichever
   mechanism its provider uses (a Claude repo-agent, a Codex or OpenCode launch
-  profile) rather than being a per-provider setting only (CHOO-2228).
+  profile) rather than being a per-provider setting only.
 - **Build switch-core from your checkout** for the managed local stack. A dev
   build launched from a Switch checkout can run switch/gateway/setup from the
   working tree (`up -d --build`) instead of this build's pinned GHCR images, via
@@ -866,12 +858,12 @@ version of their own to them without also giving them a release of their own.
 - CLI first-run prompts that leave a spawned session alive but never answering
   are now cleared or detected before the session starts — Claude Code auto-trust
   (silently broken since a config-key rename), its first-run setup wizard, and
-  the bypass-permissions warning (CHOO-2213).
+  the bypass-permissions warning.
 - @mentions in the embedded Mattermost view are readable in the light theme
   again — the link/mention colour pointed at the text-selection-highlight
-  background and rendered at ~1.4:1 on the white channel (CHOO-2203).
+  background and rendered at ~1.4:1 on the white channel.
 - A newly onboarded agent's default Mattermost rooms show in the sidebar without
-  waiting for a background reconcile to happen to fire (CHOO-2203).
+  waiting for a background reconcile to happen to fire.
 - **Sign-in details** for a managed server's bundled chat now stays open. The
   dialog was rendered inside the messaging app's dropdown menu, so the same
   click that opened it closed the menu — and the menu took the dialog with it,
@@ -889,7 +881,7 @@ version of their own to them without also giving them a release of their own.
 - Switch Console now asks, the first time you open it, whether you are happy to
   share anonymous usage data, and states plainly what that would and would not
   include. The choice is saved per install and can be changed at any time from
-  **Settings → General** (CHOO-1955).
+  **Settings → General**.
 - The app still sends nothing: there is no telemetry to consent to yet. What
   this adds is the control and the contract — a single gate that any future
   collection must ask before sending, which fails closed, so a fresh install
@@ -899,19 +891,19 @@ version of their own to them without also giving them a release of their own.
 - A signed, notarized **Intel (x86_64) macOS build**. macOS now builds per-arch
   on native runners, so an Intel Mac has an installer again after the app went
   Apple-silicon-only; the auto-update channel manifest is written per arch so
-  the two builds no longer overwrite each other's update feed (CHOO-2195).
+  the two builds no longer overwrite each other's update feed.
 
 #### Changed
 
 - **Windows builds are now signed** with Azure Trusted Signing, so the installer
-  and app no longer trip SmartScreen's unknown-publisher warning (CHOO-1468).
+  and app no longer trip SmartScreen's unknown-publisher warning.
 - Local-server mode now bundles and pulls **switch-core `0.17.2`** (was
   `0.17.1`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
   current core release.
 - The add-agent addressing control is renamed **"Who can talk to your agent"**,
   and its Settings section now unfolds itself when the owner-only default would
   reach nobody, so the warning that the agent will answer no one on that
-  messaging app is visible instead of hidden in the fold (CHOO-2173).
+  messaging app is visible instead of hidden in the fold.
 
 #### Fixed
 
@@ -928,13 +920,11 @@ version of their own to them without also giving them a release of their own.
   booted, greeted, and never answered. It now retries until the connection
   closes, and a pty accepts injected input only once the runtime has delivered
   the session's opening prompt, so the trigger can't be appended to that prompt
-  and sent as one (CHOO-2173).
+  and sent as one.
 - The agent tree no longer highlights every copy of an open room, and the
-  titlebar breadcrumb shows the agent's own icon rather than its provider logo
-  (CHOO-2173).
+  titlebar breadcrumb shows the agent's own icon rather than its provider logo.
 - User-facing error messages across the app were audited and rewritten to say
-  what happened and what to do, rather than surfacing raw internal errors
-  (CHOO-2060).
+  what happened and what to do, rather than surfacing raw internal errors.
 - Two Switch Console installs sharing a host no longer destroy each other's
   agents. Per-agent credentials live at `.switch/agents/<name>.json`, keyed by
   name alone, and each install's uniqueness check only sees its own database —
@@ -964,7 +954,7 @@ version of their own to them without also giving them a release of their own.
 - Give an agent a custom icon. The add-agent dialog and an agent's settings
   carry an icon picker — set, change, or clear it; cleared means an icon
   generated from the agent's name. Icons render in the sidebar, the agent pages
-  and dialogs, and existing agents are backfilled on first run (CHOO-2171).
+  and dialogs, and existing agents are backfilled on first run.
 
 #### Changed
 
@@ -977,11 +967,11 @@ version of their own to them without also giving them a release of their own.
 - **Collapse all** collapses again. It cleared state the redesigned sidebar no
   longer reads, so nothing moved; it now names the rows to collapse. Clearing
   that state had also been dropping Next/Previous Session's list of visible
-  sessions, which stops (CHOO-2173).
+  sessions, which stops.
 - A sidebar session row's **actions menu acts** — Delete and Archive ran but the
   row's own click handler reopened the session on top of them, so they looked
   inert (right-click was unaffected because it is a sibling of the row). The
-  guard now lives in the shared popup (CHOO-2173).
+  guard now lives in the shared popup.
 
 ### [0.26.0] - 2026-08-16
 
@@ -991,92 +981,89 @@ version of their own to them without also giving them a release of their own.
   material surface with the sidebar sitting on it and the main panel floating
   above as an inset card with a hairline and a soft shadow, using the design
   spec's surface/material tokens and corner radii. Home is deliberately left for
-  a later pass (CHOO-2164).
+  a later pass.
 - **A server is now a workspace, and you switch between them.** The list of
   servers that sat in the sidebar has been replaced by a switcher at the top,
   showing the one you are in and opening onto the rest — each with where it
   runs and whether it is reachable. Everything below it already belonged to
   that server; now the sidebar says so. Under the switcher is that server's
   Home, which is the page you used to reach by clicking the server in the
-  list, and the titlebar names the path to it (CHOO-2158).
+  list, and the titlebar names the path to it.
 - The session list is a section of its own, headed **Sessions**, with the
   grouping control labelled as what it is — group by **By Agent** or **By
   Room** — rather than sitting alone at the top of the tree where it read as
-  the sidebar's whole navigation (CHOO-2158).
+  the sidebar's whole navigation.
 - The welcome screen is reachable from the switcher as **About Switch**, as
   well as from the Switch mark at the bottom of the sidebar. With no servers
-  added, the sidebar is just **Add a server** over the setup checklist
-  (CHOO-2158).
+  added, the sidebar is just **Add a server** over the setup checklist.
 - **A server's Home page reads as a dashboard rather than a stack of cards.**
   It opens with the server, where it runs and who you are signed in as, then
   how many agents, rooms and messaging apps are on it, and gives the rest of
-  the page over to the things you act on (CHOO-2158).
+  the page over to the things you act on.
 - **Messaging apps are a table.** Which account is you, whether Switch may
   create channels there, and the app's actions are columns you can read down
   rather than facts to be opened one row at a time. Turning channel creation on
   or off is now in the row instead of behind its menu, and a platform that
   cannot create channels at all says so rather than showing the switch off.
   Unlinking stays in the menu — it is irreversible, and the row is where you
-  press to *change* an account (CHOO-2158).
+  press to *change* an account.
 - The managed stack has a section of its own with a **Restart**, and shows its
   live output, which until now was only visible while adding a server. An
   available switch-core update is announced at the top of the page rather than
   inside that section, and **Reset** sits alone at the bottom, away from Start
-  and Stop (CHOO-2158).
+  and Stop.
 - The Mattermost sign-in details Switch Console generates open in a dialog from
-  the app's row, rather than expanding underneath it (CHOO-2158).
+  the app's row, rather than expanding underneath it.
 - **A server's agents and rooms each have a page.** Under the switcher, next to
   Home, **Your Agents** lists every agent registered on the server with the
   provider it runs, where that is, and how many of the server's rooms it is in;
   **Your Rooms** lists the rooms with the messaging app each is bridged to and
   how many agents are in it. Both start a session or add a member from the row,
   and carry the same actions the sidebar rows do. Until now the only way to see
-  either as a list was to scroll the sidebar tree (CHOO-2158).
+  either as a list was to scroll the sidebar tree.
 - **An agent's page opens with the agent.** Its mark, its name, the server it is
   registered on and what it runs, with **Create Session** alongside — where the
   page used to begin at a list of sessions, with the agent named only in the
   titlebar. Sessions are framed as a list, each saying which room it is talking
-  in, or that it is in none (CHOO-2158).
+  in, or that it is in none.
 - **The titlebar says where you are, in full.** A session now reads
   agent / room / session rather than naming its directory and itself, and a room
   is its own heading with its messaging app's mark. An agent's page carries the
-  same connection status and actions menu its server's pages do (CHOO-2158).
+  same connection status and actions menu its server's pages do.
 - Agents are described by their provider's name — **Claude Code**, **Codex** —
-  rather than the `claude` and `codex` they are keyed by (CHOO-2158).
+  rather than the `claude` and `codex` they are keyed by.
 - **Every session in the sidebar has an actions button.** Pin, rename, archive
   and delete were reachable only by right-clicking, which nothing in the
   interface said you could do; they are now on a menu in the row as well. Both
   menus are built from one list, so an action cannot arrive on one and be
-  missing from the other (CHOO-2158).
+  missing from the other.
 - **Expanding a row in the sidebar is now the chevron's job alone**, and the
   chevron has moved to the end of the row, appearing on hover with that row's
   other actions. Opening an agent or a room no longer unfolds it, so reading one
   thing does not rearrange the tree around it, and the agent's provider mark
   stays visible instead of turning into a chevron under the pointer. A row with
-  nothing beneath it has no chevron at all (CHOO-2158).
+  nothing beneath it has no chevron at all.
 - **A room in the sidebar no longer counts its agents.** The pair of numbers on
   the row — agents this computer runs, agents it does not — sat where the expand
   control now goes and told you little. The sidebar lists the agents it can
   actually open; a room's full membership is a column on **Your Rooms**, which
-  is the page for reading rooms as a list (CHOO-2158).
+  is the page for reading rooms as a list.
 - **Anything you can click now says so under the pointer.** Buttons, sidebar
   rows, menu entries and tabs show the hand cursor; Tailwind's reset had left
-  them all on the arrow (CHOO-2158).
+  them all on the arrow.
 
 #### Fixed
 
 - **Adding your first server left the app with no workspace selected.** Nothing
-  chose it, so the sidebar stayed on "Add a server" until the next launch
-  (CHOO-2158).
+  chose it, so the sidebar stayed on "Add a server" until the next launch.
 - **Removing the server you were in could leave the app with no workspace at
   all** — no switcher, no destinations, no sidebar tree — because the remembered
   server was still named as the active one. A remembered server that no longer
-  exists now counts as no choice, and the app picks one (CHOO-2158).
+  exists now counts as no choice, and the app picks one.
 - Removing an agent from its own page removed the first agent in that directory,
-  which is a different agent whenever a directory holds more than one
-  (CHOO-2158).
+  which is a different agent whenever a directory holds more than one.
 - The empty session list offered to "spawn a claude session" whatever the agent
-  actually runs (CHOO-2158).
+  actually runs.
 
 ### [0.25.0] - 2026-08-15
 
@@ -1092,7 +1079,7 @@ version of their own to them without also giving them a release of their own.
   about who else is recognised on it rather than a lock — and one you have
   linked yourself offers to unlink instead of linking it twice. A platform with
   no searchable directory says so — and says a message has to arrive first —
-  instead of showing an empty list (CHOO-2137).
+  instead of showing an empty list.
 - The dialog is offered as step 2 of connecting a messaging app, straight after
   the connection succeeds, because that is the one moment the workspace is on
   your mind — **except on an app whose directory cannot be searched**, where it
@@ -1134,8 +1121,7 @@ version of their own to them without also giving them a release of their own.
   the same **Messaging apps** row that connects one. It is not a pause: the
   server deletes every Switch room on that app before removing it, so the rooms
   and their conversations go with it, and an app another admin has already
-  removed says so rather than reporting a disconnect that never happened
-  (CHOO-2137).
+  removed says so rather than reporting a disconnect that never happened.
 
 #### Changed
 
@@ -1184,13 +1170,13 @@ version of their own to them without also giving them a release of their own.
   and its event — along with the hardcoded third-party Discord webhook it posted
   to. The webhook arrived with the initial emdash import and is already revoked
   upstream. **Help → Report Issue** remains the way to send us something; it
-  opens an issue on this repository (CHOO-2040).
+  opens an issue on this repository.
 
 #### Fixed
 
 - **A session on a remote agent now opens at the size of the pane it opens
   into**, instead of a fraction of it that only corrected itself when the window
-  was resized or the session was switched away from and back (CHOO-2066). A
+  was resized or the session was switched away from and back. A
   remote session opens its terminal over SSH, and the renderer mounts and
   measures its pane partway through that: the measurement arrived after the
   spawn size had been read and before there was a PTY to resize, so it was
@@ -1240,11 +1226,11 @@ version of their own to them without also giving them a release of their own.
   conversation, which otherwise goes wherever your own config sends it.
 - Telegram brand icon, platform label and setup-guide link, so Telegram-bridged
   rooms show the "open channel" button and the attach form links the right guide
-  (CHOO-1686). Telegram bot tokens are also redacted from the diagnostic logs.
+ . Telegram bot tokens are also redacted from the diagnostic logs.
 
 #### Fixed
 - Opening a room from a deeplink expands the sidebar groups hiding it
-  (CHOO-1686). The reveal ran once, before the room a session belongs to had
+ . The reveal ran once, before the room a session belongs to had
   loaded, and never again — so the view routed correctly to a row that stayed
   collapsed. Affects any bridge, not only Telegram.
 - Two Switch Console installs sharing an agent host no longer trade the sidecar
@@ -1328,7 +1314,7 @@ version of their own to them without also giving them a release of their own.
   from the **Advanced configuration** section in its Settings tab — the same
   section Claude agents already had. Model, reasoning effort and instructions
   were previously write-once in the add-agent dialog, with no way to edit them
-  (CHOO-1985); **verbosity**, **reasoning summary** and **web search** are newly
+ ; **verbosity**, **reasoning summary** and **web search** are newly
   exposed, and reasoning effort gains `none`. Each option was checked against the
   Codex binary's own config validation rather than assumed.
 - Leaving one of those fields blank is not the same as choosing its default:
@@ -1416,15 +1402,14 @@ version of their own to them without also giving them a release of their own.
   nominal (#207).
 - Settings is reachable again. A retired Settings tab left in the view registry
   could be selected and then render nothing, stranding the whole Settings page;
-  the retired tab is now handled and navigation falls back to a valid tab
-  (CHOO-2106).
+  the retired tab is now handled and navigation falls back to a valid tab.
 
 ### [0.22.0] - 2026-08-12
 
 #### Added
 - Linux **arm64** desktop artifacts are now built and published alongside x64 —
   AppImage, deb, and rpm (#202).
-- **Windows x64** releases are now built and published (unsigned) (CHOO-1468).
+- **Windows x64** releases are now built and published (unsigned).
 
 #### Changed
 - The Codex session runtime version is now derived from the artifact registry
@@ -1435,7 +1420,7 @@ version of their own to them without also giving them a release of their own.
 
 #### Changed
 - The private-repo machinery is gone now that the repository and its packages are
-  public (CHOO-2023). The updater no longer gates on a `gh` token or a private
+  public. The updater no longer gates on a `gh` token or a private
   feed, so every user receives updates and the `auth-required` state is removed;
   managed-server image pulls drop `docker login ghcr.io` and the remote
   `.ghcr-token` forwarding; remote-host setup drops its interactive `gh:auth`
@@ -1478,8 +1463,7 @@ version of their own to them without also giving them a release of their own.
   identity deliberately keep the `switchdash` name (app id, userData directory,
   `switchdash://` scheme, npm packages, `SWITCHDASH_*` env vars) so an existing
   install updates in place rather than being stranded. The source tree moved from
-  `dash/` to `console/` and the release tag prefix is now `switch-console-v*`
-.
+  `dash/` to `console/` and the release tag prefix is now `switch-console-v*`.
 - Local-server mode now bundles and pulls **switch-core `0.13.0`** (was
   `0.12.3`): the app's bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised so a
   managed local stack runs the current core release.
@@ -1548,8 +1532,7 @@ version of their own to them without also giving them a release of their own.
   to the person who clicked instead of discarding it.
 - The bundled chat's sign-in prompt no longer offers to sign in "on your phone".
   The managed stack publishes onto `127.0.0.1` and the URL shown is a `localhost`
-  one, which no other device can reach, so it now says "on this computer"
-.
+  one, which no other device can reach, so it now says "on this computer".
 - The server page no longer sits on _"Checking sign-in options…"_ forever after
   connectivity returns. Which login methods a server offers was read once when
   the page mounted, and a read that failed was never retried, so a blip left the
@@ -1570,13 +1553,11 @@ version of their own to them without also giving them a release of their own.
   an action that could not work. Unreachable is now modelled apart from
   signed-out, so the rooms list also stops reporting an unreachable server as
   merely needing sign-in. A server whose data is unavailable shows a red dot
-  rather than amber, for both causes: neither is a transitional state
-.
+  rather than amber, for both causes: neither is a transitional state.
 - A directory that already holds agents for one Switch server can now onboard its
   agents to another. "Already onboarded" was judged per directory rather than per
   server, so every candidate was filtered out as a duplicate and the modal offered
-  an empty list — of agents that existed, on a server that did not have them
-.
+  an empty list — of agents that existed, on a server that did not have them.
 - The sidebar no longer draws a directory's agents under a server they do not
   belong to. A directory resolved to a single server — whichever of its agents was
   returned first — and then every agent in it was rendered under that one, so
@@ -1596,8 +1577,7 @@ version of their own to them without also giving them a release of their own.
   `.claude/settings.local.json` took the detected-agent branch, verified that
   foreign agent against the current server, failed, and disabled the only button
   on screen — with the onboardable agents listed above it. The onboard action now
-  takes precedence, and a detected agent belonging to another server says so
-.
+  takes precedence, and a detected agent belonging to another server says so.
 - The Add Agent modal no longer shows the create form, or the existing-agents
   list, before an agent type is picked. Both depend on the type — it decides
   which agents can be brought in and how a new one runs — so the form asked for a
@@ -1628,13 +1608,11 @@ version of their own to them without also giving them a release of their own.
   while carrying the same risk as a downgrade.
 - CI verifies the bundled standalone compose is in step with the repo's copy.
   Nothing checked before — the two could drift with only a comment asking
-  nicely, which is how the sync script once silently stopped running
-.
+  nicely, which is how the sync script once silently stopped running.
 - The host-unreachable panel now also shows on a location that mounted while its
   host was up, not only one that never mounted. Such a location stayed `ready`
   and kept every control live over a dead SSH transport — the sidebar showed the
-  trouble icon, the main pane did not; it restores itself when the host returns
-.
+  trouble icon, the main pane did not; it restores itself when the host returns.
 
 #### Security
 - Bump bundled dependencies for two advisories — DOMPurify `SAFE_FOR_TEMPLATES`
@@ -1657,8 +1635,7 @@ version of their own to them without also giving them a release of their own.
 #### Fixed
 - Restore sidebar drag-to-reorder for agents and rooms.
 - Set `GATEWAY_PUBLIC_URL` so "Open in SwitchDash" links work; redact the
-  credential key names configs actually use; vendor the real Teams logo
-.
+  credential key names configs actually use; vendor the real Teams logo.
 
 ### [0.19.1] - 2026-08-07
 
@@ -1724,8 +1701,7 @@ version of their own to them without also giving them a release of their own.
   switchdash-written profile, and a hand-run Codex session had the room-workflow
   skill but none of the tools it describes. The plugin also auto-approves the
   Switch tools, which no `approval_policy` setting could do: measured against
-  codex-cli 0.146.0, that setting does not govern MCP tool calls at all
-.
+  codex-cli 0.146.0, that setting does not govern MCP tool calls at all.
 
   ⚠️ Codex upgrades a plugin only when a user clicks Update in Settings and
   caches each version separately, so an install still on an older connector has
@@ -1748,8 +1724,7 @@ version of their own to them without also giving them a release of their own.
 
 #### Changed
 - The per-agent Codex profile carries only model, reasoning effort and
-  instructions. An agent that sets none of them no longer gets a profile at all
-.
+  instructions. An agent that sets none of them no longer gets a profile at all.
 
 ### [0.18.2] - 2026-08-05
 
@@ -1951,8 +1926,7 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 - Client no longer deletes healthy sessions when it briefly can't reach the
-  sidecar; fixes cross-build kill loops and deaf clients after a sidecar restart
-.
+  sidecar; fixes cross-build kill loops and deaf clients after a sidecar restart.
 
 ### [0.13.1] - 2026-07-26
 
@@ -2005,10 +1979,8 @@ version of their own to them without also giving them a release of their own.
 - Agent error indicator with a retry button.
 
 #### Changed
-- Discord bridge polish: deeplink redirect, room icon, and outbound image relay
-.
-- Relicensed to Apache-2.0 + Commons Clause, with a CLA gate for contributions
-.
+- Discord bridge polish: deeplink redirect, room icon, and outbound image relay.
+- Relicensed to Apache-2.0 + Commons Clause, with a CLA gate for contributions.
 
 ### [0.11.0] - 2026-07-20
 
@@ -2023,8 +1995,7 @@ version of their own to them without also giving them a release of their own.
 - Silent session token refresh — sessions renew before the 24h expiry instead
   of bouncing to sign-in; the managed local server is always-signed-in, and
   its gateway web page opens pre-authenticated in-app.
-- Editing a server's API URL cascades to its member agents' configs
-.
+- Editing a server's API URL cascades to its member agents' configs.
 
 #### Fixed
 - Remote sessions recover their room connection after an app restart or
@@ -2166,15 +2137,13 @@ skipped to `0.3.0` by request.
 #### Changed
 - An unexpanded `${SWITCH_*}` placeholder now counts as absent rather than as a
   value, so a Claude connector session falls through to the store instead of
-  dying on its own placeholder. Half a set of vars still refuses to start
-.
+  dying on its own placeholder. Half a set of vars still refuses to start.
 
 ### [0.1.6] - 2026-08-09
 
 #### Added
 - Declares its `agent-protocol` range, artifact name and release version on the
-  event stream it already opens, so switch-core can record what is connecting
-.
+  event stream it already opens, so switch-core can record what is connecting.
 - Logs the server's declaration from the `connection_state` frame, so which
   versions were actually talking to each other is answerable from a bug report
   rather than a guess.
@@ -2206,7 +2175,7 @@ by Switch Console rather than published on its own.
 #### Fixed
 - The remote session spawner clears the CLI first-run prompts that would
   otherwise leave a spawned session alive but never answering, matching the
-  desktop-side fix (CHOO-2213). Behavior change only — the client↔sidecar wire
+  desktop-side fix. Behavior change only — the client↔sidecar wire
   (ready line, endpoints, on-disk layout) is unchanged, so the major stays `1`.
 
 ### [1.9.3]
@@ -2245,7 +2214,7 @@ by Switch Console rather than published on its own.
 
 #### Changed
 - Dropped the npm-registry-auth machinery (`npm-registry-auth.ts`): now that the
-  agent runtime is published to public npmjs (CHOO-2021, CHOO-2023), the sidecar
+  agent runtime is published to public npmjs, the sidecar
   no longer needs a token to `npx` it. Behavior change only — the
   client↔sidecar wire (ready line, endpoints, on-disk layout) is unchanged, so
   the major stays at `1`.
@@ -2261,8 +2230,7 @@ by Switch Console rather than published on its own.
   switchdash already in the field judges compatibility on the major and parses
   two parts, so `1.7` and `1.8.0` order correctly and neither side
   replaces the other. `2.0.0` would have every existing install treat this
-  sidecar as incompatible and replace it while a newer install replaces it back
-.
+  sidecar as incompatible and replace it while a newer install replaces it back.
 - The version no longer carries compatibility. It says which release is running;
   what the sidecar can speak is the `sidecar-control` range it now declares in
   its ready file.
@@ -2288,7 +2256,7 @@ compatibility signal. History for those is in the git log.
 
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.2` (was `0.3.1`) — picks up the
-  runtime's store-based credential resolution (CHOO-1862); the plugin version
+  runtime's store-based credential resolution; the plugin version
   bumps so installs re-download.
 
 #### Fixed
@@ -2372,7 +2340,7 @@ compatibility signal. History for those is in the git log.
   exists, is registered on the server, and must not be called yet, and the
   guidance to delegate rather than message is removed. The scoped-addressing
   material moves to its own section. Documentation only — the MCP/HTTP tool
-  surface is unchanged (CHOO-1418).
+  surface is unchanged.
 
 ### [0.9.4] - 2026-08-15
 
@@ -2381,7 +2349,7 @@ compatibility signal. History for those is in the git log.
 - The room-workflow skill describes owner-only addressing — the new default for
   agents created in Switch Console — and states that `send_targeted_message`
   now fails outright for a disallowed sender, and that in-room commands are
-  covered by the policy too (CHOO-2137).
+  covered by the policy too.
 
 ### [0.9.3] - 2026-08-14
 
@@ -2389,7 +2357,7 @@ compatibility signal. History for those is in the git log.
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
   uploads, chats cannot be created by a bot at all (so `create_room` fails there
   for every channel type), forum topics thread natively, and formatting has no
-  tables and a 4096-character cap (CHOO-1686). It also warns that a Telegram
+  tables and a 4096-character cap. It also warns that a Telegram
   room may be mention-only, where unaddressed talk never reaches Switch at all
   and `read_context` cannot recover it — the one place the skill's "pull the
   rest with `read_context`" promise does not hold. The slash-command and
@@ -2443,7 +2411,7 @@ compatibility signal. History for those is in the git log.
 
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.0` — the runtime moved to public
-  npmjs under the `@sandboxaq` scope (CHOO-2021), so `npx` no longer needs a
+  npmjs under the `@sandboxaq` scope, so `npx` no longer needs a
   GitHub token. The scope change had shipped without a plugin version bump and so
   never reached installs; this release carries it and bumps the plugin version so
   installs re-download.
@@ -2482,11 +2450,11 @@ manifest history.
 
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.2` (was `0.3.1`) — picks up the
-  runtime's store-based credential resolution (CHOO-1862); the plugin version
+  runtime's store-based credential resolution; the plugin version
   bumps so installs re-download.
 - The room-workflow skill lists the full set of reasons `switch_unavailable` can
   be the only tool, and points at the `configure` skill as the remedy for the
-  ones it can fix (CHOO-1862).
+  ones it can fix.
 
 ### [0.3.6] - 2026-08-18
 
@@ -2497,7 +2465,7 @@ manifest history.
   exists, is registered on the server, and must not be called yet, and the
   guidance to delegate rather than message is removed. The scoped-addressing
   material moves to its own section. Documentation only — the MCP/HTTP tool
-  surface is unchanged (CHOO-1418).
+  surface is unchanged.
 
 #### Fixed
 
@@ -2523,7 +2491,7 @@ manifest history.
 - The room-workflow skill describes owner-only addressing — the new default for
   agents created in Switch Console — and states that `send_targeted_message`
   now fails outright for a disallowed sender, and that in-room commands are
-  covered by the policy too (CHOO-2137).
+  covered by the policy too.
 
 ### [0.3.4] - 2026-08-14
 
@@ -2531,7 +2499,7 @@ manifest history.
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
   uploads, chats cannot be created by a bot at all (so `create_room` fails there
   for every channel type), forum topics thread natively, and formatting has no
-  tables and a 4096-character cap (CHOO-1686). It also warns that a Telegram
+  tables and a 4096-character cap. It also warns that a Telegram
   room may be mention-only, where unaddressed talk never reaches Switch at all
   and `read_context` cannot recover it — the one place the skill's "pull the
   rest with `read_context`" promise does not hold. The slash-command and
@@ -2556,7 +2524,7 @@ manifest history.
 - A `configure` skill: the standalone setup path. Registers this Codex instance
   as a Switch agent and writes `.switch/agents/<name>.json` in the working
   directory, so `codex` reaches Switch with no Switch Console involved
-  (CHOO-1936). It writes no MCP config — the plugin's `.mcp.json` stays the
+ . It writes no MCP config — the plugin's `.mcp.json` stays the
   single server definition and the runtime resolves its own identity from the
   store (`switch-agent-runtime` 0.2.0+).
 
@@ -2594,12 +2562,12 @@ manifest history.
 
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.0` — the runtime moved to public
-  npmjs under the `@sandboxaq` scope (CHOO-2021); the scope change had shipped
+  npmjs under the `@sandboxaq` scope; the scope change had shipped
   without a plugin version bump and never reached installs, so this release
   carries it and bumps the plugin version to force re-download.
 - Drop `SWITCHDASH_GITHUB_TOKEN` and `npm_config_userconfig` from the forwarded
   `env_vars` in `.mcp.json` — `npx` no longer needs a GitHub token now that the
-  runtime is on public npmjs (CHOO-2023).
+  runtime is on public npmjs.
 - Skill updated for `read_context`'s new response shape — `truncated` /
   `oldest_timestamp` and the per-entry `kind`.
 
@@ -2630,7 +2598,7 @@ the app version that wrote it rather than a version of its own.
 
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.2` (was `0.3.1`) — picks up the
-  runtime's store-based credential resolution (CHOO-1862). The pin lives in
+  runtime's store-based credential resolution. The pin lives in
   `distribution.ts` and `opencode.json`; the version bumps so a re-written
   install is stamped fresh.
 
@@ -2643,7 +2611,7 @@ the app version that wrote it rather than a version of its own.
   exists, is registered on the server, and must not be called yet, and the
   guidance to delegate rather than message is removed. The scoped-addressing
   material moves to its own section. Documentation only — the MCP/HTTP tool
-  surface is unchanged (CHOO-1418).
+  surface is unchanged.
 
 ### [0.1.2] - 2026-08-15
 
@@ -2652,7 +2620,7 @@ the app version that wrote it rather than a version of its own.
 - The room-workflow skill describes owner-only addressing — the new default for
   agents created in Switch Console — and states that `send_targeted_message`
   now fails outright for a disallowed sender, and that in-room commands are
-  covered by the policy too (CHOO-2137).
+  covered by the policy too.
 
 ### [0.1.1] - 2026-08-14
 
@@ -2660,7 +2628,7 @@ the app version that wrote it rather than a version of its own.
 - The room-workflow skill covers Telegram: attachments cross the bridge as real
   uploads, chats cannot be created by a bot at all (so `create_room` fails there
   for every channel type), forum topics thread natively, and formatting has no
-  tables and a 4096-character cap (CHOO-1686). It also warns that a Telegram
+  tables and a 4096-character cap. It also warns that a Telegram
   room may be mention-only, where unaddressed talk never reaches Switch at all
   and `read_context` cannot recover it. The slash-command and attachment
   platform lists now also name Discord.

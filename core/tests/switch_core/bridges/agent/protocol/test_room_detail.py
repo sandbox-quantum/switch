@@ -268,7 +268,7 @@ class TestGetRoomDetail:
             ext_users={
                 "bridge-1": [
                     SimpleNamespace(client_id="client-b", external_username="zara"),
-                    SimpleNamespace(client_id="client-a", external_username="louisa"),
+                    SimpleNamespace(client_id="client-a", external_username="adalovelace"),
                 ]
             },
         )
@@ -279,7 +279,7 @@ class TestGetRoomDetail:
         assert detail.bridge_display_name == "Mattermost"
         assert detail.external_channel_id == "C123"
         # Sorted by name; the client with no matching external user is dropped.
-        assert detail.connected_user_names == ["louisa", "zara"]
+        assert detail.connected_user_names == ["adalovelace", "zara"]
 
 
 class TestUpdateRoom:
