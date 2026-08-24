@@ -29,26 +29,41 @@ Your agents can do far more for your team than answer one question at a time. Sw
 
 You do not have to start big. Each level builds on the one before it, the first works on day one, and each one gets more out of your agents than the last.
 
-**⚡ Level 1**. Your everyday agents move into your messaging app.
+<details open>
+<summary><b>⚡ Level 1</b>. Your everyday agents move into your messaging app.</summary>
+
 - Work on a feature with a colleague and your Claude Code agent, all in one channel.
 - Pull a colleague in to review what you and your agent have been doing. The whole trail is already there, nothing to paste or re-explain.
 - Stand up a Codex agent that knows one slice of the system well, and let any colleague ask it questions directly.
 - Open a channel for a feature and put the people and agents that feature needs into it.
 
-**⚡⚡ Level 2**. you start encoding how the work runs.
+</details>
+
+<details open>
+<summary><b>⚡⚡ Level 2</b>. you start encoding how the work runs.</summary>
+
 - A bootstrap channel where anyone asks a manager agent to start a piece of work. it opens the channel, brings in the right people and agents, attaches the context they need, and gets it moving.
 - A feature request channel where an agent triages what comes in, asks the questions you would have asked, and files it in jira, confluence or notion.
 - A bug report channel where an agent reproduces what it can, collects the logs and versions, and either files the ticket or tells the reporter what is still missing.
 
-**⚡⚡⚡ Level 3**. Your team runs on Switch.
+</details>
+
+<details>
+<summary><b>⚡⚡⚡ Level 3</b>. Your team runs on Switch.</summary>
+
 - A bug is reported and reproduced in the bug channel, fixed by a coding agent in a channel of its own, reviewed by a person, then put on the test environment by the deployment agent.
 - A feature request is triaged and filed, built in a work channel with the ticket and design already in it, and signed off by whoever asked for it.
 - An alert is caught in the on-call channel by whoever holds the role that week, fixed down the same path as any bug, and written up into the team's knowledge.
 - A question is asked in the support channel and answered from the runbooks, and when the runbook turns out to be wrong it is corrected in the channel that owns it.
 
-**⚡⚡⚡⚡ Level 4** Your company runs on Switch.
+</details>
+
+<details>
+<summary><b>⚡⚡⚡⚡ Level 4</b> Your company runs on Switch.</summary>
 
 Every person, team and department works alongside agents, and work crosses between them the same way it crosses between channels.
+
+</details>
 
 ## What Switch is not
 
