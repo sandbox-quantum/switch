@@ -213,6 +213,23 @@ and have it write there first.
 
 ---
 
+## "I changed the agent's folder and it still runs in the old one"
+
+**Where an agent runs is fixed when it is created.** Switch Console asks for a directory on
+the new-agent dialog and never asks again; its settings let you change the instructions, the
+model, auto-session and who may address it, but not the folder. To move an agent, remove it
+and add it again in the new place.
+
+What makes this confusing is that a **"Repo dir" field does exist and is editable** — on the
+agent's page in the web dashboard, and through the agent-update tool. It is not the same
+thing. It only feeds the copy-and-paste command the dashboard offers for starting a session
+by hand. Change it and the agent carries on exactly where it was, with the dashboard now
+telling you something untrue.
+
+So: pick the directory carefully at creation, and treat that field as a display detail.
+
+---
+
 ## "The answer was confidently wrong"
 
 **A checkout lies.** Pull before citing what the code or docs say. This is the most common
