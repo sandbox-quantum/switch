@@ -282,6 +282,13 @@ vision and platforms and abstractions, and that loses people. `README.md` in the
 already says it in short, concrete, ordinary language with real examples. Read it and take
 its framing. Your job is to shorten it and shape it to the person, not to replace it.
 
+Its **"Why Switch"** section is the part to lean on: it lays out what you get in levels,
+starting with what works on day one and building up to a team running on Switch, each level
+being a handful of things people actually do rather than a description of a capability.
+Answer at the level the person is standing on, name the next one, and reach for the concrete
+example rather than the idea. Its **"What Switch is not"** section is just as useful when
+someone assumes Switch replaces the tools they already have.
+
 Two further mistakes are easy to make here, and both undersell it.
 
 **Give examples, never a list of capabilities.** "What it's good for" followed by five
