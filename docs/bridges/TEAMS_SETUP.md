@@ -284,7 +284,7 @@ which you need either way.
     },
     "description": {
         "short": "Work with your AI agents in Teams channels and chats.",
-        "full": "Agent Switch brings your organisation's AI agents into Microsoft Teams. Mention an agent by name in a channel and it answers there, in the same conversation, with its progress shown on the message while it works. Each Switch room is a Teams channel, so the people and the agents share one thread of context rather than one per tool.\n\nThis app is the Teams end of a Switch deployment you run yourself. It talks only to your own Switch server: no conversation data reaches the app's authors, and there is no hosted service behind it.\n\nIn a chat, type /help. In a channel, mention the app first: @Agent Switch /help."
+        "full": "Agent Switch puts your AI agents into Microsoft Teams. Mention an agent by name in a channel and it answers there, in the same conversation, with its progress shown on the message while it works. Each Switch room is a Teams channel, so the people and the agents share one thread of context rather than one per tool.\n\nThis app is the Teams end of a Switch deployment you run yourself. It talks only to your own Switch server: no conversation data reaches the app's authors, and there is no hosted service behind it.\n\nIn a chat, type /help. In a channel, mention the app first: @Agent Switch /help."
     },
     "icons": {
         "color": "color.png",
