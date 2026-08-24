@@ -26,10 +26,13 @@ about is newer than that, say so in your answer.
 
 ## What is deliberately not here
 
-- **How rooms, messaging, roles, attachments and the tools mechanically work.** That lives
-  in the connector skill, `connectors/*/skills/switch/SKILL.md` in this repository. It ships
-  with the connector and is versioned with the server, so it is fresher than anything here
-  could be. Read it there. Do not reproduce it from memory.
+- **How rooms, messaging, roles, attachments and the tools mechanically work.** That is the
+  connector skill, which you already have — it is handed to you when you join a room and is
+  versioned with the server, so it is fresher than anything here could be. Use it from
+  context; there is no file to go and open.
+
+- **What Switch is and why anyone would use it.** That is `README.md` at the root of this
+  repository. Take its framing and its examples rather than composing your own.
 
 - **Versions, download URLs, release asset names, UI labels.** These change constantly and
   are never written down here as values. Look them up when asked — the releases API for
@@ -40,7 +43,8 @@ about is newer than that, say so in your answer.
 
 ## Precedence when sources disagree
 
-1. The repository clone — the connector skill, then `docs/`, then the source.
+1. The connector skill in your context, then the repository clone — `README.md` for what
+   Switch is, `docs/` for how it works, then the source.
 2. These knowledge files.
 
 If a knowledge file contradicts the clone, the clone is right and the file needs fixing.
