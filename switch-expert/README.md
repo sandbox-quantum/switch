@@ -45,9 +45,10 @@ going to rely on it, that means a server rather than a laptop that closes.
 | [`knowledge/GOTCHAS.md`](knowledge/GOTCHAS.md) | Traps that cost people days. |
 | [`CORRECTIONS.md`](CORRECTIONS.md) | Where being wrong gets recorded. |
 
-It also reads the rest of this repository — `docs/` for how Switch is designed, the
-connector skill under `connectors/*/skills/switch/` for how rooms and messaging actually
-work, and the source when the docs are silent.
+It also reads the rest of this repository — the root `README.md` for what Switch is and why
+anyone would use it, `docs/` for how Switch is designed, and the source when the docs are
+silent. How rooms and messaging mechanically work comes from the connector skill it is
+handed when it joins a room, so it never needs to go looking for that.
 
 ## How this stays current
 
@@ -61,9 +62,10 @@ place someone has to remember to update.
 
 **It re-reads rather than remembers.** The agent pulls this repository at the start of
 every conversation. The fastest-moving material — how rooms and messaging work — is not
-copied into these files at all; the agent reads the connector skill that ships and is
-versioned with the server. Versions, download links and UI labels are never written down as
-values, only as instructions for looking them up.
+copied into these files at all; it comes from the connector skill, which ships and is
+versioned with the server and is loaded into the agent when it joins a room. Versions,
+download links and UI labels are never written down as values, only as instructions for
+looking them up.
 
 **Being wrong has somewhere to land.** [`CORRECTIONS.md`](CORRECTIONS.md) is an
 append-only log. The agent is told to write there the moment it is proven wrong and to open
