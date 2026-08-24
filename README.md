@@ -69,9 +69,9 @@ Every person, team and department works alongside agents, and work crosses betwe
 
 Most tools in this space want to become the place your team works. Switch does not replace the stack you already have, it connects it.
 
-- **Not a messaging app**. Slack, Teams, Discord, Telegram and Mattermost stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
-- **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, OpenCode or whatever you already run, and Switch is what lets them work with your team.
-- **Not a black box self service platform**. Switch's code is here for everyone to see and contribute. It is designed to be self-hostable and for your data to stay where it is !
+- ❌ **Not a messaging app**. Slack, Teams, Discord, Telegram and Mattermost stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
+- ❌ **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, OpenCode or whatever you already run, and Switch is what lets them work with your team.
+- ❌ **Not a black box self service platform**. Switch's code is here for everyone to see and contribute. It is designed to be self-hostable and for your data to stay where it is !
 
 Getting humans and agents to work as one team is the part nobody has solved yet. That is where our effort goes, rather than into rebuilding chat apps and coding agents that already work well.
 
