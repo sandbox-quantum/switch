@@ -979,6 +979,7 @@ class TelegramAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Render runtime state as persistent, deletable status messages.
 

@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from switch_core.clients.agent_client import AUTO_REPLY_FLAG, AgentClient
+from switch_core.clients.agent_client import (
+    _STARTING_SESSION_MESSAGE,
+    AUTO_REPLY_FLAG,
+    AgentClient,
+)
 
 
 class _Recorder:
@@ -52,7 +56,7 @@ def _fake_self(
     async def _is_available(_room_id: str) -> bool:
         return False  # no live session → triggers the auto-reply
 
-    async def _reply_when_unavailable_here(_meta: object) -> str:
+    async def _reply_when_unavailable_here(_meta: object, _asker_handle: str) -> str:
         return unavailable_reply
 
     ns = SimpleNamespace(
@@ -161,17 +165,18 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
     assert "@operator" in body
 
 
-class TestUnavailableReplyGoesWhereItWasAsked:
+class TestStartingSessionNoticeGoesWhereItWasAsked:
     """Where "Starting a session to handle this" lands (CHOO-2173).
 
-    It used to reply onto the triggering message, which for a message at the
-    conversation root means opening a thread off it. So asking at the root got
-    a one-line notice tucked into a new thread, away from where the asker was
-    looking and away from the answer that follows.
+    It is a preamble, not an answer: the real reply follows it in the same
+    place. It used to reply onto the triggering message, which for a message at
+    the conversation root means opening a thread off it — so asking at the root
+    got a one-line notice tucked into a new thread, away from where the asker
+    was looking and away from the answer that follows.
 
     This reverses CHOO-586, which made the root case start a thread on purpose.
-    The reply is now placed the same way the typing indicator already is: in the
-    thread when asked in a thread, at the root when asked at the root.
+    The notice is now placed the same way the typing indicator already is: in
+    the thread when asked in a thread, at the root when asked at the root.
     """
 
     @pytest.mark.asyncio
@@ -180,7 +185,9 @@ class TestUnavailableReplyGoesWhereItWasAsked:
         room = SimpleNamespace(room_id="!matrix:server")
 
         await AgentClient.on_message(
-            _fake_self(send_message), room, _event(thread_id=None)
+            _fake_self(send_message, unavailable_reply=_STARTING_SESSION_MESSAGE),
+            room,
+            _event(thread_id=None),
         )
 
         assert len(send_message.calls) == 1
@@ -191,6 +198,44 @@ class TestUnavailableReplyGoesWhereItWasAsked:
     async def test_asked_in_a_thread_it_stays_in_that_thread(self) -> None:
         # The other half of the rule — replying at the root here would strand
         # the notice away from the conversation it belongs to.
+        send_message = _Recorder()
+        room = SimpleNamespace(room_id="!matrix:server")
+
+        await AgentClient.on_message(
+            _fake_self(send_message, unavailable_reply=_STARTING_SESSION_MESSAGE),
+            room,
+            _event(thread_id="$thread-root"),
+        )
+
+        assert send_message.calls[0]["thread_root_id"] == "$thread-root"
+
+
+class TestTerminalReplyThreadsOffTheTrigger:
+    """Where an "I can't help right now" reply lands (CHOO-2344).
+
+    Unlike the starting-session notice, nothing follows it — it IS the answer.
+    And it is bulky: an owner mention plus a paste-ready connect command, for
+    something only one person can act on. At the conversation root that is a
+    wall of text dropped into the channel, so it threads off the message that
+    triggered it instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_asked_at_the_root_it_opens_a_thread_on_the_trigger(self) -> None:
+        send_message = _Recorder()
+        room = SimpleNamespace(room_id="!matrix:server")
+
+        await AgentClient.on_message(
+            _fake_self(send_message), room, _event(thread_id=None)
+        )
+
+        assert len(send_message.calls) == 1
+        assert send_message.calls[0]["thread_root_id"] == "$trigger"
+
+    @pytest.mark.asyncio
+    async def test_asked_in_a_thread_it_stays_in_that_thread(self) -> None:
+        # Already in a thread: the trigger's thread root IS that thread, so it
+        # lands there rather than starting a nested one.
         send_message = _Recorder()
         room = SimpleNamespace(room_id="!matrix:server")
 

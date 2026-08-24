@@ -278,13 +278,12 @@ answers it itself instead of passing it on as an unknown command.
 
 ## Knowing an agent is working on it
 
-Two signals, and which you get depends on the kind of chat.
+Two signals, both in every bridged chat.
 
-**👀 on the message that asked — everywhere.** When an agent starts a turn the
-bot reacts to the message it is answering, and clears the reaction when the
-turn ends. This works in groups, supergroups, channels and 1:1 chats, needs no
-administrator rights, and is the same reaction the Slack bridge uses, so a room
-bridged to either place reads the same.
+**👀 on the message that asked.** When an agent starts a turn the bot reacts to
+the message it is answering, and clears the reaction when the turn ends. It
+needs no administrator rights, and it is the same reaction the Slack and
+Mattermost bridges use, so a room reads the same wherever it is bridged.
 
 It marks the *last thing a person said* in the chat, because outside forum
 topics Telegram has no threads — only reply chains — so there is no thread for

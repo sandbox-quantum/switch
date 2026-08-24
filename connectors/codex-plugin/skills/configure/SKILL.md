@@ -214,8 +214,11 @@ Switch shows room participants a paste-ready command when the agent is
 addressed with no live session:
 
 ```
-cd "<repo_dir>" && codex "connect to switch room <name>"
+cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"
 ```
+
+The prompt names the agent so a session started in a directory holding several
+of them answers `select_agent` without the user having to.
 
 `repo_dir` is what makes it useful — **and for Codex it matters twice over**,
 because the runtime reads the agent store from the session's working directory.
@@ -429,8 +432,8 @@ Be straight with the user; do not imply parity.
 **Works:** the full Switch tool surface (including `send_attachment` /
 `download_attachment`), room participation, threads, tasks, roles, moderation,
 and the offline run command Switch posts — which is a bare
-`cd "<repo_dir>" && codex "connect to switch room <name>"`, so it works as
-written provided `repo_dir` is where the store lives.
+`cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"`, so it works
+as written provided `repo_dir` is where the store lives.
 
 **Does not work, or works differently:**
 

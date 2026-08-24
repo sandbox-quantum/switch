@@ -1,6 +1,6 @@
 {
   "name": "@switch-console/desktop",
-  "version": "0.28.0",
+  "version": "0.30.0",
   "description": "A cross-platform Electron app that orchestrates multiple coding agents in parallel",
   "keywords": [
     "claude",

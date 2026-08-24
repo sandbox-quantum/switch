@@ -711,6 +711,7 @@ class SlackAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Render runtime state as persistent, truly-deletable status messages.
 
@@ -1089,11 +1090,13 @@ class SlackAdapter(CollaborationAdapter):
                         ),
                         agent_name=agent_name,
                         channel_id=channel_id,
+                        stream_key=key,
                     )
                 await self._call_session_api(
                     lambda: client.chat_stopStream(channel=channel_id, ts=closing_ts),
                     agent_name=agent_name,
                     channel_id=channel_id,
+                    stream_key=key,
                 )
                 # The card is a progress indicator, not a record. Once the turn
                 # is over the agent's own reply is the thing worth reading, so
@@ -1151,7 +1154,7 @@ class SlackAdapter(CollaborationAdapter):
         # every time stacked eight identical links under one card.
         first_link = deeplink_url if self._stream_step.get(key) is None else None
         stream_ts = open_ts
-        await self._call_session_api(
+        pushed = await self._call_session_api(
             lambda: client.chat_appendStream(
                 channel=channel_id,
                 ts=stream_ts,
@@ -1159,7 +1162,12 @@ class SlackAdapter(CollaborationAdapter):
             ),
             agent_name=agent_name,
             channel_id=channel_id,
+            stream_key=key,
         )
+        if pushed is None:
+            # The step never landed, so it is not what the card is showing —
+            # and recording it would tell the next one the link had been sent.
+            return
         self._stream_step[key] = step
 
     async def _call_session_api(
@@ -1168,16 +1176,24 @@ class SlackAdapter(CollaborationAdapter):
         *,
         agent_name: str,
         channel_id: str,
+        stream_key: tuple[str, str] | None = None,
     ) -> str | None:
         """Make a session call, routing a refusal through the same give-up path.
 
         Returns the response's `ts` on success (empty string when it has none)
         and None on failure, so a caller that needs the stream's id cannot
-        mistake a refusal for a stream it can append to."""
+        mistake a refusal for a stream it can append to.
+
+        `stream_key` names the card being written to, where there is one, so a
+        card that has gone can be forgotten instead of counted against the app.
+        """
         try:
             result = await call()
         except SlackApiError as e:
             error = str(e.response.get("error", ""))
+            if error == "message_not_found":
+                self._forget_stream(stream_key, agent_name)
+                return None
             self._note_session_failure(
                 error,
                 agent_name,
@@ -1188,6 +1204,24 @@ class SlackAdapter(CollaborationAdapter):
         self._session_failures = 0
         self._sessions_throttled_until = None
         return str(result.get("ts", ""))
+
+    def _forget_stream(self, key: tuple[str, str] | None, agent_name: str) -> None:
+        """Drop a card Slack says is no longer there.
+
+        The card is deleted when a turn ends, so a state report that arrives
+        just behind the teardown writes to something that has gone — as does a
+        card a user deleted by hand. It says nothing about whether this app can
+        host sessions, and counting it as if it did took the card away from
+        every agent in the workspace over one stale thread. The turn falls back
+        to the posted status message, and the next one opens a fresh card.
+        """
+        if key is not None:
+            self._stream_ts.pop(key, None)
+            self._stream_step.pop(key, None)
+            self._session_owner.pop(key, None)
+        logger.debug(
+            _TRACE + "card for %s is gone; forgetting it and carrying on", agent_name
+        )
 
     def _disable_agent_sessions(
         self, error: str, *, retry_in: int | None = None

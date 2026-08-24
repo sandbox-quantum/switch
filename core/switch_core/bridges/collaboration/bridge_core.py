@@ -1518,6 +1518,15 @@ class BridgeCore:
                 event.thread_id
             )
 
+        # The message the agent says it is answering. Resolved whichever way
+        # the status is positioned, so an adapter can mark that message without
+        # also moving the status onto it.
+        anchor_message_ref: str | None = None
+        if event.anchor_event_id is not None:
+            anchor_message_ref = await self._external_post_for_matrix_event(
+                event.anchor_event_id
+            )
+
         # Where a persistent status belongs, which on an adapter that asks for
         # it is the thread the reply will open on the message being worked on.
         anchor_ref = event.thread_id
@@ -1544,6 +1553,7 @@ class BridgeCore:
             deeplink_url=event.deeplink_url,
             detail=event.detail,
             trigger_thread_root_id=trigger_thread_ref,
+            anchor_message_ref=anchor_message_ref,
         )
         await self._follow_reported_anchor(
             channel_id,

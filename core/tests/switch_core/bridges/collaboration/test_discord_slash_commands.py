@@ -450,3 +450,107 @@ def test_dispatch_failure_when_adapter_not_started_is_reported() -> None:
 
     assert len(interaction.edits) == 1
     assert "Failed to run" in interaction.edits[0]
+
+
+# ── Mentions picked from the `@` menu ────────────────────────────────────────
+#
+# A slash option is a text field, and Discord offers its `@` autocomplete inside
+# one. Now that each agent has a role of its own, picking it there is the
+# obvious thing to do — and it submits `<@&123>` markup, not the name it renders
+# as. Left untranslated the command is refused as "not a single name", naming a
+# string the invoker never typed.
+
+
+class _FakeNamed:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _RoleGuild:
+    def __init__(self, roles: dict[int, str], members: dict[int, str]) -> None:
+        self.id = GUILD_ID
+        self._roles = roles
+        self._members = members
+
+    def get_role(self, role_id: int) -> Any | None:
+        name = self._roles.get(role_id)
+        return _FakeNamed(name) if name else None
+
+    def get_member(self, user_id: int) -> Any | None:
+        name = self._members.get(user_id)
+        return _FakeNamed(name) if name else None
+
+
+class _RoleClient:
+    def __init__(self, guild: _RoleGuild) -> None:
+        self._guild = guild
+
+    def get_guild(self, guild_id: int) -> Any | None:
+        return self._guild if guild_id == self._guild.id else None
+
+
+def _adapter_with_roles(
+    roles: dict[int, str] | None = None, members: dict[int, str] | None = None
+) -> DiscordAdapter:
+    adapter = _adapter()
+    adapter._client = _RoleClient(_RoleGuild(roles or {}, members or {}))  # type: ignore[assignment]
+    return adapter
+
+
+def test_an_agent_picked_from_the_menu_reaches_dispatch_as_its_name() -> None:
+    adapter = _adapter_with_roles({1540343032090599435: "switch-expert-v1"})
+    commands = _capture_commands(adapter)
+
+    _invoke(
+        adapter,
+        _FakeInteraction(_FakeChannel()),
+        "invite-agent",
+        agent="<@&1540343032090599435>",
+    )
+
+    assert commands[0].args == "@switch-expert-v1"
+
+
+def test_the_running_notice_shows_the_name_not_the_markup() -> None:
+    adapter = _adapter_with_roles({7: "switch-expert-v1"})
+    _capture_commands(adapter)
+    interaction = _FakeInteraction(_FakeChannel())
+
+    _invoke(adapter, interaction, "invite-agent", agent="<@&7>")
+
+    assert "switch-expert-v1" in interaction.responses[0]["content"]
+    assert "<@&7>" not in interaction.responses[0]["content"]
+
+
+def test_a_person_picked_from_the_menu_resolves_without_having_posted() -> None:
+    # The username cache only knows people who have said something. Someone
+    # picked from the `@` menu may not have.
+    adapter = _adapter_with_roles(members={55: "louis212"})
+    commands = _capture_commands(adapter)
+
+    _invoke(adapter, _FakeInteraction(_FakeChannel()), "reset", target="<@55>")
+
+    assert commands[0].args == "@louis212"
+
+
+def test_a_typed_name_is_still_taken_verbatim() -> None:
+    adapter = _adapter_with_roles({7: "switch-expert-v1"})
+    commands = _capture_commands(adapter)
+
+    _invoke(adapter, _FakeInteraction(_FakeChannel()), "invite-agent", agent="helper")
+
+    assert commands[0].args == "@helper"
+
+
+def test_a_mention_of_something_gone_is_still_refused_clearly() -> None:
+    # Nothing to resolve it to, so it stays markup and hits the existing
+    # "must be a single name" refusal — which is now accurate rather than
+    # misleading.
+    adapter = _adapter_with_roles()
+    commands = _capture_commands(adapter)
+    interaction = _FakeInteraction(_FakeChannel())
+
+    _invoke(adapter, interaction, "invite-agent", agent="<@&7>")
+
+    assert commands == []
+    assert interaction.responses[0]["ephemeral"] is True

@@ -166,27 +166,28 @@ const config: Configuration = {
       { target: 'nsis', arch: ['x64'] },
       { target: 'msi', arch: ['x64'] },
     ],
-    // Off until the certificate's subject common name is known verbatim. This
-    // flag is what decides whether `publisherName` below is copied into
-    // app-update.yml, and electron-updater rejects any update whose signature
-    // does not match the name it finds there. A wrong name therefore breaks
-    // updating for everyone already installed, and does so silently and later —
-    // whereas leaving the field out of the manifest merely skips the check.
-    // Turn this on in the same change that sets the real name.
-    verifyUpdateCodeSignature: false,
+    // Copies `publisherName` below into app-update.yml, so electron-updater
+    // refuses any downloaded update whose Authenticode subject does not match
+    // it. Only meaningful on a signed build: an unsigned one has no
+    // azureSignOptions, electron-builder then has no publisher to write, and
+    // the manifest simply carries no name for the updater to check.
+    verifyUpdateCodeSignature: true,
     ...(hasAzureSigning
       ? {
           azureSignOptions: {
             endpoint: 'https://eus.codesigning.azure.net/',
             codeSigningAccountName: 'cg-asa-basic-eastus',
             certificateProfileName: 'cg-public',
-            // Required by electron-builder's schema, so it cannot be omitted, but
-            // it is stripped before the signing call and never reaches the
-            // certificate — the signature's real publisher comes from the
-            // certificate itself. Its only effect is on app-update.yml, which
-            // verifyUpdateCodeSignature: false above suppresses. Treat it as
-            // unverified until a signed build confirms the actual subject.
-            publisherName: 'SandboxAQ',
+            // The certificate's subject, verbatim, as read off a signed
+            // installer produced by this config. electron-builder strips this
+            // before the signing call — it never reaches the certificate — so
+            // its sole effect is the name written into app-update.yml. Given
+            // as a full distinguished name rather than the bare CN because
+            // electron-updater compares every component it is given and warns
+            // when handed a CN alone. It must be updated in step with the
+            // certificate: a stale name here breaks updates for every existing
+            // install, silently and only at update time.
+            publisherName: 'CN=SandboxAQ, O=SandboxAQ, L=Tarrytown, S=New York, C=US',
           },
         }
       : {}),

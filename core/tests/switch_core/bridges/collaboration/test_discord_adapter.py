@@ -186,11 +186,15 @@ class _FakeWebhook:
 
 
 class _FakeClient:
-    def __init__(self, channels: dict[int, Any]) -> None:
+    def __init__(self, channels: dict[int, Any], guild: Any | None = None) -> None:
         self._channels = channels
+        self._guild = guild
 
     def get_channel(self, channel_id: int) -> Any | None:
         return self._channels.get(channel_id)
+
+    def get_guild(self, guild_id: int) -> Any | None:
+        return self._guild if guild_id == GUILD_ID else None
 
     async def fetch_channel(self, channel_id: int) -> Any:
         channel = self._channels.get(channel_id)
@@ -412,6 +416,44 @@ def test_bang_command_routed_to_on_command() -> None:
     assert cmd.channel_id == str(CHANNEL_ID)
     assert cmd.message_ref == "3000:3001"
     assert cmd.root_id == f"{CHANNEL_ID}:3000"
+
+
+def test_a_command_argument_picked_from_the_at_menu_arrives_as_a_name() -> None:
+    """A typed command branches off before the message translation downstream.
+
+    Its arguments are exactly where a mention picked from the `@` menu lands,
+    and an agent's role makes that the obvious way to name one — so the markup
+    has to be resolved here or the dispatcher matches a name against `<@&123>`.
+    """
+
+    class _Named:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _Guild:
+        id = GUILD_ID
+
+        def get_role(self, role_id: int) -> Any | None:
+            return _Named("switch-expert-v1") if role_id == 7 else None
+
+        def get_member(self, user_id: int) -> Any | None:
+            return None
+
+    class _Client:
+        def get_guild(self, guild_id: int) -> Any | None:
+            return _Guild() if guild_id == GUILD_ID else None
+
+    adapter = _adapter()
+    adapter._client = _Client()  # type: ignore[assignment]
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_message(
+            _gateway_message(channel=_FakeChannel(), content="!invite-agent <@&7>")
+        )
+    )
+
+    assert commands[0].args == "@switch-expert-v1"
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────

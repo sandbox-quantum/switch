@@ -777,3 +777,56 @@ def test_a_refusal_that_named_its_cause_is_not_retried() -> None:
     _run(_state(adapter, "working", detail="reading again"))
 
     assert "chat.startStream" not in _methods(client)
+
+
+# ── A card that has gone ─────────────────────────────────────────────────────
+
+
+def test_a_card_that_has_gone_does_not_count_against_the_app() -> None:
+    """We delete the card ourselves at the end of a turn, so a state report a
+    moment behind the teardown writes to something that is no longer there."""
+    adapter, client = _adapter()
+    _run(_state(adapter, "working", detail="reading"))
+
+    client.stream_error = "message_not_found"
+    for _ in range(_AGENT_SESSIONS_FAILURE_LIMIT + 3):
+        _run(_state(adapter, "working", detail="still reading"))
+
+    assert adapter._agent_sessions_off_reason is None
+
+
+def test_a_card_that_has_gone_is_forgotten() -> None:
+    adapter, client = _adapter()
+    _run(_state(adapter, "working", detail="reading"))
+    assert adapter._stream_ts
+
+    client.stream_error = "message_not_found"
+    _run(_state(adapter, "working", detail="still reading"))
+
+    assert adapter._stream_ts == {}
+    assert adapter._stream_step == {}
+
+
+def test_the_turn_falls_back_to_the_posted_message_once_its_card_is_gone() -> None:
+    adapter, client = _adapter()
+    _run(_state(adapter, "working", detail="reading"))
+    client.stream_error = "message_not_found"
+    _run(_state(adapter, "working", detail="still reading"))
+
+    client.stream_error = None
+    _run(_state(adapter, "working", detail="reading on"))
+
+    assert len(client.posted) == 1
+    assert _methods(client).count("chat.startStream") == 2
+
+
+def test_a_step_that_never_landed_is_not_recorded_as_shown() -> None:
+    """Recording it would tell the next step the console link had been sent."""
+    adapter, client = _adapter()
+    _run(_state(adapter, "working", detail="reading", deeplink="https://x/1"))
+    adapter._stream_step.clear()
+    client.stream_error = "not_in_channel"
+
+    _run(_state(adapter, "working", detail="a step that fails"))
+
+    assert adapter._stream_step == {}

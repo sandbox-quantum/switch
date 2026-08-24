@@ -301,6 +301,7 @@ class CollaborationAdapter(ABC):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Serialise against any other runtime-indicator work for this agent,
         then apply the state. Adapters override ``_apply_runtime_state``."""
@@ -314,6 +315,7 @@ class CollaborationAdapter(ABC):
                 deeplink_url=deeplink_url,
                 detail=detail,
                 trigger_thread_root_id=trigger_thread_root_id,
+                anchor_message_ref=anchor_message_ref,
             )
 
     async def reposition_runtime_state(
@@ -336,6 +338,7 @@ class CollaborationAdapter(ABC):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Surface a Switch Console-managed agent's runtime state on the channel.
 
@@ -355,6 +358,13 @@ class CollaborationAdapter(ABC):
         for it is looking. Defaulted because only an adapter that draws the
         distinction reads it, and its callers should not have to restate a
         value the other adapters ignore.
+
+        ``anchor_message_ref`` is the external post the agent reports it is
+        answering — the last message it was actually handed. Unlike the two
+        above it names a *message* rather than a thread, and it is set whether
+        or not that message opened one, so an adapter can mark the message
+        itself (Discord puts a reaction on it) without moving where the status
+        is posted. None when nothing the agent was handed crossed this bridge.
 
         ``deeplink_url``, when set, is an https link (served by the gateway) that
         opens the agent's session in the Switch Console desktop app; adapters that

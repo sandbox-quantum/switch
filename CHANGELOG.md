@@ -44,6 +44,47 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.20.0] - 2026-08-24
+
+#### Added
+- Each agent gets a mentionable **Discord role**, so its `@name` autocompletes
+  in the composer and arrives as a real pill rather than plain text that only
+  looks like one. The roles are minted empty and permissionless — mentioning one
+  notifies nobody — and an inbound `<@&…>` resolves back to the agent's name
+  before the addressing layer sees it. A Discord role carries no metadata, so an
+  agent's role is the one named exactly after it: a role made by hand is adopted
+  rather than duplicated, and one that has members is never deleted. Off with
+  `agent_roles: false`, and it turns itself off, saying why, on a server missing
+  Manage Roles or at Discord's 250-role cap (CHOO-2316).
+- Discord puts **👀 on the message an agent is answering** for as long as its
+  turn lasts. The posted status says an agent is busy; the reaction is what says
+  which message it is busy with, and an agent answering two people at once marks
+  both and clears both together. Needs the bot's Add Reactions permission;
+  without it the bridge warns and posts no reaction rather than faking one
+  (CHOO-2316).
+
+#### Fixed
+- A Discord command argument naming someone picked from the composer's `@` menu
+  is resolved to their name instead of being refused. Both the slash and typed
+  `!` forms branch off before the translation an ordinary message gets, so an
+  agent or person chosen from the menu arrived as raw `<@&…>` / `<@…>` markup
+  and was rejected as "not a single name" — quoting a string the invoker never
+  typed. Newly reachable because an agent's name now autocompletes, but the
+  typed form was wrong before that too (CHOO-2316).
+- Disconnecting a messaging app no longer fails with a 500 when a room member
+  has already left. Deleting a bridge kicks every client of every room it had,
+  and one that had already left answered a 403; "already not a member" is now
+  treated as done, while every other failure — permission denials included —
+  still raises (CHOO-2344).
+- An addressed **auto-session agent that is offline** now asks its **owner** to
+  open Switch Console — the person who can actually bring it online — instead of
+  telling the whole room to run a terminal command. The reply threads off the
+  triggering message, names the asker as the reason (dropped when they are the
+  owner), and the connect command names the agent it was generated for, so a
+  directory holding several agents answers `select_agent` on its own (CHOO-2344).
+
+### [0.19.0] - 2026-08-22
+
 #### Added
 - Telegram marks the message an agent is working on with **👀**, and clears it
   when the turn ends — in groups, channels and 1:1 chats alike, with no
@@ -71,6 +112,22 @@ version of their own to them without also giving them a release of their own.
 #### Changed
 - The gateway's **Docs** button opens the published documentation at
   `docs.flintai.dev` rather than the GitHub repository (CHOO-2313).
+
+#### Fixed
+- Slack's native agent-session card could vanish from a workspace and never come
+  back until the pod was replaced. A burst of Slack rate limits was being counted
+  as the app being unfit to host sessions and tripped the permanent give-up after
+  three in a row; throttling now makes the bridge stand down for the `Retry-After`
+  Slack sent rather than counting against it, and a give-up over an unrecognised
+  error expires after ten minutes instead of lasting the life of the process
+  (#276).
+- A stale or hand-deleted Slack agent card no longer turns cards off for the
+  whole workspace. A status update arriving just after a card is torn down — or a
+  user deleting the card by hand — wrote to a message that was gone, and three in
+  a row tripped the same permanent give-up. Such a card is now forgotten: the
+  turn falls back to the posted status message and the next turn opens a fresh
+  card. A step that failed to land is also no longer recorded as the card's
+  current step (#283).
 
 ### [0.18.0] - 2026-08-21
 
@@ -714,6 +771,30 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.30.0] - 2026-08-24
+
+#### Changed
+- **Windows in-app updates now verify the installer's Authenticode signature**
+  before installing it, against SandboxAQ's certificate. The check was held off
+  until a signed release confirmed the certificate's subject verbatim; a
+  mismatched name would have blocked updates for every existing install rather
+  than warning. The release build now fails if the signature and the name it
+  ships for the updater ever diverge (CHOO-1468).
+
+#### Fixed
+- The first-run **Share usage data** prompt no longer opens with focus on the
+  consent toggle. Base UI focused the dialog's first tabbable element, which drew
+  a highlighted band around the row that read as a pre-selected answer and
+  vanished on the first click; focus now goes to the dialog itself, so nothing is
+  pre-selected (CHOO-2344).
+- Error toasts no longer pile up or repeat on every refresh. The agent-icon
+  backfill is reported once per server keyed by outcome — a signed-out or too-old
+  server that could not store icons was raising a toast every few seconds for one
+  standing condition — and `toast` now replaces a toast it already shows rather
+  than stacking another copy (CHOO-2344).
+
+### [0.29.0] - 2026-08-22
 #### Added
 - Switch Console now sends a small, fixed set of product events — the app
   launching, an agent being created, a session starting and ending, a server
@@ -760,6 +841,9 @@ version of their own to them without also giving them a release of their own.
   (CHOO-2314).
 
 #### Changed
+- Local-server mode now bundles and pulls **switch-core `0.19.0`** (was
+  `0.18.0`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
+  current core release.
 - Every **Docs** affordance opens the published documentation at
   `docs.flintai.dev` instead of the GitHub repository, deep-linked to the page
   that answers the question: the sidebar and app-menu Docs entries and the
@@ -2250,6 +2334,15 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.8] - 2026-08-24
+#### Changed
+- The `configure` skill's generated connect command now names the agent it was
+  set up for, so a session started in a directory holding several agents answers
+  `select_agent` on its own instead of asking the operator. Plugin version bumped
+  so installs re-download (CHOO-2344).
+
+### [0.9.7] - 2026-08-22
 #### Fixed
 - The room-workflow skill said a Telegram DM is adopted the way Mattermost's
   is, so an agent asked for a 1:1 on Telegram would tell the user to message
@@ -2451,6 +2544,15 @@ manifest history.
 `connectors/codex-plugin/`. Version lives in `.codex-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.3.9] - 2026-08-24
+#### Changed
+- The `configure` skill's generated connect command now names the agent it was
+  set up for, so a session started in a directory holding several agents answers
+  `select_agent` on its own instead of asking the operator; the plugin README is
+  updated to match. Plugin version bumped so installs re-download (CHOO-2344).
+
+### [0.3.8] - 2026-08-22
 #### Fixed
 - The room-workflow skill said a Telegram DM is adopted the way Mattermost's
   is, so an agent asked for a 1:1 on Telegram would tell the user to message
@@ -2606,6 +2708,8 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.5] - 2026-08-22
 #### Fixed
 - The room-workflow skill said a Telegram DM is adopted the way Mattermost's
   is, so an agent asked for a 1:1 on Telegram would tell the user to message

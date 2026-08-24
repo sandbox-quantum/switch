@@ -1,5 +1,5 @@
 import { CheckIcon, XIcon } from 'lucide-react';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { Button } from '@renderer/lib/ui/button';
 import { Dialog, DialogContent, DialogContentArea, DialogFooter } from '@renderer/lib/ui/dialog';
@@ -58,6 +58,7 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
   const { value, updateAsync } = useAppSettingsKey('telemetry');
   const [enabled, setEnabled] = useState(value?.enabled ?? false);
   const [saving, setSaving] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
 
   const confirm = useCallback(() => {
     setSaving(true);
@@ -81,7 +82,16 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
     // Controlled `open` with no `onOpenChange`: Escape and outside clicks are
     // requests the parent ignores, so the prompt cannot be dismissed unanswered.
     <Dialog open>
-      <DialogContent aria-labelledby="telemetry-consent-heading" onKeyDown={onKeyDown}>
+      {/* Focus the popup, not its first tabbable child. The default would land
+          on the consent switch, which renders its focus ring as a highlighted
+          band around the toggle row — reading as a pre-selected answer to a
+          question the user has not answered yet. */}
+      <DialogContent
+        ref={popupRef}
+        initialFocus={popupRef}
+        aria-labelledby="telemetry-consent-heading"
+        onKeyDown={onKeyDown}
+      >
         <div className="flex flex-col gap-2 p-6 pb-4">
           <h2 id="telemetry-consent-heading" className="text-base font-normal text-foreground">
             Help improve Switch Console

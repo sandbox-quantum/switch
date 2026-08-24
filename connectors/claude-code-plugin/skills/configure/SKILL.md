@@ -323,11 +323,13 @@ with no live session. It is built from what you record here and in Step 5, so it
 carries the channels flag when you said channels work:
 
 ```
-cd <repo_dir> && claude "connect to switch room <name>" \
+cd <repo_dir> && claude "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>" \
   --dangerously-load-development-channels plugin:switch-connector@switch-plugins
 ```
 
-(without the flag when `channels_enabled` is false).
+(without the flag when `channels_enabled` is false). The prompt names the agent
+so a session started in a directory holding several of them answers
+`select_agent` without the user having to.
 
 **Note the path is not quoted** in what Switch generates, so a `repo_dir`
 containing a space produces a command that breaks when pasted. If the directory
@@ -810,7 +812,7 @@ Report the registered subagents (Switch name + id; not the token) and explain
 that each runs as its own session:
 
 ```
-cd <repo> && claude "connect to switch room <name>" \
+cd <repo> && claude "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>" \
   --agent <subagent_name> \
   --settings .claude/switch-subagents/<subagent_name>.settings.json \
   --dangerously-load-development-channels plugin:switch-connector@switch-plugins

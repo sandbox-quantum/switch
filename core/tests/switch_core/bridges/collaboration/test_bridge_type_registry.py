@@ -66,7 +66,9 @@ def test_discord_adapter_registers_with_expected_required_fields() -> None:
 
     assert service.get_registered_types() == ["discord"]
     schema = service.get_config_schema("discord")
-    assert set(schema["properties"]) == {"bot_token", "guild_id"}
+    # agent_roles is offered but not required: it needs Manage Roles and room
+    # under Discord's 250-role cap, so a connection stays valid without it.
+    assert set(schema["properties"]) == {"bot_token", "guild_id", "agent_roles"}
     assert set(schema["required"]) == {"bot_token", "guild_id"}
 
 

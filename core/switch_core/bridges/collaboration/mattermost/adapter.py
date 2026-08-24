@@ -505,6 +505,7 @@ class MattermostAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Surface runtime state as a posted message that is **never deleted**.
 
