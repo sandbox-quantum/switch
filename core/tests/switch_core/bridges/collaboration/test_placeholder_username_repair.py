@@ -40,10 +40,12 @@ class _Store:
     def __init__(self, user: Any) -> None:
         self._user = user
         self.renames: list[tuple[str, str]] = []
+        self.reads = 0
 
     async def get_by_external_id(
         self, session: Any, bridge_id: str, external_user_id: str
     ) -> Any:
+        self.reads += 1
         return self._user
 
     async def rename(self, session: Any, user_id: str, external_username: str) -> None:
@@ -91,6 +93,7 @@ def _core(stored_name: str, *, adapter: Any = None, puppet: Any = None) -> Any:
     core._adapter = adapter or _teams_adapter()  # type: ignore[attr-defined]
     core._external_user_store = _Store(user)  # type: ignore[attr-defined]
     core._client_lifecycle = _Lifecycle(puppet or _Puppet())  # type: ignore[attr-defined]
+    core._names_known_good = set()  # type: ignore[attr-defined]
     return core
 
 
@@ -189,3 +192,32 @@ async def test_the_rename_stands_even_if_the_account_cannot_be_relabelled() -> N
     await core._repair_placeholder_username("aad-1", "ada.lovelace")
 
     assert core._external_user_store.renames == [("eu-1", "ada.lovelace")]
+
+
+# ── cost on the common path ──────────────────────────────────────────────────
+
+
+async def test_a_name_already_known_good_is_not_looked_up_again() -> None:
+    """This runs on every inbound message on every bridge, so the case where
+    there is nothing to repair — almost every message — must not cost a query.
+    A stored name that is not a placeholder cannot become one, since the repair
+    is one-way, so the answer is safe to keep."""
+    core = _core("Ada Lovelace")
+
+    for _ in range(5):
+        await core._repair_placeholder_username(_TEAMS_ID, "Ada Lovelace")
+
+    assert core._external_user_store.reads == 1
+
+
+async def test_a_repaired_name_is_not_looked_up_again_either() -> None:
+    core = _core(_TEAMS_ID)
+
+    await core._repair_placeholder_username(_TEAMS_ID, "Ada Lovelace")
+    assert core._external_user_store.renames == [("eu-1", "Ada Lovelace")]
+
+    reads_after_repair = core._external_user_store.reads
+    await core._repair_placeholder_username(_TEAMS_ID, "Ada Lovelace")
+
+    assert core._external_user_store.reads == reads_after_repair + 1
+    assert core._external_user_store.renames == [("eu-1", "Ada Lovelace")]

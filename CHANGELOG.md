@@ -45,6 +45,20 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- Concurrent writes to a bridge's learned `connection_config` no longer lose
+  each other. The Teams bridge records a channel's team the first time it sees
+  that channel, each from its own session, so a burst of new channels was a
+  burst of read-modify-writes on one JSONB value: measured, eight concurrent
+  writes landed two. A dropped entry is exactly the state that makes Graph
+  refuse that channel's subscription after the next restart. The row is now
+  locked for the update, which also stops the serviceUrl writer clobbering it.
+- The Graph notification endpoint compares its `clientState` in constant time.
+  It is the only control that authenticates a notification's origin, and a
+  plain `!=` on a secret leaks its prefix through timing.
+- Repairing a placeholder username costs one lookup per person rather than one
+  per message. It runs on every inbound message on every bridge, and the common
+  case — a stored name that is already fine — was still opening a session and
+  querying.
 - A Graph read of a Teams channel that fails is retried later instead of being
   believed forever. The name and layout of a channel are read together and
   cached, and a failure was cached with them — so one blip, or a permission

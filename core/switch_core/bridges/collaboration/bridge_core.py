@@ -139,6 +139,11 @@ class BridgeCore:
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
         self._user_puppets: dict[str, str] = {}
+        # External user ids whose stored name is known not to be a platform id,
+        # so the placeholder repair does not re-ask the database once per
+        # message. One-way, so a cached answer cannot go stale — see
+        # _repair_placeholder_username.
+        self._names_known_good: set[str] = set()
         self._puppet_matrix_ids: set[str] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._puppet_locks: dict[str, asyncio.Lock] = {}
@@ -1047,9 +1052,14 @@ class BridgeCore:
         Switch files someone under the name it first saw, and a platform that
         supplied none left its own id there — which then reads as that person's
         name in the room title, on their Matrix account and in every agent
-        reply that addresses them. Repairing only on the way past means it costs
-        nothing on the overwhelmingly common path where the stored name is fine,
-        and needs no migration for the rows already written.
+        reply that addresses them. Repairing on the way past needs no migration
+        for the rows already written.
+
+        Runs on every inbound message on every bridge, so the common path — a
+        stored name that is fine — must not cost a query. Once someone's stored
+        name is known not to be a placeholder it cannot become one again (the
+        repair below is one-way), so that answer is remembered and the lookup
+        happens once per person rather than once per message.
 
         Deliberately one-way: an id is replaced by a name, never the reverse,
         and a name is never replaced by another name. Renaming someone people
@@ -1058,15 +1068,23 @@ class BridgeCore:
         """
         if not resolved_username or not external_user_id:
             return
+        if external_user_id in self._names_known_good:
+            return
         if self._adapter.is_placeholder_username(resolved_username):
             return
         async with self._session_factory() as session:
             existing = await self._external_user_store.get_by_external_id(
                 session, self._bridge_id, external_user_id
             )
-            if existing is None or existing.external_username == resolved_username:
+            if existing is None:
+                # Not filed yet; the caller creates them a moment later under
+                # the name we already have, so there is nothing to repair and
+                # nothing worth remembering.
                 return
-            if not self._adapter.is_placeholder_username(existing.external_username):
+            if existing.external_username == resolved_username or not (
+                self._adapter.is_placeholder_username(existing.external_username)
+            ):
+                self._names_known_good.add(external_user_id)
                 return
             logger.info(
                 "Renaming external user %s from its %s id to '%s'",

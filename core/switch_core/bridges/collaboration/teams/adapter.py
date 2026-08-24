@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import html
 import json
 import logging
@@ -1867,7 +1868,13 @@ class TeamsAdapter(CollaborationAdapter):
         # lifecycle events alike. clientState is the only origin control (the
         # encryption proves integrity, not origin), so an unverified lifecycle
         # event (e.g. a forged reauthorizationRequired) must not be honoured.
-        if item.get("clientState") != self._config.client_state:
+        # Compared in constant time: this is an authentication check, and a
+        # `!=` on a secret leaks its prefix through timing. 256 bits makes that
+        # impractical to exploit rather than impossible to attempt, and the
+        # cheap version is the same one line.
+        if not hmac.compare_digest(
+            str(item.get("clientState") or ""), self._config.client_state
+        ):
             logger.warning("Rejected Graph notification: clientState mismatch")
             return
 

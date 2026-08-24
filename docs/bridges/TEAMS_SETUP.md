@@ -580,11 +580,14 @@ an error: TLS may terminate upstream where the chart cannot see it — an AWS AL
 configured by annotation, say — so the install output warns instead:
 
 ```text
-⚠  The Teams public_base_url the chart reports is https, even though TLS is
-   disabled on this Ingress — Graph refuses a plaintext URL, so that host has
-   to be served over HTTPS by something in front (a CDN, or a load balancer
-   configured by annotation). If nothing is, the bridge will create channels
-   and then silently receive nothing.
+Set the bridge's public_base_url to exactly:
+
+  https://teams.example.com
+
+⚠  https, even though TLS is disabled on this Ingress — Graph refuses a
+   plaintext URL, so that host has to be served over HTTPS by something in
+   front (a CDN, or a load balancer configured by annotation). If nothing is,
+   the bridge will create channels and then silently receive nothing.
 ```
 
 **Both of those only happen when the chart knows the public origin** — that is,
@@ -681,7 +684,7 @@ listener's public origin you settled on in Part 2.
 | `app_id` | Application (client) ID | 1.1 |
 | `app_password` | Client secret **Value** — not the Secret ID | 1.2 |
 | `tenant_id` | Directory (tenant) ID | 1.1 |
-| `team_id` | Entra group id of the team new channels go into | 1.6 |
+| `team_id` | Entra group id of the team new channels go into | 1.5 |
 | `public_base_url` | Public HTTPS origin **of the listener** — scheme + host, no path. Under `mode: dedicated` that is the Teams host (`https://teams.example.com`), not the dashboard's; a Helm install prints the exact value to use | Part 2 |
 
 Alongside them the dialog carries a display name and an **Allow creating

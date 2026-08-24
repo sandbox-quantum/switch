@@ -71,9 +71,16 @@ Set the bridge's public_base_url to exactly:
 {{- else }}
 Set the bridge's public_base_url to the public HTTPS origin Microsoft will call
 — scheme and host only, no path.
+{{- if eq $teams.ingress.mode "external" }}
+
+The chart renders no Ingress in this mode, so it cannot tell you the origin:
+you route the two paths yourself, and the public name is whatever you route
+them from.
+{{- else }}
 
 This Ingress has no host of its own, so the chart cannot tell you: the public
 name belongs to whatever sits in front of it.
+{{- end }}
 {{- end }}
 
 Then verify from OUTSIDE the cluster, which is the part that usually fails:

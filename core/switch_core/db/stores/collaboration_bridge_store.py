@@ -101,14 +101,39 @@ class CollaborationBridgeStore:
         await session.flush()
         return bridge
 
+    async def _locked_for_config_update(
+        self, session: AsyncSession, bridge_id: str
+    ) -> CollaborationBridge:
+        """The bridge row, locked for the rest of this transaction.
+
+        ``connection_config`` is one JSONB value, and the learned parts of it
+        are written by read-modify-write from independent sessions — a Teams
+        bridge persists a channel's team the first time it sees that channel,
+        so a burst of new channels is a burst of concurrent writers. Unlocked,
+        each one reads the blob before the others commit and the last write
+        wins, silently discarding the rest. Measured: eight concurrent writes
+        landed two.
+
+        A dropped `channel_teams` entry is not cosmetic — it is exactly the
+        state that makes Graph refuse that channel's subscription after the
+        next restart, which is the failure the entry exists to prevent.
+        """
+        row = await session.execute(
+            select(CollaborationBridge)
+            .where(CollaborationBridge.id == bridge_id)
+            .with_for_update()
+        )
+        bridge = row.scalar_one_or_none()
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        return bridge
+
     async def set_service_url(
         self, session: AsyncSession, bridge_id: str, service_url: str
     ) -> None:
         """Persist a learned outbound serviceUrl into ``connection_config`` so it
         survives a restart. Reassigns the dict so SQLAlchemy tracks the change."""
-        bridge = await session.get(CollaborationBridge, bridge_id)
-        if bridge is None:
-            raise ValueError(f"Bridge not found: {bridge_id}")
+        bridge = await self._locked_for_config_update(session, bridge_id)
         bridge.connection_config = {
             **(bridge.connection_config or {}),
             "service_url": service_url,
@@ -123,9 +148,7 @@ class CollaborationBridgeStore:
         Merged into the existing map rather than replacing it, so learning one
         channel does not forget the rest. Reassigns the dicts so SQLAlchemy
         tracks the change (a mutated JSONB value is not detected)."""
-        bridge = await session.get(CollaborationBridge, bridge_id)
-        if bridge is None:
-            raise ValueError(f"Bridge not found: {bridge_id}")
+        bridge = await self._locked_for_config_update(session, bridge_id)
         config = dict(bridge.connection_config or {})
         known = dict(config.get("channel_teams") or {})
         known[channel_id] = team_id
