@@ -54,6 +54,20 @@ class TelemetryService {
     await postTelemetryEvent(payload, resolution.config);
   }
 
+  /**
+   * Whether an event sent right now would actually go anywhere.
+   *
+   * The same two refusals `track` applies, asked in advance. Only the
+   * once-per-install events need this: they spend a record that is never given
+   * back, so spending it on a send that consent then discards would retire the
+   * event for the life of the install. Nothing else should call it — everywhere
+   * else, asking first and sending second is two reads of a gate that can change
+   * in between, and `track` already reads it at the only moment that matters.
+   */
+  async canSend(): Promise<boolean> {
+    return resolveTelemetryConfig().enabled && (await isTelemetryAllowed());
+  }
+
   private resolveVersion(): Promise<string> {
     this.appVersion ??= resolveAppVersion();
     return this.appVersion;

@@ -44,8 +44,13 @@ export function entryPointOf(value: unknown): TelemetryEntryPoint {
   return oneOf(UI_ENTRY_POINTS, value, 'unknown');
 }
 
+/**
+ * `unknown` rather than `user`: every other fallback here reports the absence of
+ * a claim, and `user` would report the presence of one — asserting a person was
+ * behind a session on the strength of a caller that said nothing.
+ */
 export function startSourceOf(value: unknown): TelemetrySessionStartSource {
-  return oneOf(SESSION_START_SOURCES, value, 'user');
+  return oneOf(SESSION_START_SOURCES, value, 'unknown');
 }
 
 /**

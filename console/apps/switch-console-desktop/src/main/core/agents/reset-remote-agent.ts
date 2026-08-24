@@ -34,8 +34,8 @@ const SESSIONS_REQUEST_TIMEOUT_MS = 10_000;
  * A reset that failed for a reason worth naming.
  *
  * The reason travels as a field rather than in the message, so it can be
- * reported as a code without anyone matching on prose. Everything else that can
- * throw here — SSH, an exec, the transport — is reported as `error`, because a
+ * reported as a code without anyone matching on prose. Everything left unnamed —
+ * an exec, the transport dropping mid-reset — is reported as `error`, because a
  * remote failure's own text is not ours to enumerate and never ours to send.
  */
 class AgentResetError extends Error {
@@ -47,8 +47,27 @@ class AgentResetError extends Error {
   }
 }
 
+/**
+ * Reasons for failures this module did not raise itself.
+ *
+ * The one worth naming most comes from below: reaching the host fails with the
+ * transport's own error, and the interface branches on that error's class to
+ * tell someone their host is unreachable rather than that "something went
+ * wrong". Wrapping it in one of ours would buy a code and lose that, so the
+ * reason is remembered beside the error and the error travels untouched.
+ */
+const namedFailures = new WeakMap<object, TelemetryAgentResetFailure>();
+
+/** Remember why an error happened, and hand it straight back. */
+function named<E>(error: E, reason: TelemetryAgentResetFailure): E {
+  if (typeof error === 'object' && error !== null) namedFailures.set(error, reason);
+  return error;
+}
+
 function resetFailureReason(error: unknown): TelemetryAgentResetFailure {
-  return error instanceof AgentResetError ? error.reason : 'error';
+  if (error instanceof AgentResetError) return error.reason;
+  if (typeof error === 'object' && error !== null) return namedFailures.get(error) ?? 'error';
+  return 'error';
 }
 
 interface SidecarSessionsResponse {
@@ -198,7 +217,15 @@ async function runReset(agentId: string, agent: Agent): Promise<void> {
   // cannot re-adopt a session from a stale snapshot mid-reset.
   remoteSessionReconciler.stop(agentId);
 
-  const conn = await connectRemoteAgent(agent);
+  let conn: RemoteConn;
+  try {
+    conn = await connectRemoteAgent(agent);
+  } catch (error) {
+    // The likeliest way a reset fails, and the only step here that depends on
+    // something outside the app — worth separating from everything the app
+    // itself can get wrong.
+    throw named(error, 'connect');
+  }
   const credsSlug = agent.name ?? agent.id;
 
   // Silence the VM watcher first so it cannot auto-start a fresh session between

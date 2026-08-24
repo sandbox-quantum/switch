@@ -771,6 +771,46 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+#### Added
+- Creating an agent, starting a session and adding a server now report whether
+  they worked, and an enumerated reason when they did not. Previously only the
+  ones that succeeded were counted, so nothing showed where people got stuck.
+  A session start also records which button it came from, whether a room and an
+  opening prompt were chosen, and whether a person started the session, the app
+  started it on their behalf, or it was found already running on a remote host —
+  never the room, the prompt or the host.
+- Removing an agent, resetting a remote agent, removing a server, attaching a
+  remote session's terminal and retrying a session that failed to set up are all
+  reported now, each with whether it worked. Removing an agent distinguishes a
+  person doing it from a server teardown sweeping every agent up with it.
+- Installing, updating and removing an agent's CLI is reported — the app's main
+  first-run wall, and previously invisible. So are creating and deleting rooms,
+  signing in and out, connecting and disconnecting a messaging app, setting up a
+  remote host, starting and stopping a managed server, and the update check,
+  download and install.
+- Where people stop is now visible: the first-run checklist, the add-a-server
+  wizard, which screens get opened and which commands get run. Opening a link
+  from a message reports whether this copy of the app could find what the link
+  pointed at.
+- Turning usage sharing **on** is reported. Turning it off is not, and cannot
+  be: the check happens immediately before anything is sent, so the moment
+  someone declines is the moment nothing more is sent. The opt-out rate stays
+  unknown rather than being obtained that way.
+
+#### Fixed
+- Retrying a session that failed to set up now says whether it worked. The retry
+  reported failure by throwing, which nothing was listening for, so a second
+  attempt that failed left the session sitting on "setting up" with no error and
+  no explanation.
+- Deleting an agent left its sessions counted as still running. The sessions were
+  removed by the database itself, so nothing in the app was told they had ended.
+- A session that is un-archived can end again. Its first ending was remembered
+  for good, so the second one — and every one after it — went unrecorded.
+- A remote agent whose host refuses the connection now says so, rather than
+  reporting the generic failure every other fault shares.
+- Installing an update no longer reports that it both worked and failed. The
+  success was sent before handing over to the installer, so an install that then
+  failed to take was counted twice, in both directions.
 
 ### [0.30.0] - 2026-08-24
 
@@ -805,36 +845,8 @@ version of their own to them without also giving them a release of their own.
 - Events go to a relay we run, which forwards them on. The analytics services
   therefore never see your network address, and the app itself ships no
   credential — there is nothing in it to leak.
-- Creating an agent, starting a session and adding a server now report whether
-  they worked, and an enumerated reason when they did not. Previously only the
-  ones that succeeded were counted, so nothing showed where people got stuck.
-  A session start also records which button it came from, whether a room and an
-  opening prompt were chosen, and whether the app started the session or found
-  it already running on a remote host — never the room, the prompt or the host.
-- Removing an agent, resetting a remote agent, removing a server, attaching a
-  remote session's terminal and retrying a session that failed to set up are all
-  reported now, each with whether it worked. Removing an agent distinguishes a
-  person doing it from a server teardown sweeping every agent up with it.
-- Installing, updating and removing an agent's CLI is reported — the app's main
-  first-run wall, and previously invisible. So are creating and deleting rooms,
-  signing in and out, connecting a messaging app, setting up a remote host,
-  starting and stopping a managed server, and the update check and download.
-- Where people stop is now visible: the first-run checklist, the add-a-server
-  wizard, which screens get opened and which commands get run. Opening a link
-  from a message reports whether this copy of the app could find what the link
-  pointed at.
-- Turning usage sharing **on** is reported. Turning it off is not, and cannot
-  be: the check happens immediately before anything is sent, so the moment
-  someone declines is the moment nothing more is sent. The opt-out rate stays
-  unknown rather than being obtained that way.
 
 #### Fixed
-- Retrying a session that failed to set up now says whether it worked. The retry
-  reported failure by throwing, which nothing was listening for, so a second
-  attempt that failed left the session sitting on "setting up" with no error and
-  no explanation.
-- Deleting an agent left its sessions counted as still running. The sessions were
-  removed by the database itself, so nothing in the app was told they had ended.
 - The OpenCode connector the app writes carries its own copy of the
   room-workflow skill, so it picked up the same wrong claim that a Telegram DM
   is adopted like Mattermost's. Corrected alongside the connector directory

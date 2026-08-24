@@ -686,6 +686,11 @@ class AutoSessionWatcher {
               ? `connect to switch room ${roomId}`
               : `connect to switch room ${roomId}\n\nThen respond to this, which is what you were started for:\n${triggerLine}`,
           autoApprove,
+          // Nobody is in the desktop app: the app started this session on the
+          // user's behalf, and only because of a message in the room it is
+          // about to connect to.
+          startSource: 'auto',
+          connectedToRoom: true,
         });
         if (result.success) {
           log.info('AutoSessionWatcher: spawned session for room', {

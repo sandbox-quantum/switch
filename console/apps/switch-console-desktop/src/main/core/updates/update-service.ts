@@ -35,6 +35,7 @@ import {
   readFakeDownloadDuration,
   readFakeUpdateScenario,
 } from './dev-harness';
+import { pendingInstall } from './pending-install';
 import { formatUpdaterError, sanitizeUpdaterLogArgs } from './utils';
 
 const { autoUpdater } = _electronUpdater;
@@ -89,6 +90,13 @@ class UpdateService implements IInitializable, IDisposable {
     this.initialized = true;
 
     this.updateState.currentVersion = await resolveAppVersion();
+
+    // Before the dev-harness branch and before `active`: the install this
+    // reports belonged to the run that ended, and whether this one can check
+    // for updates has no bearing on it.
+    if (await pendingInstall.take()) {
+      trackEvent('update_install_started', { outcome: 'success' });
+    }
 
     if (import.meta.env.DEV) {
       this.setupDevHarness();
@@ -296,7 +304,11 @@ class UpdateService implements IInitializable, IDisposable {
     });
 
     const result = await autoUpdater.checkForUpdatesAndNotify();
-    return result?.updateInfo ?? null;
+    // Both branches of the updater's check carry an `updateInfo`: the
+    // not-available one returns the release it just compared this build against.
+    // `isUpdateAvailable` is the field that separates them, and null here is what
+    // every caller reads as "nothing to install".
+    return result?.isUpdateAvailable ? result.updateInfo : null;
   }
 
   async downloadUpdate(): Promise<void> {
@@ -360,18 +372,13 @@ class UpdateService implements IInitializable, IDisposable {
       toVersion: this.updateState.availableVersion,
     });
 
-    const clearGuard = () => {
-      if (this.installRestartGuardTimer) {
-        clearTimeout(this.installRestartGuardTimer);
-        this.installRestartGuardTimer = undefined;
-      }
-    };
-
+    // One attempt, one event. Only one of the two outcomes can happen — the app
+    // goes down for the installer, or it is still here afterwards — and the
+    // latch is what keeps a handover that later unwinds from being counted in
+    // both directions.
     const rollback = (reason: string) => {
       clearGuard();
-      // The install did not take. Reported here because the success case cannot
-      // be: a working install quits the app, so the only thing observable from
-      // inside it is the attempt and the ways it fails to leave.
+      void pendingInstall.clear();
       trackEvent('update_install_started', { outcome: 'failure' });
       this.installRequested = false;
       this.updateState.status = 'downloaded';
@@ -379,6 +386,13 @@ class UpdateService implements IInitializable, IDisposable {
         events.emit(updateDownloadedEvent, { version: this.updateState.availableVersion });
       }
       log.error(reason);
+    };
+
+    const clearGuard = () => {
+      if (this.installRestartGuardTimer) {
+        clearTimeout(this.installRestartGuardTimer);
+        this.installRestartGuardTimer = undefined;
+      }
     };
 
     if (this.fake) {
@@ -391,8 +405,15 @@ class UpdateService implements IInitializable, IDisposable {
       return;
     }
 
-    // Sent before handing over, while there is still a process to send from.
-    trackEvent('update_install_started', { outcome: 'success' });
+    // Written before handing over, and read on the next launch. A successful
+    // install takes the process down with it, so there is no moment inside this
+    // one at which success can be sent: `before-quit` runs after the shutdown
+    // handler that calls `app.exit`, and even first in the queue it would be
+    // racing a consent read and an HTTP post against the process ending. A
+    // record that survives the restart is the only version of this that is not
+    // a guess, and the marker's absence is what `rollback` uses to say the
+    // handover did not take.
+    void pendingInstall.set();
 
     this.installRestartGuardTimer = setTimeout(() => {
       rollback('quitAndInstall timed out before app quit; allowing retry');

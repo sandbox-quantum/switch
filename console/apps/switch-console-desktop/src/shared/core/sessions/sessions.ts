@@ -92,11 +92,21 @@ export type CreateSessionParams = {
    */
   entryPoint?: UiEntryPoint;
   /**
-   * Whether this app started the session or is catching up with one already
-   * running on a remote host. Omitted means `user`; only the reconciler adopting
-   * a session it discovered passes `adopted`.
+   * Who started the session: a person, the app on their behalf, or a remote host
+   * that was already running one. Omitted reports as `unknown` rather than
+   * assuming a person was there.
    */
   startSource?: SessionStartSource;
+  /**
+   * Whether a Switch room was chosen for this session before it was created,
+   * for reporting. Never which room.
+   *
+   * Declared by the caller rather than read back, because the record that would
+   * answer it is consumed during the launch this session is part of: the
+   * poller's intended-room entry is claimed by `ensureForSession` while
+   * `createSession` is still running, so anything asking afterwards is told no.
+   */
+  connectedToRoom?: boolean;
 };
 
 export type CreateSessionError =

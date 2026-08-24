@@ -6,6 +6,9 @@ import { ensureLocation } from '@main/core/locations/store';
 import { readSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
 import { agentExistsOnServer, GatewayError } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import type {
   OnboardAgentError,
@@ -13,6 +16,7 @@ import type {
   OnboardAgentResult,
 } from '@shared/core/agents/onboarding';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { agentEvents } from './agent-events';
 import { createAgent } from './createAgent';
@@ -20,6 +24,55 @@ import { detectSwitchAgent } from './detect';
 import { detectSwitchAgentRemote } from './detect-remote';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeAgentNeutralSettings } from './write-switch-settings';
+
+/**
+ * Where an agent onboarded through here came from.
+ *
+ * One control reaches this path: a folder dropped on the sidebar, which the
+ * location manager turns into an onboard. The first-run checklist opens the
+ * add-agent modal instead and reports `onboarding` from there, so naming this
+ * one `onboarding` too would pool the two and leave drag-and-drop with no count
+ * of its own.
+ */
+const ONBOARD_ENTRY_POINT: UiEntryPoint = 'sidebar';
+
+/**
+ * The error's discriminant as a reportable code. Never its message — every one
+ * of these carries a directory path.
+ *
+ * Only the unauthenticated case has a name of its own in the reportable set. A
+ * directory that is not a Switch agent and an identity the chosen server does
+ * not have are both real, distinct walls, and both land in `error` because
+ * naming them is a change to the reported vocabulary rather than to this map.
+ */
+const ONBOARD_AGENT_FAILURE_REASON: Record<OnboardAgentError['type'], TelemetryAgentCreateFailure> =
+  {
+    'invalid-directory': 'not_configured',
+    'switch-agent-not-on-server': 'agent_not_on_server',
+    'switch-server-unauthenticated': 'unauthenticated',
+    error: 'error',
+  };
+
+/**
+ * Report an onboarding that did not happen, and hand the error back unchanged.
+ *
+ * The success is reported from the `agent:created` hook, which by definition
+ * only fires when one happened. The location comes from the parameters rather
+ * than a row, because there is no row.
+ */
+function reportFailedOnboard(
+  params: OnboardAgentParams,
+  error: OnboardAgentError
+): OnboardAgentResult {
+  trackEvent('agent_created', {
+    agent_type: agentTypeOf(params.providerId),
+    location: params.sshHost ? 'remote' : 'local',
+    outcome: 'failure',
+    failure_reason: ONBOARD_AGENT_FAILURE_REASON[error.type],
+    entry_point: ONBOARD_ENTRY_POINT,
+  });
+  return err(error);
+}
 
 /**
  * Gate agent creation on the chosen server actually owning the detected agent
@@ -94,7 +147,11 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   let switchAgent;
   if (sshHost === null) {
     if (!checkIsValidDirectory(params.dir)) {
-      return err({ type: 'invalid-directory', dir: params.dir, message: 'Invalid directory' });
+      return reportFailedOnboard(params, {
+        type: 'invalid-directory',
+        dir: params.dir,
+        message: 'Invalid directory',
+      });
     }
     // Onboarding a directory == onboarding a Switch agent. Reject directories
     // that are not configured as one (no `.claude/settings.local.json` block).
@@ -103,7 +160,7 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     switchAgent = await detectSwitchAgentRemote(sshHost, params.dir);
   }
   if (!switchAgent) {
-    return err({
+    return reportFailedOnboard(params, {
       type: 'invalid-directory',
       dir: params.dir,
       message:
@@ -114,13 +171,17 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   }
 
   const serverError = await verifyAgentOnServer(params.serverId, switchAgent.agentId, params.dir);
-  if (serverError) return err(serverError);
+  if (serverError) return reportFailedOnboard(params, serverError);
 
   const server = await getServer(params.serverId);
   if (server) {
     const locationError = managedServerLocationError(server, sshHost);
     if (locationError) {
-      return err({ type: 'invalid-directory', dir: params.dir, message: locationError });
+      return reportFailedOnboard(params, {
+        type: 'invalid-directory',
+        dir: params.dir,
+        message: locationError,
+      });
     }
   }
 
@@ -177,6 +238,6 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
   });
 
   await locationManager.openLocation(location);
-  agentEvents._emit('agent:created', agent, 'onboarding');
+  agentEvents._emit('agent:created', agent, ONBOARD_ENTRY_POINT);
   return ok(agent);
 }

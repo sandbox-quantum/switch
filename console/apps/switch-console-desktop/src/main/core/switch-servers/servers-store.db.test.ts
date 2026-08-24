@@ -170,18 +170,16 @@ describe('servers-store: rename & delete', () => {
   });
 
   describe('addServer telemetry', () => {
-    it('reports an externally-hosted server', async () => {
+    it('leaves an externally-hosted server for its one caller to report', async () => {
+      // The controller owns both outcomes of that add, so that one press of Add
+      // cannot produce a success here and a failure there.
       await addServer({
         name: 'External server',
         gatewayUrl: 'https://gw.example.com',
         apiUrl: 'https://api.example.com',
       });
 
-      expect(telemetryMocks.trackEvent).toHaveBeenCalledTimes(1);
-      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_added', {
-        server_kind: 'external',
-        outcome: 'success',
-      });
+      expect(telemetryMocks.trackEvent).not.toHaveBeenCalled();
     });
   });
 

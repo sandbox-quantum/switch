@@ -304,6 +304,10 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         initialPrompt,
         agentName: effectiveAgentName || undefined,
         entryPoint,
+        // Whether a room was asked for, never which one. Declared here because
+        // the record `noteIntendedRoom` just wrote is consumed while this
+        // session launches, so nothing downstream can read the answer back.
+        connectedToRoom: activeRoom !== null,
       });
       navigate('session', { locationId: selectedLocationId, sessionId: id });
       onClose();

@@ -48,7 +48,7 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
 
   const handleProvision = () => {
     if (session.state !== 'unprovisioned' || session.phase !== 'idle') return;
-    void sessionManager?.provisionSession(sessionId);
+    void sessionManager?.provisionSession(sessionId, 'auto');
   };
 
   const openSession = () => {

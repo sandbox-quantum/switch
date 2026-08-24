@@ -52,6 +52,14 @@ export type TelemetryAgentCreateFailure =
   | 'name_conflict'
   | 'credentials_conflict'
   | 'invalid_name'
+  /**
+   * The two the other way into this — dropping a folder on the sidebar — hits
+   * most: the directory holds no agent configuration, or it holds one belonging
+   * to an identity this server has never heard of. Both are a person pointing
+   * the app at the wrong folder, which is worth telling apart from a fault.
+   */
+  | 'not_configured'
+  | 'agent_not_on_server'
   | 'error';
 
 export type TelemetrySessionStartFailure =
@@ -227,8 +235,16 @@ export type TelemetrySearchStatus = SearchStatus;
 /** The kinds of server this install can hold. Named once, used by five events. */
 export type TelemetryServerKind = 'local' | 'remote_managed' | 'external';
 
-/** A setup step's kind, reused from the remote-host model rather than restated. */
-export type TelemetryHostSetupStepKind = HostSetupStepKind;
+/**
+ * A setup step's kind, reused from the remote-host model rather than restated.
+ *
+ * `unknown` is this catalogue's own addition, not the model's: a step in a plan
+ * always has a real kind, but a run that fails before it can build the plan has
+ * no step to read one from. Reporting such a failure under a real kind would
+ * add it to that kind's tally, and "which step do people get stuck on" is the
+ * one question this event exists to answer.
+ */
+export type TelemetryHostSetupStepKind = HostSetupStepKind | 'unknown';
 
 /**
  * Every event the app may send, and everything each one may carry.
@@ -333,8 +349,16 @@ export type TelemetryEventMap = {
     outcome: TelemetryOutcome;
     failure_reason: TelemetryBridgeFailure;
   };
+  /**
+   * A messaging platform was disconnected from a server.
+   *
+   * Carries an outcome because the gateway refuses this one routinely — it is
+   * admin-only, and a non-admin's attempt returns rather than throws. Without it
+   * a refusal is indistinguishable from a disconnection that happened.
+   */
   bridge_disconnected: {
     bridge_platform: TelemetryBridgePlatform;
+    outcome: TelemetryOutcome;
   };
   /** Someone linked their account on a messaging platform to their Switch user. */
   bridge_identity_claimed: {
@@ -583,7 +607,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
-  bridge_disconnected: ['bridge_platform'],
+  bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
   connector_updated: ['agent_type', 'target', 'outcome', 'was_reinstall'],
   connector_uninstalled: ['agent_type', 'target', 'outcome'],
@@ -635,6 +659,26 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   telemetry_consent_changed: ['source'],
   session_attached: ['agent_type', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
+
+/**
+ * Any catalogued property the allow-list above leaves out.
+ *
+ * The `satisfies` clause constrains what may appear in each array — every entry
+ * has to be a real property of that event — but says nothing about what must.
+ * A property added to the map and forgotten here therefore compiles, and is
+ * dropped at runtime by the emitter: the event still sends, minus a dimension,
+ * with nothing to say so. The mechanical walk in `./catalogue.test.ts` cannot
+ * catch it either, since it builds its samples from this list.
+ */
+type UndeclaredProperty = {
+  [K in TelemetryEventName]: Exclude<
+    keyof TelemetryEventMap[K],
+    (typeof TELEMETRY_EVENT_PROPERTIES)[K][number]
+  >;
+}[TelemetryEventName];
+
+const _everyPropertyIsAllowListed: [UndeclaredProperty] extends [never] ? true : never = true;
+void _everyPropertyIsAllowListed;
 
 /** Which events, if any, declare a property the emitter also adds. */
 type EventsDeclaringAmbientProperty = {

@@ -39,7 +39,7 @@ export const appSettingsController = createRPCController({
     overrides: Partial<AppSettings[T]>;
   }> => appSettingsService.getWithMeta(key),
 
-  // The single place every setting change passes through, so the key is reported
+  // Every setting change passes through this controller, so the key is reported
   // here rather than from each screen that offers one. The key only — several of
   // these values are free text.
   update: async <T extends AppSettingsKey>(key: T, value: AppSettings[T]): Promise<void> => {
@@ -56,8 +56,26 @@ export const appSettingsController = createRPCController({
     if (previousTelemetry) reportConsent(previousTelemetry, value as TelemetrySettings);
   },
 
-  reset: <T extends AppSettingsKey>(key: T): Promise<void> => appSettingsService.reset(key),
+  /**
+   * Put a whole settings group, or one field of it, back to its default.
+   *
+   * Reported under the same key as the change that set it, because reverting is
+   * a person changing a setting: counting only the change would make every
+   * preference somebody tried and undid look like one that stuck. The Reset
+   * control sits in the same rows the editors do, so the two have to be
+   * comparable.
+   *
+   * Resetting `telemetry` is not an agreement to share usage data and is not
+   * reported as one. Its default is off and never-asked, so a reset can only
+   * ever land on the answer that has nothing to report.
+   */
+  reset: async <T extends AppSettingsKey>(key: T): Promise<void> => {
+    await appSettingsService.reset(key);
+    trackEvent('setting_changed', { setting_key: key as TelemetrySettingKey });
+  },
 
-  resetField: <T extends AppSettingsKey>(key: T, field: string): Promise<void> =>
-    appSettingsService.resetField(key, field as keyof AppSettings[T]),
+  resetField: async <T extends AppSettingsKey>(key: T, field: string): Promise<void> => {
+    await appSettingsService.resetField(key, field as keyof AppSettings[T]);
+    trackEvent('setting_changed', { setting_key: key as TelemetrySettingKey });
+  },
 });

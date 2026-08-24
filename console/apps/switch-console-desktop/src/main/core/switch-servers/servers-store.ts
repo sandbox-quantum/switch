@@ -186,7 +186,11 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
-  trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+  // Not reported here, unlike the managed insert above: registering a URL is a
+  // discrete action with one caller, so the controller reports both of its
+  // outcomes together and a single Add cannot produce two events. The managed
+  // kinds have no such single owner — two services call that path and so does
+  // every restart — which is why it is reported at the insert instead.
   return mapRow(row);
 }
 

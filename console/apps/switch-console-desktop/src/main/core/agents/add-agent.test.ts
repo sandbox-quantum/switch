@@ -278,6 +278,36 @@ describe('addAgent', () => {
       );
     });
 
+    it('reports a failure that arrives as a throw, after the identity was minted', async () => {
+      // The worst case this function has: the identity exists on the gateway and
+      // nothing here points at it. Without this, the one population that leaves
+      // an orphan behind is the one nothing counts.
+      h.createAgent.mockRejectedValueOnce(new Error('UNIQUE constraint failed'));
+
+      await expect(addAgent(params({ entryPoint: 'agent_page' }))).rejects.toThrow(
+        'UNIQUE constraint failed'
+      );
+
+      expect(trackEvent).toHaveBeenCalledWith('agent_created', {
+        agent_type: 'codex',
+        location: 'local',
+        outcome: 'failure',
+        failure_reason: 'error',
+        entry_point: 'agent_page',
+      });
+    });
+
+    it('reports a throw once, and never its message', async () => {
+      h.registerAgentIdentity.mockRejectedValueOnce(
+        new Error('/Users/someone/secret-project could not be registered')
+      );
+
+      await expect(addAgent(params())).rejects.toThrow();
+
+      expect(vi.mocked(trackEvent).mock.calls).toHaveLength(1);
+      expect(JSON.stringify(vi.mocked(trackEvent).mock.calls)).not.toContain('secret-project');
+    });
+
     it('reports nothing itself when the agent is created', async () => {
       // Reporting here as well as from the hook would double-count every
       // successful creation.

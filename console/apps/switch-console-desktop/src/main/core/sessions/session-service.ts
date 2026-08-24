@@ -2,7 +2,6 @@ import { err, ok, type Result } from '@switch-console/shared';
 import { eq, sql } from 'drizzle-orm';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { locationManager } from '@main/core/locations/location-manager';
-import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryOutcome, TelemetrySessionStartFailure } from '@main/core/telemetry/events';
 import { entryPointOf, startSourceOf } from '@main/core/telemetry/narrow';
@@ -54,6 +53,8 @@ export type SessionLifecycleHooks = {
   'session:created': (session: Session, params: CreateSessionParams) => void | Promise<void>;
   'session:updated': (session: Session) => void | Promise<void>;
   'session:archived': (sessionId: string) => void | Promise<void>;
+  /** An archived session was put back into use. The inverse of `archived`. */
+  'session:restored': (sessionId: string) => void | Promise<void>;
   'session:deleted': (sessionId: string) => void | Promise<void>;
   'session:runtime-ready': (sessionId: string, result: ProvisionResult) => void | Promise<void>;
 };
@@ -92,7 +93,7 @@ function reportFailedSessionStart(params: CreateSessionParams, error: CreateSess
       entry_point: entryPointOf(params.entryPoint),
       start_source: startSourceOf(params.startSource),
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
-      connected_to_room: switchNotificationPoller.hasIntendedRoom(params.id),
+      connected_to_room: params.connectedToRoom === true,
     });
   })().catch(() => {});
 }
@@ -312,7 +313,9 @@ export class SessionService implements Hookable<SessionLifecycleHooks> {
 
   async restoreSession(id: string): Promise<void> {
     const session = await restoreSession(id);
-    if (session) this._hooks.callHookBackground('session:updated', session);
+    if (!session) return;
+    this._hooks.callHookBackground('session:updated', session);
+    this._hooks.callHookBackground('session:restored', id);
   }
 
   async renameSession(

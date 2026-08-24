@@ -87,16 +87,6 @@ class SwitchNotificationPoller {
   }
 
   /**
-   * Whether a room was declared for this session before it was created.
-   *
-   * Read-only, and deliberately not the room itself: the caller reporting on
-   * session creation needs to know that a room was chosen, never which one.
-   */
-  hasIntendedRoom(sessionId: string): boolean {
-    return this.pendingRoom.has(sessionId);
-  }
-
-  /**
    * Where the next session opened for this agent should start reading.
    *
    * Set by the watcher just before it spawns, carrying the sequence of the

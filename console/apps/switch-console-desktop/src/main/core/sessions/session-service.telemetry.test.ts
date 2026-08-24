@@ -15,9 +15,10 @@ const { hoisted } = vi.hoisted(() => ({
     getAgentById: vi.fn(),
     getLocationById: vi.fn(),
     trackEvent: vi.fn(),
-    hasIntendedRoom: vi.fn(() => false),
     getSession: vi.fn(),
-    loadSession: vi.fn(),
+    sessionRows: vi.fn(),
+    mapSessionRow: vi.fn(),
+    getLocation: vi.fn(),
   },
 }));
 
@@ -25,32 +26,33 @@ vi.mock('./operations/createSession', () => ({ createSession: hoisted.createSess
 vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: hoisted.getAgentById }));
 vi.mock('@main/core/locations/store', () => ({ getLocationById: hoisted.getLocationById }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: hoisted.trackEvent }));
-vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
-  switchNotificationPoller: { hasIntendedRoom: hoisted.hasIntendedRoom },
-}));
 
-vi.mock('@main/db/client', () => ({ db: {} }));
+// Provisioning reads the session row through the query builder before it can
+// get as far as anything else, so the chain has to be walkable — otherwise the
+// failure under test is the double, not the code.
+vi.mock('@main/db/client', () => ({
+  db: {
+    select: () => ({ from: () => ({ where: () => ({ limit: () => hoisted.sessionRows() }) }) }),
+  },
+}));
 vi.mock('@main/db/schema', () => ({ sessions: {} }));
 vi.mock('@main/lib/events', () => ({ events: { emit: vi.fn() } }));
 vi.mock('@main/lib/logger', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 vi.mock('@main/core/locations/location-manager', () => ({
-  locationManager: { getLocation: vi.fn() },
+  locationManager: { getLocation: hoisted.getLocation },
 }));
 vi.mock('./session-builder', () => ({ provisionSessionRuntime: vi.fn() }));
 vi.mock('./session-runtime-manager', () => ({
-  sessionRuntimeManager: { registerSession: vi.fn() },
+  sessionRuntimeManager: { registerSession: vi.fn(), getAgent: vi.fn() },
 }));
-vi.mock('./utils/utils', () => ({ mapSessionRowToSession: vi.fn() }));
+vi.mock('./utils/utils', () => ({ mapSessionRowToSession: hoisted.mapSessionRow }));
 vi.mock('./operations/archiveSession', () => ({ archiveSession: vi.fn() }));
 vi.mock('./operations/deleteSession', () => ({ deleteSession: vi.fn() }));
 vi.mock('./operations/ensureSessionAttachable', () => ({ ensureSessionAttachable: vi.fn() }));
 vi.mock('./operations/getSessions', () => ({ getSessions: vi.fn() }));
 vi.mock('./operations/getSession', () => ({ getSession: hoisted.getSession }));
-// Provisioning reads the session through this; rejecting it is the simplest
-// way to exercise the failure path end to end.
-vi.mock('../session-join', () => ({ loadSessionWithAgent: hoisted.loadSession }));
 vi.mock('./operations/renameSession', () => ({ renameSession: vi.fn() }));
 vi.mock('./operations/restoreSession', () => ({ restoreSession: vi.fn() }));
 vi.mock('./operations/setSessionPinned', () => ({ setSessionPinned: vi.fn() }));
@@ -79,7 +81,6 @@ function failWith(type: string, extra: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  hoisted.hasIntendedRoom.mockReturnValue(false);
   hoisted.getAgentById.mockResolvedValue({ id: 'agent-1', providerId: 'codex', locationId: 'loc' });
   hoisted.getLocationById.mockResolvedValue({ id: 'loc', sshHost: null });
 });
@@ -136,12 +137,12 @@ describe('a session start that fails', () => {
   });
 
   it('records whether a room and a prompt were asked for, not what they were', async () => {
-    hoisted.hasIntendedRoom.mockReturnValue(true);
     failWith('already-exists');
 
     await sessionService.createSession({
       ...PARAMS,
       initialPrompt: 'connect to room alpha and audit the deploy',
+      connectedToRoom: true,
     });
 
     await settle();
@@ -150,6 +151,19 @@ describe('a session start that fails', () => {
     expect(properties.has_initial_prompt).toBe(true);
     expect(properties.connected_to_room).toBe(true);
     expect(JSON.stringify(properties)).not.toContain('alpha');
+  });
+
+  it('says no room was asked for when the caller declared none', async () => {
+    failWith('already-exists');
+
+    await sessionService.createSession({ ...PARAMS });
+
+    await settle();
+
+    expect(hoisted.trackEvent).toHaveBeenCalledWith(
+      'session_started',
+      expect.objectContaining({ connected_to_room: false })
+    );
   });
 
   it('treats whitespace as no prompt, the same test the create path applies', async () => {
@@ -191,9 +205,33 @@ describe('a session start that fails', () => {
 
     expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
+
+  it('passes what the caller declared to the hook when the session does start', async () => {
+    // The room flag only reaches a successful start this way, so asserting it
+    // on a failure leaves the path every real session takes uncovered — and an
+    // inverted flag looks the same from there.
+    hoisted.createSession.mockResolvedValue({
+      success: true,
+      data: { session: { id: 's-1', agentId: 'agent-1', providerId: 'codex' } },
+    });
+    const created = vi.fn();
+    const off = sessionService.on('session:created', created);
+
+    await sessionService.createSession({ ...PARAMS, connectedToRoom: true });
+    await settle();
+    off();
+
+    expect(created).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 's-1' }),
+      expect.objectContaining({ connectedToRoom: true })
+    );
+  });
 });
 
 describe('provisioning a session again', () => {
+  // Provisioning fails the way it does in the field: the session's row is
+  // there, its agent's location is not open, and the service raises that
+  // itself. Nothing here stands in for a step the service does not take.
   beforeEach(() => {
     hoisted.getSession.mockResolvedValue({
       id: 's-1',
@@ -201,7 +239,14 @@ describe('provisioning a session again', () => {
       providerId: 'codex',
       agentLocationId: 'loc',
     });
-    hoisted.loadSession.mockRejectedValue(new Error('nope'));
+    hoisted.sessionRows.mockResolvedValue([{ id: 's-1', agentId: 'agent-1' }]);
+    hoisted.mapSessionRow.mockReturnValue({
+      id: 's-1',
+      agentId: 'agent-1',
+      providerId: 'codex',
+      agentName: 'agent one',
+    });
+    hoisted.getLocation.mockReturnValue(undefined);
   });
 
   it('says nothing for a first attempt, which is not a retry', async () => {
@@ -245,12 +290,22 @@ describe('provisioning a session again', () => {
   });
 
   it('never puts the failure message in the payload', async () => {
-    hoisted.loadSession.mockRejectedValue(new Error('/Users/someone/secret-project is gone'));
+    // The message names the agent, because the person reading it has to know
+    // which one to reopen. The agent is theirs and so is its name: the error
+    // handed back to them is the only place it belongs.
+    hoisted.mapSessionRow.mockReturnValue({
+      id: 's-1',
+      agentId: 'agent-1',
+      providerId: 'codex',
+      agentName: 'secret-project bot',
+    });
 
-    await sessionService.provisionSession('s-1', 'auto');
+    const result = await sessionService.provisionSession('s-1', 'auto');
 
     await settle();
 
+    expect(JSON.stringify(result)).toContain('secret-project');
+    expect(hoisted.trackEvent).toHaveBeenCalled();
     expect(JSON.stringify(hoisted.trackEvent.mock.calls)).not.toContain('secret-project');
   });
 });

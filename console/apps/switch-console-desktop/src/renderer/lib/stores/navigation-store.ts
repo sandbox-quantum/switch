@@ -130,5 +130,15 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
         this.viewParamsStore = { ...this.viewParamsStore, [guard.redirect]: guard.params };
       }
     }
+
+    // The screen a session resumes on is arrived at rather than navigated to, so
+    // `_applyNavigation` never sees it and nobody would be counted as having
+    // opened it — someone who works all afternoon in a restored session would
+    // report no screen at all. Reported once, here at the end, so a snapshot the
+    // guard sends back counts the screen the user lands on rather than both it
+    // and the one that was persisted. `currentViewId` has settled by now, which
+    // is also what keeps a later navigation to the same screen from counting a
+    // second opening.
+    report('view_opened', { view_id: this.currentViewId });
   }
 }

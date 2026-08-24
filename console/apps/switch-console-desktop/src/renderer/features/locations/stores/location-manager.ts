@@ -256,7 +256,7 @@ export class LocationManagerStore {
               ? navParams.sessionId
               : undefined;
           if (navSessionId) {
-            sessionManager.provisionSession(navSessionId).catch(() => {});
+            sessionManager.provisionSession(navSessionId, 'auto').catch(() => {});
           }
         }
       })

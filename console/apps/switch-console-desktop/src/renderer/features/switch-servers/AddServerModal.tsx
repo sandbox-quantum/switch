@@ -1,6 +1,6 @@
 import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -113,27 +113,53 @@ const CONNECT_STEPS = 4;
  * page to be discovered (CHOO-2164).
  */
 /**
- * The path each step belongs to. `none` for the chooser and for steps that
- * inherit whatever was chosen before them.
+ * The path each step belongs to, or null for the steps that inherit whatever
+ * was chosen before them.
+ *
+ * The chooser is `none` rather than null, and the difference is the whole point
+ * of the column: arriving at the chooser is arriving with nothing chosen, which
+ * is as true of pressing Back as it is of opening the wizard. Carrying the
+ * abandoned path forwards would make a return read as progress along it.
  */
-const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName> = {
+const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   choose: 'none',
   local: 'local',
   remoteHost: 'remoteHost',
   external: 'external',
-  signIn: 'none',
-  linkAccounts: 'none',
+  signIn: null,
+  linkAccounts: null,
 };
 
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;
-  const [step, setStep] = useState<Step>(isEdit ? 'external' : (props.mode ?? 'choose'));
+  const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
+  const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
+  const [step, setStep] = useState<Step>(openedAt);
   // Which path was taken at the chooser, carried so every later step can be
   // attributed to it. `none` while still on the chooser, which is what makes a
   // drop-off before choosing distinguishable from one after.
-  const [choice, setChoice] = useState<AddServerChoiceName>(
-    isEdit ? 'external' : CHOICE_FOR_STEP[props.mode ?? 'choose']
-  );
+  const [choice, setChoice] = useState<AddServerChoiceName>(openedWith);
+
+  /**
+   * Report the step the wizard opened on.
+   *
+   * The steps below are reported as they are reached, so without this the first
+   * one — the one every later step is measured against — is the only one never
+   * counted, and the funnel has no denominator. The ref rather than the
+   * dependency list is what holds it to a single report: strict mode mounts
+   * every effect twice, and a wizard that opens twice per opening would put the
+   * denominator out by a factor of two in development builds.
+   *
+   * Editing is not one of the steps. It borrows the same form to change a
+   * server that already exists, reaches no step after this one, and counting it
+   * would put arrivals in the funnel that were never adding anything.
+   */
+  const reportedOpening = useRef(false);
+  useEffect(() => {
+    if (isEdit || reportedOpening.current) return;
+    reportedOpening.current = true;
+    report('add_server_step', { step: openedAt, choice: openedWith });
+  }, [isEdit, openedAt, openedWith]);
 
   /**
    * Move to a step, and report reaching it.
@@ -144,7 +170,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    * restarted rather than gave up.
    */
   const goToStep = (next: Step) => {
-    const nextChoice = CHOICE_FOR_STEP[next] === 'none' ? choice : CHOICE_FOR_STEP[next];
+    const nextChoice = CHOICE_FOR_STEP[next] ?? choice;
     setChoice(nextChoice);
     setStep(next);
     report('add_server_step', { step: next, choice: nextChoice });

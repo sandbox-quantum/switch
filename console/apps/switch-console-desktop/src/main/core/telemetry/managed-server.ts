@@ -40,7 +40,30 @@ export function reportManagedServerStart(
     target,
     outcome: result.kind === 'started' ? 'success' : 'failure',
     failure_reason: startFailureReason(result),
+    // Safe to read the probe off the result: every one of these comes back from
+    // the pipeline, whose first act is to look for Docker. A start that never
+    // got that far does not come through here — see below.
     docker_available: result.kind === 'docker-unavailable' ? 'unavailable' : 'available',
+  });
+}
+
+/**
+ * Report a start that threw.
+ *
+ * Kept apart from the function above because the difference is the whole point:
+ * a thrown start may have failed before the pipeline ran, and on the remote path
+ * routinely does — opening the SSH connection comes first, and an unreachable
+ * host fails there. Feeding a synthesised `error` result to the reporter above
+ * would answer `available` for a start that never looked, which is exactly the
+ * guess this dimension exists to avoid.
+ */
+export function reportManagedServerStartThrew(target: 'local' | 'remote'): void {
+  trackEvent('managed_server_action', {
+    action: 'start',
+    target,
+    outcome: 'failure',
+    failure_reason: 'error',
+    docker_available: 'unknown',
   });
 }
 

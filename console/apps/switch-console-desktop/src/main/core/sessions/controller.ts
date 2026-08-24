@@ -1,6 +1,7 @@
 import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
 import type { AttachState } from '@main/core/agent-runtime/attachment/types';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import { provisionTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
 import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
@@ -102,7 +103,10 @@ export const sessionController = createRPCController({
     return restartSessionAgent(sessionId);
   },
   async provisionSession(params: { sessionId: string; trigger: SessionProvisionTrigger }) {
-    return sessionService.provisionSession(params.sessionId, params.trigger);
+    // The trigger is typed on this side of the channel but arrives from the
+    // renderer, so it is checked rather than trusted — an unrecognised one
+    // falls back to `initial`, which reports nothing.
+    return sessionService.provisionSession(params.sessionId, provisionTriggerOf(params.trigger));
   },
   generateSessionName,
 });

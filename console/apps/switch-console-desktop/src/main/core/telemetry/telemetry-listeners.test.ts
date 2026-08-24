@@ -32,12 +32,6 @@ vi.mock('@main/core/agents/getAgentById', () => ({ getAgentById: vi.fn() }));
 vi.mock('@main/core/locations/store', () => ({ getLocationById: vi.fn() }));
 vi.mock('@main/core/sessions/operations/getSession', () => ({ getSession: vi.fn() }));
 vi.mock('./telemetry-service', () => ({ trackEvent: vi.fn() }));
-// Reached only for the yes/no of whether a room was declared. Importing the
-// real one pulls the database in at module load, which this project has no
-// Electron app to resolve a path from.
-vi.mock('@main/core/switch-rooms/switch-notification-poller', () => ({
-  switchNotificationPoller: { hasIntendedRoom: vi.fn(() => false) },
-}));
 
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getLocationById } from '@main/core/locations/store';
@@ -71,12 +65,17 @@ function startSession(id: string, providerId = 'claude') {
   );
 }
 
-/** What every session start reports beyond the two dimensions under test. */
+/**
+ * What every session start reports beyond the two dimensions under test.
+ *
+ * The helper above declares no start source, and that is reported as `unknown`:
+ * a caller that said nothing is not evidence a person was there.
+ */
 const SESSION_START_CONTEXT = {
   outcome: 'success',
   failure_reason: 'none',
   entry_point: 'sidebar',
-  start_source: 'user',
+  start_source: 'unknown',
   has_initial_prompt: false,
   connected_to_room: false,
 } as const;
@@ -135,6 +134,38 @@ describe('agent_created', () => {
       failure_reason: 'none',
       entry_point: 'sidebar',
     });
+  });
+});
+
+describe('a session started in a room', () => {
+  it('reports that a room was asked for, and who asked, never which room', async () => {
+    onLocation('local');
+    vi.mocked(getAgentById).mockResolvedValue({ id: 'agent', locationId: 'loc' } as never);
+
+    await emit(
+      'sessionService',
+      'session:created',
+      { id: 's-room', agentId: 'agent', providerId: 'claude' },
+      {
+        id: 's-room',
+        agentId: 'agent',
+        title: 'Session',
+        entryPoint: 'sidebar',
+        startSource: 'user',
+        initialPrompt: 'connect to switch room alpha and audit the deploy',
+        connectedToRoom: true,
+      }
+    );
+
+    expect(trackEvent).toHaveBeenCalledWith('session_started', {
+      ...SESSION_START_CONTEXT,
+      agent_type: 'claude',
+      location: 'local',
+      start_source: 'user',
+      has_initial_prompt: true,
+      connected_to_room: true,
+    });
+    expect(JSON.stringify(vi.mocked(trackEvent).mock.calls)).not.toContain('alpha');
   });
 });
 
@@ -198,6 +229,28 @@ describe('a session ending', () => {
     await emit('sessionService', 'session:deleted', 's-twice');
 
     expect(trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('ends a second time once a restore has put it back into use', async () => {
+    // The record of the first ending is there to collapse two endings moments
+    // apart, not to retire a session id for the life of the run — an archived
+    // session that is un-archived and later deleted has ended twice.
+    onLocation('local');
+    await startSession('s-unarchived');
+    await emit('sessionService', 'session:archived', 's-unarchived');
+    vi.mocked(trackEvent).mockClear();
+
+    await emit('sessionService', 'session:restored', 's-unarchived');
+    await emit('sessionService', 'session:deleted', 's-unarchived');
+
+    // Unknown because a restore is the row coming back, not the session
+    // running again: what it is gets re-learned when its runtime does.
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(trackEvent).toHaveBeenCalledWith('session_ended', {
+      agent_type: 'unknown',
+      location: 'unknown',
+      outcome: 'normal',
+    });
   });
 
   it('reports one pruned from its remote host, which arrives on the other bus', async () => {

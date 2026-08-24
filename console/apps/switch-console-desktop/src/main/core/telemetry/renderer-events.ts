@@ -4,10 +4,9 @@ import { log } from '@main/lib/logger';
 import { ALL_COMMAND_DEFS, type CommandId } from '@shared/commands';
 import { ONBOARDING_STEP_IDS } from '@shared/core/onboarding/checklist';
 import { ADD_SERVER_CHOICES, ADD_SERVER_STEPS } from '@shared/core/switch-servers/add-server-steps';
-import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { VIEW_IDS } from '@shared/core/views/view-ids';
-import type { TelemetryEventMap } from './events';
-import { trackEvent } from './telemetry-service';
+import type { TelemetryEventMap, TelemetryEventName } from './events';
+import { telemetryService, trackEvent } from './telemetry-service';
 
 /**
  * The command ids that exist, as a set to check a received value against.
@@ -61,22 +60,46 @@ const RENDERER_TELEMETRY_SCHEMAS = {
 };
 
 /**
- * The shapes the renderer is compiled against are the shapes this validates to.
+ * What this gate lets through is exactly what the catalogue declares.
  *
- * The two processes share no types, so the renderer states these events again in
- * `@shared`. This asserts the restatement still matches the catalogue: a
- * property added on one side without the other stops the build rather than
- * producing a call site whose value is silently dropped here.
+ * Comparing `RendererTelemetryEvents` to `TelemetryEventMap` would prove
+ * nothing — the catalogue *defines* those eight events as the shared shapes
+ * (see `./events`), so the two sides are the same type by construction and any
+ * such assertion is a tautology. The pair that can genuinely disagree is the
+ * schema and the shape: a schema is hand-written, and one that forgets a
+ * property parses a payload without it, strips it, and reports an event missing
+ * a dimension.
+ *
+ * So the check is on the schemas' *output*. The `satisfies` above already
+ * refuses a schema that omits a required property; this refuses the other
+ * direction, a schema that admits one the catalogue does not declare.
+ *
+ * Written as `[X] extends [never]` rather than indexing the map by the union:
+ * an indexed access distributes and then collapses, so `true | never` is `true`
+ * and only an *every* event mismatch would fail. That is how the assertion this
+ * replaces passed while being wrong.
+ *
+ * Read off `shape` rather than `z.infer`, which widens the two property-less
+ * schemas to a `keyof` of `string` — a check whose failure mode is "every event
+ * looks wrong" is no more use than one that never fails.
  */
-type RendererShapesMatchCatalogue = {
-  [K in RendererTelemetryEvent]: RendererTelemetryEvents[K] extends TelemetryEventMap[K]
-    ? TelemetryEventMap[K] extends RendererTelemetryEvents[K]
-      ? true
-      : never
-    : never;
-};
-const _rendererShapesMatch: RendererShapesMatchCatalogue[RendererTelemetryEvent] = true;
-void _rendererShapesMatch;
+type SchemaExtra = {
+  [K in RendererTelemetryEvent]: Exclude<
+    keyof (typeof RENDERER_TELEMETRY_SCHEMAS)[K]['shape'],
+    keyof TelemetryEventMap[K]
+  >;
+}[RendererTelemetryEvent];
+
+const _schemasAddNothing: [SchemaExtra] extends [never] ? true : never = true;
+void _schemasAddNothing;
+
+/** Every event the interface may report is one the catalogue knows about. */
+const _rendererEventsAreCatalogued: [Exclude<RendererTelemetryEvent, TelemetryEventName>] extends [
+  never,
+]
+  ? true
+  : never = true;
+void _rendererEventsAreCatalogued;
 
 /**
  * The events the interface is allowed to report.
@@ -125,14 +148,34 @@ const reportedOnce = new KV<Record<string, boolean>>('telemetry:reported');
  * several times in the same tick — a condition becoming true re-renders
  * everything watching it — and the database write does not land in time to stop
  * the second caller.
+ *
+ * The consent check comes first, and is the reason this is not simply a claim.
+ * The record is never given back, so claiming before the gate spends it on a
+ * send the gate then discards — and the event is retired for the life of the
+ * install. That is not a corner case: the app renders behind the first-run
+ * consent prompt, so on the very first launch of a build the interface reports
+ * a finished checklist while the answer is still unset, which is `no` until it
+ * is `yes`. Every install that already had a server, an agent and a room would
+ * have burned the record before anyone could agree to anything.
+ *
+ * Nothing is claimed while a send would be refused, so the event stays available
+ * and is reported the next time the condition holds and consent is in place.
  */
 const claimedThisRun = new Set<RendererTelemetryEvent>();
 
 async function claimOnce(name: RendererTelemetryEvent): Promise<boolean> {
   if (claimedThisRun.has(name)) return false;
+  if (!(await telemetryService.canSend())) return false;
+  if (claimedThisRun.has(name)) return false;
   claimedThisRun.add(name);
   if ((await reportedOnce.get(name)) === true) return false;
-  await reportedOnce.set(name, true);
+  // `setOrThrow`, because the ordinary `set` logs a failed write and returns:
+  // the caller would then send the event with no durable record of having done
+  // so, and report it again on the next launch. Letting the write throw hands
+  // the decision to the caller below, which keeps this run quiet and leaves the
+  // record unclaimed for the next one — a report that may be missed, rather
+  // than one that is certainly duplicated.
+  await reportedOnce.setOrThrow(name, true);
   return true;
 }
 

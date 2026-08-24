@@ -136,6 +136,41 @@ describe('a build that cannot send', () => {
   });
 });
 
+describe('asking in advance whether a send would arrive', () => {
+  /**
+   * The once-per-install events spend a record that is never given back, so they
+   * ask before they claim. The answer has to be the same two refusals `track`
+   * applies, or the question is worse than not asking.
+   */
+  it('is no when the build cannot send, without asking the user', async () => {
+    delete process.env.SWITCHDASH_TELEMETRY_DEV;
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+
+    expect(await telemetryService.canSend()).toBe(false);
+    expect(isTelemetryAllowed).not.toHaveBeenCalled();
+  });
+
+  it('is no when the user has not agreed', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(false);
+
+    expect(await telemetryService.canSend()).toBe(false);
+  });
+
+  it('is yes when the build can send and the user has agreed', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+
+    expect(await telemetryService.canSend()).toBe(true);
+  });
+
+  it('answers without sending anything', async () => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+
+    await telemetryService.canSend();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('the payload', () => {
   beforeEach(() => {
     vi.mocked(isTelemetryAllowed).mockResolvedValue(true);

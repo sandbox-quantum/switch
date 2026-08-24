@@ -19,6 +19,7 @@ const { h } = vi.hoisted(() => ({
     trackEvent: vi.fn(),
     remoteLocation: { id: 'loc' } as { id: string } | null,
     connect: null as null | (() => never),
+    killFails: false,
   },
 }));
 
@@ -65,7 +66,11 @@ vi.mock('./connect-remote-agent', () => ({
   connectRemoteAgent: vi.fn(async () => {
     if (h.connect) h.connect();
     return {
-      host: { exec: vi.fn(async () => {}) },
+      host: {
+        exec: vi.fn(async () => {
+          if (h.killFails) throw new Error('tmux: kill-session failed');
+        }),
+      },
       remoteRepoDir: '/srv/repo',
       ctx: {},
       connectionId: 'c-1',
@@ -97,6 +102,7 @@ beforeEach(() => {
   h.deletedChanges = 1;
   h.remoteLocation = { id: 'loc' };
   h.connect = null;
+  h.killFails = false;
 });
 
 describe('resetting a remote agent', () => {
@@ -151,9 +157,10 @@ describe('what a reset reports', () => {
     );
   });
 
-  it('reports an unreachable host as a plain error, never its message', async () => {
-    // The remote failure's own text is not ours to enumerate, and never ours
-    // to send.
+  it('reports an unreachable host as a connect failure, never its message', async () => {
+    // The commonest reason a remote reset fails, and the one thing here that is
+    // nothing to do with the app. Its own text is not ours to enumerate, and
+    // never ours to send.
     h.connect = () => {
       throw new Error('ssh: connect to host /Users/someone/secret-project failed');
     };
@@ -162,8 +169,33 @@ describe('what a reset reports', () => {
 
     expect(h.trackEvent).toHaveBeenCalledWith(
       'agent_reset',
-      expect.objectContaining({ outcome: 'failure', failure_reason: 'error' })
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'connect' })
     );
     expect(JSON.stringify(h.trackEvent.mock.calls)).not.toContain('secret-project');
+  });
+
+  it('hands the transport its own error back untouched', async () => {
+    // The interface branches on the error's class to explain an unreachable
+    // host. Naming the failure must not cost it that.
+    class HostUnreachableError extends Error {}
+    const thrown = new HostUnreachableError('Host build-box is unreachable');
+    h.connect = () => {
+      throw thrown;
+    };
+
+    await expect(resetRemoteAgent('agent-1')).rejects.toBe(thrown);
+  });
+
+  it('reports a teardown failure as a plain error, not as a connect failure', async () => {
+    // Getting to the host worked; killing its panes did not. Only the first is
+    // the host's doing.
+    h.killFails = true;
+
+    await expect(resetRemoteAgent('agent-1')).rejects.toThrow();
+
+    expect(h.trackEvent).toHaveBeenCalledWith(
+      'agent_reset',
+      expect.objectContaining({ outcome: 'failure', failure_reason: 'error' })
+    );
   });
 });

@@ -33,16 +33,22 @@ export const UI_ENTRY_POINTS = [
 export type UiEntryPoint = (typeof UI_ENTRY_POINTS)[number];
 
 /**
- * Who started a session: this app, or an agent already running on a remote host
- * that the app discovered and adopted.
+ * Who started a session.
  *
- * The two are not comparable, so they are kept apart rather than summed. An
+ * `user` is a person pressing something in this app. `auto` is the app starting
+ * one on their behalf — an agent addressed in a Switch room with no live session
+ * gets one, and nobody touched the desktop app at all. `adopted` is an agent
+ * already running on a remote host that the app discovered and took over.
+ * `unknown` is a caller that did not say.
+ *
+ * None of the four are comparable, so they are kept apart rather than summed. An
  * adopted session is stamped when the app *noticed* it — which is when the app
  * next ran, not when the agent started — and two installs watching one host each
- * adopt and report the same session. Separating them means the honest number is
- * still recoverable instead of being quietly inflated.
+ * adopt and report the same session. `auto` is separated for a blunter reason:
+ * on an active team it is the commonest way a session starts, so folding it into
+ * `user` would make most of the "people started a session" count automation.
  */
-export const SESSION_START_SOURCES = ['user', 'adopted'] as const;
+export const SESSION_START_SOURCES = ['user', 'auto', 'adopted', 'unknown'] as const;
 
 export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
 

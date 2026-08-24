@@ -24,6 +24,7 @@ import type {
   TelemetryAuthMethod,
   TelemetryBridgeFailure,
   TelemetryBridgePlatform,
+  TelemetryOutcome,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
   TelemetryServerKind,
@@ -31,6 +32,7 @@ import type {
 } from '@main/core/telemetry/events';
 import { roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
@@ -134,6 +136,19 @@ async function requireServer(serverId: string): Promise<SwitchServer> {
 }
 
 /**
+ * The refusal a managed server's host being down produces, or null while it is
+ * up.
+ *
+ * Returned rather than thrown so a path that reports its own outcome can count
+ * the refusal before it propagates: the server is what an event describes
+ * itself with, and a helper that throws leaves the caller holding nothing.
+ */
+function hostUnreachable(server: SwitchServer): HostUnreachableError | null {
+  const blocked = managedServerHostBlocked(server);
+  return blocked ? new HostUnreachableError(blocked) : null;
+}
+
+/**
  * Resolve a server and refuse to touch its gateway while the host it is managed
  * on is unreachable (CHOO-1780). `gatewayFetch` enforces the same rule at the
  * transport, so this is for the paths that reach the gateway some other way —
@@ -142,8 +157,8 @@ async function requireServer(serverId: string): Promise<SwitchServer> {
  */
 async function requireReachableServer(serverId: string): Promise<SwitchServer> {
   const server = await requireServer(serverId);
-  const blocked = managedServerHostBlocked(server);
-  if (blocked) throw new HostUnreachableError(blocked);
+  const unreachable = hostUnreachable(server);
+  if (unreachable) throw unreachable;
   return server;
 }
 
@@ -170,16 +185,25 @@ const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
   failed: 'failed',
 };
 
+function signInFailureReason(result: Result<unknown, LoginError>): TelemetrySignInFailure {
+  return result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind];
+}
+
+/**
+ * Reported by reason rather than by outcome: the two are the same fact, and a
+ * sign-in that never left this machine — the server's host is down — has a
+ * reason of its own but no result to read one from.
+ */
 function reportSignIn(
   method: TelemetryAuthMethod,
   server: SwitchServer,
-  result: Result<unknown, LoginError>
+  failureReason: TelemetrySignInFailure
 ): void {
   trackEvent('server_sign_in', {
     auth_method: method,
     server_kind: serverKindOf(server),
-    outcome: result.success ? 'success' : 'failure',
-    failure_reason: result.success ? 'none' : SIGN_IN_FAILURE[result.error.kind],
+    outcome: failureReason === 'none' ? 'success' : 'failure',
+    failure_reason: failureReason,
   });
 }
 
@@ -258,10 +282,10 @@ function reportRoomCreated(
 export const switchServersController = createRPCController({
   listServers: (): Promise<SwitchServer[]> => listServers(),
 
-  // The success is reported by the store, at the insert that is the server
-  // actually being added. Only the failure is reported here, because this is
-  // where registering a URL stops being an action and becomes an exception —
-  // and without it the whole failure population is invisible.
+  // Both outcomes are reported here rather than the success at the store's
+  // insert, so that one press of Add produces exactly one event whichever way
+  // it goes. Reported on the insert, because that is the whole of the action:
+  // registering a URL is a row, and everything after it is bookkeeping.
   addServer: async (params: AddServerParams): Promise<SwitchServer> => {
     let server: SwitchServer;
     try {
@@ -270,11 +294,17 @@ export const switchServersController = createRPCController({
       trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
       throw error;
     }
-    // Outside the catch on purpose. The store reports the success the moment the
-    // row lands, and this reconciliation is a separate step: if it fails the
-    // server has still been added, and reporting a failure here would file one
-    // click as both a success and a failure.
-    await resolveAgentServers();
+    trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+    // The row has landed, so the server is added whatever happens next — this
+    // reconciliation only unlinks agents pointing at servers that are gone.
+    // Rejecting for it would tell the user their add failed while the store has
+    // already reported it as done, and leave them to press Add again, which
+    // registers the same server a second time rather than retrying the first.
+    try {
+      await resolveAgentServers();
+    } catch (error) {
+      log.warn('switch-servers: could not reconcile agent links after adding a server', { error });
+    }
     return server;
   },
 
@@ -310,16 +340,26 @@ export const switchServersController = createRPCController({
   // re-authenticate a managed server on its own and to log in while starting a
   // stack, and neither of those is a person signing in.
   passwordLogin: async (params: PasswordLoginParams) => {
-    const server = await requireReachableServer(params.serverId);
+    const server = await requireServer(params.serverId);
+    const unreachable = hostUnreachable(server);
+    if (unreachable) {
+      reportSignIn('password', server, 'unreachable');
+      throw unreachable;
+    }
     const result = await passwordLogin(server, params.email, params.password);
-    reportSignIn('password', server, result);
+    reportSignIn('password', server, signInFailureReason(result));
     return result;
   },
 
   oidcLogin: async (serverId: string): Promise<Result<true, LoginError>> => {
-    const server = await requireReachableServer(serverId);
+    const server = await requireServer(serverId);
+    const unreachable = hostUnreachable(server);
+    if (unreachable) {
+      reportSignIn('oidc', server, 'unreachable');
+      throw unreachable;
+    }
     const result = await oidcLogin(server);
-    reportSignIn('oidc', server, result);
+    reportSignIn('oidc', server, signInFailureReason(result));
     return result;
   },
 
@@ -461,7 +501,10 @@ export const switchServersController = createRPCController({
     const platform = bridgePlatformOf(server, params.bridgeId);
     const result = await deleteBridge(server, params.bridgeId);
     reportWithBridge(platform, (bridge_platform) =>
-      trackEvent('bridge_disconnected', { bridge_platform })
+      trackEvent('bridge_disconnected', {
+        bridge_platform,
+        outcome: result.kind === 'deleted' ? 'success' : 'failure',
+      })
     );
     return result;
   },
@@ -472,12 +515,20 @@ export const switchServersController = createRPCController({
    * recoverable failures onto a typed result the modal can act on.
    */
   createRoom: async (params: CreateRoomParams): Promise<CreateRoomResult> => {
-    const server = await requireReachableServer(params.serverId);
-    const shape = {
-      server_kind: serverKindOf(server),
-      agent_count: params.agentIds.length,
-      has_instructions: (params.instructions?.trim().length ?? 0) > 0,
-    };
+    const server = await requireServer(params.serverId);
+    const report = (failure_reason: TelemetryRoomCreateFailure) =>
+      reportRoomCreated(server, params.bridgeId, {
+        server_kind: serverKindOf(server),
+        agent_count: params.agentIds.length,
+        has_instructions: (params.instructions?.trim().length ?? 0) > 0,
+        failure_reason,
+      });
+
+    const unreachable = hostUnreachable(server);
+    if (unreachable) {
+      report('unreachable');
+      throw unreachable;
+    }
 
     let result: CreateRoomResult;
     try {
@@ -489,14 +540,11 @@ export const switchServersController = createRPCController({
         agentIds: params.agentIds,
       });
     } catch (error) {
-      reportRoomCreated(server, params.bridgeId, { ...shape, failure_reason: 'error' });
+      report('error');
       throw error;
     }
 
-    reportRoomCreated(server, params.bridgeId, {
-      ...shape,
-      failure_reason: roomCreateFailureReason(result),
-    });
+    report(roomCreateFailureReason(result));
     return result;
   },
 
@@ -565,14 +613,25 @@ export const switchServersController = createRPCController({
 
   /** Delete a room and everything in it. The gateway enforces who may. */
   deleteRoom: async (params: { serverId: string; roomId: string }): Promise<void> => {
-    const server = await requireReachableServer(params.serverId);
+    const server = await requireServer(params.serverId);
+    const report = (outcome: TelemetryOutcome) =>
+      trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome });
+
+    // A host that has gone down refuses the deletion as surely as the gateway
+    // can, and the event has an outcome precisely so a refusal is counted.
+    const unreachable = hostUnreachable(server);
+    if (unreachable) {
+      report('failure');
+      throw unreachable;
+    }
+
     try {
       await deleteRoom(server, params.roomId);
     } catch (error) {
-      trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome: 'failure' });
+      report('failure');
       throw error;
     }
-    trackEvent('room_deleted', { server_kind: serverKindOf(server), outcome: 'success' });
+    report('success');
   },
 
   listRemoteRoomGroups: async (serverId: string): Promise<RemoteRoomGroup[]> =>

@@ -10,6 +10,22 @@ const mocks = vi.hoisted(() => ({
   remoteDependencyDescriptor: vi.fn(),
   probeGhAuthStatus: vi.fn(),
   getUpdateInfo: vi.fn(),
+  runSingleStep: vi.fn(),
+  runnerUpdateStep: vi.fn(),
+  runnerSkip: vi.fn(),
+}));
+
+// The runner sequences steps and knows nothing about reporting; what it does
+// with a step is its own test's business. Only the plan it hands back matters
+// here.
+vi.mock('./host-setup-runner', () => ({
+  HostSetupRunner: class {
+    runSingleStep = mocks.runSingleStep;
+    updateStep = mocks.runnerUpdateStep;
+    skip = mocks.runnerSkip;
+    checkAll = vi.fn();
+    checkStep = vi.fn();
+  },
 }));
 
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
@@ -64,9 +80,17 @@ vi.mock('@main/core/dependencies/install-output', () => ({
 }));
 
 import type { HostDependencyManager } from '@switch-console/core/deps/runtime';
+import { getRemoteDependencyManager } from '@main/core/dependencies/remote-dependency-manager';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { HostSetupPlan, HostSetupStep } from '@shared/core/remote-hosts/setup';
-import { checkStep, readAllSetupPlans } from './host-setup-service';
-import { listSetupPlans, saveSetupPlan } from './setup-plan-store';
+import {
+  checkStep,
+  installSetupStep,
+  readAllSetupPlans,
+  skipSetupStep,
+  updateSetupStep,
+} from './host-setup-service';
+import { getSetupPlan, listSetupPlans, saveSetupPlan } from './setup-plan-store';
 
 const SSH_HOST = 'dev-vm';
 
@@ -409,5 +433,152 @@ describe('offering a CLI update only when it can be carried out', () => {
     expect(await checkStep(SSH_HOST, manager, cliStep())).toMatchObject({
       updateAvailable: false,
     });
+  });
+});
+
+/**
+ * What a step reports, and about which row.
+ *
+ * The dimensions are the whole value of this event: a page of rows, each for a
+ * different agent type, and the question it answers is which of them people get
+ * stuck on. A failure filed under the wrong row is worse than an unreported one,
+ * because it moves a count somewhere it does not belong.
+ */
+describe('what a setup step reports', () => {
+  const HOST = 'report-vm';
+
+  /** A plan with the ids the real builder produces, for the paths that read one. */
+  function plan(): HostSetupPlan {
+    return {
+      sshHost: HOST,
+      status: 'idle',
+      steps: [
+        step({ id: 'node', kind: 'core-dependency', name: 'Node.js', dependsOn: [] }),
+        step({ id: 'claude', kind: 'agent-cli', name: 'Claude Code', dependsOn: ['node'] }),
+        step({ id: 'claude:plugin' }),
+      ],
+      currentStepId: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  function satisfying(planIn: HostSetupPlan, stepId: string): HostSetupPlan {
+    return {
+      ...planIn,
+      steps: planIn.steps.map((s) => (s.id === stepId ? { ...s, state: 'satisfied' } : s)),
+    };
+  }
+
+  beforeEach(() => {
+    vi.mocked(getRemoteDependencyManager).mockResolvedValue(manager);
+    vi.mocked(getSetupPlan).mockResolvedValue(plan());
+    mocks.runSingleStep.mockImplementation(async (p: HostSetupPlan, id: string) =>
+      satisfying(p, id)
+    );
+    mocks.runnerUpdateStep.mockImplementation(async (p: HostSetupPlan, id: string) =>
+      satisfying(p, id)
+    );
+    mocks.runnerSkip.mockImplementation(async (p: HostSetupPlan) => p);
+  });
+
+  it('names the row an install succeeded on', async () => {
+    await installSetupStep(HOST, 'claude');
+
+    expect(trackEvent).toHaveBeenCalledWith('host_setup_step', {
+      step_kind: 'agent-cli',
+      agent_type: 'claude',
+      action: 'install',
+      outcome: 'success',
+    });
+  });
+
+  it('names the row an install failed on, when the host could not be reached', async () => {
+    // Resolving the dependency manager is where the SSH connection is opened, so
+    // an unreachable host fails here — before the runner is ever asked to do
+    // anything. It is still that row, of that kind, for that agent type.
+    vi.mocked(getRemoteDependencyManager).mockRejectedValueOnce(new Error('ssh: connect failed'));
+
+    await expect(installSetupStep(HOST, 'claude')).rejects.toThrow();
+
+    expect(trackEvent).toHaveBeenCalledWith('host_setup_step', {
+      step_kind: 'agent-cli',
+      agent_type: 'claude',
+      action: 'install',
+      outcome: 'failure',
+    });
+  });
+
+  it('names the agent type behind a connector row', async () => {
+    vi.mocked(getRemoteDependencyManager).mockRejectedValueOnce(new Error('ssh: connect failed'));
+
+    await expect(installSetupStep(HOST, 'claude:plugin')).rejects.toThrow();
+
+    expect(trackEvent).toHaveBeenCalledWith(
+      'host_setup_step',
+      expect.objectContaining({ step_kind: 'agent-plugin', agent_type: 'claude' })
+    );
+  });
+
+  it('claims no agent type for a host-level dependency', async () => {
+    vi.mocked(getRemoteDependencyManager).mockRejectedValueOnce(new Error('ssh: connect failed'));
+
+    await expect(installSetupStep(HOST, 'node')).rejects.toThrow();
+
+    expect(trackEvent).toHaveBeenCalledWith(
+      'host_setup_step',
+      expect.objectContaining({ step_kind: 'core-dependency', agent_type: 'unknown' })
+    );
+  });
+
+  it('names the row an update failed on', async () => {
+    mocks.runnerUpdateStep.mockRejectedValueOnce(new Error('npm: EACCES'));
+
+    await expect(updateSetupStep(HOST, 'claude')).rejects.toThrow();
+
+    expect(trackEvent).toHaveBeenCalledWith('host_setup_step', {
+      step_kind: 'agent-cli',
+      agent_type: 'claude',
+      action: 'update',
+      outcome: 'failure',
+    });
+  });
+
+  it('reports a skip that took', async () => {
+    await skipSetupStep(HOST, 'claude');
+
+    expect(trackEvent).toHaveBeenCalledWith('host_setup_step', {
+      step_kind: 'agent-cli',
+      agent_type: 'claude',
+      action: 'skip',
+      outcome: 'success',
+    });
+  });
+
+  it('reports a skip that never took', async () => {
+    // Install and update both report a throw; a skip that threw used to report
+    // nothing, so the same wall counted differently depending on which button
+    // ran into it.
+    vi.mocked(getRemoteDependencyManager).mockRejectedValueOnce(new Error('ssh: connect failed'));
+
+    await expect(skipSetupStep(HOST, 'claude')).rejects.toThrow();
+
+    expect(trackEvent).toHaveBeenCalledWith('host_setup_step', {
+      step_kind: 'agent-cli',
+      agent_type: 'claude',
+      action: 'skip',
+      outcome: 'failure',
+    });
+  });
+
+  it('still reports when there is no plan to name the row from', async () => {
+    vi.mocked(saveSetupPlan).mockRejectedValueOnce(new Error('disk is full'));
+
+    await expect(installSetupStep(HOST, 'claude')).rejects.toThrow();
+
+    expect(trackEvent).toHaveBeenCalledWith(
+      'host_setup_step',
+      expect.objectContaining({ action: 'install', outcome: 'failure' })
+    );
   });
 });

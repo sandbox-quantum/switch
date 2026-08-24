@@ -3,6 +3,7 @@ import { getManagedServer } from '@main/core/switch-servers/servers-store';
 import {
   reportManagedServerOutcome,
   reportManagedServerStart,
+  reportManagedServerStartThrew,
 } from '@main/core/telemetry/managed-server';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -190,9 +191,8 @@ class LocalServerService {
       const message = error instanceof Error ? error.message : String(error);
       log.error('local-switch-server: start failed', { error });
       this.setStatus({ phase: 'error', error: message });
-      const thrown: StartLocalServerResult = { kind: 'error', message };
-      reportManagedServerStart('local', thrown);
-      return thrown;
+      reportManagedServerStartThrew('local');
+      return { kind: 'error', message };
     } finally {
       host.dispose();
       this.busy = false;

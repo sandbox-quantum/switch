@@ -417,16 +417,22 @@ function stepOutcome(plan: HostSetupPlan, stepId: string): TelemetryOutcome {
  * the step succeeded, so "it did not throw" is not the same as "it worked".
  * A step that is not in the returned plan, which should not happen, is reported
  * as a failure rather than silently as a success.
+ *
+ * The plan is what names the step, so it is also where the two dimensions come
+ * from — a row that failed because the host was unreachable is still that row,
+ * of that kind, for that agent type. It is nullable because a run can fail
+ * before there is a plan at all, and both dimensions are then reported as
+ * `unknown` rather than folded into a real kind's tally.
  */
 function reportSetupStep(
-  plan: HostSetupPlan,
+  plan: HostSetupPlan | null,
   stepId: string,
   action: TelemetryHostSetupAction,
   outcome: TelemetryOutcome
 ): void {
-  const step = plan.steps.find((s) => s.id === stepId);
+  const step = plan?.steps.find((s) => s.id === stepId);
   trackEvent('host_setup_step', {
-    step_kind: step?.kind ?? 'core-dependency',
+    step_kind: step?.kind ?? 'unknown',
     // Null for a host-level dependency, which belongs to no agent.
     agent_type: agentTypeOf(step ? (agentIdForStep(step) ?? '') : ''),
     action,
@@ -434,25 +440,19 @@ function reportSetupStep(
   });
 }
 
-/** The same, for a run that threw before it could produce a plan. */
-function reportSetupStepThrew(action: TelemetryHostSetupAction): void {
-  trackEvent('host_setup_step', {
-    step_kind: 'core-dependency',
-    agent_type: 'unknown',
-    action,
-    outcome: 'failure',
-  });
-}
-
 export async function installSetupStep(sshHost: string, stepId: string): Promise<HostSetupPlan> {
-  const plan = await ensureSetupPlan(sshHost);
-  const manager = await getRemoteDependencyManager(sshHost);
+  // Both of these reach past the app — resolving the dependency manager opens
+  // the SSH connection — so they belong inside the guarded region: a host that
+  // cannot be reached is the commonest way an install never happens.
+  let plan: HostSetupPlan | null = null;
   try {
+    plan = await ensureSetupPlan(sshHost);
+    const manager = await getRemoteDependencyManager(sshHost);
     const next = await runnerFor(sshHost, manager).runSingleStep(plan, stepId);
     reportSetupStep(next, stepId, 'install', stepOutcome(next, stepId));
     return next;
   } catch (error) {
-    reportSetupStepThrew('install');
+    reportSetupStep(plan, stepId, 'install', 'failure');
     log.warn('[HostSetup] step install stopped', {
       event: 'host-setup-step-install-stopped',
       sshHost,
@@ -465,14 +465,15 @@ export async function installSetupStep(sshHost: string, stepId: string): Promise
 
 /** Update one step to the newest available version — the per-row Update button. */
 export async function updateSetupStep(sshHost: string, stepId: string): Promise<HostSetupPlan> {
-  const plan = await ensureSetupPlan(sshHost);
-  const manager = await getRemoteDependencyManager(sshHost);
+  let plan: HostSetupPlan | null = null;
   try {
+    plan = await ensureSetupPlan(sshHost);
+    const manager = await getRemoteDependencyManager(sshHost);
     const next = await runnerFor(sshHost, manager).updateStep(plan, stepId);
     reportSetupStep(next, stepId, 'update', stepOutcome(next, stepId));
     return next;
   } catch (error) {
-    reportSetupStepThrew('update');
+    reportSetupStep(plan, stepId, 'update', 'failure');
     log.warn('[HostSetup] step update stopped', {
       event: 'host-setup-step-update-stopped',
       sshHost,
@@ -487,13 +488,20 @@ export async function updateSetupStep(sshHost: string, stepId: string): Promise<
 export async function skipSetupStep(sshHost: string, stepId: string): Promise<HostSetupPlan> {
   const plan = await getSetupPlan(sshHost);
   if (!plan) throw new Error(`No setup plan exists for ${sshHost}`);
-  const manager = await getRemoteDependencyManager(sshHost);
-  const next = await runnerFor(sshHost, manager).skip(plan, stepId);
-  // A skip always succeeds at what it is for — moving past the step. Whether the
-  // dependency is satisfied is a different question, and the point of counting
-  // skips is that someone decided to go on without it.
-  reportSetupStep(next, stepId, 'skip', 'success');
-  return next;
+  try {
+    const manager = await getRemoteDependencyManager(sshHost);
+    const next = await runnerFor(sshHost, manager).skip(plan, stepId);
+    // A skip always succeeds at what it is for — moving past the step. Whether the
+    // dependency is satisfied is a different question, and the point of counting
+    // skips is that someone decided to go on without it.
+    reportSetupStep(next, stepId, 'skip', 'success');
+    return next;
+  } catch (error) {
+    // Reaching the host can fail here too, and a skip that never took is not the
+    // decision this event exists to count.
+    reportSetupStep(plan, stepId, 'skip', 'failure');
+    throw error;
+  }
 }
 
 /** Drop a host's plan and its runner — called when the host is removed. */

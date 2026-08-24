@@ -3,7 +3,6 @@ import { getAgentById } from '@main/core/agents/getAgentById';
 import { getSession } from '@main/core/sessions/operations/getSession';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
-import { switchNotificationPoller } from '@main/core/switch-rooms/switch-notification-poller';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentTypeOf } from './agent-type';
 import type { TelemetryEventMap, TelemetryLocationKind } from './events';
@@ -131,9 +130,11 @@ export function registerTelemetryListeners(): void {
       // The same test `createSession` itself applies, so the reported flag and
       // the prompt the session actually launched with cannot disagree.
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
-      // Declared by the create-session form before the session exists, so it is
-      // already recorded by the time this runs.
-      connected_to_room: switchNotificationPoller.hasIntendedRoom(session.id),
+      // Declared by whoever asked for the session. Not read back from the
+      // poller: its record of the intended room is consumed during the launch,
+      // before this hook runs, so asking here answers no for every session that
+      // actually started.
+      connected_to_room: params.connectedToRoom === true,
     });
   });
 
@@ -143,6 +144,14 @@ export function registerTelemetryListeners(): void {
 
   sessionService.on('session:deleted', (sessionId) => endSession(sessionId, 'normal'));
   sessionService.on('session:archived', (sessionId) => endSession(sessionId, 'normal'));
+
+  // Un-archiving puts a session that has already reported an end back into use.
+  // Forgetting that it ended is what lets it report the next one: the record is
+  // there to collapse two endings moments apart, not to retire a session id for
+  // the life of the run.
+  sessionService.on('session:restored', (sessionId) => {
+    endedSessions.delete(sessionId);
+  });
 
   // Rows deleted outside the sessionService path — the remote-session
   // reconciler pruning a session that has gone from its VM, or one terminated

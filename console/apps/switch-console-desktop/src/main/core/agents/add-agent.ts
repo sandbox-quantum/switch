@@ -85,23 +85,27 @@ const ADD_AGENT_FAILURE_REASON: Record<
 };
 
 /**
- * Report a creation that did not happen, and hand the result back unchanged.
+ * Report a creation that did not happen.
  *
- * Wrapped around every failing return rather than reported from the
- * `agent:created` hook, which by definition only fires when one succeeded. The
- * location is read from the parameters, not the database: no row exists to look
- * it up from, and the parameters are what the user asked for.
+ * Reported here rather than from the `agent:created` hook, which by definition
+ * only fires when one succeeded. The location is read from the parameters, not
+ * the database: no row exists to look it up from, and the parameters are what
+ * the user asked for.
  */
-function reportFailedCreate(params: AddAgentParams, result: AddAgentResult): AddAgentResult {
-  if (result.kind === 'created') return result;
-
+function reportCreateFailure(params: AddAgentParams, reason: TelemetryAgentCreateFailure): void {
   trackEvent('agent_created', {
     agent_type: agentTypeOf(params.providerId),
     location: params.sshHost === null ? 'local' : 'remote',
     outcome: 'failure',
-    failure_reason: ADD_AGENT_FAILURE_REASON[result.kind],
+    failure_reason: reason,
     entry_point: entryPointOf(params.entryPoint),
   });
+}
+
+/** The same, wrapped around a failing return so it can stay an expression. */
+function reportFailedCreate(params: AddAgentParams, result: AddAgentResult): AddAgentResult {
+  if (result.kind === 'created') return result;
+  reportCreateFailure(params, ADD_AGENT_FAILURE_REASON[result.kind]);
   return result;
 }
 
@@ -119,6 +123,20 @@ function reportFailedCreate(params: AddAgentParams, result: AddAgentResult): Add
  * throws (leaving the gateway agent, as the pre-existing provision path did).
  */
 export async function addAgent(params: AddAgentParams): Promise<AddAgentResult> {
+  try {
+    return await runAddAgent(params);
+  } catch (error) {
+    // The half of the failures that are not a typed return, and the half worth
+    // watching most: everything past the identity mint signals failure by
+    // throwing, and those are the attempts that leave an agent registered on the
+    // gateway with nothing here pointing at it. `error` is the only honest code
+    // — these are not a named union, and their messages carry paths.
+    reportCreateFailure(params, 'error');
+    throw error;
+  }
+}
+
+async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   if (params.sshHost === null && !checkIsValidDirectory(params.dir)) {
     return reportFailedCreate(params, {
       kind: 'error',
