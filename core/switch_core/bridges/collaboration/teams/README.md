@@ -79,11 +79,9 @@ Environment/tenant setup owned by an administrator — track as a separate ops t
    `User.ReadBasic.All`, and `TeamMember.ReadWrite.All` /
    `ChannelMember.ReadWrite.All`. Resource-data subscriptions count against a
    shared per-tenant Teams subscription quota.
-5. **Encryption certificate** for Graph resource data: an X.509 cert whose public
-   certificate is handed to Graph and whose private key the bridge holds to
-   decrypt message bodies. **Switch generates this on bridge creation** — there
-   is nothing for an administrator to produce. A supplied set still wins if all
-   three fields are given.
+5. *(nothing to do)* The X.509 keypair Graph resource data is encrypted to is
+   generated on bridge creation. Listed only so its absence is not mistaken for
+   an omission; a supplied set still wins if all three fields are given.
 6. **Public HTTPS ingress** routing `https://<public-host>/api/messages` and
    `/api/teams/notifications` to the bridge's listener. Graph requires valid TLS
    and a response to its validation handshake within 10 seconds.

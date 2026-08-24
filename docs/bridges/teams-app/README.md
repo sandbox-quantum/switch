@@ -38,7 +38,7 @@ zip -j agent-switch-teams.zip manifest.json color.png outline.png
 package whose contents are inside a folder.
 
 **4. Upload it**, as described in
-[TEAMS_SETUP.md §1.6](../TEAMS_SETUP.md#16-teams-app-package).
+[TEAMS_SETUP.md §1.5](../TEAMS_SETUP.md#15-teams-app-package).
 
 ## Changing it later
 

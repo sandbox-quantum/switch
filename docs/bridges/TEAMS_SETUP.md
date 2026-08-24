@@ -108,8 +108,10 @@ Two Microsoft APIs feed the bridge, both landing on the adapter's own listener:
   subscriptions before their ~60-minute expiry.
 
 Capture therefore has two tiers. `@mention` capture needs only the Bot Framework
-path; full channel capture additionally needs Graph subscriptions **and** the
-encryption certificate.
+path; full channel capture additionally needs Graph subscriptions, which need
+the Graph permissions in [1.4](#14-graph-api-permissions). The keypair those
+notifications are encrypted to is Switch's own — generated per bridge, with
+nothing to obtain or install.
 
 ---
 
@@ -201,7 +203,7 @@ Switch from the first message.
 **About the RSC variant.** `ChannelMessage.Read.Group` is resource-specific
 consent: scoped to the teams your app is installed in rather than tenant-wide,
 and preferable where your organisation will accept it. Three consequences. It
-is declared in the Teams app manifest ([1.6](#16-teams-app-package)) as well as
+is declared in the Teams app manifest ([1.5](#15-teams-app-package)) as well as
 granted in the portal, so it is not a drop-in substitution for a checkbox. It
 applies only to teams the app is installed in — so if capture works in one team
 and not another, that is the first thing to check. And Microsoft blocks message
@@ -229,27 +231,7 @@ Nothing in this section is needed for the Bot Framework side. Messages that
 registration itself, and need no Graph permission at all — which is why a
 bridge with none of the above still looks half-alive.
 
-### 1.5 Encryption certificate — nothing to do
-
-Full channel capture needs an X.509 keypair: Graph encrypts message bodies to a
-public certificate and the bridge decrypts with the private key. **Switch
-generates it when you create the bridge**, so there is no step here and no
-`openssl` to run.
-
-The certificate is pure key transport — Microsoft never validates it against a
-trust store, checks an issuer, or cares who signed it — so a generated
-self-signed pair is not a compromise. There is no party for a CA to vouch to.
-
-If your organisation insists on supplying its own, the three fields still exist
-on the API (`encryption_certificate_id`, `encryption_public_certificate`,
-`encryption_private_key`) and a supplied set takes precedence. Supply all three
-or none; a partial set is rejected, because pairing someone's certificate with a
-private key they do not hold fails only at decryption time, long after the
-mistake.
-
-Rotating means creating a new bridge, which mints a new pair.
-
-### 1.6 Teams app package
+### 1.5 Teams app package
 
 An Azure Bot is reachable but not yet *present* in Teams. A Teams app package
 puts it in a team, and without one the bot cannot be added to channels or post
@@ -724,8 +706,10 @@ Everything else is generated or learned, and hidden from the form:
 
 - `client_state` — the shared secret echoed in every Graph notification and
   validated on receipt. Minted per bridge; there is nothing to invent.
-- The **encryption trio** — generated (1.5), so channel capture works out of the
-  box rather than only once someone pastes three PEMs correctly.
+- The **encryption trio** Graph resource-data notifications are encrypted to —
+  generated per bridge, so channel capture works out of the box rather than
+  only once someone pastes three PEMs correctly. Supplying your own through the
+  API still wins, all three or none; rotating means re-creating the bridge.
 - `listen_host` / `listen_port` (default `0.0.0.0:3978`) — the listener bind.
   A deployment detail, and only worth changing to run more than one Teams bridge
   on a host. Because it cannot be edited later, it has to be passed at creation
@@ -748,7 +732,7 @@ bridge normally provisions one, but you can instead point the room at a channel
 where a conversation is already happening.
 
 **There is no per-channel install step.** Installing the app into a team
-([1.6](#16-teams-app-package)) makes the bot available in every **standard**
+([1.5](#15-teams-app-package)) makes the bot available in every **standard**
 channel of that team at once — you do not add it channel by channel, and there
 is no "add app to this channel" button to look for. Private and shared channels
 are the exception: each one needs the app added to it explicitly.
@@ -766,7 +750,7 @@ https://teams.microsoft.com/l/channel/19%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%40th
 
 **URL-decode it before you paste it in**: `%3A` is `:` and `%40` is `@`, so the
 example above is `19:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@thread.tacv2`. The
-`groupId` in the same URL is the team id from [1.6](#16-teams-app-package) —
+`groupId` in the same URL is the team id from [1.5](#15-teams-app-package) —
 useful confirmation that the channel is in the team the bridge points at.
 
 #### 2. Bind a room to it
@@ -809,7 +793,7 @@ bite:
 
 - **The shipped manifest does not offer the app in them.** Teams gates that
   behind `"supportsChannelFeatures": "tier1"`, which needs manifest v1.25 or
-  later, and the package in [1.6](#16-teams-app-package) is v1.19. To opt in,
+  later, and the package in [1.5](#15-teams-app-package) is v1.19. To opt in,
   set `manifestVersion` to `1.25`, change the `$schema` URL to match, add
   `"supportsChannelFeatures": "tier1"` at the top level, raise `version`, and
   upload again. Without it the app simply will not appear in the channel's
@@ -961,7 +945,7 @@ In a 1:1 chat no mention is ever needed.
 Teams has no server-registered slash commands the way Slack does. What it has
 is a **command list**, declared in the app manifest, which shows the commands
 in the bot's own menu; picking one types it into the compose box. The manifest
-in [1.6](#16-teams-app-package) already carries one, so if you used it there is
+in [1.5](#15-teams-app-package) already carries one, so if you used it there is
 nothing to do here.
 
 Three things to know if you are editing it.
@@ -1146,7 +1130,12 @@ left undone.
 Graph resource-data encryption proves message **integrity, not origin** (the
 wrapping key is the public certificate, which anyone can encrypt to). The
 `clientState` shared secret is therefore **required** and validated on every
-notification. Inbound Bot Framework activities are separately authenticated by
+notification.
+
+That is also why Switch generating its own keypair costs nothing: the
+certificate is pure key transport, and Microsoft never validates it against a
+trust store, checks an issuer or cares who signed it. There is no party for a CA
+to vouch to. Inbound Bot Framework activities are separately authenticated by
 verifying the Bot Connector JWT.
 
 Because `/api/messages` and `/api/teams/notifications` are exposed publicly,
