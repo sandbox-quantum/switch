@@ -11,6 +11,7 @@ import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-
 import { serverView } from '@renderer/features/switch-servers/view';
 import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
+import type { ViewIdName } from '@shared/core/views/view-ids';
 
 // Switch Console views: agents-at-a-location (location), sessions (session), home, settings,
 // and a connected Switch gateway's workspace — its Home (server) plus that
@@ -52,6 +53,19 @@ export type ViewDefinition<TParams extends object = Record<never, never>> = {
 type Views = typeof views;
 
 export type ViewId = keyof Views;
+
+/**
+ * The registry and the shared list of view ids say the same thing.
+ *
+ * The list is what the main process reports against, and it cannot import this
+ * file. Both directions are asserted, so adding a view without naming it there —
+ * or leaving a name behind after removing one — fails to compile instead of
+ * quietly reporting a screen that does not exist or missing one that does.
+ */
+const _viewIdsAreExhaustive: ViewIdName extends ViewId ? true : never = true;
+const _viewIdsAreComplete: ViewId extends ViewIdName ? true : never = true;
+void _viewIdsAreExhaustive;
+void _viewIdsAreComplete;
 
 export type WrapParams<TId extends ViewId> = Views[TId] extends {
   WrapView: ComponentType<infer P>;

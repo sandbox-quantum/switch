@@ -271,6 +271,8 @@ export async function onboardLocationAgents(
   }
 
   await locationManager.openLocation(location);
-  for (const agent of created) agentEvents._emit('agent:created', agent);
+  // Nothing on the way here names a control, and a directory's worth of
+  // definitions can arrive in one call, so `unknown` is what these are.
+  for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown');
   return ok(created);
 }

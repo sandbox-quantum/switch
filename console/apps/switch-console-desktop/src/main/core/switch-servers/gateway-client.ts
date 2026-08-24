@@ -633,10 +633,26 @@ export async function fetchBridges(server: SwitchServer): Promise<RemoteBridge[]
 const SECRET_FIELD_RE = /token|password|secret|api[_-]?key|private[_-]?key|credential/i;
 
 /** JSON Schema as Pydantic's `model_json_schema()` emits it for a bridge config. */
+type BridgeConfigSchemaProperty = {
+  title?: string;
+  description?: string;
+  format?: string;
+  type?: string;
+  default?: unknown;
+  /** Pydantic emits `bool | None` as `anyOf: [{type:"boolean"},{type:"null"}]`
+   * rather than a top-level `type`, so look through it. */
+  anyOf?: Array<{ type?: string }>;
+};
+
 type BridgeConfigSchema = {
-  properties?: Record<string, { title?: string; description?: string; format?: string }>;
+  properties?: Record<string, BridgeConfigSchemaProperty>;
   required?: string[];
 };
+
+function primitiveType(prop: BridgeConfigSchemaProperty): string | undefined {
+  if (prop.type) return prop.type;
+  return prop.anyOf?.find((variant) => variant.type && variant.type !== 'null')?.type;
+}
 
 function humanizeFieldKey(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -647,13 +663,22 @@ function toConfigFields(schema: BridgeConfigSchema): BridgeConfigField[] {
   // Object key order follows the Pydantic model's field order, which puts the
   // required credentials before the optional tuning knobs — worth preserving,
   // so the form reads the way the platform's setup docs do.
-  return Object.entries(schema.properties ?? {}).map(([key, prop]) => ({
-    key,
-    label: prop.title ?? humanizeFieldKey(key),
-    description: prop.description ?? null,
-    required: required.has(key),
-    secret: prop.format === 'password' || SECRET_FIELD_RE.test(key),
-  }));
+  return Object.entries(schema.properties ?? {}).map(([key, prop]) => {
+    const kind = primitiveType(prop) === 'boolean' ? 'boolean' : 'string';
+    const fallback = kind === 'boolean' ? false : null;
+    return {
+      key,
+      label: prop.title ?? humanizeFieldKey(key),
+      description: prop.description ?? null,
+      required: required.has(key),
+      secret: prop.format === 'password' || SECRET_FIELD_RE.test(key),
+      kind,
+      default:
+        typeof prop.default === 'string' || typeof prop.default === 'boolean'
+          ? prop.default
+          : fallback,
+    };
+  });
 }
 
 /**
@@ -665,9 +690,9 @@ function toConfigFields(schema: BridgeConfigSchema): BridgeConfigField[] {
  * than hard-coded per platform. A server running a newer switch-core that adds
  * a bridge type, or a field to an existing one, works without an app release.
  *
- * Every schema-visible field is a string today (the sole int, the Teams listen
- * port, is `SkipJsonSchema`), so values are collected as strings and the server
- * coerces.
+ * Fields carry their primitive type, because they are no longer all strings:
+ * the Slack bridge's agent-user-groups toggle is a boolean, and the server
+ * rejects an empty string as one rather than coercing it.
  */
 export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBridgeType[]> {
   const res = await gatewayFetch(server, '/collaborations/types', { authenticated: true });
@@ -705,7 +730,7 @@ export async function createBridge(
   params: {
     bridgeType: string;
     displayName: string;
-    connectionConfig: Record<string, string>;
+    connectionConfig: Record<string, string | boolean>;
     setAsDefault: boolean;
     channelCreationEnabled: boolean;
   }

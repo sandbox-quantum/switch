@@ -62,7 +62,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   const [displayName, setDisplayName] = useState('');
   // Credential values. Renderer-local and never persisted: this state dies with
   // the modal, and the only thing that reads it is the submit call.
-  const [config, setConfig] = useState<Record<string, string>>({});
+  // Typed by the schema, not all strings: a boolean field posts a real boolean,
+  // since the server rejects an empty string as one.
+  const [config, setConfig] = useState<Record<string, string | boolean>>({});
   const [setAsDefault, setSetAsDefault] = useState(false);
   // Defaults on: most platforms can create channels, and the server rejects
   // this staying true for one that can't rather than us guessing wrong.
@@ -82,20 +84,34 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   // isn't forced off while that request is in flight.
   const channelCreationSupported = selectedType?.channelCreationSupported ?? true;
 
-  const handleTypeChange = useCallback((next: string | null) => {
-    // Switching platform drops whatever was typed for the previous one — those
-    // fields do not exist on the new type, and carrying a stale token forward
-    // would silently submit a credential the user thinks they replaced.
-    setTypeKey(next);
-    setConfig({});
-    setChannelCreationEnabled(true);
-    setError(null);
-  }, []);
+  const handleTypeChange = useCallback(
+    (next: string | null) => {
+      // Switching platform drops whatever was typed for the previous one — those
+      // fields do not exist on the new type, and carrying a stale token forward
+      // would silently submit a credential the user thinks they replaced. The
+      // new type's defaults are seeded, so a field left untouched posts what the
+      // platform expects rather than nothing.
+      setTypeKey(next);
+      const fields = types.find((t) => t.key === next)?.fields ?? [];
+      const defaults: Record<string, string | boolean> = {};
+      for (const field of fields) {
+        if (field.default !== null) defaults[field.key] = field.default;
+      }
+      setConfig(defaults);
+      setChannelCreationEnabled(true);
+      setError(null);
+    },
+    [types]
+  );
 
   const trimmedName = displayName.trim();
-  const missingRequired = (selectedType?.fields ?? []).some(
-    (f) => f.required && !(config[f.key] ?? '').trim()
-  );
+  const missingRequired = (selectedType?.fields ?? []).some((f) => {
+    if (!f.required) return false;
+    const value = config[f.key];
+    // `false` is an answer, not an omission — only a blank string is missing.
+    if (typeof value === 'boolean') return false;
+    return !(value ?? '').trim();
+  });
   const canSubmit =
     !!serverId && isAdmin && !!selectedType && !!trimmedName && !missingRequired && !isSubmitting;
 
@@ -108,10 +124,15 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     try {
       // Send only the fields this type declares, trimmed. A value left over in
       // state from a field that is no longer rendered must not ride along.
-      const connectionConfig: Record<string, string> = {};
+      const connectionConfig: Record<string, string | boolean> = {};
       for (const field of selectedType.fields) {
-        const value = (config[field.key] ?? '').trim();
-        if (value) connectionConfig[field.key] = value;
+        const value = config[field.key];
+        if (typeof value === 'boolean') {
+          connectionConfig[field.key] = value;
+          continue;
+        }
+        const trimmed = (value ?? '').trim();
+        if (trimmed) connectionConfig[field.key] = trimmed;
       }
 
       const result = await rpc.switchServers.createBridge({
@@ -239,32 +260,56 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                 <ExternalLink className="size-3" />
               </button>
 
-              {selectedType.fields.map((field) => (
-                <Field key={field.key}>
-                  <FieldLabel>
-                    {field.label}
-                    {!field.required && (
-                      <span className="ml-1 font-normal text-foreground-muted">(optional)</span>
+              {selectedType.fields.map((field) =>
+                field.kind === 'boolean' ? (
+                  <label
+                    key={field.key}
+                    className="group/field flex cursor-pointer items-start gap-2.5"
+                  >
+                    <Checkbox
+                      checked={config[field.key] === true}
+                      onCheckedChange={(checked) => {
+                        setConfig((prev) => ({ ...prev, [field.key]: checked === true }));
+                        setError(null);
+                      }}
+                      className="mt-0.5"
+                    />
+                    <span className="flex flex-col gap-0.5">
+                      <span className="text-sm font-medium">{field.label}</span>
+                      {field.description && (
+                        <span className="text-xs text-foreground-muted">{field.description}</span>
+                      )}
+                    </span>
+                  </label>
+                ) : (
+                  <Field key={field.key}>
+                    <FieldLabel>
+                      {field.label}
+                      {!field.required && (
+                        <span className="ml-1 font-normal text-foreground-muted">(optional)</span>
+                      )}
+                    </FieldLabel>
+                    <Input
+                      // Masked for credentials, so a token is not left readable on
+                      // screen while the user checks the rest of the form.
+                      type={field.secret ? 'password' : 'text'}
+                      autoComplete={field.secret ? 'new-password' : 'off'}
+                      spellCheck={false}
+                      value={
+                        typeof config[field.key] === 'string' ? (config[field.key] as string) : ''
+                      }
+                      onChange={(e) => {
+                        const { value } = e.target;
+                        setConfig((prev) => ({ ...prev, [field.key]: value }));
+                        setError(null);
+                      }}
+                    />
+                    {field.description && (
+                      <p className="mt-1 text-xs text-foreground-muted">{field.description}</p>
                     )}
-                  </FieldLabel>
-                  <Input
-                    // Masked for credentials, so a token is not left readable on
-                    // screen while the user checks the rest of the form.
-                    type={field.secret ? 'password' : 'text'}
-                    autoComplete={field.secret ? 'new-password' : 'off'}
-                    spellCheck={false}
-                    value={config[field.key] ?? ''}
-                    onChange={(e) => {
-                      const { value } = e.target;
-                      setConfig((prev) => ({ ...prev, [field.key]: value }));
-                      setError(null);
-                    }}
-                  />
-                  {field.description && (
-                    <p className="mt-1 text-xs text-foreground-muted">{field.description}</p>
-                  )}
-                </Field>
-              ))}
+                  </Field>
+                )
+              )}
 
               <label
                 className={cn(

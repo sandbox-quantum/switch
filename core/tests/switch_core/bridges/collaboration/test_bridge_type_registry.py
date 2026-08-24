@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
@@ -65,7 +66,9 @@ def test_discord_adapter_registers_with_expected_required_fields() -> None:
 
     assert service.get_registered_types() == ["discord"]
     schema = service.get_config_schema("discord")
-    assert set(schema["properties"]) == {"bot_token", "guild_id"}
+    # agent_roles is offered but not required: it needs Manage Roles and room
+    # under Discord's 250-role cap, so a connection stays valid without it.
+    assert set(schema["properties"]) == {"bot_token", "guild_id", "agent_roles"}
     assert set(schema["required"]) == {"bot_token", "guild_id"}
 
 
@@ -87,7 +90,15 @@ def test_get_config_schema_exposes_required_fields() -> None:
 
     schema = service.get_config_schema("slack")
 
-    assert set(schema["properties"]) == {"bot_token", "app_token", "workspace_id"}
+    # agent_usergroups is offered but not required: it needs a paid plan and an
+    # admin-granted permission, so a connection stays valid without it.
+    assert set(schema["properties"]) == {
+        "bot_token",
+        "app_token",
+        "workspace_id",
+        "agent_usergroups",
+        "agent_sessions",
+    }
     assert set(schema["required"]) == {"bot_token", "app_token", "workspace_id"}
 
 
@@ -171,5 +182,41 @@ def test_teams_adapter_registers_with_expected_required_fields() -> None:
         "encryption_certificate_id",
         "encryption_public_certificate",
         "encryption_private_key",
+        "channel_teams",
     ):
         assert hidden not in schema["properties"]
+
+
+# ── Connection config validation ─────────────────────────────────────────────
+
+
+def test_validate_connection_config_accepts_a_valid_edit() -> None:
+    service = _service()
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+
+    service.validate_connection_config(
+        "slack",
+        {
+            "bot_token": "xoxb-1",
+            "app_token": "xapp-1",
+            "workspace_id": "T1",
+            "agent_usergroups": True,
+        },
+    )
+
+
+def test_validate_connection_config_rejects_a_broken_edit() -> None:
+    # Editing a connection is checked before it is stored: a config the adapter
+    # cannot parse would otherwise take the bridge down at its next start, long
+    # after the request that caused it.
+    service = _service()
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+
+    with pytest.raises(PydanticValidationError):
+        service.validate_connection_config("slack", {"bot_token": "xoxb-1"})
+
+
+def test_validate_connection_config_unknown_type_raises() -> None:
+    service = _service()
+    with pytest.raises(ValueError, match="Unknown bridge type"):
+        service.validate_connection_config("does-not-exist", {})

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
   listPlugins: vi.fn(),
   readFile: vi.fn(),
+  trackEvent: vi.fn(),
 }));
 
 vi.mock('@main/core/execution-context/local-execution-context', () => ({
@@ -13,6 +14,9 @@ vi.mock('@main/core/execution-context/local-execution-context', () => ({
     exec = mocks.exec;
   },
 }));
+
+// Reaches the settings store, and through it the database, at import time.
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: mocks.trackEvent }));
 
 vi.mock('@switch-console/core/deps/runtime', () => ({
   resolveCommandPath: mocks.resolveCommandPath,
@@ -399,6 +403,11 @@ describe('switchSetupService mutations', () => {
       ['plugin', 'install', 'switch-connector@switch-plugins', '-s', 'user'],
       expect.anything()
     );
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'claude',
+      target: 'local',
+      outcome: 'success',
+    });
   });
 
   it('uninstall issues the scoped uninstall command', async () => {
@@ -439,6 +448,23 @@ describe('switchSetupService mutations', () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toBe('no write access');
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'claude',
+      target: 'local',
+      outcome: 'failure',
+    });
+  });
+
+  it('reports nothing when the agent type has no Switch setup to attempt', async () => {
+    mocks.getPlugin.mockReturnValue(NONE_AGENT);
+
+    const result = await switchSetupService.install('no-switch-agent');
+
+    expect(result).toEqual({
+      success: false,
+      message: 'Switch setup is not supported for this agent.',
+    });
+    expect(mocks.trackEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -646,6 +672,7 @@ describe('switchSetupService with the codex dialect', () => {
 
 describe('file-based connector version', () => {
   const installedVersion = vi.fn();
+  const install = vi.fn();
   const FILES_AGENT = {
     metadata: { id: 'opencode' },
     capabilities: {
@@ -656,7 +683,7 @@ describe('file-based connector version', () => {
       },
       hostDependency: { binaryNames: ['opencode'] },
     },
-    behavior: { switchSetup: { files: { installedVersion } } },
+    behavior: { switchSetup: { files: { installedVersion, install } } },
   };
 
   beforeEach(() => {
@@ -685,5 +712,49 @@ describe('file-based connector version', () => {
 
     expect(status.installed).toBe(true);
     expect(status.updateAvailable).toBe(false);
+  });
+
+  // The app writes this connector rather than driving a marketplace CLI for it,
+  // and it is still a connector being installed.
+  it('reports an install the app performs itself', async () => {
+    install.mockResolvedValue(undefined);
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'success',
+    });
+  });
+
+  it('reports its failure too', async () => {
+    install.mockRejectedValue(new Error('permission denied'));
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'failure',
+    });
+  });
+
+  it('still answers, and still reports, when the connector implements nothing', async () => {
+    // A plugin can declare a files connector and supply no behaviour for it.
+    // The user asked for an install: they get a failure, not a rejected promise
+    // reaching the UI as a stack trace with nothing recorded.
+    mocks.getPlugin.mockReturnValue({ ...FILES_AGENT, behavior: { switchSetup: {} } });
+
+    const result = await switchSetupService.install('opencode');
+
+    expect(result.success).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'opencode',
+      target: 'local',
+      outcome: 'failure',
+    });
   });
 });

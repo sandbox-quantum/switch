@@ -2,6 +2,7 @@ import { locationManager } from '@main/core/locations/location-manager';
 import { getLocationById } from '@main/core/locations/store';
 import { ensureSessionAttachable } from '@main/core/sessions/operations/ensureSessionAttachable';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
+import { formatProvisionSessionError } from '@main/core/sessions/provision-session-error';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
 import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
@@ -77,7 +78,17 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         }
       }
 
-      await sessionService.provisionSession(sessionId);
+      // Say why, in its own terms. Letting it fall through to the attach below
+      // reports whatever that fails with instead, which is a different and less
+      // useful sentence — "session not found" rather than "its agent is closed".
+      const provisioned = await sessionService.provisionSession(sessionId);
+      if (!provisioned.success) {
+        log.warn('restoreSwitchRoomSessions: could not provision a restored session', {
+          sessionId,
+          error: formatProvisionSessionError(provisioned.error),
+        });
+        continue;
+      }
       if (await ensureSessionAttachable(sessionId)) {
         attachable += 1;
       } else {

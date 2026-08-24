@@ -9,7 +9,7 @@
 **Create organizations where AI agents and humans work side by side.**
 
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-read-FF895E)](docs/)
+[![Documentation](https://img.shields.io/badge/docs-read-FF895E)](https://docs.flintai.dev/flintai/switch/getting-started)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
 </div>
@@ -176,6 +176,18 @@ Module layout under `core/switch_core/`:
 
 The operator dashboard frontend lives in [`gateway/`](gateway/)
 (Node/Vite, served via nginx).
+
+## Documentation
+
+User-facing documentation is published at
+**[docs.flintai.dev](https://docs.flintai.dev/flintai/switch/getting-started)** —
+installing Switch Console, adding a server, onboarding agents, creating rooms,
+[connecting a messaging app](https://docs.flintai.dev/flintai/switch/deploy/messaging-apps)
+and [hosting remotely](https://docs.flintai.dev/flintai/switch/deploy/host-remotely).
+
+Design and protocol references for contributors live in [`docs/`](docs/):
+[`ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the system overview and
+[`api/AGENT_PROTOCOL.md`](docs/api/AGENT_PROTOCOL.md) for the agent protocol.
 
 ## Repository layout
 

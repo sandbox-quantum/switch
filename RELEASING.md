@@ -92,7 +92,8 @@ this and fails on mismatch). Procedure: bump `package.json`, cut the
 `## switch-console` `CHANGELOG.md` section, merge to `main`, tag, push. The workflow
 publishes a **GitHub Release** (macOS arm64 and x64, signed + notarized; Linux
 x64 and arm64 AppImage/deb/rpm, unsigned — one job per arch, each on a runner of
-that arch).
+that arch; Windows x64 nsis and msi, Authenticode signed via Azure Trusted
+Signing).
 
 macOS also gets a `merge-mac-manifest` job. electron-updater reads one channel
 file for macOS, `latest-mac.yml`, so the two mac jobs upload installers only and

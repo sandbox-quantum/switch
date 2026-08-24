@@ -6,12 +6,24 @@ const loadSessionWithAgent = vi.hoisted(() => vi.fn());
 const getLocationById = vi.hoisted(() => vi.fn());
 const getLocation = vi.hoisted(() => vi.fn(() => ({}) as unknown));
 const openLocation = vi.hoisted(() => vi.fn(async () => ({ success: true })));
-const provisionSession = vi.hoisted(() => vi.fn<(id: string) => Promise<void>>(async () => {}));
+/**
+ * Provisioning reports its failures as a value rather than throwing, so the
+ * double has to answer with one — a bare `undefined` reads as a failure and
+ * would skip every session.
+ */
+const provisionSession = vi.hoisted(() =>
+  vi.fn<(id: string) => Promise<{ success: boolean; error?: unknown; data?: unknown }>>(
+    async () => ({ success: true, data: { path: '/repo', locationId: 'loc-1' } })
+  )
+);
 const hydrateSession = vi.hoisted(() => vi.fn<(id: string) => Promise<void>>(async () => {}));
 const ensureSessionAttachable = vi.hoisted(() =>
   vi.fn<(id: string) => Promise<boolean>>(async () => false)
 );
 
+// Naming the provision failure pulls in the error module, which reaches the
+// database through the runtime manager at import time.
+vi.mock('@main/db/client', () => ({ db: {} }));
 vi.mock('./switch-room-service', () => ({
   switchRoomService: { listPersistedSessionIds, prunePersisted },
 }));
@@ -106,9 +118,11 @@ describe('restoreSwitchRoomSessions', () => {
 
   it('keeps going when one session fails to restore', async () => {
     listPersistedSessionIds.mockResolvedValue(['bad-1', 'good-1']);
-    provisionSession.mockImplementation(async (id: string) => {
-      if (id === 'bad-1') throw new Error('provision blew up');
-    });
+    provisionSession.mockImplementation(async (id: string) =>
+      id === 'bad-1'
+        ? { success: false, error: { type: 'error', message: 'provision blew up' } }
+        : { success: true, data: { path: '/repo', locationId: 'loc-1' } }
+    );
     ensureSessionAttachable.mockResolvedValue(true);
 
     await restoreSwitchRoomSessions();

@@ -12,7 +12,7 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/users", "Users"],
 ];
 
-const DOCS_URL = "https://github.com/sandbox-quantum/switch";
+const DOCS_URL = "https://docs.flintai.dev/flintai/switch/getting-started";
 
 export default function TopBar() {
   const { pathname } = useLocation();

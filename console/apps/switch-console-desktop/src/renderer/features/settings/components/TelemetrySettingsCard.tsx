@@ -20,7 +20,7 @@ const TelemetrySettingsCard: React.FC = () => {
     isSaving: saving,
   } = useAppSettingsKey('telemetry');
 
-  const enabled = telemetry?.enabled ?? true;
+  const enabled = telemetry?.enabled ?? false;
 
   const toggle = useCallback(
     (next: boolean) => {
@@ -33,7 +33,7 @@ const TelemetrySettingsCard: React.FC = () => {
 
   return (
     <SettingRow
-      title="Share anonymous usage data"
+      title="Share usage data"
       description={
         <>
           <p>{TELEMETRY_SUMMARY}</p>

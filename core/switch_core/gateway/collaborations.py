@@ -280,7 +280,23 @@ async def update_bridge(
         bridge = await bridge_store.set_channel_creation_enabled(
             session, bridge_id, payload.channel_creation_enabled
         )
+    if payload.connection_config is not None:
+        merged = {**(bridge.connection_config or {}), **payload.connection_config}
+        try:
+            collab_lifecycle.validate_connection_config(bridge.type, merged)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        bridge = await bridge_store.merge_connection_config(
+            session, bridge_id, dict(payload.connection_config)
+        )
     await session.commit()
+
+    # A running adapter holds the config it was built with, so a change only
+    # takes effect on restart. Doing it here means enabling something is the
+    # whole operation rather than a change that quietly does nothing until the
+    # next deploy.
+    if payload.connection_config is not None:
+        await collab_lifecycle.restart(bridge_id)
     rooms = await room_store.get_by_bridge(session, bridge_id)
     return await _detail(
         bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle

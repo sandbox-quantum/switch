@@ -232,6 +232,44 @@ describe('fetchBridgeTypes', () => {
       description: 'The xoxb token.',
       required: true,
       secret: true,
+      kind: 'string',
+      default: null,
+    });
+  });
+
+  it('carries a boolean field as one, with its default', async () => {
+    // Fields used to be strings without exception. A boolean sent as the empty
+    // string the form would otherwise produce is rejected by the server, so the
+    // type has to survive the flattening.
+    fetchMock.mockResolvedValue(
+      response(200, [
+        {
+          key: 'slack',
+          config_schema: {
+            properties: {
+              bot_token: { title: 'Bot Token', type: 'string' },
+              agent_usergroups: {
+                title: 'Agent Usergroups',
+                type: 'boolean',
+                default: true,
+              },
+            },
+            required: ['bot_token'],
+          },
+        },
+      ])
+    );
+
+    const [slack] = await fetchBridgeTypes(SERVER);
+
+    expect(slack.fields[1]).toEqual({
+      key: 'agent_usergroups',
+      label: 'Agent Usergroups',
+      description: null,
+      required: false,
+      secret: false,
+      kind: 'boolean',
+      default: true,
     });
   });
 

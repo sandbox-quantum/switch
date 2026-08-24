@@ -70,3 +70,32 @@ don't onboard Mattermost by hand — it's already there after setup. Log in at
   starts the DM with the agent's bot and Switch picks it up.
 - **Deeplinks.** Set `GATEWAY_PUBLIC_URL` on switch-core for clickable "Open in
   Switch Console" links (see the [index](README.md#deployment-knobs)).
+
+## Showing that an agent is working
+
+Three signals, in order of how long they last. Nothing here needs configuring.
+
+- **👀 on the message that asked.** Added when the agent picks the message up and
+  removed when its turn ends. Inside a thread it goes on the reply, not the root
+  the reply hangs off — the mark says *which* message is being handled. It is
+  added by the agent's own bot, so two agents on one message show two
+  reactions and hovering names them. This is the signal that always works: it
+  needs no thread and it does not expire.
+- **A posted status line** — "⚙️ Working on it…", edited in place as the agent
+  reports activity and retired to "✓ Done · 2m14s" when the turn finishes. It is
+  edited rather than deleted because Mattermost's client leaves a
+  "(message deleted)" placeholder behind any post removed while it is on screen.
+- **The typing indicator**, nudged once as the turn opens. Mattermost expires it
+  after about five seconds, so treat it as a first flicker rather than a
+  progress signal.
+
+**What Mattermost cannot do.** There is no equivalent of Slack's native AI
+progress card — the live panel that streams what an agent is doing under its own
+name. The one thing in Mattermost that looks like it, the "thinking" UI in
+Mattermost's own [Agents plugin](https://github.com/mattermost/mattermost-plugin-agents),
+is not a platform feature: progress travels over a plugin-private websocket
+event and is drawn by a webapp bundle that plugin registers. Neither half is
+reachable from a bot token or the REST API, and ephemeral posts cannot be edited
+over the API either. Matching that layer would mean Switch shipping a Mattermost
+plugin of its own, which every server admin would have to install. Switch does
+not do this, and does not approximate it.

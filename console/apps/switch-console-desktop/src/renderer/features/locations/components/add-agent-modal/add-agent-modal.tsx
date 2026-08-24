@@ -43,6 +43,7 @@ import {
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
@@ -54,7 +55,14 @@ import { useConfigureAgentForm, usePickMode } from './modes';
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
 // carries the SWITCH_* env block). The richer Switch Console flows — SSH, clone, create
 // new GitHub repo — are out of scope for v0, so this modal is local + pick only.
-export type AddLocationModalProps = BaseModalProps<void>;
+export type AddLocationModalProps = BaseModalProps<void> & {
+  /**
+   * Which control opened this dialog. Required rather than defaulted: four
+   * places open it, and a default would silently file whichever one forgot
+   * under the same heading as the ones that did not.
+   */
+  entryPoint: UiEntryPoint;
+};
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
@@ -68,7 +76,10 @@ function canonicalDir(dir: string): string {
   return stripped || (trimmed.startsWith('/') ? '/' : '');
 }
 
-export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLocationModalProps) {
+export const AddAgentModal = observer(function AddAgentModal({
+  onClose,
+  entryPoint,
+}: AddLocationModalProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
@@ -291,6 +302,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,
         providerConfig: launchProfileConfigRef.current,
+        entryPoint,
       });
       if (result.kind !== 'created') {
         reportProvisionError(result);

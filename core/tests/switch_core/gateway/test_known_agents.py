@@ -18,6 +18,19 @@ def _agent(metadata: dict | None) -> SimpleNamespace:
     return SimpleNamespace(name="claude-code.test", metadata_=metadata)
 
 
+def _agent_named(name: str) -> SimpleNamespace:
+    """An agent whose name does not contain "claude" — the Codex and OpenCode
+    suites assert a `claude` binary is never suggested, and the connect prompt
+    now carries the agent's own name."""
+    return SimpleNamespace(name=name, metadata_={})
+
+
+def _identity(agent_name: str) -> str:
+    """The trailing clause the connect prompt carries so a session started in a
+    directory holding several agents knows which one it is."""
+    return f" — if you are asked which agent you are, you are {agent_name}"
+
+
 class TestBuildProfileConnectionModel:
     def test_channels_enabled_defaults_to_session_addressable(self) -> None:
         profile = ClaudeCodeKnownAgent.build_profile(
@@ -72,7 +85,7 @@ class TestStartSessionInstructions:
         # The flag must come AFTER the prompt argument so claude treats the
         # quoted text as the initial prompt, not as a value for the flag.
         assert (
-            'claude "connect to switch room hub" '
+            f'claude "connect to switch room hub{_identity("claude-code.test")}" '
             "--dangerously-load-development-channels "
             "plugin:switch-connector@switch-plugins"
         ) in msg
@@ -89,7 +102,7 @@ class TestStartSessionInstructions:
         # pushed events), and the message frames reading as asynchronous.
         assert (
             'cd /srv/agent && claude "connect to switch room ops '
-            'and pull the latest messages"'
+            f'and pull the latest messages{_identity("claude-code.test")}"'
         ) in msg
         assert "asynchronously" in msg
         # Real-time delivery requires an API-key / subscription Claude Code.
@@ -118,7 +131,7 @@ class TestStartSessionInstructions:
         assert "--dangerously-load-development-channels" not in msg
         assert (
             'cd /srv/agent && claude "connect to switch room ops '
-            'and pull the latest messages"'
+            f'and pull the latest messages{_identity("claude-code.test")}"'
         ) in msg
 
     def test_connected_not_live_opening(self) -> None:
@@ -210,7 +223,7 @@ class TestStartSessionInstructions:
         # dev-channels flag; the settings path matches what the configure skill
         # writes the subagent credentials to.
         assert (
-            'claude "connect to switch room hub" '
+            f'claude "connect to switch room hub{_identity("claude-code.test")}" '
             "--agent seo-writer "
             "--settings .claude/switch-subagents/seo-writer.settings.json "
             "--dangerously-load-development-channels "
@@ -299,11 +312,16 @@ class TestCodexKnownAgent:
 
     def test_start_session_instructions_emit_codex_not_claude(self) -> None:
         opts = CodexOptions(repo_dir="/Users/x/repo")
-        msg = CodexKnownAgent.start_session_instructions(opts, _agent({}), "hub", None)
+        msg = CodexKnownAgent.start_session_instructions(
+            opts, _agent_named("codex.test"), "hub", None
+        )
         assert msg is not None
         # The path is quoted so a repo_dir with spaces still produces a valid
         # paste command.
-        assert 'cd "/Users/x/repo" && codex "connect to switch room hub"' in msg
+        assert (
+            'cd "/Users/x/repo" && codex "connect to switch room hub'
+            f'{_identity("codex.test")}"'
+        ) in msg
         # It must NOT suggest a claude command or Claude-specific flags.
         assert "claude" not in msg
         assert "--dangerously-load-development-channels" not in msg
@@ -321,7 +339,7 @@ class TestCodexKnownAgent:
     def test_connected_not_live_opening(self) -> None:
         opts = CodexOptions(repo_dir="/r")
         msg = CodexKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", None, connected_not_live=True
+            opts, _agent_named("codex.test"), "ops", None, connected_not_live=True
         )
         assert msg is not None
         assert "isn't reporting" in msg
@@ -331,7 +349,11 @@ class TestCodexKnownAgent:
     def test_other_room_names_branch(self) -> None:
         opts = CodexOptions(repo_dir="/r")
         msg = CodexKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", None, other_room_names=["hub", "triage"]
+            opts,
+            _agent_named("codex.test"),
+            "ops",
+            None,
+            other_room_names=["hub", "triage"],
         )
         assert msg is not None
         assert "**hub**" in msg
@@ -341,10 +363,13 @@ class TestCodexKnownAgent:
     def test_assume_role_folded_into_prompt(self) -> None:
         opts = CodexOptions(repo_dir="/r")
         msg = CodexKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", None, assume_role="reviewer"
+            opts, _agent_named("codex.test"), "ops", None, assume_role="reviewer"
         )
         assert msg is not None
-        assert 'codex "connect to switch room ops and assume the role reviewer"' in msg
+        assert (
+            'codex "connect to switch room ops and assume the role reviewer'
+            f'{_identity("codex.test")}"'
+        ) in msg
 
     def test_empty_string_repo_dir_normalised_to_placeholder(self) -> None:
         opts = CodexOptions(repo_dir="")
@@ -449,19 +474,19 @@ class TestOpenCodeKnownAgent:
         # that name. The prompt must go through --prompt.
         opts = OpenCodeOptions(repo_dir="/Users/x/repo")
         msg = OpenCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "hub", None
+            opts, _agent_named("opencode.test"), "hub", None
         )
         assert msg is not None
         assert (
-            'cd "/Users/x/repo" && opencode --prompt "connect to switch room hub"'
-            in msg
-        )
+            'cd "/Users/x/repo" && opencode --prompt "connect to switch room hub'
+            f'{_identity("opencode.test")}"'
+        ) in msg
         assert 'opencode "connect' not in msg
 
     def test_start_session_instructions_emit_opencode_only(self) -> None:
         opts = OpenCodeOptions(repo_dir="/Users/x/repo")
         msg = OpenCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "hub", None
+            opts, _agent_named("opencode.test"), "hub", None
         )
         assert msg is not None
         assert "claude" not in msg
@@ -481,12 +506,13 @@ class TestOpenCodeKnownAgent:
     def test_assume_role_is_folded_into_the_prompt(self) -> None:
         opts = OpenCodeOptions(repo_dir="/r")
         msg = OpenCodeKnownAgent.start_session_instructions(
-            opts, _agent({}), "ops", None, assume_role="reviewer"
+            opts, _agent_named("opencode.test"), "ops", None, assume_role="reviewer"
         )
         assert msg is not None
         assert (
-            '--prompt "connect to switch room ops and assume the role reviewer"' in msg
-        )
+            '--prompt "connect to switch room ops and assume the role reviewer'
+            f'{_identity("opencode.test")}"'
+        ) in msg
 
     def test_blank_repo_dir_uses_placeholder(self) -> None:
         msg = OpenCodeKnownAgent.start_session_instructions(

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
+import type { TelemetryEventMap } from '@main/core/telemetry/events';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { db } from '@main/db/client';
 import { agents, kv, type SwitchServerRow, switchServers } from '@main/db/schema';
 import {
@@ -155,6 +157,12 @@ export async function ensureManagedServer(
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
+  // Only the insert: this function also runs on every restart of a stack that
+  // already exists, and that is not a server being added.
+  trackEvent('server_added', {
+    server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
+    outcome: 'success',
+  });
   return mapRow(row);
 }
 
@@ -178,6 +186,11 @@ export async function addServer(params: AddServerParams): Promise<SwitchServer> 
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
+  // Not reported here, unlike the managed insert above: registering a URL is a
+  // discrete action with one caller, so the controller reports both of its
+  // outcomes together and a single Add cannot produce two events. The managed
+  // kinds have no such single owner — two services call that path and so does
+  // every restart — which is why it is reported at the insert instead.
   return mapRow(row);
 }
 
@@ -211,6 +224,10 @@ export async function renameServer(params: RenameServerParams): Promise<SwitchSe
 }
 
 export async function removeServer(id: string): Promise<void> {
+  // Read before the row goes, since nothing afterwards can say what kind it was
+  // — but a read that exists only to describe the removal must not prevent it.
+  const server = await getServer(id).catch(() => null);
+
   await deleteSessionCookie(id);
   // Unlink agents explicitly: SQLite's ALTER TABLE ADD COLUMN can't carry an
   // ON DELETE clause, so the FK's set-null isn't enforced by the engine.
@@ -219,6 +236,17 @@ export async function removeServer(id: string): Promise<void> {
   if ((await getActiveServerId()) === id) {
     await db.delete(kv).where(eq(kv.key, ACTIVE_SERVER_KV_KEY));
   }
+
+  // Removing an already-absent server is not a server being removed.
+  if (server) trackEvent('server_removed', { server_kind: serverKindOf(server) });
+}
+
+/** The reported kind of a server, in the same terms `server_added` uses. */
+export function serverKindOf(
+  server: SwitchServer
+): TelemetryEventMap['server_added']['server_kind'] {
+  if (!server.managed) return 'external';
+  return server.managementKind === 'remote' ? 'remote_managed' : 'local';
 }
 
 export async function getActiveServerId(): Promise<string | null> {

@@ -468,11 +468,16 @@ class BridgeDetail(BaseModel):
 
 
 class BridgeUpdateRequest(BaseModel):
-    # Both optional so a caller can change one without restating the other; a
-    # request that sets neither changes nothing rather than silently resetting
+    # All optional so a caller can change one without restating the others; a
+    # request that sets none changes nothing rather than silently resetting
     # a field it did not mention.
     agent_greetings_enabled: bool | None = None
     channel_creation_enabled: bool | None = None
+    # Merged over the stored config, not substituted for it, so changing one
+    # setting does not mean re-sending the platform's secrets. The merged
+    # result is validated against the bridge type's schema before it is kept,
+    # and the bridge is restarted so the change actually takes effect.
+    connection_config: dict[str, object] | None = None
 
 
 class BridgeTypeInfo(BaseModel):

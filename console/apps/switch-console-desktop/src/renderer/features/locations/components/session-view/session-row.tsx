@@ -35,7 +35,7 @@ export const SessionRow = observer(function SessionRow({
 
   const handleArchive = () => void sessionManager?.archiveSession(session.data.id);
   const handleRestore = () => void sessionManager?.restoreSession(session.data.id);
-  const handleProvision = () => void sessionManager?.provisionSession(session.data.id);
+  const handleProvision = () => void sessionManager?.provisionSession(session.data.id, 'auto');
   const handleDelete = () =>
     showDeleteSession({
       locationId: session.locationId,

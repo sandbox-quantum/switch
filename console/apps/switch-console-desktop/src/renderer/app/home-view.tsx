@@ -22,12 +22,8 @@ const TAGLINE = 'A platform-agnostic framework to bring humans and agents togeth
  * from Settings → General.
  */
 export const HomeMainPanel = observer(function HomeMainPanel() {
-  const { steps, complete, startStep } = useOnboardingChecklist();
-  const {
-    value: onboarding,
-    update: updateOnboarding,
-    isLoading,
-  } = useAppSettingsKey('onboarding');
+  const { steps, complete, startStep, dismiss: dismissChecklist } = useOnboardingChecklist();
+  const { value: onboarding, isLoading } = useAppSettingsKey('onboarding');
   // Until the setting has loaded there is no honest answer, and guessing "show"
   // flashes the checklist at someone who dismissed it launches ago.
   const showChecklist = !isLoading && onboarding?.showChecklist === true;
@@ -54,7 +50,7 @@ export const HomeMainPanel = observer(function HomeMainPanel() {
               steps={steps}
               complete={complete}
               onStart={startStep}
-              onDismiss={() => updateOnboarding({ showChecklist: false })}
+              onDismiss={dismissChecklist}
             />
           )}
           <WelcomeLearnMore />

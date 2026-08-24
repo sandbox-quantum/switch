@@ -74,11 +74,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#switch-console-v}"
-          notes="Switch Console desktop app $version — macOS Apple silicon + Intel, and Linux x64 + arm64.
+          notes="Switch Console desktop app $version — macOS Apple silicon + Intel, Linux x64 + arm64, and Windows x64.
 
           **macOS:** download the .dmg for your Mac — \`switch-console-arm64.dmg\` for Apple silicon (M1 and later), \`switch-console-x64.dmg\` for Intel. Not sure which you have? Apple menu → About This Mac. Open it and drag Switch Console to Applications. Both are signed and notarized with SandboxAQ's Developer ID — they open without a Gatekeeper bypass, and both receive in-app updates.
 
-          **Linux (x64 and arm64):** match your \`dpkg --print-architecture\`. Download the .AppImage (\`chmod +x\` then run), the .deb (\`sudo apt install ./<file>.deb\`) or the .rpm (\`sudo dnf install ./<file>.rpm\`). Linux builds are unsigned."
+          **Linux (x64 and arm64):** match your \`dpkg --print-architecture\`. Download the .AppImage (\`chmod +x\` then run), the .deb (\`sudo apt install ./<file>.deb\`) or the .rpm (\`sudo dnf install ./<file>.rpm\`). Linux builds are unsigned.
+
+          **Windows (x64):** run \`switch-console-x64.exe\`, or use \`switch-console-x64.msi\` for an \`msiexec\` install. Both are Authenticode signed as SandboxAQ, so no SmartScreen bypass is needed, and in-app updates verify that signature before installing."
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Switch Console $version" \
@@ -553,7 +555,7 @@ jobs:
         working-directory: console/apps/switch-console-desktop
         run: pnpm exec electron-builder --win --publish never --config electron-builder.config.ts
 
-      - name: Report whether the installer was signed
+      - name: Verify the installer's signature and update manifest
         # The build logs "signing with signtool.exe" whether or not a certificate
         # was found, so the log cannot answer this. Read the PE certificate table
         # instead, and fail a signed run that silently produced nothing.
@@ -567,18 +569,49 @@ jobs:
             const dirs = pe + 24 + (magic === 0x20b ? 112 : 96);
             process.stdout.write(String(d.readUInt32LE(dirs + 4 * 8 + 4)));
           ')"
+          # The manifest electron-updater reads at runtime; the publisher name it
+          # will demand of every later update is written here, or not at all.
+          manifest=release/win-unpacked/resources/app-update.yml
+          if [ ! -f "$manifest" ]; then
+            echo "::error::$manifest is missing — the build produced no update manifest to check."
+            exit 1
+          fi
           if [ "$signed" != "0" ]; then
             echo "Authenticode signature present ($signed bytes)."
-            # The subject's CN is the string `publisherName` has to match before
-            # verifyUpdateCodeSignature can be turned on, and the certificate is
-            # the only authoritative source for it.
-            powershell -NoProfile -Command \
-              '$s = Get-AuthenticodeSignature "release\switch-console-x64.exe"; Write-Host "status: $($s.Status)"; Write-Host "subject: $($s.SignerCertificate.Subject)"'
+            status="$(powershell -NoProfile -Command \
+              '(Get-AuthenticodeSignature "release\switch-console-x64.exe").Status' | tr -d '\r')"
+            subject="$(powershell -NoProfile -Command \
+              '(Get-AuthenticodeSignature "release\switch-console-x64.exe").SignerCertificate.Subject' | tr -d '\r')"
+            echo "status: $status"
+            echo "subject: $subject"
+            if [ "$status" != "Valid" ]; then
+              echo "::error::Authenticode status is $status, not Valid."
+              exit 1
+            fi
+            # A certificate that stops matching the manifest has to fail the
+            # release here: installs already in the field would otherwise go on
+            # refusing updates, silently and indefinitely.
+            if ! grep -q '^publisherName' "$manifest"; then
+              echo "::error::Installer is signed but $manifest declares no publisherName — updates would install unverified."
+              exit 1
+            fi
+            if ! grep -qF "$subject" "$manifest"; then
+              echo "::error::$manifest does not name the signing certificate's subject ($subject). Update win.azureSignOptions.publisherName to match."
+              cat "$manifest"
+              exit 1
+            fi
+            echo "app-update.yml names the signing certificate — updates will verify."
           elif [ -n "$AZURE_CLIENT_ID" ]; then
             echo "::error::Azure credentials were present but the installer is unsigned."
             exit 1
           else
             echo "::notice::No Azure credentials on this run — installer is unsigned, as expected."
+            # An unsigned build must not claim a publisher either: electron-updater
+            # would then reject its own unsigned successors.
+            if grep -q '^publisherName' "$manifest"; then
+              echo "::error::Unsigned build declared a publisherName — updates from it would never verify."
+              exit 1
+            fi
           fi
 
       - name: Upload to GitHub Release

@@ -307,7 +307,10 @@ export class LocalAgentRuntime implements AgentRuntimeProvider {
         events.emit(agentSessionExitedChannel, { sessionId: this.sessionId });
         // In-process counterpart for main-process consumers — `events` only
         // reaches the renderer (see session-hooks).
-        sessionHooks._emit('session:agent-exited', { sessionId: this.sessionId });
+        sessionHooks._emit('session:agent-exited', {
+          sessionId: this.sessionId,
+          decision: decision.kind,
+        });
 
         if (this.tmux) {
           return;

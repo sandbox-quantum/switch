@@ -3,6 +3,7 @@ import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/r
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
 import { openExternalUrl } from '@renderer/lib/open-external';
+import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
@@ -101,10 +102,7 @@ export function SettingsPage({
   onTabChange: (tab: SettingsPageTab) => void;
 }) {
   const handleDocsClick = useCallback(() => {
-    void openExternalUrl(
-      'https://github.com/sandbox-quantum/switch',
-      'Could not open the documentation'
-    );
+    void openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation');
   }, []);
 
   const tabs: Array<{

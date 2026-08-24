@@ -5,6 +5,11 @@ import {
   getRemoteManagedServer,
   listManagedServers,
 } from '@main/core/switch-servers/servers-store';
+import {
+  reportManagedServerOutcome,
+  reportManagedServerStart,
+  reportManagedServerStartThrew,
+} from '@main/core/telemetry/managed-server';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
@@ -202,12 +207,14 @@ class RemoteServerService {
           drift: null,
         });
       }
+      reportManagedServerStart('remote', result);
       return result;
     } catch (error) {
       host?.dispose();
       const message = error instanceof Error ? error.message : String(error);
       log.error(`remote-switch-server: start failed for ${sshHost}`, { error });
       this.setStatus(sshHost, { phase: 'error', error: message });
+      reportManagedServerStartThrew('remote');
       return { kind: 'error', message };
     } finally {
       this.busy.delete(sshHost);
@@ -218,22 +225,28 @@ class RemoteServerService {
   async stop(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
       throw new Error(`An operation is already in progress for ${sshHost}.`);
-    hostReachabilityService.requireReachable(sshHost);
     this.busy.add(sshHost);
-    const host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
+    // Reaching the host is part of stopping it, and the part that most often
+    // fails: a stack is torn down because its host is misbehaving. Both steps
+    // therefore sit inside the region that reports, and inside the one that
+    // gives the busy flag back.
+    let host: RemoteServerHost | null = null;
     try {
+      hostReachabilityService.requireReachable(sshHost);
+      host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
       this.setStatus(sshHost, { phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host);
       this.setStatus(sshHost, { phase: 'stopped', message: null, error: null });
+      reportManagedServerOutcome('stop', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
+      reportManagedServerOutcome('stop', 'remote', 'failure');
       throw error;
     } finally {
-      host.dispose();
-      this.hosts.delete(sshHost);
+      this.releaseHost(sshHost, host);
       this.busy.delete(sshHost);
     }
   }
@@ -246,27 +259,45 @@ class RemoteServerService {
   async reset(sshHost: string): Promise<void> {
     if (this.busy.has(sshHost))
       throw new Error(`An operation is already in progress for ${sshHost}.`);
-    hostReachabilityService.requireReachable(sshHost);
     this.busy.add(sshHost);
-    const host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
+    // Reaching the host is inside the reported region for the reason `stop`
+    // gives.
+    let host: RemoteServerHost | null = null;
     try {
+      hostReachabilityService.requireReachable(sshHost);
+      host = this.hosts.get(sshHost) ?? (await createRemoteServerHost(sshHost));
       this.setStatus(sshHost, { phase: 'stopping', message: 'Removing agents…' });
       const server = await getRemoteManagedServer(sshHost);
       if (server) await deleteAgentsForServer(server.id);
       this.setStatus(sshHost, { phase: 'stopping', message: 'Destroying containers and data…' });
       await resetStack(host);
       this.setStatus(sshHost, { phase: 'stopped', message: null, error: null });
+      reportManagedServerOutcome('reset', 'remote', 'success');
     } catch (error) {
       this.setStatus(sshHost, {
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
+      reportManagedServerOutcome('reset', 'remote', 'failure');
       throw error;
     } finally {
-      host.dispose();
-      this.hosts.delete(sshHost);
+      this.releaseHost(sshHost, host);
       this.busy.delete(sshHost);
     }
+  }
+
+  /**
+   * Drop the host a teardown used, and the map entry it may have come from.
+   *
+   * Null when the teardown never got one — the alias is then left alone rather
+   * than un-keyed, because an entry dropped without being disposed strands the
+   * port-forward it owns and lets the reachability reconciler adopt the same
+   * stack a second time.
+   */
+  private releaseHost(sshHost: string, host: RemoteServerHost | null): void {
+    if (!host) return;
+    host.dispose();
+    this.hosts.delete(sshHost);
   }
 
   /** Abort in-flight health waits and drop all forwards (app quit). The remote

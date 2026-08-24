@@ -38,7 +38,12 @@ async function bootstrap() {
   viewStateCache.populate(allViewState as Record<string, unknown>);
 
   setupNavigationGuards();
-  if (navResult) appState.navigation.restoreSnapshot(navResult);
+  // Restored even with nothing to restore, so the screen the app settles on is
+  // always the one it announces having opened. A snapshot is only written once
+  // something changes, so an install where nobody navigates away from home has
+  // none — and skipping the call would leave that install having opened no
+  // screen at all.
+  appState.navigation.restoreSnapshot(navResult ?? {});
   setupAppCommandProvider();
   setupViewCommandProvider(views as unknown as ViewCommandProviders);
   wireMouseNavigation();

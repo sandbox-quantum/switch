@@ -370,6 +370,13 @@ export type BridgeConfigField = {
   /** Render masked and keep out of logs. Set from the schema's
    * `format: "password"` hint, falling back to a name heuristic. */
   secret: boolean;
+  /** The schema's primitive type, so the form renders a control that matches
+   * it. A boolean posted as the string the server cannot parse is rejected
+   * outright, so this is not only about how it looks. */
+  kind: 'string' | 'boolean';
+  /** The schema's default, so an untouched field posts what the platform
+   * expects rather than nothing. */
+  default: string | boolean | null;
 };
 
 /** A bridge type registered on a server, with the fields needed to attach one
@@ -402,7 +409,7 @@ export type CreateBridgeParams = {
   serverId: string;
   bridgeType: string;
   displayName: string;
-  connectionConfig: Record<string, string>;
+  connectionConfig: Record<string, string | boolean>;
   /** Make this the bridge new rooms land on when none is named. */
   setAsDefault: boolean;
   /** Whether this connection may create channels on the platform. The

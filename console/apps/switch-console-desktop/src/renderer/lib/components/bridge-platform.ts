@@ -1,3 +1,5 @@
+import { SWITCH_DOCS_MESSAGING_APPS_URL } from '@shared/urls';
+
 /**
  * Display names and setup guides for collaboration bridge platforms, keyed by
  * the gateway's `bridge_type`.
@@ -24,23 +26,20 @@ export function bridgePlatformLabel(bridgeType: string | null | undefined): stri
   return PLATFORM_LABELS[bridgeType] ?? bridgeType;
 }
 
-/** Where the setup guides live. */
-const DOCS_BASE = 'https://github.com/sandbox-quantum/switch/blob/main/docs/bridges';
-
 /**
  * Per-platform setup guide, for the "how do I get these credentials" link on
  * the attach form.
  *
- * These point at the repository's own markdown on `main`, which is a stopgap:
- * they are expected to move to published documentation, so they are collected
- * here rather than spread through the JSX — changing them later is one edit.
+ * The slugs are the documentation site's, not the bridge keys: `teams` is
+ * published as `microsoft-teams`. Collected here rather than spread through the
+ * JSX so the mapping is checkable in one place.
  */
 const PLATFORM_DOCS: Record<string, string> = {
-  slack: `${DOCS_BASE}/SLACK_SETUP.md`,
-  mattermost: `${DOCS_BASE}/MATTERMOST_SETUP.md`,
-  discord: `${DOCS_BASE}/DISCORD_SETUP.md`,
-  teams: `${DOCS_BASE}/TEAMS_SETUP.md`,
-  telegram: `${DOCS_BASE}/TELEGRAM_SETUP.md`,
+  slack: `${SWITCH_DOCS_MESSAGING_APPS_URL}/slack`,
+  mattermost: `${SWITCH_DOCS_MESSAGING_APPS_URL}/mattermost`,
+  discord: `${SWITCH_DOCS_MESSAGING_APPS_URL}/discord`,
+  teams: `${SWITCH_DOCS_MESSAGING_APPS_URL}/microsoft-teams`,
+  telegram: `${SWITCH_DOCS_MESSAGING_APPS_URL}/telegram`,
 };
 
 /**
@@ -49,5 +48,5 @@ const PLATFORM_DOCS: Record<string, string> = {
  * a link that lands somewhere useful instead of a 404.
  */
 export function bridgeSetupDocsUrl(bridgeType: string): string {
-  return PLATFORM_DOCS[bridgeType] ?? `${DOCS_BASE}/README.md`;
+  return PLATFORM_DOCS[bridgeType] ?? SWITCH_DOCS_MESSAGING_APPS_URL;
 }

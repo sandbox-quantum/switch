@@ -16,6 +16,7 @@ from telegram import (
     InputMediaDocument,
     InputMediaPhoto,
     LinkPreviewOptions,
+    ReactionTypeEmoji,
     ReplyParameters,
     Update,
 )
@@ -84,6 +85,11 @@ _MAX_COMMAND_DESCRIPTION = 256
 _SUPERGROUP_PREFIX = "-100"
 
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+# Marks the message an agent is working on. Telegram only accepts reactions
+# from a fixed set, and 👀 is in it — the same one Slack uses, so the signal
+# reads the same wherever a room is bridged.
+_WORKING_REACTION = "\U0001f440"
 
 # The URL schemes Telegram will actually turn into a link. An `<a>` carrying
 # anything else is not rendered as written: the API rejects the message with
@@ -189,6 +195,24 @@ class TelegramAdapter(CollaborationAdapter):
         # The bot can delete its own messages, so runtime state renders as a
         # persistent message (the base class's _working_msg) rather than the
         # one-shot typing action.
+        # chat id -> the last message a person sent there. Outside forum topics
+        # Telegram has no thread object, so a turn is reported with no root and
+        # there is nothing else to say which message a reaction belongs on.
+        # Bounded like _seen_ids: one entry per chat the bot has ever seen.
+        self._last_inbound: OrderedDict[str, str] = OrderedDict()
+        self._last_inbound_max = 1000
+        # (chat id, thread root) -> the message that actually asked in it.
+        # A forum topic keeps the same root for every message in it, so the
+        # mark belongs on the latest question rather than on the topic.
+        # Bounded for the same reason as _seen_ids.
+        self._thread_trigger: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._thread_trigger_max = 1000
+        # Messages currently carrying the 👀, as (chat id, message id), so a
+        # turn reporting its activity repeatedly reacts once.
+        self._reacted: set[tuple[str, str]] = set()
+        # (chat id, agent name) -> every message that agent has marked. An
+        # agent asked two things at once marks both, and the turn ends once.
+        self._agent_reactions: dict[tuple[str, str], set[str]] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -855,6 +879,93 @@ class TelegramAdapter(CollaborationAdapter):
         except Exception:
             logger.exception("Failed to trigger typing in Telegram chat %s", channel_id)
 
+    # ── Working reaction ─────────────────────────────────────────────────────
+
+    def _note_inbound(self, chat_id: str, root_id: str | None, message_id: str) -> None:
+        """Remember the message a reaction should go on if this chat asks next."""
+        if root_id:
+            key = (chat_id, root_id)
+            self._thread_trigger.pop(key, None)
+            self._thread_trigger[key] = message_id
+            while len(self._thread_trigger) > self._thread_trigger_max:
+                self._thread_trigger.popitem(last=False)
+        self._last_inbound.pop(chat_id, None)
+        self._last_inbound[chat_id] = message_id
+        while len(self._last_inbound) > self._last_inbound_max:
+            self._last_inbound.popitem(last=False)
+
+    def _reaction_anchor(self, chat_id: str, thread_root_id: str | None) -> str | None:
+        """The message the 👀 goes on.
+
+        Inside a forum topic every message shares one root, so the mark belongs
+        on the latest question asked there rather than on the topic itself.
+        Everywhere else Telegram has no thread object and the turn is reported
+        with no root at all, so the last thing a person said in the chat stands
+        in: that is what the agent is replying to, and the message a reader is
+        looking at while they wait.
+        """
+        if thread_root_id:
+            return self._thread_trigger.get((chat_id, thread_root_id), thread_root_id)
+        return self._last_inbound.get(chat_id)
+
+    async def _begin_working_reaction(
+        self, chat_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Mark what this agent is working on, once per turn."""
+        asked_on = self._reaction_anchor(chat_id, thread_root_id)
+        if not asked_on:
+            return
+        self._agent_reactions.setdefault((chat_id, agent_name), set()).add(asked_on)
+        await self._mark_working(chat_id, asked_on, working=True)
+
+    async def _end_working_reactions(self, chat_id: str, agent_name: str) -> None:
+        """Unmark everything this agent marked — the turn ends only once.
+
+        An agent asked two things at once works on both and marks both, but the
+        report that ends the turn names one chat. Clearing only that would
+        leave the other message marked as in progress for good.
+        """
+        for ref in sorted(self._agent_reactions.pop((chat_id, agent_name), set())):
+            await self._mark_working(chat_id, ref, working=False)
+
+    async def _mark_working(
+        self, chat_id: str, message_id: str, *, working: bool
+    ) -> None:
+        """Put 👀 on the message being worked on, and take it off after.
+
+        This is Telegram's one real progress affordance in a group. A bot may
+        react to anyone's message without being an administrator, it needs no
+        thread, and it says *which* message is being handled — which the status
+        message, sitting at the bottom of the chat, cannot.
+
+        A chat can have reactions switched off. That costs the mark, not the
+        turn, so a refusal is logged and the tracked state left as it was for a
+        later attempt to correct.
+        """
+        key = (chat_id, message_id)
+        if working == (key in self._reacted):
+            return
+        try:
+            bot = self._require_bot()
+            await bot.set_message_reaction(
+                chat_id=self._chat_id(chat_id),
+                message_id=int(message_id),
+                reaction=[ReactionTypeEmoji(_WORKING_REACTION)] if working else [],
+            )
+        except TelegramError as e:
+            logger.warning(
+                "Could not %s the working reaction on %s in %s: %s",
+                "add" if working else "remove",
+                message_id,
+                chat_id,
+                e,
+            )
+            return
+        if working:
+            self._reacted.add(key)
+        else:
+            self._reacted.discard(key)
+
     # ── Runtime state ────────────────────────────────────────────────────────
 
     async def _apply_runtime_state(
@@ -868,6 +979,7 @@ class TelegramAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Render runtime state as persistent, deletable status messages.
 
@@ -877,8 +989,19 @@ class TelegramAdapter(CollaborationAdapter):
         The working indicator stays up through `awaiting-input` (the agent is
         mid-turn, just paused) and the pings go with it when the turn ends or
         resumes.
+
+        In a 1:1 chat Telegram will draw the progress itself, and better: an
+        animated "Thinking…" attributed to the bot rather than a message in the
+        history. Where that is available the posted message is not used, and
+        any earlier one is taken down. It is a private-chat method, so a
+        bridged group always gets the posted message.
         """
         key = (channel_id, agent_name)
+        if state in ("working", "awaiting-input"):
+            await self._begin_working_reaction(channel_id, agent_name, thread_root_id)
+        else:
+            await self._end_working_reactions(channel_id, agent_name)
+
         if state == "working":
             await self._clear_input_pings(channel_id, agent_name)
             body = self._working_body(detail, deeplink_url)
@@ -1256,6 +1379,7 @@ class TelegramAdapter(CollaborationAdapter):
         )
         root_id = self._root_id_of(message)
         message_ref = f"{chat_id}:{message.message_id}"
+        self._note_inbound(chat_id, root_id, str(message.message_id))
 
         if await self._handle_start(content.strip(), chat_id, channel_type):
             return

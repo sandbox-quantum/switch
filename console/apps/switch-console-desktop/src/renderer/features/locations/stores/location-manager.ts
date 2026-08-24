@@ -256,7 +256,7 @@ export class LocationManagerStore {
               ? navParams.sessionId
               : undefined;
           if (navSessionId) {
-            sessionManager.provisionSession(navSessionId).catch(() => {});
+            sessionManager.provisionSession(navSessionId, 'auto').catch(() => {});
           }
         }
       })
@@ -293,7 +293,13 @@ export class LocationManagerStore {
     appState.navigation.revalidate();
     try {
       await Promise.all(
-        agents.map((agent) => rpc.agents.deleteAgent({ agentId: agent.id, deleteInSwitch: false }))
+        agents.map((agent) =>
+          rpc.agents.deleteAgent({
+            agentId: agent.id,
+            deleteInSwitch: false,
+            trigger: 'user',
+          })
+        )
       );
     } catch (error) {
       runInAction(() => {
@@ -332,7 +338,11 @@ export class LocationManagerStore {
     if (remaining.length === 0) appState.navigation.revalidate();
 
     try {
-      await rpc.agents.deleteAgent({ agentId, deleteInSwitch: options.deleteInSwitch });
+      await rpc.agents.deleteAgent({
+        agentId,
+        deleteInSwitch: options.deleteInSwitch,
+        trigger: 'user',
+      });
       // Reconcile against the source of truth (also corrects the optimistic guess).
       await agentsStore.load();
     } catch (error) {

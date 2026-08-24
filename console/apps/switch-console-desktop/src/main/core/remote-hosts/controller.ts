@@ -13,6 +13,11 @@ import {
   remoteDependencyDescriptor,
 } from '@main/core/dependencies/remote-dependency-manager';
 import { getRemoteSwitchSetupService } from '@main/core/switch-setup/remote-switch-setup';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import { cliFailureReason } from '@main/core/telemetry/cli-failure';
+import type { TelemetryCliAction } from '@main/core/telemetry/events';
+import { installMethodOf } from '@main/core/telemetry/narrow';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -82,6 +87,33 @@ async function probeDeps(sshHost: string): Promise<RemoteDependencyView[]> {
   return views;
 }
 
+/**
+ * Report a CLI action that really did run on a remote host.
+ *
+ * The local controller's equivalent always reports `local`; this one always
+ * reports `remote`, which is the only difference between them. The host is never
+ * named — `remote` is the whole of what is said about where.
+ *
+ * The id here is a dependency id, which may be a core dependency rather than an
+ * agent, so it goes through the same narrowing as anywhere else and reports
+ * `unknown` when it is not a provider we know.
+ */
+function reportRemoteCliAction(
+  action: TelemetryCliAction,
+  id: string,
+  method: InstallMethod | undefined,
+  result: { success: boolean; error?: { type?: string } }
+): void {
+  trackEvent('agent_cli_action', {
+    agent_type: agentTypeOf(id),
+    target: 'remote',
+    install_method: installMethodOf(method),
+    action,
+    outcome: result.success ? 'success' : 'failure',
+    failure_reason: cliFailureReason(result),
+  });
+}
+
 export const remoteHostsController = createRPCController({
   /** SSH aliases from ~/.ssh/config, for the onboarding picker. */
   listSshConfigHosts: (): Promise<string[]> => listSshConfigHosts(),
@@ -109,12 +141,30 @@ export const remoteHostsController = createRPCController({
     hostReachabilityService.checkNow(sshHost),
 
   /** Verify reachability, then onboard (or rename) the host. */
-  onboardHost: async (params: { sshHost: string; name: string }): Promise<RemoteHost> => {
+  onboardHost: async (params: {
+    sshHost: string;
+    name: string;
+    /**
+     * Whether the alias came from the machine's SSH config or was typed in. Only
+     * the form knows — both write through here — and it is the difference
+     * between a host the app offered and one someone had to know the name of.
+     */
+    pickedFromSshConfig: boolean;
+  }): Promise<RemoteHost> => {
     const test = await testConnection(params.sshHost);
     if (!test.ok) {
+      trackEvent('host_onboarded', {
+        outcome: 'failure',
+        picked_from_ssh_config: params.pickedFromSshConfig === true,
+      });
       throw new Error(`Cannot reach ${params.sshHost}: ${test.message}`);
     }
-    return upsertRemoteHost({ sshHost: params.sshHost, name: params.name });
+    const host = await upsertRemoteHost({ sshHost: params.sshHost, name: params.name });
+    trackEvent('host_onboarded', {
+      outcome: 'success',
+      picked_from_ssh_config: params.pickedFromSshConfig === true,
+    });
+    return host;
   },
 
   /**
@@ -124,10 +174,16 @@ export const remoteHostsController = createRPCController({
    * against stale state.
    */
   removeHost: async (sshHost: string): Promise<void> => {
-    await removeRemoteHost(sshHost);
-    await discardSetupPlan(sshHost);
-    await deletePersistedReachability(sshHost);
-    evictRemoteDependencyManager(sshHost);
+    try {
+      await removeRemoteHost(sshHost);
+      await discardSetupPlan(sshHost);
+      await deletePersistedReachability(sshHost);
+      evictRemoteDependencyManager(sshHost);
+    } catch (error) {
+      trackEvent('host_removed', { outcome: 'failure' });
+      throw error;
+    }
+    trackEvent('host_removed', { outcome: 'success' });
   },
 
   /** The host's persisted setup plan, or null if setup has never been run. */
@@ -181,12 +237,16 @@ export const remoteHostsController = createRPCController({
     method?: InstallMethod;
   }): Promise<DependencyInstallResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
-    return manager.install(params.id, params.method);
+    const result = await manager.install(params.id, params.method);
+    reportRemoteCliAction('install', params.id, params.method, result);
+    return result;
   },
 
   updateDep: async (params: { sshHost: string; id: string }): Promise<DependencyUpdateResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
-    return manager.update(params.id);
+    const result = await manager.update(params.id);
+    reportRemoteCliAction('update', params.id, undefined, result);
+    return result;
   },
 
   uninstallDep: async (params: {
@@ -194,7 +254,9 @@ export const remoteHostsController = createRPCController({
     id: string;
   }): Promise<DependencyUninstallResult> => {
     const manager = await getRemoteDependencyManager(params.sshHost);
-    return manager.uninstall(params.id);
+    const result = await manager.uninstall(params.id);
+    reportRemoteCliAction('uninstall', params.id, undefined, result);
+    return result;
   },
 
   /** Switch connector plugin status for every Switch-supported agent type on the host. */

@@ -149,7 +149,10 @@ class _FakeBot:
         self.edits: list[dict[str, Any]] = []
         self.deletes: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
+        self.reactions: list[dict[str, Any]] = []
         self.files: dict[str, _FakeFileHandle] = {}
+        # Set to an exception to make every set_message_reaction raise it.
+        self.reaction_error: Exception | None = None
         self.published_commands: list[Any] = []
         self.chat: _FakeChat = _FakeChat()
         # What getChatMember reports for the bot itself in `chat`.
@@ -201,6 +204,11 @@ class _FakeBot:
 
     async def send_chat_action(self, **kwargs: Any) -> None:
         self.actions.append(kwargs)
+
+    async def set_message_reaction(self, **kwargs: Any) -> None:
+        if self.reaction_error is not None:
+            raise self.reaction_error
+        self.reactions.append(kwargs)
 
     async def set_my_commands(self, commands: Any) -> None:
         self.published_commands = list(commands)
@@ -1231,6 +1239,195 @@ def test_the_status_message_follows_the_conversation() -> None:
     assert moved.thread_root_id == "88"
     # The replacement goes up before the original comes down.
     assert _bot(adapter).deletes[0]["message_id"] == int(original.split(":")[1])
+
+
+# ── Working reaction ─────────────────────────────────────────────────────────
+
+
+def _ask(adapter: TelegramAdapter, message_id: int = 11, **kwargs: Any) -> None:
+    """Deliver an inbound message, so the adapter knows what is being answered."""
+    adapter._on_message = lambda m: _collect([], m)
+    _run(adapter._handle_message(_FakeInbound(message_id=message_id, **kwargs)))
+
+
+def _emoji(call: dict[str, Any]) -> list[str]:
+    return [r.emoji for r in call["reaction"]]
+
+
+def test_working_puts_the_eyes_on_the_message_that_asked() -> None:
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    assert _emoji(_bot(adapter).reactions[0]) == ["👀"]
+    assert _bot(adapter).reactions[0]["message_id"] == 11
+
+
+def test_the_eyes_come_off_when_the_turn_ends() -> None:
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    assert _emoji(_bot(adapter).reactions[-1]) == []
+    assert _bot(adapter).reactions[-1]["message_id"] == 11
+
+
+def test_the_eyes_go_up_once_however_often_the_activity_changes() -> None:
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+
+    for detail in ("reading", "editing", "running tests"):
+        _run(
+            adapter.apply_runtime_state(
+                str(CHAT_ID),
+                "scout",
+                "working",
+                mention_handle=None,
+                thread_root_id=None,
+                detail=detail,
+            )
+        )
+
+    assert len(_bot(adapter).reactions) == 1
+
+
+def test_the_eyes_stay_up_while_the_agent_waits_for_input() -> None:
+    # awaiting-input is mid-turn, not the end of one: the agent is still on it.
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID),
+            "scout",
+            "awaiting-input",
+            mention_handle="alice",
+            thread_root_id=None,
+        )
+    )
+
+    assert [_emoji(c) for c in _bot(adapter).reactions] == [["👀"]]
+
+
+def test_the_eyes_follow_the_newest_question_in_the_chat() -> None:
+    # Telegram reports no thread, so "what is being worked on" is whatever was
+    # asked last — not the first thing the agent was ever asked.
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "idle", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    _ask(adapter, message_id=12)
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    assert [c["message_id"] for c in _bot(adapter).reactions] == [11, 11, 12]
+
+
+def test_a_reply_is_marked_on_itself_not_on_what_it_replied_to() -> None:
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+    _ask(adapter, message_id=12, reply_to_message=_FakeInbound(message_id=11))
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id="11"
+        )
+    )
+
+    assert _bot(adapter).reactions[0]["message_id"] == 12
+
+
+def test_every_message_an_agent_marked_is_cleared_by_the_one_turn_ending() -> None:
+    # Two chats, one agent, one turn end — both marks have to come off.
+    adapter = _adapter()
+    other = str(-100999)
+    _ask(adapter, message_id=11)
+    _ask(adapter, message_id=21, chat=_FakeChat(chat_id=-100999))
+    for channel in (str(CHAT_ID), other):
+        _run(
+            adapter.apply_runtime_state(
+                channel, "scout", "working", mention_handle=None, thread_root_id=None
+            )
+        )
+
+    for channel in (str(CHAT_ID), other):
+        _run(
+            adapter.apply_runtime_state(
+                channel, "scout", "idle", mention_handle=None, thread_root_id=None
+            )
+        )
+
+    cleared = [c["message_id"] for c in _bot(adapter).reactions if not c["reaction"]]
+    assert sorted(cleared) == [11, 21]
+
+
+def test_a_chat_that_never_spoke_is_not_reacted_to() -> None:
+    # Nothing to mark is not an error, and must not invent a message id.
+    adapter = _adapter()
+
+    _run(
+        adapter.apply_runtime_state(
+            str(CHAT_ID), "scout", "working", mention_handle=None, thread_root_id=None
+        )
+    )
+
+    assert _bot(adapter).reactions == []
+    assert "Working on it" in _bot(adapter).messages[0]["text"]
+
+
+def test_a_refused_reaction_is_logged_and_the_turn_carries_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Reactions can be switched off per chat. That costs the signal, not the turn.
+    adapter = _adapter()
+    _ask(adapter, message_id=11)
+    _bot(adapter).reaction_error = BadRequest("REACTION_INVALID")
+
+    with caplog.at_level(logging.WARNING):
+        _run(
+            adapter.apply_runtime_state(
+                str(CHAT_ID),
+                "scout",
+                "working",
+                mention_handle=None,
+                thread_root_id=None,
+            )
+        )
+
+    assert any("working reaction" in r.getMessage() for r in caplog.records)
+    assert "Working on it" in _bot(adapter).messages[0]["text"]
 
 
 # ── Translation ──────────────────────────────────────────────────────────────

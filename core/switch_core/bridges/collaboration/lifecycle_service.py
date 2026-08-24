@@ -171,6 +171,19 @@ class CollaborationBridgeLifecycleService:
             raise ValueError(f"Unknown bridge type: {bridge_type}")
         return config_cls.model_json_schema()
 
+    def validate_connection_config(
+        self, bridge_type: str, connection_config: dict[str, object]
+    ) -> None:
+        """Raise unless `connection_config` is valid for this bridge type.
+
+        Editing a connection has to be checked before it is stored: a config
+        the adapter cannot parse would take the bridge down on its next start,
+        long after the request that caused it."""
+        config_cls = self._config_registry.get(bridge_type)
+        if config_cls is None:
+            raise ValueError(f"Unknown bridge type: {bridge_type}")
+        config_cls.model_validate(connection_config)
+
     async def start_all(self) -> None:
         async with self._session_factory() as session:
             bridges = await self._bridge_store.get_active(session)
@@ -464,6 +477,15 @@ class CollaborationBridgeLifecycleService:
         self._bridges.pop(bridge_id, None)
         self._held_resources.pop(bridge_id, None)
         logger.info("Stopped collaboration bridge %s", bridge_id)
+
+    async def restart(self, bridge_id: str) -> None:
+        """Stop and start a bridge so it picks up its stored config.
+
+        An adapter is built from the config it was given at start, so an edit
+        is inert until the bridge is rebuilt."""
+        await self.stop(bridge_id)
+        await self.start(bridge_id)
+        logger.info("Restarted collaboration bridge %s", bridge_id)
 
     async def stop_all(self) -> None:
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))

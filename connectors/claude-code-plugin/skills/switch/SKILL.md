@@ -450,14 +450,20 @@ For a private 1:1 between one agent and one human, create a room with
 - **Mattermost**: DMs are user-initiated from the client, so creating a
   `direct` room here fails — the user starts the DM with the agent's bot and
   Switch picks it up automatically.
-- **Telegram**: same as Mattermost — the user messages the bot first and
-  Switch adopts the chat. Telegram bots cannot create chats at all, so
-  `create_room` fails on a Telegram bridge for *every* channel type, not just
-  `direct`; the chat is made in a Telegram client and the bot added to it.
-  `list_bridges` reports this as `can_create_channels: false`, so check there
-  before offering to make a room rather than finding out from the failure —
-  and note an operator can withhold channel creation from any platform, so a
-  false answer is not Telegram-specific.
+- **Telegram**: there is **no DM at all**, and this one is not a "create it
+  from the other side" case. A private chat with the bot is the *lobby*: the
+  bridge answers it with setup guidance and never provisions a room, so no
+  agent is reachable there and nothing you do in Telegram adopts it. One bot
+  fronts every agent, so a 1:1 could not say which agent it was with anyway.
+  Offer a **group containing just that user and the bot**, with the one agent
+  invited — that behaves like a DM and the agent is addressable by name.
+  Separately, Telegram bots cannot create chats at all, so `create_room` fails
+  on a Telegram bridge for *every* channel type, not just `direct`; the chat is
+  made in a Telegram client and the bot added to it. `list_bridges` reports
+  this as `can_create_channels: false`, so check there before offering to make
+  a room rather than finding out from the failure — and note an operator can
+  withhold channel creation from any platform, so a false answer is not
+  Telegram-specific.
 
 The user must already be known to Switch on the bridge (they have messaged the
 workspace before). If not, creation fails loudly with `no user '<name>' is

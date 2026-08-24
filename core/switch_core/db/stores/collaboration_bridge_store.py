@@ -86,6 +86,21 @@ class CollaborationBridgeStore:
         await session.flush()
         return bridge
 
+    async def merge_connection_config(
+        self, session: AsyncSession, bridge_id: str, changes: dict[str, object]
+    ) -> CollaborationBridge:
+        """Merge `changes` into ``connection_config``, keeping untouched keys.
+
+        Merging rather than replacing means an operator can flip one setting
+        without re-sending the platform's tokens. Reassigns the dict so
+        SQLAlchemy tracks the change."""
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        bridge.connection_config = {**(bridge.connection_config or {}), **changes}
+        await session.flush()
+        return bridge
+
     async def set_service_url(
         self, session: AsyncSession, bridge_id: str, service_url: str
     ) -> None:

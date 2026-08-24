@@ -27,10 +27,21 @@ bot is never promoted, and needs no permissions in a group.
 2. Give it a display name (e.g. "Agent Switch") and a username ending in `bot`
    (e.g. `acme_switch_bot`). The username is the `bot_username`.
 3. BotFather replies with the **token** — this is the `bot_token`. It has the
-   shape `<bot id>:<hmac>`. Treat it like a password; anyone holding it controls
-   the bot. Do not paste it into a chat, a ticket or a room, and revoke it with
-   BotFather's `/revoke` if you ever do.
-4. **Turn Group Privacy off**, before adding the bot anywhere:
+   shape `<bot id>:<hmac>`.
+4. **Save the token now, before going any further.** You need it in step 5, and
+   BotFather's message is the only time it is shown to you — there is no screen
+   anywhere that displays an existing token again. Put it straight into your
+   password manager or your deployment's secret store.
+
+   Treat it like a password: anyone holding it controls the bot. Do not paste
+   it into a chat, a ticket, a room or a commit.
+
+   **If you lost it, or pasted it somewhere you shouldn't have**, you do not
+   need a new bot — issue a new token with `/token` in BotFather (`/mybots` →
+   the bot → **API Token** → **Revoke current token** does the same and
+   invalidates the old one immediately). Update `bot_token` on the connection
+   afterwards, or the bridge stops polling.
+5. **Turn Group Privacy off**, before adding the bot anywhere:
    `/mybots` → the bot → **Bot Settings** → **Group Privacy** → **Turn off**.
 
 **Why, and why now.** Telegram runs bots in *privacy mode* by default: in a
@@ -48,7 +59,7 @@ basic group into a supergroup, and Telegram's "add as admin" chat picker leaves
 basic groups out — so it is offered as a repair for a single chat (below), not
 as the way in.
 
-5. As a gateway admin, onboard the bridge from the **operator dashboard**:
+6. As a gateway admin, onboard the bridge from the **operator dashboard**:
    **Messaging Apps → Register messaging app → Telegram**, give it a display
    name (e.g. "Acme Telegram"), and fill in the fields below.
 
@@ -62,6 +73,14 @@ Fields (`TelegramConnectionConfig`):
 On success the bridge starts polling.
 
 ## 2. Link a chat to Switch — from Telegram
+
+> **A 1:1 chat with the bot is not a room.** Switch bridges Telegram *groups*,
+> supergroups and channels. Messaging the bot directly reaches the **lobby**,
+> which answers with setup guidance and nothing else — no room is created, no
+> agent is reachable, and an agent cannot be given a private Telegram chat with
+> someone. To talk to an agent one-to-one on Telegram, make a group containing
+> just you and the bot. See
+> [Why there is no Telegram DM](#why-there-is-no-telegram-dm).
 
 **This is the normal way, and it needs nothing from Switch.** In any Telegram
 client:
@@ -256,6 +275,83 @@ things Telegram delivers there.
 `/start` is Telegram's own handshake rather than a Switch command — it is what
 the dashboard's install links send once the bot has been added — so the bridge
 answers it itself instead of passing it on as an unknown command.
+
+## Knowing an agent is working on it
+
+Two signals, both in every bridged chat.
+
+**👀 on the message that asked.** When an agent starts a turn the bot reacts to
+the message it is answering, and clears the reaction when the turn ends. It
+needs no administrator rights, and it is the same reaction the Slack and
+Mattermost bridges use, so a room reads the same wherever it is bridged.
+
+It marks the *last thing a person said* in the chat, because outside forum
+topics Telegram has no threads — only reply chains — so there is no thread for
+a status to belong to. If an agent is asked two things at once, both messages
+are marked and both are cleared when the turn ends.
+
+A chat can have reactions switched off. Then the mark is lost and the turn
+carries on; the bridge logs it rather than failing the turn.
+
+**The "⚙️ Working on it…" message.** Alongside the reaction, the bridge posts a
+status message and edits it in place as the agent's activity changes, removing
+it when the turn ends.
+
+Telegram has a native animated "Thinking…" placeholder — the one it uses for
+its own AI features — but it is **not reachable here**. It is written with
+`sendMessageDraft`, whose `chat_id` Telegram documents as a *private chat*, and
+Switch does not bridge Telegram 1:1 chats: a private chat with the bot is the
+lobby, which answers with setup guidance rather than becoming a room. The same
+restriction applies to the richer `sendRichMessageDraft` and its
+`<tg-thinking>` block, so a newer Bot API does not change this.
+
+## Why there is no Telegram DM
+
+On Slack and Discord an agent can be given a 1:1 room with a person. **On
+Telegram it cannot**, and this is a deliberate limit rather than an unfinished
+feature.
+
+A private chat with the bot maps to the **lobby**: the bridge recognises it,
+replies with guidance on linking a real chat, and stops there. No room is
+provisioned and no agent ever receives the message. Creating a room with
+`channel_type="direct"` on a Telegram connection fails for the same reason it
+fails for every other type — a Telegram bot cannot create a chat at all.
+
+The reason is that one bot fronts every Switch agent. In a group that works,
+because each message is labelled with the agent's name and mark, and `@name`
+picks out who is being addressed. In a 1:1 there is no such handle: the chat is
+between you and *the bot*, so "which agent am I talking to" has no answer the
+platform can express, and every agent you own would share one conversation.
+
+**What to do instead:** create a Telegram group with just you and the bot, and
+invite the one agent you want. It behaves like a DM, and the agent is
+addressable by name.
+
+One consequence worth knowing: **Telegram's native "Thinking…" placeholder is
+out of reach.** It is a private-chat-only API (`sendMessageDraft`, and the
+richer `sendRichMessageDraft` with its `<tg-thinking>` block), and Switch has no
+private chats to use it in. Progress is shown with 👀 and the posted status
+message instead.
+
+## What Telegram cannot do: agent-name autocomplete
+
+The Slack bridge gives each agent a **user group**, so typing `@` in the
+composer autocompletes the agent's name. **There is no Telegram equivalent, and
+this is not a gap that can be closed by configuration.**
+
+- Telegram's `@` autocomplete offers only real members of the chat.
+- There is no user-group or alias concept for a bot to register names in.
+- Every Switch agent posts through the *same* bot, so the only handle that
+  autocompletes is the bot's own.
+
+Address an agent by typing its name after the bot's `@handle`, or use
+`!list-agents` to see the names available in the chat. The `/` command menu is
+the only autocompleting affordance the platform offers a bot, and it lists
+commands, not agents.
+
+The one route to real per-agent autocomplete is a separate Telegram bot account
+per agent — a different design, not a setting, and not something this bridge
+does.
 
 ## One instance per bot token
 

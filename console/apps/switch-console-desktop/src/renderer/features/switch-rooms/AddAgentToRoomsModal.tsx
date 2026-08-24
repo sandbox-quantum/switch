@@ -97,6 +97,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
           serverId,
           roomId: room.id,
           agentIds: [switchAgentId],
+          direction: 'room_to_agents',
         });
       }
       await switchRoomsStore.refreshRoomState();

@@ -63,12 +63,22 @@ function humanizeKey(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** Whether a value satisfies a required field. A blank string does not; `false`
+ *  does — it is an answer, not an omission. */
+export function isProvided(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  return value !== undefined && value !== null;
+}
+
 export function renderOptionFields(
   schema: Record<string, unknown> | undefined,
   values: Record<string, unknown>,
   setValues: (
     update: (prev: Record<string, unknown>) => Record<string, unknown>,
   ) => void,
+  // Marks a field with the usual asterisk. Optional because agent options have
+  // no required fields; a bridge connection's credentials do.
+  requiredFields: string[] = [],
 ) {
   const obj = asSchemaObject(schema);
   if (!obj?.properties) return null;
@@ -122,6 +132,7 @@ export function renderOptionFields(
                 setValues((prev) => ({ ...prev, [key]: e.target.value }))
               }
               fullWidth
+              required={requiredFields.includes(key)}
               helperText={prop.description}
             />
           );

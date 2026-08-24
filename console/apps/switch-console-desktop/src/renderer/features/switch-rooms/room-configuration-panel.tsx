@@ -440,6 +440,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
         serverId,
         roomId: room.id,
         agentIds: [switchAgentId],
+        direction: 'agents_to_room',
       });
       await onAdded();
     } catch (cause) {

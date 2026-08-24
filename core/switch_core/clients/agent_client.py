@@ -153,6 +153,43 @@ _CONNECTED_NOT_LIVE_MESSAGE = (
 )
 
 
+def _offline_owner_message(
+    owner_handle: str | None, asker_handle: str, cmd: str | None
+) -> str:
+    """The reply for an auto_session agent addressed with nothing to start it.
+
+    An auto_session agent is brought online by Switch Console watching on its
+    owner's machine, so reaching this means the app is not running or not
+    connected — the fix is for the OWNER to open it, and nobody else in the
+    room can act. So the owner leads and is asked directly; the asker is named
+    as the reason, not as a second person being told to do something.
+
+    Deliberately says "online" rather than anything about sessions: which
+    process is or is not attached to which room is Switch's business, not
+    something to hand a reader in a chat channel.
+    """
+    # The owner addressing their own agent is the common case; naming them as
+    # the reason they should act reads as a stutter ("@me … and @me needs me").
+    needs_me = "" if owner_handle == asker_handle else f", and @{asker_handle} needs me"
+    if owner_handle:
+        opening = (
+            f"@{owner_handle} — I'm not online in this room{needs_me}. "
+            "Open Switch Console to bring me online here."
+        )
+        terminal = "If you'd rather do it from a terminal:"
+    else:
+        # No owner account on this platform to mention. Still name who has to
+        # act, so the message is not read as something the room can fix.
+        opening = (
+            f"I'm not online in this room{needs_me}. **My owner needs to open "
+            "Switch Console** to bring me online here."
+        )
+        terminal = "Or, from a terminal:"
+    if cmd is None:
+        return opening
+    return f"{opening} {terminal}\n\n```\n{cmd}\n```"
+
+
 # Posted (once, guarded by AUTO_REPLY_FLAG) when a sender tags this agent but
 # the agent's scoped addressing policy does not permit that sender to address
 # it here. The message is demoted to unaddressed room chatter; this reply is
@@ -370,8 +407,8 @@ class AgentClient(ClientBase[ClientConfig]):
             if not triggered_by_auto_reply and not await self._is_available(
                 meta.room_id
             ):
-                msg = await self._reply_when_unavailable_here(meta)
                 handle = self._sender_handle(event)
+                msg = await self._reply_when_unavailable_here(meta, handle)
                 already_tagged = _mention_regex(handle).search(msg) is not None
                 body = msg if already_tagged else f"@{handle} {msg}"
                 await self.send_message(
@@ -379,13 +416,25 @@ class AgentClient(ClientBase[ClientConfig]):
                     body,
                     format="markdown",
                     mentions=[event.sender],
-                    # Answer where the question was asked: `thread_id`, not the
-                    # reply root. They differ for a message at the conversation
-                    # root, where the reply root is the message itself — which
-                    # opens a thread off it, so a one-line "starting a session"
-                    # buries itself somewhere nobody is looking, away from the
-                    # answer that follows it.
-                    thread_root_id=thread_id,
+                    # Where this lands depends on whether an answer follows it.
+                    #
+                    # "Starting a session" is a preamble: the real answer arrives
+                    # after it, in the room the question was asked in. Threading
+                    # it off the trigger buries the notice away from the answer
+                    # it introduces, so it goes where the question was —
+                    # `thread_id`, which is None for a message at the root
+                    # (CHOO-2173).
+                    #
+                    # Everything else here is the whole reply and nothing
+                    # follows it, so it threads off the triggering message: an
+                    # owner mention and a paste-ready command are a wall of text
+                    # to drop into a channel for something only one person can
+                    # act on (CHOO-2344).
+                    thread_root_id=(
+                        thread_id
+                        if msg == _STARTING_SESSION_MESSAGE
+                        else reply_thread_root
+                    ),
                     extra_content={AUTO_REPLY_FLAG: True},
                 )
 
@@ -756,7 +805,9 @@ class AgentClient(ClientBase[ClientConfig]):
         self._room_meta[matrix_room_id] = meta
         return meta
 
-    async def _reply_when_unavailable_here(self, meta: RoomMeta) -> str:
+    async def _reply_when_unavailable_here(
+        self, meta: RoomMeta, asker_handle: str
+    ) -> str:
         """Message for an agent addressed here but not live in this room.
 
         If the agent has live session(s) connected to OTHER rooms, name them so
@@ -844,15 +895,19 @@ class AgentClient(ClientBase[ClientConfig]):
             # No role lease here, just sessions elsewhere: prefer the
             # known-agent reply so the operator gets the paste-ready
             # connect command alongside the "ask me there" alternative.
-            return await self._unavailable_reply(meta, agent, other_room_names=names)
+            return await self._unavailable_reply(
+                meta, agent, asker_handle, other_room_names=names
+            )
 
         # No live session in a distinct room. A session_addressable agent bound
         # to THIS room but not live here was most likely launched without live
         # channels: say a session is connected-but-not-live rather than imply
         # there is none.
         if connection_model == "session_addressable" and bound_here:
-            return await self._unavailable_reply(meta, agent, connected_not_live=True)
-        return await self._unavailable_reply(meta, agent)
+            return await self._unavailable_reply(
+                meta, agent, asker_handle, connected_not_live=True
+            )
+        return await self._unavailable_reply(meta, agent, asker_handle)
 
     async def owner_handle_in(self, agent: Agent, bridge_id: str | None) -> str | None:
         """The agent owner's account on the platform this room is bridged to,
@@ -884,23 +939,48 @@ class AgentClient(ClientBase[ClientConfig]):
         self,
         meta: RoomMeta,
         agent: Agent,
+        asker_handle: str,
         other_room_names: list[str] | None = None,
         connected_not_live: bool = False,
     ) -> str:
         """Build the room-facing message for an addressed-but-offline agent.
 
-        Prefers per-known-agent `start_session_instructions` (e.g. the
-        paste-ready terminal command for Claude Code). Falls back to the
-        static `_UNAVAILABLE_MESSAGES` text keyed by connection_model when
-        the agent has no known-agent spec or the spec returns None;
-        `connected_not_live` selects the "bound here but not live" fallback.
+        An auto_session agent with nowhere else to point the asker gets the
+        owner-facing "I'm not online" reply: only its owner can act, so the
+        message asks them and nobody else. Every other case prefers the
+        per-known-agent `start_session_instructions` (e.g. the paste-ready
+        terminal command for Claude Code), falling back to the static
+        `_UNAVAILABLE_MESSAGES` text keyed by connection_model when the agent
+        has no known-agent spec or the spec returns None; `connected_not_live`
+        selects the "bound here but not live" fallback.
 
         `agent` is the freshly-read row supplied by the caller (via
         `_fresh_agent`), so option edits made through the gateway (e.g.
         `PATCH /agents/{id}/options`, `connection_model`) take effect without
         restarting this client — `self.agent` alone is a boot-time snapshot.
         """
+        connection_model = (agent.integration_profile or {}).get(
+            "connection_model", "session_passive"
+        )
         spec_options = known_agent_for(agent)
+        # `other_room_names` outranks this: a live session in another room is
+        # somewhere the asker can go right now, which beats asking the owner to
+        # start something.
+        if (
+            connection_model == "auto_session"
+            and not other_room_names
+            and not connected_not_live
+        ):
+            cmd = (
+                spec_options[0].connect_command(spec_options[1], agent, meta.name, None)
+                if spec_options is not None
+                else None
+            )
+            return _offline_owner_message(
+                await self.owner_handle_in(agent, meta.bridge_id),
+                asker_handle,
+                cmd,
+            )
         if spec_options is not None:
             spec, options = spec_options
             msg = spec.start_session_instructions(
@@ -915,9 +995,6 @@ class AgentClient(ClientBase[ClientConfig]):
                 return msg
         if connected_not_live:
             return _CONNECTED_NOT_LIVE_MESSAGE
-        connection_model = (agent.integration_profile or {}).get(
-            "connection_model", "session_passive"
-        )
         return _UNAVAILABLE_MESSAGES.get(
             connection_model, _UNAVAILABLE_MESSAGES["session_passive"]
         )

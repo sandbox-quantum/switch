@@ -167,10 +167,10 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
   const serverIds = new Set(switchIdentities().map((identity) => identity.serverId));
   for (const serverId of serverIds) {
     try {
-      reportBackfill(await rpc.switchServers.backfillAgentIcons(serverId));
+      reportBackfill(serverId, await rpc.switchServers.backfillAgentIcons(serverId));
     } catch (cause) {
       log.warn('could not give existing agents their icons', { serverId, cause });
-      toast({
+      reportOnce(serverId, 'failed', {
         title: 'Agent icons could not be saved',
         description:
           'Your agents show a generated icon here, but the Switch server has not stored it — so they keep their old picture in Slack and the other chat apps.',
@@ -180,9 +180,31 @@ async function giveExistingAgentsAnIcon(): Promise<void> {
   }
 }
 
-function reportBackfill(outcome: AgentIconBackfill): void {
+/**
+ * What each server was last told to the user about, so an unresolved condition
+ * is not re-announced on every refresh.
+ *
+ * The caller runs on first paint, window focus, sign-in, the background
+ * reconcile, the retry button and every membership-changing mutation. A server
+ * that is signed out or too old to store icons fails all of them, which turned
+ * one standing problem into a toast every few seconds (CHOO-2344).
+ *
+ * Keyed by outcome, not a bare "said something already": if the situation
+ * changes — a signed-out server starts answering and turns out to be too old —
+ * that is news and gets said. Cleared on success so a later regression is not
+ * swallowed by a record of the last one.
+ */
+const reportedBackfill = new Map<string, string>();
+
+function reportOnce(serverId: string, outcome: string, notice: Parameters<typeof toast>[0]) {
+  if (reportedBackfill.get(serverId) === outcome) return;
+  reportedBackfill.set(serverId, outcome);
+  toast(notice);
+}
+
+function reportBackfill(serverId: string, outcome: AgentIconBackfill): void {
   if (outcome.kind === 'unsupported') {
-    toast({
+    reportOnce(serverId, 'unsupported', {
       title: 'This Switch server does not support agent icons yet',
       description:
         'Your agents show a generated icon here, but it cannot be saved, so they keep their old picture in Slack and the other chat apps. Updating the server fixes it.',
@@ -191,11 +213,13 @@ function reportBackfill(outcome: AgentIconBackfill): void {
     return;
   }
   if (outcome.kind === 'partial') {
-    toast({
+    reportOnce(serverId, `partial:${outcome.failed}`, {
       title: `${outcome.failed} agent${outcome.failed === 1 ? '' : 's'} kept the old icon`,
       description:
         'Their icon could not be saved to the Switch server, so it will not show in Slack or the other chat apps.',
       variant: 'destructive',
     });
+    return;
   }
+  reportedBackfill.delete(serverId);
 }

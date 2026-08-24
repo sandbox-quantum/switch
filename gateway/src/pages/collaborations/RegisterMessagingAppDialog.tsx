@@ -16,7 +16,11 @@ import {
 import { useCallback, useMemo, useState } from "react";
 import { type BridgeDetail, createBridge } from "../../data/api";
 import { useBridgeTypes } from "../../data/hooks";
-import { isSecretField } from "../agents/optionFields";
+import {
+  extractDefaults,
+  isProvided,
+  renderOptionFields,
+} from "../agents/optionFields";
 
 interface Props {
   open: boolean;
@@ -36,7 +40,9 @@ export default function RegisterMessagingAppDialog({
   const { data: bridgeTypes } = useBridgeTypes();
   const [selectedType, setSelectedType] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [config, setConfig] = useState<Record<string, string>>({});
+  // Values are typed by the schema, not all strings: a boolean field must post
+  // a real boolean, since the backend rejects "" as one.
+  const [config, setConfig] = useState<Record<string, unknown>>({});
   const [channelCreationEnabled, setChannelCreationEnabled] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,13 +56,19 @@ export default function RegisterMessagingAppDialog({
   // isn't forced off while that request is in flight.
   const channelCreationSupported = selectedTypeInfo?.channel_creation_supported ?? true;
 
-  const handleTypeChange = useCallback((key: string) => {
-    // Switching type clears any fields entered for the previous one.
-    setSelectedType(key);
-    setConfig({});
-    setChannelCreationEnabled(true);
-    setError(null);
-  }, []);
+  const handleTypeChange = useCallback(
+    (key: string) => {
+      // Switching type clears any fields entered for the previous one, then
+      // seeds the new type's defaults — a field left untouched should post what
+      // the schema says it defaults to, not an empty value.
+      setSelectedType(key);
+      const schema = bridgeTypes?.find((t) => t.key === key)?.config_schema;
+      setConfig(extractDefaults(schema as Record<string, unknown> | undefined));
+      setChannelCreationEnabled(true);
+      setError(null);
+    },
+    [bridgeTypes],
+  );
 
   const reset = useCallback(() => {
     setSelectedType("");
@@ -76,7 +88,7 @@ export default function RegisterMessagingAppDialog({
   const canSubmit =
     !!selectedType &&
     displayName.trim().length > 0 &&
-    requiredFields.every((f) => (config[f] ?? "").trim().length > 0);
+    requiredFields.every((f) => isProvided(config[f]));
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -164,21 +176,12 @@ export default function RegisterMessagingAppDialog({
                   </Typography>
                 )}
               </Stack>
-              {configSchema &&
-                Object.entries(configSchema.properties).map(([field, prop]) => (
-                  <TextField
-                    key={field}
-                    label={prop.title ?? humanize(field)}
-                    type={isSecretField(field, prop) ? "password" : "text"}
-                    value={config[field] ?? ""}
-                    onChange={(e) =>
-                      setConfig((prev) => ({ ...prev, [field]: e.target.value }))
-                    }
-                    fullWidth
-                    required={requiredFields.includes(field)}
-                    helperText={prop.description}
-                  />
-                ))}
+              {renderOptionFields(
+                configSchema as Record<string, unknown> | undefined,
+                config,
+                setConfig,
+                requiredFields,
+              )}
             </>
           )}
         </Stack>

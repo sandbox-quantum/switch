@@ -24,4 +24,10 @@ export const sessionDeeplinkChannel = defineEvent<{
   /** Shared session id, preferred for resolution (resolves on any client);
    * empty string for links from older builds that only carried the room. */
   sessionId: string;
+  /**
+   * Whether the link started the app rather than being handed to a running one.
+   * Known only in the main process; carried here because whether the link
+   * resolved is known only in the renderer, and both belong to one event.
+   */
+  coldStart: boolean;
 }>('switch-room:session-deeplink');

@@ -32,6 +32,8 @@ import { registerSidecarDiagnostics } from './core/sidecar/sidecar-diagnostics';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
+import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
+import { trackEvent } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { initializeDatabase } from './db/initialize';
@@ -136,6 +138,11 @@ void app.whenReady().then(async () => {
   appService.initialize();
   await appSettingsService.initialize();
   await promptLibraryService.initialize();
+
+  // After the settings store, which owns the consent gate every event asks
+  // before it is sent, and never before the database it is read from.
+  registerTelemetryListeners();
+  trackEvent('app_launched', {});
 
   try {
     await resolveAgentServers();

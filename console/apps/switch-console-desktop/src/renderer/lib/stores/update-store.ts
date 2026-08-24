@@ -219,7 +219,7 @@ export class UpdateStore {
     // download continues in the background.
     void this._resyncFromMain().then(() => {
       if (IN_FLIGHT_STATUSES.has(this.state.status)) return;
-      rpc.update.check().catch(() => {});
+      rpc.update.check('startup').catch(() => {});
     });
   }
 

@@ -66,7 +66,7 @@ export const SETTINGS_DEFAULTS = {
     pr: 'flat' as const,
   },
   telemetry: {
-    enabled: true,
+    enabled: false,
     askedAt: null,
   },
 } satisfies SettingsDefaultsMap;

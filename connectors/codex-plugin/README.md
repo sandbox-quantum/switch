@@ -165,10 +165,11 @@ knowing:
 
 - `repo_dir` should be the directory the credentials were written into. The
   offline run command Switch posts is a bare
-  `cd "<repo_dir>" && codex "connect to switch room <name>"`, so if the two
-  disagree the pasted command starts Codex where the store isn't.
+  `cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"`, so if the
+  two disagree the pasted command starts Codex where the store isn't.
 - Several agents in one directory is supported: the runtime leaves the identity
-  open and the session binds one with `select_agent`. Agents spanning **several
+  open and the session binds one with `select_agent` — which the prompt above
+  answers, since it names the agent the command was generated for. Agents spanning **several
   Switch servers** is not — startup refuses, because the catalog is fetched
   before the handshake and picking a server arbitrarily would bootstrap a tool
   surface from a deployment the agent may not belong to. `SWITCH_API_ENDPOINT`

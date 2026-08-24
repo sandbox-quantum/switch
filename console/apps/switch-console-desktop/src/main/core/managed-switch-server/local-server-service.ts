@@ -1,5 +1,10 @@
 import { deleteAgentsForServer } from '@main/core/switch-servers/delete-server-agents';
 import { getManagedServer } from '@main/core/switch-servers/servers-store';
+import {
+  reportManagedServerOutcome,
+  reportManagedServerStart,
+  reportManagedServerStartThrew,
+} from '@main/core/telemetry/managed-server';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
@@ -180,11 +185,13 @@ class LocalServerService {
           drift: null,
         });
       }
+      reportManagedServerStart('local', result);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.error('local-switch-server: start failed', { error });
       this.setStatus({ phase: 'error', error: message });
+      reportManagedServerStartThrew('local');
       return { kind: 'error', message };
     } finally {
       host.dispose();
@@ -201,11 +208,13 @@ class LocalServerService {
       this.setStatus({ phase: 'stopping', message: 'Stopping containers…' });
       await stopStack(host);
       this.setStatus({ phase: 'stopped', message: null, error: null });
+      reportManagedServerOutcome('stop', 'local', 'success');
     } catch (error) {
       this.setStatus({
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
+      reportManagedServerOutcome('stop', 'local', 'failure');
       throw error;
     } finally {
       host.dispose();
@@ -231,11 +240,13 @@ class LocalServerService {
       this.setStatus({ phase: 'stopping', message: 'Destroying containers and data…' });
       await resetStack(host);
       this.setStatus({ phase: 'stopped', message: null, error: null });
+      reportManagedServerOutcome('reset', 'local', 'success');
     } catch (error) {
       this.setStatus({
         phase: 'error',
         error: error instanceof Error ? error.message : String(error),
       });
+      reportManagedServerOutcome('reset', 'local', 'failure');
       throw error;
     } finally {
       host.dispose();

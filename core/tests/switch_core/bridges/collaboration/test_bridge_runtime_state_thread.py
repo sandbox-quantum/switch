@@ -27,6 +27,7 @@ class _FakeAdapter:
         self.runtime_state_follows_anchor = follows_anchor
         self.applied: list[str | None] = []
         self.trigger_threads: list[str | None] = []
+        self.anchors: list[str | None] = []
 
     def agents_with_live_runtime_state(self, channel_id: str) -> list[str]:
         return []
@@ -42,9 +43,11 @@ class _FakeAdapter:
         deeplink_url: str | None,
         detail: str | None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         self.applied.append(thread_root_id)
         self.trigger_threads.append(trigger_thread_root_id)
+        self.anchors.append(anchor_message_ref)
 
     async def reposition_runtime_state(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
@@ -159,3 +162,28 @@ def test_a_threaded_trigger_reports_its_thread() -> None:
     _report(bridge, thread_id="$thread", anchor_event_id="$thread")
 
     assert bridge.adapter_spy.trigger_threads == ["post-thread"]
+
+
+# ── The message being answered, as distinct from where the status goes ───────
+
+
+def test_the_answered_message_is_reported_even_at_the_channel_root() -> None:
+    """Marking a message and moving the status onto it are separate choices.
+
+    Discord leaves the status where the conversation is and puts a reaction on
+    the message instead, so it needs the anchor without opting into the move.
+    """
+    bridge = _bridge(follows_anchor=False, posts={"$trigger": "post-trigger"})
+
+    _report(bridge, thread_id=None, anchor_event_id="$trigger")
+
+    assert bridge.adapter_spy.applied == [None]
+    assert bridge.adapter_spy.anchors == ["post-trigger"]
+
+
+def test_an_unmapped_answered_message_is_reported_as_absent() -> None:
+    bridge = _bridge(follows_anchor=False, posts={})
+
+    _report(bridge, thread_id=None, anchor_event_id="$unknown")
+
+    assert bridge.adapter_spy.anchors == [None]

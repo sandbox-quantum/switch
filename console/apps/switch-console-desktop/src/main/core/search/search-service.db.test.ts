@@ -136,7 +136,8 @@ describe('searchService', () => {
 
       agentEvents._emit(
         'agent:created',
-        agentRecord({ id: 'agent-3', name: 'newcomer-bot', locationId: 'loc-1' })
+        agentRecord({ id: 'agent-3', name: 'newcomer-bot', locationId: 'loc-1' }),
+        'unknown'
       );
 
       expect(titles(searchService.search({ query: 'newcomer' }).items)).toEqual(['newcomer-bot']);
@@ -270,7 +271,11 @@ describe('searchService', () => {
         ['a-noise', 'co-test'],
         ['a-noise2', 'test-agent-tt'],
       ]) {
-        agentEvents._emit('agent:created', agentRecord({ id, name, locationId: 'loc-1' }));
+        agentEvents._emit(
+          'agent:created',
+          agentRecord({ id, name, locationId: 'loc-1' }),
+          'unknown'
+        );
       }
 
       expect(titles(searchService.search({ query: 'test-tt' }).items)).toEqual(['test-tt']);
@@ -282,7 +287,8 @@ describe('searchService', () => {
       searchService.initialize();
       agentEvents._emit(
         'agent:created',
-        agentRecord({ id: 'a-cc', name: 'reviewer cc', locationId: 'loc-1' })
+        agentRecord({ id: 'a-cc', name: 'reviewer cc', locationId: 'loc-1' }),
+        'unknown'
       );
 
       expect(titles(searchService.search({ query: 'reviewer cc' }).items)).toEqual(['reviewer cc']);
@@ -301,7 +307,8 @@ describe('searchService', () => {
       searchService.initialize();
       agentEvents._emit(
         'agent:created',
-        agentRecord({ id: 'agent-4', name: 'codex-runner', locationId: 'loc-1' })
+        agentRecord({ id: 'agent-4', name: 'codex-runner', locationId: 'loc-1' }),
+        'unknown'
       );
 
       // 'codex' is agent-2's provider (a keyword) and agent-4's name.

@@ -1,6 +1,7 @@
 import z from 'zod';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
+import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
 export const MAX_SESSION_TITLE_LENGTH = 100;
@@ -85,6 +86,27 @@ export type CreateSessionParams = {
    * relay) but gets no PTY until someone views it.
    */
   attach?: boolean;
+  /**
+   * Which control the user started the session from, for reporting. Omitted by
+   * callers with no user behind them, which report as `unknown`.
+   */
+  entryPoint?: UiEntryPoint;
+  /**
+   * Who started the session: a person, the app on their behalf, or a remote host
+   * that was already running one. Omitted reports as `unknown` rather than
+   * assuming a person was there.
+   */
+  startSource?: SessionStartSource;
+  /**
+   * Whether a Switch room was chosen for this session before it was created,
+   * for reporting. Never which room.
+   *
+   * Declared by the caller rather than read back, because the record that would
+   * answer it is consumed during the launch this session is part of: the
+   * poller's intended-room entry is claimed by `ensureForSession` while
+   * `createSession` is still running, so anything asking afterwards is told no.
+   */
+  connectedToRoom?: boolean;
 };
 
 export type CreateSessionError =

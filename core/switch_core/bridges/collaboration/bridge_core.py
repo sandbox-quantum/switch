@@ -162,6 +162,8 @@ class BridgeCore:
         # (channel_id, agent_name) -> the last message the agent reported having
         # been handed. Cleared when its turn ends. See _follow_reported_anchor.
         self._reported_anchors: dict[tuple[str, str], str] = {}
+        # Identity provisioning runs in the background — see _create_agent_identities.
+        self._identity_task: asyncio.Task[None] | None = None
 
     @property
     def adapter(self) -> CollaborationAdapter:
@@ -180,9 +182,18 @@ class BridgeCore:
             on_app_joined=self._handle_app_joined_channel,
         )
         await self._ensure_channel_captures()
-        await self._create_agent_identities()
+        # Deliberately not awaited. Provisioning is one call per agent against
+        # the platform, and a rate-limited platform makes that minutes of
+        # mostly waiting — which would hold up the bridge coming online, and
+        # with it every other bridge behind it at startup and any request that
+        # restarts one. Messages do not depend on it: an agent is addressable
+        # by name whether or not its platform identity exists yet.
+        self._identity_task = asyncio.create_task(self._run_agent_identities())
 
     async def stop(self) -> None:
+        if self._identity_task and not self._identity_task.done():
+            self._identity_task.cancel()
+        self._identity_task = None
         await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
@@ -222,23 +233,59 @@ class BridgeCore:
             if client:
                 self._puppet_matrix_ids.add(client.matrix_user_id)
 
+    async def _run_agent_identities(self) -> None:
+        """Wrapper for the background provisioning task.
+
+        A bare create_task swallows whatever the coroutine raises, so anything
+        escaping the per-agent handling below would vanish without trace.
+        Cancellation is ordinary shutdown and says so quietly."""
+        try:
+            await self._create_agent_identities()
+        except asyncio.CancelledError:
+            logger.info(
+                "%s identity provisioning cancelled before finishing",
+                self._bridge_type,
+            )
+            raise
+        except Exception:
+            logger.exception(
+                "%s identity provisioning stopped unexpectedly", self._bridge_type
+            )
+
     async def _create_agent_identities(self) -> None:
         async with self._session_factory() as session:
             agents = await self._agent_store.get_all(session)
 
+        failed = 0
         for agent in agents:
             try:
                 await self._adapter.create_agent_identity(agent.name, agent.description)
             except Exception:
+                failed += 1
                 logger.exception(
                     "Failed to create %s identity for agent %s",
                     self._bridge_type,
                     agent.name,
                 )
 
-        logger.info(
-            "Created %s identities for %d agents", self._bridge_type, len(agents)
-        )
+        # Counts calls that returned, not identities that now exist: an adapter
+        # that cannot provision at all reports that itself. Reporting the agent
+        # count regardless of failures would read as success on a run where
+        # every one of them failed.
+        if failed:
+            logger.warning(
+                "Provisioned %s identities for %d of %d agents; %d failed",
+                self._bridge_type,
+                len(agents) - failed,
+                len(agents),
+                failed,
+            )
+        else:
+            logger.info(
+                "Provisioned %s identities for %d agents",
+                self._bridge_type,
+                len(agents),
+            )
 
     async def _ensure_channel_captures(self) -> None:
         """Ask the adapter to (re)establish server-side message capture for this
@@ -1527,6 +1574,15 @@ class BridgeCore:
                 event.thread_id
             )
 
+        # The message the agent says it is answering. Resolved whichever way
+        # the status is positioned, so an adapter can mark that message without
+        # also moving the status onto it.
+        anchor_message_ref: str | None = None
+        if event.anchor_event_id is not None:
+            anchor_message_ref = await self._external_post_for_matrix_event(
+                event.anchor_event_id
+            )
+
         # Where a persistent status belongs, which on an adapter that asks for
         # it is the thread the reply will open on the message being worked on.
         anchor_ref = event.thread_id
@@ -1553,6 +1609,7 @@ class BridgeCore:
             deeplink_url=event.deeplink_url,
             detail=event.detail,
             trigger_thread_root_id=trigger_thread_ref,
+            anchor_message_ref=anchor_message_ref,
         )
         await self._follow_reported_anchor(
             channel_id,

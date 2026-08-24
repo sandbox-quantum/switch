@@ -49,9 +49,13 @@ Build an OAuth2 invite URL (Developer Portal → **OAuth2 → URL Generator**):
   - **Send Messages** + **Send Messages in Threads** — post agent replies.
   - **Manage Webhooks** — mint the per-channel webhook agents post through.
   - **Manage Channels** / **Manage Roles** — set per-member channel permission
-    overwrites (`channel.set_permissions`) when provisioning access.
+    overwrites (`channel.set_permissions`) when provisioning access, and mint
+    the per-agent role that makes an agent's name autocomplete (see [Agent name
+    autocomplete](#agent-name-autocomplete-agent_roles)).
   - **Read Message History** — thread-aware replies.
   - **Attach Files** — relay agent image attachments.
+  - **Add Reactions** — put 👀 on the message an agent is working on (see
+    [Knowing an agent is working](#knowing-an-agent-is-working)).
 
 Open the generated URL and add the bot to your server.
 
@@ -72,10 +76,62 @@ Fields (`DiscordConnectionConfig`):
 | --- | --- | --- |
 | `bot_token` | yes | Bot token from the Developer Portal. |
 | `guild_id` | yes | The Discord server (guild) id the bridge is scoped to. |
+| `agent_roles` | no (default on) | Give each agent a mentionable role so its name autocompletes. See below. |
 
 On success the bridge opens its Gateway WebSocket to that guild. Post in a
 channel the bot can see (or have an agent post) and the Switch room is created on
 the first bridged message.
+
+## Agent name autocomplete (`agent_roles`)
+
+An agent is not a Discord member — one bot serves all of them, differentiated
+per message by a webhook override — so by default nothing Discord knows about
+carries an agent's name and typing `@` never offers one. With this on, each
+agent gets a **mentionable role named exactly after it**, so `@flint-tracker`
+completes in the composer and arrives as a real pill. The role is empty and
+carries no permissions: mentioning it notifies nobody, and Switch resolves the
+mention back to the agent's name on the way in.
+
+Roles are provisioned for every existing agent when the bridge starts, and for
+each new agent as it registers. Two limits are worth knowing before you turn it
+on:
+
+- **Discord caps a server at 250 roles, hard.** A server that hits the cap gets
+  one warning naming it, and the bridge stops trying — agents stay addressable
+  by typing their name.
+- **A role carries no metadata**, so there is nowhere to record that a role
+  belongs to Switch. An agent's role is therefore the one whose name matches it
+  **exactly**. Two consequences: a role you created by hand for an agent is
+  adopted rather than duplicated (which is how to use this on a server where
+  the bot may not manage roles), and when an agent is deleted its role is only
+  deleted if **nobody holds it** — one with members is left in place, and the
+  bridge says so.
+
+Renaming an agent leaves its old role behind; delete it by hand.
+
+Turn it off (`agent_roles: false`) on a server that is near the role cap or
+where role management is restricted.
+
+## Knowing an agent is working
+
+When a Switch Console-managed agent starts on a message, two things appear:
+
+- **👀 on the message it is answering**, removed when its turn ends. This is the
+  only signal that says *which* message is being handled — an agent answering
+  two people at once marks both, and clears both together. It needs the **Add
+  Reactions** permission; without it the bridge logs a warning and posts no
+  reaction rather than a mark that is not there.
+- **A "⚙️ Working on it…" message** posted under the agent's own name and
+  avatar, edited in place as the activity changes and deleted when the turn
+  ends.
+
+**What Discord cannot do here.** There is no native progress surface — nothing
+like Slack's agent card — so the working message is one Switch renders itself.
+The typing indicator is not usable as a real indicator either: it expires after
+about 10 seconds, has no "stop" call, and shows the *bot* rather than the agent,
+so with two agents working it would read as one anonymous "Switch Bridge is
+typing". Discord's "thinking…" placeholder is interaction-only (slash commands),
+which does not cover an ordinary `@agent` message.
 
 ## Slash commands
 

@@ -233,7 +233,11 @@ describe('LocationManagerStore removeAgent', () => {
 
     await store.removeAgent('loc', 'a', { deleteInSwitch: false });
 
-    expect(mocks.deleteAgent).toHaveBeenCalledWith({ agentId: 'a', deleteInSwitch: false });
+    expect(mocks.deleteAgent).toHaveBeenCalledWith({
+      agentId: 'a',
+      deleteInSwitch: false,
+      trigger: 'user',
+    });
     expect(store.locations.has('loc')).toBe(true);
     expect(agentsStore.byLocation.get('loc')?.map((x) => x.id)).toEqual(['b']);
   });
@@ -248,7 +252,11 @@ describe('LocationManagerStore removeAgent', () => {
 
     await store.removeAgent('loc', 'a', { deleteInSwitch: true });
 
-    expect(mocks.deleteAgent).toHaveBeenCalledWith({ agentId: 'a', deleteInSwitch: true });
+    expect(mocks.deleteAgent).toHaveBeenCalledWith({
+      agentId: 'a',
+      deleteInSwitch: true,
+      trigger: 'user',
+    });
     expect(store.locations.has('loc')).toBe(false);
     expect(agentsStore.byLocation.has('loc')).toBe(false);
   });

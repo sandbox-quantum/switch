@@ -1,19 +1,19 @@
 import { ArrowUpRight } from 'lucide-react';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { SectionLabel } from '@renderer/lib/ui/label';
-import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
+import {
+  SWITCH_CONSOLE_DOCS_URL,
+  SWITCH_CONSOLE_REPO_URL,
+  SWITCH_DOCS_MESSAGING_APPS_URL,
+  SWITCH_DOCS_REMOTE_HOSTING_URL,
+  SWITCH_DOCS_ROOMS_URL,
+} from '@shared/urls';
 
-/**
- * The welcome screen's "Learn more" shelf (CHOO-2022).
- *
- * Every card points at the repository README for now — the docs site does not
- * exist yet, and a card that opens nothing is worse than one that opens the
- * README. Give each its own URL when there is one.
- */
+/** The welcome screen's "Learn more" shelf (CHOO-2022). */
 const LEARN_MORE_CARDS: { title: string; url: string }[] = [
-  { title: 'Hosting Switch on a SSH device or a cloud', url: SWITCH_CONSOLE_DOCS_URL },
-  { title: 'Connecting to message apps', url: SWITCH_CONSOLE_DOCS_URL },
-  { title: 'Best ways to use Rooms', url: SWITCH_CONSOLE_DOCS_URL },
+  { title: 'Hosting Switch on a SSH device or a cloud', url: SWITCH_DOCS_REMOTE_HOSTING_URL },
+  { title: 'Connecting to message apps', url: SWITCH_DOCS_MESSAGING_APPS_URL },
+  { title: 'Best ways to use Rooms', url: SWITCH_DOCS_ROOMS_URL },
 ];
 
 export function WelcomeLearnMore() {
@@ -69,7 +69,7 @@ export function WelcomeFooter() {
       <button
         type="button"
         className="hover:text-foreground"
-        onClick={() => openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the repository')}
+        onClick={() => openExternalUrl(SWITCH_CONSOLE_REPO_URL, 'Could not open the repository')}
       >
         GitHub
       </button>

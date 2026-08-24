@@ -17,6 +17,27 @@ if TYPE_CHECKING:
     from switch_core.db.models import Agent
 
 
+def connect_prompt(
+    room_name: str,
+    agent_name: str,
+    assume_role: str | None,
+    also_pull: bool,
+) -> str:
+    """The natural-language prompt a started session is launched with.
+
+    One directory can hold credentials for several provisioned agents, in which
+    case the session has to be told which one it is before it may act. Naming
+    the agent in the prompt itself answers that without the operator having to
+    know it happens.
+    """
+    prompt = f"connect to switch room {room_name}"
+    if assume_role:
+        prompt += f" and assume the role {assume_role}"
+    if also_pull:
+        prompt += " and pull the latest messages"
+    return f"{prompt} — if you are asked which agent you are, you are {agent_name}"
+
+
 class KnownAgentOptions(BaseModel):
     """Base class for per-known-agent registration options.
 
@@ -47,6 +68,27 @@ class KnownAgent(ABC):
     @classmethod
     def parse_options(cls, raw: dict[str, Any] | None) -> KnownAgentOptions:
         return cls.options_schema.model_validate(raw or {})
+
+    @classmethod
+    def connect_command(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        assume_role: str | None,
+    ) -> str | None:
+        """The paste-ready shell command that starts this agent connected to
+        `room_name`, with no surrounding prose.
+
+        Split out from `start_session_instructions` because the command is the
+        one host-specific part: callers that need their own wording around it
+        (the addressed-but-offline reply) take the command and write the rest
+        themselves, rather than each host restating the same sentences.
+
+        None when no command applies — the same condition that makes
+        `start_session_instructions` return None.
+        """
+        return None
 
     @classmethod
     def start_session_instructions(
@@ -192,30 +234,13 @@ class ClaudeCodeKnownAgent(KnownAgent):
         )
 
     @classmethod
-    def start_session_instructions(
+    def connect_command(
         cls,
         options: KnownAgentOptions,
         agent: Agent,
         room_name: str,
-        owner_handle: str | None,
-        assume_role: str | None = None,
-        other_room_names: list[str] | None = None,
-        connected_not_live: bool = False,
+        assume_role: str | None,
     ) -> str | None:
-        """Build the room-facing onboarding message.
-
-        Shape depends on the install's connection model:
-
-        - channels disabled (session_passive): the agent reads asynchronously,
-          so the message says the operator must trigger a pull, the connect
-          command itself includes "and pull the latest messages", and a note
-          explains real-time delivery needs an Anthropic API key / subscription.
-        - channels enabled (session_addressable): the usual connect command.
-          `connected_not_live` switches the opening to "a session is connected
-          here but isn't live" (operator likely launched it without the
-          dev-channels flag); `other_room_names` points the asker at live
-          sessions in genuinely different rooms instead.
-        """
         assert isinstance(options, ClaudeCodeOptions)
         # Channels-enabled installations need the dev-channels flag so the
         # plugin can deliver inbound events; without channels the flag is a
@@ -242,16 +267,43 @@ class ClaudeCodeKnownAgent(KnownAgent):
             subagent_flags = (
                 f" --agent {options.subagent_name} --settings {settings_path}"
             )
-        # Fold an optional role into the connect prompt itself, so the started
-        # session lands in the room AND takes the role in one go.
-        prompt = f"connect to switch room {room_name}"
-        if assume_role:
-            prompt += f" and assume the role {assume_role}"
         # A session_passive session receives no pushed events, so the connect
         # must also pull — fold that into the prompt itself.
-        if not options.channels_enabled:
-            prompt += " and pull the latest messages"
-        cmd = f'cd {dir_token} && claude "{prompt}"{subagent_flags}{flag}'
+        prompt = connect_prompt(
+            room_name,
+            agent.name,
+            assume_role,
+            also_pull=not options.channels_enabled,
+        )
+        return f'cd {dir_token} && claude "{prompt}"{subagent_flags}{flag}'
+
+    @classmethod
+    def start_session_instructions(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        owner_handle: str | None,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        """Build the room-facing onboarding message.
+
+        Shape depends on the install's connection model:
+
+        - channels disabled (session_passive): the agent reads asynchronously,
+          so the message says the operator must trigger a pull, the connect
+          command itself includes "and pull the latest messages", and a note
+          explains real-time delivery needs an Anthropic API key / subscription.
+        - channels enabled (session_addressable): the usual connect command.
+          `connected_not_live` switches the opening to "a session is connected
+          here but isn't live" (operator likely launched it without the
+          dev-channels flag); `other_room_names` points the asker at live
+          sessions in genuinely different rooms instead.
+        """
+        assert isinstance(options, ClaudeCodeOptions)
+        cmd = cls.connect_command(options, agent, room_name, assume_role)
 
         if not options.channels_enabled:
             # session_passive: reads asynchronously, so the operator must
@@ -366,6 +418,19 @@ class CodexKnownAgent(KnownAgent):
         )
 
     @classmethod
+    def connect_command(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        assume_role: str | None,
+    ) -> str | None:
+        assert isinstance(options, CodexOptions)
+        dir_token = options.repo_dir if options.repo_dir else "<codex-dir>"
+        prompt = connect_prompt(room_name, agent.name, assume_role, also_pull=False)
+        return f'cd "{dir_token}" && codex "{prompt}"'
+
+    @classmethod
     def start_session_instructions(
         cls,
         options: KnownAgentOptions,
@@ -384,11 +449,7 @@ class CodexKnownAgent(KnownAgent):
         connector is watching.
         """
         assert isinstance(options, CodexOptions)
-        dir_token = options.repo_dir if options.repo_dir else "<codex-dir>"
-        prompt = f"connect to switch room {room_name}"
-        if assume_role:
-            prompt += f" and assume the role {assume_role}"
-        cmd = f'cd "{dir_token}" && codex "{prompt}"'
+        cmd = cls.connect_command(options, agent, room_name, assume_role)
 
         prefix = f"@{owner_handle}\n\n" if owner_handle else ""
         if connected_not_live:
@@ -488,6 +549,24 @@ class OpenCodeKnownAgent(KnownAgent):
         )
 
     @classmethod
+    def connect_command(
+        cls,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        assume_role: str | None,
+    ) -> str | None:
+        """The prompt goes through `--prompt`, never as a positional argument:
+        OpenCode reads its first positional as the project directory, so a bare
+        `opencode "connect to switch room …"` is a request to open a directory
+        of that name rather than a prompt.
+        """
+        assert isinstance(options, OpenCodeOptions)
+        dir_token = options.repo_dir if options.repo_dir else "<opencode-dir>"
+        prompt = connect_prompt(room_name, agent.name, assume_role, also_pull=False)
+        return f'cd "{dir_token}" && opencode --prompt "{prompt}"'
+
+    @classmethod
     def start_session_instructions(
         cls,
         options: KnownAgentOptions,
@@ -498,19 +577,9 @@ class OpenCodeKnownAgent(KnownAgent):
         other_room_names: list[str] | None = None,
         connected_not_live: bool = False,
     ) -> str | None:
-        """Build the room-facing onboarding message for an OpenCode agent.
-
-        The prompt goes through `--prompt`, never as a positional argument:
-        OpenCode reads its first positional as the project directory, so a bare
-        `opencode "connect to switch room …"` is a request to open a directory of
-        that name rather than a prompt.
-        """
+        """Build the room-facing onboarding message for an OpenCode agent."""
         assert isinstance(options, OpenCodeOptions)
-        dir_token = options.repo_dir if options.repo_dir else "<opencode-dir>"
-        prompt = f"connect to switch room {room_name}"
-        if assume_role:
-            prompt += f" and assume the role {assume_role}"
-        cmd = f'cd "{dir_token}" && opencode --prompt "{prompt}"'
+        cmd = cls.connect_command(options, agent, room_name, assume_role)
 
         prefix = f"@{owner_handle}\n\n" if owner_handle else ""
         if connected_not_live:
