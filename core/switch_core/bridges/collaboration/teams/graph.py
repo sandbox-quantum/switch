@@ -186,8 +186,18 @@ class GraphClient:
         return result
 
     async def get_channel(self, *, team_id: str, channel_id: str) -> dict[str, Any]:
+        """One channel's properties.
+
+        `$select` is not an optimisation here so much as a correctness one:
+        Graph documents populating `email` and `summary` as expensive, and
+        `layoutType` — which tells a posts channel from a chat one — is only
+        returned by this per-channel read. Listing a team's channels reports it
+        as null for every channel, so there is no bulk route to it.
+        """
         resp = await self._send(
-            "GET", f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}"
+            "GET",
+            f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}",
+            params={"$select": "id,displayName,description,membershipType,layoutType"},
         )
         if resp.status_code >= 300:
             raise _graph_error(f"get channel {channel_id}", resp)

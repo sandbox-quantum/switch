@@ -385,6 +385,10 @@ class TeamsAdapter(CollaborationAdapter):
         # channel id -> its display name; "" records that Graph was asked and
         # could not say, so it is not asked again on every message.
         self._channel_names: dict[str, str] = {}
+        # channel id -> "post" | "chat", the conversation layout Graph reports.
+        # "" records that Graph was asked and could not say. See
+        # `_uses_post_layout` for what an unknown layout is treated as.
+        self._channel_layouts: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
@@ -614,32 +618,84 @@ class TeamsAdapter(CollaborationAdapter):
     def _thread_conversation(channel_id: str, root_id: str) -> str:
         return f"{channel_id};messageid={root_id}"
 
-    def _remember_post(
-        self, channel_id: str, post_id: str, *, is_channel: bool | None = None
-    ) -> None:
-        """Note the post a channel's conversation is currently in.
+    async def _channel_layout(self, channel_id: str) -> str | None:
+        """The channel's conversation layout as Graph reports it, or None.
 
-        Set from both directions. Inbound, so a reply lands under the question.
-        Outbound too, because the first thing an agent says in a channel has no
-        question to answer — it opens a post — and everything it says next
-        belongs in that post rather than in a fresh one each time. Without this
-        an agent greeting itself into a channel produced a column of one-line
-        posts.
+        Graph is the only thing that knows: a Bot Framework activity says
+        nothing about layout, and listing a team's channels returns the
+        property as null for every one of them. So it is a per-channel read,
+        cached — and the same read the channel's name comes from, so learning
+        both costs one call.
+        """
+        cached = self._channel_layouts.get(channel_id)
+        if cached is not None:
+            return cached or None
+        channel = await self._read_channel(channel_id)
+        if channel is None:
+            return None
+        return self._channel_layouts.get(channel_id) or None
+
+    async def _uses_post_layout(
+        self, channel_id: str, *, is_channel: bool | None = None
+    ) -> bool:
+        """Whether replies in this channel have to be steered into a post.
+
+        Teams has two channel layouts and they want opposite things.
+
+        A **posts** channel is a list of conversations: a message at the root
+        opens a new one. An agent answering a question there must land under
+        the question, or the answer appears as a fresh post below and reads as
+        a non-sequitur.
+
+        A **chat** channel is a stream, like every other platform Switch
+        bridges. "No thread" means the root, and steering is exactly wrong: it
+        buries an agent's first message, the room-linked notice and the runtime
+        status inside whatever thread the channel last used. So a chat channel
+        gets the ordinary policy — the agent decides whether to thread, and
+        nothing is rewritten on the way out.
+
+        An unreadable layout is treated as posts. That is Graph's own default,
+        and it is what every Teams channel was before the chat layout existed,
+        so it is the answer least likely to surprise. Chats and group chats
+        have no posts to be wrong about and are never steered.
         """
         threaded = self._is_channel(channel_id) if is_channel is None else is_channel
-        if threaded and post_id:
+        if not threaded:
+            return False
+        return await self._channel_layout(channel_id) != "chat"
+
+    async def _remember_post(
+        self,
+        channel_id: str,
+        post_id: str,
+        *,
+        is_channel: bool | None = None,
+        only_if_unset: bool = False,
+    ) -> None:
+        """Note the post a posts-channel conversation is currently in.
+
+        Inbound, unconditionally: the message someone just sent is what an
+        untied reply should answer under.
+
+        Outbound, only when nothing is recorded yet (`only_if_unset`). The
+        first thing an agent says in a channel has no question to answer — it
+        opens a post — and what it says next belongs in that post rather than
+        in a fresh one each time, or an agent greeting itself into a channel
+        produces a column of one-line posts. But an agent's own message must
+        never *displace* a real one: an agent deliberately replying into an
+        older thread would otherwise drag every later answer back into it.
+        """
+        if not post_id:
+            return
+        if only_if_unset and channel_id in self._last_post:
+            return
+        if await self._uses_post_layout(channel_id, is_channel=is_channel):
             self._last_post[channel_id] = post_id
 
-    def _post_to_answer_in(
+    async def _post_to_answer_in(
         self, channel_id: str, thread_root_id: str | None
     ) -> str | None:
-        """Which post a channel reply belongs under.
-
-        A Teams channel is a list of posts, not a stream of messages: posting
-        at the root starts a new conversation. So an agent answering a question
-        must land under the question, and an answer that arrives as a fresh
-        post reads as a non-sequitur — the reply and what it replies to end up
-        in different places.
+        """Which post a channel reply belongs under, in a posts channel.
 
         A caller that named a thread knows better than we do and wins. What
         this covers is the caller that named none, which is any agent whose
@@ -647,13 +703,16 @@ class TeamsAdapter(CollaborationAdapter):
         last saw this channel speak in, rather than opening a new one.
 
         The limitation, stated because it is real: "last" is per channel, so
-        two conversations running in the same channel at the same moment can
-        cross. Teams gives no better signal on an untied reply, and landing in
-        the wrong post beats starting a fresh one every time. Chats and group
-        chats are untouched — they have no posts to be wrong about.
+        two conversations running in the same posts channel at the same moment
+        can cross. Teams gives no better signal on an untied reply, and landing
+        in the wrong post beats starting a fresh one every time.
+
+        Chat-layout channels are left entirely alone — see `_uses_post_layout`.
         """
-        if thread_root_id is not None or not self._is_channel(channel_id):
+        if thread_root_id is not None:
             return thread_root_id
+        if not await self._uses_post_layout(channel_id):
+            return None
         return self._last_post.get(channel_id)
 
     async def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
@@ -688,7 +747,7 @@ class TeamsAdapter(CollaborationAdapter):
         # `translate_outbound` first, and rendering again here put the body
         # through the conversion twice.
         activity = await self._message_activity(sender_name, content)
-        thread_root_id = self._post_to_answer_in(channel_id, thread_root_id)
+        thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
 
         if self._is_channel(channel_id) and thread_root_id is None:
             conversation_id, msg_id = await self._connector.create_channel_thread(
@@ -708,7 +767,9 @@ class TeamsAdapter(CollaborationAdapter):
 
         if msg_id:
             self._sent[msg_id] = (service_url, conversation_id)
-            self._remember_post(channel_id, thread_root_id or msg_id)
+            await self._remember_post(
+                channel_id, thread_root_id or msg_id, only_if_unset=True
+            )
             return msg_id
         return None
 
@@ -728,7 +789,7 @@ class TeamsAdapter(CollaborationAdapter):
 
         service_url = self._service_url_for(channel_id)
         body = self.translate_outbound(content)
-        thread_root_id = self._post_to_answer_in(channel_id, thread_root_id)
+        thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         activity: dict[str, Any] = {"type": "message", "text": body}
         mentions = self._mention_entities(body)
         if mentions:
@@ -754,7 +815,9 @@ class TeamsAdapter(CollaborationAdapter):
 
         if msg_id:
             self._sent[msg_id] = (service_url, conversation_id)
-            self._remember_post(channel_id, thread_root_id or msg_id)
+            await self._remember_post(
+                channel_id, thread_root_id or msg_id, only_if_unset=True
+            )
             return msg_id
         return None
 
@@ -945,6 +1008,8 @@ class TeamsAdapter(CollaborationAdapter):
 
         self._channel_type[channel_id] = channel_type
         self._team_of_channel[channel_id] = self._config.team_id
+        self._channel_names[channel_id] = str(channel.get("displayName") or "")
+        self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         # Capture the new channel's messages right away.
         await self._ensure_channel_subscription(channel_id)
         return channel_id
@@ -963,6 +1028,14 @@ class TeamsAdapter(CollaborationAdapter):
             else "channel_public"
         )
         self._channel_type[channel_id] = resolved
+        # The same response carries the name and layout, so record them rather
+        # than reading the channel a second time on the first message.
+        self._channel_names.setdefault(
+            channel_id, str(channel.get("displayName") or "")
+        )
+        self._channel_layouts.setdefault(
+            channel_id, str(channel.get("layoutType") or "")
+        )
         return resolved
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
@@ -1345,7 +1418,7 @@ class TeamsAdapter(CollaborationAdapter):
         # The post this message sits in — itself, when it opened the post.
         # Remembered so an untied reply lands under the question rather than
         # starting a conversation of its own; see _post_to_answer_in.
-        self._remember_post(
+        await self._remember_post(
             channel_id,
             root_id or message_ref,
             # The caller was told the type; do not re-derive it from the id.
@@ -1453,6 +1526,22 @@ class TeamsAdapter(CollaborationAdapter):
         cached = self._channel_names.get(channel_id)
         if cached is not None:
             return cached or None
+        await self._read_channel(channel_id)
+        return self._channel_names.get(channel_id) or None
+
+    async def _read_channel(self, channel_id: str) -> dict[str, Any] | None:
+        """Read a channel from Graph once and cache what the adapter needs.
+
+        Two things come off this call — the display name, without which a room
+        is titled after a `19:…` id, and the conversation layout, which decides
+        whether an untied reply is steered into a post. They are cached
+        together because they arrive together: asking twice would double the
+        traffic for nothing.
+
+        Returns None when the read could not be made or failed, having recorded
+        "asked and could not say" for both so a channel Graph will not describe
+        is not re-read on every message.
+        """
         if self._graph is None or not self._is_channel(channel_id):
             return None
         team_id = self._team_of_channel.get(channel_id) or self._config.team_id
@@ -1464,18 +1553,18 @@ class TeamsAdapter(CollaborationAdapter):
             )
         except Exception:
             logger.warning(
-                "Could not read the name of Teams channel %s; a room created "
-                "for it will be named after its id",
+                "Could not read Teams channel %s; a room created for it will be "
+                "named after its id, and replies there will be threaded as if it "
+                "used the posts layout",
                 channel_id,
                 exc_info=True,
             )
-            # Cached as "asked and failed", so a channel Graph will not name
-            # is not re-read on every message.
-            self._channel_names[channel_id] = ""
+            self._channel_names.setdefault(channel_id, "")
+            self._channel_layouts.setdefault(channel_id, "")
             return None
-        resolved = str(channel.get("displayName") or "")
-        self._channel_names[channel_id] = resolved
-        return resolved or None
+        self._channel_names[channel_id] = str(channel.get("displayName") or "")
+        self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
+        return channel
 
     def _self_mention_token(self, activity: dict[str, Any]) -> str | None:
         recipient = activity.get("recipient") or {}

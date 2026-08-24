@@ -1,9 +1,13 @@
 """CHOO-2067 — an answer belongs under the question.
 
-A Teams channel is a list of posts, not a stream of messages, so posting at
-the channel root starts a new conversation. An agent whose reply named no
+A Teams posts channel is a list of posts, not a stream of messages, so posting
+at the channel root starts a new conversation. An agent whose reply named no
 thread did exactly that: the question sat in one post and its answer appeared
 as a fresh one below, reading as a non-sequitur.
+
+These cases run with no Graph client, so they also pin the fallback: a channel
+whose layout cannot be read is treated as a posts channel. The two layouts are
+separated in `test_teams_channel_layout.py`.
 """
 
 from __future__ import annotations
