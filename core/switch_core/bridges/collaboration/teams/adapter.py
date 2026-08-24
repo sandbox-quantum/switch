@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 import httpx
 from aiohttp import web
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.collaboration.adapter import (
@@ -242,6 +242,16 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
     # hidden from the gateway config form (SkipJsonSchema).
     service_url: SkipJsonSchema[str | None] = None
 
+    # Channel id -> the AAD group id of the team holding it, learned from the
+    # `channelData` of inbound activities and persisted here. A Graph message
+    # subscription names the team as well as the channel, and `team_id` above
+    # is only the team Switch *provisions into* — a channel the bot was added
+    # to in some other team belongs to none of it. Held in memory alone this
+    # was lost on every restart, and capture in those channels stayed dead
+    # until someone thought to mention the bot; see `_learn_channel_team`.
+    # Learned at runtime, never an admin input, so it is hidden from the form.
+    channel_teams: SkipJsonSchema[dict[str, str]] = Field(default_factory=dict)
+
     @model_validator(mode="after")
     def _encryption_material_is_all_or_nothing(self) -> TeamsConnectionConfig:
         """A half-supplied encryption trio is a mistake, not a partial request.
@@ -405,9 +415,13 @@ class TeamsAdapter(CollaborationAdapter):
         # channel id -> last failure, so the repair loop can retry quietly and
         # still speak up when the reason changes.
         self._capture_failures: dict[str, str] = {}
-        # channel id -> AAD team id, learned from bot-join activities so a
-        # channel-message subscription can be created for it.
-        self._team_of_channel: dict[str, str] = {}
+        # channel id -> AAD team id, learned from inbound activities so a
+        # channel-message subscription can be created for it. Seeded from the
+        # persisted config, so a channel outside the configured team keeps its
+        # capture across a restart instead of waiting to be re-taught.
+        self._team_of_channel: dict[str, str] = dict(config.channel_teams)
+        # Installed by the bridge to persist a newly-learned channel/team pair.
+        self._persist_channel_team: Callable[[str, str], Awaitable[None]] | None = None
         self._sub_lock = asyncio.Lock()
         self._renewal_task: asyncio.Task[None] | None = None
         self._repair_task: asyncio.Task[None] | None = None
@@ -603,6 +617,43 @@ class TeamsAdapter(CollaborationAdapter):
             await self._persist_service_url(service_url)
         except Exception:
             logger.warning("Failed to persist Teams serviceUrl", exc_info=True)
+
+    def set_channel_team_persister(
+        self, persist: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        self._persist_channel_team = persist
+
+    async def _learn_channel_team(self, channel_id: str, team_id: str) -> None:
+        """Record which team a channel belongs to, and persist it.
+
+        A Graph message subscription is created against
+        ``teams/{team}/channels/{channel}/messages``, so the team is not
+        optional — and the only place it arrives is the ``channelData`` of an
+        inbound activity. Held in memory alone it is lost on every restart,
+        and a channel in any team other than the configured one then falls
+        back to that one, where Graph answers "Channel is not present in the
+        team" and capture never starts.
+
+        That failure cannot heal on its own: refilling the map needs an
+        activity from the channel, and without capture Teams delivers only
+        messages that mention the bot — so tagging an *agent*, which is the
+        normal way to use the room, never arrives. Silence, until someone
+        happens to tag the bot itself.
+        """
+        if self._team_of_channel.get(channel_id) == team_id:
+            return
+        self._team_of_channel[channel_id] = team_id
+        if self._persist_channel_team is None:
+            return
+        try:
+            await self._persist_channel_team(channel_id, team_id)
+        except Exception:
+            logger.warning(
+                "Failed to persist the team of Teams channel %s; capture there "
+                "will need the bot mentioned again after the next restart",
+                channel_id,
+                exc_info=True,
+            )
 
     def _is_channel(self, channel_id: str) -> bool:
         """Whether ``channel_id`` is a Teams channel (threaded) vs a flat chat.
@@ -1007,7 +1058,7 @@ class TeamsAdapter(CollaborationAdapter):
             raise RuntimeError(f"Teams channel creation returned no id for '{name}'")
 
         self._channel_type[channel_id] = channel_type
-        self._team_of_channel[channel_id] = self._config.team_id
+        await self._learn_channel_team(channel_id, self._config.team_id)
         self._channel_names[channel_id] = str(channel.get("displayName") or "")
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         # Capture the new channel's messages right away.
@@ -1311,7 +1362,7 @@ class TeamsAdapter(CollaborationAdapter):
         # GUID"). Fall back to the configured team_id, which is also that GUID.
         group_id = team.get("aadGroupId") or self._config.team_id
         if group_id and channel_id:
-            self._team_of_channel[channel_id] = str(group_id)
+            await self._learn_channel_team(channel_id, str(group_id))
 
         if activity_type == "message":
             await self._dispatch_message(activity, channel_id, channel_type)

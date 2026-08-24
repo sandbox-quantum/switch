@@ -44,6 +44,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- Teams channel capture no longer dies at a restart for any channel outside the
+  connection's configured team. A Graph subscription names the team as well as
+  the channel, and the team is only ever carried on an inbound activity — held
+  in memory it was lost on restart, and those channels fell back to the
+  configured team, where Graph answers "Channel is not present in the team".
+  Nothing recovered it: refilling the map needs an activity from the channel,
+  and without capture Teams delivers only messages mentioning the bot, so
+  addressing an agent — the normal way to use the room — never arrived. The
+  mapping is now persisted the way the Bot Connector endpoint already was.
+
 #### Added
 - Teams accepts `/command` as well as `!command`, and the setup guide carries
   the app-manifest snippet that puts the commands above the compose box. Teams

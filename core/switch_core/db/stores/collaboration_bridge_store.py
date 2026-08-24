@@ -100,6 +100,24 @@ class CollaborationBridgeStore:
         }
         await session.flush()
 
+    async def set_channel_team(
+        self, session: AsyncSession, bridge_id: str, channel_id: str, team_id: str
+    ) -> None:
+        """Persist which team a channel belongs to into ``connection_config``.
+
+        Merged into the existing map rather than replacing it, so learning one
+        channel does not forget the rest. Reassigns the dicts so SQLAlchemy
+        tracks the change (a mutated JSONB value is not detected)."""
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None:
+            raise ValueError(f"Bridge not found: {bridge_id}")
+        config = dict(bridge.connection_config or {})
+        known = dict(config.get("channel_teams") or {})
+        known[channel_id] = team_id
+        config["channel_teams"] = known
+        bridge.connection_config = config
+        await session.flush()
+
     async def delete(self, session: AsyncSession, bridge_id: str) -> None:
         bridge = await session.get(CollaborationBridge, bridge_id)
         if bridge:

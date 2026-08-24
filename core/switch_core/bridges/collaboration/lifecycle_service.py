@@ -347,6 +347,11 @@ class CollaborationBridgeLifecycleService:
         adapter.set_service_url_persister(
             lambda service_url: self._persist_service_url(bridge_id, service_url)
         )
+        adapter.set_channel_team_persister(
+            lambda channel_id, team_id: self._persist_channel_team(
+                bridge_id, channel_id, team_id
+            )
+        )
         adapter.set_max_attachment_bytes(self._config.agent_media_max_bytes)
 
         if (
@@ -419,6 +424,17 @@ class CollaborationBridgeLifecycleService:
         so outbound survives a restart (used by the Teams adapter)."""
         async with self._session_factory() as session:
             await self._bridge_store.set_service_url(session, bridge_id, service_url)
+            await session.commit()
+
+    async def _persist_channel_team(
+        self, bridge_id: str, channel_id: str, team_id: str
+    ) -> None:
+        """Persist the team an adapter learned a channel belongs to, so channel
+        capture survives a restart (used by the Teams adapter)."""
+        async with self._session_factory() as session:
+            await self._bridge_store.set_channel_team(
+                session, bridge_id, channel_id, team_id
+            )
             await session.commit()
 
     async def _run_bridge(

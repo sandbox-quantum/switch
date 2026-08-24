@@ -755,6 +755,19 @@ class CollaborationAdapter(ABC):
         carried on inbound activities) override this to persist it."""
         return None
 
+    def set_channel_team_persister(
+        self, persist: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Install a callback the adapter uses to persist which container a
+        channel belongs to, when that is learned from inbound traffic rather
+        than configured.
+
+        Default is a no-op; Teams overrides it because a Graph message
+        subscription is created against `teams/{team}/channels/{channel}`, and
+        the team arrives only on an inbound activity. Losing it on restart
+        silently kills capture in every channel outside the configured team."""
+        return None
+
     def set_channel_migration_handler(
         self, handler: Callable[[str, str], Awaitable[None]]
     ) -> None:

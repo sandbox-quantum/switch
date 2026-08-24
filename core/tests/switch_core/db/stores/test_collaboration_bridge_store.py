@@ -150,3 +150,79 @@ async def test_set_default_unknown_bridge_raises(
     async with session_factory() as session:
         with pytest.raises(ValueError):
             await store.set_default(session, "does-not-exist")
+
+
+@pytest.mark.asyncio
+async def test_set_channel_team_merges_rather_than_replaces(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Learning one channel's team must not forget the others.
+
+    The map is a single JSONB value, so a write that assigned instead of
+    merging would drop every channel learned before it — and each loss costs
+    Teams channel capture until the bot is mentioned in that channel again.
+    """
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+
+        await store.set_channel_team(session, bridge_id, "19:a@thread.tacv2", "team-1")
+        await store.set_channel_team(session, bridge_id, "19:b@thread.tacv2", "team-2")
+        await session.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["channel_teams"] == {
+            "19:a@thread.tacv2": "team-1",
+            "19:b@thread.tacv2": "team-2",
+        }
+
+
+@pytest.mark.asyncio
+async def test_set_channel_team_updates_a_channel_that_moved(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+
+        await store.set_channel_team(session, bridge_id, "19:a@thread.tacv2", "team-1")
+        await store.set_channel_team(session, bridge_id, "19:a@thread.tacv2", "team-2")
+        await session.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["channel_teams"] == {
+            "19:a@thread.tacv2": "team-2"
+        }
+
+
+@pytest.mark.asyncio
+async def test_set_channel_team_leaves_the_rest_of_the_config_alone(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.set_service_url(session, bridge_id, "https://smba.example")
+
+        await store.set_channel_team(session, bridge_id, "19:a@thread.tacv2", "team-1")
+        await session.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["service_url"] == "https://smba.example"
+        assert bridge.connection_config["channel_teams"]
+
+
+@pytest.mark.asyncio
+async def test_set_channel_team_unknown_bridge_raises(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        with pytest.raises(ValueError):
+            await store.set_channel_team(session, "does-not-exist", "19:a", "team-1")
