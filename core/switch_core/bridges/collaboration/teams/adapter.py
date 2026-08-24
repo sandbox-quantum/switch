@@ -72,6 +72,12 @@ _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
 # and what anyone who has used Slack will try first.
 _COMMAND_PREFIXES = ("!", "/")
 
+# How long a failed Graph read of a channel is taken at its word before being
+# tried again. Long enough that a channel Graph will not describe is not read
+# on every message; short enough that a blip, or a permission granted after the
+# bridge started, heals on its own.
+_CHANNEL_READ_RETRY_AFTER = 300.0
+
 
 def _handle_for(user: dict[str, Any]) -> str:
     """The handle Switch knows a Teams person by.
@@ -395,6 +401,9 @@ class TeamsAdapter(CollaborationAdapter):
         # channel id -> its display name; "" records that Graph was asked and
         # could not say, so it is not asked again on every message.
         self._channel_names: dict[str, str] = {}
+        # channel id -> when a Graph read of it last failed (monotonic), so the
+        # retry is throttled without being abandoned. See `_read_channel`.
+        self._channel_read_failed_at: dict[str, float] = {}
         # channel id -> "post" | "chat", the conversation layout Graph reports.
         # "" records that Graph was asked and could not say. See
         # `_uses_post_layout` for what an unknown layout is treated as.
@@ -642,7 +651,15 @@ class TeamsAdapter(CollaborationAdapter):
         """
         if self._team_of_channel.get(channel_id) == team_id:
             return
+        # Anything already read for this channel was read against a different
+        # team and is not to be trusted — most often it was not read at all,
+        # because the wrong team is exactly what Graph refuses. Without this the
+        # subscription heals on the new team while the name and layout stay
+        # stuck at whatever the failed read left behind.
         self._team_of_channel[channel_id] = team_id
+        self._channel_names.pop(channel_id, None)
+        self._channel_layouts.pop(channel_id, None)
+        self._channel_read_failed_at.pop(channel_id, None)
         if self._persist_channel_team is None:
             return
         try:
@@ -681,9 +698,9 @@ class TeamsAdapter(CollaborationAdapter):
         cached = self._channel_layouts.get(channel_id)
         if cached is not None:
             return cached or None
-        channel = await self._read_channel(channel_id)
-        if channel is None:
+        if self._read_recently_failed(channel_id):
             return None
+        await self._read_channel(channel_id)
         return self._channel_layouts.get(channel_id) or None
 
     async def _uses_post_layout(
@@ -1581,6 +1598,8 @@ class TeamsAdapter(CollaborationAdapter):
         cached = self._channel_names.get(channel_id)
         if cached is not None:
             return cached or None
+        if self._read_recently_failed(channel_id):
+            return None
         await self._read_channel(channel_id)
         return self._channel_names.get(channel_id) or None
 
@@ -1593,9 +1612,13 @@ class TeamsAdapter(CollaborationAdapter):
         together because they arrive together: asking twice would double the
         traffic for nothing.
 
-        Returns None when the read could not be made or failed, having recorded
-        "asked and could not say" for both so a channel Graph will not describe
-        is not re-read on every message.
+        Returns None when the read could not be made or failed. A failure is
+        remembered so the read is not retried on every message, but only for
+        `_CHANNEL_READ_RETRY_AFTER` — a Graph blip, or a permission granted
+        minutes later, must not pin a channel to "nameless, posts layout" for
+        the life of the process. That is the same shape as the bug that made
+        capture die at a restart, and it is not worth repeating for a cheaper
+        symptom.
         """
         if self._graph is None or not self._is_channel(channel_id):
             return None
@@ -1608,18 +1631,27 @@ class TeamsAdapter(CollaborationAdapter):
             )
         except Exception:
             logger.warning(
-                "Could not read Teams channel %s; a room created for it will be "
-                "named after its id, and replies there will be threaded as if it "
-                "used the posts layout",
+                "Could not read Teams channel %s; until this succeeds a room "
+                "created for it is named after its id, and replies there are "
+                "threaded as if it used the posts layout",
                 channel_id,
                 exc_info=True,
             )
-            self._channel_names.setdefault(channel_id, "")
-            self._channel_layouts.setdefault(channel_id, "")
+            self._channel_read_failed_at[channel_id] = time.monotonic()
             return None
+        self._channel_read_failed_at.pop(channel_id, None)
         self._channel_names[channel_id] = str(channel.get("displayName") or "")
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         return channel
+
+    def _read_recently_failed(self, channel_id: str) -> bool:
+        failed_at = self._channel_read_failed_at.get(channel_id)
+        if failed_at is None:
+            return False
+        if time.monotonic() - failed_at < _CHANNEL_READ_RETRY_AFTER:
+            return True
+        del self._channel_read_failed_at[channel_id]
+        return False
 
     def _self_mention_token(self, activity: dict[str, Any]) -> str | None:
         recipient = activity.get("recipient") or {}

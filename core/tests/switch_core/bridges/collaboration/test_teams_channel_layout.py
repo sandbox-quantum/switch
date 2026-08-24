@@ -248,3 +248,78 @@ def test_a_refusal_is_not_retried_on_every_message() -> None:
     _run(adapter.send_message(_CHANNEL, "james", "two"))
 
     assert graph.reads == 1
+
+
+# ── A failed read must not be permanent ───────────────────────────────────────
+
+
+class _FlakyGraph:
+    """Refuses the first read, answers the second."""
+
+    def __init__(self, layout: str) -> None:
+        self._layout = layout
+        self.reads = 0
+
+    async def get_channel(self, *, team_id: str, channel_id: str) -> dict[str, Any]:
+        self.reads += 1
+        if self.reads == 1:
+            raise RuntimeError("ServiceUnavailable")
+        return {"id": channel_id, "displayName": "general", "layoutType": self._layout}
+
+
+def test_a_failed_read_is_retried_once_its_backoff_has_passed() -> None:
+    # A blip, or a permission granted a minute after the bridge started, must
+    # not pin a channel to "nameless, posts layout" for the life of the
+    # process — that is the shape of the bug that killed capture at a restart.
+    import switch_core.bridges.collaboration.teams.adapter as adapter_module
+
+    graph = _FlakyGraph("chat")
+    adapter, connector = _adapter(graph)
+
+    _run(adapter._channel_layout(_CHANNEL))
+    assert graph.reads == 1
+    # Still inside the backoff: no second call, and no layout yet.
+    _run(adapter._channel_layout(_CHANNEL))
+    assert graph.reads == 1
+
+    adapter._channel_read_failed_at[_CHANNEL] -= (
+        adapter_module._CHANNEL_READ_RETRY_AFTER + 1
+    )
+
+    assert _run(adapter._channel_layout(_CHANNEL)) == "chat"
+    assert graph.reads == 2
+    # And once it has answered, it is not asked again.
+    _run(adapter._channel_layout(_CHANNEL))
+    assert graph.reads == 2
+
+
+def test_learning_a_new_team_reopens_a_read_made_against_the_old_one() -> None:
+    """The gap this closes: a channel in another team fails its read, then the
+    team is learned and the subscription heals — but the name and layout would
+    stay stuck at whatever the failed read left behind, because the wrong team
+    is exactly what Graph refuses."""
+    graph = _Graph("chat")
+    adapter, _ = _adapter(graph)
+    # A read made while the team was wrong, cached as "could not say".
+    adapter._channel_layouts[_CHANNEL] = ""
+    adapter._channel_names[_CHANNEL] = ""
+    adapter._channel_read_failed_at[_CHANNEL] = 0.0
+
+    _run(adapter._learn_channel_team(_CHANNEL, "team-elsewhere"))
+
+    assert _CHANNEL not in adapter._channel_layouts
+    assert _CHANNEL not in adapter._channel_read_failed_at
+    assert _run(adapter._channel_layout(_CHANNEL)) == "chat"
+
+
+def test_relearning_the_same_team_does_not_discard_a_good_read() -> None:
+    graph = _Graph("chat")
+    adapter, _ = _adapter(graph)
+    _run(adapter._learn_channel_team(_CHANNEL, "team-7"))
+    _run(adapter._channel_layout(_CHANNEL))
+    assert graph.reads == 1
+
+    _run(adapter._learn_channel_team(_CHANNEL, "team-7"))
+
+    assert _run(adapter._channel_layout(_CHANNEL)) == "chat"
+    assert graph.reads == 1

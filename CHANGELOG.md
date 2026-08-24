@@ -45,6 +45,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- A Graph read of a Teams channel that fails is retried later instead of being
+  believed forever. The name and layout of a channel are read together and
+  cached, and a failure was cached with them — so one blip, or a permission
+  granted a minute after the bridge started, left that channel nameless and
+  threaded as a posts channel for the life of the process. Learning a channel's
+  team now also discards anything read against the previous one, since a read
+  made against the wrong team is exactly the read Graph refuses.
 - The rejection an inbound Teams activity gets when it is addressed to the
   wrong app id names the audience the token carries — and now reads that back
   out of a signature-verified decode rather than an unverified one. The
