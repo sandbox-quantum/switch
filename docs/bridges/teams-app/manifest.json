@@ -6,8 +6,8 @@
     "developer": {
         "name": "Agent Switch",
         "websiteUrl": "https://github.com/sandbox-quantum/switch",
-        "privacyUrl": "https://github.com/sandbox-quantum/switch/blob/main/SECURITY.md",
-        "termsOfUseUrl": "https://github.com/sandbox-quantum/switch/blob/main/LICENSE"
+        "privacyUrl": "https://example.com/privacy",
+        "termsOfUseUrl": "https://example.com/terms"
     },
     "name": {
         "short": "Agent Switch",
@@ -15,7 +15,7 @@
     },
     "description": {
         "short": "Work with your AI agents in Teams channels and chats.",
-        "full": "Agent Switch brings your organisation's AI agents into Microsoft Teams. Mention an agent by name in a channel and it answers there, in the same conversation, with its progress shown on the message while it works. Each Switch room is a Teams channel, so the people and the agents share one thread of context rather than one per tool.\n\nThis app is the Teams end of a Switch deployment you run yourself. It talks only to your own Switch server: no conversation data reaches the app's authors, and there is no hosted service behind it.\n\nType /help in any channel or chat the app is in to see what it understands."
+        "full": "Agent Switch brings your organisation's AI agents into Microsoft Teams. Mention an agent by name in a channel and it answers there, in the same conversation, with its progress shown on the message while it works. Each Switch room is a Teams channel, so the people and the agents share one thread of context rather than one per tool.\n\nThis app is the Teams end of a Switch deployment you run yourself. It talks only to your own Switch server: no conversation data reaches the app's authors, and there is no hosted service behind it.\n\nIn a chat, type /help. In a channel, mention the app first: @Agent Switch /help."
     },
     "icons": {
         "color": "color.png",
@@ -40,16 +40,16 @@
                         "personal"
                     ],
                     "commands": [
-                        { "title": "help", "description": "Show every in-room command" },
-                        { "title": "list-agents", "description": "List the agents in this room" },
-                        { "title": "agents-status", "description": "Show each agent's presence and capabilities" },
-                        { "title": "invite-agent", "description": "Add an existing agent: invite-agent @agent-name" },
-                        { "title": "agents-greet", "description": "Have the agents here introduce themselves" },
-                        { "title": "roles", "description": "List this room's roles and who holds each" },
-                        { "title": "list-aliases", "description": "List this room's agent aliases" },
-                        { "title": "set-alias", "description": "Give an agent a room alias: set-alias @agent-name @alias" },
-                        { "title": "reset", "description": "Reset an agent's session: reset @agent-name" },
-                        { "title": "interrupt", "description": "Interrupt an agent's current turn: interrupt @agent-name" }
+                        { "title": "/help", "description": "Show every in-room command" },
+                        { "title": "/list-agents", "description": "List the agents in this room" },
+                        { "title": "/agents-status", "description": "Show each agent's presence and capabilities" },
+                        { "title": "/invite-agent", "description": "Add an existing agent: /invite-agent @agent-name" },
+                        { "title": "/agents-greet", "description": "Have the agents here introduce themselves" },
+                        { "title": "/roles", "description": "List this room's roles and who holds each" },
+                        { "title": "/list-aliases", "description": "List this room's agent aliases" },
+                        { "title": "/set-alias", "description": "Give an agent a room alias: /set-alias @agent-name @alias" },
+                        { "title": "/reset", "description": "Reset an agent's session: /reset @agent-name" },
+                        { "title": "/interrupt", "description": "Interrupt an agent's current turn: /interrupt @agent-name" }
                     ]
                 }
             ]

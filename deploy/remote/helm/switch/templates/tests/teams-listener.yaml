@@ -2,10 +2,14 @@
 {{- $teams := .Values.switchCore.teamsBridge }}
 # `helm test` check for the Teams bridge listener.
 #
-# Runs Graph's own validation handshake against the Service: GET the
-# notification path with a validationToken and require it echoed back verbatim.
-# That proves the listener is bound inside the pod AND that the Service
-# publishes its port — the two halves the chart is responsible for.
+# Probes the notification path through the Service: GET it with a
+# validationToken and require it echoed back verbatim. That proves the listener
+# is bound inside the pod AND that the Service publishes its port — the two
+# halves the chart is responsible for.
+#
+# Graph's real handshake is a POST carrying the same query parameter. The same
+# handler answers both, and a GET is what a probe can express, so this
+# exercises the handshake's shape rather than reproducing it.
 #
 # It deliberately does NOT prove Microsoft can reach you. This runs inside the
 # cluster, so it says nothing about public DNS, ingress routing or certificate

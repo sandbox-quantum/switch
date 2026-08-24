@@ -42,8 +42,9 @@ it. That is the shape to use behind a CDN or reverse proxy that terminates TLS
 and owns the public name.
 
 Put that proxy in front of this Ingress's load balancer, and make sure it
-forwards query strings and does NOT cache: Graph validates a new subscription
-with a GET carrying ?validationToken=, and a cached answer fails the handshake.
+forwards query strings, allows POST and does NOT cache: Graph validates a new
+subscription with a POST carrying ?validationToken=, and a stripped or cached
+answer fails the handshake.
 {{- else if eq $teams.ingress.mode "shared" }}
 The two callback paths were added to the managed Ingress on host
 {{ .Values.ingress.host }}.

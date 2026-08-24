@@ -10,6 +10,7 @@ are asserted here instead.
 from __future__ import annotations
 
 import json
+import re
 import struct
 from pathlib import Path
 
@@ -107,9 +108,19 @@ def test_the_command_menu_is_within_the_platform_limits(manifest: dict) -> None:
         for command in entry["commands"]:
             assert len(command["title"]) <= 32
             assert len(command["description"]) <= 128
-            # Teams prefixes the slash itself when it inserts the command;
-            # carrying one here produces "//help" in the compose box.
-            assert not command["title"].startswith("/")
+
+
+def test_every_offered_command_carries_a_prefix_switch_dispatches_on(
+    manifest: dict,
+) -> None:
+    # Teams inserts the title into the compose box verbatim and prepends
+    # nothing, so a title without a prefix arrives as an ordinary message and
+    # is never dispatched as a command.
+    from switch_core.bridges.collaboration.teams.adapter import _COMMAND_PREFIXES
+
+    for entry in manifest["bots"][0]["commandLists"]:
+        for command in entry["commands"]:
+            assert command["title"][:1] in _COMMAND_PREFIXES, command["title"]
 
 
 def test_the_menu_only_offers_commands_switch_answers(manifest: dict) -> None:
@@ -118,12 +129,22 @@ def test_the_menu_only_offers_commands_switch_answers(manifest: dict) -> None:
     from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 
     offered = {
-        command["title"]
+        command["title"].lstrip("/!")
         for entry in manifest["bots"][0]["commandLists"]
         for command in entry["commands"]
     }
     unknown = sorted(offered - set(COMMANDS_BY_NAME))
     assert not unknown, f"the menu offers commands Switch cannot answer: {unknown}"
+
+
+def test_the_guide_ships_the_same_manifest_it_tells_you_to_paste() -> None:
+    """The setup guide embeds the manifest so it can be copied without a
+    download. Two copies drift, and the one people paste is the one in the
+    guide — so they are compared rather than trusted."""
+    guide = (PACKAGE.parent / "TEAMS_SETUP.md").read_text()
+    fenced = re.search(r"```json\n(\{.*?\n\})\n```", guide, re.S)
+    assert fenced, "no JSON block in TEAMS_SETUP.md — did the manifest section move?"
+    assert json.loads(fenced.group(1)) == json.loads(MANIFEST.read_text())
 
 
 def test_both_icons_exist_at_the_sizes_teams_requires(manifest: dict) -> None:
