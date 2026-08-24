@@ -186,7 +186,7 @@ when one is missing, not so you can pick and choose:
 | --- | --- |
 | `ChannelMessage.Read.All`<br>(or `ChannelMessage.Read.Group`, see below) | No channel capture. The bridge sees only messages that @mention the bot, so plain channel conversation, and bare `!commands`, never reach Switch. |
 | `Channel.Create` | Adding a room to the bridge fails: Switch cannot provision the room's channel. |
-| `Channel.ReadBasic.All` | Binding a room to a channel that **already exists** fails (see [Adopting an existing channel](#adopting-an-existing-channel)) — Switch reads the channel to learn whether it is standard or private, and provisions membership differently for each. |
+| `Channel.ReadBasic.All` | Three things, all from the same read. Binding a room to a channel that **already exists** fails (see [Bringing Switch into a channel that already exists](#bringing-switch-into-a-channel-that-already-exists)) — Switch reads the channel to learn whether it is standard or private, and provisions membership differently for each. A room auto-created for a channel is titled after the channel's raw `19:…` id, because Teams often omits the name from the activity. And agents fall back to posts-layout threading in every channel (see [How agents use threads](#how-agents-use-threads)). |
 | `TeamMember.ReadWrite.All` | People named on a room are not added to a **standard** channel. A standard channel inherits the team's membership, so they are added to the team. |
 | `ChannelMember.ReadWrite.All` | The same, for a **private** channel, which carries its own membership. |
 | `User.ReadBasic.All` | Nobody can link their Switch account to their Teams account, so no agent can @mention its owner. Switch also cannot resolve a sender's name when Teams omits it — 1:1 chats especially — and falls back to their raw id, which then becomes their name in room titles and in every reply that addresses them. |
@@ -200,11 +200,18 @@ Switch from the first message.
 
 **About the RSC variant.** `ChannelMessage.Read.Group` is resource-specific
 consent: scoped to the teams your app is installed in rather than tenant-wide,
-and preferable where your organisation will accept it. Two consequences. It is
-declared in the Teams app manifest ([1.6](#16-teams-app-package)) as well as
-granted in the portal, so it is not a drop-in substitution for a checkbox. And
-it applies only to teams the app is installed in — so if capture works in one
-team and not another, that is the first thing to check.
+and preferable where your organisation will accept it. Three consequences. It
+is declared in the Teams app manifest ([1.6](#16-teams-app-package)) as well as
+granted in the portal, so it is not a drop-in substitution for a checkbox. It
+applies only to teams the app is installed in — so if capture works in one team
+and not another, that is the first thing to check. And Microsoft blocks message
+subscriptions on **private and shared** channels for apps consented this way,
+answering `403`; those need the tenant-wide permission.
+
+The shipped manifest pairs it with `ChannelSettings.Read.Group`, the RSC
+equivalent of `Channel.ReadBasic.All`. Take both or neither: on the RSC route,
+`ChannelSettings.Read.Group` is what lets Switch read a channel's name and
+layout.
 
 > **Teams protected APIs.** Microsoft gates change notifications carrying Teams
 > message content behind a separate access request, and may attach billing to
@@ -248,30 +255,165 @@ An Azure Bot is reachable but not yet *present* in Teams. A Teams app package
 puts it in a team, and without one the bot cannot be added to channels or post
 proactively — so this step is a hard prerequisite for Part 4, not a formality.
 
-Build the manifest in the **Teams Developer Portal**
-(`dev.teams.microsoft.com` → Apps → New app), or hand-write `manifest.json` and
-upload it. Either way, four fields carry the setup you did above:
+Switch ships a complete one. Copy the manifest below into a `manifest.json`,
+put the two icons beside it, change three values, zip the three files and
+upload. The whole package is in the repository at
+[`docs/bridges/teams-app/`](teams-app/) if you would rather download it than
+copy it — including
+[`color.png`](teams-app/color.png) and [`outline.png`](teams-app/outline.png),
+which you need either way.
 
-| Field | Value |
+<details>
+<summary><strong>Agent Switch app manifest</strong> (paste this)</summary>
+
+```json
+{
+    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.19",
+    "version": "1.0.0",
+    "id": "00000000-0000-0000-0000-000000000000",
+    "developer": {
+        "name": "Agent Switch",
+        "websiteUrl": "https://github.com/sandbox-quantum/switch",
+        "privacyUrl": "https://github.com/sandbox-quantum/switch/blob/main/SECURITY.md",
+        "termsOfUseUrl": "https://github.com/sandbox-quantum/switch/blob/main/LICENSE"
+    },
+    "name": {
+        "short": "Agent Switch",
+        "full": "Agent Switch — your AI agents, in your channels"
+    },
+    "description": {
+        "short": "Work with your AI agents in Teams channels and chats.",
+        "full": "Agent Switch brings your organisation's AI agents into Microsoft Teams. Mention an agent by name in a channel and it answers there, in the same conversation, with its progress shown on the message while it works. Each Switch room is a Teams channel, so the people and the agents share one thread of context rather than one per tool.\n\nThis app is the Teams end of a Switch deployment you run yourself. It talks only to your own Switch server: no conversation data reaches the app's authors, and there is no hosted service behind it.\n\nType /help in any channel or chat the app is in to see what it understands."
+    },
+    "icons": {
+        "color": "color.png",
+        "outline": "outline.png"
+    },
+    "accentColor": "#3F3C3B",
+    "bots": [
+        {
+            "botId": "00000000-0000-0000-0000-000000000000",
+            "scopes": ["team", "personal", "groupChat"],
+            "isNotificationOnly": false,
+            "supportsFiles": false,
+            "commandLists": [
+                {
+                    "scopes": ["team", "groupChat", "personal"],
+                    "commands": [
+                        { "title": "help", "description": "Show every in-room command" },
+                        { "title": "list-agents", "description": "List the agents in this room" },
+                        { "title": "agents-status", "description": "Show each agent's presence and capabilities" },
+                        { "title": "invite-agent", "description": "Add an existing agent: invite-agent @agent-name" },
+                        { "title": "agents-greet", "description": "Have the agents here introduce themselves" },
+                        { "title": "roles", "description": "List this room's roles and who holds each" },
+                        { "title": "list-aliases", "description": "List this room's agent aliases" },
+                        { "title": "set-alias", "description": "Give an agent a room alias: set-alias @agent-name @alias" },
+                        { "title": "reset", "description": "Reset an agent's session: reset @agent-name" },
+                        { "title": "interrupt", "description": "Interrupt an agent's current turn: interrupt @agent-name" }
+                    ]
+                }
+            ]
+        }
+    ],
+    "permissions": ["identity", "messageTeamMembers"],
+    "validDomains": ["switch.example.com"],
+    "webApplicationInfo": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "resource": "https://graph.microsoft.com"
+    },
+    "authorization": {
+        "permissions": {
+            "resourceSpecific": [
+                { "name": "ChannelMessage.Read.Group", "type": "Application" },
+                { "name": "ChannelSettings.Read.Group", "type": "Application" }
+            ]
+        }
+    }
+}
+```
+
+</details>
+
+**Change these before you upload:**
+
+| In the manifest | Replace with |
 | --- | --- |
-| `bots[0].botId` | The `app_id` from [1.1](#11-app-registration) |
-| `bots[0].scopes` | `team` at minimum. Add `personal` and `groupChat` for 1:1 and group-chat capture. |
-| `webApplicationInfo.id` | The same `app_id` — this is what ties the app to your Entra registration |
-| `validDomains` | The host of your `public_base_url` |
+| `00000000-0000-0000-0000-000000000000` — in `id`, `bots[0].botId` **and** `webApplicationInfo.id` | The `app_id` from [1.1](#11-app-registration). The same value in all three: it is what ties the Teams app, the bot and the Entra registration together. |
+| `switch.example.com` in `validDomains` | The host of your `public_base_url` |
+| The three `developer` URLs | Your organisation's own site, privacy policy and terms — needed only if you publish to your app catalogue |
 
-If you are taking the resource-specific consent route for channel capture
-([1.4](#14-graph-api-permissions)), the RSC permission is declared in this
-manifest as well as granted in the portal.
+**Delete the `authorization` block** unless you are taking the resource-specific
+consent route for channel capture ([1.4](#14-graph-api-permissions)). RSC is
+declared here as well as granted in the portal, so it is not a drop-in
+substitute for the tenant-wide permission; if you granted
+`ChannelMessage.Read.All` instead, this block asks the team owner to consent to
+something you are not using.
 
-**Then install it into the target team.** That needs either sideloading
-permission on your account (Teams admin centre → Setup policies → *Upload
-custom apps*) or an administrator to publish it to the organisation's app
-catalogue. This is the step most likely to need someone else, which is why it
-is in [Prerequisites](#prerequisites).
+**Then zip the three files flat:**
 
-Record the **team id** — the Entra group id of the team new channels are created
-in. This becomes `team_id`. The simplest way to read it: open the team in Teams
-on the web and copy the `groupId` query parameter from the URL.
+```bash
+zip -j agent-switch-teams.zip manifest.json color.png outline.png
+```
+
+`-j` matters. Teams rejects a package whose files sit inside a folder.
+
+**Then get it into Teams**, whichever of these your tenant allows:
+
+- **Sideload it** — Teams → **Apps → Manage your apps → Upload an app → Upload
+  a custom app**, pick the zip, choose the team. This needs *Upload custom
+  apps* on in your app setup policy (Teams admin centre → **Teams apps → Setup
+  policies**), and a policy change can take up to 24 hours to take effect. If
+  the **Upload a custom app** option is not there, that setting is off.
+- **Have an admin publish it** — Teams admin centre → **Teams apps → Manage
+  apps → Upload new app**. No sideloading permission needed, and it becomes
+  available to the whole organisation.
+- **Register it in the Developer Portal first** — `dev.teams.microsoft.com` →
+  **Apps → Import app**, upload the zip. Useful if you want to edit the
+  manifest in a UI afterwards, or hand the app to someone else to publish.
+
+This is the step most likely to need someone else, which is why it is in
+[Prerequisites](#prerequisites).
+
+#### The icons
+
+A Teams package will not install without two PNGs, and **a manifest cannot
+point at an image URL** — Teams reads them from inside the zip. Both are in
+[`docs/bridges/teams-app/`](teams-app/):
+
+| File | Size | What it is |
+| --- | --- | --- |
+| `color.png` | 192×192 | The full-colour app icon. Square with no rounded corners: Teams masks the corners itself, so an icon that rounds its own is rounded twice. |
+| `outline.png` | 32×32 | A white silhouette on transparency, for the Teams app bar. Not a shrunk logo — no colour, no padding around the symbol. |
+
+Replace them with your own if you would rather the app carried your branding;
+keep the sizes and the outline's white-on-transparent rule.
+
+The **Azure Bot resource carries its own icon**, separately from this package.
+Set it there too ([1.3](#13-azure-bot-resource) → the bot's **Settings**), or
+the bot shows a default avatar in some surfaces even though the package is
+branded.
+
+#### Changing the app later
+
+A manifest edit only reaches an installed app if you **raise `version`** and
+upload again. Teams matches on `id`, so the same `id` with a higher `version`
+replaces the app rather than adding a second one. Leave `version` alone and the
+upload does nothing, silently — which is the usual reason a newly added command
+never appears in the compose box.
+
+Most changes then propagate on their own. Ones that alter what the app can do —
+adding a bot, changing `botId`, adding RSC permissions — need each team to
+consent again, and until someone does, that team keeps the old version.
+
+Never change `id` after the app is installed. Teams would treat the upload as a
+different app and you would have two.
+
+#### Record the team id
+
+The **team id** is the Entra group id of the team new channels are created in.
+This becomes `team_id`. The simplest way to read it: open the team in Teams on
+the web and copy the `groupId` query parameter from the URL.
 
 ---
 
@@ -552,12 +694,38 @@ capture stays off and an error is logged. There is no way to edit a bridge's
 credentials, so adopting the generated ones means deleting it and creating it
 again.
 
-### Adopting an existing channel
+### Bringing Switch into a channel that already exists
 
 A room does not have to bring a new channel with it. Adding a room to the
 bridge normally provisions one, but you can instead point the room at a channel
-that already exists in the team — useful when a conversation is already
-happening somewhere and you want agents in it.
+where a conversation is already happening.
+
+**There is no per-channel install step.** Installing the app into a team
+([1.6](#16-teams-app-package)) makes the bot available in every **standard**
+channel of that team at once — you do not add it channel by channel, and there
+is no "add app to this channel" button to look for. Private and shared channels
+are the exception: each one needs the app added to it explicitly.
+
+#### 1. Get the channel's id
+
+The channel's Switch-side id is its Teams thread id, of the form
+`19:…@thread.tacv2`. To read it: **right-click the channel in Teams → Get link
+to channel**, and take the first path segment of the URL.
+
+```
+https://teams.microsoft.com/l/channel/19%3A9be3de4e70874c71a608dee9ba803ed3%40thread.tacv2/My%20channel?groupId=…&tenantId=…
+                                      └──────────────── the channel id, URL-encoded ────────────────┘
+```
+
+**URL-decode it before you paste it in**: `%3A` is `:` and `%40` is `@`, so the
+example above is `19:9be3de4e70874c71a608dee9ba803ed3@thread.tacv2`. The
+`groupId` in the same URL is the team id from [1.6](#16-teams-app-package) —
+useful confirmation that the channel is in the team the bridge points at.
+
+#### 2. Bind a room to it
+
+In the gateway, add the room to the Teams bridge and give it that channel id
+instead of letting Switch provision one.
 
 Two things differ from the provisioning path, and both have bitten people:
 
@@ -571,7 +739,45 @@ Two things differ from the provisioning path, and both have bitten people:
   the subscription fails, and the bridge retries in the background rather than
   giving up — see [Troubleshooting](#troubleshooting).
 
-The channel's Switch-side id is its Teams thread id (`19:…@thread.tacv2`).
+Switch posts a short notice in the channel once the room is linked, which is
+also your confirmation that outbound works.
+
+#### 3. Say something to an agent
+
+Add an agent to the room and `@`-mention it by name in the channel.
+
+Whether the bot needs mentioning depends on capture. Without Graph channel
+capture, Teams only delivers a channel message to a bot that was
+`@mentioned` — that is the platform's rule, not Switch's — so both messages and
+bare commands need it. With capture live ([1.4](#14-graph-api-permissions)) the
+bridge sees every message in the channel, and a bare `!help` works. Mentioning
+an *agent* by name is separate, and is always how you address one.
+
+#### Private and shared channels
+
+These work differently enough to plan around. Three things, in the order they
+bite:
+
+- **The shipped manifest does not offer the app in them.** Teams gates that
+  behind `"supportsChannelFeatures": "tier1"`, which needs manifest v1.25 or
+  later; the package in [1.6](#16-teams-app-package) is v1.19, chosen because
+  it is the version tenants accept most reliably. To opt in, set
+  `manifestVersion` to `1.25`, change the `$schema` URL to match, add
+  `"supportsChannelFeatures": "tier1"` at the top level, raise `version`, and
+  upload again. Without it the app simply will not appear in the channel's
+  **Add an app** list, with no explanation.
+- **Each one needs the app added to it.** Installing into the team covers every
+  standard channel and no private or shared one. If Graph returns
+  `403 app not enabled in this channel`, that is the missing step.
+- **Graph channel capture does not work there over RSC.** Microsoft blocks
+  message subscriptions on private and shared channels for apps consented that
+  way, and answers `403`. If you need full capture in one, grant tenant-wide
+  `ChannelMessage.Read.All` ([1.4](#14-graph-api-permissions)) instead of the
+  RSC variant. Otherwise the channel falls back to `@mention`-only capture,
+  which still works.
+
+A channel shared *into* your team from elsewhere cannot have apps added from
+where you see it — go to the team that hosts it.
 
 ---
 
@@ -634,48 +840,88 @@ never accepted an inbound activity — see the `serviceUrl` entry in
 
 ---
 
+## How agents use threads
+
+Teams offers a channel two conversation layouts, and Switch behaves differently
+in each. Nothing here is configurable: the bridge asks Graph which layout a
+channel uses and follows it. Channel owners choose the layout in Teams, under
+**Edit channel → Conversation layout**.
+
+**Threads layout** (Graph calls it `chat`) is a stream of messages, like every
+other platform Switch bridges. Agents behave as they do on Slack:
+
+- An agent decides whether to reply in a thread. A reply to something said in a
+  thread stays in that thread; anything else goes to the channel.
+- The notice Switch posts when it links a channel to a room goes to the
+  channel, not into a thread.
+- A working agent's status card sits wherever the message that triggered it
+  was — in the thread if it was asked there, at the channel level if it was
+  asked there.
+
+**Posts layout** (Graph calls it `post`) is a list of conversations, where a
+message at the channel level starts a new one rather than continuing the last.
+Answering there needs steering, or a reply appears as a fresh post below the
+question and reads as a non-sequitur. So:
+
+- An agent's reply lands in the post containing the message it is answering,
+  whether or not the agent chose to thread it.
+- With nothing to answer — an agent introducing itself, say — it opens a post,
+  and what it says next joins that post rather than starting another.
+- A post an *agent* opened never displaces a real message as the one later
+  answers land in.
+
+If Switch cannot read a channel's layout — Graph refusing the read is the usual
+reason — it assumes posts, which is Teams' own default and what every channel
+was before the threads layout existed.
+
+---
+
 ## Commands
 
-Both `!list-agents` and `/list-agents` work, and reach the same place. In a
-**channel** the bot must be mentioned for the message to reach Switch at all:
+Both `!list-agents` and `/list-agents` work, and reach the same place. `!help`
+lists every command Switch understands.
 
-```text
-@YourBot /list-agents
-```
+**Whether a channel command needs the bot mentioned depends on capture**, and
+this is the one thing people get wrong:
 
-The mention is stripped before the command is parsed, so `@YourBot /help`,
-`@YourBot !invite-agent @agent-name` and the rest behave as they do elsewhere.
-A bare command with no mention only works where Graph channel capture is live
-([1.4](#14-graph-api-permissions)); without it the Bot Framework never delivers
-the message. In a 1:1 chat no mention is needed.
+- **With Graph channel capture live** ([1.4](#14-graph-api-permissions)), the
+  bridge sees every message in the channel, so a bare `!list-agents` works.
+- **Without it**, Teams only delivers a channel message to a bot that was
+  `@mentioned` — the platform's rule, not Switch's — so the command must carry
+  the mention:
+
+  ```text
+  @Agent Switch /list-agents
+  ```
+
+  The mention is stripped before the command is parsed, so
+  `@Agent Switch /help`, `@Agent Switch !invite-agent @agent-name` and the rest
+  behave as they do elsewhere.
+
+In a 1:1 chat no mention is ever needed.
 
 ### Putting the commands in the Teams UI
 
 Teams has no server-registered slash commands the way Slack does. What it has
-is a **command list**, declared in your app manifest ([1.6](#16-teams-app-package)),
-which shows the commands above the compose box; picking one types it in and
-sends it. Add this to your manifest's `bots[0]`:
+is a **command list**, declared in the app manifest, which shows the commands
+above the compose box; picking one types it in and sends it. The manifest in
+[1.6](#16-teams-app-package) already carries one, so if you used it there is
+nothing to do here.
 
-```json
-"commandLists": [
-  {
-    "scopes": ["team", "groupChat", "personal"],
-    "commands": [
-      { "title": "/help", "description": "List the commands Switch understands" },
-      { "title": "/list-agents", "description": "Agents in this room" },
-      { "title": "/invite-agent", "description": "Add an agent by name: /invite-agent @agent-name" },
-      { "title": "/status", "description": "What the agents here are working on" }
-    ]
-  }
-]
-```
+Two things to know if you are editing it.
 
-Two things to know. The list is **presentation only** — Teams sends the text
-and Switch parses it, so a command missing from the manifest still works if
-someone types it, and a command in the manifest that Switch does not know
-returns the usual "unknown command". And in a channel the command still needs
-the bot mentioned, so the menu inserts `/list-agents` and you add `@YourBot` in
-front.
+**The list is presentation only.** Teams sends the text and Switch parses it,
+so a command missing from the manifest still works if someone types it, and a
+command in the manifest that Switch does not know returns the usual "unknown
+command".
+
+**Teams caps a command list at ten commands** per scope, which is why the
+shipped one is a selection rather than all of them. Swap in whichever ten your
+teams actually use; `!help` lists the rest.
+
+If the menu does not appear after you edit it, the manifest almost certainly
+reached nobody: an edit only lands if you raise `version` and upload again —
+see [Changing the app later](#changing-the-app-later).
 
 `!` remains available everywhere and needs no manifest at all.
 
@@ -850,12 +1096,13 @@ them; Microsoft cannot satisfy it, and Graph's validation handshake will fail.
   Switch therefore holds. Everyone else — and every agent, which is not a Teams
   user at all — renders as plain `@name` text, which is what Switch's own
   addressing matches on.
-- **A reply with no thread of its own lands in the post the channel last spoke
-  in.** A Teams channel is a list of posts rather than a stream, so replying at
-  the channel root would start a new conversation instead of answering under
-  the question. The bridge therefore answers in the most recent post it saw —
-  which is right almost always, and can put a reply under the wrong post when
-  two conversations are running in one channel at the same moment. Teams offers
-  nothing better to key on for a reply that is not explicitly threaded.
+- **In a posts channel, a reply with no thread of its own lands in the post the
+  channel last spoke in.** See [How agents use threads](#how-agents-use-threads)
+  — right almost always, and wrong when two conversations run in one posts
+  channel at the same moment. Teams offers nothing better to key on for a reply
+  that is not explicitly threaded.
+- **Private and shared channels need a newer manifest** than the one shipped,
+  and cannot use resource-specific consent for channel capture. See
+  [Private and shared channels](#private-and-shared-channels).
 - **One Teams bridge per listener port** — run multiple on distinct ports (and
   ingress routes) if needed.

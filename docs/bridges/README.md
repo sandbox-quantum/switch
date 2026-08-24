@@ -58,11 +58,14 @@ form lists the live set and the fields each one requires.
   the channel — which not every connection can or may do.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
   address it; unaddressed chatter is bridged as context. In-room commands (e.g.
-  `!invite-agent`) work on every platform. Slack, Discord and Telegram
-  additionally expose them as **native slash commands** (`/invite-agent`) routed
-  into the same handler — declared in the app manifest on Slack, registered
-  automatically per guild on Discord, and accepted alongside `!` on Telegram,
-  where `/` is the platform's own convention.
+  `!invite-agent`) work on every platform. Every platform except Mattermost also
+  takes the `/invite-agent` form, routed into the same handler — though what
+  makes it work differs. Slack declares its commands in the app manifest and
+  Discord registers them per guild, so `/` is a real platform command there.
+  Telegram and Teams simply accept `/` alongside `!` as an ordinary message:
+  on Telegram because `/` is the platform's own convention, and on Teams
+  because a manifest command list only *types* the command into the compose box
+  for the bot to parse.
 - **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only render `http(s)` links (Discord and
   Telegram) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to a clickable

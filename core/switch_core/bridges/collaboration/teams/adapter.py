@@ -1246,10 +1246,13 @@ class TeamsAdapter(CollaborationAdapter):
         return token.lstrip("!/")
 
     def slash_invite_hint(self) -> str | None:
-        # Only worth advertising once the operator has declared the commands in
-        # the app manifest, which the setup guide covers; the `!` form works
-        # regardless, and both reach the same dispatcher.
-        return "`/invite-agent @agent-name` — if the Switch commands are in your Teams app manifest"
+        # Teams has no server-registered slash commands: a manifest command
+        # list only types the text into the compose box, and the bot parses it
+        # like any other message. So the slash form always works, whether or
+        # not the operator has declared it, and reaches the same dispatcher.
+        return (
+            "`/invite-agent @agent-name` — the same thing, if you prefer the slash form"
+        )
 
     def is_placeholder_username(self, username: str) -> bool:
         # Every id Teams hands out for a person is one of two shapes: a

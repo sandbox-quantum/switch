@@ -279,10 +279,11 @@ class CollaborationAdapter(ABC):
     def slash_invite_hint(self) -> str | None:
         """How to run `invite-agent` as a native slash command here, if at all.
 
-        Native slash commands are per-platform: Slack declares them in its app
-        manifest, Discord registers them per guild and Telegram publishes a bot
-        command menu, while Mattermost and Teams have none — so the no-agents
-        notice must not advertise a `/` form on a bridge that has none to offer.
+        The `/` form is per-platform: Slack declares its commands in the app
+        manifest, Discord registers them per guild, and Telegram and Teams
+        accept `/` as an ordinary message prefix, while Mattermost has nothing —
+        so the no-agents notice must not advertise a `/` form on a bridge that
+        has none to offer.
         The invocation differs too, since Slack and Telegram take a free-text
         tail where Discord names each argument as its own field, so each adapter
         spells out its own.

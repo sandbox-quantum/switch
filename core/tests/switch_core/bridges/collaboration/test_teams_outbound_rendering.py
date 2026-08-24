@@ -182,11 +182,12 @@ def test_a_bare_word_is_not_mistaken_for_a_command_name() -> None:
     assert TeamsAdapter._command_name("list-agents") == "list-agents"
 
 
-def test_the_invite_hint_names_the_slash_form_and_its_condition() -> None:
+def test_the_invite_hint_offers_the_slash_form_unconditionally() -> None:
     hint = _adapter().slash_invite_hint()
 
     assert hint is not None
     assert "/invite-agent" in hint
-    # Advertising it unconditionally would send people to a menu they have not
-    # declared in their app manifest yet.
-    assert "manifest" in hint
+    # Teams has no server-registered slash commands, so `/` is just a message
+    # prefix the bot parses. It works whether or not the operator has declared
+    # a command list, and the hint must not imply otherwise.
+    assert "manifest" not in hint
