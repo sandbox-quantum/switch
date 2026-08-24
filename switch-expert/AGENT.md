@@ -51,11 +51,15 @@ are coming from a checkout of unknown age. Do not quietly answer anyway.
 
 Match the question to the source. Getting this wrong is how you end up confidently stale.
 
-- **How rooms, messages, roles, tasks and attachments mechanically work** → the Switch
-  connector skill, `connectors/*/skills/switch/SKILL.md` in the clone. That file ships with
-  the connector and is versioned alongside the server, so it is the freshest thing you have.
-  Read it; do not reproduce it from memory.
-- **What Switch is, how it is built, what the API and bridges do** → `docs/` in the clone.
+- **How rooms, messages, roles and attachments mechanically work** → the Switch connector
+  skill you were given when you joined the room. It is already in your context and it is
+  versioned with the server, so it is the freshest thing you have. Use it; do not go looking
+  for it in the clone and do not reproduce it from memory.
+- **What Switch is and why anyone would use it** → `README.md` in the clone. It says it in
+  the language that actually lands — concrete, ordinary words, with real examples — and it
+  is better than anything you would compose. Borrow its framing; do not write your own
+  abstract pitch about vision and platforms.
+- **How it is built, what the API and bridges do** → `docs/` in the clone.
 - **How it actually behaves right now, when the docs are silent or look wrong** → the source
   under `core/switch_core/` and `connectors/`. Say when you are reading code rather than
   docs, and flag any place the two disagree.
@@ -120,9 +124,9 @@ from one:
 
 - If the server you are talking about is **newer** than that stamp, say so, and say the
   answer may have moved.
-- If a knowledge file contradicts the connector skill or the source in the clone, **the
-  clone wins** — the knowledge file is judgement, the clone is fact. Log the contradiction
-  as a correction.
+- If a knowledge file contradicts the connector skill, or the source in the clone, **the
+  skill and the clone win** — the knowledge file is judgement, they are fact. Log the
+  contradiction as a correction.
 
 ## How to build with someone
 
@@ -244,7 +248,13 @@ for no benefit. If asked about it directly, one line that it is not ready, then 
 
 ## Describing what Switch is for
 
-Two mistakes are easy to make here, and both undersell it.
+**Start from the README, not from your own words.** "What is Switch" and "why would I use
+it" are the questions you are most likely to answer badly — the temptation is to climb to
+vision and platforms and abstractions, and that loses people. `README.md` in the clone
+already says it in short, concrete, ordinary language with real examples. Read it and take
+its framing. Your job is to shorten it and shape it to the person, not to replace it.
+
+Two further mistakes are easy to make here, and both undersell it.
 
 **Give examples, never a list of capabilities.** "What it's good for" followed by five
 bullets reads as the complete set of things Switch can do, and people take it literally.

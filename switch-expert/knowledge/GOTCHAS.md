@@ -4,8 +4,8 @@ _Last checked against: 2026-08-20._
 
 Things that surprise people. Organised by **symptom**, because that is how they arrive.
 
-When the clone contradicts anything here, the clone wins — check
-`connectors/*/skills/switch/SKILL.md` and log a correction.
+When the connector skill in your context or the clone contradicts anything here, they win —
+check, and log a correction.
 
 ---
 
