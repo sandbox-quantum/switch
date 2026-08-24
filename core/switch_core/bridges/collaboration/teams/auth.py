@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 import httpx
 import jwt
@@ -152,24 +153,35 @@ class InboundActivityValidator:
                 options={"require": ["exp", "iss", "aud"]},
             )
         except jwt.InvalidAudienceError as exc:
+            audience = self._describe_audience(token, signing_key.key)
             raise PermissionError(
-                f"inbound Teams activity is addressed to {self._describe_audience(token)}, "
+                f"inbound Teams activity is addressed to {audience}, "
                 f"but this bridge is configured with app id {self._app_id!r}. "
                 "The Azure Bot resource's Microsoft App ID must be the app id "
                 "registered on the bridge."
             ) from exc
 
     @staticmethod
-    def _describe_audience(token: str) -> str:
+    def _describe_audience(token: str, signing_key: Any) -> str:
         """The audience the token actually carries, for a mismatch message.
 
-        Read without verifying — the signature has already been checked by the
-        caller, and this only ever reaches a log line explaining a rejection.
+        Decoded with the same signing key, relaxing only the audience check —
+        the one claim already known not to match. Reading it from an unverified
+        parse would mean quoting an attacker's own words back in the message
+        explaining why they were rejected, and the habit is worth not having
+        even where, as here, the signature has just been checked.
+
         The audience of a Bot Connector token is an application id, not a
         secret; the token itself is never logged.
         """
         try:
-            claims = jwt.decode(token, options={"verify_signature": False})
+            claims = jwt.decode(
+                token,
+                signing_key,
+                algorithms=["RS256"],
+                issuer=_BOTFRAMEWORK_ISSUER,
+                options={"verify_aud": False},
+            )
         except jwt.PyJWTError:
             return "an unreadable audience"
         aud = claims.get("aud")

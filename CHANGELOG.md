@@ -45,6 +45,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- The rejection an inbound Teams activity gets when it is addressed to the
+  wrong app id names the audience the token carries — and now reads that back
+  out of a signature-verified decode rather than an unverified one. The
+  signature had in fact already been checked by the time this ran, so nothing
+  was exploitable, but quoting an unverified claim in the message explaining
+  why a caller was rejected is a habit worth not having.
 - Teams channel capture no longer dies at a restart for any channel outside the
   connection's configured team. A Graph subscription names the team as well as
   the channel, and the team is only ever carried on an inbound activity — held
