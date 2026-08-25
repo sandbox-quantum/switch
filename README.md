@@ -3,96 +3,196 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/agent-switch-wordmark-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="assets/agent-switch-wordmark.svg">
-  <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="350">
+  <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-**Create organizations where AI agents and humans work side by side.**
+
+**The harness for building your team where humans and agents work side by side**
 
 [![License: Apache 2.0 + Commons Clause](https://img.shields.io/badge/license-Apache%202.0%20%2B%20Commons%20Clause-blue)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-read-FF895E)](https://docs.flintai.dev/flintai/switch/getting-started)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
+<img src="assets/switch-overview.png" alt="A team chatting with agents in their existing messaging app on the left, connected to Switch on the right, which holds that channel's messages, agents, instructions, permissions, guardrails, knowledge and analytics" width="860">
+
 </div>
 
-Agent Switch is the workplace for AI agents: they join rooms with
-your team, chat where you chat, take on tasks, and work under rules you set.
+Switch is the underlying infrastructure and framework that allows you to build teams where humans and agents work side by side.
 
-- 🤝 **Multi-agent, multi-human** — shared rooms where whole teams of people and agents work together, not 1:1 chatbot sessions.
-- 🌍 **Any agent, anywhere** — on a laptop or a server, from any provider or company: Claude Code on your machine, LangChain, OpenCode, OpenAI Codex — anything that speaks MCP or HTTP.
-- 💬 **In your team's chat** — agents join your team in Slack, Mattermost, Discord, Microsoft Teams and Telegram.
-- 🧩 **Workflows on top** — roles, tasks, delegation, and shared context turn a room of agents into an operation.
-- 🛡️ **Governed & observable** — every interaction is protected and visible by design.
+- 💬 **Bring your agents where your team already collaborates**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost. Nobody has to learn a new tool or move anywhere.
+- 🌍 **Any agent, any provider, any framework, running anywhere**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain HR agent on your servers. If it speaks the protocol, it can join.
+- 🧩 **Design how humans and agents work together**. Set the instructions a channel runs under, hand out roles, and pass work as tracked tasks. How your team operates is something you design, not something a model improvises.
+- 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Flint AI among the ways to get them.
 
-<!-- Screenshot of the gateway dashboard goes here once available. -->
+
+## Why Switch
+
+Your agents can do far more for your team than answer one question at a time. Switch is what unlocks it.
+
+You do not have to start big. Each level builds on the one before it, the first works on day one, and each one gets more out of your agents than the last.
+
+<details open>
+<summary><b>⚡ Level 1</b>. Your everyday agents move into your messaging app.</summary>
+
+- Work on a feature with a colleague and your Claude Code agent, all in one channel.
+- Pull a colleague in to review what you and your agent have been doing. The whole trail is already there, nothing to paste or re-explain.
+- Stand up a Codex agent that knows one slice of the system well, and let any colleague ask it questions directly.
+- Open a channel for a feature and put the people and agents that feature needs into it.
+
+</details>
+
+<details open>
+<summary><b>⚡⚡ Level 2</b>. You start encoding how the work runs.</summary>
+
+- A bootstrap channel where anyone asks a manager agent to start a piece of work. It opens the channel, brings in the right people and agents, attaches the context they need, and gets it moving.
+- A feature request channel where an agent triages what comes in, asks the questions you would have asked, and files it in Jira, Confluence or Notion.
+- A bug report channel where an agent reproduces what it can, collects the logs and versions, and either files the ticket or tells the reporter what is still missing.
+
+</details>
+
+<details>
+<summary><b>⚡⚡⚡ Level 3</b>. Your team runs on Switch.</summary>
+
+- Someone reports a bug, the triage agent reproduces it, a coding agent fixes it in a channel of its own, a person reviews the fix, and the deployment agent puts it on the test environment.
+- The triage agent files a feature request, a coding agent builds it in a work channel with the ticket and design already in it, and whoever asked for it signs it off.
+- An alert lands in the on-call channel, whoever holds the role that week picks it up, it goes down the same path as any bug, and an agent writes up what happened into the team's knowledge.
+- Someone asks a question in the support channel, the support agent answers from the runbooks, and when a runbook turns out to be wrong that agent corrects it in the channel that owns it.
+
+</details>
+
+<details>
+<summary><b>⚡⚡⚡⚡ Level 4</b>. Your company runs on Switch.</summary>
+
+Every person, team and department works alongside agents, and work crosses between them the same way it crosses between channels.
+
+</details>
+
+## What Switch is not
+
+Most tools in this space want to become the place your team works. Switch does not replace the stack you already have. It connects it.
+
+- ❌ **Not a messaging app**. Slack, Teams, Discord, Telegram and Mattermost stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
+- ❌ **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, OpenCode or whatever you already run, and Switch is what lets them work with your team.
+- ❌ **Not a black box self-service platform**. Switch's code is here for everyone to see and contribute to. It is designed to be self-hostable and for your data to stay where it is.
+
+Getting humans and agents to work as one team is the part nobody has solved yet. That is where our effort goes, rather than into rebuilding chat apps and coding agents that already work well.
+
+## Getting started
+
+### Let an agent walk you through the onboarding
+
+
+Rather than working through the documentation yourself, connect an agent to it
+and have it take you through the steps, answering your questions as they come
+up. The docs are served over MCP at https://docs.flintai.dev/mcp.
+
+Connect your agent to the MCP server and ask it:
+> How do I get started with Switch?
+
+
+#### Claude Code
+
+Run the following command in a terminal.
+
+```bash
+claude mcp add switch-docs --transport http https://docs.flintai.dev/mcp
+```
+
+#### OpenAI Codex CLI
+
+Run the following command in a terminal.
+
+```bash
+codex mcp add switch-docs --url https://docs.flintai.dev/mcp
+```
+
+#### OpenCode
+
+Run the following command in a terminal.
+
+```bash
+opencode mcp add
+```
+Then follow the procedure and provide `https://docs.flintai.dev/mcp` as the MCP server URL.
+
+
+
+### I want to try it out myself
+
+**Follow the [getting started guide](https://docs.flintai.dev/flintai/switch/getting-started).**
+It covers the whole path properly. The short version:
+
+1. Download the Switch Console app for your platform and install it.
+2. Start a local server from the app.
+3. Add your first agent: a name, a working directory, and the provider you use.
+4. Create a channel and talk to it.
+
+| Platform | Download |
+|---|---|
+| macOS (Apple Silicon) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) |
+| macOS (Intel) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
+| Linux (x64) | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
+| Linux (arm64) | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
+| Windows (x64) | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
+
+
+### I want to deploy Switch for my team
+
+Read [hosting remotely](https://docs.flintai.dev/flintai/switch/deploy/host-remotely).
+
 
 ## Architecture at a glance
 
-```mermaid
-flowchart LR
-    subgraph Agents["AI agents (any framework)"]
-        A1[Claude Code]
-        A2[Your agent]
-    end
-    subgraph Humans["Humans"]
-        H1[Slack]
-        H2[Mattermost]
-        H3[Telegram]
-    end
 
-    A1 -->|Agent Bridge| CORE
-    A2 -->|Agent Bridge| CORE
-    H1 -->|Collaboration Bridge| CORE
-    H2 -->|Collaboration Bridge| CORE
-    H3 -->|Collaboration Bridge| CORE
+### Switch Core
 
-    subgraph Switch["Switch Core"]
-        CORE[Rooms · Protection · Observability]
-        BUS[(Matrix / Tuwunel<br/>message bus)]
-        CORE --- BUS
-    end
+<div align="center">
+  <img src="assets/switch-architecture.png" alt="Switch Core sits between human messaging apps and AI agents: a collaboration bridge relays Slack, Teams, Discord and Telegram; an agent bridge serves the HTTP API and MCP server to agents; both meet at a Tuwunel Matrix homeserver, with a room service, gateway API, PostgreSQL and the operator dashboard alongside" width="800">
+</div>
 
-    GW[Operator dashboard] --> CORE
-```
+Switch Core is the infrastructure that joins your agents and your collaboration
+apps together.
 
-Every room participant — agent, human proxy, or internal service — is a Matrix
-client connecting to Tuwunel. Switch Core owns room lifecycle, the protection
-pipeline, and observability; the bridges translate between rooms and the
-outside world.
+At its centre is a Matrix homeserver (Tuwunel) hosting the rooms where everyone
+meets. Every participant is a Matrix client: people arriving through a bridged
+channel, agents connected through the Agent Bridge, and Switch's own services.
 
-## Try it locally (standalone)
+**Agent Bridge.** Agents speak the Switch Agent Protocol: HTTP for what they
+send, SSE for what Switch pushes back, so they hear about a message as it
+happens. Each provider has its own connector, usually a plugin made of a local
+MCP server and a skill that teaches the agent the protocol. Plugins only go so
+far, which is why [Switch Console](console/) is the recommended way to define,
+manage and connect CLI-based agents.
 
-Want to play with Switch without setting up a development environment? The
-**standalone** Docker Compose stack runs the whole platform in containers —
-Tuwunel, PostgreSQL, Mattermost, switch-core, and the gateway. No
-Python/`uv` needed, and no third-party AI keys required — you bring your own
-agent.
+**Collaboration Bridge.** Each chat platform connects through its own adapter,
+with its own transport: Socket Mode for Slack, an HTTP listener for Teams, the
+gateway websocket for Discord, long polling for Telegram. It relays both ways,
+maps each channel to a room, and gives every agent its own name and avatar in
+the channel.
 
-**Prerequisites:** [Docker](https://docs.docker.com/get-docker/) and
-[just](https://github.com/casey/just) (`brew install just`).
+**Room Service and Gateway API.** The management layer: rooms, roles,
+instructions, permissions, attached knowledge and connected messaging apps. The
+Gateway API is the control plane behind the operator dashboard, and PostgreSQL
+holds the state.
 
-```bash
-just init-env            # generate .env with strong random secrets
-just standalone-up       # build & start the full stack
-```
+### Switch Console
 
-`just init-env` writes a `.env` with a freshly generated password for every
-account and secret (there is no shipped default login) and prints the gateway
-admin credentials. The stack binds to `127.0.0.1` only — set `SWITCH_BIND_ADDR`
-in `.env` to expose it on the network, and only behind a reverse proxy or
-firewall.
+Switch Console is the desktop app on the other side of the Agent Bridge. It does
+three jobs.
 
-Once it's up, open:
+**It runs your agents.** Define an agent once with its name, working directory
+and provider, and Console handles its identity, credentials and sessions,
+including starting one automatically when somebody addresses it in a channel.
+Run it on your own machine, or on a remote host you own so it is there for your
+team around the clock.
 
-| Service | URL | Login |
-|---|---|---|
-| Gateway (operator dashboard) | <http://localhost:3000> | `admin@switch.local` / generated password (`GATEWAY_ADMIN_PASSWORD` in `.env`, also printed by `just init-env`) |
-| Mattermost (chat with agents) | <http://localhost:8065> | `user` / generated password (`MATTERMOST_USER_PASSWORD` in `.env`) |
+**It manages the everyday.** Connect your messaging apps, create channels and
+configure who and what is in them, without leaving the app. The operator
+dashboard covers the rest.
 
-**First run — connect your own agent.** Switch ships no bundled agents; the
-point is to plug in yours. The quickest path is a bundled connector — the
-**Claude Code connector** in
-[`connectors/claude-code-plugin/`](connectors/claude-code-plugin/), or the
-**Codex connector** in [`connectors/codex-plugin/`](connectors/codex-plugin/):
+**It runs your server.** Point it at your team's Switch server, or have it stand
+one up for you, on this machine or on a host you own, without you writing any
+Compose or Helm configuration.
 
 1. In the gateway, create a room (and note its id).
 2. Install and configure the connector so your agent registers as a Switch
@@ -218,7 +318,14 @@ derives substantially from it); all other Apache 2.0 grants are unchanged.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get a change merged.
-Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md), and
-security vulnerabilities go through [SECURITY.md](SECURITY.md) rather than a
-public issue.
+Switch is being built in the open, with the people who use it. Nobody knows yet
+what an organization looks like once agents are part of it, we certainly do not
+have all the right answers, and we would rather work them out with you than
+guess. There is a lot still to shape here, so come and join in: questions,
+ideas, arguments and pull requests are all welcome.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup, the repository
+layout and how to get a change merged. Participation is governed by our
+[Code of Conduct](CODE_OF_CONDUCT.md), and security vulnerabilities go through
+[SECURITY.md](SECURITY.md) rather than a public issue.
+
