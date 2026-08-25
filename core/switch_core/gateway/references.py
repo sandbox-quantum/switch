@@ -246,9 +246,11 @@ async def list_room_references(
     room_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[ReferenceDetail]:
+    await require_room_access(session, room_store, room_id, user, "read")
     refs = await resource_service.list_room_references(session, room_id)
     return await _enrich(session, refs, resource_service, user_store)
 
@@ -289,7 +291,9 @@ async def detach_reference_from_room(
     reference_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> None:
+    await require_room_access(session, room_store, room_id, user, "write")
     await resource_service.detach_reference_from_room(session, room_id, reference_id)
     await session.commit()

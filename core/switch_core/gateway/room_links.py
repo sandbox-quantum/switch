@@ -39,8 +39,10 @@ async def list_linked_rooms(
     room_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[LinkedRoomDetail]:
+    await require_room_access(session, room_store, room_id, user, "read")
     rows = await resource_service.list_linked_rooms_for_room(session, room_id)
     return [LinkedRoomDetail(**row) for row in rows]
 
@@ -50,8 +52,10 @@ async def list_inbound_linked_rooms(
     room_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[InboundLinkedRoomDetail]:
+    await require_room_access(session, room_store, room_id, user, "read")
     rows = await resource_service.list_inbound_linked_rooms(session, room_id)
     return [InboundLinkedRoomDetail(**row) for row in rows]
 
