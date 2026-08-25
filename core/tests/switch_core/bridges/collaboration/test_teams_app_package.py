@@ -342,3 +342,50 @@ def test_the_builder_refuses_a_package_teams_would_reject_for_it(
 
     assert result.returncode != 0
     assert "supportsChannelFeatures" in (result.stdout + result.stderr)
+
+
+def test_bump_raises_the_patch_version(tmp_path: Path) -> None:
+    # Teams matches on `id` and ignores an upload whose version has not risen,
+    # without saying so — which is the usual reason an edit "did nothing".
+    _, out = _build(
+        tmp_path, "--app-id", "3fa85f64-5717-4562-b3fc-2c963f66afa6", "--bump"
+    )
+
+    shipped = json.loads(MANIFEST.read_text())["version"]
+    built = json.loads(zipfile.ZipFile(out).read("manifest.json"))["version"]
+    assert built != shipped
+    major, minor, patch = (int(n) for n in built.split("."))
+    was = [int(n) for n in shipped.split(".")]
+    assert [major, minor, patch] == [was[0], was[1], was[2] + 1]
+
+
+def test_an_unbumped_build_says_teams_will_ignore_it(tmp_path: Path) -> None:
+    import subprocess
+
+    script = PACKAGE.parents[2] / "scripts" / "build_teams_app_package.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "-o",
+            str(tmp_path / "p.zip"),
+            "--app-id",
+            "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--bump" in result.stdout
+
+
+def test_the_slash_list_is_offered_in_every_scope_the_bot_has(
+    manifest: dict,
+) -> None:
+    # Narrowing this hid the commands in 1:1 chats. Microsoft's own example on
+    # the slash-commands page scopes its slash list to personal as well, even
+    # though the prose enumerates only channels and group chats — an inert
+    # scope costs nothing, a missing one costs the feature.
+    bot = manifest["bots"][0]
+    for entry in bot["commandLists"]:
+        assert set(entry["scopes"]) == set(bot["scopes"]), entry["triggers"]

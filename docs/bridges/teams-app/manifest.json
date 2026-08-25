@@ -98,7 +98,8 @@
                 {
                     "scopes": [
                         "team",
-                        "groupChat"
+                        "groupChat",
+                        "personal"
                     ],
                     "triggers": [
                         "slash"

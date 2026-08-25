@@ -83,6 +83,10 @@ def _apply(manifest: dict, args: argparse.Namespace) -> list[str]:
     if args.app_name:
         manifest["name"]["short"] = args.app_name
         manifest["name"]["full"] = args.app_name_full or args.app_name
+    if args.bump:
+        parts = manifest["version"].split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        manifest["version"] = ".".join(parts)
     if args.version:
         manifest["version"] = args.version
     blob = json.dumps(manifest)
@@ -156,8 +160,12 @@ def main() -> int:
     parser.add_argument("--website-url", help="your organization's site")
     parser.add_argument("--app-name", help='override the app name ("Agent Switch")')
     parser.add_argument("--app-name-full", help="the long form, if it differs")
+    parser.add_argument("--version", help="set the manifest version outright")
     parser.add_argument(
-        "--version", help="manifest version; raise it to update an installed app"
+        "--bump",
+        action="store_true",
+        help="raise the patch version — required for Teams to update an app "
+        "that is already installed",
     )
     parser.add_argument(
         "-o",
@@ -192,9 +200,21 @@ def main() -> int:
             zf.write(path, arcname=name)
 
     print(f"Wrote {args.output} ({args.output.stat().st_size} bytes)")
-    print(f"  manifest.json  v{manifest['manifestVersion']}, app id {manifest['id']}")
+    print(
+        f"  manifest.json  schema v{manifest['manifestVersion']}, "
+        f"app version {manifest['version']}, app id {manifest['id']}"
+    )
     for name in icons:
         print(f"  {name}")
+    if not (args.bump or args.version):
+        # The single most common reason an edit appears not to have worked.
+        # Teams matches on `id` and ignores an upload whose `version` is not
+        # higher than the installed one — without saying so.
+        print(
+            f"\nNote: app version is still {manifest['version']}. If this app is "
+            "already installed,\nTeams will ignore this upload. Re-run with "
+            "--bump to raise it."
+        )
     if unresolved:
         print("\nStill a placeholder — Teams will accept this, your users will not:")
         for line in unresolved:

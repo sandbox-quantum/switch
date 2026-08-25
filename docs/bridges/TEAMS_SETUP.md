@@ -349,7 +349,8 @@ which you need either way.
                 {
                     "scopes": [
                         "team",
-                        "groupChat"
+                        "groupChat",
+                        "personal"
                     ],
                     "triggers": [
                         "slash"
@@ -467,7 +468,14 @@ just teams-app-package \
 
 That writes `agent-switch-teams.zip`, filling the app id into all three places
 for you and checking the limits Teams enforces without explaining — icon sizes,
-name and description lengths, the command cap. It exits non-zero and names
+name and description lengths, the command cap. **Pass the id rather than
+editing `manifest.json`**: that file is tracked in a public repository and
+ships with a placeholder deliberately, so an id typed into it is one
+`git add` from being published.
+
+**Updating an app that is already installed? Add `--bump`.** Teams matches on
+`id` and ignores an upload whose `version` has not increased, without saying
+so — it is the usual reason an edit appears to have done nothing. It exits non-zero and names
 anything you left as a placeholder, so a null app id cannot ship quietly. Add
 `--version` when you are updating an app that is already installed.
 
