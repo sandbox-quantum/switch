@@ -22,6 +22,7 @@
         "outline": "outline.png"
     },
     "accentColor": "#3F3C3B",
+    "supportsChannelFeatures": "tier1",
     "bots": [
         {
             "botId": "00000000-0000-0000-0000-000000000000",

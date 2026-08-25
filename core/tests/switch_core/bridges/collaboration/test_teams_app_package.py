@@ -239,19 +239,64 @@ def test_a_bad_app_id_is_refused_rather_than_written(tmp_path: Path) -> None:
     assert not out.exists()
 
 
-def test_channel_features_is_opt_in(tmp_path: Path) -> None:
-    _, off = _build(tmp_path, "--app-id", "3fa85f64-5717-4562-b3fc-2c963f66afa6")
-    assert "supportsChannelFeatures" not in json.loads(
-        zipfile.ZipFile(off).read("manifest.json")
+def test_the_built_package_declares_channel_feature_support(tmp_path: Path) -> None:
+    _, out = _build(tmp_path, "--app-id", "3fa85f64-5717-4562-b3fc-2c963f66afa6")
+
+    built = json.loads(zipfile.ZipFile(out).read("manifest.json"))
+    assert built["supportsChannelFeatures"] == "tier1"
+
+
+def test_a_team_scoped_app_on_a_modern_schema_declares_channel_features(
+    manifest: dict,
+) -> None:
+    """Teams rejects the upload without it, in its own words: "Applications with
+    manifest version 1.25 or higher that support the 'team' scope must include
+    the 'supportsChannelFeatures' property."
+
+    It is a validator rule rather than a schema one, so nothing catches it
+    before the upload does — which is how a package that validated cleanly
+    against the published schema still came back refused.
+    """
+    version = tuple(int(n) for n in manifest["manifestVersion"].split("."))
+    team_scoped = any("team" in bot.get("scopes", []) for bot in manifest["bots"])
+    if version >= (1, 25) and team_scoped:
+        assert manifest.get("supportsChannelFeatures") == "tier1"
+
+
+def test_the_builder_refuses_a_package_teams_would_reject_for_it(
+    tmp_path: Path,
+) -> None:
+    # Pins the check itself, not just today's manifest: the rule has to survive
+    # someone editing the shipped file.
+    import subprocess
+
+    stripped = json.loads(MANIFEST.read_text())
+    stripped.pop("supportsChannelFeatures", None)
+    scratch = tmp_path / "manifest.json"
+    scratch.write_text(json.dumps(stripped))
+    for icon in stripped["icons"].values():
+        (tmp_path / icon).write_bytes((PACKAGE / icon).read_bytes())
+
+    script = PACKAGE.parents[2] / "scripts" / "build_teams_app_package.py"
+    source = script.read_text().replace(
+        'PACKAGE_DIR = REPO_ROOT / "docs" / "bridges" / "teams-app"',
+        f"PACKAGE_DIR = Path({str(tmp_path)!r})",
+    )
+    patched = tmp_path / "build.py"
+    patched.write_text(source)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(patched),
+            "-o",
+            str(tmp_path / "x.zip"),
+            "--app-id",
+            "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        ],
+        capture_output=True,
+        text=True,
     )
 
-    _, on = _build(
-        tmp_path,
-        "--app-id",
-        "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-        "--channel-features",
-    )
-    assert (
-        json.loads(zipfile.ZipFile(on).read("manifest.json"))["supportsChannelFeatures"]
-        == "tier1"
-    )
+    assert result.returncode != 0
+    assert "supportsChannelFeatures" in (result.stdout + result.stderr)

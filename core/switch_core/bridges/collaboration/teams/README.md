@@ -133,9 +133,10 @@ but per-channel Graph subscriptions are skipped and an error is logged.
 - **In a posts-layout channel, an untied reply lands in the post the channel
   last spoke in** (see Threading above) — wrong when two conversations run in
   one channel at once. Teams offers nothing better to key on.
-- **Private and shared channels** need the app manifest to declare
-  `supportsChannelFeatures: tier1` before the app can be added to them, which
-  the shipped package deliberately does not — and Graph refuses message
-  subscriptions on them for RSC-consented apps regardless.
+- **Private and shared channels** are declared supported
+  (`supportsChannelFeatures: tier1`, which Teams requires of any v1.25+
+  manifest taking the `team` scope) but are not exercised: they must be added
+  to per channel, and Graph refuses message subscriptions on them for
+  RSC-consented apps.
 - **One Teams bridge per listener port** — run multiple Teams bridges on distinct
   ports (and ingress routes) if needed.

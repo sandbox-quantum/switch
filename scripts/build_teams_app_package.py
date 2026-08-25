@@ -85,12 +85,6 @@ def _apply(manifest: dict, args: argparse.Namespace) -> list[str]:
         manifest["name"]["full"] = args.app_name_full or args.app_name
     if args.version:
         manifest["version"] = args.version
-    if args.channel_features:
-        # Lets the app be added to private and shared channels. Off by default
-        # because declaring it asserts the app works correctly in all three
-        # channel types; see TEAMS_SETUP.md.
-        manifest["supportsChannelFeatures"] = "tier1"
-
     blob = json.dumps(manifest)
     left: list[str] = []
     if PLACEHOLDER_APP_ID in blob:
@@ -125,6 +119,23 @@ def _check(manifest: dict) -> None:
     for entry in manifest["bots"][0].get("commandLists", []):
         if len(entry["commands"]) > 12:
             problems.append("a command list may hold at most 12 commands")
+    # Teams' own words on rejecting the upload: "Applications with manifest
+    # version 1.25 or higher that support the 'team' scope must include the
+    # 'supportsChannelFeatures' property." It is a validator rule, not a schema
+    # one, so nothing catches it before the upload does — hence catching it
+    # here.
+    schema_version = tuple(int(n) for n in manifest["manifestVersion"].split("."))
+    has_team_scope = any(
+        "team" in bot.get("scopes", []) for bot in manifest.get("bots", [])
+    )
+    if schema_version >= (1, 25) and has_team_scope:
+        if not manifest.get("supportsChannelFeatures"):
+            problems.append(
+                "manifestVersion is "
+                f"{manifest['manifestVersion']} and a bot declares the 'team' "
+                "scope, so supportsChannelFeatures is required — set it to "
+                "'tier1'"
+            )
     if problems:
         raise SystemExit(
             "This manifest would be rejected:\n  - " + "\n  - ".join(problems)
@@ -147,11 +158,6 @@ def main() -> int:
     parser.add_argument("--app-name-full", help="the long form, if it differs")
     parser.add_argument(
         "--version", help="manifest version; raise it to update an installed app"
-    )
-    parser.add_argument(
-        "--channel-features",
-        action="store_true",
-        help="declare supportsChannelFeatures=tier1 (private/shared channels)",
     )
     parser.add_argument(
         "-o",

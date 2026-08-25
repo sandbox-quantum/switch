@@ -273,6 +273,7 @@ which you need either way.
         "outline": "outline.png"
     },
     "accentColor": "#3F3C3B",
+    "supportsChannelFeatures": "tier1",
     "bots": [
         {
             "botId": "00000000-0000-0000-0000-000000000000",
@@ -369,8 +370,7 @@ That writes `agent-switch-teams.zip`, filling the app id into all three places
 for you and checking the limits Teams enforces without explaining — icon sizes,
 name and description lengths, the command cap. It exits non-zero and names
 anything you left as a placeholder, so a null app id cannot ship quietly. Add
-`--channel-features` for private and shared channels, and `--version` when you
-are updating an app that is already installed.
+`--version` when you are updating an app that is already installed.
 
 Without a clone, do it by hand — the three files must be at the **root** of the
 zip, because Teams rejects a package whose contents sit inside a folder:
@@ -814,17 +814,13 @@ an *agent* by name is separate, and is always how you address one.
 These work differently enough to plan around. Three things, in the order they
 bite:
 
-- **The shipped manifest does not offer the app in them.** Teams gates that
-  behind `"supportsChannelFeatures": "tier1"`, and the package in
-  [1.5](#15-teams-app-package) does not declare it. Without it the app simply
-  does not appear in the channel's **Add an app** list, with no explanation.
-  To opt in: add `"supportsChannelFeatures": "tier1"` at the top level, raise
-  `version`, and upload again — the schema version already supports it, so
-  that one line is the whole change.
-
-  It is left out rather than defaulted on because declaring it asserts the app
-  behaves correctly across all three channel types, and the next two points are
-  reasons to believe it does not yet. Turn it on when you have tried it.
+- **The app can be added to them, but has not been proven in them.** The
+  manifest declares `"supportsChannelFeatures": "tier1"`, which is what makes
+  Teams offer it in a private or shared channel's **Add an app** list. That is
+  not a choice: Teams **requires** the property of any manifest at schema v1.25
+  or later whose bot takes the `team` scope, and refuses the upload without it.
+  Read the declaration as "allowed here", not as "tested here" — the next two
+  points still hold.
 - **Each one needs the app added to it.** Installing into the team covers every
   standard channel and no private or shared one. If Graph returns
   `403 app not enabled in this channel`, that is the missing step.

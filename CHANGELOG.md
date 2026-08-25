@@ -55,6 +55,11 @@ version of their own to them without also giving them a release of their own.
   quietly.
 
 #### Changed
+- The shipped Teams app manifest declares `supportsChannelFeatures: tier1`.
+  Teams requires it of any manifest at schema v1.25 or later whose bot takes
+  the `team` scope and refuses the upload without it — a validator rule, not a
+  schema one, so the package validated cleanly against the published schema and
+  was still rejected. The package builder now checks the same rule.
 - The shipped Teams app manifest moves to schema v1.27. It was written at v1.19
   on the reasoning that older schemas upload most reliably; the tenant we
   actually run on is on v1.27, which settles that better than the reasoning
