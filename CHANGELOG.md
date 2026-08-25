@@ -44,6 +44,15 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- The shipped Teams app manifest moves to schema v1.27. It was written at v1.19
+  on the reasoning that older schemas upload most reliably; the tenant we
+  actually run on is on v1.27, which settles that better than the reasoning
+  did. Nothing is removed between the two and the required fields are
+  identical, so it is a version bump rather than a rewrite — and v1.25 raised a
+  command list's cap from ten entries to twelve, so the menu gains
+  `/list-switch-agents` and `/room-url`.
+
 #### Fixed
 - A Teams posts channel no longer fills with *"This message has been deleted."*
   Teams substitutes that for any deleted message and keeps it in the post, so

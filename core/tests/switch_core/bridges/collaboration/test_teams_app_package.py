@@ -38,8 +38,10 @@ def _png_size(path: Path) -> tuple[int, int]:
 
 
 def test_the_manifest_is_valid_json_at_the_version_it_claims(manifest: dict) -> None:
-    assert manifest["manifestVersion"] == "1.19"
-    assert manifest["$schema"].endswith("/v1.19/MicrosoftTeams.schema.json")
+    # The two must agree: Teams pins `manifestVersion` to a `const` per schema,
+    # so a mismatched pair fails validation with nothing useful said about why.
+    version = manifest["manifestVersion"]
+    assert manifest["$schema"].endswith(f"/v{version}/MicrosoftTeams.schema.json")
 
 
 def test_every_field_teams_requires_is_present(manifest: dict) -> None:
@@ -104,7 +106,8 @@ def test_the_command_menu_is_within_the_platform_limits(manifest: dict) -> None:
     command_lists = manifest["bots"][0]["commandLists"]
     assert len(command_lists) <= 3
     for entry in command_lists:
-        assert len(entry["commands"]) <= 10, "Teams caps a command list at ten"
+        # Twelve from schema v1.25; ten before that.
+        assert len(entry["commands"]) <= 12, "Teams caps a command list at twelve"
         for command in entry["commands"]:
             assert len(command["title"]) <= 32
             assert len(command["description"]) <= 128

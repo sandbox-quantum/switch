@@ -1,6 +1,6 @@
 {
-    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
-    "manifestVersion": "1.19",
+    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.27/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.27",
     "version": "1.0.0",
     "id": "00000000-0000-0000-0000-000000000000",
     "developer": {
@@ -49,7 +49,9 @@
                         { "title": "/list-aliases", "description": "List this room's agent aliases" },
                         { "title": "/set-alias", "description": "Give an agent a room alias: /set-alias @agent-name @alias" },
                         { "title": "/reset", "description": "Reset an agent's session: /reset @agent-name" },
-                        { "title": "/interrupt", "description": "Interrupt an agent's current turn: /interrupt @agent-name" }
+                        { "title": "/interrupt", "description": "Interrupt an agent's current turn: /interrupt @agent-name" },
+                        { "title": "/list-switch-agents", "description": "List every agent on this Switch, to find one to invite" },
+                        { "title": "/room-url", "description": "Show this room's address in Switch" }
                     ]
                 }
             ]

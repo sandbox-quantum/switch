@@ -250,8 +250,8 @@ which you need either way.
 
 ```json
 {
-    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
-    "manifestVersion": "1.19",
+    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.27/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.27",
     "version": "1.0.0",
     "id": "00000000-0000-0000-0000-000000000000",
     "developer": {
@@ -300,7 +300,9 @@ which you need either way.
                         { "title": "/list-aliases", "description": "List this room's agent aliases" },
                         { "title": "/set-alias", "description": "Give an agent a room alias: /set-alias @agent-name @alias" },
                         { "title": "/reset", "description": "Reset an agent's session: /reset @agent-name" },
-                        { "title": "/interrupt", "description": "Interrupt an agent's current turn: /interrupt @agent-name" }
+                        { "title": "/interrupt", "description": "Interrupt an agent's current turn: /interrupt @agent-name" },
+                        { "title": "/list-switch-agents", "description": "List every agent on this Switch, to find one to invite" },
+                        { "title": "/room-url", "description": "Show this room's address in Switch" }
                     ]
                 }
             ]
@@ -795,14 +797,16 @@ These work differently enough to plan around. Three things, in the order they
 bite:
 
 - **The shipped manifest does not offer the app in them.** Teams gates that
-  behind `"supportsChannelFeatures": "tier1"`, which needs manifest v1.25 or
-  later, and the package in [1.5](#15-teams-app-package) is v1.19. To opt in,
-  set `manifestVersion` to `1.25`, change the `$schema` URL to match, add
-  `"supportsChannelFeatures": "tier1"` at the top level, raise `version`, and
-  upload again. Without it the app simply will not appear in the channel's
-  **Add an app** list, with no explanation. Bumping has been reported to make
-  some tenants reject the package on upload — if yours does, that is why, and
-  v1.19 is the fallback.
+  behind `"supportsChannelFeatures": "tier1"`, and the package in
+  [1.5](#15-teams-app-package) does not declare it. Without it the app simply
+  does not appear in the channel's **Add an app** list, with no explanation.
+  To opt in: add `"supportsChannelFeatures": "tier1"` at the top level, raise
+  `version`, and upload again — the schema version already supports it, so
+  that one line is the whole change.
+
+  It is left out rather than defaulted on because declaring it asserts the app
+  behaves correctly across all three channel types, and the next two points are
+  reasons to believe it does not yet. Turn it on when you have tried it.
 - **Each one needs the app added to it.** Installing into the team covers every
   standard channel and no private or shared one. If Graph returns
   `403 app not enabled in this channel`, that is the missing step.
@@ -970,14 +974,14 @@ so a command missing from the manifest still works if someone types it, and a
 command in the manifest that Switch does not know returns the usual "unknown
 command".
 
-**Teams caps a command list at ten commands** per scope, which is why the
-shipped one is a selection rather than all of them. Swap in whichever ten your
-teams actually use; `!help` lists the rest.
+**Teams caps a command list at twelve commands** per scope (ten before schema
+v1.25), which is why the shipped one is a selection rather than all of them.
+Swap in whichever twelve your teams actually use; `!help` lists the rest.
 
 One thing the list is *not*: the `/` autocomplete picker that appears as you
 type. That is a separate, newer feature needing manifest v1.29 and two
-properties v1.19 does not have, so on this package the commands live in the
-bot's menu rather than the picker.
+properties this package does not carry, so here the commands live in the bot's
+own menu rather than in the picker.
 
 If the menu does not appear after you edit it, the manifest almost certainly
 reached nobody: an edit only lands if you raise `version` and upload again —
