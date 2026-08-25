@@ -23,6 +23,7 @@ from pydantic.json_schema import SkipJsonSchema
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    format_elapsed,
 )
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
@@ -985,9 +986,18 @@ class TeamsAdapter(CollaborationAdapter):
         A "working on it…" card is posted (as the agent) while the agent works
         and edited in place as the activity detail changes; it stays up through
         ``awaiting-input`` — where a "needs your input" ping is added — and both
-        are removed when the turn goes ``idle`` (or resumes to ``working``,
-        since the requested input was provided). Teams messages are truly
-        deletable, so no tombstone is left behind.
+        are retired when the turn goes ``idle`` (or resumes to ``working``,
+        since the requested input was provided).
+
+        **How they are retired depends on the channel's layout**, because Teams
+        does not delete the same way in both. In a chat-layout channel a deleted
+        message is gone, so the status is removed and leaves nothing behind. In
+        a **posts** channel Teams substitutes *"This message has been deleted."*
+        and keeps it in the post — so a status that appears and vanishes each
+        turn litters the conversation with tombstones, one per turn per agent.
+        There is no way to delete without one. So there, as on Mattermost, the
+        status is never deleted: it is edited into a small terminal marker and
+        left as the record of a turn that is over.
         """
         key = (channel_id, agent_name)
         if state == "working":
@@ -1015,8 +1025,18 @@ class TeamsAdapter(CollaborationAdapter):
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
         else:
-            await self._clear_working(channel_id, agent_name)
+            await self._retire_working(channel_id, agent_name)
             await self._clear_input_pings(channel_id, agent_name)
+
+    async def _leaves_a_tombstone(self, channel_id: str) -> bool:
+        """Whether deleting a message here would leave wreckage behind.
+
+        Only in a posts channel, where Teams replaces a deleted message with
+        *"This message has been deleted."* and keeps it in the post. A
+        chat-layout channel drops it cleanly, and a chat or group chat has no
+        post to litter.
+        """
+        return await self._uses_post_layout(channel_id)
 
     async def _refresh_card(
         self, channel_id: str, message_ref: str, agent_name: str, body: str
@@ -1031,10 +1051,44 @@ class TeamsAdapter(CollaborationAdapter):
             activity=await self._message_activity(agent_name, body),
         )
 
-    async def _clear_working(self, channel_id: str, agent_name: str) -> None:
+    async def _retire_working(self, channel_id: str, agent_name: str) -> None:
+        """End the turn's live status: edited where a delete would scar, else
+        removed.
+
+        The marker is kept to the bare fact that the turn finished and how long
+        it took, because in a posts channel this line stays there for good and
+        has to earn its place. The session link is deliberately dropped: it
+        belongs on a live indicator, where it is still worth following, not on
+        the record of a turn that is over.
+        """
         live = self._working_msg.pop((channel_id, agent_name), None)
-        if live is not None:
+        if live is None:
+            return
+        if not await self._leaves_a_tombstone(channel_id):
             await self.delete_message(channel_id, live.message_ref)
+            return
+        elapsed = format_elapsed(time.monotonic() - live.started_at)
+        await self._refresh_card(
+            channel_id,
+            live.message_ref,
+            agent_name,
+            self.translate_outbound(f"✓ Done · {elapsed}"),
+        )
+
+    async def _reposition_runtime_state(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        """Follow the conversation, except where moving would leave a scar.
+
+        Repositioning is a repost plus a delete, and in a posts channel that
+        delete leaves *"This message has been deleted."* behind — once per move,
+        so the busier the conversation the more of them. Pinned to where the
+        turn began there instead: less precise about where the agent is up to,
+        and it costs the reader nothing.
+        """
+        if await self._leaves_a_tombstone(channel_id):
+            return
+        await super()._reposition_runtime_state(channel_id, agent_name, thread_root_id)
 
     async def _remove_runtime_indicator(
         self, channel_id: str, message_ref: str
@@ -1057,9 +1111,25 @@ class TeamsAdapter(CollaborationAdapter):
             )
 
     async def _clear_input_pings(self, channel_id: str, agent_name: str) -> None:
+        """Resolve the operator pings raised during the turn.
+
+        Edited rather than removed wherever a delete would leave a tombstone —
+        and for a ping that matters more than for the status line, since the
+        people looking at it are exactly the ones it was aimed at."""
         refs = self._input_pings.pop((channel_id, agent_name), [])
+        if not refs:
+            return
+        scars = await self._leaves_a_tombstone(channel_id)
         for ref in refs:
-            await self.delete_message(channel_id, ref)
+            if scars:
+                await self._refresh_card(
+                    channel_id,
+                    ref,
+                    agent_name,
+                    self.translate_outbound("✓ Input received"),
+                )
+            else:
+                await self.delete_message(channel_id, ref)
 
     # ── Channels ─────────────────────────────────────────────────────────────
 

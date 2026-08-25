@@ -918,6 +918,12 @@ class _CountingConnector:
         self.deletes.append(activity_id)
 
 
+def _card_text(activity: dict[str, Any]) -> str:
+    """The body an agent card carries, whatever its shape."""
+    card = activity["attachments"][0]["content"]
+    return "\n".join(str(block.get("text", "")) for block in card["body"])
+
+
 def _wire_counting(adapter: TeamsAdapter, connector: _CountingConnector) -> None:
     adapter._connector = connector  # type: ignore[assignment]
     adapter._default_service_url = "https://smba.example/amer/"
@@ -975,7 +981,7 @@ def test_working_detail_refreshes_in_place() -> None:
     assert adapter._working_msg[("19:abc@thread.tacv2", "worker")].message_ref == "M1"
 
 
-def test_idle_clears_working_message() -> None:
+def test_idle_retires_the_working_message_by_editing_it() -> None:
     adapter = _adapter()
     fake = _CountingConnector()
     _wire_counting(adapter, fake)
@@ -999,7 +1005,12 @@ def test_idle_clears_working_message() -> None:
         )
     )
 
-    assert fake.deletes == ["M1"]
+    # A posts channel: Teams substitutes "This message has been deleted." for
+    # anything removed and keeps it in the post, so the status is edited into a
+    # terminal marker instead of being deleted.
+    assert fake.deletes == []
+    assert [u["activity_id"] for u in fake.updates] == ["M1"]
+    assert "Done" in _card_text(fake.updates[-1]["activity"])
     assert ("19:abc@thread.tacv2", "worker") not in adapter._working_msg
 
 
@@ -1041,7 +1052,8 @@ def test_awaiting_input_keeps_working_and_pings() -> None:
             thread_root_id=None,
         )
     )
-    # Both the working message and the ping are removed on idle.
-    assert set(fake.deletes) == {"M1", "M2"}
+    # Both are retired on idle — edited, not deleted, in a posts channel.
+    assert fake.deletes == []
+    assert {u["activity_id"] for u in fake.updates} == {"M1", "M2"}
     assert key not in adapter._working_msg
     assert key not in adapter._input_pings

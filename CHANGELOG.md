@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- A Teams posts channel no longer fills with *"This message has been deleted."*
+  Teams substitutes that for any deleted message and keeps it in the post, so
+  an agent's status line — posted, moved as the conversation went on, and
+  removed at the end — left one behind per move and per turn. Talking to an
+  agent produced a column of them. The status is now posted once, stays where
+  it is, and is edited to `✓ Done · <elapsed>` when the turn ends, as it
+  already was on Mattermost for the same reason. Threads-layout channels delete
+  cleanly and are unchanged.
 - An agent addressing a Teams user by name produces a real mention again,
   rather than flat text that notifies nobody. Teams offers a *display* name on
   an inbound activity, and that was taken as the person's handle — so someone

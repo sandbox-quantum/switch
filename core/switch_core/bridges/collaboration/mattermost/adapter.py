@@ -22,6 +22,7 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    format_elapsed,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -715,7 +716,7 @@ class MattermostAdapter(CollaborationAdapter):
         live = self._working_msg.pop((channel_id, agent_name), None)
         if live is None:
             return
-        elapsed = _format_elapsed(time.monotonic() - live.started_at)
+        elapsed = format_elapsed(time.monotonic() - live.started_at)
         await self._patch_post_as(
             agent_name,
             live.message_ref,
@@ -1660,20 +1661,3 @@ class MattermostAdapter(CollaborationAdapter):
         except Exception:
             pass
         return None
-
-
-def _format_elapsed(seconds: float) -> str:
-    """How long a turn took, for the marker its status line becomes.
-
-    Rounded to whole seconds and written the way a reader skims it — "8s",
-    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
-    second turns report "0s" instead of an empty string.
-    """
-    total = max(0, int(seconds))
-    if total < 60:
-        return f"{total}s"
-    minutes, secs = divmod(total, 60)
-    if minutes < 60:
-        return f"{minutes}m{secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"

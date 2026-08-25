@@ -46,6 +46,14 @@ and listing a team's channels reports `layoutType` as null for all of them, so
 the per-channel read is the only route; an unreadable layout is treated as
 `post`, Graph's own default.
 
+**Runtime status** is retired differently per layout, for the same reason.
+Teams substitutes *"This message has been deleted."* for a deleted message in a
+`post`-layout channel and keeps it in the post, so there the status card is
+never deleted: it is edited into a `✓ Done · <elapsed>` marker, and it is not
+repositioned either (a move is a repost plus a delete). A `chat`-layout channel
+deletes cleanly and keeps the ordinary behaviour. Mattermost does the same
+thing for the same reason — see `_apply_runtime_state` there.
+
 ## Security note
 
 Graph resource-data encryption proves message **integrity, not origin** (the

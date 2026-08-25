@@ -24,6 +24,27 @@ from switch_core.bridges.collaboration.models import (
 logger = logging.getLogger(__name__)
 
 
+def format_elapsed(seconds: float) -> str:
+    """How long a turn took, for the marker its status line becomes.
+
+    Rounded to whole seconds and written the way a reader skims it — "8s",
+    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
+    second turns report "0s" instead of an empty string.
+
+    Lives here rather than beside one adapter because every platform that
+    retires a status line by editing it rather than deleting it wants the same
+    words on it.
+    """
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
 @dataclass(frozen=True)
 class LiveRuntimeIndicator:
     """The runtime status message currently posted for one agent in one channel.
