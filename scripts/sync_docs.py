@@ -259,7 +259,7 @@ def write_index(dest: Path, entries: list[tuple[list[str], str]]) -> None:
             lines.extend(["", f"## {' › '.join(trail)}" if trail else "", ""])
         rel = page[len(SOURCE_PREFIX) :] or "index"
         lines.append(f"- [{rel}]({rel}.md) — <{published_url(page)}>")
-    (dest / "INDEX.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    (dest / "TOC.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def resolve_source(source: str | None, keep: Path) -> Path:

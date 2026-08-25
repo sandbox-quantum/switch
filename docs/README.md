@@ -13,7 +13,7 @@ what users are told.
 **Generated — do not edit.** Change the source pages in the docs repository, then
 run `just sync-docs`. Every file under `official/` is rewritten on each run, so
 an edit made here is lost without warning. Start at
-[`official/INDEX.md`](official/INDEX.md), which lists the pages in the order the
+[`official/TOC.md`](official/TOC.md), which lists the pages in the order the
 site presents them.
 
 ## `old/`
