@@ -44,6 +44,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- An agent no longer answers Switch's own notices. A system message — a
+  command's result, "Added X to this room", the guidance shown when someone
+  tags the app itself — is output, not a request for a reply, and the marker
+  saying so was honoured by the admin client but not by agents. Two ways in: a
+  direct room addresses its agent with every message, so running
+  `/list-agents` in a 1:1 chat had the agent start a session to respond to its
+  own roster; and any notice that lists the agents present writes each `@name`,
+  which tagged all of them. Such a message now arrives as ordinary unaddressed
+  context on every platform.
+
 #### Added
 - `just teams-app-package` builds the Teams app package an operator uploads.
   Every route into a tenant wants a `.zip` — the Developer Portal's Import app,
