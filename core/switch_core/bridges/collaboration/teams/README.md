@@ -54,6 +54,14 @@ repositioned either (a move is a repost plus a delete). A `chat`-layout channel
 deletes cleanly and keeps the ordinary behaviour. Mattermost does the same
 thing for the same reason — see `_apply_runtime_state` there.
 
+**Commands** arrive three ways and all land on the same dispatcher: `!name`,
+`/name`, and a bare `name` on a *targeted* message (`recipient.isTargeted`),
+which is what Teams' `/` picker sends — it prints the slash and inserts the
+name without it. A bare name is only read as a command when it is both
+targeted and known, and an unknown `/name` is left as text, since `/` opens
+paths and dates as often as commands. `!` is Switch's own prefix, so an
+unknown `!name` still answers "unknown command".
+
 ## Security note
 
 Graph resource-data encryption proves message **integrity, not origin** (the

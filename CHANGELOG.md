@@ -44,7 +44,21 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- Switch's commands appear in Teams' `/` autocomplete picker. The shipped
+  manifest moves to schema v1.29 and declares `supportsTargetedMessages` plus a
+  second command list with `triggers: ["slash"]`. The two surfaces disagree
+  about the slash — the picker prints it and inserts the bare name, while the
+  mention menu inserts a title verbatim — so the lists carry the same commands
+  spelled for their own surface. A command picked from the picker is sent
+  privately to Switch and needs no `@`-mention.
+
 #### Fixed
+- A Teams message that merely began with a slash is no longer swallowed as a
+  command. Pasting `/Users/ada/notes.md` came back "unknown command" instead of
+  reaching an agent. `/` is not Switch's prefix — it opens paths, dates and
+  fractions — so an unknown `/name` is now read as text. `!` is Switch's own,
+  so `!list-agent` still answers that it is a typo.
 - An agent no longer answers Switch's own notices. A system message — a
   command's result, "Added X to this room", the guidance shown when someone
   tags the app itself — is output, not a request for a reply, and the marker

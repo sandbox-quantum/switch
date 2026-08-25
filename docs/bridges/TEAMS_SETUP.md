@@ -250,8 +250,8 @@ which you need either way.
 
 ```json
 {
-    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.27/MicrosoftTeams.schema.json",
-    "manifestVersion": "1.27",
+    "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.29/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.29",
     "version": "1.0.0",
     "id": "00000000-0000-0000-0000-000000000000",
     "developer": {
@@ -262,7 +262,7 @@ which you need either way.
     },
     "name": {
         "short": "Agent Switch",
-        "full": "Agent Switch — your AI agents, in your channels"
+        "full": "Agent Switch \u2014 your AI agents, in your channels"
     },
     "description": {
         "short": "Work with your AI agents in Teams channels and chats.",
@@ -282,6 +282,7 @@ which you need either way.
                 "personal",
                 "groupChat"
             ],
+            "supportsTargetedMessages": true,
             "isNotificationOnly": false,
             "supportsFiles": false,
             "commandLists": [
@@ -291,19 +292,117 @@ which you need either way.
                         "groupChat",
                         "personal"
                     ],
+                    "triggers": [
+                        "mention"
+                    ],
                     "commands": [
-                        { "title": "/help", "description": "Show every in-room command" },
-                        { "title": "/list-agents", "description": "List the agents in this room" },
-                        { "title": "/agents-status", "description": "Show each agent's presence and capabilities" },
-                        { "title": "/invite-agent", "description": "Add an existing agent: /invite-agent @agent-name" },
-                        { "title": "/agents-greet", "description": "Have the agents here introduce themselves" },
-                        { "title": "/roles", "description": "List this room's roles and who holds each" },
-                        { "title": "/list-aliases", "description": "List this room's agent aliases" },
-                        { "title": "/set-alias", "description": "Give an agent a room alias: /set-alias @agent-name @alias" },
-                        { "title": "/reset", "description": "Reset an agent's session: /reset @agent-name" },
-                        { "title": "/interrupt", "description": "Interrupt an agent's current turn: /interrupt @agent-name" },
-                        { "title": "/list-switch-agents", "description": "List every agent on this Switch, to find one to invite" },
-                        { "title": "/room-url", "description": "Show this room's address in Switch" }
+                        {
+                            "title": "/help",
+                            "description": "Show every in-room command"
+                        },
+                        {
+                            "title": "/list-agents",
+                            "description": "List the agents in this room"
+                        },
+                        {
+                            "title": "/agents-status",
+                            "description": "Show each agent's presence and capabilities"
+                        },
+                        {
+                            "title": "/invite-agent",
+                            "description": "Add an existing agent: /invite-agent @agent-name"
+                        },
+                        {
+                            "title": "/agents-greet",
+                            "description": "Have the agents here introduce themselves"
+                        },
+                        {
+                            "title": "/roles",
+                            "description": "List this room's roles and who holds each"
+                        },
+                        {
+                            "title": "/list-aliases",
+                            "description": "List this room's agent aliases"
+                        },
+                        {
+                            "title": "/set-alias",
+                            "description": "Give an agent a room alias: /set-alias @agent-name @alias"
+                        },
+                        {
+                            "title": "/reset",
+                            "description": "Reset an agent's session: /reset @agent-name"
+                        },
+                        {
+                            "title": "/interrupt",
+                            "description": "Interrupt an agent's current turn: /interrupt @agent-name"
+                        },
+                        {
+                            "title": "/list-switch-agents",
+                            "description": "List every agent on this Switch, to find one to invite"
+                        },
+                        {
+                            "title": "/room-url",
+                            "description": "Show this room's address in Switch"
+                        }
+                    ]
+                },
+                {
+                    "scopes": [
+                        "team",
+                        "groupChat"
+                    ],
+                    "triggers": [
+                        "slash"
+                    ],
+                    "commands": [
+                        {
+                            "title": "help",
+                            "description": "Show every in-room command"
+                        },
+                        {
+                            "title": "list-agents",
+                            "description": "List the agents in this room"
+                        },
+                        {
+                            "title": "agents-status",
+                            "description": "Show each agent's presence and capabilities"
+                        },
+                        {
+                            "title": "invite-agent",
+                            "description": "Add an existing agent: /invite-agent @agent-name"
+                        },
+                        {
+                            "title": "agents-greet",
+                            "description": "Have the agents here introduce themselves"
+                        },
+                        {
+                            "title": "roles",
+                            "description": "List this room's roles and who holds each"
+                        },
+                        {
+                            "title": "list-aliases",
+                            "description": "List this room's agent aliases"
+                        },
+                        {
+                            "title": "set-alias",
+                            "description": "Give an agent a room alias: /set-alias @agent-name @alias"
+                        },
+                        {
+                            "title": "reset",
+                            "description": "Reset an agent's session: /reset @agent-name"
+                        },
+                        {
+                            "title": "interrupt",
+                            "description": "Interrupt an agent's current turn: /interrupt @agent-name"
+                        },
+                        {
+                            "title": "list-switch-agents",
+                            "description": "List every agent on this Switch, to find one to invite"
+                        },
+                        {
+                            "title": "room-url",
+                            "description": "Show this room's address in Switch"
+                        }
                     ]
                 }
             ]
@@ -978,10 +1077,10 @@ nothing to do here.
 
 Three things to know if you are editing it.
 
-**A title is inserted verbatim** — Teams prepends nothing. That is why every
-title in the shipped list already starts with `/`. A title of `help` would be
-typed as `help`, which is an ordinary message, and Switch would treat it as
-one.
+**A title is inserted verbatim** in the mention menu — Teams prepends nothing
+there, which is why those titles carry their `/`. The `/` picker is the
+opposite: it prepends the slash and inserts the bare name. Keep each list
+spelled for its own surface.
 
 **The list is presentation only.** Teams types the text and Switch parses it,
 so a command missing from the manifest still works if someone types it, and a
@@ -992,10 +1091,25 @@ command".
 v1.25), which is why the shipped one is a selection rather than all of them.
 Swap in whichever twelve your teams actually use; `!help` lists the rest.
 
-One thing the list is *not*: the `/` autocomplete picker that appears as you
-type. That is a separate, newer feature needing manifest v1.29 and two
-properties this package does not carry, so here the commands live in the bot's
-own menu rather than in the picker.
+**The commands appear twice, spelled differently, and that is deliberate.**
+Teams has two surfaces and they disagree about the slash:
+
+- The **`/` autocomplete picker**, the one you get by typing `/` in the compose
+  box. It prints the slash itself and inserts the *bare* name, so those titles
+  are declared without one. `supportsTargetedMessages` on the bot is what puts
+  Switch in that picker at all; `triggers: ["slash"]` is what puts individual
+  commands there.
+- The **bot's own command menu**, reached by mentioning it. That inserts a
+  title verbatim, so those titles keep their `/`.
+
+A title with a slash in the picker would read `//help`, and a title without one
+in the mention menu would insert `help`, which is a word rather than a command.
+Hence two lists with the same commands.
+
+Picking from the `/` picker also sends the message **privately to Switch** —
+other people in the channel do not see it, and no `@`-mention is needed. It
+works in channels, group chats and meeting chats, but not in a 1:1 chat, where
+you can simply type the command.
 
 If the menu does not appear after you edit it, the manifest almost certainly
 reached nobody: an edit only lands if you raise `version` and upload again —

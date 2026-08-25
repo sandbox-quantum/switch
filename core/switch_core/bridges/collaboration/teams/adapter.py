@@ -20,6 +20,7 @@ from aiohttp import web
 from pydantic import Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
@@ -1596,7 +1597,46 @@ class TeamsAdapter(CollaborationAdapter):
             channel_name=channel_name,
             self_mention_token=self_mention_token,
             command_text=command_text,
+            is_targeted=bool((activity.get("recipient") or {}).get("isTargeted")),
         )
+
+    def _command_in(self, probe: str, *, is_targeted: bool) -> str | None:
+        """The command this message runs, or None if it is ordinary text.
+
+        Two ways a command arrives, and both need a name Switch knows.
+
+        **Prefixed** — `!help`, or `/help`. The prefix alone used to be enough,
+        which meant any message opening with a slash was swallowed: paste a
+        path and you got "unknown command" instead of your message. Telegram
+        already guards against that; this is the same guard.
+
+        **Bare, on a targeted message** — Teams' `/` picker prepends the slash
+        itself and inserts the command's bare name, so `activity.text` is
+        `help`, not `/help`. That is why the slash-triggered list in the shipped
+        manifest declares titles without one, matching Microsoft's own samples.
+        A bare name is only read as a command when the message was targeted at
+        this bot: outside that, "help" in a channel is somebody talking.
+        """
+        if not probe:
+            return None
+        first = probe.split(None, 1)[0]
+        name = self._command_name(first)
+        if name in COMMANDS_BY_NAME:
+            # Known, however it was written: `!help`, `/help`, or the bare
+            # `help` the picker inserts.
+            return name if first[:1] in _COMMAND_PREFIXES or is_targeted else None
+        # Unknown. Whether that is worth answering depends on which prefix was
+        # used, because the two mean different things to a person.
+        #
+        # `!` is Switch's own and means nothing else, so `!list-agent` is a
+        # misspelt command and deserves to be told so.
+        #
+        # `/` is not Switch's — it opens paths, dates and fractions, and Teams
+        # delivers those as ordinary text. Reading every one as a command is
+        # how `/Users/ada/notes.md` came back "unknown command" instead of
+        # reaching an agent. So an unknown `/name` is left as what it looks
+        # like: a message.
+        return name if first.startswith("!") else None
 
     async def _deliver(
         self,
@@ -1611,6 +1651,7 @@ class TeamsAdapter(CollaborationAdapter):
         channel_name: str | None,
         self_mention_token: str | None = None,
         command_text: str | None = None,
+        is_targeted: bool = False,
     ) -> None:
         """Route a parsed inbound message to the command or message callback.
 
@@ -1631,7 +1672,8 @@ class TeamsAdapter(CollaborationAdapter):
             is_channel=channel_type in ("channel_public", "channel_private"),
         )
         command_probe = (command_text if command_text is not None else text).strip()
-        if command_probe[:1] in _COMMAND_PREFIXES and self._on_command is not None:
+        command = self._command_in(command_probe, is_targeted=is_targeted)
+        if command is not None and self._on_command is not None:
             parts = command_probe.split(None, 1)
             await self._on_command(
                 InboundCommand(
@@ -1639,7 +1681,7 @@ class TeamsAdapter(CollaborationAdapter):
                     channel_type=channel_type,
                     sender_id=sender_id,
                     sender_name=sender_name,
-                    command=self._command_name(parts[0]),
+                    command=command,
                     args=parts[1].strip() if len(parts) > 1 else "",
                     message_ref=message_ref,
                     root_id=root_id,

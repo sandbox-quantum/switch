@@ -115,17 +115,59 @@ def test_the_command_menu_is_within_the_platform_limits(manifest: dict) -> None:
             assert len(command["description"]) <= 128
 
 
-def test_every_offered_command_carries_a_prefix_switch_dispatches_on(
+def test_a_mention_menu_title_carries_the_prefix_it_will_insert(
     manifest: dict,
 ) -> None:
-    # Teams inserts the title into the compose box verbatim and prepends
-    # nothing, so a title without a prefix arrives as an ordinary message and
-    # is never dispatched as a command.
+    # The @mention menu inserts a title verbatim and prepends nothing, so the
+    # title has to be the text Switch dispatches on.
     from switch_core.bridges.collaboration.teams.adapter import _COMMAND_PREFIXES
 
     for entry in manifest["bots"][0]["commandLists"]:
+        if "slash" in entry.get("triggers", ["mention"]):
+            continue
         for command in entry["commands"]:
             assert command["title"][:1] in _COMMAND_PREFIXES, command["title"]
+
+
+def test_a_slash_picker_title_is_bare_because_teams_adds_the_slash(
+    manifest: dict,
+) -> None:
+    # The `/` picker prepends the slash for display and inserts the bare name,
+    # which is why every Microsoft sample declares these without one. A title
+    # of "/help" would render as "//help" and arrive with a prefix the picker
+    # did not intend.
+    for entry in manifest["bots"][0]["commandLists"]:
+        if "slash" not in entry.get("triggers", ["mention"]):
+            continue
+        for command in entry["commands"]:
+            assert not command["title"].startswith("/"), command["title"]
+
+
+def test_the_slash_picker_needs_the_bot_to_accept_targeted_messages(
+    manifest: dict,
+) -> None:
+    # Declaring triggers: ["slash"] surfaces nothing on its own — the schema is
+    # explicit that supportsTargetedMessages is what puts the agent in the
+    # picker. Getting one without the other is a silent no-op.
+    bot = manifest["bots"][0]
+    declares_slash = any(
+        "slash" in entry.get("triggers", ["mention"])
+        for entry in bot.get("commandLists", [])
+    )
+    if declares_slash:
+        assert bot.get("supportsTargetedMessages") is True
+
+
+def test_both_surfaces_offer_the_same_commands(manifest: dict) -> None:
+    # Two lists exist only because the two surfaces spell a title differently.
+    # They should not drift into offering different things.
+    lists = {
+        tuple(sorted(entry.get("triggers", ["mention"]))): {
+            c["title"].lstrip("/") for c in entry["commands"]
+        }
+        for entry in manifest["bots"][0]["commandLists"]
+    }
+    assert lists[("mention",)] == lists[("slash",)]
 
 
 def test_the_menu_only_offers_commands_switch_answers(manifest: dict) -> None:
