@@ -44,6 +44,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- `just teams-app-package` builds the Teams app package an operator uploads.
+  Every route into a tenant wants a `.zip` — the Developer Portal's Import app,
+  Upload a custom app, the admin centre — and none of them takes a bare
+  `manifest.json`, so the guide's "now zip these three files" was a step people
+  had to get right by hand. It also writes the app id into the three places it
+  has to match, checks the limits Teams enforces without explaining them, and
+  exits non-zero naming any placeholder left in, so a null app id cannot ship
+  quietly.
+
 #### Changed
 - The shipped Teams app manifest moves to schema v1.27. It was written at v1.19
   on the reasoning that older schemas upload most reliably; the tenant we

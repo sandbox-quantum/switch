@@ -353,13 +353,31 @@ substitute for the tenant-wide permission; if you granted
 `ChannelMessage.Read.All` instead, this block asks the team owner to consent to
 something you are not using.
 
-**Then zip the three files flat:**
+**Then build the package.** Every upload route wants a `.zip` — the Developer
+Portal's **Import app** included — and none of them takes a bare
+`manifest.json`. From a clone of the repository:
+
+```bash
+just teams-app-package \
+  --app-id 00000000-0000-0000-0000-000000000000 \
+  --public-host teams.example.com \
+  --privacy-url https://example.com/privacy \
+  --terms-url https://example.com/terms
+```
+
+That writes `agent-switch-teams.zip`, filling the app id into all three places
+for you and checking the limits Teams enforces without explaining — icon sizes,
+name and description lengths, the command cap. It exits non-zero and names
+anything you left as a placeholder, so a null app id cannot ship quietly. Add
+`--channel-features` for private and shared channels, and `--version` when you
+are updating an app that is already installed.
+
+Without a clone, do it by hand — the three files must be at the **root** of the
+zip, because Teams rejects a package whose contents sit inside a folder:
 
 ```bash
 zip -j agent-switch-teams.zip manifest.json color.png outline.png
 ```
-
-`-j` matters. Teams rejects a package whose files sit inside a folder.
 
 **Then get it into Teams**, whichever of these your tenant allows:
 

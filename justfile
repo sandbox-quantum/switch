@@ -88,6 +88,14 @@ artifacts:
 artifacts-check:
     uv run --project core python scripts/gen_artifacts.py --check
 
+# ── Build the Teams app package an operator uploads ───────────────────────────
+# Every route into a tenant wants a .zip — Developer Portal Import app, Upload a
+# custom app, the admin centre — and none takes a bare manifest.json. Pass the
+# Azure Bot app id and it fills the three places it has to match.
+#   just teams-app-package --app-id <guid> --public-host teams.example.com
+teams-app-package *args:
+    uv run --project core python scripts/build_teams_app_package.py {{ args }}
+
 # ── Run alembic migrations ─────────────────────────────────────────────────────
 migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head

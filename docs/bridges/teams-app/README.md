@@ -28,7 +28,15 @@ tenant-wide Graph permissions in Entra instead, it asks every team owner to
 consent to something the deployment does not use. See
 [§1.4](../TEAMS_SETUP.md#14-graph-api-permissions) for the two routes.
 
-**3. Zip the three files flat**, from this directory:
+**3. Build the zip.** From the repository root:
+
+```bash
+just teams-app-package --app-id <your-app-id> --public-host <your-host>
+```
+
+That does steps 1 and 2 for you as well — the app id goes into all three
+places, and it refuses to pretend a placeholder is a real value. Or by hand,
+from this directory:
 
 ```bash
 zip -j agent-switch-teams.zip manifest.json color.png outline.png

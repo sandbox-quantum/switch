@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import re
 import struct
+import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -162,3 +164,94 @@ def test_the_icons_are_named_relatively_so_they_zip_flat(manifest: dict) -> None
     # must not reference a path either.
     for path in manifest["icons"].values():
         assert "/" not in path and not path.startswith(".")
+
+
+# ── the builder that turns the three files into an uploadable zip ─────────────
+
+
+def _build(tmp_path: Path, *args: str) -> tuple[int, Path]:
+    """Run the packager as an operator would, and return (exit code, zip)."""
+    import subprocess
+
+    out = tmp_path / "pkg.zip"
+    script = PACKAGE.parents[2] / "scripts" / "build_teams_app_package.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "-o", str(out), *args],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, out
+
+
+def test_the_package_is_flat_because_teams_rejects_a_nested_one(
+    tmp_path: Path,
+) -> None:
+    code, out = _build(tmp_path, "--app-id", "3fa85f64-5717-4562-b3fc-2c963f66afa6")
+
+    names = zipfile.ZipFile(out).namelist()
+    assert sorted(names) == ["color.png", "manifest.json", "outline.png"]
+    assert all("/" not in name for name in names)
+    assert code == 1  # host and URLs left as placeholders, and it says so
+
+
+def test_the_app_id_is_written_to_all_three_places(tmp_path: Path) -> None:
+    # One value, three fields, and Teams does not explain a mismatch — which is
+    # the whole reason this is not a hand edit.
+    app_id = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    _, out = _build(tmp_path, "--app-id", app_id)
+
+    built = json.loads(zipfile.ZipFile(out).read("manifest.json"))
+    assert built["id"] == app_id
+    assert built["bots"][0]["botId"] == app_id
+    assert built["webApplicationInfo"]["id"] == app_id
+
+
+def test_a_fully_supplied_package_reports_success(tmp_path: Path) -> None:
+    code, out = _build(
+        tmp_path,
+        "--app-id",
+        "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "--public-host",
+        "teams.example.org",
+        "--privacy-url",
+        "https://example.org/privacy",
+        "--terms-url",
+        "https://example.org/terms",
+    )
+
+    assert code == 0
+    built = json.loads(zipfile.ZipFile(out).read("manifest.json"))
+    assert built["validDomains"] == ["teams.example.org"]
+    assert built["developer"]["privacyUrl"] == "https://example.org/privacy"
+
+
+def test_an_unreplaced_placeholder_is_a_non_zero_exit(tmp_path: Path) -> None:
+    # So a CI step or a careless operator cannot ship the null GUID quietly.
+    code, _ = _build(tmp_path)
+
+    assert code == 1
+
+
+def test_a_bad_app_id_is_refused_rather_than_written(tmp_path: Path) -> None:
+    code, out = _build(tmp_path, "--app-id", "not-a-guid")
+
+    assert code != 0
+    assert not out.exists()
+
+
+def test_channel_features_is_opt_in(tmp_path: Path) -> None:
+    _, off = _build(tmp_path, "--app-id", "3fa85f64-5717-4562-b3fc-2c963f66afa6")
+    assert "supportsChannelFeatures" not in json.loads(
+        zipfile.ZipFile(off).read("manifest.json")
+    )
+
+    _, on = _build(
+        tmp_path,
+        "--app-id",
+        "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "--channel-features",
+    )
+    assert (
+        json.loads(zipfile.ZipFile(on).read("manifest.json"))["supportsChannelFeatures"]
+        == "tier1"
+    )
