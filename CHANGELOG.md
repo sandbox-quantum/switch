@@ -45,6 +45,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- An agent addressing a Teams user by name produces a real mention again,
+  rather than flat text that notifies nobody. Teams offers a *display* name on
+  an inbound activity, and that was taken as the person's handle — so someone
+  was filed under `Louis Amaudruz`, space and all, while the matcher that turns
+  `@name` back into a mention stops at the first space. It looked for `Louis`,
+  the directory held `louis amaudruz`, and the two could never meet: anyone
+  whose handle contained a space was permanently unmentionable. A display name
+  is now traded for the one-word principal name the directory holds, and the
+  matcher recognises the names it knows however many words they run to, so
+  people already stored the old way work without being renamed.
 - Concurrent writes to a bridge's learned `connection_config` no longer lose
   each other. The Teams bridge records a channel's team the first time it sees
   that channel, each from its own session, so a burst of new channels was a

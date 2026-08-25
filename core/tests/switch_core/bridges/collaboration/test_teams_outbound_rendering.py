@@ -87,6 +87,50 @@ def test_a_name_repeated_gets_one_entity() -> None:
     assert len(adapter._mention_entities(body)) == 1
 
 
+def test_a_handle_with_a_space_in_it_is_still_a_mention() -> None:
+    # The reported bug. Teams offers a display name for people whose principal
+    # name we cannot read, so the handle we file them under is two words. A
+    # matcher that stops at the space sees `@Louis` and finds nobody, and the
+    # person gets flat text and no notification.
+    adapter = _adapter(**{"Louis Amaudruz": "aad-louis"})
+    body = adapter.translate_outbound("@Louis Amaudruz starting a session")
+
+    assert body == "<at>Louis Amaudruz</at> starting a session"
+    assert adapter._mention_entities(body) == [
+        {
+            "type": "mention",
+            "text": "<at>Louis Amaudruz</at>",
+            "mentioned": {"id": "aad-louis", "name": "Louis Amaudruz"},
+        }
+    ]
+
+
+def test_the_longest_known_name_wins() -> None:
+    # Both are addressable, so matching the shorter one first would tag the
+    # wrong person and leave "Amaudruz" dangling as text.
+    adapter = _adapter(**{"Louis": "aad-other", "Louis Amaudruz": "aad-louis"})
+
+    assert adapter.translate_outbound("@Louis Amaudruz") == "<at>Louis Amaudruz</at>"
+    assert adapter.translate_outbound("@Louis alone") == "<at>Louis</at> alone"
+
+
+def test_a_known_name_is_not_matched_inside_a_longer_one() -> None:
+    adapter = _adapter(ada="aad-ada")
+
+    assert adapter.translate_outbound("@adaline wrote it") == "@adaline wrote it"
+
+
+def test_a_name_learned_later_is_matched_from_then_on() -> None:
+    # The matcher is built from the targets, so it has to be rebuilt when a
+    # person is met for the first time mid-session.
+    adapter = _adapter(alice="aad-alice")
+    assert adapter.translate_outbound("hi @bob") == "hi @bob"
+
+    adapter.prime_mention_targets({"bob": "aad-bob"})
+
+    assert adapter.translate_outbound("hi @bob") == "hi <at>bob</at>"
+
+
 def test_the_card_carries_mentions_where_teams_looks_for_them() -> None:
     # On a card the entities live under `msteams`, not on the activity.
     adapter = _adapter(alice="aad-alice")

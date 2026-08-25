@@ -103,14 +103,37 @@ def test_a_missing_name_is_looked_up_rather_than_replaced_by_the_id() -> None:
     assert graph.lookups == [_AAD_ID]
 
 
-def test_a_name_teams_offered_is_taken_without_asking_graph() -> None:
+def test_a_one_word_name_teams_offered_is_taken_without_asking_graph() -> None:
     graph = _Graph({"userPrincipalName": "someone.else@contoso.com"})
+    adapter = _adapter(graph)
+
+    handle = _run(adapter._sender_handle(_AAD_ID, "ada"))
+
+    assert handle == "ada"
+    assert graph.lookups == []
+
+
+def test_a_display_name_with_a_space_is_traded_for_the_principal_name() -> None:
+    # The offered name is what Teams puts on an activity, and it is nearly
+    # always two words. `@Ada Lovelace` cannot be read back out of a message —
+    # a mention ends at the space — so filing someone under it makes them
+    # permanently untaggable. The directory has a one-word answer; ask for it.
+    graph = _Graph({"userPrincipalName": "ada.lovelace@contoso.com"})
     adapter = _adapter(graph)
 
     handle = _run(adapter._sender_handle(_AAD_ID, "Ada Lovelace"))
 
-    assert handle == "Ada Lovelace"
-    assert graph.lookups == []
+    assert handle == "ada.lovelace"
+    assert graph.lookups == [_AAD_ID]
+
+
+def test_a_display_name_stands_when_the_directory_cannot_improve_on_it() -> None:
+    # Worse than a handle, better than an id: the room still shows a person's
+    # name, and `_mark_mentions` can still tag them by matching the whole of it.
+    graph = _Graph(None, fail=True)
+    adapter = _adapter(graph)
+
+    assert _run(adapter._sender_handle(_AAD_ID, "Ada Lovelace")) == "Ada Lovelace"
 
 
 def test_a_name_that_is_really_the_id_is_not_believed() -> None:

@@ -56,9 +56,11 @@ logger = logging.getLogger(__name__)
 _MENTION_TAG = re.compile(r"<at\b[^>]*>(.*?)</at>", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
-# An `@name` we might be able to turn into a real Teams mention. Same shape as
-# the other adapters use, so what counts as a name does not vary by platform.
-_MENTION_NAME = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]*)")
+# The whole of a name, if every character of it can be part of an `@mention`.
+_HANDLE_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+# What may follow a name for it to have ended there, rather than the name
+# being a prefix of a longer one: `@ada` must not match inside `@adaline`.
+_MENTION_END = r"(?![A-Za-z0-9._-])"
 _AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
 # A Teams identifier standing where a person's name should be: a channel
 # account (`29:…`, `8:orgid:…`) or a bare Entra object id.
@@ -97,6 +99,21 @@ def _handle_for(user: dict[str, Any]) -> str:
         return principal.split("@", 1)[0]
     display = str(user.get("displayName") or "")
     return display or str(user.get("id") or "")
+
+
+def _is_usable_handle(name: str) -> bool:
+    """Whether `name` survives being written as `@name`.
+
+    A handle is read back out of message text, where a mention ends at the
+    first character that cannot be part of one. A name containing anything
+    else — a space, above all, since most display names have one — is
+    therefore unaddressable, and an id was never a name to begin with.
+    """
+    return (
+        bool(name)
+        and not _TEAMS_ID.match(name)
+        and _HANDLE_SHAPE.match(name) is not None
+    )
 
 
 def _hard_wrap(text: str) -> str:
@@ -393,6 +410,9 @@ class TeamsAdapter(CollaborationAdapter):
         self._channel_type: dict[str, ChannelType] = {}
         # casefolded username -> AAD object id, for rendering real @mentions.
         self._mention_targets: dict[str, str] = {}
+        # `_mention_targets` compiled into an `@name` matcher; None until built,
+        # and discarded whenever the targets change.
+        self._mention_pattern: re.Pattern[str] | None = None
         # AAD object id -> the handle we know that person by, so a directory
         # read happens once per sender rather than once per message.
         self._sender_handles: dict[str, str] = {}
@@ -1221,6 +1241,26 @@ class TeamsAdapter(CollaborationAdapter):
         self._mention_targets.update(
             {name.casefold(): external_id for name, external_id in targets.items()}
         )
+        self._mention_pattern = None
+
+    def _known_name_pattern(self) -> re.Pattern[str] | None:
+        """An ``@name`` matcher covering the names we can actually address.
+
+        Built from the targets rather than from a general name shape, because
+        a Teams handle is often a display name and so often contains a space:
+        no fixed pattern can tell where `@Louis Amaudruz` ends without knowing
+        the name. Longest first, so the full name wins over its first word.
+
+        Rebuilt when the targets change, which is on startup and once per
+        person met.
+        """
+        if self._mention_pattern is None and self._mention_targets:
+            names = sorted(self._mention_targets, key=len, reverse=True)
+            alternatives = "|".join(re.escape(name) for name in names)
+            self._mention_pattern = re.compile(
+                f"@({alternatives}){_MENTION_END}", re.IGNORECASE
+            )
+        return self._mention_pattern
 
     def translate_outbound(self, content: str) -> str:
         return _hard_wrap(self._mark_mentions(content))
@@ -1235,14 +1275,21 @@ class TeamsAdapter(CollaborationAdapter):
         is not a Teams user, and ``@agent`` is Switch's own addressing, which
         wants the plain text.
         """
+        pattern = self._known_name_pattern()
+        if pattern is None:
+            return content
 
         def _replace(match: re.Match[str]) -> str:
             name = match.group(1)
+            # The pattern matches case-insensitively while the entity is looked
+            # up by casefold, and for a few scripts those disagree. Emitting
+            # markup the entity pass would not pair leaves a mention that
+            # highlights nobody, so leave the text alone instead.
             if name.casefold() not in self._mention_targets:
                 return match.group(0)
             return f"<at>{html.escape(name)}</at>"
 
-        return _MENTION_NAME.sub(_replace, content)
+        return pattern.sub(_replace, content)
 
     def _mention_entities(self, text: str) -> list[dict[str, Any]]:
         """Bot Framework mention entities for the ``<at>`` markup in ``text``.
@@ -1279,6 +1326,14 @@ class TeamsAdapter(CollaborationAdapter):
         text of every agent reply that addressed them. An id is never a name,
         so look one up instead, and only give up when Graph cannot say either.
 
+        What Teams offers on an activity is the *display* name, which is
+        usually two words. A handle is also what an agent writes to address
+        someone, and `@Louis Amaudruz` cannot be read back — a mention ends at
+        the first space — so taking the offered name at face value files
+        people under something that can never be tagged. Ask the directory for
+        the principal name instead, which is one word by construction, and
+        keep the offered name only if the directory cannot say.
+
         Cached per sender: it is one directory read per person, on a value that
         does not change between messages.
         """
@@ -1286,21 +1341,29 @@ class TeamsAdapter(CollaborationAdapter):
         if cached is not None:
             return cached
         handle = ""
-        # A name Teams itself offered is good enough and costs nothing; only an
-        # id masquerading as one sends us to Graph.
-        if offered_name and offered_name != sender_id:
+        # A one-word name Teams offered is already a usable handle and costs
+        # nothing. An id masquerading as a name, or a name with a space in it,
+        # sends us to the directory for something better.
+        if (
+            offered_name
+            and offered_name != sender_id
+            and _is_usable_handle(offered_name)
+        ):
             handle = offered_name
         elif self._graph is not None and sender_id:
             try:
                 handle = _handle_for(await self._graph.get_user(user_id=sender_id))
             except Exception:
                 logger.warning(
-                    "Could not resolve a name for Teams sender %s; falling back "
-                    "to their id",
+                    "Could not resolve a handle for Teams sender %s; falling "
+                    "back to %s",
                     sender_id,
+                    "the display name Teams offered" if offered_name else "their id",
                     exc_info=True,
                 )
-        handle = handle or sender_id
+        # A display name with a space is a poor handle but a good deal better
+        # than an id, so it stands when the directory yields nothing.
+        handle = handle or offered_name or sender_id
         self._sender_handles[sender_id] = handle
         return handle
 
