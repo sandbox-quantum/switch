@@ -22,7 +22,7 @@ history — a later commit cannot take it back. Keep internal detail out of it:
 
 ## Project Overview
 
-Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
+Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms, with collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
 
 The target architecture is documented in `docs/`.
 
@@ -76,14 +76,12 @@ just test -k "test_name"         # run specific test
   - `models.py` — SQLAlchemy table definitions
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
-- `rooms/` — Room lifecycle, configuration, provisioning
-- `clients/` — Matrix clients (agent, user, resource manager, observe)
+- `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
+- `clients/` — Matrix clients (agent, user, admin, bridge, resource manager)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors)
   - `collaboration/` — Collaboration Bridge (Slack, Mattermost, Discord, Teams, Telegram adapters)
-  - `observe/` — Observe Bridge (event sinks)
   - `resource/` — Resource Bridge (platform resource management)
-- `protect/` — Protection pipeline (checks, protect bridge, API)
 - `gateway/` — Management API for the frontend
 
 **Key patterns:**
@@ -226,10 +224,14 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 
 ## Reference Documentation
 
-Everything under `docs/` is listed here; if it is not in this list, it does not
-exist:
-- `docs/old/ARCHITECTURE.md` — system overview: components, domain model, key flows,
-  entry points, and a code map from area to module
+- `docs/official/` — the published user-facing documentation
+  (docs.flintai.dev) synced into the repo. Generated — edit the source in the
+  docs repository, never here. Start at `docs/README.md` for how the sync
+  works; `docs/official/internals/` covers architecture and the agent
+  protocol for readers of this repo.
+- `docs/old/ARCHITECTURE.md` — historical system overview: components, domain
+  model, key flows, entry points, and a code map. Predates the docs sync and
+  may lag the tree.
 - `docs/old/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
   event stream, room slots, failure handling). Authoritative where it and
   `ARCHITECTURE.md` overlap
