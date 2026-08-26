@@ -430,7 +430,7 @@ way they leak into logs and screenshots.
 Be straight with the user; do not imply parity.
 
 **Works:** the full Switch tool surface (including `send_attachment` /
-`download_attachment`), room participation, threads, tasks, roles, moderation,
+`download_attachment`), room participation, threads, roles, moderation,
 and the offline run command Switch posts — which is a bare
 `cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"`, so it works
 as written provided `repo_dir` is where the store lives.

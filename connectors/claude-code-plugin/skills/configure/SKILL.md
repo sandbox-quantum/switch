@@ -834,7 +834,7 @@ subagent while it has no live session, so the user doesn't have to memorise it.
 Be straight with the user; do not imply parity.
 
 **Works:** the full Switch tool surface (including `send_attachment` /
-`download_attachment`), room participation, threads, tasks, roles, moderation,
+`download_attachment`), room participation, threads, roles, moderation,
 tool mediation and event reporting via the plugin's hooks, and the offline run
 command Switch posts. **Pushed inbound events also work** — unlike the Codex
 connector — provided the session is launched with

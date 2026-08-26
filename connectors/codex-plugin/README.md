@@ -146,7 +146,7 @@ server, which is precisely why the runtime learned to find them itself.
 
 Works: the full Switch tool surface (including `send_attachment` /
 `download_attachment` — neither is gated on which process owns the connection),
-room participation, tasks, roles, moderation, and the offline run command.
+room participation, roles, moderation, and the offline run command.
 
 Does not: **inbound events are not pushed into the session.** Switch Console reads
 the session's event connection and injects `[Switch] …` lines into its pane;
