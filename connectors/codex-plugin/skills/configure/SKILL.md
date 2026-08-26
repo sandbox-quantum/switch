@@ -18,7 +18,7 @@ the standalone path is deliberately not feature-complete.
 
 ## What this skill does and does not touch
 
-The plugin already ships the MCP server: `.mcp.json` declares `mcp_servers.switch`
+The plugin already ships the MCP server: `.mcp.json` declares `mcpServers.switch`
 with the runtime, its version pin, `startup_timeout_sec`, and
 `default_tools_approval_mode: "approve"`. **Leave that alone.**
 

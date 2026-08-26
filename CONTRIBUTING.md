@@ -29,7 +29,7 @@ hot-reload while developing: `just run` (switch-core on `:8000`) and
 `just down`, or `just reset` to also wipe the volumes.
 
 If you only want to see Switch running rather than develop against it, the
-standalone stack in the [README](README.md#quickstart) is a shorter path.
+standalone stack in the [README](README.md#getting-started) is a shorter path.
 
 ## Common commands
 
@@ -62,7 +62,7 @@ Run `just` with no arguments to list every recipe. The most-used ones:
 | `console/` | The Switch Console desktop app |
 | `connectors/` | Agent connectors (`claude-code-plugin`, `codex-plugin`, `opencode-plugin`) |
 | `deploy/` | Deployment assets — Docker Compose stacks (`local/`), the Helm chart (`remote/`) and shared images |
-| `docs/` | Architecture, agent protocol and bridge setup references |
+| `docs/` | `official/` — the published documentation synced into the repo (generated, edit the docs repository); `old/` — internal architecture, protocol and bridge references |
 | `switch-expert/` | Instructions and knowledge for an agent that answers questions about Switch |
 | `justfile` | Repo-root task runner (drives all code trees) |
 

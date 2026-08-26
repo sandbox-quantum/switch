@@ -112,8 +112,7 @@ and each ships its own copy of the Switch room-workflow skill at
   `env_vars` and Codex forwards them **by name** from its own environment — no
   expansion, and no secret in the file. An unset name is simply not forwarded,
   which is why the list can include the Switch Console-only variables without
-  breaking a standalone session (the Claude connector cannot do this: `${VAR}`
-  expansion makes every declared variable mandatory).
+  breaking a standalone session.
 
   The plugin's `.mcp.json` also carries `default_tools_approval_mode =
   "approve"`, so the Switch tools never prompt. It has to live there rather than
