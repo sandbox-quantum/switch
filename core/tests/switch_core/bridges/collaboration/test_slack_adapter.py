@@ -43,6 +43,17 @@ def _capture_messages(adapter: SlackAdapter) -> list[InboundMessage]:
     return captured
 
 
+def _capture_commands(adapter: SlackAdapter) -> list[InboundCommand]:
+    captured: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        captured.append(cmd)
+
+    adapter._on_command = on_command
+    adapter._channel_name_cache["C123"] = "general"
+    return captured
+
+
 class _FakeWebClient:
     """Captures chat_postMessage / chat_delete kwargs and returns canned ts."""
 
@@ -1290,3 +1301,88 @@ def test_send_attachment_upload_failure_falls_back_to_disclosed_text() -> None:
     assert "cat.png" in fake.calls[0]["text"]
     assert fake.calls[0]["username"] == "agent-a"
     assert ref == "C123:999.9"
+
+
+# ── Code-formatted commands (near-miss intake) ───────────────────────────────
+
+
+def test_unwrap_code_span() -> None:
+    unwrap = SlackAdapter._unwrap_code_span
+    assert unwrap("`!cmd`") == "!cmd"
+    assert unwrap("```!cmd```") == "!cmd"
+    assert unwrap("  `!invite-agent @x`  ") == "!invite-agent @x"
+    # Not a whole-message span: prose around it, or two spans — left untouched.
+    assert unwrap("run `!cmd` now") == "run `!cmd` now"
+    assert unwrap("`!a` `!b`") == "`!a` `!b`"
+    # Plain text and degenerate fences are returned as-is.
+    assert unwrap("plain text") == "plain text"
+    assert unwrap("`") == "`"
+
+
+def test_backtick_wrapped_command_from_human_is_run() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "user": "U1",
+                "text": "`!invite-agent @switch-onboarder`",
+                "channel_type": "channel",
+            }
+        )
+    )
+
+    # The command runs despite the code formatting, and is not also bridged as
+    # an ordinary message.
+    assert len(commands) == 1
+    assert commands[0].command == "invite-agent"
+    assert commands[0].args == "@switch-onboarder"
+    assert messages == []
+
+
+def test_code_span_command_inside_prose_is_not_run() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+    messages = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "user": "U1",
+                "text": "run `!invite-agent @x` to add it",
+                "channel_type": "channel",
+            }
+        )
+    )
+
+    # A reference embedded in prose stays an ordinary message, never a command.
+    assert commands == []
+    assert len(messages) == 1
+
+
+def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
+    adapter = _adapter()
+    adapter._bot_id = "BSELF"
+    commands = _capture_commands(adapter)
+    _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "text": "`!invite-agent @x`",
+                "channel_type": "channel",
+                "bot_id": "BDATADOG",
+            }
+        )
+    )
+
+    # An agent posting a `!command` reference must never trigger it.
+    assert commands == []

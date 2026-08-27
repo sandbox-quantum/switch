@@ -8,14 +8,20 @@ from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import InboundCommand
 
 
-def _cmd(*, message_ref: str | None, root_id: str | None = None) -> InboundCommand:
+def _cmd(
+    *,
+    message_ref: str | None,
+    root_id: str | None = None,
+    command: str = "status",
+    args: str = "",
+) -> InboundCommand:
     return InboundCommand(
         channel_id="chan-1",
         channel_type="channel_private",
         sender_id="ext-user",
         sender_name="louisa",
-        command="status",
-        args="",
+        command=command,
+        args=args,
         message_ref=message_ref,
         root_id=root_id,
     )
@@ -25,6 +31,7 @@ def _fake_bridge(
     room_send_result: object,
     *,
     external_to_matrix: dict[str, str] | None = None,
+    translate_inbound: object = None,
 ) -> SimpleNamespace:
     """A minimal BridgeCore stand-in for _handle_inbound_command.
 
@@ -34,6 +41,7 @@ def _fake_bridge(
     recorded: list[dict[str, str]] = []
     sent_content: list[dict] = []
     lookup = external_to_matrix or {}
+    translate = translate_inbound or (lambda raw: raw)
 
     async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
         async def _room_send(_room_id: str, _type: str, content: dict) -> object:
@@ -53,6 +61,7 @@ def _fake_bridge(
 
     return SimpleNamespace(
         _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
+        _adapter=SimpleNamespace(translate_inbound=translate),
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _matrix_event_for_external_post=_matrix_event_for_external_post,
         _record_message_map=_record_message_map,
@@ -125,3 +134,27 @@ class TestCommandThreadMapping:
         await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref="mm-post-1"))
 
         assert bridge.recorded == []
+
+    async def test_command_args_translated_via_adapter(self) -> None:
+        # A `!command`'s args reach the funnel with the bridge's native mention
+        # markup — an agent picked from Slack autocomplete arrives as its group
+        # tag `<!subteam^S…>`, not `@name`. The funnel must run args through the
+        # adapter's inbound translation (as slash commands already do) so the
+        # dispatcher's first-@token targeting resolves the agent. Regression for
+        # `!invite-agent @agent` failing while `/invite-agent` worked.
+        bridge = _fake_bridge(
+            SimpleNamespace(event_id="$cmd-event"),
+            translate_inbound=lambda raw: raw.replace(
+                "<!subteam^S123>", "@switch-onboarder"
+            ),
+        )
+        await BridgeCore._handle_inbound_command(
+            bridge,
+            _cmd(
+                message_ref="mm-post-1",
+                command="invite-agent",
+                args="<!subteam^S123>",
+            ),
+        )
+
+        assert bridge.sent_content[0]["args"] == "@switch-onboarder"

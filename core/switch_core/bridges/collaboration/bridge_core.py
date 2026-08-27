@@ -617,7 +617,7 @@ class BridgeCore:
 
         content: dict[str, object] = {
             "command": cmd.command,
-            "args": cmd.args,
+            "args": self._adapter.translate_inbound(cmd.args),
             "user_id": puppet.matrix_user_id,
             "user_name": cmd.sender_name,
         }
