@@ -1813,7 +1813,7 @@ class SlackAdapter(CollaborationAdapter):
     @staticmethod
     def _unwrap_code_span(text: str) -> str:
         """Return the inside of a message that is *entirely* one Slack code span
-        (```x``` or `x`), else the text unchanged.
+        (```x``` or `x`), else the stripped text unchanged.
 
         Slack keeps the backticks in the delivered text, so a `!cmd` in a code
         span no longer starts with "!" and gets treated as chatter instead of a
