@@ -1028,6 +1028,30 @@ def _capture_commands(adapter: SlackAdapter) -> list[InboundCommand]:
     return captured
 
 
+def test_typed_command_translates_slack_mention() -> None:
+    adapter = _adapter()
+    adapter._user_cache["U1"] = SlackUser(name="jane", display_name="Jane")
+    adapter._user_cache["U999"] = SlackUser(name="worker", display_name="Worker")
+    adapter._channel_name_cache["C123"] = "general"
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "user": "U1",
+                "text": "!invite-agent <@U999>",
+                "channel_type": "channel",
+            }
+        )
+    )
+
+    assert len(commands) == 1
+    assert commands[0].command == "invite-agent"
+    assert commands[0].args == "@worker"
+
+
 def test_slash_command_maps_to_in_room_command() -> None:
     adapter = _adapter()
     fake = _FakeSlashWebClient()

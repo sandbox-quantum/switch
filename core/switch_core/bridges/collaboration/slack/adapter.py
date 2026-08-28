@@ -2009,7 +2009,7 @@ class SlackAdapter(CollaborationAdapter):
         if stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
-            args = parts[1].strip() if len(parts) > 1 else ""
+            args = self.translate_inbound(parts[1].strip()) if len(parts) > 1 else ""
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
@@ -2072,9 +2072,9 @@ class SlackAdapter(CollaborationAdapter):
         user = await self._resolve_user_name(user_id)
         channel_name = str(payload.get("channel_name", "")) or None
 
-        # Slack encodes any @mentions in the slash text as `<@U…>`; normalise
-        # them to `@name` so the command dispatcher's targeting (first @token →
-        # target agent/role) resolves the same way it does for a typed command.
+        # Slack encodes @mentions in command arguments as `<@U…>`; normalise
+        # them to `@name` so the command dispatcher's first `@` token resolves
+        # to the target agent or role.
         args = self.translate_inbound(text)
 
         try:
