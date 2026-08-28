@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 from nio import RoomSendError
 
@@ -40,8 +40,12 @@ def _fake_bridge(
     """
     recorded: list[dict[str, str]] = []
     sent_content: list[dict] = []
+    pending: dict[str, str] = {}
     lookup = external_to_matrix or {}
     translate = translate_inbound or (lambda raw: raw)
+
+    def _prerecord_message_map(matrix_event_id: str, external_post_id: str) -> None:
+        pending[matrix_event_id] = external_post_id
 
     async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
         async def _room_send(_room_id: str, _type: str, content: dict) -> object:
@@ -65,8 +69,11 @@ def _fake_bridge(
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _matrix_event_for_external_post=_matrix_event_for_external_post,
         _record_message_map=_record_message_map,
+        _prerecord_message_map=_prerecord_message_map,
+        _pending_message_maps=pending,
         recorded=recorded,
         sent_content=sent_content,
+        pending=pending,
     )
 
 
@@ -158,3 +165,89 @@ class TestCommandThreadMapping:
         )
 
         assert bridge.sent_content[0]["args"] == "@switch-onboarder"
+
+
+class TestCommandResultThreadingRace:
+    async def test_external_post_prefers_pending_anchor_over_db(self) -> None:
+        # While the durable row is still being written, the in-memory anchor must
+        # resolve without touching the DB. The store raises to prove the DB is
+        # not consulted on a pending hit.
+        def _boom(*_a: object, **_k: object) -> object:
+            raise AssertionError("DB consulted despite a pending anchor")
+
+        bridge = SimpleNamespace(
+            _pending_message_maps={"$cmd-event": "chan-1:100.1"},
+            _bridge_id="b",
+            _bridge_message_map_store=SimpleNamespace(get_by_matrix_event_id=_boom),
+            _session_factory=_boom,
+        )
+        got = await BridgeCore._external_post_for_matrix_event(bridge, "$cmd-event")
+        assert got == "chan-1:100.1"
+
+    async def test_top_level_command_result_threads_during_db_write(self) -> None:
+        # Regression for the intermittent root-posting of fast system commands
+        # (the !help screenshot): the reply is relayed WHILE _record_message_map
+        # is still awaiting its write. The anchor set before that await must
+        # resolve the command's thread root, and is popped once the write returns.
+        resolved: dict[str, str | None] = {}
+
+        async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
+            async def _room_send(_room_id: str, _type: str, _content: dict) -> object:
+                return SimpleNamespace(event_id="$cmd-event")
+
+            return SimpleNamespace(
+                matrix_user_id="@puppet:switch.local",
+                client=SimpleNamespace(room_send=_room_send),
+            )
+
+        async def _matrix_event_for_external_post(_post: str) -> str | None:
+            return None  # top-level command: its own post is not yet bridged
+
+        async def _get_none(*_a: object, **_k: object) -> None:
+            return None
+
+        class _NullSession:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_a: object) -> bool:
+                return False
+
+        bridge = SimpleNamespace(
+            _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
+            _adapter=SimpleNamespace(translate_inbound=lambda s: s),
+            _pending_message_maps={},
+            _bridge_id="b",
+            _bridge_message_map_store=SimpleNamespace(get_by_matrix_event_id=_get_none),
+            _session_factory=lambda: _NullSession(),
+            _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
+            _matrix_event_for_external_post=_matrix_event_for_external_post,
+        )
+        bridge._prerecord_message_map = MethodType(
+            BridgeCore._prerecord_message_map, bridge
+        )
+        bridge._external_post_for_matrix_event = MethodType(
+            BridgeCore._external_post_for_matrix_event, bridge
+        )
+
+        async def _record_message_map(
+            *, external_channel_id: str, matrix_event_id: str, external_post_id: str
+        ) -> None:
+            # Simulate the reply's outbound relay resolving the thread root while
+            # this write is still in flight.
+            resolved["mid"] = await bridge._external_post_for_matrix_event(
+                matrix_event_id
+            )
+
+        bridge._record_message_map = _record_message_map
+
+        await BridgeCore._handle_inbound_command(
+            bridge, _cmd(message_ref="chan-1:100.1", command="help")
+        )
+
+        # Mid-write the anchor resolved to the command post (threads under it)...
+        assert resolved["mid"] == "chan-1:100.1"
+        # ...and it is cleared once the write returns...
+        assert bridge._pending_message_maps == {}
+        # ...after which resolution falls through to the DB (empty here).
+        assert await bridge._external_post_for_matrix_event("$cmd-event") is None
