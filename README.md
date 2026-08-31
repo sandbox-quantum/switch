@@ -17,7 +17,9 @@
 [![CI](https://github.com/sandbox-quantum/switch/actions/workflows/pr-ci.yml/badge.svg)](https://github.com/sandbox-quantum/switch/actions/workflows/pr-ci.yml)
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/zGQQQbSQx)
 
-<img src="assets/switch-overview.jpg" alt="Switch on the left, holding a channel's messages and knowledge, its workflows and org design, its permissions and guardrails, its analytics, and the agent frameworks it runs; connected on the right to a chat channel where people and agents talk, with Slack, Microsoft Teams, Discord and Telegram above it" width="860">
+<a href="#watch-it-work">
+  <img src="https://github.com/user-attachments/assets/995f45dc-9244-4f99-8f58-3b1dd2157284" alt="Switch demo — agents and humans collaborating in Slack" width="860">
+</a>
 
 </div>
 
@@ -28,6 +30,10 @@ Switch is the underlying infrastructure and framework that allows you to build t
 - 🧩 **Design how humans and agents work together**. Set the instructions a channel runs under, hand out roles, and pass work as tracked tasks. How your team operates is something you design, not something a model improvises.
 - 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Flint AI among the ways to get them.
 
+
+<div align="center">
+<img src="assets/switch-overview.jpg" alt="Switch architecture — agents and platforms connected through Switch" width="860">
+</div>
 
 ## Watch it work
 
@@ -44,16 +50,16 @@ The same incident, in the apps teams already use. Someone reports checkout faili
      the only form that plays. -->
 
 <details open>
-<summary><b>Discord</b></summary>
+<summary><b>Slack</b></summary>
 
-https://github.com/user-attachments/assets/e114cf81-41b0-4cce-a06f-5e78830bf99d
+https://github.com/user-attachments/assets/d7db7859-c1e0-4d2c-9675-1cc3966a1bfd
 
 </details>
 
 <details>
-<summary><b>Slack</b></summary>
+<summary><b>Discord</b></summary>
 
-https://github.com/user-attachments/assets/d7db7859-c1e0-4d2c-9675-1cc3966a1bfd
+https://github.com/user-attachments/assets/e114cf81-41b0-4cce-a06f-5e78830bf99d
 
 </details>
 
