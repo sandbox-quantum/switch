@@ -34,9 +34,10 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
   }, []);
 
   const handleClose = useCallback(() => {
+    if (submitting) return;
     reset();
     onClose();
-  }, [reset, onClose]);
+  }, [submitting, reset, onClose]);
 
   const handleSubmit = useCallback(async () => {
     if (newPassword !== confirmPassword) {
