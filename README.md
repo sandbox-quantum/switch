@@ -18,7 +18,7 @@
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/zGQQQbSQx)
 
 <a href="#watch-it-work">
-  <img src="https://github.com/user-attachments/assets/7a416af5-3d25-4731-a9c0-5be03acc86a3" alt="Switch demo — agents and humans collaborating in Slack" width="860">
+  <img src="https://github.com/user-attachments/assets/995f45dc-9244-4f99-8f58-3b1dd2157284" alt="Switch demo — agents and humans collaborating in Slack" width="860">
 </a>
 
 </div>
