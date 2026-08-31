@@ -77,3 +77,24 @@ async def test_short_new_password_rejected_by_schema() -> None:
 async def test_empty_new_password_rejected_by_schema() -> None:
     with pytest.raises(ValidationError):
         ChangePasswordRequest(current_password="old-password-1", new_password="")
+
+
+async def test_oidc_user_without_password_hash_returns_403() -> None:
+    """OIDC-provisioned users have password_hash=None — changing password must fail cleanly."""
+    user = User(
+        id="u-2",
+        name="Oidc User",
+        email="oidc@example.com",
+        role="user",
+        password_hash=None,
+    )
+    session = _FakeSession()
+    req = ChangePasswordRequest(
+        current_password="anything", new_password="new-password-1"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await change_password(req, session, user)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 403
+    assert not session.committed

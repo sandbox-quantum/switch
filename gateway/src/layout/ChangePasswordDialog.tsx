@@ -69,6 +69,7 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
           <TextField
             label="Current password"
             type="password"
+            autoComplete="current-password"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
             required
@@ -76,6 +77,7 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
           <TextField
             label="New password"
             type="password"
+            autoComplete="new-password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             required
@@ -83,6 +85,7 @@ export default function ChangePasswordDialog({ open, onClose }: Props) {
           <TextField
             label="Confirm new password"
             type="password"
+            autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             required
