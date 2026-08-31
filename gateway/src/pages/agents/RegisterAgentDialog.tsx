@@ -339,7 +339,7 @@ export default function RegisterAgentDialog({
                   <TextField
                     label="Name"
                     value={name}
-                    onChange={(e) => setName(e.target.value.toLowerCase())}
+                    onChange={(e) => setName(e.target.value.replace(/[A-Z]/g, (c) => c.toLowerCase()))}
                     fullWidth
                     required
                   />
