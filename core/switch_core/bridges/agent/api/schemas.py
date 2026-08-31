@@ -119,6 +119,13 @@ class ConnectionSubscribeRequest(BaseModel):
     takeover: bool = False
 
 
+class ConnectionCloseRequest(BaseModel):
+    """Tear a connection down now rather than letting its heartbeat lapse."""
+
+    connection_id: str
+    reason: str = "client closed"
+
+
 class ConnectionBeatRequest(BaseModel):
     """The single client tick that keeps a connection alive (CHOO-1857).
 

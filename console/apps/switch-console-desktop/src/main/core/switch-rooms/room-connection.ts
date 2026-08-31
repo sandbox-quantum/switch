@@ -478,6 +478,12 @@ export class RoomConnection {
       this.currentAnchorId = null;
       void this.postRuntimeState('idle', null, { detached: true }).catch(() => {});
     }
+    // Tell the server the connection is gone instead of letting the heartbeat
+    // lapse. Until it is closed the room slot stays claimed, the agent's
+    // all-scope watcher stays dark on that room, and a message arriving in the
+    // meantime spawns nothing (CHOO-2497). Detached and best-effort for the
+    // same reason as the idle report above; the sweep remains the backstop.
+    void this.closeConnection();
     this.abort.abort();
     if (this.busyFallback) clearTimeout(this.busyFallback);
     if (this.humanGateTimer) clearTimeout(this.humanGateTimer);
@@ -532,6 +538,47 @@ export class RoomConnection {
     if (!opts.detached) signals.push(this.abort.signal);
     if (opts.extraSignal) signals.push(opts.extraSignal);
     return fetch(url, { ...init, signal: AbortSignal.any(signals) });
+  }
+
+  /**
+   * Ask the server to drop this session's connection, releasing its room slot
+   * at once. Failure is logged rather than thrown: teardown must not depend on
+   * the network, and the heartbeat sweep still collects the connection a few
+   * seconds later.
+   */
+  private async closeConnection(): Promise<void> {
+    try {
+      const resp = await this.fetchWithTimeout(
+        `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/connection/close`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.creds.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            connection_id: this.connectionId,
+            reason: 'session stopped',
+          }),
+        },
+        RUNTIME_STATE_REQUEST_TIMEOUT_MS,
+        { detached: true }
+      );
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      }
+    } catch (error) {
+      this.log.warn(
+        'RoomConnection: could not close the connection; falling back to the server sweep',
+        {
+          event: 'room_connection_close_failed',
+          sessionId: this.sessionId,
+          roomId: this.roomId,
+          connectionId: this.connectionId,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+    }
   }
 
   private async postRuntimeState(

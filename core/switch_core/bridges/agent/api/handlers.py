@@ -25,6 +25,7 @@ from switch_core.bridges.agent.api.schemas import (
     BulkRegisterResult,
     CancelTaskRequest,
     ConnectionBeatRequest,
+    ConnectionCloseRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
     CreateModerationRoomRequest,
@@ -855,6 +856,32 @@ async def connection_beat(
 
     protocol.event_buffer.confirm(agent.id, conn.id, cursor)
     return {"ok": True, "rooms": sorted(conn.rooms), "cursor": conn.cursor}
+
+
+@router.post("/{agent_id}/connection/close")
+async def connection_close(
+    agent_id: str,
+    req: ConnectionCloseRequest,
+    agent: Annotated[Agent, Depends(get_agent_from_scope)],
+    protocol: Annotated[ProtocolService, Depends(get_protocol)],
+) -> dict[str, Any]:
+    """Close a connection now, releasing its room slots immediately.
+
+    Without this a client that goes away — a session the user deleted, above
+    all — keeps its room claim until the heartbeat sweep notices, and for those
+    few seconds the agent's all-scope watcher stays dark on that room and no
+    replacement session is spawned.
+
+    Idempotent: closing a connection that is already gone is the outcome the
+    caller wanted, so it reports `closed: false` rather than failing.
+    """
+    try:
+        conn = protocol.connections.require(agent.id, req.connection_id)
+    except UnknownConnectionError:
+        return {"ok": True, "closed": False}
+
+    protocol.connections.close(conn.id, req.reason)
+    return {"ok": True, "closed": True}
 
 
 @router.post("/{agent_id}/connection/subscribe")
