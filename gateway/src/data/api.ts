@@ -867,6 +867,16 @@ export function oidcLoginUrl(): string {
   return `${BASE}/auth/oidc/login`;
 }
 
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await jsonRequest("/auth/me/password", "PUT", {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}
+
 export async function fetchUsers(): Promise<UserInfo[] | null> {
   return fetchJson<UserInfo[]>("/users");
 }
