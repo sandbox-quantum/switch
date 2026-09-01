@@ -159,6 +159,7 @@ async def register_agent_endpoint(
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
+            display_name=req.display_name,
             connector_type=req.connector_type,
             integration_profile=req.integration_profile,
             tools=req.tools,
@@ -183,6 +184,7 @@ async def _register_known(
     name: str,
     description: str,
     icon_url: str | None,
+    display_name: str | None,
     options_raw: dict,
     parent_agent_id: str | None,
     overwrite: bool,
@@ -217,6 +219,7 @@ async def _register_known(
             name=name,
             description=description,
             icon_url=icon_url,
+            display_name=display_name,
             connector_type=spec.connector_type,
             integration_profile=integration_profile,
             tools=spec.tools,
@@ -247,6 +250,7 @@ async def register_known_agent_endpoint(
         name=req.name,
         description=req.description,
         icon_url=req.icon_url,
+        display_name=req.display_name,
         options_raw=req.options,
         parent_agent_id=req.parent_agent_id,
         overwrite=req.overwrite,
@@ -337,6 +341,10 @@ async def register_known_agents_bulk_endpoint(
             # no icon lets each fall back to something derived from its own
             # name. An individual subagent can still be given one afterwards.
             icon_url=None,
+            # Nor a display name: the whole point of a subagent's derived
+            # `<parent>.<child>` identifier is that it says which parent it
+            # belongs to, and one shared human label would erase that.
+            display_name=None,
             options_raw=options,
             parent_agent_id=req.parent_agent_id,
             overwrite=req.overwrite,
