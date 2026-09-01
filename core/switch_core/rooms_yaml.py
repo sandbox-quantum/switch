@@ -80,9 +80,10 @@ class InlineExternalReference(BaseModel):
 
     @model_validator(mode="after")
     def _validate_value(self) -> InlineExternalReference:
-        # Validate the value bag against the type's schema now, so a bad inline
-        # reference fails at parse time rather than mid-provision.
-        self.value = validate_reference_value(self.type, self.value)
+        # Only the value bag's shape can be checked here: parse() is
+        # synchronous and holds neither a session nor a principal, so whether
+        # the type exists and is readable is settled in _resolve_references.
+        self.value = validate_reference_value(self.value)
         return self
 
 
@@ -250,7 +251,8 @@ class RoomYamlService:
         self, entries: list[ExternalReferenceEntry], *, user_id: str, is_admin: bool
     ) -> tuple[list[str], list[InlineExternalReference]]:
         """Resolve attach-existing references up front (fail loud on missing /
-        ambiguous / no-access). Returns (attach-existing ids, inline entries)."""
+        ambiguous / no-access) and check every inline entry's type resolves for
+        this principal. Returns (attach-existing ids, inline entries)."""
         attached_ids: list[str] = []
         inline: list[InlineExternalReference] = []
         async with self._session_factory() as session:
@@ -278,6 +280,12 @@ class RoomYamlService:
                         )
                     attached_ids.append(matches[0])
                 else:
+                    # Raises if the type does not exist or the user cannot
+                    # read it — here, before create_room, so provisioning
+                    # aborts with nothing created.
+                    await self._resources.resolve_type_for_principal(
+                        session, entry.type, user_id=user_id, is_admin=is_admin
+                    )
                     inline.append(entry)
         return attached_ids, inline
 
