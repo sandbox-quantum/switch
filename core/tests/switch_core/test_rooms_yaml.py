@@ -37,6 +37,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -141,6 +142,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
     """Seed a user + two agents, and wire up the YAML service."""
     resource_service = ResourceService(
         reference_store=ReferenceStore(),
+        reference_type_store=ReferenceTypeStore(),
         document_store=DocumentStore(),
         package_store=PackageStore(),
         room_link_store=RoomLinkStore(),
@@ -326,6 +328,7 @@ async def test_provision_attach_reference_by_name(env):
         ref = await env["resource_service"].create_reference(
             session,
             owner_id=env["user_id"],
+            is_admin=False,
             read_visibility="private",
             write_visibility="private",
             type="confluence",
@@ -373,6 +376,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
             await env["resource_service"].create_reference(
                 session,
                 owner_id=env["user_id"],
+                is_admin=False,
                 read_visibility="private",
                 write_visibility="private",
                 type="github",

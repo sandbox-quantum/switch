@@ -2688,7 +2688,7 @@ class ProtocolService:
         owner (anonymous agents cannot own resources).
         """
         async with self.session_factory() as session:
-            _agent, owner_id, _is_admin = await self._resolve_acting_identity(
+            _agent, owner_id, is_admin = await self._resolve_acting_identity(
                 session, agent_id
             )
             if owner_id is None:
@@ -2698,6 +2698,7 @@ class ProtocolService:
             ref = await self.resource_service.create_reference(
                 session,
                 owner_id=owner_id,
+                is_admin=is_admin,
                 read_visibility=read_visibility,
                 write_visibility=write_visibility,
                 type=type,

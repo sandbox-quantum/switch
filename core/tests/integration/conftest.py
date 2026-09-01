@@ -68,6 +68,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -145,6 +146,7 @@ class SessionEnv:
     external_user_store: ExternalUserStore
     api_key_store: ApiKeyStore
     reference_store: ReferenceStore
+    reference_type_store: ReferenceTypeStore
     document_store: DocumentStore
     package_store: PackageStore
     room_link_store: RoomLinkStore
@@ -392,6 +394,7 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         external_user_store=ExternalUserStore(),
         api_key_store=ApiKeyStore(),
         reference_store=ReferenceStore(),
+        reference_type_store=ReferenceTypeStore(),
         document_store=DocumentStore(),
         package_store=PackageStore(),
         room_link_store=RoomLinkStore(),
@@ -439,6 +442,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
 
     resource_service = ResourceService(
         reference_store=session_env.reference_store,
+        reference_type_store=session_env.reference_type_store,
         document_store=session_env.document_store,
         package_store=session_env.package_store,
         room_link_store=session_env.room_link_store,

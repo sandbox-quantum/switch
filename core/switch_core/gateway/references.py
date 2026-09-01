@@ -130,6 +130,7 @@ async def create_reference(
         ref = await resource_service.create_reference(
             session,
             owner_id=user.id,
+            is_admin=user.role == "admin",
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
             type=req.type,

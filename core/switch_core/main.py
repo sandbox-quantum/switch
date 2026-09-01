@@ -75,6 +75,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -203,6 +204,7 @@ async def run() -> None:
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     reference_store = ReferenceStore()
+    reference_type_store = ReferenceTypeStore()
     document_store = DocumentStore()
     package_store = PackageStore()
     room_link_store = RoomLinkStore()
@@ -224,6 +226,7 @@ async def run() -> None:
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
+        reference_type_store=reference_type_store,
         document_store=document_store,
         package_store=package_store,
         room_link_store=room_link_store,

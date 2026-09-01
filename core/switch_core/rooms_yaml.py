@@ -297,6 +297,7 @@ class RoomYamlService:
                     ref = await self._resources.create_reference(
                         session,
                         owner_id=user_id,
+                        is_admin=is_admin,
                         read_visibility=entry.read_visibility,
                         write_visibility=entry.write_visibility,
                         type=entry.type,

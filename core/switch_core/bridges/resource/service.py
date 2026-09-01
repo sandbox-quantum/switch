@@ -1,23 +1,67 @@
 from __future__ import annotations
 
-from typing import Any
+import logging
+import re
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.authz import Principal, can, require, validate_visibility_pair
+from switch_core.authz import (
+    Principal,
+    can,
+    can_manage,
+    require,
+    validate_visibility_pair,
+)
 from switch_core.bridges.resource.events import ResourceLoadEntry
 from switch_core.bridges.resource.registry import (
-    serialize_used_types,
+    BUILTIN_REFERENCE_TYPES,
+    ReferenceTypeSpec,
+    is_builtin_type,
     validate_reference_value,
 )
-from switch_core.db.models import Document, Package, Reference, Room, RoomGroup
+from switch_core.db.models import (
+    Document,
+    Package,
+    Reference,
+    ReferenceType,
+    Room,
+    RoomGroup,
+)
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 
+logger = logging.getLogger(__name__)
+
 ROOM_DOCUMENT_MAX_CONTENT_BYTES = 1_048_576
+
+REFERENCE_TYPE_SLUG_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
+
+
+@dataclass(frozen=True)
+class ReferenceTypeView:
+    """One entry of the resolution list — a type a principal may pick.
+
+    Built-ins report ``owner_id=None``. Visibility is deliberately absent: the
+    picker needs the owner label and the built-in marker, and nothing else.
+    """
+
+    spec: ReferenceTypeSpec
+    owner_id: str | None
+    is_builtin: bool
+
+
+@dataclass(frozen=True)
+class ReferenceTypeRow:
+    """One entry of the management list — a database row the principal manages."""
+
+    row: ReferenceType
+    shadowed_by_builtin: bool
 
 
 class ResourceService:
@@ -33,12 +77,14 @@ class ResourceService:
         self,
         *,
         reference_store: ReferenceStore,
+        reference_type_store: ReferenceTypeStore,
         document_store: DocumentStore,
         package_store: PackageStore,
         room_link_store: RoomLinkStore,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._references = reference_store
+        self._reference_types = reference_type_store
         self._documents = document_store
         self._packages = package_store
         self._room_links = room_link_store
@@ -67,6 +113,243 @@ class ResourceService:
             "scope": "room" if doc.room_id is not None else "global",
             "created_by_agent_id": doc.created_by_agent_id,
         }
+
+    # ── Reference types ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _row_to_spec(row: ReferenceType) -> ReferenceTypeSpec:
+        return ReferenceTypeSpec(
+            type=row.type,
+            display_name=row.display_name,
+            instructions=row.instructions,
+            value_hint=row.value_hint,
+        )
+
+    async def _resolve_specs(
+        self, session: AsyncSession, slugs: set[str]
+    ) -> dict[str, tuple[ReferenceTypeSpec, Literal["builtin", "user"]]]:
+        """Resolve ``slugs`` to their specs, built-in winning any collision.
+
+        Unresolvable slugs are simply absent from the result; the two public
+        resolvers below differ in what they do about that. No visibility filter
+        — see decision 3: a reference already in a room carries its type's
+        metadata to every agent there.
+        """
+        resolved: dict[str, tuple[ReferenceTypeSpec, Literal["builtin", "user"]]] = {}
+        for row in await self._reference_types.get_many(session, sorted(slugs)):
+            resolved[row.type] = (self._row_to_spec(row), "user")
+        for slug in slugs:
+            builtin = BUILTIN_REFERENCE_TYPES.get(slug)
+            if builtin is not None:
+                resolved[slug] = (builtin, "builtin")
+        return resolved
+
+    async def list_reference_types_for_principal(
+        self, session: AsyncSession, *, user_id: str | None, is_admin: bool
+    ) -> list[ReferenceTypeView]:
+        """The resolution list: every built-in plus every row the principal may
+        read, one entry per slug, a built-in winning a collision."""
+        rows = (
+            await self._reference_types.list_all(session)
+            if is_admin
+            else await self._reference_types.list_for_user(session, user_id)
+        )
+        views: dict[str, ReferenceTypeView] = {
+            row.type: ReferenceTypeView(
+                spec=self._row_to_spec(row), owner_id=row.owner_id, is_builtin=False
+            )
+            for row in rows
+        }
+        for slug, spec in BUILTIN_REFERENCE_TYPES.items():
+            views[slug] = ReferenceTypeView(spec=spec, owner_id=None, is_builtin=True)
+        return [views[slug] for slug in sorted(views)]
+
+    async def list_owned_reference_types(
+        self, session: AsyncSession, *, user_id: str, is_admin: bool
+    ) -> list[ReferenceTypeRow]:
+        """The management list: database rows only, never built-ins.
+
+        A principal manages the rows it owns; an admin manages every row, per
+        ``can_manage``. A row shadowed by a built-in stays here, and stays
+        editable and deletable, flagged rather than hidden.
+        """
+        rows = (
+            await self._reference_types.list_all(session)
+            if is_admin
+            else await self._reference_types.list_for_user(session, user_id)
+        )
+        principal = Principal(user_id, is_admin)
+        return [
+            ReferenceTypeRow(row=row, shadowed_by_builtin=is_builtin_type(row.type))
+            for row in sorted(rows, key=lambda r: r.type)
+            if can_manage(principal, row.owner_id)
+        ]
+
+    async def resolve_display_names(
+        self, session: AsyncSession, slugs: set[str]
+    ) -> dict[str, str]:
+        """Slug → display name, with unresolvable slugs omitted so the caller
+        can map a miss to ``None``."""
+        resolved = await self._resolve_specs(session, slugs)
+        return {slug: spec.display_name for slug, (spec, _) in resolved.items()}
+
+    async def resolve_types_for_payload(
+        self, session: AsyncSession, slugs: set[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Slug → agent-facing type entry, for the on-connect payload.
+
+        An unresolvable slug is present and flagged ``missing`` rather than
+        dropped: an agent holding a reference of that type must be told its
+        instructions are absent instead of silently receiving none.
+        """
+        resolved = await self._resolve_specs(session, slugs)
+        payload: dict[str, dict[str, Any]] = {}
+        for slug in sorted(slugs):
+            entry = resolved.get(slug)
+            if entry is None:
+                logger.error(
+                    "Reference type '%s' is not registered on this instance; "
+                    "references of that type are served without instructions",
+                    slug,
+                )
+                payload[slug] = {
+                    "type": slug,
+                    "display_name": slug,
+                    "instructions": (
+                        f"The reference type '{slug}' is not registered on this "
+                        "Switch instance, so no instructions are available for it. "
+                        "Say so rather than guessing at how to use the reference."
+                    ),
+                    "origin": "unknown",
+                    "missing": True,
+                }
+                continue
+            spec, origin = entry
+            payload[slug] = spec.to_public_dict(origin=origin)
+        return payload
+
+    async def resolve_type_for_principal(
+        self, session: AsyncSession, type_: str, *, user_id: str | None, is_admin: bool
+    ) -> ReferenceTypeSpec:
+        """Resolve the type a principal is picking, raising if it cannot.
+
+        A type the principal cannot read is *unknown*, not forbidden, and the
+        error enumerates only the slugs the principal can already see —
+        otherwise it is an oracle for other users' private type names.
+        """
+        views = await self.list_reference_types_for_principal(
+            session, user_id=user_id, is_admin=is_admin
+        )
+        by_slug = {view.spec.type: view.spec for view in views}
+        spec = by_slug.get(type_)
+        if spec is None:
+            raise ValueError(
+                f"Unknown reference type '{type_}'. Known: {sorted(by_slug)}"
+            )
+        return spec
+
+    async def create_reference_type(
+        self,
+        session: AsyncSession,
+        *,
+        owner_id: str,
+        type: str,
+        display_name: str,
+        instructions: str,
+        value_hint: str,
+        read_visibility: str,
+        write_visibility: str,
+    ) -> ReferenceType:
+        if REFERENCE_TYPE_SLUG_PATTERN.fullmatch(type) is None:
+            raise ValueError(
+                f"Invalid reference type '{type}': must match "
+                "^[a-z][a-z0-9_]{1,62}$ (lowercase letters, digits and "
+                "underscores, starting with a letter, 2-63 characters)"
+            )
+        if is_builtin_type(type):
+            raise ValueError(f"'{type}' is a built-in reference type")
+        validate_visibility_pair(read_visibility, write_visibility)
+        reference_type = ReferenceType(
+            type=type,
+            owner_id=owner_id,
+            read_visibility=read_visibility,
+            write_visibility=write_visibility,
+            display_name=display_name,
+            instructions=instructions,
+            value_hint=value_hint,
+        )
+        return await self._reference_types.create(session, reference_type)
+
+    async def update_reference_type(
+        self,
+        session: AsyncSession,
+        type_: str,
+        *,
+        user_id: str,
+        is_admin: bool,
+        display_name: str | None = None,
+        instructions: str | None = None,
+        value_hint: str | None = None,
+        read_visibility: str | None = None,
+        write_visibility: str | None = None,
+    ) -> ReferenceType:
+        reference_type = await self._reference_types.get(session, type_)
+        if reference_type is None:
+            raise ValueError(f"Reference type not found: {type_}")
+        require(Principal(user_id, is_admin), "write", reference_type)
+        validate_visibility_pair(
+            read_visibility
+            if read_visibility is not None
+            else reference_type.read_visibility,
+            write_visibility
+            if write_visibility is not None
+            else reference_type.write_visibility,
+        )
+        return await self._reference_types.update_fields(
+            session,
+            type_,
+            display_name=display_name,
+            instructions=instructions,
+            value_hint=value_hint,
+            read_visibility=read_visibility,
+            write_visibility=write_visibility,
+        )
+
+    async def delete_reference_type(
+        self,
+        session: AsyncSession,
+        type_: str,
+        *,
+        user_id: str,
+        is_admin: bool,
+    ) -> None:
+        reference_type = await self._reference_types.get(session, type_)
+        if reference_type is None:
+            raise ValueError(f"Reference type not found: {type_}")
+        require(Principal(user_id, is_admin), "delete", reference_type)
+        in_use = await self._reference_types.count_references_of_type(session, type_)
+        if in_use:
+            raise ValueError(
+                f"Reference type '{type_}' is used by {in_use} reference(s) "
+                "and cannot be deleted"
+            )
+        await self._reference_types.delete(session, type_)
+
+    async def log_builtin_shadowing(self, session: AsyncSession) -> None:
+        """Report every stored type a built-in shadows.
+
+        The built-in wins resolution, so such a row's references silently start
+        serving different instructions — a semantic change that must be visible
+        to an operator.
+        """
+        for row in await self._reference_types.list_all(session):
+            if is_builtin_type(row.type):
+                logger.error(
+                    "Reference type '%s' (owner %s) is shadowed by a built-in of "
+                    "the same slug; the built-in's instructions are served instead",
+                    row.type,
+                    row.owner_id,
+                )
 
     # ── On-connect / list helpers ─────────────────────────────────────────
 
@@ -116,7 +399,7 @@ class ResourceService:
         ]
 
         return {
-            "reference_types": serialize_used_types(all_types),
+            "reference_types": await self.resolve_types_for_payload(session, all_types),
             "references": [self._reference_to_payload(r) for r in refs],
             "documents": [self._document_metadata(d) for d in docs],
             "packages": package_payloads,
@@ -158,6 +441,7 @@ class ResourceService:
         session: AsyncSession,
         *,
         owner_id: str,
+        is_admin: bool,
         read_visibility: str,
         write_visibility: str,
         type: str,
@@ -166,7 +450,10 @@ class ResourceService:
         instructions: str,
         value: dict[str, Any],
     ) -> Reference:
-        normalised_value = validate_reference_value(type, value)
+        await self.resolve_type_for_principal(
+            session, type, user_id=owner_id, is_admin=is_admin
+        )
+        normalised_value = validate_reference_value(value)
         validate_visibility_pair(read_visibility, write_visibility)
         ref = Reference(
             owner_id=owner_id,
@@ -224,7 +511,7 @@ class ResourceService:
             write_visibility if write_visibility is not None else ref.write_visibility,
         )
         normalised_value = (
-            validate_reference_value(ref.type, value) if value is not None else None
+            validate_reference_value(value) if value is not None else None
         )
         return await self._references.update_fields(
             session,
