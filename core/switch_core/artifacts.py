@@ -23,14 +23,14 @@ ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "switch-core": "0.21.1",
     "switch-console": "0.31.2",
     "agent-runtime": "0.3.4",
-    "sidecar": "1.9.5",
+    "sidecar": "1.9.6",
     "gateway": "0.21.1",
     "setup": "0.21.1",
     "helm-chart": "0.21.1",
     "compose": "0.21.1",
-    "switch-connector": "0.9.10",
-    "switch-connector-codex": "0.3.11",
-    "switch-connector-opencode": "0.1.6",
+    "switch-connector": "0.9.11",
+    "switch-connector-codex": "0.3.12",
+    "switch-connector-opencode": "0.1.7",
 }
 
 CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
