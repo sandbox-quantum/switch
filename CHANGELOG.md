@@ -1079,6 +1079,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.31.3] - 2026-09-01
+
+#### Added
+- The disabled "Add agent" button now explains why on hover, splitting the
+  not-ready tooltip into distinct checking and blocked messages (#314).
+
+#### Changed
+- Bundles agent-runtime 0.3.4 (reaps orphaned agent runtimes at boot) and the
+  updated connectors (Claude Code 0.9.11, Codex 0.3.12, OpenCode 0.1.7) and
+  sidecar 1.9.6.
+
 ### [0.31.2] - 2026-08-27
 
 #### Added
