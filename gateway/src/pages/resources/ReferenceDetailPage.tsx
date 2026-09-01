@@ -31,7 +31,7 @@ import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 import JsonValueForm from "./value_forms/JsonValueForm";
-import { VALUE_FORMS } from "./value_forms";
+import UrlsValueForm from "./value_forms/UrlsValueForm";
 
 export default function ReferenceDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -79,7 +79,9 @@ export default function ReferenceDetailPage() {
     );
   }
 
-  const typeSpec = (types ?? []).find((t) => t.type === ref.type);
+  // Visibility-filtered, so it may miss a type this reference legitimately
+  // has. Its only job is the value hint; every label comes from the server.
+  const visibleTypeSpec = (types ?? []).find((t) => t.type === ref.type);
   const canMutate =
     !!user && (user.id === ref.owner_id || user.role === "admin");
 
@@ -95,16 +97,20 @@ export default function ReferenceDetailPage() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           {ref.name || "Reference"}
         </Typography>
-        <Chip label={typeSpec?.display_name ?? ref.type} size="small" />
+        <Chip
+          label={ref.type_display_name ?? `${ref.type} (unknown type)`}
+          size="small"
+        />
         <AccessChip pair={ref} />
       </Stack>
 
       <Stack spacing={4}>
-        <RefInfoSection ref_={ref} typeLabel={typeSpec?.display_name} />
+        <RefInfoSection ref_={ref} />
         <Divider />
         <EditFieldsSection
           ref_={ref}
           canMutate={canMutate}
+          valueHint={visibleTypeSpec?.value_hint}
           onSaved={(updated) => setRef(updated)}
         />
         <Divider />
@@ -131,19 +137,16 @@ export default function ReferenceDetailPage() {
   );
 }
 
-function RefInfoSection({
-  ref_,
-  typeLabel,
-}: {
-  ref_: ReferenceDetail;
-  typeLabel: string | undefined;
-}) {
+function RefInfoSection({ ref_ }: { ref_: ReferenceDetail }) {
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
-      <InfoLine label="Type" value={typeLabel ?? ref_.type} />
+      <InfoLine
+        label="Type"
+        value={ref_.type_display_name ?? `${ref_.type} (unknown type)`}
+      />
       {ref_.owner_name ? (
         <InfoLine label="Owner" value={ref_.owner_name} />
       ) : (
@@ -182,10 +185,12 @@ function InfoLine({
 function EditFieldsSection({
   ref_,
   canMutate,
+  valueHint,
   onSaved,
 }: {
   ref_: ReferenceDetail;
   canMutate: boolean;
+  valueHint: string | undefined;
   onSaved: (updated: ReferenceDetail) => void;
 }) {
   const [name, setName] = useState(ref_.name);
@@ -195,6 +200,7 @@ function EditFieldsSection({
   const [value, setValue] = useState<Record<string, unknown>>(ref_.value);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [valueValid, setValueValid] = useState(true);
 
   const dirty = useMemo(
     () =>
@@ -225,7 +231,9 @@ function EditFieldsSection({
     }
   };
 
-  const ValueForm = VALUE_FORMS[ref_.type] ?? JsonValueForm;
+  // Keyed on the value's shape, not on whether the type resolves: every type
+  // shares the URL shape, and the type may simply not be visible to this user.
+  const isUrlsValue = Array.isArray(value.urls);
 
   return (
     <Stack spacing={2}>
@@ -256,11 +264,24 @@ function EditFieldsSection({
         minRows={6}
         helperText="Sent to agents on connect. Not shown in lists."
       />
-      <ValueForm
-        value={value}
-        onChange={setValue}
-        disabled={!canMutate || saving}
-      />
+      {isUrlsValue ? (
+        <UrlsValueForm
+          value={value}
+          onChange={setValue}
+          disabled={!canMutate || saving}
+          helperText={
+            valueHint ??
+            "This reference's type is not visible to you. Enter one URL per line."
+          }
+        />
+      ) : (
+        <JsonValueForm
+          value={value}
+          onChange={setValue}
+          disabled={!canMutate || saving}
+          onValidityChange={setValueValid}
+        />
+      )}
       <AccessSelect
         value={access}
         onChange={setAccess}
@@ -272,7 +293,7 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving}
+          disabled={!canMutate || !dirty || saving || !valueValid}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save
