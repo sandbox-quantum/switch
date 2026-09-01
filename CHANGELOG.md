@@ -2624,6 +2624,11 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.6] - 2026-09-01
+
+#### Changed
+- Rebuilt on agent-runtime 0.3.4, which reaps orphaned agent runtimes at boot.
+
 ### [1.9.5]
 
 #### Changed
@@ -2714,6 +2719,11 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.11] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
 
 ### [0.9.10] - 2026-08-27
 #### Changed
@@ -2938,6 +2948,11 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.12] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
+
 ### [0.3.11] - 2026-08-27
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.3` (was `0.3.2`) — picks up the
@@ -3115,6 +3130,11 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.7] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
 
 ### [0.1.6] - 2026-08-27
 #### Changed

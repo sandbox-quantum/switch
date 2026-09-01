@@ -90,7 +90,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.5
+    version: 1.9.6
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with
@@ -127,12 +127,12 @@ artifacts:
 
   switch-connector:
     description: The Claude Code connector plugin.
-    version: 0.9.10
+    version: 0.9.11
     declared_in: connectors/claude-code-plugin/.claude-plugin/plugin.json
 
   switch-connector-codex:
     description: The Codex connector plugin.
-    version: 0.3.11
+    version: 0.3.12
     declared_in: connectors/codex-plugin/.codex-plugin/plugin.json
 
   switch-connector-opencode:
@@ -140,7 +140,7 @@ artifacts:
       The OpenCode connector. Unlike the other two it is written by Switch
       Console rather than installed from the marketplace, because OpenCode has
       no plugin marketplace to install it from.
-    version: 0.1.6
+    version: 0.1.7
     declared_in: connectors/opencode-plugin/package.json
 
 contracts:
