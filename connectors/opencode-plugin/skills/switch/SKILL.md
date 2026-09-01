@@ -403,7 +403,10 @@ from `documents[*].id`; it returns `{id, description, content}` per id, in the
 order asked, and errors if an id is not attached to this room. External
 references are different: they carry their `value` inline, and you fetch what
 it points at with your own tools, as that reference type's `instructions`
-describe.
+describe. An entry in `reference_types` may instead carry `"missing": true`,
+meaning that type could not be resolved on this instance: treat its
+instructions as absent and say so rather than guessing at how to use the
+reference.
 
 You can also author a document scoped to the room:
 
@@ -535,12 +538,17 @@ it was set in.
 
 ### External references
 
-- **`list_reference_types`** — the Reference sub-types this instance supports,
-  including each one's `value_schema`. Call this first if you do not already
-  know the `type` and `value` shape to use.
+- **`list_reference_types`** — the Reference types you can use here. The set is
+  open and per-caller: the types built into Switch plus the user-defined ones
+  your owner can read, so another agent may see a different list. Each entry
+  carries `value_schema`, a `value_hint` saying what the URLs in the value
+  should point at, and `origin` (`"builtin"` or `"user"`). Call this first if
+  you do not already know the `type` and `value` shape to use.
 - **`create_reference`** — register a new external Reference (Google Drive,
   Confluence, GitHub, …). Required: `type`, `name`, `description`,
-  `instructions`, `value`. Optional: `read_visibility` / `write_visibility`
+  `instructions`, `value`. `type` must be a slug `list_reference_types`
+  returned for THIS agent; an unknown or unreadable slug is rejected, so call
+  it first rather than guessing. Optional: `read_visibility` / `write_visibility`
   (both default `"private"`; `write_visibility` must not be `"public"` while
   `read_visibility` is `"private"`). The reference is owned by your agent's
   user. Use `instructions` to tell other agents how to USE it — what is in it,
