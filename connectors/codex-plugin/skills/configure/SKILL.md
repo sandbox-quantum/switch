@@ -193,7 +193,9 @@ and nobody can tell which human is behind which agent:
   from `$USER` or `whoami`.
 
 To slugify: lowercase, replace anything outside `[a-z0-9._-]` with `-`, collapse
-repeats, strip leading/trailing `-`.
+runs of `-`, strip leading/trailing `.`, `_` and `-`. Strip all three, not just `-`:
+the pattern requires a letter or digit first, so a surviving leading `.` or `_`
+is rejected all over again.
 
 Confirm the name or accept a custom one; if it fails the regex, explain why and
 ask again. If it carries no user identifier, flag the collision risk once and

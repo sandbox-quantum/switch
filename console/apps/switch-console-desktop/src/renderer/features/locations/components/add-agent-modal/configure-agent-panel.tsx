@@ -235,6 +235,8 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
   const nameId = useId();
   const descriptionId = useId();
   const instructionsId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+
   return (
     <FieldGroup>
       {/* Above the name, because it is the first thing the finished agent is
@@ -255,16 +257,35 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
         <FieldLabel htmlFor={nameId}>Name</FieldLabel>
         <Input
           id={nameId}
+          ref={nameRef}
           placeholder="Name this agent"
           value={form.agentName}
           onChange={(e) => form.setAgentName(e.target.value)}
-          aria-invalid={form.agentName.length > 0 && !form.nameIsValid}
+          aria-invalid={form.nameIsRejected}
         />
-        {form.agentName.length > 0 && !form.nameIsValid ? (
-          <span className="text-destructive text-xs">
-            Use lowercase letters, digits, <span className="font-mono">. - _</span>, starting with a
-            letter or digit. No spaces or uppercase.
-          </span>
+        {form.nameIsRejected ? (
+          <div className="flex flex-col items-start gap-1.5">
+            <span className="text-destructive text-xs">
+              Use lowercase letters, digits, <span className="font-mono">. - _</span>, starting with
+              a letter or digit. No spaces or uppercase.
+            </span>
+            {form.suggestedName && (
+              <Button
+                variant="outline"
+                size="xs"
+                className="max-w-full"
+                // Accepting the offer makes the name valid, which unmounts this
+                // button; without moving focus first it falls to the body and
+                // the tab order restarts.
+                onClick={() => {
+                  form.setAgentName(form.suggestedName);
+                  nameRef.current?.focus();
+                }}
+              >
+                Use <span className="truncate font-mono">{form.suggestedName}</span>
+              </Button>
+            )}
+          </div>
         ) : form.agentName.length > 0 ? (
           // Once there is a name, show the handle it produces rather than
           // repeating the advice: the advice is about choosing a name, and it

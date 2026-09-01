@@ -1,21 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
+import { slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentDefaults } from '@shared/core/switch-servers/switch-servers';
-
-/**
- * Slugify a string into the Switch agent-name charset: lowercase letters,
- * digits, `.`, `-`, `_`. Any other character becomes `-`; runs of `-` collapse
- * and leading/trailing `-` are stripped. Mirrors the `configure` skill's slug
- * rule so desktop-registered agents are named the same way.
- */
-export function slugifyAgentNamePart(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 /**
  * Suggest a default name and description for a new agent of `providerId` in
