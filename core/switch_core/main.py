@@ -232,6 +232,8 @@ async def run() -> None:
         room_link_store=room_link_store,
         session_factory=session_factory,
     )
+    async with session_factory() as session:
+        await resource_service.log_builtin_shadowing(session)
 
     # One connection registry for the process. Created here rather than inside
     # the agent bridge because the Matrix agent clients are wired first and read

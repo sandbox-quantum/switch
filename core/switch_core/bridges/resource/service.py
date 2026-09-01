@@ -43,6 +43,15 @@ ROOM_DOCUMENT_MAX_CONTENT_BYTES = 1_048_576
 REFERENCE_TYPE_SLUG_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
 
 
+class ReferenceTypeInUseError(ValueError):
+    """A reference type still has references and so cannot be deleted.
+
+    A ValueError so callers matching the broad kind keep working; a distinct
+    class so the gateway can answer 409 rather than the 404 it gives every
+    other ValueError on a by-slug route.
+    """
+
+
 @dataclass(frozen=True)
 class ReferenceTypeView:
     """One entry of the resolution list — a type a principal may pick.
@@ -329,7 +338,7 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", reference_type)
         in_use = await self._reference_types.count_references_of_type(session, type_)
         if in_use:
-            raise ValueError(
+            raise ReferenceTypeInUseError(
                 f"Reference type '{type_}' is used by {in_use} reference(s) "
                 "and cannot be deleted"
             )
