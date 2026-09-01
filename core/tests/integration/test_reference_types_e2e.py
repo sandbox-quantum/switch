@@ -5,8 +5,7 @@ a Reference of it, attaches the Reference to a real room, and an agent runs the
 real `connect_to_room` operation. The assertions read the on-connect payload the
 agent actually receives, so nothing is inferred from service-level state.
 
-Three properties are pinned here, each stated as a decision in the
-implementation plan:
+Three properties are pinned here:
 
 * a user-defined type reaches the connected agent with its own `instructions`
   and `origin: "user"`;
@@ -142,7 +141,7 @@ async def test_a_user_defined_type_reaches_the_connected_agent(
 async def test_a_type_private_to_another_user_still_reaches_the_agent(
     harness: Harness,
 ) -> None:
-    """Decision 3: `read_visibility` gates picking and enumerating a type, never
+    """`read_visibility` gates picking and enumerating a type, never
     delivery of its metadata for a Reference already attached to a room.
 
     The room attachment is the grant. Do not "fix" this into a visibility filter:
@@ -203,7 +202,7 @@ async def test_a_type_private_to_another_user_still_reaches_the_agent(
 async def test_an_unresolvable_type_is_delivered_flagged_missing(
     harness: Harness, session_env: SessionEnv
 ) -> None:
-    """Decision 7: `references.type` carries no foreign key and cannot carry one
+    """`references.type` carries no foreign key and cannot carry one
     (built-ins are not rows), so a slug registered nowhere is a reachable state —
     a built-in retired in a later release, or a row removed by direct SQL.
 

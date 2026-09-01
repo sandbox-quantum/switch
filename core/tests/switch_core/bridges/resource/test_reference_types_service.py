@@ -55,9 +55,9 @@ async def users(
 async def _shadow_github(session: AsyncSession, owner_id: str) -> ReferenceType:
     """Write a row whose slug a built-in already owns.
 
-    ``create_reference_type`` refuses this, so it can only arise the way
-    decision 5 describes: a future release adding a built-in over a slug a user
-    already holds. The store is the honest way to reach that state.
+    ``create_reference_type`` refuses this, so it can only arise one way: a
+    future release adding a built-in over a slug a user already holds. The store
+    is the honest way to reach that state.
     """
     return await ReferenceTypeStore().create(
         session,
@@ -137,6 +137,20 @@ class TestResolution:
     ) -> None:
         async with session_factory() as session:
             await _shadow_github(session, users["alice"])
+            # A reference of the *built-in* github resolves against the
+            # built-in, so it must not block deleting the shadowed row.
+            await service.create_reference(
+                session,
+                owner_id=users["bob"],
+                is_admin=False,
+                read_visibility="private",
+                write_visibility="private",
+                type="github",
+                name="A repo",
+                description="",
+                instructions="",
+                value={"urls": ["https://example.invalid/org/repo"]},
+            )
             await session.commit()
 
         async with session_factory() as session:
@@ -349,7 +363,7 @@ class TestPrivateTypeStillReachesAgents:
         session_factory: async_sessionmaker[AsyncSession],
         users: dict[str, str],
     ) -> None:
-        """Decision 3: ``read_visibility`` gates who may *pick* and *enumerate* a
+        """``read_visibility`` gates who may *pick* and *enumerate* a
         type, never delivery of its metadata for a reference already attached to
         a room. The attachment is the grant. Withholding the instructions would
         ship an agent a reference it cannot act on while looking healthy — the
@@ -410,16 +424,15 @@ class TestCreateReferenceType:
         session_factory: async_sessionmaker[AsyncSession],
         users: dict[str, str],
     ) -> None:
-        """Decision 4: any authenticated user may create a type with the full
-        read/write visibility pair, exactly like a Reference. There is no admin
-        gate on ``read_visibility="public"``; the only pair rule is the existing
+        """Any authenticated user may create a type with the full read/write
+        visibility pair, exactly like a Reference. There is no admin gate on
+        ``read_visibility="public"``; the only pair rule is the existing
         write-implies-read invariant in ``authz.validate_visibility_pair``.
 
         The mitigation for user-authored, agent-facing instructions is
         disclosure (owner and built-in marker travel on the picker payload), not
-        restriction. An admin gate is the opt-in tightening named under Risks in
-        the implementation plan — reversing this behaviour means changing this
-        test, deliberately.
+        restriction. Adding an admin gate is a deliberate tightening — it means
+        changing this test, not just the service.
         """
         async with session_factory() as session:
             created = await service.create_reference_type(

@@ -140,9 +140,9 @@ class ResourceService:
         """Resolve ``slugs`` to their specs, built-in winning any collision.
 
         Unresolvable slugs are simply absent from the result; the two public
-        resolvers below differ in what they do about that. No visibility filter
-        — see decision 3: a reference already in a room carries its type's
-        metadata to every agent there.
+        resolvers below differ in what they do about that. No visibility filter:
+        a reference already attached to a room carries its type's metadata to
+        every agent there — the attachment is the grant.
         """
         resolved: dict[str, tuple[ReferenceTypeSpec, Literal["builtin", "user"]]] = {}
         for row in await self._reference_types.get_many(session, sorted(slugs)):
@@ -336,12 +336,17 @@ class ResourceService:
         if reference_type is None:
             raise ValueError(f"Reference type not found: {type_}")
         require(Principal(user_id, is_admin), "delete", reference_type)
-        in_use = await self._reference_types.count_references_of_type(session, type_)
-        if in_use:
-            raise ReferenceTypeInUseError(
-                f"Reference type '{type_}' is used by {in_use} reference(s) "
-                "and cannot be deleted"
+        if not is_builtin_type(type_):
+            # A shadowed row resolves for nobody — references of the slug are
+            # served by the built-in — so counting them would strand the row.
+            in_use = await self._reference_types.count_references_of_type(
+                session, type_
             )
+            if in_use:
+                raise ReferenceTypeInUseError(
+                    f"Reference type '{type_}' is used by {in_use} reference(s) "
+                    "and cannot be deleted"
+                )
         await self._reference_types.delete(session, type_)
 
     async def log_builtin_shadowing(self, session: AsyncSession) -> None:

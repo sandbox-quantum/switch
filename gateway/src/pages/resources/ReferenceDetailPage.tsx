@@ -231,9 +231,11 @@ function EditFieldsSection({
     }
   };
 
-  // Keyed on the value's shape, not on whether the type resolves: every type
-  // shares the URL shape, and the type may simply not be visible to this user.
-  const isUrlsValue = Array.isArray(value.urls);
+  // Keyed on the stored value's shape, not on whether the type resolves: every
+  // type shares the URL shape, and the type may simply not be visible to this
+  // user. Reading the stored bag rather than the edit state keeps the choice of
+  // editor fixed for the lifetime of an edit.
+  const isUrlsValue = Array.isArray(ref_.value.urls);
 
   return (
     <Stack spacing={2}>
