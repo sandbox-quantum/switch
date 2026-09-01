@@ -252,6 +252,16 @@ groups. Agents stay addressable by typing their name, exactly as before — you
 lose the autocomplete, nothing else. It does not retry per agent or repeat the
 warning on every startup.
 
+**Several workspaces in one org.** A bot token lists only its own workspace's
+user groups, so each bridge mints its own group per agent and knows only those
+ids. An Enterprise Grid composer does not respect that boundary — it offers a
+sibling workspace's group as well, so a mention can arrive at one bridge naming
+a group only another one created. Slack has no call that resolves a user group
+by id, so the bridges pool what they mint and read each other's, which is what
+keeps an agent taggable from either workspace. It follows that both workspaces
+must be bridged to the **same** Switch server; two servers cannot see each
+other's groups, and a mention that crossed between them stays unresolved.
+
 ### Native session status (`agent_sessions`)
 
 **On by default.** A turn opens a Slack **agent session** and streams its
