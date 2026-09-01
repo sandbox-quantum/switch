@@ -554,7 +554,7 @@ it was set in.
   you do not already know the \`type\` and \`value\` shape to use.
 - **\`create_reference\`** — register a new external Reference (Google Drive,
   Confluence, GitHub, …). Required: \`type\`, \`name\`, \`description\`,
-  \`instructions\`, \`value\`. \`type\` must be a slug \`list_reference_types\`
+  \`instructions\`, \`value\`. \`type\` must be a slug that \`list_reference_types\`
   returned for THIS agent; an unknown or unreadable slug is rejected, so call
   it first rather than guessing. Optional: \`read_visibility\` / \`write_visibility\`
   (both default \`"private"\`; \`write_visibility\` must not be \`"public"\` while
