@@ -44,6 +44,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.21.1] - 2026-09-01
+
+#### Fixed
+- Slack: normalize typed command mentions so commands addressed with a typed
+  `@agent` are recognized (#316).
+- Slack: resolve agent mentions that crossed a workspace boundary (#327).
+
 ### [0.21.0] - 2026-08-25
 
 #### Added
