@@ -2494,6 +2494,14 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.3.4] - 2026-09-01
+
+#### Added
+- Reap orphaned agent runtimes at boot: `reapOrphanedRuntimes` is now part of
+  the package's public surface so the runtime and Switch Console share one
+  definition of an abandoned runtime, and a session started on a dead host is
+  cleaned up on the next start (#309).
+
 ### [0.3.3] - 2026-08-27
 
 #### Fixed
