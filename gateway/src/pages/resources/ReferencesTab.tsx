@@ -26,12 +26,6 @@ export default function ReferencesTab({ refreshKey }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
-  const displayNameByType = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const t of types ?? []) m[t.type] = t.display_name;
-    return m;
-  }, [types]);
-
   const owners = useMemo(() => {
     const m = new Map<string, string>();
     for (const r of refs ?? []) {
@@ -57,8 +51,11 @@ export default function ReferencesTab({ refreshKey }: Props) {
         field: "type",
         headerName: "Type",
         width: 150,
-        renderCell: ({ value }) => (
-          <Chip label={displayNameByType[value] ?? value} size="small" />
+        renderCell: ({ row }) => (
+          <Chip
+            label={row.type_display_name ?? `${row.type} (unknown type)`}
+            size="small"
+          />
         ),
       },
       { field: "description", headerName: "Description", flex: 2, minWidth: 240 },
@@ -87,7 +84,7 @@ export default function ReferencesTab({ refreshKey }: Props) {
         valueFormatter: (value) => formatDate(value as string),
       },
     ],
-    [displayNameByType],
+    [],
   );
 
   return (
