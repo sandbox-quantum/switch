@@ -153,10 +153,18 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
         renderCell: ({ row }) =>
           row.detail ? (
             <Stack direction="row">
-              <IconButton size="small" onClick={() => setEditing(row.detail)}>
+              <IconButton
+                size="small"
+                onClick={() => setEditing(row.detail)}
+                aria-label={`Edit ${row.display_name}`}
+              >
                 <EditOutlined fontSize="small" />
               </IconButton>
-              <IconButton size="small" onClick={() => setDeleting(row.detail)}>
+              <IconButton
+                size="small"
+                onClick={() => setDeleting(row.detail)}
+                aria-label={`Delete ${row.display_name}`}
+              >
                 <DeleteOutline fontSize="small" />
               </IconButton>
             </Stack>
