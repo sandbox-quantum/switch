@@ -64,6 +64,7 @@ _HANDLE_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 # being a prefix of a longer one: `@ada` must not match inside `@adaline`.
 _MENTION_END = r"(?![A-Za-z0-9._-])"
 _AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
+_ZERO_WIDTH_SPACE = "\u200b"
 # A Teams identifier standing where a person's name should be: a channel
 # account (`29:…`, `8:orgid:…`) or a bare Entra object id.
 _TEAMS_ID = re.compile(
@@ -1335,6 +1336,26 @@ class TeamsAdapter(CollaborationAdapter):
 
     def translate_outbound(self, content: str) -> str:
         return _hard_wrap(self._mark_mentions(content))
+
+    def escape_label_for_body(self, label: str) -> str:
+        """Add the `<at>` tag to what the base class already defuses.
+
+        The inherited `@` rule is what stops `_mark_mentions` marking up an
+        `@alice` a label carried in, and the inherited `]` rule is what stops
+        a card's TextBlock, which renders markdown, turning a label's
+        `[text](url)` into a link of its own choosing. Teams needs one
+        more: `<at>alice</at>` written straight into a label skips the marking
+        pass but is still found by `_mention_entities`, which scans the
+        rendered body for the markup and pairs whatever it finds with an entity
+        that notifies whoever `alice` actually is. A zero-width space after
+        every `<` breaks the tag.
+
+        Broken syntax rather than entity escaping, because an Adaptive Card is
+        not HTML: `&lt;` here is shown to the reader as those four
+        characters."""
+        return (
+            super().escape_label_for_body(label).replace("<", "<" + _ZERO_WIDTH_SPACE)
+        )
 
     def _mark_mentions(self, content: str) -> str:
         """Wrap ``@name`` in Teams' ``<at>`` markup for people we can address.

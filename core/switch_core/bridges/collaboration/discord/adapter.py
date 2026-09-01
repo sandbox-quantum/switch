@@ -53,6 +53,71 @@ _WORKING_REACTION = "👀"
 # Discord's error code for "Maximum number of guild roles reached" (250).
 _MAX_GUILD_ROLES_CODE = 30005
 
+# Applied to the bot posts that inline an agent's name into the body — the DM
+# path, which has no webhook identity to carry it. Escaping the text is not
+# enough on its own: Discord decides who a message pings from the raw content
+# it receives, so `@everyone` in a name is refused here rather than in markup.
+# Only the mass mentions are withheld; a user or role the agent deliberately
+# mentioned still resolves.
+_NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
+
+# Inserted after the `<` of anything that looks like a Discord entity. Discord
+# has no escape for `<`, so the syntax is broken rather than escaped — the same
+# technique discord.py uses on `@`.
+_ZERO_WIDTH_SPACE = "\u200b"
+
+
+class _WebhookIdentity:
+    """The username one send posts under, across every webhook call it makes.
+
+    Discord validates a webhook username server-side and answers one it
+    dislikes with a 400. The exact rule is Discord's and is not pinned by
+    anything in this tree, so rather than guess at a blocklist the send is
+    attempted and a refusal falls back to the identifier, which the platform
+    has always accepted.
+
+    The refusal is remembered for the rest of the send because a send is
+    several webhook calls — one per chunk, plus any truncation notice — and
+    re-offering a name Discord has already refused doubles every one of them
+    and repeats the same warning per part. Held per send rather than per agent
+    so a name is re-offered on the next message: the refusal may have been
+    about something Discord has since changed its mind on, and a process-long
+    latch would hide a rename until the next restart.
+    """
+
+    def __init__(self, label: str, identifier: str) -> None:
+        self._label = label
+        self._identifier = identifier
+        self._refused = False
+
+    async def send(self, webhook: discord.Webhook, payload: dict[str, Any]) -> Any:
+        """Post `payload`, which must survive being sent twice."""
+        return await self.send_rebuilding(webhook, lambda: payload)
+
+    async def send_rebuilding(
+        self, webhook: discord.Webhook, build_payload: Callable[[], dict[str, Any]]
+    ) -> Any:
+        """Post a payload rebuilt for each attempt.
+
+        For the attachment path alone: an attempt reads the `discord.File` it
+        was handed, so a retry that reused it would upload nothing."""
+        if self._refused:
+            return await webhook.send(username=self._identifier, **build_payload())
+        try:
+            return await webhook.send(username=self._label, **build_payload())
+        except discord.HTTPException as e:
+            if e.status != 400 or self._label == self._identifier:
+                raise
+            self._refused = True
+            logger.warning(
+                "Discord refused the display name %r as a webhook username (%s); "
+                "posting as %r instead",
+                self._label,
+                e,
+                self._identifier,
+            )
+            return await webhook.send(username=self._identifier, **build_payload())
+
 
 class DiscordConnectionConfig(BridgeConnectionConfig):
     bot_token: str
@@ -282,9 +347,14 @@ class DiscordAdapter(CollaborationAdapter):
         if self._channel_type_of(target) == "lobby":
             # DM channels have no webhooks, so no per-message identity — fall
             # back to a bot post with the agent name inlined.
+            label = await self.agent_label_for_body(sender_name)
             return await self._send_chunked(
-                f"**{sender_name}**: {content}",
-                lambda part: target.send(part, suppress_embeds=True),
+                f"**{label}**: {content}",
+                lambda part: target.send(
+                    part,
+                    suppress_embeds=True,
+                    allowed_mentions=_NO_MASS_MENTIONS,
+                ),
                 where=f"DM {channel_id}",
             )
 
@@ -312,16 +382,19 @@ class DiscordAdapter(CollaborationAdapter):
         # Resolved once here rather than inside the send callback: that callback
         # is synchronous, and a chunked message would otherwise re-resolve per
         # chunk and could split one message across two different avatars.
-        avatar_url = await self.agent_icon_url(sender_name)
+        agent = await self.agent_rendering(sender_name)
+        identity = _WebhookIdentity(agent.field_label, sender_name)
         return await self._send_chunked(
             content,
-            lambda part: webhook.send(
-                content=part,
-                username=sender_name,
-                avatar_url=avatar_url,
-                suppress_embeds=True,
-                wait=True,
-                **kwargs,
+            lambda part: identity.send(
+                webhook,
+                {
+                    "content": part,
+                    "avatar_url": agent.icon_url,
+                    "suppress_embeds": True,
+                    "wait": True,
+                    **kwargs,
+                },
             ),
             where=f"channel {channel_id}",
         )
@@ -414,10 +487,13 @@ class DiscordAdapter(CollaborationAdapter):
         body = self.translate_outbound(caption) if caption else ""
 
         if self._channel_type_of(target) == "lobby":
-            content = f"**{sender_name}**: {body}" if body else f"**{sender_name}**"
+            label = await self.agent_label_for_body(sender_name)
+            content = f"**{label}**: {body}" if body else f"**{label}**"
             try:
                 msg = await target.send(
-                    content, file=discord.File(io.BytesIO(data), filename=filename)
+                    content,
+                    file=discord.File(io.BytesIO(data), filename=filename),
+                    allowed_mentions=_NO_MASS_MENTIONS,
                 )
                 return f"{msg.channel.id}:{msg.id}"
             except discord.HTTPException:
@@ -449,13 +525,17 @@ class DiscordAdapter(CollaborationAdapter):
             kwargs: dict[str, Any] = {}
             if thread is not None:
                 kwargs["thread"] = thread
-            sent: Any = await webhook.send(
-                content=body,
-                username=sender_name,
-                avatar_url=await self.agent_icon_url(sender_name),
-                file=discord.File(io.BytesIO(data), filename=filename),
-                wait=True,
-                **kwargs,
+            agent = await self.agent_rendering(sender_name)
+            identity = _WebhookIdentity(agent.field_label, sender_name)
+            sent: Any = await identity.send_rebuilding(
+                webhook,
+                lambda: {
+                    "content": body,
+                    "avatar_url": agent.icon_url,
+                    "file": discord.File(io.BytesIO(data), filename=filename),
+                    "wait": True,
+                    **kwargs,
+                },
             )
             return f"{sent.channel.id}:{sent.id}"
         except discord.HTTPException as e:
@@ -1075,6 +1155,44 @@ class DiscordAdapter(CollaborationAdapter):
             return f"<@&{role_id}>" if role_id else match.group(0)
 
         return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+
+    def escape_label_for_body(self, label: str) -> str:
+        """Defuse Discord's markdown, mentions and `<…>` entity syntax.
+
+        Three things a name can otherwise do to the body it is inlined into:
+
+        - Markdown. `Bo*b` eats the bolding of the prefix it sits in, so
+          discord.py's `escape_markdown` backslashes its emphasis characters.
+          `ignore_links=False` because a label is a name, not prose: there is
+          no URL in it worth keeping legible, and the exemption is a hole.
+        - Mass and user mentions. `escape_mentions` breaks `@everyone`,
+          `@here` and `<@id>` with a zero-width space after the `@`. It does
+          nothing for a plain `@opsbot`, which needs no Discord syntax at all:
+          `translate_outbound` runs over the finished body after the label is
+          inlined and resolves any handle it holds an id for into a real
+          `<@id>` or `<@&role>`. The base class's `@` rule is what closes that,
+          which is why this builds on it rather than replacing it.
+        - Everything else Discord resolves from `<…>` — a channel link
+          (`<#id>`), a custom emoji (`<:name:id>`), a timestamp (`<t:ts:F>`),
+          a slash-command link (`</cmd:id>`). `escape_mentions` covers none of
+          these ("this does not include channel mentions") and backslash does
+          not escape `<` on Discord, so the syntax is broken instead: a
+          zero-width space goes after every `<`. Each of those forms needs its
+          sigil immediately after the `<`, so this defuses all of them and
+          leaves an ordinary name alone.
+
+        Not covered: a bare URL in a display name still auto-links. Discord
+        linkifies one straight out of the raw content and offers no escape for
+        it, so a name that is a URL renders as a clickable link. Cosmetic
+        rather than a forgery — the link goes where the name says it does."""
+        return discord.utils.escape_markdown(
+            discord.utils.escape_mentions(
+                super()
+                .escape_label_for_body(label)
+                .replace("<", "<" + _ZERO_WIDTH_SPACE)
+            ),
+            ignore_links=False,
+        )
 
     def translate_inbound(self, raw_message: str) -> str:
         def _replace_user(match: re.Match[str]) -> str:

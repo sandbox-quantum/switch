@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from switch_core.agent_icon import default_icon_url
+from switch_core.bridges.collaboration.adapter import AgentPresentation
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
@@ -849,10 +850,11 @@ async def test_message_activity_carries_notification_summary_and_fallback() -> N
 async def test_message_activity_uses_the_agents_own_icon_when_it_has_one() -> None:
     adapter = _adapter()
 
-    async def _resolver(agent_name: str) -> str | None:
-        return "https://example.com/worker.png" if agent_name == "worker" else None
+    async def _resolver(agent_name: str) -> AgentPresentation | None:
+        icon = "https://example.com/worker.png" if agent_name == "worker" else None
+        return AgentPresentation(display_name=None, icon_url=icon)
 
-    adapter.set_agent_icon_resolver(_resolver)
+    adapter.set_agent_presentation_resolver(_resolver)
     activity = await adapter._message_activity("worker", "hello")
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]
@@ -862,10 +864,10 @@ async def test_message_activity_uses_the_agents_own_icon_when_it_has_one() -> No
 async def test_message_activity_falls_back_to_the_default_icon() -> None:
     adapter = _adapter()
 
-    async def _resolver(agent_name: str) -> str | None:
-        return None
+    async def _resolver(agent_name: str) -> AgentPresentation | None:
+        return AgentPresentation(display_name=None, icon_url=None)
 
-    adapter.set_agent_icon_resolver(_resolver)
+    adapter.set_agent_presentation_resolver(_resolver)
     activity = await adapter._message_activity("worker", "hello")
 
     image = activity["attachments"][0]["content"]["body"][0]["columns"][0]["items"][0]

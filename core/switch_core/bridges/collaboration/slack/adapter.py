@@ -401,12 +401,13 @@ class SlackAdapter(CollaborationAdapter):
         elif self._channel_type_cache.get(channel_id) in ("im", "mpim"):
             thread_ts = self._last_user_message_ts.get(channel_id)
 
+        agent = await self.agent_rendering(sender_name)
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
                 text=content,
-                username=sender_name,
-                icon_url=await self.agent_icon_url(sender_name),
+                username=agent.field_label,
+                icon_url=agent.icon_url,
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -419,11 +420,11 @@ class SlackAdapter(CollaborationAdapter):
             )
             return None
 
-    async def agent_icon_url(self, agent_name: str) -> str:
+    def adapt_icon_url(self, raw: str | None, agent_name: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
-        # white. Wrapping the resolver rather than each call site keeps every
-        # place that posts as an agent on the same background.
-        return on_slack_background(await super().agent_icon_url(agent_name))
+        # white. Adjusting here rather than at each call site keeps every place
+        # that posts as an agent on the same background.
+        return on_slack_background(super().adapt_icon_url(raw, agent_name))
 
     def slash_invite_hint(self) -> str:
         # Slack passes a slash command's whole tail through as free text, so the
@@ -506,10 +507,11 @@ class SlackAdapter(CollaborationAdapter):
                 else thread_root_id
             )
 
+        label = await self.agent_label_for_body(sender_name)
         comment = (
-            f"*{sender_name}*: {self.translate_outbound(caption)}"
+            f"*{label}*: {self.translate_outbound(caption)}"
             if caption
-            else f"*{sender_name}* sent `{filename}`"
+            else f"*{label}* sent `{filename}`"
         )
 
         try:
@@ -576,10 +578,11 @@ class SlackAdapter(CollaborationAdapter):
             )
 
         names = ", ".join(f"`{file.filename}`" for file in files)
+        label = await self.agent_label_for_body(sender_name)
         comment = (
-            f"*{sender_name}*: {self.translate_outbound(caption)}"
+            f"*{label}*: {self.translate_outbound(caption)}"
             if caption
-            else f"*{sender_name}* sent {names}"
+            else f"*{label}* sent {names}"
         )
 
         try:
@@ -676,12 +679,13 @@ class SlackAdapter(CollaborationAdapter):
 
             thread_ts = self._last_thread_ts.get(channel_id)
 
+            agent = await self.agent_rendering(sender_name)
             try:
                 result = await self._web_client.chat_postMessage(
                     channel=channel_id,
                     text="_thinking..._",
-                    username=sender_name,
-                    icon_url=await self.agent_icon_url(sender_name),
+                    username=agent.field_label,
+                    icon_url=agent.icon_url,
                     thread_ts=thread_ts,
                 )
                 ts = result.get("ts")
@@ -1136,7 +1140,7 @@ class SlackAdapter(CollaborationAdapter):
                     agent_name,
                 )
                 return
-            icon_url = await self.agent_icon_url(agent_name)
+            agent = await self.agent_rendering(agent_name)
             open_ts = await self._call_session_api(
                 lambda: client.chat_startStream(
                     channel=channel_id,
@@ -1144,8 +1148,8 @@ class SlackAdapter(CollaborationAdapter):
                     recipient_user_id=requester,
                     recipient_team_id=self._team_id,
                     task_display_mode="timeline",
-                    username=agent_name,
-                    icon_url=icon_url,
+                    username=agent.field_label,
+                    icon_url=agent.icon_url,
                 ),
                 agent_name=agent_name,
                 channel_id=channel_id,
@@ -1798,6 +1802,33 @@ class SlackAdapter(CollaborationAdapter):
 
     def translate_outbound(self, content: str) -> str:
         return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+
+    def escape_label_for_body(self, label: str) -> str:
+        """Escape the three characters Slack reserves, over the base defusal.
+
+        `&`, `<` and `>` are how every piece of Slack markup is written, so
+        escaping them is what stops a label from writing a link, a user mention
+        or a `<!channel>` broadcast in Slack's own syntax.
+
+        That is not on its own enough, which is why this builds on the
+        inherited rule rather than replacing it. A label never has to reach
+        Slack in Slack's syntax: `_translate_mentions_to_slack` runs over the
+        finished body *after* the label is inlined, so a plain `@opsbot` in a
+        display name is turned into a real `<!subteam^S…>` by this bridge,
+        from text these three replacements do not touch. The `@` the base class
+        defuses is what closes that.
+
+        mrkdwn's emphasis characters (`*`, `_`, `~`, backtick) have no escape
+        sequence — Slack documents none — so a label containing them can still
+        unbalance the bold run it sits in. That is cosmetic; the markup a label
+        could forge is not, and this closes it."""
+        return (
+            super()
+            .escape_label_for_body(label)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
 
     def translate_inbound(self, raw_message: str) -> str:
         return self._translate_links_to_markdown(
