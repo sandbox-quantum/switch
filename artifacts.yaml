@@ -82,7 +82,7 @@ artifacts:
 
   agent-runtime:
     description: The Switch protocol client and MCP runtime, published to a registry.
-    version: 0.3.3
+    version: 0.3.4
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
