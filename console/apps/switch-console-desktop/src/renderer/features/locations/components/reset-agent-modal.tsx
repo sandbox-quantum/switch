@@ -29,7 +29,7 @@ export function ResetAgentModal({ agentLabel, onSuccess, onClose }: Props) {
           restarts it fresh.
         </p>
 
-        <div className="border-destructive/30 bg-destructive/10 flex items-start gap-2.5 rounded-md border p-3 text-sm">
+        <div className="flex items-start gap-2.5 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
           <TriangleAlert className="mt-0.5 size-4 shrink-0 text-foreground-destructive" />
           <span className="text-foreground-muted">
             Any in-progress work in those sessions will be lost. This can’t be undone.
