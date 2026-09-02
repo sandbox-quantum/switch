@@ -44,6 +44,32 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.22.1] - 2026-09-02
+
+#### Performance
+- **Agent Bridge no longer holds a database connection while doing other
+  work.** Under load the connection pool could be exhausted by slots checked
+  out and left idle in transaction, which surfaced as `QueuePool limit ...
+  connection timed out` and, because heartbeats share the same pool, as
+  fleet-wide agent loss. Three fixes: a request never takes a second pool
+  checkout while holding one (targeted messages to owner-only agents were the
+  common trigger); the message path collapses six checkouts to one on an
+  internal room and two on a bridged one; and authentication is taken off the
+  heartbeat path via a single outer join plus a narrow in-process cache of
+  resolved credentials (#351).
+
+#### Added
+- New operator settings for the above: `AGENT_AUTH_CACHE_TTL_SECONDS` and
+  `AGENT_AUTH_CACHE_MAX_ENTRIES` tune the credential cache (set the TTL to `0`
+  to disable it), and the opt-in `DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT`
+  (default off) turns a leaked idle-in-transaction slot into a loud error. All
+  three are exposed as Helm chart values (#351).
+
+#### Fixed
+- Rejoin the two Alembic migration heads left by the parallel 0.22.0 merges, so
+  `alembic upgrade head` is unambiguous again — deploys from main were failing
+  on the two heads (#351).
+
 ### [0.22.0] - 2026-09-02
 
 #### Added
