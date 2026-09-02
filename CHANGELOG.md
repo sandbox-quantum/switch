@@ -44,6 +44,43 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **User-defined external reference types.** Reference types are no longer a
+  closed set of four. Any signed-in user can define one — slug, display name,
+  agent-facing instructions, value hint and a read/write visibility pair,
+  exactly like a Reference — from the new **Reference types** tab under
+  Resources, or over `POST /references/reference-types`. The four built-ins
+  (Google Drive, Confluence, GitHub, Jira) stay in code, cannot be edited or
+  deleted, and win any slug collision. Agents see the types their owner can
+  read, via `list_reference_types`; each entry now also carries `value_hint`
+  and `origin` (`builtin` or `user`). A type's visibility gates who may *pick*
+  it, never delivery of its instructions for a reference already attached to a
+  room — the attachment is the grant.
+
+#### Changed
+- **A reference value must now carry at least one URL.** An empty `urls` list
+  was already rejected, but an absent `urls` key silently validated to an empty
+  list and was stored. It is now a 400. Existing rows still read fine; the
+  failure appears the first time someone saves one — including a no-op save
+  from the reference detail page. Find them before upgrading and give each a
+  real URL:
+
+  ```sql
+  SELECT id, type FROM "references"
+  WHERE value->'urls' = '[]'::jsonb OR NOT (value ? 'urls');
+  ```
+- **`GET /references/reference-types` now requires a session** and returns
+  401 without one. It was the last unauthenticated route on the references
+  router; the set it returns is per-caller now, so it cannot be answered
+  anonymously.
+
+### [0.21.1] - 2026-09-01
+
+#### Fixed
+- Slack: normalize typed command mentions so commands addressed with a typed
+  `@agent` are recognized (#316).
+- Slack: resolve agent mentions that crossed a workspace boundary (#327).
+
 ### [0.21.0] - 2026-08-25
 
 #### Added
@@ -1071,6 +1108,17 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.31.3] - 2026-09-01
+
+#### Added
+- The disabled "Add agent" button now explains why on hover, splitting the
+  not-ready tooltip into distinct checking and blocked messages (#314).
+
+#### Changed
+- Bundles agent-runtime 0.3.4 (reaps orphaned agent runtimes at boot) and the
+  updated connectors (Claude Code 0.9.11, Codex 0.3.12, OpenCode 0.1.7) and
+  sidecar 1.9.6.
 
 ### [0.31.2] - 2026-08-27
 
@@ -2487,6 +2535,14 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.3.4] - 2026-09-01
+
+#### Added
+- Reap orphaned agent runtimes at boot: `reapOrphanedRuntimes` is now part of
+  the package's public surface so the runtime and Switch Console share one
+  definition of an abandoned runtime, and a session started on a dead host is
+  cleaned up on the next start (#309).
+
 ### [0.3.3] - 2026-08-27
 
 #### Fixed
@@ -2609,6 +2665,11 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.6] - 2026-09-01
+
+#### Changed
+- Rebuilt on agent-runtime 0.3.4, which reaps orphaned agent runtimes at boot.
+
 ### [1.9.5]
 
 #### Changed
@@ -2699,6 +2760,11 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.11] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
 
 ### [0.9.10] - 2026-08-27
 #### Changed
@@ -2923,6 +2989,11 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.12] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
+
 ### [0.3.11] - 2026-08-27
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.3` (was `0.3.2`) — picks up the
@@ -3100,6 +3171,11 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.7] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
 
 ### [0.1.6] - 2026-08-27
 #### Changed

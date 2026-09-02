@@ -5,11 +5,20 @@ import { useNavigate, useSearchParams } from "react-router";
 import CreateDocumentDialog from "./CreateDocumentDialog";
 import CreatePackageDialog from "./CreatePackageDialog";
 import CreateReferenceDialog from "./CreateReferenceDialog";
+import CreateReferenceTypeDialog from "./CreateReferenceTypeDialog";
 import DocumentsTab from "./DocumentsTab";
 import PackagesTab from "./PackagesTab";
 import ReferencesTab from "./ReferencesTab";
+import ReferenceTypesTab from "./ReferenceTypesTab";
 
-type ResourceTab = "references" | "documents" | "packages";
+type ResourceTab = "references" | "types" | "documents" | "packages";
+
+const NEW_LABELS: Record<ResourceTab, string> = {
+  references: "New reference",
+  types: "New reference type",
+  documents: "New document",
+  packages: "New package",
+};
 
 export default function ResourcesPage() {
   const navigate = useNavigate();
@@ -20,7 +29,9 @@ export default function ResourcesPage() {
       ? "documents"
       : tabParam === "packages"
         ? "packages"
-        : "references";
+        : tabParam === "types"
+          ? "types"
+          : "references";
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -48,12 +59,12 @@ export default function ResourcesPage() {
     navigate(`/resources/packages/${id}`);
   };
 
-  const newLabel =
-    tab === "references"
-      ? "New reference"
-      : tab === "documents"
-        ? "New document"
-        : "New package";
+  const handleReferenceTypeCreated = () => {
+    setCreateOpen(false);
+    setRefreshKey((k) => k + 1);
+  };
+
+  const newLabel = NEW_LABELS[tab];
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
@@ -74,12 +85,14 @@ export default function ResourcesPage() {
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
       >
         <Tab label="References" value="references" />
+        <Tab label="Reference types" value="types" />
         <Tab label="Documents" value="documents" />
         <Tab label="Packages" value="packages" />
       </Tabs>
 
       <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
         {tab === "references" && <ReferencesTab refreshKey={refreshKey} />}
+        {tab === "types" && <ReferenceTypesTab refreshKey={refreshKey} />}
         {tab === "documents" && <DocumentsTab refreshKey={refreshKey} />}
         {tab === "packages" && <PackagesTab refreshKey={refreshKey} />}
       </Box>
@@ -89,6 +102,13 @@ export default function ResourcesPage() {
           open={createOpen}
           onClose={() => setCreateOpen(false)}
           onCreated={handleReferenceCreated}
+        />
+      )}
+      {tab === "types" && (
+        <CreateReferenceTypeDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={handleReferenceTypeCreated}
         />
       )}
       {tab === "documents" && (

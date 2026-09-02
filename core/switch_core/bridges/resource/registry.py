@@ -1,66 +1,47 @@
-"""In-memory registry of external reference sub-types.
+"""Built-in external reference types.
 
-For P0 this is a static dict. A reference's ``type`` field is validated against
-this registry at create time; the per-type ``value_model`` validates the
-JSONB value bag. ``display_name`` and ``instructions`` are surfaced to UI and
-agents respectively.
+The four types defined here ship with Switch and are never database rows: their
+agent-facing ``instructions`` stay under code review. User-defined types live in
+the ``reference_types`` table and are resolved per-principal by
+``ResourceService``; a built-in wins any slug collision.
+
+Every type shares one value shape — a non-empty list of URLs — so what varies
+per type is prose: ``display_name``, ``instructions`` for agents, and
+``value_hint`` for the human filling in the form.
 """
 
-import builtins
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class GoogleDriveValue(BaseModel):
-    """Value shape for a Google Drive reference.
+class ReferenceValue(BaseModel):
+    """Value shape for every reference: one or more URLs identifying the material."""
 
-    ``urls`` may point at individual documents, folders, or a mix.
-    """
-
-    urls: list[str] = Field(default_factory=list, min_length=1)
-
-
-class ConfluenceValue(BaseModel):
-    """Value shape for a Confluence reference. Pages, spaces, or a mix."""
-
-    urls: list[str] = Field(default_factory=list, min_length=1)
-
-
-class GitHubValue(BaseModel):
-    """Value shape for a GitHub reference. One or more repository URLs
-    (e.g. ``https://github.com/sandbox-quantum/aq-switch``)."""
-
-    urls: list[str] = Field(default_factory=list, min_length=1)
-
-
-class JiraValue(BaseModel):
-    """Value shape for a Jira reference. One or more Jira URLs — projects,
-    issues, or boards, or a mix (e.g.
-    ``https://your-org.atlassian.net/browse/PROJ-123``)."""
-
-    urls: list[str] = Field(default_factory=list, min_length=1)
+    urls: list[str] = Field(min_length=1)
 
 
 class ReferenceTypeSpec(BaseModel):
     type: str
     display_name: str
     instructions: str
-    value_model: builtins.type[BaseModel]
+    value_hint: str
 
     def value_json_schema(self) -> dict[str, Any]:
-        return self.value_model.model_json_schema()
+        return ReferenceValue.model_json_schema()
 
-    def to_public_dict(self) -> dict[str, Any]:
+    def to_public_dict(self, *, origin: Literal["builtin", "user"]) -> dict[str, Any]:
         return {
             "type": self.type,
             "display_name": self.display_name,
             "instructions": self.instructions,
             "value_schema": self.value_json_schema(),
+            "value_hint": self.value_hint,
+            "origin": origin,
         }
 
 
-REFERENCE_TYPES: dict[str, ReferenceTypeSpec] = {
+BUILTIN_REFERENCE_TYPES: dict[str, ReferenceTypeSpec] = {
     "google_drive": ReferenceTypeSpec(
         type="google_drive",
         display_name="Google Drive",
@@ -70,7 +51,7 @@ REFERENCE_TYPES: dict[str, ReferenceTypeSpec] = {
             "can fetch Drive content on your behalf. The recommended path is "
             "the Glean MCP connector when available."
         ),
-        value_model=GoogleDriveValue,
+        value_hint="Paste links to Google Drive documents or folders.",
     ),
     "confluence": ReferenceTypeSpec(
         type="confluence",
@@ -81,7 +62,7 @@ REFERENCE_TYPES: dict[str, ReferenceTypeSpec] = {
             "fetch Confluence content on your behalf — typically the Atlassian "
             "MCP connector (e.g. getConfluencePage, searchConfluenceUsingCql)."
         ),
-        value_model=ConfluenceValue,
+        value_hint="Paste links to Confluence pages or spaces.",
     ),
     "github": ReferenceTypeSpec(
         type="github",
@@ -95,7 +76,9 @@ REFERENCE_TYPES: dict[str, ReferenceTypeSpec] = {
             "URL(s) in this reference's value identify which repo(s) to "
             "operate on."
         ),
-        value_model=GitHubValue,
+        value_hint=(
+            "Paste links to GitHub repositories (e.g. https://github.com/org/repo)."
+        ),
     ),
     "jira": ReferenceTypeSpec(
         type="jira",
@@ -108,44 +91,24 @@ REFERENCE_TYPES: dict[str, ReferenceTypeSpec] = {
             "getVisibleJiraProjects). The URL(s) in this reference's value "
             "identify which Jira project / issue / board to operate on."
         ),
-        value_model=JiraValue,
+        value_hint=(
+            "Paste links to Jira projects, issues, or boards "
+            "(e.g. https://your-org.atlassian.net/browse/PROJ-123)."
+        ),
     ),
 }
 
 
-def list_known_types() -> list[str]:
-    return list(REFERENCE_TYPES.keys())
-
-
-def validate_reference_type(type_: str) -> None:
-    if type_ not in REFERENCE_TYPES:
-        raise ValueError(
-            f"Unknown reference type '{type_}'. Known: {list_known_types()}"
-        )
-
-
-def validate_reference_value(type_: str, value: dict[str, Any]) -> dict[str, Any]:
-    """Validate ``value`` against the type's Pydantic model. Returns the
+def validate_reference_value(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate ``value`` against the shared value model. Returns the
     parsed-and-redumped dict (so unknown fields are stripped). Raises
     ``ValueError`` on failure."""
-    validate_reference_type(type_)
-    spec = REFERENCE_TYPES[type_]
     try:
-        parsed = spec.value_model.model_validate(value)
+        parsed = ReferenceValue.model_validate(value)
     except Exception as exc:
-        raise ValueError(f"Invalid value for type '{type_}': {exc}") from exc
+        raise ValueError(f"Invalid reference value: {exc}") from exc
     return parsed.model_dump(mode="json")
 
 
-def serialize_used_types(types: set[str]) -> dict[str, dict[str, Any]]:
-    """Return the registry entries for the types actually present in a room,
-    as plain dicts ready to be embedded in the on-connect payload."""
-    return {
-        t: {
-            "type": REFERENCE_TYPES[t].type,
-            "display_name": REFERENCE_TYPES[t].display_name,
-            "instructions": REFERENCE_TYPES[t].instructions,
-        }
-        for t in types
-        if t in REFERENCE_TYPES
-    }
+def is_builtin_type(type_: str) -> bool:
+    return type_ in BUILTIN_REFERENCE_TYPES

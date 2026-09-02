@@ -25,7 +25,6 @@ import {
 import {
   useDocuments,
   usePackages,
-  useReferenceTypes,
   useReferences,
   useRoomDocuments,
   useRoomPackages,
@@ -111,7 +110,6 @@ function RoomReferences({
   attachedPackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
-  const { data: types } = useReferenceTypes();
   const {
     data: attached,
     loading,
@@ -127,11 +125,6 @@ function RoomReferences({
     () => new Set((attached ?? []).map((r) => r.id)),
     [attached],
   );
-  const displayNameByType = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const t of types ?? []) m[t.type] = t.display_name;
-    return m;
-  }, [types]);
 
   const options = useMemo<PickerOption[]>(
     () =>
@@ -142,15 +135,15 @@ function RoomReferences({
           primary: (
             <Stack direction="row" alignItems="center" spacing={1}>
               <Chip
-                label={displayNameByType[r.type] ?? r.type}
+                label={r.type_display_name ?? `${r.type} (unknown type)`}
                 size="small"
               />
               <span>{r.name || r.description}</span>
             </Stack>
           ),
-          search: `${r.name} ${r.description} ${r.type} ${displayNameByType[r.type] ?? ""}`.toLowerCase(),
+          search: `${r.name} ${r.description} ${r.type} ${r.type_display_name ?? ""}`.toLowerCase(),
         })),
-    [allRefs, attachedIds, displayNameByType],
+    [allRefs, attachedIds],
   );
 
   const handleAttach = async (ids: string[]) => {
@@ -209,7 +202,7 @@ function RoomReferences({
               }}
             >
               <Chip
-                label={displayNameByType[ref.type] ?? ref.type}
+                label={ref.type_display_name ?? `${ref.type} (unknown type)`}
                 size="small"
               />
               <Typography variant="body2" sx={{ flexGrow: 1 }}>

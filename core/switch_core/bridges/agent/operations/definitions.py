@@ -356,7 +356,10 @@ async def list_references() -> dict[str, Any]:
 
     External references carry their `value` inline (URLs / IDs); fetch the
     underlying content using your own tools as described in
-    `reference_types[<type>].instructions`.
+    `reference_types[<type>].instructions`. An entry may instead carry
+    `"missing": true`, meaning that type could not be resolved on this
+    instance: treat its instructions as absent and say so rather than
+    guessing at how to use the reference.
 
     Internal documents are advertised by id + description + instructions
     only; call `load_internal_documents` to fetch their content.
@@ -1202,18 +1205,22 @@ async def release_role() -> dict[str, Any]:
 
 @operation
 async def list_reference_types() -> list[dict[str, Any]]:
-    """List the Reference sub-types this Switch instance supports.
+    """List the Reference types you can use on this Switch instance.
 
-    Call this before `create_reference` to discover which `type` values
-    are valid and what shape the `value` payload must have.
+    The set is open and per-caller: it is the types built into Switch plus
+    the user-defined ones your owner can read, so another agent may see a
+    different list. Call this before `create_reference` and pick a `type`
+    from what it returns for you.
 
     Returns:
-        List of `{type, display_name, instructions, value_schema}`.
-        `value_schema` is the JSON Schema for the per-type value
-        payload — use it to build the `value` dict for `create_reference`.
+        List of `{type, display_name, instructions, value_schema,
+        value_hint, origin}`. `value_schema` is the JSON Schema for the
+        `value` dict `create_reference` expects, `value_hint` says what the
+        URLs in it should point at, and `origin` is `"builtin"` for a type
+        that ships with Switch or `"user"` for one someone defined here.
     """
     protocol = get_protocol()
-    return protocol.list_reference_types()
+    return await protocol.list_reference_types(get_agent_id())
 
 
 @operation
@@ -1234,10 +1241,10 @@ async def create_reference(
     and access it.
 
     Args:
-        type: Reference type. Supported values: "google_drive",
-            "confluence", "github", "jira". Each type expects a specific
-            `value` shape. Call `list_reference_types` for the authoritative
-            list and each type's `value_schema`.
+        type: Reference type — a slug `list_reference_types` returned for
+            YOU. The set is open (users define their own types) and
+            per-caller, so call `list_reference_types` first rather than
+            guessing a slug; an unknown or unreadable one is rejected.
         name: Short display name.
         description: One-or-two sentence summary of what this reference
             points at, shown in listings.
@@ -1245,10 +1252,10 @@ async def create_reference(
             reference — what's in it, when to consult it, any caveats.
             This is the field agents read when the reference shows up in
             their room context.
-        value: Type-specific payload. For every built-in type today the
-            shape is `{"urls": ["https://...", ...]}` — `min_length=1`. For
-            "jira" the URLs point at projects, issues, or boards (e.g.
-            `https://your-org.atlassian.net/browse/PROJ-123`).
+        value: `{"urls": ["https://...", ...]}` — the shape every type
+            shares, with at least one URL. What those URLs should point at
+            is the type's `value_hint` from `list_reference_types` (for
+            "jira", say, projects, issues, or boards).
         read_visibility: "private" (default — only you can read/attach it) or
             "public" (anyone can read/attach).
         write_visibility: "private" (default — only you can edit it) or

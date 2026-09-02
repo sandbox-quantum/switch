@@ -15,8 +15,7 @@ import { createReference } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
 import { useReferenceTypes } from "../../data/hooks";
-import JsonValueForm from "./value_forms/JsonValueForm";
-import { VALUE_FORMS } from "./value_forms";
+import UrlsValueForm from "./value_forms/UrlsValueForm";
 
 interface Props {
   open: boolean;
@@ -72,7 +71,8 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
     }
   };
 
-  const ValueForm = type ? (VALUE_FORMS[type] ?? JsonValueForm) : null;
+  // The slug was picked from this very list, so it always resolves.
+  const selectedType = (types ?? []).find((t) => t.type === type);
   const canSubmit =
     !!type && name.trim().length > 0 && description.trim().length > 0 && !submitting;
 
@@ -93,13 +93,20 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
           >
             {(types ?? []).map((t) => (
               <MenuItem key={t.type} value={t.type}>
-                {t.display_name}
+                {t.is_builtin
+                  ? t.display_name
+                  : `${t.display_name} — by ${t.owner_name ?? t.owner_id}`}
               </MenuItem>
             ))}
           </TextField>
 
-          {ValueForm && (
-            <ValueForm value={value} onChange={setValue} disabled={submitting} />
+          {selectedType && (
+            <UrlsValueForm
+              value={value}
+              onChange={setValue}
+              disabled={submitting}
+              helperText={selectedType.value_hint}
+            />
           )}
 
           <TextField
