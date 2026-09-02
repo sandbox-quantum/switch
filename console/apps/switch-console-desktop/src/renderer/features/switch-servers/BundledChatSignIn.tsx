@@ -129,7 +129,7 @@ export function BundledChatSignInModal({ serverId, bridgeDisplayName, onClose }:
         {signInQuery.isLoading ? (
           <Spinner className="size-3.5" />
         ) : signInQuery.isError ? (
-          <p className="text-destructive text-xs">
+          <p className="text-xs text-destructive">
             {failureText(signInQuery.error, 'Could not read the sign-in details.')}
           </p>
         ) : signIn?.kind === 'unavailable' ? (

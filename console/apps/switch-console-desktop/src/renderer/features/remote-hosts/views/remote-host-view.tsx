@@ -190,22 +190,22 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
             exactly that, rather than being blamed on whichever step it touched.
           */}
             {installStep.isError && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 {failureText(installStep.error, 'Could not install.')}
               </p>
             )}
             {updateStep.isError && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 {failureText(updateStep.error, 'Could not update.')}
               </p>
             )}
             {recheck.isError && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 {failureText(recheck.error, 'Could not check this host.')}
               </p>
             )}
             {prepare.isError && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 {failureText(prepare.error, 'Could not work out what this host needs.')}
               </p>
             )}

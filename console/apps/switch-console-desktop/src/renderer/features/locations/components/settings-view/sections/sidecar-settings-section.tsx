@@ -169,7 +169,7 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
 
             <Button
               variant="outline"
-              className="text-destructive hover:text-destructive ml-auto"
+              className="ml-auto text-destructive hover:text-destructive"
               disabled={busy || !data.running}
               onClick={() => stop.mutate()}
             >

@@ -189,7 +189,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
             )}
           </Field>
 
-          {error && <p className="text-destructive text-xs">{error}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
       <DialogFooter>

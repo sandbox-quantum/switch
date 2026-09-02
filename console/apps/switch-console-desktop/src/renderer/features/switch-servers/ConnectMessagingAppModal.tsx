@@ -183,13 +183,13 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       <DialogContentArea className="pt-0">
         <div className="flex w-full flex-col gap-5">
           {!server && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               No Switch server is selected. Choose a server in the sidebar first.
             </p>
           )}
 
           {server && !isAdmin && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               Connecting a messaging app requires an admin account on this server. You are signed in
               without admin rights, so the server would reject this.
             </p>
@@ -219,7 +219,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
               </SelectContent>
             </Select>
             {typesQuery.isError && (
-              <p className="text-destructive mt-1 text-xs">
+              <p className="mt-1 text-xs text-destructive">
                 {failureText(typesQuery.error, 'Could not load the available messaging apps.')}
               </p>
             )}
@@ -350,7 +350,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
             </>
           )}
 
-          {error && <p className="text-destructive text-xs">{error}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
       <DialogFooter>

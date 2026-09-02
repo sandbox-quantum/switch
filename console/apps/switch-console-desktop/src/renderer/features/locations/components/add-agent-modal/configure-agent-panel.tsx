@@ -261,7 +261,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           aria-invalid={form.agentName.length > 0 && !form.nameIsValid}
         />
         {form.agentName.length > 0 && !form.nameIsValid ? (
-          <span className="text-destructive text-xs">
+          <span className="text-xs text-destructive">
             Use lowercase letters, digits, <span className="font-mono">. - _</span>, starting with a
             letter or digit. No spaces or uppercase.
           </span>

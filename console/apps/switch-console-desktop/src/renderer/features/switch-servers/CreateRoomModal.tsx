@@ -192,7 +192,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
       <DialogContentArea className="pt-0">
         <div className="flex w-full flex-col gap-6">
           {!server && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               No Switch server is selected, so there is nowhere to create a room. Choose a server in
               the sidebar first.
             </p>
@@ -221,19 +221,19 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               ))}
             </div>
             {noBridgesAtAll && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 This server has no messaging app connected, so a room created here would be
                 unreachable. Connect one first.
               </p>
             )}
             {noneRunning && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 This server&apos;s messaging apps are not running, so a room created here would be
                 unreachable. Start one, or connect another.
               </p>
             )}
             {noneCanCreateChannels && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 None of the running messaging apps can create a channel from Switch — for example, a
                 Telegram bot can&apos;t create chats on its own. Make the chat directly in the
                 messaging app instead (for Telegram, create the group and add the bot to it) and it
@@ -241,7 +241,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               </p>
             )}
             {bridgesQuery.isError && (
-              <p className="text-destructive text-xs">
+              <p className="text-xs text-destructive">
                 {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
               </p>
             )}
@@ -366,7 +366,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             )}
           </div>
 
-          {error && <p className="text-destructive text-xs">{error}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
       <DialogFooter>

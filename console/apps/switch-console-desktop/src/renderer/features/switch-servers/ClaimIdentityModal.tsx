@@ -81,13 +81,13 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
           </p>
 
           {!serverId && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               No Switch server is selected. Choose a server in the sidebar first.
             </p>
           )}
 
           {bridgeIsGone && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               That messaging app is no longer connected to this server.
             </p>
           )}
