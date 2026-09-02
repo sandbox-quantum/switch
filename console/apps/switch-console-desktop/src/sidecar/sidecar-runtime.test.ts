@@ -10,6 +10,7 @@ import {
   SidecarRuntime,
 } from './sidecar-runtime';
 import type { SidecarSessionEntry } from './sidecar-state';
+import { makeAgentTmuxSessionName } from './vm-tmux';
 
 // Use the generic parser so raw 'start'/'stop' map to status deterministically,
 // independent of any provider's custom hook parser.
@@ -378,6 +379,70 @@ describe('SidecarRuntime (multi-session)', () => {
 
     expect(created[0].conn.stop).not.toHaveBeenCalled();
     expect(runtime.connectedSessions()).toHaveLength(1);
+  });
+
+  it('reaps dead panes, stops their retrying connection, and forgets their room', async () => {
+    const created: Array<{ deps: RoomConnectionDeps; conn: ManagedConnection }> = [];
+    const factory: RoomConnectionFactory = (deps) => {
+      const conn = fakeConnection();
+      created.push({ deps, conn });
+      return conn;
+    };
+    let paneLive = true;
+    const registry = fakeRegistry();
+    const startupWatch = makeStartupWatch();
+    const runtime = new SidecarRuntime({
+      creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
+      deeplinkScheme: 'switchdash',
+      tmuxRun: vi.fn(),
+      isPaneLive: () => paneLive,
+      log: silentLog,
+      createConnection: factory,
+      registry,
+      startupWatch,
+    });
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+    startupWatch.begin({ ptyId: PTY_A, sessionId: 'session-a', providerId: 'codex' });
+    expect(startupWatch.blocksInjection(PTY_A)).toBe(true);
+    expect(registry.has('session-a')).toBe(true);
+
+    paneLive = false;
+    expect(runtime.reapDeadSessions()).toEqual([{ sessionId: 'session-a', roomId: 'room-1' }]);
+    expect(created[0].conn.stop).toHaveBeenCalledTimes(1);
+    expect(runtime.activeTmuxTargets()).toEqual([]);
+    expect(runtime.hasLiveRoom('room-1')).toBe(false);
+    expect(registry.has('session-a')).toBe(false);
+    expect(startupWatch.blocksInjection(PTY_A)).toBe(false);
+  });
+
+  it('does not reap a live pane or another session when one pane dies', async () => {
+    const live = new Set(['session-a']);
+    const created: Array<{ deps: RoomConnectionDeps; conn: ManagedConnection }> = [];
+    const factory: RoomConnectionFactory = (deps) => {
+      const conn = fakeConnection();
+      created.push({ deps, conn });
+      return conn;
+    };
+    const runtime = new SidecarRuntime({
+      creds: { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' },
+      deeplinkScheme: 'switchdash',
+      tmuxRun: vi.fn(),
+      isPaneLive: (target) =>
+        [...live].some((sessionId) => target === makeAgentTmuxSessionName(sessionId)),
+      log: silentLog,
+      createConnection: factory,
+      registry: fakeRegistry(),
+      startupWatch: makeStartupWatch(),
+    });
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+    await runtime.handleHook(switchRoomHook('room-2', PTY_B));
+
+    live.clear();
+    live.add('session-b');
+    expect(runtime.reapDeadSessions()).toEqual([{ sessionId: 'session-a', roomId: 'room-1' }]);
+    expect(created[0].conn.stop).toHaveBeenCalledTimes(1);
+    expect(created[1].conn.stop).not.toHaveBeenCalled();
+    expect(runtime.connectedSessions()).toEqual([{ sessionId: 'session-b', roomId: 'room-2' }]);
   });
 });
 

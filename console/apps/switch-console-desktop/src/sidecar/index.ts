@@ -413,6 +413,20 @@ async function main(): Promise<void> {
       })
     );
     for (const t of [...liveTargets]) if (!targets.has(t)) liveTargets.delete(t);
+
+    // A dead pane is terminal for the runtime connection. Reap it now rather
+    // than leaving RoomConnection's no-target retry loop and the durable
+    // session registry alive indefinitely. The watcher guard is released so a
+    // later notification can auto-start a replacement for the room.
+    for (const { sessionId, roomId } of runtime.reapDeadSessions()) {
+      spawner?.drop(sessionId);
+      if (roomId) watcher?.clearRoom(roomId);
+      log.error('sidecar: reaped session after its tmux target died', {
+        event: 'switch_session_reaped_dead_target',
+        sessionId,
+        roomId,
+      });
+    }
   };
   const refresh = async (): Promise<void> => {
     await Promise.all([refreshLiveness(), refreshWatchEnabled(), refreshLaunchSpec()]);
