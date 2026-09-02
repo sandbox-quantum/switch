@@ -145,9 +145,6 @@ def _allowed_client(
 
     agent = SimpleNamespace(name="fixer", addressing_policy=policy, owner_id=owner_id)
 
-    async def _fresh_agent():  # type: ignore[no-untyped-def]
-        return agent
-
     async def _resolve(_session, _mxid):  # type: ignore[no-untyped-def]
         if principal is None:
             return None
@@ -159,7 +156,6 @@ def _allowed_client(
 
     return SimpleNamespace(
         agent=agent,
-        _fresh_agent=_fresh_agent,
         session_factory=_session_factory,
         _resolve_sender_principal=_resolve,
         _room_store=SimpleNamespace(get=_get_room),
@@ -167,7 +163,9 @@ def _allowed_client(
 
 
 async def _decide(client: SimpleNamespace, room_id: str = "room-1"):  # type: ignore[no-untyped-def]
-    return await AgentClient._addressing_allowed(client, "@u:switch.local", room_id)
+    return await AgentClient._addressing_allowed(
+        client, None, client.agent, "@u:switch.local", room_id
+    )
 
 
 class TestAddressingAllowed:
@@ -363,10 +361,10 @@ class TestOwnerAgentsAddressing:
 
 
 def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  # type: ignore[no-untyped-def]
-    """Fake client for _gate_addressed: records any auto-reply sent."""
+    """Fake client for _gate_addressed and the auto-reply it hands back."""
     sent: list[dict] = []
 
-    async def _addressing_allowed(_matrix_sender, _room_id):  # type: ignore[no-untyped-def]
+    async def _addressing_allowed(_session, _agent, _matrix_sender, _room_id):  # type: ignore[no-untyped-def]
         return _AddressingDecision(allowed=allowed, refusal="" if allowed else refusal)
 
     async def _send_message(room_id, body, **kwargs):  # type: ignore[no-untyped-def]
@@ -376,10 +374,13 @@ def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  
         return "human"
 
     client = SimpleNamespace(
+        agent=SimpleNamespace(name="fixer"),
         _addressing_allowed=_addressing_allowed,
         send_message=_send_message,
         _sender_handle=_sender_handle,
+        _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
     )
+    client._post_auto_reply = AgentClient._post_auto_reply.__get__(client)
     client.sent = sent  # type: ignore[attr-defined]
     return client
 
@@ -388,29 +389,32 @@ def _room() -> SimpleNamespace:
     return SimpleNamespace(room_id="!matrix:switch.local")
 
 
-class TestGateAddressed:
-    async def test_not_addressed_short_circuits(self) -> None:
-        client = _gate_client(allowed=False)
-        result = await AgentClient._gate_addressed(
-            client, _room(), _event(), _meta(), "$root", False
+async def _gate(client: SimpleNamespace, event: SimpleNamespace):  # type: ignore[no-untyped-def]
+    """Run the gate and post whatever refusal it hands back, the way on_message
+    does — the gate itself never touches Matrix, so that its caller can close
+    the database session first."""
+    outcome = await AgentClient._gate_addressed(
+        client, None, client.agent, event, _meta()
+    )
+    if outcome.refusal is not None:
+        await client._post_auto_reply(
+            "!matrix:switch.local", event, outcome.refusal, "$root"
         )
-        assert result is False
-        assert client.sent == []  # no reply for an untagged message
+    return outcome
 
+
+class TestGateAddressed:
     async def test_allowed_stays_addressed(self) -> None:
         client = _gate_client(allowed=True)
-        result = await AgentClient._gate_addressed(
-            client, _room(), _event(), _meta(), "$root", True
-        )
-        assert result is True
+        outcome = await _gate(client, _event())
+        assert outcome.addressed is True
+        assert outcome.refusal is None
         assert client.sent == []
 
     async def test_denied_demotes_and_replies(self) -> None:
         client = _gate_client(allowed=False)
-        result = await AgentClient._gate_addressed(
-            client, _room(), _event(), _meta(), "$root", True
-        )
-        assert result is False
+        outcome = await _gate(client, _event())
+        assert outcome.addressed is False
         assert len(client.sent) == 1
         reply = client.sent[0]
         assert _ADDRESSING_DENIED_MESSAGE in reply["body"]
@@ -422,20 +426,28 @@ class TestGateAddressed:
     async def test_denied_auto_reply_does_not_ping_pong(self) -> None:
         # If the tagging message was itself an auto-reply, do not reply again.
         client = _gate_client(allowed=False)
-        result = await AgentClient._gate_addressed(
-            client, _room(), _event(auto_reply=True), _meta(), "$root", True
-        )
-        assert result is False
+        outcome = await _gate(client, _event(auto_reply=True))
+        assert outcome.addressed is False
+        assert outcome.refusal is None
         assert client.sent == []
 
     async def test_reply_carries_the_decision_wording(self) -> None:
         # The refusal the decision chose is what the sender sees, not a
         # re-derived generic one.
         client = _gate_client(allowed=False, refusal=_ADDRESSING_UNCLAIMED_MESSAGE)
-        await AgentClient._gate_addressed(
-            client, _room(), _event(), _meta(), "$root", True
-        )
+        await _gate(client, _event())
         assert _ADDRESSING_UNCLAIMED_MESSAGE in client.sent[0]["body"]
+
+    async def test_nothing_is_posted_from_inside_the_gate(self) -> None:
+        # The point of returning the refusal: the caller holds a database
+        # session while the gate runs and must close it before talking to
+        # Matrix.
+        client = _gate_client(allowed=False)
+        outcome = await AgentClient._gate_addressed(
+            client, None, client.agent, _event(), _meta()
+        )
+        assert outcome.refusal == _ADDRESSING_DENIED_MESSAGE
+        assert client.sent == []
 
 
 def _command(
@@ -450,19 +462,26 @@ def _command_client(*, allowed: bool, targets_me: bool):  # type: ignore[no-unty
     """Fake client for _gate_command: records any command reply posted."""
     replies: list[dict] = []
 
-    async def _addressing_allowed(_matrix_sender, _room_id):  # type: ignore[no-untyped-def]
+    async def _addressing_allowed(_session, _agent, _matrix_sender, _room_id):  # type: ignore[no-untyped-def]
         return _AddressingDecision(
             allowed=allowed, refusal="" if allowed else _ADDRESSING_DENIED_MESSAGE
         )
 
-    async def _targets_me(_args, _room_id):  # type: ignore[no-untyped-def]
+    async def _targets_me(_session, _args, _room_id):  # type: ignore[no-untyped-def]
         return targets_me
 
     async def _reply_command(room_id, body, **kwargs):  # type: ignore[no-untyped-def]
         replies.append({"room_id": room_id, "body": body, **kwargs})
 
+    agent = SimpleNamespace(name="fixer")
+
+    async def _fresh_agent(_session):  # type: ignore[no-untyped-def]
+        return agent
+
     client = SimpleNamespace(
-        agent=SimpleNamespace(name="fixer"),
+        agent=agent,
+        session_factory=_session_factory,
+        _fresh_agent=_fresh_agent,
         _addressing_allowed=_addressing_allowed,
         _command_targets_me_explicitly=_targets_me,
         reply_command=_reply_command,
@@ -511,10 +530,10 @@ class TestCommandTargetsMeExplicitly:
     counts as explicit targeting."""
 
     def _client(self, *, name: str = "fixer", alias: bool = False, role: bool = False):  # type: ignore[no-untyped-def]
-        async def _tags_alias(_text, _room_id):  # type: ignore[no-untyped-def]
+        async def _tags_alias(_session, _text, _room_id):  # type: ignore[no-untyped-def]
             return alias
 
-        async def _tags_role(_text, _room_id):  # type: ignore[no-untyped-def]
+        async def _tags_role(_session, _text, _room_id):  # type: ignore[no-untyped-def]
             return role
 
         client = SimpleNamespace(
@@ -530,14 +549,16 @@ class TestCommandTargetsMeExplicitly:
     async def test_no_at_token_is_not_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentClient._command_targets_me_explicitly(client, "", "room-1")
+            await AgentClient._command_targets_me_explicitly(client, None, "", "room-1")
             is False
         )
 
     async def test_own_name_is_explicit(self) -> None:
         client = self._client()
         assert (
-            await AgentClient._command_targets_me_explicitly(client, "@fixer", "room-1")
+            await AgentClient._command_targets_me_explicitly(
+                client, None, "@fixer", "room-1"
+            )
             is True
         )
 
@@ -545,7 +566,7 @@ class TestCommandTargetsMeExplicitly:
         client = self._client()
         assert (
             await AgentClient._command_targets_me_explicitly(
-                client, "@someone-else", "room-1"
+                client, None, "@someone-else", "room-1"
             )
             is False
         )
@@ -554,7 +575,7 @@ class TestCommandTargetsMeExplicitly:
         client = self._client(alias=True)
         assert (
             await AgentClient._command_targets_me_explicitly(
-                client, "@nickname", "room-1"
+                client, None, "@nickname", "room-1"
             )
             is True
         )
@@ -563,7 +584,7 @@ class TestCommandTargetsMeExplicitly:
         client = self._client(role=True)
         assert (
             await AgentClient._command_targets_me_explicitly(
-                client, "@manager", "room-1"
+                client, None, "@manager", "room-1"
             )
             is True
         )
