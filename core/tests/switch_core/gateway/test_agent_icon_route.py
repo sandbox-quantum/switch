@@ -12,10 +12,10 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.agents import update_agent_icon
 from switch_core.gateway.schemas import UpdateAgentIconRequest
+from tests.switch_core.gateway.agent_route_harness import add_agent, add_user
 
 _AGENT_STORE = AgentStore()
 
@@ -23,62 +23,13 @@ _ICON = "https://cdn.example.com/9.x/bottts/png?seed=switch-worker"
 _OTHER_ICON = "https://cdn.example.com/9.x/shapes/png?seed=switch-worker"
 
 
-async def _add_user(session: AsyncSession, *, name: str, role: str = "user") -> User:
-    user = User(name=name, email=f"{name}@example.com", role=role)
-    session.add(user)
-    await session.flush()
-    return user
-
-
-async def _add_agent(
-    session: AsyncSession,
-    *,
-    name: str,
-    owner_id: str | None,
-    icon_url: str | None = None,
-) -> Agent:
-    client = Client(
-        type="agent",
-        matrix_user_id=f"@{name}:test",
-        display_name=name,
-        password=f"pw-{name}",
-    )
-    session.add(client)
-    await session.flush()
-
-    api_key = ApiKey(
-        type="agent",
-        key_hash=f"hash-{name}",
-        encrypted_key=f"enc-{name}",
-        label=name,
-        user_id=owner_id,
-    )
-    session.add(api_key)
-    await session.flush()
-
-    agent = Agent(
-        name=name,
-        description=f"{name} desc",
-        icon_url=icon_url,
-        agent_type="session_passive",
-        connector_type="external",
-        integration_profile={"connection_model": "session_passive"},
-        client_id=client.id,
-        api_key_id=api_key.id,
-        owner_id=owner_id,
-    )
-    session.add(agent)
-    await session.flush()
-    return agent
-
-
 class TestUpdateAgentIcon:
     async def test_owner_can_set_an_icon(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            agent = await _add_agent(session, name="a1", owner_id=owner.id)
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
 
             summary = await update_agent_icon(
                 agent.id,
@@ -97,8 +48,8 @@ class TestUpdateAgentIcon:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            agent = await _add_agent(
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(
                 session, name="a1", owner_id=owner.id, icon_url=_ICON
             )
 
@@ -118,8 +69,8 @@ class TestUpdateAgentIcon:
         """Clearing has to be expressible — the whole reason this is a separate
         route rather than another optional field on the agent update."""
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            agent = await _add_agent(
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(
                 session, name="a1", owner_id=owner.id, icon_url=_ICON
             )
 
@@ -140,8 +91,8 @@ class TestUpdateAgentIcon:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            agent = await _add_agent(
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(
                 session, name="a1", owner_id=owner.id, icon_url=_ICON
             )
 
@@ -159,9 +110,9 @@ class TestUpdateAgentIcon:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            other = await _add_user(session, name="other")
-            agent = await _add_agent(session, name="a1", owner_id=owner.id)
+            owner = await add_user(session, name="owner")
+            other = await add_user(session, name="other")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
 
             with pytest.raises(HTTPException) as exc:
                 await update_agent_icon(
@@ -181,9 +132,9 @@ class TestUpdateAgentIcon:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            admin = await _add_user(session, name="admin", role="admin")
-            agent = await _add_agent(session, name="a1", owner_id=owner.id)
+            owner = await add_user(session, name="owner")
+            admin = await add_user(session, name="admin", role="admin")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
 
             summary = await update_agent_icon(
                 agent.id,
@@ -199,7 +150,7 @@ class TestUpdateAgentIcon:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
+            owner = await add_user(session, name="owner")
 
             with pytest.raises(HTTPException) as exc:
                 await update_agent_icon(
@@ -231,8 +182,8 @@ class TestUpdateAgentIcon:
         and never stored at all, since Switch itself dereferences the URL when
         a bridge needs the image as bytes."""
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            agent = await _add_agent(session, name="a1", owner_id=owner.id)
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(session, name="a1", owner_id=owner.id)
 
             with pytest.raises(HTTPException) as exc:
                 await update_agent_icon(
@@ -252,8 +203,8 @@ class TestUpdateAgentIcon:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
-            owner = await _add_user(session, name="owner")
-            agent = await _add_agent(
+            owner = await add_user(session, name="owner")
+            agent = await add_agent(
                 session, name="a1", owner_id=owner.id, icon_url=_ICON
             )
 

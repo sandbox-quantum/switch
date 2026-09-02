@@ -105,6 +105,12 @@ class Agent(Base):
     # means no icon was chosen, and the display layer supplies the fallback, so
     # that fallback can change without touching stored rows.
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Human-readable name shown to people ("Switch Dev") next to the machine
+    # identifier `name` carries ("switchdev"). NULL means none was chosen and
+    # the display layer falls back to `name`. Never the Matrix client display
+    # name: that stays the identifier, because it is what bridges match on to
+    # recognise an agent's own echo.
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_type: Mapped[str] = mapped_column(Text, nullable=False)
     connector_type: Mapped[str] = mapped_column(Text, nullable=False)
     integration_profile: Mapped[dict] = mapped_column(JSONB, nullable=False)
