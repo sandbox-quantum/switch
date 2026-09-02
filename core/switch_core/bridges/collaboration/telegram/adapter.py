@@ -177,6 +177,11 @@ class TelegramAdapter(CollaborationAdapter):
         # people who address by numeric id rather than handle.
         self._user_names: dict[int, str] = {}
         self._username_to_id: dict[str, int] = {}
+        # chat id -> its public `@name`, or None for a chat that resolved and
+        # has none. A deeplink is built once per room on every dashboard read,
+        # inside the request's transaction, and getChat is a network round trip
+        # — uncached, that is a pool slot held for it per room, per page load.
+        self._chat_usernames: dict[str, str | None] = {}
         # Whether BotFather's privacy mode is off for this bot, read from getMe
         # at startup. It is a global setting and says nothing about any one
         # chat, so it is only half of what _chat_visibility decides.
@@ -1087,9 +1092,13 @@ class TelegramAdapter(CollaborationAdapter):
         """The chat's public `@name`, if it has one.
 
         Best effort: a failed lookup falls through to the id-derived link
-        rather than costing the caller its button."""
+        rather than costing the caller its button, and is not cached — only a
+        chat that answered is, so a transient failure does not stick.
+        """
         if self._bot is None:
             return None
+        if channel_id in self._chat_usernames:
+            return self._chat_usernames[channel_id]
         try:
             chat = await self._bot.get_chat(self._chat_id(channel_id))
         except Exception:
@@ -1100,7 +1109,9 @@ class TelegramAdapter(CollaborationAdapter):
             )
             return None
         username = getattr(chat, "username", None)
-        return str(username) if username else None
+        resolved = str(username) if username else None
+        self._chat_usernames[channel_id] = resolved
+        return resolved
 
     async def home_deeplink(self) -> str | None:
         """`https://t.me/<bot username>` — the bot's own chat, which is the
