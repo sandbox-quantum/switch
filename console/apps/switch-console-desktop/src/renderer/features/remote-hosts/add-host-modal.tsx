@@ -154,7 +154,7 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
           </Field>
 
           {mutation.isError && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               {failureText(mutation.error, 'Could not add the host.')}
             </p>
           )}

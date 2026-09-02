@@ -825,7 +825,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
               placeholder="https://switch-gateway.example.com"
               autoFocus={isEdit}
             />
-            {gatewayMessage && <p className="text-destructive mt-1 text-xs">{gatewayMessage}</p>}
+            {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
           </Field>
           <Field>
             <FieldLabel>API URL</FieldLabel>
@@ -837,8 +837,8 @@ const ExternalServerStep = observer(function ExternalServerStep({
                 if (e.key === 'Enter') void handleSubmit();
               }}
             />
-            {apiMessage && <p className="text-destructive mt-1 text-xs">{apiMessage}</p>}
-            {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
+            {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
+            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
           </Field>
         </FieldGroup>
       </DialogContentArea>

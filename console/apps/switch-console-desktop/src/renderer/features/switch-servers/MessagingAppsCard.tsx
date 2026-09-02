@@ -254,7 +254,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       )}
 
       {identitiesError !== null && (
-        <p className="text-destructive mt-2 text-xs">
+        <p className="mt-2 text-xs text-destructive">
           {failureText(
             identitiesError,
             'Could not load which messaging accounts are linked to you, so this list may be incomplete.'
@@ -263,7 +263,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       )}
 
       {bridgesQuery.isError ? (
-        <p className="text-destructive mt-3 text-xs">
+        <p className="mt-3 text-xs text-destructive">
           {failureText(
             bridgesQuery.error,
             'Could not load this server’s messaging apps. Re-check the server, or reload the page.'
@@ -315,7 +315,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
           ))}
         </div>
       )}
-      {toggleError && <p className="text-destructive mt-2 text-xs">{toggleError}</p>}
+      {toggleError && <p className="mt-2 text-xs text-destructive">{toggleError}</p>}
     </div>
   );
 });
@@ -421,7 +421,7 @@ export function MessagingAppRow({
               silently, so without this the app simply is not in the list and
               nothing anywhere says why. */}
           {bridge.status !== 'active' && (
-            <span className="text-destructive shrink-0 text-xs">{bridge.status}</span>
+            <span className="shrink-0 text-xs text-destructive">{bridge.status}</span>
           )}
         </div>
         {identities === null ? null : identity === null ? (
@@ -448,7 +448,7 @@ export function MessagingAppRow({
             {handleOf(identity)}
           </span>
         )}
-        {releaseError !== null && <p className="text-destructive mt-0.5 text-xs">{releaseError}</p>}
+        {releaseError !== null && <p className="mt-0.5 text-xs text-destructive">{releaseError}</p>}
       </div>
 
       {/* Linking is the one thing an unlinked app needs, so it stays a button

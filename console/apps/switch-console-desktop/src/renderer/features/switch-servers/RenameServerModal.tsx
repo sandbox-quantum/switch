@@ -69,9 +69,9 @@ export const RenameServerModal = observer(function RenameServerModal({
               autoFocus
             />
             {isEmpty && !isUnchanged && (
-              <p className="text-destructive mt-1 text-xs">Server name cannot be empty.</p>
+              <p className="mt-1 text-xs text-destructive">Server name cannot be empty.</p>
             )}
-            {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
+            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
           </Field>
         </FieldGroup>
       </DialogContentArea>

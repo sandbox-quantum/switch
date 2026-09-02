@@ -134,7 +134,7 @@ function BridgeList({
   if (error !== null) {
     return (
       <div className="flex flex-col items-start gap-3">
-        <p className="text-destructive text-sm">
+        <p className="text-sm text-destructive">
           {failureText(error, 'Could not read this server’s messaging apps.')}
         </p>
         <Button variant="outline" size="sm" onClick={onRetry}>
