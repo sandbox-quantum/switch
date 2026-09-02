@@ -132,6 +132,7 @@ services:
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
+      MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
       # Neither plugin is usable in a bundled Switch deployment: Copilot has no
       # configured provider and throws a 404 looking up its bot on every page
       # load, and Calls ships a WebRTC service nothing here can reach.
