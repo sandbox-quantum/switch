@@ -90,7 +90,7 @@ artifacts:
       The remote runtime Switch Console deploys to an agent host. Deployed rather
       than published, so nothing else declares its version — this file is its
       only source and the constant is generated from it.
-    version: 1.9.6
+    version: 1.9.7
 
   # ── Published under the switch-core release ────────────────────────────────
   # No version of their own: `helm package` and the image build stamp them with
