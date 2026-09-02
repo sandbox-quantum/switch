@@ -1,7 +1,11 @@
+import re
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# A Postgres time value: a bare count of milliseconds, or a count with a unit.
+_PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 
 
 class SwitchConfig(BaseSettings):
@@ -100,6 +104,19 @@ class SwitchConfig(BaseSettings):
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
 
+    # Postgres terminates a connection that sits inside an open transaction
+    # without executing anything for longer than this (a Postgres interval such
+    # as "15s"), turning a slot that never comes back into a loud, attributable
+    # error. Disabled by default, and it must stay that way until Matrix I/O
+    # moves out of the RoomService transactions: `add_agents_to_room`,
+    # `remove_agents_from_room` and `delete_room` currently hold a transaction
+    # across invite/kick round trips, so enabling this today would trade a
+    # latency problem for a consistency one — Matrix membership changed, the
+    # rows that record it rolled back. Applies to the application engine only;
+    # Alembic builds its own engine from `db_connect_args`, so a migration is
+    # never killed mid-transaction.
+    db_idle_in_transaction_session_timeout: str | None = None
+
     # libpq-style TLS mode for the Postgres connection, forwarded to asyncpg.
     # "disable" (the default) keeps in-cluster / local-dev connections plain,
     # matching current behaviour. Managed Postgres (RDS / Cloud SQL / Azure)
@@ -118,6 +135,17 @@ class SwitchConfig(BaseSettings):
             raise ValueError(
                 "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
                 f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_idle_in_transaction_session_timeout(self) -> "SwitchConfig":
+        value = self.db_idle_in_transaction_session_timeout
+        if value is not None and not _PG_INTERVAL_RE.match(value):
+            raise ValueError(
+                "DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT must be a Postgres "
+                "interval such as '15s', '500ms' or a bare count of "
+                f"milliseconds, got {value!r}."
             )
         return self
 
