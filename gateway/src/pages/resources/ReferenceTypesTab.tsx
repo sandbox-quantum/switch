@@ -152,7 +152,7 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
         filterable: false,
         renderCell: ({ row }) =>
           row.detail ? (
-            <Stack direction="row">
+            <>
               <IconButton
                 size="small"
                 onClick={() => setEditing(row.detail)}
@@ -167,7 +167,7 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
               >
                 <DeleteOutline fontSize="small" />
               </IconButton>
-            </Stack>
+            </>
           ) : null,
       },
     ],
