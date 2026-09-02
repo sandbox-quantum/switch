@@ -20,6 +20,7 @@ def create_engine_from_config(
         "max_overflow": config.db_max_overflow,
         "pool_recycle": config.db_pool_recycle,
         "pool_pre_ping": config.db_pool_pre_ping,
+        "pool_timeout": config.db_pool_timeout,
         "connect_args": connect_args,
     }
     defaults.update(engine_kwargs)
