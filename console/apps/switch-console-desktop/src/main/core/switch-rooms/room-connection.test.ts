@@ -1454,3 +1454,104 @@ describe('repointing a restored session', () => {
     conn.stop();
   });
 });
+
+/**
+ * A turn that cannot end.
+ *
+ * Measured on a live deployment: a session reported `working` against a room it
+ * no longer held, every five seconds, for 32 hours. The server rejected each
+ * report — the room id it carried was null — and nothing here noticed, because
+ * `adoptRoom` had no path for the room going away and the only thing that ever
+ * closed a turn was the agent going idle.
+ */
+describe('a turn that cannot end', () => {
+  function pushable() {
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+    });
+    return { stream, push: (frame: string) => controller.enqueue(encoder.encode(frame)) };
+  }
+
+  /** A session already in a room, already mid-turn: exactly the shape the
+   * stuck session was in. `spawnTurn` opens the turn as `start()` runs. */
+  function workingSession(opts: { runtimeStateStatus?: number } = {}) {
+    const { stream, push } = pushable();
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        return { ok: true, status: 200, body: stream, text: async (): Promise<string> => '' };
+      }
+      if (u.includes('/runtime-state') && opts.runtimeStateStatus) {
+        return {
+          ok: false,
+          status: opts.runtimeStateStatus,
+          text: async (): Promise<string> => 'room_id must be a string',
+        };
+      }
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      spawnTurn: { threadId: 'thread-1', anchorId: 'msg-1' },
+      log: silentLog,
+    });
+    conn.start();
+    return { conn, fetchMock, push };
+  }
+
+  function loggedAt(level: 'warn' | 'error', fragment: string): boolean {
+    return silentLog[level].mock.calls.some((c) => String(c[0]).includes(fragment));
+  }
+
+  /** runtime-state posts only: the heartbeat keeps beating regardless, and it
+   * is the reporting that must stop. */
+  function reports(fetchMock: { mock: { calls: unknown[][] } }): number {
+    return fetchMock.mock.calls.filter((c) => String(c[0]).includes('/runtime-state')).length;
+  }
+
+  beforeEach(() => {
+    silentLog.debug.mockClear();
+    silentLog.info.mockClear();
+    silentLog.warn.mockClear();
+    silentLog.error.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('ends when the server withdraws the room', async () => {
+    const { conn, fetchMock, push } = workingSession();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runtimeStates(fetchMock)).toContain('working');
+
+    push(`event: subscription_changed\ndata: ${JSON.stringify({ rooms: [] })}\n\n`);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(loggedAt('warn', 'the room was withdrawn')).toBe(true);
+    expect(conn.room).toBeNull();
+
+    // The ticker is what kept the 422s coming; nothing more may be reported.
+    const settled = reports(fetchMock);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reports(fetchMock)).toBe(settled);
+    conn.stop();
+  });
+});

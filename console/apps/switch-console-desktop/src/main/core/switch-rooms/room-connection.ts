@@ -440,11 +440,13 @@ export class RoomConnection {
    */
   private adoptRoom(rooms: string[]): void {
     const next = rooms[0] ?? null;
-    // Against what we last *reported*, not what we hold: a session launched
-    // into a room declares it at open and the server confirms the same value,
-    // which is the only signal the rest of the app ever gets that the session
-    // is in that room.
-    if (next === this.reportedRoom) return;
+    // Against what we last *reported*, not merely what we hold: a session
+    // launched into a room declares it at open and the server confirms the
+    // same value, which is the only signal the rest of the app ever gets that
+    // the session is in that room. What we hold still has to agree, or a room
+    // declared but never confirmed — then refused — would read as "no change"
+    // and nobody would learn it had gone.
+    if (next === this.reportedRoom && next === this.roomId) return;
 
     const previous = this.roomId;
     this.roomId = next;
@@ -459,9 +461,42 @@ export class RoomConnection {
       roomId: next,
     });
     this.onRoomChanged?.(next);
-    if (next && !this.openSpawnTurn()) {
+    if (next === null) {
+      // The room has been taken and there is nowhere left to report. A turn
+      // left open here is the 32-hour "working on it" bug: every field it
+      // needs is still set, so the ticker keeps pushing runtime state at a
+      // room this connection no longer covers, and the server rejects each
+      // one. End it here — the same clearing stop() does — rather than let it
+      // keep asking for something that cannot be granted.
+      this.log.warn('RoomConnection: the room was withdrawn — ending the turn', {
+        event: 'room_connection_room_withdrawn',
+        sessionId: this.sessionId,
+        previous,
+        turnWasActive: this.roomTurnActive,
+      });
+      this.clearRoomTurn();
+      return;
+    }
+    if (!this.openSpawnTurn()) {
       void this.postRuntimeState('idle', null).catch(() => {});
     }
+  }
+
+  /**
+   * Drop the current room turn without reporting into the room.
+   *
+   * For the cases where reporting is impossible or is itself what is failing:
+   * the room is gone, or the report is being refused. Every caller says why at
+   * warn or error level — a turn that ends without the room being told is a
+   * degraded outcome and must not be silent.
+   */
+  private clearRoomTurn(): void {
+    this.roomTurnActive = false;
+    this.currentThreadId = null;
+    this.currentAnchorId = null;
+    this.runtimeState = 'idle';
+    this.lastActivityDetail = null;
+    this.stopActivityTicker();
   }
 
   /** Stop the loops and clear any lingering runtime-state surface. */
