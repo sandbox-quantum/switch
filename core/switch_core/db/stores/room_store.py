@@ -16,6 +16,30 @@ class RoomStore:
     async def get(self, session: AsyncSession, room_id: str) -> Room | None:
         return await session.get(Room, room_id)
 
+    async def get_with_membership(
+        self, session: AsyncSession, room_id: str, agent_id: str
+    ) -> tuple[Room, bool] | None:
+        """The room plus whether `agent_id` is one of its members.
+
+        `None` when no such room exists, which the caller must distinguish
+        from a room the agent simply cannot see. Outer-joined so both answers
+        come back in one statement — the pair is the single most frequent
+        authorization question in the bridge.
+        """
+        result = await session.execute(
+            select(Room, room_agents.c.agent_id)
+            .outerjoin(
+                room_agents,
+                (Room.id == room_agents.c.room_id)
+                & (room_agents.c.agent_id == agent_id),
+            )
+            .where(Room.id == room_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row[0], row[1] is not None
+
     async def get_by_matrix_room_id(
         self, session: AsyncSession, matrix_room_id: str
     ) -> Room | None:

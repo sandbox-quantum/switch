@@ -83,6 +83,14 @@ class _FakeRoomStore:
     async def get_agent_ids(self, _session: Any, room_id: str) -> list[str]:
         return list(self._members.get(room_id, []))
 
+    async def get_with_membership(
+        self, session: Any, room_id: str, agent_id: str
+    ) -> Any:
+        room = await self.get(session, room_id)
+        if room is None:
+            return None
+        return room, agent_id in await self.get_agent_ids(session, room_id)
+
 
 def _role(name: str, exclusive: bool, instructions: str) -> SimpleNamespace:
     return SimpleNamespace(
@@ -100,7 +108,12 @@ def _lease(
 
 def _room(room_id: str, name: str) -> SimpleNamespace:
     return SimpleNamespace(
-        id=room_id, name=name, description="d", matrix_room_id="!m:x"
+        id=room_id,
+        name=name,
+        description="d",
+        matrix_room_id="!m:x",
+        archived_at=None,
+        bridge_id=None,
     )
 
 

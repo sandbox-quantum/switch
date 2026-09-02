@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -43,6 +44,7 @@ def init_dependencies(
     resource_request_tracker: ResourceRequestTracker,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
+    api_key_cache: ApiKeyCache,
     external_user_store: ExternalUserStore,
     bridge_store: CollaborationBridgeStore,
     session_factory: Any,
@@ -61,6 +63,7 @@ def init_dependencies(
     _state["resource_request_tracker"] = resource_request_tracker
     _state["resource_service"] = resource_service
     _state["api_key_store"] = api_key_store
+    _state["api_key_cache"] = api_key_cache
     _state["external_user_store"] = external_user_store
     _state["bridge_store"] = bridge_store
     _state["session_factory"] = session_factory
@@ -80,6 +83,7 @@ def init_dependencies(
         resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
+        api_key_cache=api_key_cache,
         external_user_store=external_user_store,
         bridge_store=bridge_store,
         session_factory=session_factory,
@@ -134,6 +138,10 @@ def get_collab_lifecycle() -> CollaborationBridgeLifecycleService:
 
 def get_api_key_store() -> ApiKeyStore:
     return _state["api_key_store"]  # type: ignore[no-any-return]
+
+
+def get_api_key_cache() -> ApiKeyCache:
+    return _state["api_key_cache"]  # type: ignore[no-any-return]
 
 
 def get_config() -> SwitchConfig:

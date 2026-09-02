@@ -120,6 +120,15 @@ switchCore:
     redirectUrl: ""
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Bearer-token resolution runs before every authenticated request and agents
+  # beat continuously, so a successful resolution is memoised in process for
+  # this many seconds. Only successes are cached — an unknown or revoked token
+  # always reads the database — and a key rotation or agent deletion drops the
+  # entry at once rather than waiting for it to expire. This is therefore the
+  # window in which an already-issued credential can outlive its revocation;
+  # it must stay under the 6s agent heartbeat TTL, and 0 disables the cache.
+  authCache:
+    ttlSeconds: 5
   service:
     type: ClusterIP
     port: 8000
@@ -317,6 +326,16 @@ postgresql:
     # Seconds to wait for a free slot before raising. Deliberately short:
     # SQLAlchemy's 30s default hides starvation as latency.
     timeout: 5
+
+  # Postgres kills a switch-core connection that sits inside an open
+  # transaction without executing anything for longer than this (e.g. "15s"),
+  # so a leaked checkout becomes a loud, attributable error instead of a slot
+  # that never comes back. Empty (the default) leaves it off, and it must stay
+  # off until switch-core stops holding transactions across Matrix round trips
+  # on the room-membership paths — until then this trades request latency for
+  # membership drift: agents invited on Matrix with no row recording it. Set it
+  # in staging first. Migrations are unaffected; Alembic does not read it.
+  idleInTransactionSessionTimeout: ""
 
   # Password source. By default the password is read from the chart-managed
   # Secret (secrets.postgresPassword). To source it from a pre-existing Secret

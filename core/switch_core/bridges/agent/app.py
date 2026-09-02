@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from switch_core.bridges.agent.api.handlers import router as api_router
 from switch_core.bridges.agent.api.operations import router as operations_router
 from switch_core.bridges.agent.api.version_routes import router as version_router
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.deeplink import router as deeplink_router
 from switch_core.bridges.agent.dependencies import init_dependencies
@@ -63,6 +64,14 @@ def create_agent_bridge_app(
     if connections is None:
         connections = ConnectionRegistry()
 
+    # One cache for the whole process, for the same reason as `connections`:
+    # the HTTP door and the MCP door each carry their own auth middleware, and
+    # a rotated key must stop working on both the moment it is rotated.
+    api_key_cache = ApiKeyCache(
+        ttl_seconds=config.agent_auth_cache_ttl_seconds,
+        max_entries=config.agent_auth_cache_max_entries,
+    )
+
     init_dependencies(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
@@ -77,6 +86,7 @@ def create_agent_bridge_app(
         resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
+        api_key_cache=api_key_cache,
         external_user_store=external_user_store,
         bridge_store=bridge_store,
         session_factory=session_factory,
@@ -97,6 +107,7 @@ def create_agent_bridge_app(
         resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
+        api_key_cache=api_key_cache,
         external_user_store=external_user_store,
         bridge_store=bridge_store,
         session_factory=session_factory,  # type: ignore[arg-type]
@@ -153,6 +164,7 @@ def create_agent_bridge_app(
         BearerAuthMiddleware,
         agent_store=agent_store,
         api_key_store=api_key_store,
+        api_key_cache=api_key_cache,
         session_factory=session_factory,  # type: ignore[arg-type]
     )
 

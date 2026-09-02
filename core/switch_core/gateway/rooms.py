@@ -105,7 +105,9 @@ async def _build_room_detail(
 ) -> RoomDetail:
     agent_ids = await room_store.get_agent_ids(session, room.id)
     client_ids = await room_store.get_client_ids(session, room.id)
-    statuses = await protocol.get_agent_statuses_by_ids(room.id, agent_ids)
+    statuses = await protocol.get_agent_statuses_by_ids_in_session(
+        session, room.id, agent_ids
+    )
 
     bridge_display_name: str | None = None
     bridge_type: str | None = None
