@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SwitchEventStream, type SwitchEventStreamDeps } from './event-stream';
+import { BEAT_INTERVAL_MS, SwitchEventStream, type SwitchEventStreamDeps } from './event-stream';
 
 /**
- * A client retrying something that can never succeed.
+ * Two ways a client can retry something that can never succeed.
  *
- * Measured on a live deployment: a stream re-declaring a room that had been
- * deleted, refused on every open, reopening at once, for over a day. It could
- * not self-heal, and it produced most of the error volume on that deployment.
+ * Both were measured on a live deployment: a stream re-declaring a room that
+ * had been deleted, refused on every open, reopening at once; and a heartbeat
+ * treating "your connection is gone" as a normal answer and beating on at full
+ * cadence. Neither could self-heal, and between them they produced most of the
+ * error volume on that deployment.
  */
 
 const creds = { agentId: 'agent-1', apiEndpoint: 'https://switch.test', token: 'tok' };
@@ -137,6 +139,67 @@ describe('a room the server refuses', () => {
     // One open, then the backoff — not an immediate retry, and nothing dropped.
     expect(urlsFor(fetchMock, '/events')).toHaveLength(1);
     expect(rejected).toEqual([]);
+    abort.abort();
+  });
+});
+
+describe('the heartbeat', () => {
+  /** Beat requests made in `windowMs` of (fake) time, all of them rejected. */
+  async function beatsWhileRejected(status: number, windowMs: number): Promise<number> {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) return new Promise(() => {});
+      return { ok: false, status, text: async (): Promise<string> => '' };
+    });
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+    await vi.advanceTimersByTimeAsync(windowMs);
+    const beats = urlsFor(fetchMock, 'connection/beat').length;
+    abort.abort();
+    return beats;
+  }
+
+  it('backs off when the connection is rejected, instead of beating at full rate', async () => {
+    const windowMs = 20 * BEAT_INTERVAL_MS;
+    // At the base cadence this window holds ~20 beats. Doubling from the base
+    // gives 4s, 8s, 16s… — four requests in the same window.
+    expect(await beatsWhileRejected(404, windowMs)).toBeLessThanOrEqual(5);
+    expect(await beatsWhileRejected(409, windowMs)).toBeLessThanOrEqual(5);
+  });
+
+  it('keeps backing off the longer the rejection lasts', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) return new Promise(() => {});
+      return { ok: false, status: 404, text: async (): Promise<string> => '' };
+    });
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    const early = urlsFor(fetchMock, 'connection/beat').length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    const late = urlsFor(fetchMock, 'connection/beat').length - early;
+
+    expect(late).toBeLessThan(early);
+    abort.abort();
+  });
+
+  it('returns to the base cadence once a beat lands', async () => {
+    vi.useFakeTimers();
+    let reject = true;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/events')) return new Promise(() => {});
+      if (reject) return { ok: false, status: 404, text: async (): Promise<string> => '' };
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    const { abort } = makeStream(fetchMock, { rooms: [] });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    reject = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    const recovered = urlsFor(fetchMock, 'connection/beat').length;
+    await vi.advanceTimersByTimeAsync(10 * BEAT_INTERVAL_MS);
+
+    expect(urlsFor(fetchMock, 'connection/beat').length - recovered).toBeGreaterThanOrEqual(9);
     abort.abort();
   });
 });

@@ -362,9 +362,12 @@ export class SwitchEventStream {
    *
    * A 404 or 409 means we are not receiving — the connection expired, or it has
    * no stream attached. Both are recovered by reopening, which resumes from the
-   * cursor. Failing quietly here is the one thing that must not happen: a client
-   * that has stopped receiving while believing it is connected is exactly the
-   * bug this transport exists to remove.
+   * cursor, and both count as a beat that did not land: the remedy is a reopen,
+   * and a reopen that keeps being refused is a client that cannot succeed and
+   * must not be retried at full rate forever. Failing quietly here is the one
+   * thing that must not happen: a client that has stopped receiving while
+   * believing it is connected is exactly the bug this transport exists to
+   * remove.
    *
    * While beats succeed the cadence is fixed and short — the server declares the
    * connection dead without them. While they fail it backs off, because a beat
@@ -380,19 +383,24 @@ export class SwitchEventStream {
     let failures = 0;
     let backoff = BEAT_INTERVAL_MS;
 
-    const fail = (error: unknown): void => {
+    /** Count a beat that did not land and slow the loop down. Returns whether
+     * to report this one: the first, then powers of two, so a permanent
+     * failure costs a handful of lines rather than one per beat. */
+    const slowDown = (): boolean => {
       failures += 1;
-      // Report the first failure, then on a curve: powers of two, so a
-      // permanent outage costs a handful of lines rather than one per beat.
-      if ((failures & (failures - 1)) === 0) {
-        log.warn('SwitchEventStream: heartbeat failed', {
-          event: 'switch_beat_failed',
-          endpoint: this.deps.creds.apiEndpoint,
-          failures,
-          error: String(error),
-        });
-      }
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+      return (failures & (failures - 1)) === 0;
+    };
+
+    const fail = (error: unknown): void => {
+      if (!slowDown()) return;
+      log.warn('SwitchEventStream: heartbeat failed', {
+        event: 'switch_beat_failed',
+        endpoint: this.deps.creds.apiEndpoint,
+        failures,
+        error: String(error),
+        backoffMs: backoff,
+      });
     };
 
     while (!signal.aborted) {
@@ -402,16 +410,22 @@ export class SwitchEventStream {
           cursor: this.cursor,
         });
         if (resp.status === 404 || resp.status === 409) {
-          // Not an outage: the server answered. We are simply not attached, so
-          // reopen at the normal cadence rather than backing off.
-          log.warn('SwitchEventStream: heartbeat rejected — reopening', {
-            event: 'switch_beat_rejected',
-            status: resp.status,
-            connectionId,
-          });
+          // The server answered, so this is not an outage — but it is not a
+          // beat that landed either: we are not attached, and only a reopen
+          // fixes that. Reopen, and slow down all the same. A reopen that
+          // keeps being refused is a client that cannot currently succeed,
+          // and it must not spend the endpoint at full rate while it fails.
+          const report = slowDown();
           this.reopen();
-          failures = 0;
-          backoff = BEAT_INTERVAL_MS;
+          if (report) {
+            log.warn('SwitchEventStream: heartbeat rejected — reopening', {
+              event: 'switch_beat_rejected',
+              status: resp.status,
+              connectionId,
+              failures,
+              backoffMs: backoff,
+            });
+          }
         } else if (!resp.ok) {
           fail(new Error(`HTTP ${resp.status}`));
         } else {
