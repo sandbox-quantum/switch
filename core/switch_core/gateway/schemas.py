@@ -690,6 +690,9 @@ class ReferenceDetail(BaseModel):
     attached_rooms_count: int = 0
     packages: list[str] = []
     created_at: str
+    # Resolved server-side, unfiltered by the type's visibility: the caller can
+    # already read the raw slug. Null when the slug resolves to no type at all.
+    type_display_name: str | None = None
 
 
 class ReferenceCreateRequest(BaseModel):
@@ -718,10 +721,65 @@ class ReferenceDeleteResponse(BaseModel):
 
 
 class ReferenceTypeInfo(BaseModel):
+    """A type a user may pick, built-in or user-defined.
+
+    The owner pair is the disclosure that makes user-authored types safe to
+    offer: a type's instructions are prose every agent in a room is told to
+    follow, so the picker names who wrote them. Both are null for a built-in.
+    Visibility is not part of picking a type and stays off this shape.
+    """
+
     type: str
     display_name: str
     instructions: str
     value_schema: dict[str, Any]
+    value_hint: str
+    is_builtin: bool
+    owner_id: str | None
+    owner_name: str | None
+
+
+class ReferenceTypeDetail(BaseModel):
+    """A stored reference type, for the management list. Never a built-in."""
+
+    type: str
+    display_name: str
+    instructions: str
+    value_schema: dict[str, Any]
+    value_hint: str
+    is_builtin: bool
+    owner_id: str
+    owner_name: str | None
+    read_visibility: str
+    write_visibility: str
+    shadowed_by_builtin: bool
+    created_at: str
+
+
+class ReferenceTypeCreateRequest(BaseModel):
+    type: str
+    display_name: str
+    instructions: str
+    value_hint: str
+    read_visibility: str = "private"
+    write_visibility: str = "private"
+
+
+class ReferenceTypeUpdateRequest(BaseModel):
+    """A partial update. The slug is immutable, so a body carrying `type` is a
+    422 rather than a silently ignored field."""
+
+    model_config = {"extra": "forbid"}
+
+    display_name: str | None = None
+    instructions: str | None = None
+    value_hint: str | None = None
+    read_visibility: str | None = None
+    write_visibility: str | None = None
+
+
+class ReferenceTypeDeleteResponse(BaseModel):
+    deleted_type: str
 
 
 class ResourceRoom(BaseModel):

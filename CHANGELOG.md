@@ -44,6 +44,36 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **User-defined external reference types.** Reference types are no longer a
+  closed set of four. Any signed-in user can define one — slug, display name,
+  agent-facing instructions, value hint and a read/write visibility pair,
+  exactly like a Reference — from the new **Reference types** tab under
+  Resources, or over `POST /references/reference-types`. The four built-ins
+  (Google Drive, Confluence, GitHub, Jira) stay in code, cannot be edited or
+  deleted, and win any slug collision. Agents see the types their owner can
+  read, via `list_reference_types`; each entry now also carries `value_hint`
+  and `origin` (`builtin` or `user`). A type's visibility gates who may *pick*
+  it, never delivery of its instructions for a reference already attached to a
+  room — the attachment is the grant.
+
+#### Changed
+- **A reference value must now carry at least one URL.** An empty `urls` list
+  was already rejected, but an absent `urls` key silently validated to an empty
+  list and was stored. It is now a 400. Existing rows still read fine; the
+  failure appears the first time someone saves one — including a no-op save
+  from the reference detail page. Find them before upgrading and give each a
+  real URL:
+
+  ```sql
+  SELECT id, type FROM "references"
+  WHERE value->'urls' = '[]'::jsonb OR NOT (value ? 'urls');
+  ```
+- **`GET /references/reference-types` now requires a session** and returns
+  401 without one. It was the last unauthenticated route on the references
+  router; the set it returns is per-caller now, so it cannot be answered
+  anonymously.
+
 ### [0.21.1] - 2026-09-01
 
 #### Fixed

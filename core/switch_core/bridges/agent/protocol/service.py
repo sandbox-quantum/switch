@@ -2660,15 +2660,28 @@ class ProtocolService:
             await self.agent_session_store.touch_heartbeat(session, agent_id, room_id)
             await session.commit()
 
-    def list_reference_types(self) -> list[dict[str, Any]]:
-        """Enumerate the Reference sub-types registered on this Switch
-        instance. Each entry carries `type`, `display_name`,
-        `instructions`, and `value_schema` (JSON Schema for the
-        per-type value payload). Used by agents preparing a
-        `create_reference` call."""
-        from switch_core.bridges.resource.registry import REFERENCE_TYPES
+    async def list_reference_types(self, agent_id: str) -> list[dict[str, Any]]:
+        """Enumerate the Reference types the calling agent may pick from.
 
-        return [spec.to_public_dict() for spec in REFERENCE_TYPES.values()]
+        The set is per-caller: every built-in, plus every user-defined type
+        the agent's owner can read. Each entry carries `type`,
+        `display_name`, `instructions`, `value_schema`, `value_hint` and
+        `origin`. Used by agents preparing a `create_reference` call.
+
+        An ownerless agent resolves as an anonymous principal and sees the
+        built-ins plus the public types; reading the list needs no owner.
+        """
+        async with self.session_factory() as session:
+            _agent, owner_id, is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            views = await self.resource_service.list_reference_types_for_principal(
+                session, user_id=owner_id, is_admin=is_admin
+            )
+        return [
+            view.spec.to_public_dict(origin="builtin" if view.is_builtin else "user")
+            for view in views
+        ]
 
     async def create_reference(
         self,
@@ -2688,7 +2701,7 @@ class ProtocolService:
         owner (anonymous agents cannot own resources).
         """
         async with self.session_factory() as session:
-            _agent, owner_id, _is_admin = await self._resolve_acting_identity(
+            _agent, owner_id, is_admin = await self._resolve_acting_identity(
                 session, agent_id
             )
             if owner_id is None:
@@ -2698,6 +2711,7 @@ class ProtocolService:
             ref = await self.resource_service.create_reference(
                 session,
                 owner_id=owner_id,
+                is_admin=is_admin,
                 read_visibility=read_visibility,
                 write_visibility=write_visibility,
                 type=type,
