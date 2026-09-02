@@ -26,6 +26,7 @@ from switch_core.addressing import (
     owner_only_policy,
     parse_policy,
 )
+from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.authz import Action, Principal, require, require_manage
@@ -113,7 +114,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# \A and \Z rather than ^ and $: Python's $ also matches before a single
+# trailing newline, which would let an identifier carry a line break.
+_VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
 
 # History pagination. The homeserver caps a /messages page regardless of what
 # we ask for, and state events consume it without ever reaching the caller, so
@@ -189,6 +192,7 @@ class ProtocolService:
         name: str,
         description: str,
         icon_url: str | None = None,
+        display_name: str | None = None,
         connector_type: str,
         integration_profile: IntegrationProfile,
         tools: list[ToolSpec] | None = None,
@@ -227,10 +231,15 @@ class ProtocolService:
         than clearing it, so re-registering an agent does not silently discard
         a picture the owner chose.
 
+        ``display_name`` is the human-readable label shown beside the machine
+        identifier ``name``, or None for none. It behaves like ``icon_url`` on
+        re-registration: None keeps whatever the agent already has.
+
         Raises:
             ValueError: name is invalid (lowercase alphanumeric, dots, hyphens,
                 or underscores — no spaces).
             InvalidIconUrl: ``icon_url`` is malformed or points somewhere unsafe.
+            InvalidDisplayName: ``display_name`` is over-long or unsafe to render.
             AgentExistsError: agent with this name exists and ``overwrite`` is
                 False.
         """
@@ -241,6 +250,7 @@ class ProtocolService:
             )
 
         validated_icon_url = normalise_icon_url(icon_url)
+        validated_display_name = normalise_display_name(display_name)
 
         tool_specs = tools or []
         model_specs = models or []
@@ -267,6 +277,7 @@ class ProtocolService:
                     encrypted_key=encrypted_key,
                     description=description,
                     icon_url=validated_icon_url,
+                    display_name=validated_display_name,
                     agent_type=agent_type,
                     connector_type=connector_type,
                     integration_profile=profile_data,
@@ -284,6 +295,7 @@ class ProtocolService:
                     name=name,
                     description=description,
                     icon_url=validated_icon_url,
+                    display_name=validated_display_name,
                     agent_type=agent_type,
                     connector_type=connector_type,
                     integration_profile=profile_data,
@@ -317,6 +329,7 @@ class ProtocolService:
         registration_token: str,
         name: str,
         description: str,
+        display_name: str | None = None,
         connector_type: str,
         integration_profile: IntegrationProfile,
         tools: list[ToolSpec] | None = None,
@@ -340,6 +353,7 @@ class ProtocolService:
         return await self.register_agent(
             name=name,
             description=description,
+            display_name=display_name,
             connector_type=connector_type,
             integration_profile=integration_profile,
             tools=tools,
@@ -358,6 +372,7 @@ class ProtocolService:
         name: str,
         description: str,
         icon_url: str | None,
+        display_name: str | None,
         agent_type: str,
         connector_type: str,
         integration_profile: dict[str, Any],
@@ -380,6 +395,11 @@ class ProtocolService:
         )
         await self.api_key_store.create(session, api_key_record)
 
+        # The Matrix client's display name is the agent's identifier, never its
+        # human display name: it is stamped on every event as `sender_name`, and
+        # the collaboration bridges match on it to recognise an agent's own echo
+        # coming back from a platform. A human name here would make an agent
+        # re-import its own messages as a stranger.
         client_record = await self.client_lifecycle.create_client(
             client_type="agent",
             display_name=name,
@@ -389,6 +409,7 @@ class ProtocolService:
             name=name,
             description=description,
             icon_url=icon_url,
+            display_name=display_name,
             agent_type=agent_type,
             connector_type=connector_type,
             integration_profile=integration_profile,
@@ -439,6 +460,7 @@ class ProtocolService:
         encrypted_key: str,
         description: str,
         icon_url: str | None,
+        display_name: str | None,
         agent_type: str,
         connector_type: str,
         integration_profile: dict[str, Any],
@@ -463,6 +485,11 @@ class ProtocolService:
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
         icon_fields = {} if icon_url is None else {"icon_url": icon_url}
+        # Same for the display name: a connector re-registers on every startup
+        # and knows nothing about it.
+        display_name_fields = (
+            {} if display_name is None else {"display_name": display_name}
+        )
         await self.agent_store.update(
             session,
             existing.id,
@@ -475,6 +502,7 @@ class ProtocolService:
             oauth_client_id=oauth_client_id,
             parent_agent_id=parent_agent_id,
             **icon_fields,
+            **display_name_fields,
         )
         await self.api_key_store.delete(session, old_api_key_id)
 

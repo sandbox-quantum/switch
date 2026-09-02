@@ -218,6 +218,10 @@ class AgentSummary(BaseModel):
     # not an error: the caller renders its own fallback rather than Switch
     # inventing a default, so the fallback can change without a data migration.
     icon_url: str | None = None
+    # Human-readable label for the agent, or null when none is set. The caller
+    # falls back to `name`, which is the machine identifier the agent is
+    # addressed by and stays what every bridge matches on.
+    display_name: str | None = None
     connector_type: str
     connection_model: str | None
     tool_count: int
@@ -318,6 +322,17 @@ class UpdateAgentIconRequest(BaseModel):
     icon_url: str | None
 
 
+class UpdateAgentDisplayNameRequest(BaseModel):
+    """Set (or clear) an agent's human display name.
+
+    ``display_name: null`` (or a blank string) clears it — the agent falls back
+    to its identifier. The field is required rather than defaulted so that
+    clearing a display name is always something the client said, never
+    something it forgot to send."""
+
+    display_name: str | None
+
+
 class KnownAgentType(BaseModel):
     key: str
     connector_type: str
@@ -333,6 +348,9 @@ class RegisterKnownAgentRequest(BaseModel):
     # re-registration that omits it keeps whatever icon the agent already has
     # rather than clearing it.
     icon_url: str | None = None
+    # Optional at registration, and re-registration that omits it keeps
+    # whatever the agent already has, exactly like `icon_url`.
+    display_name: str | None = None
     options: dict[str, Any] = {}
     overwrite: bool = False
 
@@ -393,6 +411,7 @@ class RegisterOtherAgentRequest(BaseModel):
     name: str
     description: str
     icon_url: str | None = None
+    display_name: str | None = None
     overwrite: bool = False
 
 

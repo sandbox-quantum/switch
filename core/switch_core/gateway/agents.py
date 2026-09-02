@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import InvalidIconUrl, normalise_icon_url
 from switch_core.authz import Principal, require_manage
 from switch_core.bridges.agent.protocol.agent_detail import (
@@ -45,6 +46,7 @@ from switch_core.gateway.schemas import (
     RegisterKnownSubagentsResponse,
     RegisterOtherAgentRequest,
     UpdateAddressingPolicyRequest,
+    UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
 )
@@ -161,6 +163,7 @@ async def register_known_agent(
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
+            display_name=req.display_name,
             connector_type=spec.connector_type,
             integration_profile=integration_profile,
             tools=spec.tools,
@@ -394,6 +397,56 @@ async def update_agent_icon(
     return await build_agent_summary(session, agent_store, agent, owner_name)
 
 
+@router.put("/{agent_id}/display-name")
+async def update_agent_display_name(
+    agent_id: str,
+    req: UpdateAgentDisplayNameRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> AgentSummary:
+    """Set, change, or clear an agent's human display name.
+
+    ``display_name: null`` (or a blank string) clears it, leaving the agent
+    with only its identifier. Only the agent's owner (or an admin) may change
+    it. Like the icon, this applies to every agent regardless of how it was
+    registered.
+
+    A name that is over-long or carries a line break is refused with 400 rather
+    than stored to break a message header later.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    try:
+        require_manage(Principal(user.id, user.role == "admin"), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change its display name.",
+        )
+
+    try:
+        display_name = normalise_display_name(req.display_name)
+    except InvalidDisplayName as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await agent_store.update(session, agent_id, display_name=display_name)
+    await session.commit()
+    await session.refresh(agent)
+
+    logger.info(
+        "%s agent %s display name by user %s",
+        "Cleared" if display_name is None else "Set",
+        agent.name,
+        user.name,
+    )
+
+    owner_name = user.name if agent.owner_id == user.id else None
+    return await build_agent_summary(session, agent_store, agent, owner_name)
+
+
 @router.post("/register-other")
 async def register_other_agent(
     req: RegisterOtherAgentRequest,
@@ -416,6 +469,7 @@ async def register_other_agent(
             name=req.name,
             description=req.description,
             icon_url=req.icon_url,
+            display_name=req.display_name,
             connector_type="external",
             integration_profile=default_profile,
             owner_id=user.id,

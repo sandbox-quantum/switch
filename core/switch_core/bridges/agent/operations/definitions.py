@@ -1558,10 +1558,12 @@ async def list_agents(
 
     Returns:
         A list of agent summaries (sorted by name), each
-        {id, name, description, icon_url, connector_type, connection_model,
-        tool_count, model_count, owner_id, owner_name, oauth_client_id,
-        created_at, parent_agent_id, known_agent_type, known_agent_options}.
-        `icon_url` is null when the agent has no icon set.
+        {id, name, description, icon_url, display_name, connector_type,
+        connection_model, tool_count, model_count, owner_id, owner_name,
+        oauth_client_id, created_at, parent_agent_id, known_agent_type,
+        known_agent_options}.
+        `icon_url` is null when the agent has no icon set. `display_name` is
+        null when the agent has no display name set; fall back to `name`.
         Use `get_agent_detail` for the full detail of one agent.
     """
     agent_id = get_agent_id()
@@ -1583,12 +1585,13 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
             `list_all_rooms`/`get_room_detail`).
 
     Returns:
-        {id, name, description, icon_url, connector_type, connection_model,
-        tool_count, model_count, owner_id, owner_name, oauth_client_id,
-        created_at, parent_agent_id, known_agent_type, known_agent_options,
-        agent_type, integration_profile, tools, models, rooms, sessions,
-        children}.
-        `icon_url` is null when the agent has no icon set.
+        {id, name, description, icon_url, display_name, connector_type,
+        connection_model, tool_count, model_count, owner_id, owner_name,
+        oauth_client_id, created_at, parent_agent_id, known_agent_type,
+        known_agent_options, agent_type, integration_profile, tools, models,
+        rooms, sessions, children}.
+        `icon_url` is null when the agent has no icon set. `display_name` is
+        null when the agent has no display name set; fall back to `name`.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
