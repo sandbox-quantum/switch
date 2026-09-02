@@ -233,6 +233,12 @@ Include with `nindent 12`.
   value: {{ .Values.postgresql.pool.maxOverflow | quote }}
 - name: DB_POOL_TIMEOUT
   value: {{ .Values.postgresql.pool.timeout | quote }}
+{{- with .Values.postgresql.idleInTransactionSessionTimeout }}
+- name: DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT
+  value: {{ . | quote }}
+{{- end }}
+- name: AGENT_AUTH_CACHE_TTL_SECONDS
+  value: {{ .Values.switchCore.authCache.ttlSeconds | quote }}
 - name: MATRIX_SERVER
   value: "http://{{ include "switch.tuwunelHost" . }}:8008"
 - name: MATRIX_SERVER_NAME
