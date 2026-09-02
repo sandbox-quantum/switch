@@ -590,8 +590,19 @@ class BridgeCore:
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
         room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
-            logger.error("No room mapping for channel %s", cmd.channel_id)
-            return
+            lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
+            async with lock:
+                room_ids = self._channel_to_room.get(cmd.channel_id)
+                if room_ids is None:
+                    room_ids = await self._create_room_for_channel(
+                        channel_id=cmd.channel_id,
+                        channel_type=cmd.channel_type,
+                        agent_name=cmd.agent_name,
+                        sender_name=cmd.sender_name,
+                        channel_name=cmd.channel_name,
+                    )
+            if room_ids is None:
+                return
         room_id, matrix_room_id = room_ids
 
         puppet = await self._ensure_user_in_matrix_room(
