@@ -227,6 +227,12 @@ Include with `nindent 12`.
   value: {{ include "switch.postgresDatabase" . | quote }}
 - name: DB_SSL_MODE
   value: {{ .Values.postgresql.sslMode | quote }}
+- name: DB_POOL_SIZE
+  value: {{ .Values.postgresql.pool.size | quote }}
+- name: DB_MAX_OVERFLOW
+  value: {{ .Values.postgresql.pool.maxOverflow | quote }}
+- name: DB_POOL_TIMEOUT
+  value: {{ .Values.postgresql.pool.timeout | quote }}
 - name: MATRIX_SERVER
   value: "http://{{ include "switch.tuwunelHost" . }}:8008"
 - name: MATRIX_SERVER_NAME
