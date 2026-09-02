@@ -10,12 +10,15 @@ connection. The numbers below are therefore contracts, not observations.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.bridges.agent.protocol.types import RoomDescriptor
 from switch_core.db.models import Agent, ApiKey, Client, Room, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -41,6 +44,17 @@ class _CountingSessionFactory:
 class _NoBridges:
     def get(self, _bridge_id: str) -> None:
         return None
+
+
+class _OneBridge:
+    def __init__(self) -> None:
+        self.typing: list[tuple[str, str, bool]] = []
+
+    def get(self, _bridge_id: str) -> Any:
+        return SimpleNamespace(handle_outbound_typing=self._record)
+
+    async def _record(self, room_id: str, agent_name: str, is_typing: bool) -> None:
+        self.typing.append((room_id, agent_name, is_typing))
 
 
 def _service(counting: _CountingSessionFactory) -> ProtocolService:
@@ -104,6 +118,53 @@ async def _seed(
         await RoomStore().add_agents(session, room.id, [ids[0]])
         await session.commit()
         return room.id, ids[0], ids[1]
+
+
+class TestRequireRoomMember:
+    async def test_membership_costs_one_checkout(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, member_id, _ = await _seed(session_factory)
+        counting = _CountingSessionFactory(session_factory)
+        svc = _service(counting)
+
+        room = await svc.require_room_member(member_id, room_id)
+
+        assert room.id == room_id
+        assert counting.opened == 1, "one question, one slot"
+
+    async def test_a_non_member_is_still_one_checkout(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, _, outsider_id = await _seed(session_factory)
+        counting = _CountingSessionFactory(session_factory)
+        svc = _service(counting)
+
+        with pytest.raises(PermissionError):
+            await svc.require_room_member(outsider_id, room_id)
+
+        assert counting.opened == 1
+
+    async def test_a_missing_room_still_raises_value_error(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # "No such room" and "not your room" must stay distinguishable now that
+        # the two reads have been folded into one statement.
+        _, member_id, _ = await _seed(session_factory)
+        svc = _service(_CountingSessionFactory(session_factory))
+
+        with pytest.raises(ValueError, match="Room not found"):
+            await svc.require_room_member(member_id, "no-such-room")
+
+    async def test_the_resolved_room_carries_its_bridge(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, member_id, _ = await _seed(session_factory)
+        svc = _service(_CountingSessionFactory(session_factory))
+
+        room = await svc.require_room_member(member_id, room_id)
+
+        assert room.bridge_id is None
 
 
 class TestCanAddress:
@@ -191,6 +252,81 @@ class TestCanAddress:
 
         assert allowed is True
         assert counting.opened == 0
+
+
+class TestTyping:
+    async def test_an_internal_room_costs_nothing_beyond_membership(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Was three checkouts: membership took two of its own, then a third
+        # re-read the agent and the room the caller had already resolved.
+        room_id, member_id, _ = await _seed(session_factory)
+        counting = _CountingSessionFactory(session_factory)
+        svc = _service(counting)
+
+        await svc.set_typing(member_id, room_id, True)
+
+        assert counting.opened == 1
+
+    async def test_a_bridged_room_costs_one_read_for_the_agent_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, member_id, _ = await _seed(session_factory)
+        counting = _CountingSessionFactory(session_factory)
+        svc = _service(counting)
+        bridge = _OneBridge()
+        svc.collab_lifecycle = bridge  # type: ignore[assignment]
+        room = RoomDescriptor(
+            id="room-1",
+            name="room",
+            description="d",
+            matrix_room_id="!r:test",
+            bridge_id="bridge-1",
+        )
+
+        await svc._set_typing(member_id, room, True)
+
+        assert bridge.typing == [("room-1", "member", True)]
+        assert counting.opened == 1
+
+
+class TestSendMessage:
+    async def test_posting_to_an_internal_room_costs_one_checkout(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # One to authorize. A bridged room adds exactly one more, to name the
+        # agent for the typing indicator — and no more than that, because the
+        # room the caller already resolved is passed along instead of re-read.
+        room_id, member_id, _ = await _seed(session_factory)
+        counting = _CountingSessionFactory(session_factory)
+        svc = _service(counting)
+        sent: list[tuple[str, str]] = []
+
+        class _Client:
+            async def send_message(
+                self, matrix_room_id: str, content: str, **_kwargs: Any
+            ) -> str:
+                sent.append((matrix_room_id, content))
+                return "$event"
+
+        svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
+            get_by_agent_id=lambda _agent_id: _Client()
+        )
+
+        event_id = await svc.send_message(member_id, room_id, "hello")
+
+        assert event_id == "$event"
+        assert sent == [("!r:test", "hello")]
+        assert counting.opened == 1
+
+    async def test_a_non_member_cannot_post(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id, _, outsider_id = await _seed(session_factory)
+        svc = _service(_CountingSessionFactory(session_factory))
+
+        with pytest.raises(PermissionError):
+            await svc.send_message(outsider_id, room_id, "hello")
 
 
 class TestAgentStatuses:
