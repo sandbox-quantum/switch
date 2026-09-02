@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, _is_public_path
 from switch_core.bridges.agent.deeplink import router
 
@@ -22,6 +23,7 @@ def _client_with_auth() -> TestClient:
         BearerAuthMiddleware,
         agent_store=None,  # type: ignore[arg-type]
         api_key_store=None,  # type: ignore[arg-type]
+        api_key_cache=ApiKeyCache(ttl_seconds=0, max_entries=1),
         session_factory=None,  # type: ignore[arg-type]
     )
     return TestClient(app, follow_redirects=False)

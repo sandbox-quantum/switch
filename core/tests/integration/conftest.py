@@ -40,6 +40,7 @@ from testcontainers.postgres import PostgresContainer
 
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -502,6 +503,10 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
+        api_key_cache=ApiKeyCache(
+            ttl_seconds=config.agent_auth_cache_ttl_seconds,
+            max_entries=config.agent_auth_cache_max_entries,
+        ),
         external_user_store=session_env.external_user_store,
         bridge_store=session_env.bridge_store,
         session_factory=session_factory,
