@@ -15,6 +15,10 @@ export type RegisterAgentInput = {
   /** The icon chosen in the create form, or null for none. Required so a new
    * create flow has to say which it means. */
   iconUrl: string | null;
+  /** The human label the agent is rendered under on chat platforms, or null to
+   * be shown under `name`. Required for the same reason as `iconUrl`: a flow
+   * that has a label to pass must not lose it by omission. */
+  displayName: string | null;
 };
 
 /**
@@ -41,6 +45,7 @@ export async function registerAgentIdentity(
       description: input.description,
       agentType: input.agentType,
       iconUrl: input.iconUrl,
+      displayName: input.displayName,
       options: {
         channels_enabled: true,
         repo_dir: input.repoDir,
@@ -53,7 +58,7 @@ export async function registerAgentIdentity(
       if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
       if (cause.kind === 'http' && cause.status === 409) return { kind: 'name-conflict' };
       if (cause.kind === 'http' && cause.status === 400) {
-        return { kind: 'invalid-name', message: cause.message };
+        return { kind: 'invalid-name', message: cause.detail ?? cause.message };
       }
       return { kind: 'error', message: cause.message };
     }

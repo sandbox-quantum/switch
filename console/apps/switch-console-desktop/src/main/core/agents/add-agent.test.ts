@@ -100,6 +100,7 @@ function params(overrides: Record<string, unknown> = {}) {
     providerId: 'codex' as const,
     serverId: 'srv-1',
     description: 'Codex running in repo',
+    displayName: null,
     iconUrl: null,
     autoSession: false,
     autoApprove: false,

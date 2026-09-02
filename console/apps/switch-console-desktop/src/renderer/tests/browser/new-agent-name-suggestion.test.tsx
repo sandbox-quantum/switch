@@ -93,6 +93,7 @@ describe('a rejected agent name', () => {
 
     expect(form?.agentName).toBe('switch-dev');
     expect(form?.nameIsValid).toBe(true);
+    expect(form?.displayName).toBe('Switch Dev');
     expect(el.textContent).not.toContain(REJECTION);
     expect(suggestionButton(el)).toBeUndefined();
   });

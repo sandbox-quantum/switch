@@ -41,6 +41,10 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  */
 export function useConfigureAgentForm() {
   const [agentName, setAgentName] = useState('');
+  // The label chat platforms render the agent under. Optional: an agent with
+  // none is shown under its identifier.
+  const [displayName, setDisplayNameRaw] = useState('');
+  const [displayNameTouched, setDisplayNameTouched] = useState(false);
   const [description, setDescription] = useState('');
   // What the agent is for, in its own words (CHOO-2228). Optional: an agent
   // with none runs on its provider's defaults, and the description stands in
@@ -67,6 +71,11 @@ export function useConfigureAgentForm() {
     setAutoApproveTouched(true);
   }, []);
 
+  const setDisplayName = useCallback((value: string) => {
+    setDisplayNameRaw(value);
+    setDisplayNameTouched(true);
+  }, []);
+
   /**
    * What the run location implies, for as long as the user has not answered
    * themselves: an agent on a host is put there to run unattended, and a
@@ -89,12 +98,28 @@ export function useConfigureAgentForm() {
   const suggestedName = nameIsRejected ? slugifyAgentNamePart(agentName) : '';
   const isValid = nameIsValid && description.trim().length > 0;
 
+  /**
+   * Take the offered slug as the name, keeping the text it was slugged from as
+   * the display name. "Switch Dev" is both the label someone wants and the
+   * thing the charset rejects, so the slug must not be all that survives it.
+   * A display name the user wrote themselves is an answer, not a guess, and
+   * stands.
+   */
+  const acceptSuggestedName = useCallback(() => {
+    if (suggestedName === '') return;
+    if (!displayNameTouched) setDisplayNameRaw(agentName);
+    setAgentName(suggestedName);
+  }, [agentName, displayNameTouched, suggestedName]);
+
   return {
     agentName,
     setAgentName,
     nameIsValid,
     nameIsRejected,
     suggestedName,
+    acceptSuggestedName,
+    displayName,
+    setDisplayName,
     description,
     setDescription,
     instructions,

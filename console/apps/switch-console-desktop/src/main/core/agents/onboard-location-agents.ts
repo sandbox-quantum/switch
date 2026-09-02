@@ -135,6 +135,8 @@ async function resolveIdentity(
     // Nobody is at a form to choose one, so it starts with the avatar its name
     // generates — the same picture it would be shown with anyway.
     iconUrl: agentAvatarUrlForName(name),
+    // The definition file carries no human label, so there is none to adopt.
+    displayName: null,
   });
   if (registered.kind !== 'created') {
     const message = 'message' in registered ? registered.message : '';
