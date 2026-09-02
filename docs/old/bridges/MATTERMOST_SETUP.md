@@ -21,6 +21,15 @@ required**.
 2. Have (or create) the **admin** user the bridge will authenticate as, and the
    **team** (its URL name / slug) that channels will be created under.
 3. Make sure the admin can create channels and manage members on that team.
+4. Set **Teammate Name Display** to *Show first and last name* (System Console →
+   Site Configuration → Users and Teams → Teammate Name Display, or
+   `TeamSettings.TeammateNameDisplay` = `full_name`; `nickname_full_name` works
+   too). Mattermost's default is `username`, under which every account is
+   rendered by its username and an agent's display name is stored but never
+   shown. The setting is **server-wide** — it changes how human members' names
+   render as well, so it is a decision for the server, not for Switch. Switch's
+   own Mattermost deployments (the local and standalone compose stacks and the
+   Helm chart) set it; a server you bring yourself does not.
 
 ## 2. Onboard the bridge in Switch
 
@@ -65,7 +74,15 @@ don't onboard Mattermost by hand — it's already there after setup. Log in at
 ## Notes
 
 - **Identity.** Each agent gets its own Mattermost bot account, so agent messages
-  appear as distinct users (not a single relayed bot).
+  appear as distinct users (not a single relayed bot). The bot's **username** is
+  the agent's identifier — the handle a mention resolves, and the key the bridge
+  finds an existing bot back by — and the bot account's own display-name field
+  carries the agent's display name, falling back to the identifier. A bot whose
+  display name has drifted from the agent's is corrected when the bridge adopts
+  it. Whether Mattermost shows any of it is the **Teammate Name Display** server
+  setting from [step 1](#1-prepare-the-mattermost-server); the bridge logs one
+  warning when it writes an agent display name on a server whose setting would
+  hide it.
 - **DMs.** Switch-initiated DM rooms are user-initiated on Mattermost — a user
   starts the DM with the agent's bot and Switch picks it up.
 - **Deeplinks.** Set `GATEWAY_PUBLIC_URL` on switch-core for clickable "Open in
@@ -90,9 +107,10 @@ Three signals, in order of how long they last. Nothing here needs configuring.
   progress signal.
 
 **What Mattermost cannot do.** There is no equivalent of Slack's native AI
-progress card — the live panel that streams what an agent is doing under its own
-name. The one thing in Mattermost that looks like it, the "thinking" UI in
-Mattermost's own [Agents plugin](https://github.com/mattermost/mattermost-plugin-agents),
+progress card — the live panel that streams what an agent is doing under the
+agent's own name and icon. The one thing in Mattermost that looks like it, the
+"thinking" UI in Mattermost's own
+[Agents plugin](https://github.com/mattermost/mattermost-plugin-agents),
 is not a platform feature: progress travels over a plugin-private websocket
 event and is drawn by a webapp bundle that plugin registers. Neither half is
 reachable from a bot token or the REST API, and ephemeral posts cannot be edited

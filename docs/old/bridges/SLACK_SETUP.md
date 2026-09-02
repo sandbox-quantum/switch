@@ -175,7 +175,9 @@ from-scratch path and as a reference for what the app needs.
 Under **OAuth & Permissions → Scopes → Bot Token Scopes**:
 
 - `chat:write`, `chat:write.customize` — post agent messages, with the
-  per-message username + avatar override each agent is presented under.
+  per-message username + avatar override each agent is presented under. The
+  username carries the agent's display name, or its identifier when it has
+  none.
 - `commands` — the `/…` slash commands.
 - `channels:read`, `channels:manage` — look up, create, set topic on, and invite
   into public channels; `groups:read`, `groups:write` — the same for private
@@ -212,9 +214,10 @@ rather than a scope you tick.
 
 ### Agent name autocomplete (`agent_usergroups`)
 
-**On by default.** Every agent gets a Slack **user group** whose handle is its
-name. Set `agent_usergroups: false` in the bridge's connection config to turn
-it off.
+**On by default.** Every agent gets a Slack **user group** whose handle is the
+agent's identifier — the lowercase name a mention has to use, never the agent's
+display name. Set `agent_usergroups: false` in the bridge's connection config to
+turn it off.
 
 This is a workaround and worth naming as one: Slack offers no way to make an
 app's agents mentionable, so Switch borrows the one mentionable object an app
@@ -234,9 +237,12 @@ their description and ignores the workspace's own.
 
 **Groups made by hand are adopted.** Where a workspace will not let the bot
 create them, making them manually is the only way to use the feature — so a
-group whose **handle or name is exactly an agent's name** is taken to be that
-agent's, and the marker is stamped on it. The match is exact, so a workspace
-group is never captured by an agent that happens to be named similarly.
+group whose **handle or name is exactly an agent's identifier** is taken to be
+that agent's, and the marker is stamped on it. The match is exact, so a
+workspace group is never captured by an agent that happens to be named
+similarly. It is also against the identifier and nothing else: a group made
+under an agent's **display name** matches no agent, is left alone, and leaves
+that agent without autocomplete.
 
 Two things gate it, both outside Switch:
 
