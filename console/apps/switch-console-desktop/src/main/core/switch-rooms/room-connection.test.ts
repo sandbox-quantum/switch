@@ -1607,3 +1607,72 @@ describe('a turn that cannot end', () => {
  * Measured on a live deployment at roughly 29 errors a minute, for over a day,
  * with no path back.
  */
+describe('a room the server refuses', () => {
+  beforeEach(() => {
+    silentLog.warn.mockClear();
+    silentLog.error.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is surfaced and dropped, and the session is left room-less', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (!u.includes('/events')) {
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      }
+      if (u.includes('rooms=')) {
+        return {
+          ok: false,
+          status: 403,
+          body: null,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: 'Room not found: room-gone' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({ start() {} }),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const refused: { roomId: string; status: number }[] = [];
+    const rooms: (string | null)[] = [];
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-gone',
+      roomName: null,
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      onRoomChanged: (room) => rooms.push(room),
+      onRoomRejected: ({ roomId, status }) => refused.push({ roomId, status }),
+      log: silentLog,
+    });
+    conn.start();
+    await flush(8);
+
+    expect(refused).toEqual([{ roomId: 'room-gone', status: 403 }]);
+    expect(rooms).toEqual([null]);
+    expect(conn.room).toBeNull();
+    expect(silentLog.error.mock.calls.some((c) => String(c[0]).includes('refused the room'))).toBe(
+      true
+    );
+
+    const opens = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('/events'));
+    expect(opens).toHaveLength(2);
+    expect(opens[1]).not.toContain('rooms=');
+    conn.stop();
+  });
+});

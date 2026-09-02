@@ -226,6 +226,14 @@ export interface RoomConnectionDeps {
    * `connect_to_room` call landed on.
    */
   onRoomChanged?: (roomId: string | null) => void;
+  /**
+   * The server has refused a room this connection declared — it is gone, or
+   * this agent may no longer subscribe to it. The stream has dropped it, so
+   * anything that remembers the room has to forget it here: a room id we keep
+   * is a room id we re-declare on the next connection, and the server refuses
+   * the whole connection over it.
+   */
+  onRoomRejected?: (info: { roomId: string; status: number; detail: string }) => void;
   log: RoomConnectionLogger;
 }
 
@@ -312,6 +320,10 @@ export class RoomConnection {
   private spawnTurn: SpawnTurn | null;
   /** Notified whenever the server tells us which room this session is in. */
   private readonly onRoomChanged: ((roomId: string | null) => void) | null;
+  /** Notified when the server refuses a room we declared. */
+  private readonly onRoomRejected:
+    | ((info: { roomId: string; status: number; detail: string }) => void)
+    | null;
   /**
    * The last room we passed to `onRoomChanged`. Deliberately not seeded from
    * the declared room: a connection opened declaring one is *told* the same
@@ -348,6 +360,7 @@ export class RoomConnection {
     this.startCursor = deps.startCursor;
     this.spawnTurn = deps.spawnTurn ?? null;
     this.onRoomChanged = deps.onRoomChanged ?? null;
+    this.onRoomRejected = deps.onRoomRejected ?? null;
     this.log = deps.log;
   }
 
@@ -366,6 +379,7 @@ export class RoomConnection {
       startCursor: this.startCursor,
       onEvent: (event) => this.handleEvent(event),
       onRooms: (rooms) => this.adoptRoom(rooms),
+      onRoomRejected: (info) => this.handleRoomRejected(info),
       onGap: (info) => this.handleGap(info),
       onEvicted: (reason) =>
         this.log.warn('RoomConnection: connection evicted', {
@@ -497,6 +511,26 @@ export class RoomConnection {
     if (!this.openSpawnTurn()) {
       void this.postRuntimeState('idle', null).catch(() => {});
     }
+  }
+
+  /**
+   * A declared room the server refuses. Terminal, not transient.
+   *
+   * The stream has already dropped it, which arrives here as an empty room
+   * list and ends the turn. What this adds is the disclosure — at error level,
+   * because a session pointed at a room that does not exist is broken and not
+   * merely quiet — and the hand-off to whoever persisted the room, so a
+   * restart does not resurrect it.
+   */
+  private handleRoomRejected(info: { roomId: string; status: number; detail: string }): void {
+    this.log.error('RoomConnection: the server refused the room this session declared', {
+      event: 'room_connection_room_refused',
+      sessionId: this.sessionId,
+      roomId: info.roomId,
+      status: info.status,
+      detail: info.detail,
+    });
+    this.onRoomRejected?.(info);
   }
 
   /**
