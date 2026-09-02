@@ -72,10 +72,19 @@ class SwitchConfig(BaseSettings):
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
 
-    db_pool_size: int = 20
+    # Every authenticated agent request resolves its bearer token against the
+    # database before the handler runs, and each live agent connection beats
+    # every 2s, so the pool is sized against connection count rather than
+    # human traffic: a fleet of N connections costs roughly N/2 checkouts per
+    # second. Exceeding the pool does not shed load, it queues, and a queued
+    # heartbeat that misses HEARTBEAT_TTL_SECONDS costs the connection.
+    db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
     db_pool_pre_ping: bool = True
+    # SQLAlchemy's default is 30s, long enough that pool starvation surfaces as
+    # unexplained latency rather than an error. Fail fast and loudly instead.
+    db_pool_timeout: float = 5.0
 
     # libpq-style TLS mode for the Postgres connection, forwarded to asyncpg.
     # "disable" (the default) keeps in-cluster / local-dev connections plain,

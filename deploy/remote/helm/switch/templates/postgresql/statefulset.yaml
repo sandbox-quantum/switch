@@ -25,6 +25,13 @@ spec:
         - name: postgresql
           image: {{ .Values.postgresql.image }}
           imagePullPolicy: {{ .Values.postgresql.imagePullPolicy }}
+          {{- with .Values.postgresql.parameters }}
+          args:
+            {{- range $name, $value := . }}
+            - -c
+            - {{ printf "%s=%v" $name $value | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - containerPort: 5432
               protocol: TCP
