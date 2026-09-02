@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { CircleAlert } from 'lucide-react';
+import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useId, useRef, useState } from 'react';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
@@ -9,6 +9,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { rpc } from '@renderer/lib/ipc';
+import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldGroup, FieldLabel, FieldTitle } from '@renderer/lib/ui/field';
@@ -264,28 +265,34 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           aria-invalid={form.nameIsRejected}
         />
         {form.nameIsRejected ? (
-          <div className="flex flex-col items-start gap-1.5">
-            <span className="text-destructive text-xs">
+          <Alert
+            variant="destructive"
+            className="border-border-destructive bg-background-destructive"
+          >
+            <TriangleAlert />
+            <AlertDescription className="text-foreground-destructive">
               Use lowercase letters, digits, <span className="font-mono">. - _</span>, starting with
               a letter or digit. No spaces or uppercase.
-            </span>
+            </AlertDescription>
             {form.suggestedName && (
-              <Button
-                variant="outline"
-                size="xs"
-                className="max-w-full"
-                // Accepting the offer makes the name valid, which unmounts this
-                // button; without moving focus first it falls to the body and
-                // the tab order restarts.
-                onClick={() => {
-                  form.setAgentName(form.suggestedName);
-                  nameRef.current?.focus();
-                }}
-              >
-                Use <span className="truncate font-mono">{form.suggestedName}</span>
-              </Button>
+              <AlertAction>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="max-w-full"
+                  // Accepting the offer makes the name valid, which unmounts this
+                  // button; without moving focus first it falls to the body and
+                  // the tab order restarts.
+                  onClick={() => {
+                    form.setAgentName(form.suggestedName);
+                    nameRef.current?.focus();
+                  }}
+                >
+                  Use <span className="truncate font-mono">{form.suggestedName}</span>
+                </Button>
+              </AlertAction>
             )}
-          </div>
+          </Alert>
         ) : form.agentName.length > 0 ? (
           // Once there is a name, show the handle it produces rather than
           // repeating the advice: the advice is about choosing a name, and it
