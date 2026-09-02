@@ -429,9 +429,10 @@ async def run() -> None:
     await client_lifecycle.start_all()
     await collab_lifecycle.start_all()
 
-    # Backfill system clients (e.g. the admin client) into rooms created before
-    # they existed; the just-started clients auto-accept the invites.
-    await room_service.reconcile_system_clients()
+    # Backfill room membership: system clients (e.g. the admin client) added
+    # after a room was created, and any agent whose invite did not land. The
+    # just-started clients accept the invites on their first sync.
+    await room_service.reconcile_room_clients()
 
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port

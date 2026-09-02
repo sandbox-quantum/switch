@@ -4,7 +4,14 @@ from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy import func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import ClientRoom, Room, RoomGroup, room_agents
+from switch_core.db.models import (
+    Agent,
+    Client,
+    ClientRoom,
+    Room,
+    RoomGroup,
+    room_agents,
+)
 
 
 class RoomStore:
@@ -295,6 +302,23 @@ class RoomStore:
             select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)
         )
         return list(result.scalars().all())
+
+    async def get_member_agent_clients(
+        self, session: AsyncSession, room_id: str
+    ) -> dict[str, str]:
+        """`{client_id: matrix_user_id}` for the agents this room has as members.
+
+        Resolved from the database rather than from the running client
+        registry, so it answers correctly before the agent clients have
+        finished booting.
+        """
+        result = await session.execute(
+            select(Client.id, Client.matrix_user_id)
+            .join(Agent, Agent.client_id == Client.id)
+            .join(room_agents, room_agents.c.agent_id == Agent.id)
+            .where(room_agents.c.room_id == room_id)
+        )
+        return {client_id: matrix_user_id for client_id, matrix_user_id in result.all()}
 
     async def get_by_bridge(self, session: AsyncSession, bridge_id: str) -> list[Room]:
         result = await session.execute(select(Room).where(Room.bridge_id == bridge_id))
