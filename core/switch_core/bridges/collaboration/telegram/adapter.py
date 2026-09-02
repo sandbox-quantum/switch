@@ -606,7 +606,8 @@ class TelegramAdapter(CollaborationAdapter):
         Telegram offers no per-message identity, so the name is part of the body
         — the same degradation Discord falls back to in DMs, applied everywhere.
         """
-        body = self._attribute(sender_name, content)
+        agent = await self.agent_rendering(sender_name)
+        body = self._attribute(sender_name, agent.body_label, content)
         return await self._send_text(channel_id, body, thread_root_id)
 
     async def send_attachment(
@@ -626,8 +627,9 @@ class TelegramAdapter(CollaborationAdapter):
         Falls back to the base text notice on failure so a file is never
         silently dropped.
         """
+        agent = await self.agent_rendering(sender_name)
         attributed = self._attribute(
-            sender_name, self.translate_outbound(caption or "")
+            sender_name, agent.body_label, self.translate_outbound(caption or "")
         )
         caption_text, overflow_ref = await self._split_caption(
             channel_id, attributed, thread_root_id
@@ -710,8 +712,9 @@ class TelegramAdapter(CollaborationAdapter):
                 channel_id, sender_name, files, caption, thread_root_id
             )
 
+        agent = await self.agent_rendering(sender_name)
         attributed = self._attribute(
-            sender_name, self.translate_outbound(caption or "")
+            sender_name, agent.body_label, self.translate_outbound(caption or "")
         )
         caption_text, overflow_ref = await self._split_caption(
             channel_id, attributed, thread_root_id
@@ -1007,10 +1010,11 @@ class TelegramAdapter(CollaborationAdapter):
             body = self._working_body(detail, deeplink_url)
             existing = self._working_msg.get(key)
             if existing is not None:
+                agent = await self.agent_rendering(agent_name)
                 await self.update_message(
                     channel_id,
                     existing.message_ref,
-                    self._attribute(agent_name, body),
+                    self._attribute(agent_name, agent.body_label, body),
                 )
                 self._working_msg[key] = replace(existing, body=body)
                 return
@@ -1889,10 +1893,18 @@ class TelegramAdapter(CollaborationAdapter):
         talking. A mark that is always the same for the same agent gives a
         reader something to recognise at a glance, the way an avatar would.
 
-        Derived from the name rather than configured, so it needs no state and
-        no migration and cannot disagree between two bridges. `blake2b` and not
-        `hash()`: the built-in is salted per process, so it would hand the same
-        agent a different colour after every restart.
+        Derived from the identifier rather than configured, so it needs no
+        state and no migration and cannot disagree between two bridges.
+        `blake2b` and not `hash()`: the built-in is salted per process, so it
+        would hand the same agent a different colour after every restart.
+
+        Keyed on the identifier and not the display name, which is the change
+        this rules out. `display_name` and `icon_url` are both owner-settable,
+        so the mark is the only per-speaker signal on a Telegram message that
+        an impersonating agent cannot control. Keyed on the label instead, two
+        agents sharing a display name would collapse onto one mark and an
+        agent's mark would move when it is renamed — losing the
+        recognisability the mark exists for.
 
         Deliberately not a provider logo. The server only distinguishes
         `claude-code` from `codex`, and Switch Console registers every other
@@ -1903,14 +1915,35 @@ class TelegramAdapter(CollaborationAdapter):
         return _AGENT_MARKERS[digest[0] % len(_AGENT_MARKERS)]
 
     @classmethod
-    def _attribute(cls, sender_name: str, content: str) -> str:
+    def _attribute(cls, sender_name: str, label: str, content: str) -> str:
         """Put the agent's mark and name at the head of the body.
 
         This is the whole of Telegram's per-message identity: one bot posts for
-        every agent, so without the name a reader cannot tell them apart."""
+        every agent, so without the name a reader cannot tell them apart.
+
+        Two names, deliberately. `label` is what the reader sees; the mark
+        comes from `sender_name`, the identifier, for the reasons
+        `_agent_marker` gives.
+
+        `label` is the escaped form — `AgentRendering.body_label`, never
+        `field_label`. This prefix is message text, not a name field, and
+        Telegram has no name field at all, so the escaped form is the only one
+        that may reach here: a bare `@handle` in a display name is linked by
+        Telegram out of ordinary message text, with no markup involved, so the
+        unescaped form would notify that account from the prefix alone.
+
+        Two escapes, both needed and neither redundant. `escape_label_for_body`
+        defuses the markup, and `html.escape` below neutralises the tags; a
+        zero-width space is not an entity, so the two never compound. This
+        prefix is finished HTML — assembled after `translate_outbound` has
+        already run over `content`, and never fed back through it — so
+        `html.escape` is the whole of the tag escaping it needs. The ping line
+        the base `_ping_operator` builds is the other pipeline: it inlines the
+        same escaped label into Markdown source and lets `translate_outbound`
+        escape the whole line. Neither pipeline knows about the other and each
+        escapes exactly once."""
         name = (
-            f"{cls._agent_marker(sender_name)} "
-            f"<b>{html.escape(sender_name, quote=False)}</b>"
+            f"{cls._agent_marker(sender_name)} <b>{html.escape(label, quote=False)}</b>"
         )
         if not content:
             return name

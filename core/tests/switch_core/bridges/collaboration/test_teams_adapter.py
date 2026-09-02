@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 from switch_core.agent_icon import default_icon_url
-from switch_core.bridges.collaboration.adapter import AgentPresentation
+from switch_core.bridges.collaboration.adapter import AgentPresentation, AgentRendering
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
@@ -821,8 +821,14 @@ def test_typing_false_is_noop() -> None:
 # ── Adaptive card ────────────────────────────────────────────────────────────
 
 
+def _rendering(label: str, icon_url: str) -> AgentRendering:
+    return AgentRendering(field_label=label, body_label=label, icon_url=icon_url)
+
+
 def test_agent_card_carries_name_and_body() -> None:
-    card = agent_message_card("worker", "the message body", "https://example.com/i.png")
+    card = agent_message_card(
+        _rendering("worker", "https://example.com/i.png"), "the message body", []
+    )
     # Name appears in the header column; body appears as its own TextBlock.
     header = card["body"][0]["columns"][1]["items"][0]
     assert header["text"] == "worker"
@@ -830,7 +836,9 @@ def test_agent_card_carries_name_and_body() -> None:
 
 
 def test_agent_card_renders_the_supplied_icon() -> None:
-    card = agent_message_card("worker", "body", "https://example.com/custom.png")
+    card = agent_message_card(
+        _rendering("worker", "https://example.com/custom.png"), "body", []
+    )
     image = card["body"][0]["columns"][0]["items"][0]
     assert image["url"] == "https://example.com/custom.png"
 
