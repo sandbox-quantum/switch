@@ -2778,6 +2778,57 @@ class ProtocolService:
             )
             await session.commit()
 
+    async def list_all_references(
+        self,
+        agent_id: str,
+        name_contains: str | None,
+        type: str | None,
+        owner_name: str | None,
+        current_room_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """List the references the agent's owner may read, across the instance.
+
+        Filters are ANDed; a None filter is ignored. `owner_name` is matched
+        against the resolved owner name exactly, like `list_agents`, so a name
+        no user carries yields an empty list. Rows carry no `value`: this is
+        discovery, and the value arrives via `list_references` once attached.
+
+        When `current_room_id` is given, each row reports whether it is already
+        attached to that room; when it is None the key is left out entirely, so
+        an absent key never reads as "not attached".
+        """
+        async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if owner_id is None:
+                raise ValueError(
+                    f"Agent {agent_id} has no owner_id and cannot list references"
+                )
+            pairs = await self.resource_service.list_references_with_owner_names(
+                session,
+                owner_id,
+                is_admin=owner_is_admin,
+                name_contains=name_contains,
+                type=type,
+                owner_name=owner_name,
+            )
+            attached_ids: set[str] | None = None
+            if current_room_id is not None:
+                attached_ids = await self.resource_service.list_room_reference_ids(
+                    session, current_room_id
+                )
+            return [
+                self.resource_service.reference_to_summary(
+                    ref,
+                    name,
+                    attached_to_current_room=None
+                    if attached_ids is None
+                    else ref.id in attached_ids,
+                )
+                for ref, name in pairs
+            ]
+
     async def link_rooms(
         self,
         agent_id: str,

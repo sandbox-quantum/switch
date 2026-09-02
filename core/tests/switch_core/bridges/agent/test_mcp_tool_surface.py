@@ -71,6 +71,7 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
         "list_reference_types",
         "create_reference",
         "attach_reference_to_room",
+        "list_all_references",
         "link_rooms",
         "unlink_rooms",
         "list_room_groups",
