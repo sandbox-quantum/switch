@@ -16,6 +16,7 @@ from typing import Any
 
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
+    connected_room,
     get_agent_id,
     get_protocol,
     require_connected_room,
@@ -156,20 +157,7 @@ async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
     agent_id = get_agent_id()
 
     protocol = get_protocol()
-    connected_room_id: str | None = None
-    key = session_key()
-    if key:
-        # Ask the live connection first and the binding row only for callers
-        # that have none, matching how require_connected_room resolves it — a
-        # connection carries its own rooms and no row is written for it.
-        connection = protocol.connections.get(key)
-        if connection is not None and len(connection.rooms) == 1:
-            connected_room_id = next(iter(connection.rooms))
-        elif connection is None:
-            async with protocol.session_factory() as db:
-                row = await protocol.agent_session_store.get_connected_room(db, key)
-            if row is not None:
-                _, connected_room_id = row
+    connected_room_id = await connected_room()
     rooms = await protocol.list_rooms(agent_id, include_archived=include_archived)
 
     return [
@@ -1306,6 +1294,50 @@ async def attach_reference_to_room(room_id: str, reference_id: str) -> dict[str,
     protocol = get_protocol()
     await protocol.attach_reference_to_room_as_agent(agent_id, room_id, reference_id)
     return {"ok": True}
+
+
+@operation
+async def list_all_references(
+    name_contains: str | None = None,
+    type: str | None = None,
+    owner_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """List every reference on this Switch instance your owner can read.
+
+    Unlike `list_references` (which is scoped to the connected room and shows
+    what is already attached there), this searches the whole instance, so it is
+    how you find the `reference_id` to pass to `attach_reference_to_room`. It
+    needs no room connection. Use the optional filters to narrow the result;
+    they are ANDed together, and omitting one ignores it.
+
+    Args:
+        name_contains: Case-insensitive substring to match against reference
+            names.
+        type: Return only references of this exact type slug (e.g. "github").
+            See `list_reference_types` for the types in use.
+        owner_name: Return only references owned by the user with this exact
+            name.
+
+    Returns:
+        A list of {id, type, name, description, owner_name, read_visibility,
+        write_visibility, created_at} dicts, newest first. When this session has
+        exactly one current room, each entry also carries
+        `attached_to_current_room` — false means you still need to attach it;
+        the key is absent when the session has no current room or spans several,
+        so a missing key never means "not attached".
+        `value` (the URLs / ids a reference points at) is deliberately omitted:
+        this is discovery. Attach the reference and call `list_references` to
+        get its `value`.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    return await protocol.list_all_references(
+        agent_id,
+        name_contains=name_contains,
+        type=type,
+        owner_name=owner_name,
+        current_room_id=await connected_room(),
+    )
 
 
 @operation

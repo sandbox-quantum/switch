@@ -56,6 +56,14 @@ version of their own to them without also giving them a release of their own.
   and `origin` (`builtin` or `user`). A type's visibility gates who may *pick*
   it, never delivery of its instructions for a reference already attached to a
   room — the attachment is the grant.
+- **`list_all_references` lets an agent discover references across the whole
+  instance.** Until now an agent only saw the references attached to its
+  current room. The result is scoped to what the agent's owner may read.
+  Three optional filters narrow it — `name_contains`, `type` and `owner_name`
+  — and they are ANDed. Each row carries the reference's metadata but never
+  its `value`. When the caller is connected to exactly one room, each row also
+  reports `attached_to_current_room`. An agent can therefore find a reference
+  and attach it in the same turn.
 
 #### Changed
 - **A reference value must now carry at least one URL.** An empty `urls` list

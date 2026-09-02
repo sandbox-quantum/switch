@@ -113,6 +113,36 @@ class ResourceService:
         }
 
     @staticmethod
+    def reference_to_summary(
+        ref: Reference, owner_name: str, *, attached_to_current_room: bool | None
+    ) -> dict[str, Any]:
+        """Discovery shape: identity and visibility, with neither the `value`
+        nor the `instructions` for using it — enough to decide whether to attach
+        a reference, not enough to use one.
+
+        Deliberately not `_reference_to_payload`, which exists so an agent can
+        *use* a reference it already has attached and therefore carries the
+        URLs/ids inline.
+
+        `attached_to_current_room` is emitted only when the caller passes a
+        value; None omits the key entirely, so an absent key never reads as
+        "not attached".
+        """
+        summary: dict[str, Any] = {
+            "id": ref.id,
+            "type": ref.type,
+            "name": ref.name,
+            "description": ref.description,
+            "owner_name": owner_name,
+            "read_visibility": ref.read_visibility,
+            "write_visibility": ref.write_visibility,
+            "created_at": str(ref.created_at),
+        }
+        if attached_to_current_room is not None:
+            summary["attached_to_current_room"] = attached_to_current_room
+        return summary
+
+    @staticmethod
     def _document_metadata(doc: Document) -> dict[str, Any]:
         return {
             "id": doc.id,
@@ -498,7 +528,33 @@ class ResourceService:
     async def list_references_for_user(
         self, session: AsyncSession, user_id: str
     ) -> list[Reference]:
+        """The user's own references plus the public ones, with their `value`.
+
+        Owner+public with no admin bypass, deliberately: every row carries the
+        reference's `value`, so an admin bypass here would hand out other
+        users' secrets. The single-resource read keeps the bypass.
+        """
         return await self._references.list_for_user(session, user_id)
+
+    async def list_references_with_owner_names(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        *,
+        is_admin: bool,
+        name_contains: str | None = None,
+        type: str | None = None,
+        owner_name: str | None = None,
+    ) -> list[tuple[Reference, str]]:
+        """Readable references paired with their owner's name, for discovery."""
+        return await self._references.list_readable_with_owner_names(
+            session,
+            user_id,
+            is_admin=is_admin,
+            name_contains=name_contains,
+            type=type,
+            owner_name=owner_name,
+        )
 
     async def update_reference(
         self,
@@ -576,6 +632,11 @@ class ResourceService:
         self, session: AsyncSession, room_id: str
     ) -> list[Reference]:
         return await self._references.list_for_room(session, room_id)
+
+    async def list_room_reference_ids(
+        self, session: AsyncSession, room_id: str
+    ) -> set[str]:
+        return await self._references.list_ids_for_room(session, room_id)
 
     async def get_reference_attached_counts(
         self, session: AsyncSession, reference_ids: list[str]

@@ -561,6 +561,18 @@ it was set in.
   \`read_visibility\` is \`"private"\`). The reference is owned by your agent's
   user. Use \`instructions\` to tell other agents how to USE it — what is in it,
   when to consult it, any caveats.
+- **\`list_all_references\`** — every Reference on this instance your agent's
+  owner can read: their own, plus every reference with \`read_visibility\`
+  \`"public"\` (an admin owner sees all of them). This is how you find the
+  \`reference_id\` to hand to \`attach_reference_to_room\`. Optional
+  \`name_contains\` (case-insensitive substring of the name), \`type\` and
+  \`owner_name\` (exact) filters are ANDed together; omit one and it is ignored.
+  It needs no room connection. It does NOT return \`value\` — this is discovery,
+  so attach the reference and call \`list_references\` to read its \`value\`. When
+  the session has exactly one current room, each entry also carries
+  \`attached_to_current_room\`: false means you still need to attach it. That key
+  is absent when the session has no current room or spans several, so a missing
+  key never means "not attached".
 - **\`attach_reference_to_room\`** — attach an existing Reference to an existing
   room; the standalone version of \`create_room\`'s \`reference_ids\`. Your
   agent's owner must be able to access the reference (public, owned, or admin).
@@ -754,6 +766,7 @@ failure-mode tools are covered in the sections just above.
 - \`update_room\` — change an existing room, including its aliases.
 - \`invite_agent_to_room\` — add an agent to an existing room by name.
 - \`list_references\` — re-fetch the room's references, documents and packages.
+- \`list_all_references\` — every reference your owner can read, instance-wide.
 - \`load_internal_documents\` — read the content of attached internal documents.
 - \`create_room_document\` — author a document scoped to the connected room.
 - \`update_room_document\` — change a document you created.
