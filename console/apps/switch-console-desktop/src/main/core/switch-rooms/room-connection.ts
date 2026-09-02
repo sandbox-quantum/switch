@@ -44,6 +44,21 @@ const CONTROL_STEP_GAP_MS = 600;
 // While a turn is working, re-push the activity line this often with a refreshed
 // elapsed-time suffix (e.g. "· 15s") so a long-running step visibly ticks.
 const ACTIVITY_TICK_INTERVAL_MS = 5_000;
+// Two bounds on a working turn, because a turn that never ends re-pushes its
+// activity line every tick for as long as the process lives. One was observed
+// running for 32 hours against a room the session no longer held, rejected
+// every five seconds. Both give up loudly rather than keep a room reading
+// "working on it" against a turn nobody is going to close.
+//
+// The failure cap catches the case where the report itself is refused — the
+// server is answering, and answering that this report can never be accepted,
+// so repeating it is the definition of a loop that cannot succeed.
+const MAX_ACTIVITY_REPORT_FAILURES = 5;
+// The wall clock catches everything else: a turn whose completion signal was
+// lost (an interrupt fires no hook) leaves reports succeeding forever against
+// work that finished long ago. Set well past any real turn, so reaching it is
+// evidence of a bug rather than of a slow agent.
+export const MAX_ROOM_TURN_MS = 4 * 60 * 60 * 1000;
 
 export type SwitchCredentials = { agentId: string; apiEndpoint: string; token: string };
 
@@ -278,6 +293,8 @@ export class RoomConnection {
   private workingStartedAt = 0;
   /** Ticker that re-pushes the activity line with a refreshed elapsed suffix. */
   private activityTicker: ReturnType<typeof setInterval> | null = null;
+  /** Consecutive rejected activity reports, reset by the first that lands. */
+  private activityFailures = 0;
   private busyFallback: ReturnType<typeof setTimeout> | null = null;
   private humanGateTimer: ReturnType<typeof setTimeout> | null = null;
   private noTargetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -496,6 +513,7 @@ export class RoomConnection {
     this.currentAnchorId = null;
     this.runtimeState = 'idle';
     this.lastActivityDetail = null;
+    this.activityFailures = 0;
     this.stopActivityTicker();
   }
 
@@ -836,7 +854,10 @@ export class RoomConnection {
     // the generic indicator, and idle/awaiting-input carry no activity.
     this.lastActivityDetail = null;
     if (state === 'working') {
-      if (!wasWorking) this.workingStartedAt = Date.now();
+      if (!wasWorking) {
+        this.workingStartedAt = Date.now();
+        this.activityFailures = 0;
+      }
       this.startActivityTicker();
       // Post the "working on it…" message with an elapsed suffix right away so
       // the timer ticks from the start of the turn, not only once the first
@@ -883,13 +904,32 @@ export class RoomConnection {
   /** Push the current activity line (base + elapsed) to the bridge. */
   private pushActivity(): void {
     const detail = this.composeActivityDetail();
-    void this.postRuntimeState('working', this.currentThreadId, {}, detail).catch((error) => {
-      if (this.abort.signal.aborted) return;
-      this.log.warn('RoomConnection: failed to report activity', {
-        roomId: this.roomId,
-        error: String(error),
-      });
-    });
+    void this.postRuntimeState('working', this.currentThreadId, {}, detail).then(
+      () => {
+        this.activityFailures = 0;
+      },
+      (error) => {
+        if (this.abort.signal.aborted) return;
+        this.activityFailures += 1;
+        if (this.activityFailures < MAX_ACTIVITY_REPORT_FAILURES) {
+          this.log.warn('RoomConnection: failed to report activity', {
+            roomId: this.roomId,
+            failures: this.activityFailures,
+            error: String(error),
+          });
+          return;
+        }
+        this.log.error('RoomConnection: abandoning the turn — the room keeps refusing it', {
+          event: 'room_connection_turn_abandoned',
+          reason: 'activity_report_refused',
+          sessionId: this.sessionId,
+          roomId: this.roomId,
+          failures: this.activityFailures,
+          error: String(error),
+        });
+        this.clearRoomTurn();
+      }
+    );
   }
 
   private startActivityTicker(): void {
@@ -897,6 +937,25 @@ export class RoomConnection {
     this.activityTicker = setInterval(() => {
       if (this.stopped || !this.roomTurnActive || this.runtimeState !== 'working') {
         this.stopActivityTicker();
+        return;
+      }
+      const elapsed = Date.now() - this.workingStartedAt;
+      if (elapsed >= MAX_ROOM_TURN_MS) {
+        // Past any turn a real agent runs, so the completion signal was lost
+        // rather than late. Clear the room's "working on it" instead of
+        // leaving it to age indefinitely, and say plainly that we gave up —
+        // the session may well still be working, and the room will no longer
+        // show it.
+        this.log.error('RoomConnection: abandoning the turn — it has outrun the cap', {
+          event: 'room_connection_turn_abandoned',
+          reason: 'max_turn_duration',
+          sessionId: this.sessionId,
+          roomId: this.roomId,
+          elapsedMs: elapsed,
+          capMs: MAX_ROOM_TURN_MS,
+        });
+        this.clearRoomTurn();
+        void this.postRuntimeState('idle', null).catch(() => {});
         return;
       }
       this.pushActivity();

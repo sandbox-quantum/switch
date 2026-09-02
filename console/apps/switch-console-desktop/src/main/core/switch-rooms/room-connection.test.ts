@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InjectionTarget } from './injection-sink';
-import { type PromptInjector, RoomConnection } from './room-connection';
+import { MAX_ROOM_TURN_MS, type PromptInjector, RoomConnection } from './room-connection';
 import { resolveSessionControl } from './session-control';
 import type { AgentBridgeEvent, AttachmentRef } from './switch-event-format';
 
@@ -1456,13 +1456,14 @@ describe('repointing a restored session', () => {
 });
 
 /**
- * A turn that cannot end.
+ * A turn that cannot end (CHOO-2274).
  *
  * Measured on a live deployment: a session reported `working` against a room it
  * no longer held, every five seconds, for 32 hours. The server rejected each
  * report — the room id it carried was null — and nothing here noticed, because
- * `adoptRoom` had no path for the room going away and the only thing that ever
- * closed a turn was the agent going idle.
+ * the only thing that ever closed a turn was the agent going idle, and that
+ * signal was never coming. Three ways out now: the room being withdrawn, the
+ * report being refused, and the clock.
  */
 describe('a turn that cannot end', () => {
   function pushable() {
@@ -1554,4 +1555,55 @@ describe('a turn that cannot end', () => {
     expect(reports(fetchMock)).toBe(settled);
     conn.stop();
   });
+
+  it('gives up when the room keeps refusing the report', async () => {
+    const { conn, fetchMock } = workingSession({ runtimeStateStatus: 422 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Five consecutive refusals: the opening push plus four ticks.
+    await vi.advanceTimersByTimeAsync(4 * 5_000);
+    expect(loggedAt('error', 'abandoning the turn')).toBe(true);
+
+    const settled = reports(fetchMock);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reports(fetchMock)).toBe(settled);
+    conn.stop();
+  });
+
+  it('gives up when the turn outruns the wall clock', async () => {
+    const { conn, fetchMock } = workingSession();
+    await vi.advanceTimersByTimeAsync(0);
+
+    vi.setSystemTime(Date.now() + MAX_ROOM_TURN_MS);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(loggedAt('error', 'outrun the cap')).toBe(true);
+    // The room is told the turn is over rather than left showing "working".
+    expect(runtimeStates(fetchMock).at(-1)).toBe('idle');
+
+    const settled = reports(fetchMock);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reports(fetchMock)).toBe(settled);
+    conn.stop();
+  });
+
+  it('keeps ticking while the reports land', async () => {
+    const { conn, fetchMock } = workingSession();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(loggedAt('error', 'abandoning the turn')).toBe(false);
+    expect(runtimeStates(fetchMock).filter((s) => s === 'working').length).toBeGreaterThan(4);
+    conn.stop();
+  });
 });
+
+/**
+ * A room the server refuses outright.
+ *
+ * The open is refused, not the room — so the connection never gets as far as a
+ * room list, and re-declaring the same dead room means never connecting again.
+ * Measured on a live deployment at roughly 29 errors a minute, for over a day,
+ * with no path back.
+ */
