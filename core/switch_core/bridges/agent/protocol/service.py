@@ -820,9 +820,27 @@ class ProtocolService:
         if not agent_ids:
             return {}
         async with self.session_factory() as session:
-            result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
-            agents = list(result.scalars().all())
-            return await self._compute_statuses(session, agents, room_id)
+            return await self.get_agent_statuses_by_ids_in_session(
+                session, room_id, agent_ids
+            )
+
+    async def get_agent_statuses_by_ids_in_session(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        agent_ids: list[str],
+    ) -> dict[str, AgentStatus]:
+        """`get_agent_statuses_by_ids` for a caller that already holds a session.
+
+        A request handler with its own open transaction must use this: taking a
+        second checkout while holding the first makes the request queue against
+        the pool for a slot it is itself occupying.
+        """
+        if not agent_ids:
+            return {}
+        result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        agents = list(result.scalars().all())
+        return await self._compute_statuses(session, agents, room_id)
 
     async def get_agent_status(self, agent_id: str, room_id: str) -> AgentStatus:
         async with self.session_factory() as session:
@@ -1018,6 +1036,7 @@ class ProtocolService:
 
     async def _require_can_address(
         self,
+        session: AsyncSession,
         target: Agent,
         *,
         room_id: str,
@@ -1031,6 +1050,7 @@ class ProtocolService:
         :meth:`_can_address` and reported instead.
         """
         if await self._can_address(
+            session,
             target,
             room_id=room_id,
             group_id=group_id,
@@ -1044,6 +1064,7 @@ class ProtocolService:
 
     async def _can_address(
         self,
+        session: AsyncSession,
         target: Agent,
         *,
         room_id: str,
@@ -1057,12 +1078,15 @@ class ProtocolService:
         the `agents` dimension, or through an `owner_agents` rule when both are
         owned by the same person. The sender is looked up only once the target
         is actually restricted, so the open case stays a single read.
+
+        Reads through the caller's `session`: every caller already holds one,
+        and taking a second while the first is open queues a request behind
+        the pool for its own slot.
         """
         policy = parse_policy(target.addressing_policy)
         if policy.is_open():
             return True
-        async with self.session_factory() as session:
-            sender = await self.agent_store.get(session, sender_agent_id)
+        sender = await self.agent_store.get(session, sender_agent_id)
         return can_address(
             policy,
             room_id=room_id,
@@ -1175,6 +1199,7 @@ class ProtocolService:
                 if target_agent is None:
                     continue
                 if not await self._can_address(
+                    session,
                     target_agent,
                     room_id=room_id,
                     group_id=group_id,
@@ -1930,12 +1955,14 @@ class ProtocolService:
         # so it is subject to the same allow-list as a message. Unlike the
         # message path (which demotes to unaddressed) a task is explicit, so a
         # denied delegation fails loud rather than silently vanishing.
-        await self._require_can_address(
-            performer,
-            room_id=room.id,
-            group_id=room_row.group_id if room_row is not None else None,
-            sender_agent_id=requester_id,
-        )
+        async with self.session_factory() as session:
+            await self._require_can_address(
+                session,
+                performer,
+                room_id=room.id,
+                group_id=room_row.group_id if room_row is not None else None,
+                sender_agent_id=requester_id,
+            )
 
         async with self.session_factory() as session:
             task = Task(
