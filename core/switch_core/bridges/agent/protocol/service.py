@@ -29,6 +29,7 @@ from switch_core.addressing import (
 from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.agent_detail import (
     apply_agent_options,
     assemble_agent_detail,
@@ -161,6 +162,7 @@ class ProtocolService:
         resource_request_tracker: ResourceRequestTracker,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
+        api_key_cache: ApiKeyCache,
         external_user_store: ExternalUserStore,
         bridge_store: CollaborationBridgeStore,
         session_factory: async_sessionmaker[AsyncSession],
@@ -187,6 +189,10 @@ class ProtocolService:
         self.resource_request_tracker = resource_request_tracker
         self.resource_service = resource_service
         self.api_key_store = api_key_store
+        # Shared with the bearer-auth middleware for the same reason as
+        # `connections`: a key this service rotates must stop authenticating
+        # requests on every door at once.
+        self.api_key_cache = api_key_cache
         self.external_user_store = external_user_store
         self.bridge_store = bridge_store
         self.session_factory = session_factory
@@ -515,6 +521,7 @@ class ProtocolService:
             )
 
         await session.commit()
+        self.api_key_cache.invalidate_agent(existing.id)
         return existing.id
 
     async def _create_bridge_identities(
@@ -669,6 +676,7 @@ class ProtocolService:
         async with self.session_factory() as session:
             await self.agent_store.delete(session, resolved_id)
             await session.commit()
+        self.api_key_cache.invalidate_agent(resolved_id)
 
         await self.client_lifecycle.remove(client_id)
 

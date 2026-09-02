@@ -16,6 +16,7 @@ from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_config,
+    get_protocol,
     get_session,
 )
 from switch_core.gateway.schemas import (
@@ -109,8 +110,10 @@ async def delete_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
     if key.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this key")
+    key_hash = key.key_hash
     await api_key_store.delete(session, key_id)
     await session.commit()
+    get_protocol().api_key_cache.invalidate(key_hash)
 
     logger.info("Deleted API key '%s' for user %s", key.label, user.email)
     return {"ok": True}

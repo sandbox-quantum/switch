@@ -86,12 +86,40 @@ class SwitchConfig(BaseSettings):
     # unexplained latency rather than an error. Fail fast and loudly instead.
     db_pool_timeout: float = 5.0
 
+    # Resolving a bearer token to its agent is the highest-frequency query in
+    # the system — it runs before every authenticated request, and a fleet of
+    # agents beats continuously — so a successful resolution is memoised in
+    # process for this long. Only successes are cached; an unknown or revoked
+    # token always reaches Postgres, and a rotation or an agent deletion drops
+    # the entry immediately rather than waiting for it to expire. This is the
+    # window in which an already-issued credential outlives its revocation, so
+    # it is deliberately shorter than the agent heartbeat TTL. Set to 0 to
+    # disable the cache and read the database on every request.
+    agent_auth_cache_ttl_seconds: float = 5.0
+    # Bound on the memo. One entry per distinct live token; the oldest is
+    # evicted past this, so a flood of tokens cannot grow the process.
+    agent_auth_cache_max_entries: int = 4096
+
     # libpq-style TLS mode for the Postgres connection, forwarded to asyncpg.
     # "disable" (the default) keeps in-cluster / local-dev connections plain,
     # matching current behaviour. Managed Postgres (RDS / Cloud SQL / Azure)
     # requires TLS — set "require" to encrypt without verifying the server
     # certificate, or "verify-ca" / "verify-full" to also validate it.
     db_ssl_mode: str = "disable"
+
+    @model_validator(mode="after")
+    def _validate_agent_auth_cache(self) -> "SwitchConfig":
+        if self.agent_auth_cache_ttl_seconds < 0:
+            raise ValueError(
+                "AGENT_AUTH_CACHE_TTL_SECONDS must not be negative (0 disables "
+                f"the cache), got {self.agent_auth_cache_ttl_seconds!r}."
+            )
+        if self.agent_auth_cache_max_entries < 1:
+            raise ValueError(
+                "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
+                f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_db_ssl_mode(self) -> "SwitchConfig":
