@@ -86,6 +86,14 @@ export interface SwitchEventStreamDeps {
    * the agent's tool calls.
    */
   onRooms?: (rooms: string[]) => void;
+  /**
+   * A room we declared that the server refuses to serve, and has therefore
+   * been dropped from the declared set.
+   *
+   * Terminal for that room: the id outlives the room, so whatever remembers it
+   * has to forget, or the next connection declares the same dead room again.
+   */
+  onRoomRejected?: (info: { roomId: string; status: number; detail: string }) => void;
   /** Fired when the server reports missed events it cannot replay. */
   onGap(info: { fromSequence: number; reason: string }): void;
   /** Fired when another stream took this connection over, or it was closed. */
@@ -147,6 +155,39 @@ export class SwitchEventStream {
     const rooms = raw.filter((r): r is string => typeof r === 'string');
     this.rooms = rooms;
     this.deps.onRooms?.(rooms);
+  }
+
+  /**
+   * Give up on a declared room the server refuses, keeping the connection.
+   *
+   * The server refuses the **whole** connection when one declared room cannot
+   * be served, so re-declaring it means never connecting again: a room id
+   * outlives its room, and nothing else in the open path would ever notice.
+   * The room is dropped, the refusal is reported at error level, and the room
+   * list goes out over the same callback the server's own updates arrive on,
+   * so anything holding the room learns it is gone.
+   *
+   * Only rooms the body actually names are dropped. A refusal that names none
+   * of them says nothing about which room is at fault — it stays a transport
+   * error and keeps its backoff.
+   */
+  private dropRefusedRooms(status: number, body: string): boolean {
+    if (status !== 403 && status !== 404) return false;
+    const refused = this.rooms.filter((room) => body.includes(room));
+    if (refused.length === 0) return false;
+    const remaining = this.rooms.filter((room) => !refused.includes(room));
+    const detail = body.slice(0, 500);
+    this.deps.log.error('SwitchEventStream: the server refused a declared room — dropping it', {
+      event: 'switch_stream_room_refused',
+      status,
+      rooms: refused,
+      remaining,
+      detail,
+    });
+    this.rooms = remaining;
+    for (const roomId of refused) this.deps.onRoomRejected?.({ roomId, status, detail });
+    this.deps.onRooms?.(remaining);
+    return true;
   }
 
   private async subscribe(roomId: string): Promise<void> {
@@ -223,7 +264,13 @@ export class SwitchEventStream {
         });
 
         if (!resp.ok || !resp.body) {
-          throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+          const body = await resp.text();
+          // Reopening without the refused room is a different request from the
+          // one that just failed, and the declared set strictly shrinks, so
+          // this cannot spin: retry now rather than serving the backoff a
+          // transport failure earned.
+          if (this.dropRefusedRooms(resp.status, body)) continue;
+          throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
         backoff = INITIAL_BACKOFF_MS;
