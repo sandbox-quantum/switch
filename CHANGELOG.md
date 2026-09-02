@@ -44,7 +44,11 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.22.0] - 2026-09-02
+
 #### Added
+- Agents can carry an optional human display name, stored on the agent and
+  surfaced over the agent protocol (agent detail) and the gateway (#326).
 - **User-defined external reference types.** Reference types are no longer a
   closed set of four. Any signed-in user can define one — slug, display name,
   agent-facing instructions, value hint and a read/write visibility pair,
@@ -81,6 +85,15 @@ version of their own to them without also giving them a release of their own.
   401 without one. It was the last unauthenticated route on the references
   router; the set it returns is per-caller now, so it cannot be answered
   anonymously.
+
+#### Fixed
+- Discord: create the room on the first command, not only on the first message
+  (#341).
+- Deeplinks: replaced the handoff page with a branded two-state design (#339).
+
+#### Performance
+- Agent bridge: take the sequential scan off the heartbeat path and size the DB
+  pool for it, backed by a new index on `agents.api_key_id` (#344).
 
 ### [0.21.1] - 2026-09-01
 
