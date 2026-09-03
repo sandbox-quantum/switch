@@ -18,7 +18,12 @@ class ControlService implements IInitializable, IDisposable {
   async initialize(): Promise<void> {
     this.registerRoutes();
     await this.server.start();
-    this.writeTokenFile();
+    try {
+      this.writeTokenFile();
+    } catch (err) {
+      this.server.stop();
+      throw err;
+    }
     log.info('ControlService: initialized', { port: this.server.getPort() });
   }
 

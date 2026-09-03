@@ -68,9 +68,16 @@ export class ControlServer {
         const match = route.pattern.exec(url);
         if (!match) continue;
 
-        const params: Record<string, string> = {};
-        for (let i = 0; i < route.paramNames.length; i++) {
-          params[route.paramNames[i]!] = decodeURIComponent(match[i + 1]!);
+        let params: Record<string, string>;
+        try {
+          params = {};
+          for (let i = 0; i < route.paramNames.length; i++) {
+            params[route.paramNames[i]!] = decodeURIComponent(match[i + 1]!);
+          }
+        } catch {
+          res.writeHead(400);
+          res.end();
+          return;
         }
 
         try {
