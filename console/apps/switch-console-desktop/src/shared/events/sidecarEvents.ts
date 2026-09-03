@@ -6,10 +6,13 @@ import { defineEvent } from '@shared/lib/ipc/events';
  *
  * - `not-running` — no sidecar is up on the host.
  * - `up-to-date` — the host runs this client's exact build.
- * - `upgrade-available` — a different build is running and can be replaced now
- *   (the sidecar is idle).
- * - `upgrade-pending` — a different build is running but has live sessions, so
- *   the upgrade is deferred until it is idle rather than interrupting work.
+ * - `upgrade-available` — a different build is running and can be replaced now.
+ *   Live sessions do not hold this back: they survive the restart, losing only
+ *   a few seconds of room injection.
+ * - `upgrade-pending` — a build one MAJOR ahead is ready but the sidecar has
+ *   live sessions, so it is deferred until idle. A major is where the durable
+ *   state schema may move, and a sidecar refuses to read state written by a
+ *   newer one, so taking it under live sessions risks stranding them.
  * - `newer-on-host` — a newer Switch Console deployed the running sidecar. There is
  *   nothing to offer: replacing it would be a downgrade, and on a shared host
  *   two installs doing that to each other never converges.
