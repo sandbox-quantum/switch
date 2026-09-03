@@ -709,6 +709,10 @@ export type ProvisionAgentResult =
    * the Switch deployment at `endpoint` — another install's agent. Refused
    * before minting, so nothing was created. */
   | { kind: 'credentials-conflict'; endpoint: string }
+  /** The working directory already holds credentials for this name on the SAME
+   * server, but the agent is unknown to this install — a colleague's agent.
+   * Refused before minting to avoid destroying their token (CHOO-2560). */
+  | { kind: 'already-configured' }
   | RegisterIdentityFailure;
 
 /**
