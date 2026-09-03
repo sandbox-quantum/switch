@@ -17,12 +17,10 @@ from switch_core.bridges.agent.mcp import create_mcp_app
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -47,8 +45,6 @@ def create_agent_bridge_app(
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
     task_store: TaskStore,
-    request_tracker: RequestTracker,
-    resource_request_tracker: ResourceRequestTracker,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
     external_user_store: ExternalUserStore,
@@ -82,8 +78,6 @@ def create_agent_bridge_app(
         event_buffer=event_buffer,
         connections=connections,
         task_store=task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,
@@ -103,8 +97,6 @@ def create_agent_bridge_app(
         event_buffer=event_buffer,
         connections=connections,
         task_store=task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,

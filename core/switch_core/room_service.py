@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_CLIENT_TYPES = ("resource_manager", "observe", "admin")
+SYSTEM_CLIENT_TYPES = ("observe", "admin")
 
 
 class LinkedRoomSpec(BaseModel):

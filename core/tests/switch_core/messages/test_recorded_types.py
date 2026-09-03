@@ -10,7 +10,6 @@ from switch_core.messages.recorded_types import (
     EPHEMERAL,
     NOT_RECORDED,
     PERSISTED_ELSEWHERE,
-    RPC,
     TELEMETRY,
     should_record,
 )
@@ -37,7 +36,7 @@ def test_classification_names_no_type_that_is_never_dispatched():
 
 
 def test_the_buckets_do_not_overlap():
-    buckets = [EPHEMERAL, RPC, PERSISTED_ELSEWHERE, TELEMETRY]
+    buckets = [EPHEMERAL, PERSISTED_ELSEWHERE, TELEMETRY]
     total = sum(len(bucket) for bucket in buckets)
     assert total == len(NOT_RECORDED)
 
@@ -49,7 +48,6 @@ def test_conversation_is_recorded():
 
 def test_bus_traffic_is_not_recorded():
     assert not should_record("com.switch.agent.runtime_state")
-    assert not should_record("com.switch.mediation.tool_request")
     assert not should_record("com.switch.task.delegate")
     assert not should_record("com.switch.report.llm_call")
 

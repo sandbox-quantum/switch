@@ -22,7 +22,6 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -54,13 +53,11 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.client_base import ClientBase
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.clients.resource_manager_client import ResourceManagerClient
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
 from switch_core.db.engine import (
@@ -236,8 +233,6 @@ async def run() -> None:
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer()
-    request_tracker = RequestTracker()
-    resource_request_tracker = ResourceRequestTracker()
     connector_store = ServerConnectorStore()
 
     # ── Resource service ─────────────────────────────────────────────────────
@@ -277,18 +272,8 @@ async def run() -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         connections=connections,
         frontend_base_url=config.frontend_base_url,
-    )
-    client_factory.register(
-        "resource_manager",
-        ResourceManagerClient,
-        agent_store=agent_store,
-        room_store=room_store,
-        resource_service=resource_service,
-        request_tracker=request_tracker,
     )
     client_factory.register("user", ClientBase)
     client_factory.register("bridge", ClientBase)
@@ -358,8 +343,6 @@ async def run() -> None:
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
         task_store=task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
         external_user_store=external_user_store,
@@ -422,7 +405,6 @@ async def run() -> None:
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
-    await client_lifecycle.ensure_system_client("resource_manager")
     await client_lifecycle.ensure_system_client("admin")
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────

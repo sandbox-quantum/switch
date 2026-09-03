@@ -49,9 +49,7 @@ from switch_core.bridges.agent.protocol.types import (
     RegistrationResult,
     TaskProtocolConfig,
 )
-from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.client_base import ClientBase
 from switch_core.clients.client_factory import ClientFactory
@@ -437,8 +435,6 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     # events and client registrations never leak across tests.
     event_buffer = EventBuffer()
     connections = ConnectionRegistry()
-    request_tracker = RequestTracker()
-    resource_request_tracker = ResourceRequestTracker()
     collab_lifecycle = _NoBridges()
 
     resource_service = ResourceService(
@@ -467,8 +463,6 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         agent_session_store=session_env.agent_session_store,
         room_role_store=session_env.room_role_store,
         external_user_store=session_env.external_user_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         connections=connections,
         frontend_base_url=config.frontend_base_url,
     )
@@ -503,8 +497,6 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         collab_lifecycle=collab_lifecycle,  # type: ignore[arg-type]
         event_buffer=event_buffer,
         task_store=session_env.task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
         api_key_cache=ApiKeyCache(

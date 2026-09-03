@@ -28,14 +28,6 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
-from switch_core.bridges.agent.request_tracker import RequestTracker
-from switch_core.bridges.resource.events import (
-    ResourceLoadResponse,
-    RoomDocumentCreateResponse,
-    RoomDocumentDeleteResponse,
-    RoomDocumentUpdateResponse,
-)
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.client_base import (
     ClientBase,
     ClientBaseKwargs,
@@ -69,9 +61,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
-    MediationLlmResponse,
-    MediationResult,
-    MediationToolResult,
     TaskAccept,
     TaskCancel,
     TaskDelegate,
@@ -235,8 +224,6 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
-        request_tracker: RequestTracker,
-        resource_request_tracker: ResourceRequestTracker,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
@@ -251,8 +238,6 @@ class AgentClient(ClientBase[ClientConfig]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
-        self._request_tracker = request_tracker
-        self._resource_request_tracker = resource_request_tracker
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -1123,52 +1108,6 @@ class AgentClient(ClientBase[ClientConfig]):
                 ),
             ),
         )
-
-    # ── Post-invocation mediation ──────────────────────────────────────────────
-
-    async def on_mediation_tool_result(
-        self, room: RoomRef, event: MediationToolResult
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        result = MediationResult(verdict=event.status)
-        self._request_tracker.resolve(event.request_id, result)
-
-    async def on_mediation_llm_response(
-        self, room: RoomRef, event: MediationLlmResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        result = MediationResult(verdict=event.status)
-        self._request_tracker.resolve(event.request_id, result)
-
-    async def on_resource_load_response(
-        self, room: RoomRef, event: ResourceLoadResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_create_response(
-        self, room: RoomRef, event: RoomDocumentCreateResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_update_response(
-        self, room: RoomRef, event: RoomDocumentUpdateResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_delete_response(
-        self, room: RoomRef, event: RoomDocumentDeleteResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
 
     # ── Mention detection ─────────────────────────────────────────────────────
 

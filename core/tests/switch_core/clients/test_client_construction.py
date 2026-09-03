@@ -22,7 +22,6 @@ from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.client_factory import matrix_transport_for
-from switch_core.clients.resource_manager_client import ResourceManagerClient
 from switch_core.clients.user_client import UserClient
 from tests.switch_core.transport.fake import FakeMessageRecorder
 
@@ -61,7 +60,7 @@ def test_bridge_client_construction_matches_its_lifecycle_call_site() -> None:
     assert client.config.bridge_id == "bridge-1"
 
 
-@pytest.mark.parametrize("cls", [UserClient, AdminClient, ResourceManagerClient])
+@pytest.mark.parametrize("cls", [UserClient, AdminClient])
 def test_every_registered_client_type_constructs(cls: type) -> None:
     base = _base_kwargs()
     # Collaborators the factory injects as extra kwargs differ per class, so

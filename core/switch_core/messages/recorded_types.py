@@ -22,25 +22,6 @@ MEMBERSHIP_EVENT_TYPE = "m.room.member"
 # Ephemeral: presence-like state, superseded by the next one, null body.
 EPHEMERAL = frozenset({"com.switch.agent.runtime_state"})
 
-# Request/response pairs that use the bus as an RPC channel. They are addressed
-# to one recipient and meaningless once answered.
-RPC = frozenset(
-    {
-        "com.switch.mediation.tool_request",
-        "com.switch.mediation.llm_request",
-        "com.switch.mediation.tool_result",
-        "com.switch.mediation.llm_response",
-        "com.switch.resource.load_request",
-        "com.switch.resource.load_response",
-        "com.switch.resource.room_document_create_request",
-        "com.switch.resource.room_document_create_response",
-        "com.switch.resource.room_document_update_request",
-        "com.switch.resource.room_document_update_response",
-        "com.switch.resource.room_document_delete_request",
-        "com.switch.resource.room_document_delete_response",
-    }
-)
-
 # Already durable in the `tasks` table, which is the record readers query.
 PERSISTED_ELSEWHERE = frozenset(
     {
@@ -56,7 +37,7 @@ PERSISTED_ELSEWHERE = frozenset(
 # they want a table shaped for querying them, not the conversation log.
 TELEMETRY = frozenset({"com.switch.report.tool_call", "com.switch.report.llm_call"})
 
-NOT_RECORDED = EPHEMERAL | RPC | PERSISTED_ELSEWHERE | TELEMETRY
+NOT_RECORDED = EPHEMERAL | PERSISTED_ELSEWHERE | TELEMETRY
 
 # The observe prefix is reserved and unimplemented; no type under it exists to
 # name individually yet.

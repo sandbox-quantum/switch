@@ -22,6 +22,7 @@ from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.authz import Action, Principal, require, require_manage
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
+from switch_core.bridges.agent.mediation import MediationService
 from switch_core.bridges.agent.protocol.agent_detail import (
     apply_agent_options,
     assemble_agent_detail,
@@ -49,9 +50,7 @@ from switch_core.bridges.agent.protocol.types import (
     ToolCallReport,
     ToolSpec,
 )
-from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
@@ -122,6 +121,11 @@ _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
 # is the size of the response.
 HISTORY_MAX_LIMIT = 500
 
+# The post-invocation hooks answer in a different vocabulary from the
+# pre-invocation ones: `ok` / `blocked` / `redacted` rather than `proceed` /
+# `blocked`. Nothing currently returns anything but this.
+POST_INVOCATION_OK = "ok"
+
 
 def _epoch_ms(when: Any) -> int | None:
     """A stored timestamp as epoch milliseconds, which is what agents read."""
@@ -183,8 +187,6 @@ class ProtocolService:
         event_buffer: EventBuffer,
         connections: ConnectionRegistry,
         task_store: TaskStore,
-        request_tracker: RequestTracker,
-        resource_request_tracker: ResourceRequestTracker,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
         api_key_cache: ApiKeyCache,
@@ -211,9 +213,10 @@ class ProtocolService:
         # connection set in two.
         self.connections = connections
         self.task_store = task_store
-        self.request_tracker = request_tracker
-        self.resource_request_tracker = resource_request_tracker
         self.resource_service = resource_service
+        self.mediation = MediationService(
+            session_factory=session_factory, agent_store=agent_store
+        )
         self.api_key_store = api_key_store
         # Shared with the bearer-auth middleware for the same reason as
         # `connections`: a key this service rotates must stop authenticating
@@ -3255,41 +3258,16 @@ class ProtocolService:
         room_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        request_id: str,
-        timeout: float,
     ) -> dict[str, Any]:
-        """Request mediation before tool call. Returns verdict and reason."""
-        import asyncio
+        """Whether this agent may call this tool. Verdict and reason.
 
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        if client.transport is None:
-            raise ValueError("Agent client not connected")
-
-        future = self.request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await client.send_event(
-            room.matrix_room_id,
-            "com.switch.mediation.tool_request",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "tool_id": tool_name,
-                "args": arguments,
-                "status": "pending",
-            },
-        )
-
-        try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.request_tracker.cancel(request_id)
-            raise ValueError("Mediation verdict timed out")
-
-        return {"verdict": result.verdict, "reason": result.reason}
+        `arguments` is not inspected. It is accepted because a mediation
+        decision that looks at what is being passed is the obvious next thing
+        to want, and because the hook already sends it.
+        """
+        await self.require_room_member(agent_id, room_id)
+        verdict = await self.mediation.tool_access(agent_id, tool_name)
+        return {"verdict": verdict.verdict, "reason": verdict.reason}
 
     async def pre_llm_request(
         self,
@@ -3297,41 +3275,14 @@ class ProtocolService:
         room_id: str,
         model: str,
         messages: list[dict[str, Any]],
-        request_id: str,
-        timeout: float,
     ) -> dict[str, Any]:
-        """Request mediation before LLM request. Returns verdict and reason."""
-        import asyncio
+        """Whether this agent may call this model. Verdict and reason.
 
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        if client.transport is None:
-            raise ValueError("Agent client not connected")
-
-        future = self.request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await client.send_event(
-            room.matrix_room_id,
-            "com.switch.mediation.llm_request",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "model_id": model,
-                "messages": messages,
-                "status": "pending",
-            },
-        )
-
-        try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.request_tracker.cancel(request_id)
-            raise ValueError("Mediation verdict timed out")
-
-        return {"verdict": result.verdict, "reason": result.reason}
+        `messages` is not inspected, for the same reason `arguments` is not.
+        """
+        await self.require_room_member(agent_id, room_id)
+        verdict = await self.mediation.model_access(agent_id, model)
+        return {"verdict": verdict.verdict, "reason": verdict.reason}
 
     async def post_tool_result(
         self,
@@ -3339,42 +3290,19 @@ class ProtocolService:
         room_id: str,
         tool_name: str,
         result: Any,
-        request_id: str,
-        timeout: float,
     ) -> dict[str, Any]:
-        """Request mediation after tool result. Returns verdict."""
-        import asyncio
+        """The hook point after a tool returns. Nothing is decided here yet.
 
-        room = await self.require_room_member(agent_id, room_id)
-        rm_clients = self.client_lifecycle.get_by_type("resource_manager")
-        if not rm_clients:
-            raise ValueError("Resource manager client not running")
-        rm = rm_clients[0]
-        if rm.transport is None:
-            raise ValueError("Resource manager client not connected")
+        It has always returned `ok` unconditionally — the verdict used to be
+        the literal string this method itself put on the wire and then read
+        back off it. Kept as the place a post-invocation check would go, and
+        as the membership check the caller is entitled to fail on.
 
-        future = self.request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await rm.send_event(
-            room.matrix_room_id,
-            "com.switch.mediation.tool_result",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "tool_id": tool_name,
-                "result": result,
-                "status": "ok",
-            },
-        )
-
-        try:
-            med_result = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.request_tracker.cancel(request_id)
-            raise ValueError("Mediation verdict timed out")
-
-        return {"verdict": med_result.verdict}
+        Note the vocabulary differs from the pre-invocation hooks: these
+        answer `ok` / `blocked` / `redacted`, not `proceed` / `blocked`.
+        """
+        await self.require_room_member(agent_id, room_id)
+        return {"verdict": POST_INVOCATION_OK}
 
     async def list_room_resources(self, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
@@ -3385,49 +3313,23 @@ class ProtocolService:
 
     async def request_document_load(
         self,
+        *,
         agent_id: str,
         room_id: str,
         document_ids: list[str],
-        request_id: str,
-        timeout: float,
     ) -> list[dict[str, Any]]:
-        """Dispatch a com.switch.resource.load_request as the agent and await
-        the resource manager's response. Raises on error / timeout."""
-        import asyncio
+        """Load documents attached to this room.
 
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        if client.transport is None:
-            raise ValueError("Agent client not connected")
-
-        future = self.resource_request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await client.send_event(
-            room.matrix_room_id,
-            "com.switch.resource.load_request",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "document_ids": document_ids,
-            },
-        )
-
-        from switch_core.bridges.resource.events import ResourceLoadResponse
-
-        try:
-            response = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.resource_request_tracker.cancel(request_id)
-            raise ValueError("Resource load timed out") from None
-
-        if not isinstance(response, ResourceLoadResponse):
-            raise ValueError(f"Unexpected response type: {type(response).__name__}")
-        if response.status != "ok":
-            raise ValueError(response.error or "Resource manager returned an error")
-        return [d.model_dump(mode="json") for d in response.documents]
+        The service checks each id is attached here, which is what stops a
+        document being read across a room boundary. Membership is checked
+        first, so an agent that is not in the room never reaches it.
+        """
+        await self.require_room_member(agent_id, room_id)
+        async with self.session_factory() as session:
+            entries = await self.resource_service.load_documents(
+                session, room_id, document_ids
+            )
+        return [entry.model_dump(mode="json") for entry in entries]
 
     async def request_room_document_create(
         self,
@@ -3438,51 +3340,29 @@ class ProtocolService:
         description: str,
         instructions: str,
         content: str,
-        request_id: str,
-        timeout: float,
     ) -> str:
-        import asyncio
-
         room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.transport is None:
-            raise ValueError("Agent client not connected")
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            document = await self.resource_service.create_room_document(
+                session,
+                room_id=room_id,
+                agent_id=agent_id,
+                owner_id=agent.owner_id if agent is not None else None,
+                name=name,
+                description=description,
+                instructions=instructions,
+                content=content,
+            )
+            document_id, document_name = document.id, document.name
+            await session.commit()
 
-        future = self.resource_request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await client.send_event(
+        await self._announce_document(
+            agent_id,
             room.matrix_room_id,
-            "com.switch.resource.room_document_create_request",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "name": name,
-                "description": description,
-                "instructions": instructions,
-                "content": content,
-            },
+            f"\U0001f4c4 created room document \u201c{document_name}\u201d.",
         )
-
-        from switch_core.bridges.resource.events import RoomDocumentCreateResponse
-
-        try:
-            response = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.resource_request_tracker.cancel(request_id)
-            raise ValueError("Room document create timed out") from None
-
-        if not isinstance(response, RoomDocumentCreateResponse):
-            raise ValueError(f"Unexpected response type: {type(response).__name__}")
-        if response.status != "ok" or response.document_id is None:
-            raise ValueError(response.error or "Resource manager returned an error")
-
-        await self._post_agent_notice(
-            client,
-            room.matrix_room_id,
-            f"📄 created room document “{response.document_name or name}”.",
-        )
-        return response.document_id
+        return document_id
 
     async def request_room_document_update(
         self,
@@ -3494,50 +3374,26 @@ class ProtocolService:
         description: str | None,
         instructions: str | None,
         content: str | None,
-        request_id: str,
-        timeout: float,
     ) -> None:
-        import asyncio
-
         room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.transport is None:
-            raise ValueError("Agent client not connected")
+        async with self.session_factory() as session:
+            document = await self.resource_service.update_room_document(
+                session,
+                room_id=room_id,
+                agent_id=agent_id,
+                document_id=document_id,
+                name=name,
+                description=description,
+                instructions=instructions,
+                content=content,
+            )
+            document_name = document.name
+            await session.commit()
 
-        future = self.resource_request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await client.send_event(
+        await self._announce_document(
+            agent_id,
             room.matrix_room_id,
-            "com.switch.resource.room_document_update_request",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "document_id": document_id,
-                "name": name,
-                "description": description,
-                "instructions": instructions,
-                "content": content,
-            },
-        )
-
-        from switch_core.bridges.resource.events import RoomDocumentUpdateResponse
-
-        try:
-            response = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.resource_request_tracker.cancel(request_id)
-            raise ValueError("Room document update timed out") from None
-
-        if not isinstance(response, RoomDocumentUpdateResponse):
-            raise ValueError(f"Unexpected response type: {type(response).__name__}")
-        if response.status != "ok":
-            raise ValueError(response.error or "Resource manager returned an error")
-
-        await self._post_agent_notice(
-            client,
-            room.matrix_room_id,
-            f"📄 updated room document “{response.document_name or document_id}”.",
+            f"\U0001f4c4 updated room document \u201c{document_name}\u201d.",
         )
 
     async def request_room_document_delete(
@@ -3546,47 +3402,49 @@ class ProtocolService:
         agent_id: str,
         room_id: str,
         document_id: str,
-        request_id: str,
-        timeout: float,
     ) -> None:
-        import asyncio
-
         room = await self.require_room_member(agent_id, room_id)
+        async with self.session_factory() as session:
+            # Read the name before deleting it: the notice says what went, and
+            # after the delete there is nothing left to ask.
+            document = await self.resource_service.get_room_scoped_document(
+                session, room_id, document_id
+            )
+            document_name = document.name
+            await self.resource_service.delete_room_document(
+                session,
+                room_id=room_id,
+                agent_id=agent_id,
+                document_id=document_id,
+            )
+            await session.commit()
+
+        await self._announce_document(
+            agent_id,
+            room.matrix_room_id,
+            f"\U0001f5d1 deleted room document \u201c{document_name}\u201d.",
+        )
+
+    async def _announce_document(
+        self, agent_id: str, matrix_room_id: str, body: str
+    ) -> None:
+        """Say in the room what the agent just did to a document.
+
+        Best-effort, and deliberately after the commit: the change has already
+        happened, and failing to narrate it must neither undo it nor fail the
+        call that made it. A missing client is worth a line in the log — the
+        room is now out of step with the database and nobody in it was told.
+        """
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None or client.transport is None:
-            raise ValueError("Agent client not connected")
-
-        future = self.resource_request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await client.send_event(
-            room.matrix_room_id,
-            "com.switch.resource.room_document_delete_request",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "document_id": document_id,
-            },
-        )
-
-        from switch_core.bridges.resource.events import RoomDocumentDeleteResponse
-
-        try:
-            response = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.resource_request_tracker.cancel(request_id)
-            raise ValueError("Room document delete timed out") from None
-
-        if not isinstance(response, RoomDocumentDeleteResponse):
-            raise ValueError(f"Unexpected response type: {type(response).__name__}")
-        if response.status != "ok":
-            raise ValueError(response.error or "Resource manager returned an error")
-
-        await self._post_agent_notice(
-            client,
-            room.matrix_room_id,
-            f"🗑 deleted room document “{response.document_name or document_id}”.",
-        )
+            logger.warning(
+                "Agent %s has no connected client, so its document change in "
+                "%s was not announced in the room",
+                agent_id,
+                matrix_room_id,
+            )
+            return
+        await self._post_agent_notice(client, matrix_room_id, body)
 
     async def post_llm_response(
         self,
@@ -3594,39 +3452,11 @@ class ProtocolService:
         room_id: str,
         model: str,
         response: Any,
-        request_id: str,
-        timeout: float,
     ) -> dict[str, Any]:
-        """Request mediation after LLM response. Returns verdict."""
-        import asyncio
+        """The hook point after a model answers. Nothing is decided here yet.
 
-        room = await self.require_room_member(agent_id, room_id)
-        rm_clients = self.client_lifecycle.get_by_type("resource_manager")
-        if not rm_clients:
-            raise ValueError("Resource manager client not running")
-        rm = rm_clients[0]
-        if rm.transport is None:
-            raise ValueError("Resource manager client not connected")
-
-        future = self.request_tracker.register(
-            request_id, agent_id, room.matrix_room_id
-        )
-        await rm.send_event(
-            room.matrix_room_id,
-            "com.switch.mediation.llm_response",
-            {
-                "request_id": request_id,
-                "agent_id": agent_id,
-                "model_id": model,
-                "response": response,
-                "status": "ok",
-            },
-        )
-
-        try:
-            med_result = await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self.request_tracker.cancel(request_id)
-            raise ValueError("Mediation verdict timed out")
-
-        return {"verdict": med_result.verdict}
+        The counterpart to `post_tool_result`, and unconditional for the same
+        reason.
+        """
+        await self.require_room_member(agent_id, room_id)
+        return {"verdict": POST_INVOCATION_OK}
