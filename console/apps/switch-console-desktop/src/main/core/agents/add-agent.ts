@@ -229,6 +229,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       apiEndpoint: server.apiUrl,
       apiToken: registered.apiKey,
       agentId: registered.id,
+      expectedAgentId: slotAgentId ?? undefined,
     });
     // The config file is the agent's configuration; the provider's own file is
     // generated from it, here and on every later edit.

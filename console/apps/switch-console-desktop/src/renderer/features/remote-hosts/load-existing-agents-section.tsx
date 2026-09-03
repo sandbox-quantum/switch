@@ -42,6 +42,7 @@ type LoadableAgentRow = {
   ownerName: string | null;
   source: 'server' | 'scan';
   endpointMismatch: boolean;
+  blockedReason: string | null;
 };
 
 const LOAD_AGENTS_QUERY_KEY = 'load-existing-agents';
@@ -64,7 +65,15 @@ export function LoadExistingAgentsSection({
     enabled: isOpen,
   });
 
-  const agents: LoadableAgentRow[] = useMemo(() => discovery.data?.agents ?? [], [discovery.data]);
+  // Agents found by manual directory scans (outside the auto-discovery scope).
+  const [manualAgents, setManualAgents] = useState<LoadableAgentRow[]>([]);
+
+  const agents: LoadableAgentRow[] = useMemo(() => {
+    const auto = discovery.data?.agents ?? [];
+    if (manualAgents.length === 0) return auto;
+    const seen = new Set(auto.map((a) => `${a.dir}\0${a.name}`));
+    return [...auto, ...manualAgents.filter((a) => !seen.has(`${a.dir}\0${a.name}`))];
+  }, [discovery.data, manualAgents]);
 
   // Per-row provider overrides for agents discovered without a provider.
   const [providerOverrides, setProviderOverrides] = useState<Record<string, AgentProviderId>>({});
@@ -85,10 +94,7 @@ export function LoadExistingAgentsSection({
     });
   }, []);
 
-  const selectableAgents = useMemo(
-    () => agents.filter((a) => !a.alreadyAgent && !a.endpointMismatch),
-    [agents]
-  );
+  const selectableAgents = useMemo(() => agents.filter((a) => !a.blockedReason), [agents]);
 
   const toggleAll = useCallback(() => {
     if (selected.size === selectableAgents.length) {
@@ -170,8 +176,14 @@ export function LoadExistingAgentsSection({
   const [manualDir, setManualDir] = useState('');
   const manualScan = useMutation({
     mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
+    onSuccess: (found) => {
+      setManualAgents((prev) => {
+        const keys = new Set(prev.map((a) => `${a.dir}\0${a.name}`));
+        return [
+          ...prev,
+          ...found.filter((a: LoadableAgentRow) => !keys.has(`${a.dir}\0${a.name}`)),
+        ];
+      });
       setManualDir('');
     },
   });
@@ -232,7 +244,7 @@ export function LoadExistingAgentsSection({
               <div className="divide-y divide-border rounded-md border">
                 {agents.map((agent) => {
                   const key = `${agent.dir}\0${agent.name}`;
-                  const disabled = agent.alreadyAgent || agent.endpointMismatch;
+                  const blocked = !!agent.blockedReason;
                   const needsProvider = !agent.providerId && !providerOverrides[key];
                   const isSelected = selected.has(key);
 
@@ -240,20 +252,15 @@ export function LoadExistingAgentsSection({
                     <div key={key} className="flex items-center gap-3 px-3 py-2">
                       <Checkbox
                         checked={isSelected}
-                        disabled={disabled}
+                        disabled={blocked}
                         onCheckedChange={() => toggleAgent(key)}
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-sm font-medium">{agent.name}</span>
-                          {agent.alreadyAgent && (
-                            <span className="shrink-0 text-xs text-foreground-muted">
-                              Already loaded
-                            </span>
-                          )}
-                          {agent.endpointMismatch && (
+                          {agent.blockedReason && (
                             <span className="shrink-0 text-xs text-destructive">
-                              Endpoint mismatch
+                              {agent.blockedReason}
                             </span>
                           )}
                         </div>
@@ -264,8 +271,14 @@ export function LoadExistingAgentsSection({
                             <span>· {getProvider(agent.providerId)?.name ?? agent.providerId}</span>
                           )}
                         </div>
+                        {!blocked && agent.ownerName && (
+                          <p className="text-xs text-foreground-muted">
+                            Session access: yes · rooms: policy admits only its owner, ask{' '}
+                            {agent.ownerName} to widen
+                          </p>
+                        )}
                       </div>
-                      {!disabled && needsProvider && (
+                      {!blocked && needsProvider && (
                         <Select
                           value={providerOverrides[key] ?? ''}
                           onValueChange={(v) => setProviderFor(key, v as AgentProviderId)}
