@@ -22,7 +22,7 @@ from switch_core.db.models import Client, Room
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.messages import MessageRecorder
-from switch_core.transport import SendResult
+from switch_core.transport import InboundMembership, SendResult
 
 
 async def _make_room(session: AsyncSession) -> tuple[str, str, str]:
@@ -448,3 +448,137 @@ class TestRoomResolution:
                 )
                 assert message is not None
                 assert message.room_id == room_id
+
+
+class TestRecordsArrivals:
+    """A join is not a send, so it comes in by its own door.
+
+    It is recorded by the client that arrived, about itself. Exactly one Switch
+    client owns each participant, so that gives one row per arrival for the
+    same reason recording sends does.
+    """
+
+    async def test_an_arrival_is_recorded(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, matrix_room_id, client_id = await _make_room(session)
+            await session.commit()
+
+        await _recorder(session_factory).record_join(
+            transport_room_id=matrix_room_id,
+            event=InboundMembership(
+                room_id=matrix_room_id,
+                event_id="$join1",
+                sender="@agent:test",
+                timestamp=1000,
+                content={"membership": "join", "displayname": "agent one"},
+                state_key="@agent:test",
+                membership="join",
+                prev_membership="invite",
+                display_name="agent one",
+            ),
+            client_id=client_id,
+        )
+
+        async with session_factory() as session:
+            message = await MessageStore().get_by_transport_event_id(session, "$join1")
+        assert message is not None
+        assert message.room_id == room_id
+        assert message.event_type == "m.room.member"
+        assert message.sender_matrix_id == "@agent:test"
+        assert message.sender_name == "agent one"
+        assert message.content["membership"] == "join"
+
+    async def test_the_row_carries_no_rendered_sentence(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """How an arrival reads is the reader's to phrase. Writing "x joined
+        the room" into the log would freeze today's wording into every row."""
+        async with session_factory() as session:
+            _, matrix_room_id, client_id = await _make_room(session)
+            await session.commit()
+
+        await _recorder(session_factory).record_join(
+            transport_room_id=matrix_room_id,
+            event=InboundMembership(
+                room_id=matrix_room_id,
+                event_id="$join2",
+                sender="@agent:test",
+                timestamp=1000,
+                state_key="@agent:test",
+                membership="join",
+                display_name="agent one",
+            ),
+            client_id=client_id,
+        )
+
+        async with session_factory() as session:
+            message = await MessageStore().get_by_transport_event_id(session, "$join2")
+        assert message is not None
+        assert message.body is None
+        assert message.msgtype is None
+
+    async def test_seeing_the_same_join_twice_records_it_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A redelivered sync is not a second arrival."""
+        async with session_factory() as session:
+            room_id, matrix_room_id, client_id = await _make_room(session)
+            await session.commit()
+
+        event = InboundMembership(
+            room_id=matrix_room_id,
+            event_id="$join3",
+            sender="@agent:test",
+            timestamp=1000,
+            state_key="@agent:test",
+            membership="join",
+            display_name="agent one",
+        )
+        recorder = _recorder(session_factory)
+        await recorder.record_join(
+            transport_room_id=matrix_room_id, event=event, client_id=client_id
+        )
+        await recorder.record_join(
+            transport_room_id=matrix_room_id, event=event, client_id=client_id
+        )
+
+        async with session_factory() as session:
+            rows = await MessageStore().list_for_room(
+                session, room_id, after_seq=0, limit=10
+            )
+        assert [row.transport_event_id for row in rows] == ["$join3"]
+
+    async def test_a_failure_to_record_does_not_escape(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Nothing about being in a room depends on the row having landed."""
+        async with session_factory() as session:
+            _, matrix_room_id, client_id = await _make_room(session)
+            await session.commit()
+
+        recorder = _recorder(session_factory)
+
+        async def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("database is unhappy")
+
+        recorder._message_store.create = boom  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.ERROR):
+            await recorder.record_join(
+                transport_room_id=matrix_room_id,
+                event=InboundMembership(
+                    room_id=matrix_room_id,
+                    event_id="$join4",
+                    sender="@agent:test",
+                    timestamp=1000,
+                    state_key="@agent:test",
+                    membership="join",
+                ),
+                client_id=client_id,
+            )
+
+        assert "failed to record the arrival" in caplog.text

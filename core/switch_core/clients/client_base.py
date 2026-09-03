@@ -291,6 +291,15 @@ class ClientBase[ConfigT: ClientConfig]:
         if event.state_key == self.matrix_user_id:
             if event.membership == "join":
                 self._mark_joined(room.room_id, event.timestamp)
+                if event.prev_membership != "join":
+                    # Recorded on the arrival itself rather than under the
+                    # announcement guards below: the log wants every arrival,
+                    # including ones too old to be worth announcing.
+                    await self.message_recorder.record_join(
+                        transport_room_id=room.room_id,
+                        event=event,
+                        client_id=self.client_id,
+                    )
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into
                 # membership is an arrival. Joins predating this process are not

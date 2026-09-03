@@ -14,6 +14,11 @@ unclassified, so the denylist stays honest without the log going quiet.
 
 from __future__ import annotations
 
+# An arrival. Not a send, so it never reaches `should_record` — the recorder
+# has its own entry point for it — but the read path needs the name to tell an
+# arrival from something someone said.
+MEMBERSHIP_EVENT_TYPE = "m.room.member"
+
 # Ephemeral: presence-like state, superseded by the next one, null body.
 EPHEMERAL = frozenset({"com.switch.agent.runtime_state"})
 
