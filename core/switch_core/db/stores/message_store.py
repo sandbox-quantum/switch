@@ -1,3 +1,6 @@
+from collections.abc import Collection
+from datetime import datetime
+
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,6 +93,68 @@ class MessageStore:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_timeline(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        limit: int,
+        since: datetime | None,
+        before: datetime | None,
+    ) -> list[Message]:
+        """The newest `limit` rows in the window, newest first.
+
+        The window is half-open: `since` is included, `before` is not. Ordering
+        is by `seq` rather than `sent_at` — within a room `seq` is a total order
+        with no ties, whereas two rows can share a timestamp — so a caller that
+        asks for the newest N gets the same N every time.
+        """
+        query = select(Message).where(Message.room_id == room_id)
+        if since is not None:
+            query = query.where(Message.sent_at >= since)
+        if before is not None:
+            query = query.where(Message.sent_at < before)
+        result = await session.execute(query.order_by(Message.seq.desc()).limit(limit))
+        return list(result.scalars().all())
+
+    async def list_by_transport_event_ids(
+        self, session: AsyncSession, room_id: str, event_ids: Collection[str]
+    ) -> list[Message]:
+        """Rows for specific transport event ids within one room.
+
+        Scoped to the room so an id from elsewhere cannot be read through it.
+        """
+        if not event_ids:
+            return []
+        result = await session.execute(
+            select(Message).where(
+                Message.room_id == room_id,
+                Message.transport_event_id.in_(list(event_ids)),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def attachments_for(
+        self, session: AsyncSession, message_ids: Collection[str]
+    ) -> dict[str, list[MessageAttachment]]:
+        """Attachments for several messages at once, keyed by message id.
+
+        One query for the whole page: fetching per message would put the N+1
+        back that moving the read path here is meant to remove. Messages with
+        no files are simply absent from the map.
+        """
+        if not message_ids:
+            return {}
+        result = await session.execute(
+            select(MessageAttachment)
+            .where(MessageAttachment.message_id.in_(list(message_ids)))
+            .order_by(MessageAttachment.message_id, MessageAttachment.position)
+        )
+        by_message: dict[str, list[MessageAttachment]] = {}
+        for attachment in result.scalars().all():
+            by_message.setdefault(attachment.message_id, []).append(attachment)
+        return by_message
 
     async def get_attachments(
         self, session: AsyncSession, message_id: str

@@ -565,9 +565,8 @@ async def read_context(
     `limit`, or page backwards with `before`, before concluding you have the
     full picture. `oldest_timestamp` marks where to resume, but it is epoch
     milliseconds while `before` is parsed as ISO-8601: convert it rather than
-    passing it straight back. `truncated` is deliberately conservative: a read
-    that ends exactly on `limit` reports truncated even if nothing older
-    exists.
+    passing it straight back. `truncated` is exact: a read that ends exactly on
+    `limit` with nothing older behind it reports False.
 
     `attachments` is a (usually empty) list of files on the message, each
     {"filename", "mimetype", "size", "mxc", "msgtype"}. Any file type can

@@ -882,6 +882,10 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint("room_id", "seq", name="uq_messages_room_seq"),
+        # `seq` orders the room and is what the read path pages on; `sent_at`
+        # is what a caller asking for a time window filters by, so it needs an
+        # index of its own rather than a scan back along seq.
+        Index("ix_messages_room_sent_at", "room_id", "sent_at"),
         Index(
             "ix_messages_thread_root",
             "room_id",

@@ -14,7 +14,6 @@ from switch_core.transport import (
     HistoryPage,
     InboundEvent,
     MessageFormat,
-    SeekDirection,
     SendResult,
     TransportError,
     TransportHandlers,
@@ -58,14 +57,12 @@ class FakeTransport:
         upload_uri: str = "mxc://fake/abc",
         history: HistoryPage | None = None,
         download: DownloadResult | None = None,
-        seek_token: str | None = None,
         fail_send: str | None = None,
     ) -> None:
         self._joined = joined if joined is not None else []
         self._upload_uri = upload_uri
         self._history = history or HistoryPage(events=[], next_token=None)
         self._download = download or DownloadResult(body=b"", content_type="text/plain")
-        self._seek_token = seek_token
         self._fail_send = fail_send
 
         self.sent_messages: list[dict[str, Any]] = []
@@ -233,11 +230,6 @@ class FakeTransport:
         self, room_id: str, *, start: str | None, limit: int
     ) -> HistoryPage:
         return self._history
-
-    async def seek_by_timestamp(
-        self, room_id: str, timestamp_ms: int, *, direction: SeekDirection
-    ) -> str | None:
-        return self._seek_token
 
     # ── Rooms ─────────────────────────────────────────────────────────────────
 

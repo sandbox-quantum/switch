@@ -11,7 +11,6 @@ import io
 import logging
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 import markdown
 from nio import (
@@ -22,7 +21,6 @@ from nio import (
     LoginError,
     ProfileSetDisplayNameError,
     ReactionEvent,
-    RoomContextError,
     RoomGetEventError,
     RoomMemberEvent,
     RoomMessageMedia,
@@ -49,7 +47,6 @@ from switch_core.transport.types import (
     MessageFormat,
     NotConnectedError,
     RoomRef,
-    SeekDirection,
     SendResult,
     TransportError,
     UploadResult,
@@ -450,45 +447,6 @@ class MatrixTransport:
             events=[to_inbound(room, event) for event in resp.chunk],
             next_token=resp.end,
         )
-
-    async def seek_by_timestamp(
-        self, room_id: str, timestamp_ms: int, *, direction: SeekDirection
-    ) -> str | None:
-        """Locate a history cursor near a timestamp.
-
-        Matrix pagination is token-only, so reaching a point in time otherwise
-        means walking every page back to it. `timestamp_to_event` (Matrix 1.6)
-        jumps straight there; every failure degrades to None so the caller
-        scans instead.
-        """
-        client = self.raw_client
-        dir_flag = "b" if direction == "backward" else "f"
-        path = (
-            f"/_matrix/client/v1/rooms/{quote(room_id)}"
-            f"/timestamp_to_event?ts={timestamp_ms}&dir={dir_flag}"
-        )
-        try:
-            resp = await client.send(
-                "GET",
-                path,
-                headers={"Authorization": f"Bearer {client.access_token}"},
-            )
-            if resp.status != 200:
-                return None
-            payload = await resp.json()
-        except Exception:
-            logger.debug("timestamp_to_event unavailable in %s", room_id, exc_info=True)
-            return None
-
-        event_id = payload.get("event_id")
-        if not event_id:
-            return None
-
-        context = await client.room_context(room_id, event_id, limit=1)
-        if isinstance(context, RoomContextError):
-            return None
-        start: str | None = context.start
-        return start
 
     # ── Rooms ─────────────────────────────────────────────────────────────────
 

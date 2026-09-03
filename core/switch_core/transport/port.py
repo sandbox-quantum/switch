@@ -20,7 +20,6 @@ from switch_core.transport.types import (
     DownloadResult,
     HistoryPage,
     MessageFormat,
-    SeekDirection,
     SendResult,
     UploadResult,
 )
@@ -157,17 +156,6 @@ class MessageTransport(Protocol):
         self, room_id: str, *, start: str | None, limit: int
     ) -> HistoryPage:
         """Read one page of history backwards from `start`."""
-        ...
-
-    async def seek_by_timestamp(
-        self, room_id: str, timestamp_ms: int, *, direction: SeekDirection
-    ) -> str | None:
-        """Return a history cursor positioned near `timestamp_ms`.
-
-        Returns None when the transport cannot seek by time, in which case the
-        caller must scan. This is a latency optimisation, never a correctness
-        requirement.
-        """
         ...
 
     # ── Rooms ─────────────────────────────────────────────────────────────────

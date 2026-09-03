@@ -56,6 +56,8 @@ from switch_core.crypto import encrypt_token
 from switch_core.db.models import (
     Agent,
     ApiKey,
+    Message,
+    MessageAttachment,
     Model,
     Reference,
     RoleLease,
@@ -72,6 +74,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
 from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
@@ -82,9 +85,8 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
 )
+from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.transport import (
-    InboundMedia,
-    InboundMembership,
     TransportError,
 )
 
@@ -115,17 +117,41 @@ logger = logging.getLogger(__name__)
 # trailing newline, which would let an identifier carry a line break.
 _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
 
-# History pagination. The homeserver caps a /messages page regardless of what
-# we ask for, and state events consume it without ever reaching the caller, so
-# one page is never a reliable window. The page cap bounds a single read_context
-# call; hitting it is reported as `truncated` rather than passed off as the
-# whole story.
-HISTORY_PAGE_SIZE = 100
-HISTORY_MAX_PAGES = 20
-# Pages spent walking back to a `before` window, budgeted separately from the
-# pages spent reading inside it. Only used when the homeserver cannot answer
-# timestamp_to_event; a scan is the slow path, so it gets room to succeed.
-HISTORY_MAX_SEEK_PAGES = 100
+# A hard ceiling on one read_context call, whatever limit the caller asks for.
+# History comes from a single indexed query now, so the only thing this guards
+# is the size of the response.
+HISTORY_MAX_LIMIT = 500
+
+
+def _epoch_ms(when: Any) -> int | None:
+    """A stored timestamp as epoch milliseconds, which is what agents read."""
+    if not isinstance(when, datetime):
+        return None
+    return int(when.timestamp() * 1000)
+
+
+def _from_epoch_ms(when: int | None) -> datetime | None:
+    if when is None:
+        return None
+    return datetime.fromtimestamp(when / 1000, tz=UTC)
+
+
+def _elided_root(root_id: str) -> dict[str, Any]:
+    """A stand-in for a thread root with no recorded row.
+
+    Dropping the thread would lose its replies as well, so the root is named
+    and marked elided instead — visibly incomplete rather than quietly absent.
+    """
+    logger.warning("No recorded thread root %s; returning an elided stub", root_id)
+    return {
+        "id": root_id,
+        "kind": "message",
+        "sender": None,
+        "sender_name": None,
+        "body": None,
+        "timestamp": None,
+        "elided": True,
+    }
 
 
 class AgentExistsError(Exception):
@@ -172,6 +198,7 @@ class ProtocolService:
         self.agent_runtime_state_store = AgentRuntimeStateStore()
         self.room_role_store = RoomRoleStore()
         self.room_group_store = RoomGroupStore()
+        self.message_store = MessageStore()
         self.user_store = UserStore()
         self.room_store = room_store
         self.room_service = room_service
@@ -1491,74 +1518,49 @@ class ProtocolService:
         return here[0] if here else None
 
     @staticmethod
-    def _message_dict(event: Any) -> dict[str, Any]:
-        """Build the agent-facing message dict from an inbound event."""
-        sender_name = getattr(event, "sender_name", None) or event.sender
-        body = getattr(event, "body", None)
+    def _timeline_entry(
+        message: Message, attachments: list[MessageAttachment]
+    ) -> dict[str, Any]:
+        """Build the agent-facing entry for a recorded row.
 
-        attachments: list[dict[str, Any]] = []
-        if isinstance(event, InboundMedia):
-            attachments.append(
-                {
-                    "filename": event.filename or body,
-                    "mimetype": event.mimetype or "",
-                    "size": event.size or 0,
-                    "mxc": event.uri,
-                    "msgtype": event.msgtype,
-                }
-            )
-
+        An arrival is stored with no body — how it reads is this function's to
+        decide, not the writer's — so the sentence is composed here and can be
+        changed without rewriting history.
+        """
+        name = message.sender_name or message.sender_matrix_id
+        if message.event_type == MEMBERSHIP_EVENT_TYPE:
+            return {
+                "id": message.transport_event_id,
+                "kind": "room_join",
+                "sender": message.sender_matrix_id,
+                "sender_name": name,
+                "body": f"{name} joined the room",
+                "timestamp": _epoch_ms(message.sent_at),
+                "attachments": [],
+            }
         return {
-            "id": event.event_id,
+            "id": message.transport_event_id,
             "kind": "message",
-            "sender": event.sender,
-            "sender_name": sender_name,
-            "body": body,
-            "timestamp": getattr(event, "timestamp", None),
-            "attachments": attachments,
-        }
-
-    @staticmethod
-    def _join_dict(event: InboundMembership) -> dict[str, Any] | None:
-        """Build a timeline entry for someone joining the room.
-
-        Only a transition *into* join counts: a display-name change or avatar
-        update is also an m.room.member event with membership "join", and
-        replaying those as arrivals would be a lie.
-        """
-        if event.membership != "join" or event.prev_membership == "join":
-            return None
-        name = event.display_name or event.state_key
-        return {
-            "id": event.event_id,
-            "kind": "room_join",
-            "sender": event.state_key,
+            "sender": message.sender_matrix_id,
             "sender_name": name,
-            "body": f"{name} joined the room",
-            "timestamp": event.timestamp,
-            "attachments": [],
+            "body": message.body,
+            "timestamp": _epoch_ms(message.sent_at),
+            "attachments": [
+                {
+                    "filename": attachment.filename,
+                    "mimetype": attachment.mimetype or "",
+                    "size": attachment.size or 0,
+                    "mxc": attachment.uri,
+                    "msgtype": message.msgtype,
+                }
+                for attachment in attachments
+            ],
         }
 
-    def _timeline_entry(self, event: Any) -> dict[str, Any] | None:
-        """Map a timeline event to an agent-facing entry, or None to skip.
-
-        Messages and joins are the timeline; every other state event (leaves,
-        topic changes, power levels) is noise an agent cannot act on.
-        """
-        if isinstance(event, InboundMembership):
-            return self._join_dict(event)
-        if getattr(event, "body", None):
-            return self._message_dict(event)
-        return None
-
     @staticmethod
-    def _thread_root_id(event: Any) -> str:
-        """Return the thread root id for an event.
-
-        A threaded reply belongs to its root; anything else is its own root.
-        """
-        root = getattr(event, "thread_root_id", None)
-        return str(root) if root else str(event.event_id)
+    def _thread_root_id(message: Message) -> str:
+        """A threaded reply belongs to its root; anything else is its own root."""
+        return message.thread_root_event_id or message.transport_event_id
 
     async def read_context(
         self,
@@ -1584,189 +1586,84 @@ class ProtocolService:
         said and "room_join" for an arrival. Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
-        inside it is fetched on demand; if it cannot be fetched it is returned
-        as an elided stub so the reply is not lost.
+        inside it is fetched alongside; if no record of it exists it is
+        returned as an elided stub so the reply is not lost.
 
         `truncated` is True when older history exists that this call did not
-        reach — the caller asked for more than it got. It is deliberately
-        conservative: a window that ends exactly on `limit` reports truncated
-        even if nothing older happens to exist. A short history must never be
-        mistaken for a complete one.
+        return. It is exact: the query asks for one row more than the caller
+        wanted, and the presence of that row is the answer.
         """
-        room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None:
-            raise ValueError("Agent client not running")
-        if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
+        await self.require_room_member(agent_id, room_id)
+        limit = max(1, min(limit, HISTORY_MAX_LIMIT))
 
-        # Walk backwards page by page until the window is satisfied. A single
-        # page is not enough: the homeserver caps its size, and state events
-        # that never reach the caller still consume it.
-        #
-        # Reaching a `before` window and reading inside it are budgeted
-        # separately. Matrix has no timestamp cursor, so a `before` deep in a
-        # busy room can only be reached by paging over everything newer — and
-        # if those pages came out of the read budget, a far-enough-back window
-        # would return empty no matter how small a `limit` the caller asked
-        # for. Seeking is the cost of getting there, not part of the answer.
+        async with self.session_factory() as session:
+            # One more than asked for. Whether that row exists is precisely the
+            # question `truncated` answers, so there is nothing to estimate and
+            # no reason to be conservative about it.
+            rows = await self.message_store.list_timeline(
+                session,
+                room_id,
+                limit=limit + 1,
+                since=_from_epoch_ms(since_ms),
+                before=_from_epoch_ms(before_ms),
+            )
+            truncated = len(rows) > limit
+            rows = rows[:limit]
+
+            # Replies whose root is older than the window. Reading them costs
+            # one more query for the whole page rather than one per thread.
+            in_window = {row.transport_event_id for row in rows}
+            orphan_roots = {
+                row.thread_root_event_id
+                for row in rows
+                if row.thread_root_event_id
+                and row.thread_root_event_id not in in_window
+            }
+            roots = await self.message_store.list_by_transport_event_ids(
+                session, room_id, orphan_roots
+            )
+            attachments = await self.message_store.attachments_for(
+                session, [row.id for row in rows + roots]
+            )
+
+        entries = {
+            row.transport_event_id: self._timeline_entry(
+                row, attachments.get(row.id, [])
+            )
+            for row in rows + roots
+        }
+
         groups: dict[str, dict[str, Any]] = {}
-        collected = 0
         oldest_ts: int | None = None
-        read_pages = 0
-        seek_pages = 0
-        exhausted = False
-
-        start: str | None = None
-        if before_ms is not None:
-            start = await self._seek_before_token(
-                client, room.matrix_room_id, before_ms
+        for row in rows:
+            entry = entries[row.transport_event_id]
+            root_id = self._thread_root_id(row)
+            group = groups.setdefault(
+                root_id, {"root": None, "replies": [], "latest": 0}
             )
-
-        while collected < limit and read_pages < HISTORY_MAX_PAGES:
-            if seek_pages >= HISTORY_MAX_SEEK_PAGES:
-                logger.warning(
-                    "read_context gave up seeking back to %s in %s after "
-                    "%d pages; the window was never reached",
-                    before_ms,
-                    room.matrix_room_id,
-                    seek_pages,
-                )
-                break
-            page = await client.transport.read_history(
-                room.matrix_room_id, start=start, limit=HISTORY_PAGE_SIZE
-            )
-
-            chunk = list(page.events)
-            end = page.next_token
-            # A page that contributes nothing because everything on it is
-            # newer than `before` is a seek, not a read.
-            reached_window = before_ms is None or any(
-                getattr(e, "timestamp", None) is not None
-                and getattr(e, "timestamp") < before_ms
-                for e in chunk
-            )
-            if reached_window:
-                read_pages += 1
+            if entry["id"] == root_id:
+                group["root"] = entry
             else:
-                seek_pages += 1
+                group["replies"].append(entry)
+            ts = entry["timestamp"]
+            if ts is not None:
+                group["latest"] = max(group["latest"], ts)
+                oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
 
-            for event in chunk:
-                ts = getattr(event, "timestamp", None)
-                # Newer than the window: keep walking back towards it.
-                if before_ms is not None and ts is not None and ts >= before_ms:
-                    continue
-                # Older than the window: pagination runs newest-first, so
-                # everything beyond this point is older too.
-                if since_ms is not None and ts is not None and ts < since_ms:
-                    exhausted = True
-                    break
-
-                entry = self._timeline_entry(event)
-                if entry is None:
-                    continue
-
-                root_id = self._thread_root_id(event)
-                group = groups.setdefault(
-                    root_id, {"root": None, "replies": [], "latest": 0}
-                )
-                if entry["id"] == root_id:
-                    group["root"] = entry
-                else:
-                    group["replies"].append(entry)
-                if ts is not None and ts > group["latest"]:
-                    group["latest"] = ts
-                if ts is not None and (oldest_ts is None or ts < oldest_ts):
-                    oldest_ts = ts
-
-                collected += 1
-                if collected >= limit:
-                    break
-
-            if exhausted:
-                break
-            # No continuation token, or the server stopped moving: this is the
-            # start of the room.
-            if not end or end == start:
-                exhausted = True
-                break
-            start = end
-
-        # Resolve roots that fall outside the fetched window (orphan replies).
         for root_id, group in groups.items():
             if group["root"] is None:
-                group["root"] = await self._fetch_root(
-                    client, room.matrix_room_id, root_id
-                )
+                group["root"] = entries.get(root_id) or _elided_root(root_id)
 
-        ordered = sorted(groups.values(), key=lambda g: g["latest"])
         threads: list[dict[str, Any]] = []
-        for group in ordered:
-            group["replies"].reverse()  # chunk was newest-first → oldest-first
+        for group in sorted(groups.values(), key=lambda g: g["latest"]):
+            group["replies"].reverse()  # rows came newest-first
             threads.append({"root": group["root"], "replies": group["replies"]})
-
-        if not exhausted:
-            logger.warning(
-                "read_context truncated in %s: %d entries over %d read pages "
-                "(%d spent seeking), older history not reached",
-                room.matrix_room_id,
-                collected,
-                read_pages,
-                seek_pages,
-            )
 
         return {
             "threads": threads,
-            "truncated": not exhausted,
+            "truncated": truncated,
             "oldest_timestamp": oldest_ts,
         }
-
-    async def _seek_before_token(
-        self, client: ClientBase[Any], matrix_room_id: str, before_ms: int
-    ) -> str | None:
-        """Get a pagination token positioned at `before_ms`, if the server can.
-
-        `/messages` takes a token, not a timestamp, so reaching a `before` deep
-        in a busy room otherwise means paging over everything newer just to
-        arrive. `timestamp_to_event` (Matrix 1.6) jumps straight there.
-
-        Returns None when the homeserver cannot answer — the caller then walks
-        back the slow way. A failure here costs speed, not correctness, so it
-        is logged and swallowed rather than raised.
-        """
-        if client.transport is None:
-            return None
-        return await client.transport.seek_by_timestamp(
-            matrix_room_id, before_ms, direction="backward"
-        )
-
-    async def _fetch_root(
-        self, client: ClientBase[Any], matrix_room_id: str, root_id: str
-    ) -> dict[str, Any]:
-        """Fetch a thread-root event that fell outside the read window.
-
-        Failure is degraded-but-functional: we return an elided stub (keeping
-        the replies attached to a known id) rather than dropping the thread.
-        """
-        if client.transport is None:
-            raise ValueError("Agent client not connected to Matrix")
-        event = await client.transport.get_event(matrix_room_id, root_id)
-        if event is None:
-            logger.warning(
-                "Could not fetch thread root %s in %s; returning elided stub",
-                root_id,
-                matrix_room_id,
-            )
-            return {
-                "id": root_id,
-                "kind": "message",
-                "sender": None,
-                "sender_name": None,
-                "body": None,
-                "timestamp": None,
-                "elided": True,
-            }
-        return self._message_dict(event)
 
     async def download_media(
         self, agent_id: str, room_id: str, mxc: str
