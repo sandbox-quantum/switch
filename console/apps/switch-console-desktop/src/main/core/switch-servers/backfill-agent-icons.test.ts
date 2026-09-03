@@ -36,6 +36,7 @@ function agent(overrides: Partial<RemoteAgentSummary>): RemoteAgentSummary {
   return {
     id: 'a-1',
     name: 'worker',
+    displayName: null,
     description: '',
     connectorType: 'claude-code',
     ownerId: 'user-me',
