@@ -44,6 +44,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.23.0] - 2026-09-03
+
+#### Performance
+- **Matrix I/O no longer runs inside a database transaction.**
+  `add_agents_to_room`, `remove_agents_from_room` and `delete_room` each held a
+  connection-pool slot open across a fan-out of Matrix invites/kicks (up to 10s
+  per call), a major contributor to pool exhaustion under load. The three now
+  read short, commit, then do the Matrix work holding nothing — ordered so
+  Matrix membership can never exceed what the database records (a crash leaves
+  an under-privileged, repairable agent, never one silently reading a room
+  Switch has no record of) (#354).
+- **Per-client sync-cursor writes are staggered.** With one Matrix client per
+  participant (hundreds in a single process) and the throttle interval equal to
+  the sync long-poll, every client persisted its cursor in the same instant on
+  an idle instance — a periodic burst of concurrent one-row transactions that
+  starved the pool and cost heartbeats their connection. A sync that carried
+  nothing durable no longer earns a write, and the writes that remain no longer
+  align (#357).
+
+#### Changed
+- On the collaboration bridges, a turn that ends on an error now renders as the
+  stall it is — the reason is shown as why the turn stopped, not streamed as an
+  in-progress step under a spinner (#356).
+
 ### [0.22.1] - 2026-09-02
 
 #### Performance

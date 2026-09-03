@@ -60,7 +60,7 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.22.1
+    version: 0.23.0
     declared_in: core/pyproject.toml
     published_as: switch-core
 
