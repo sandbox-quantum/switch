@@ -6,7 +6,7 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
-import type { ProviderSource } from './discover-configured-agents';
+import type { DiscoveredConfiguredAgent, ProviderSource } from './discover-configured-agents';
 import { discoverConfiguredAgents } from './discover-configured-agents';
 
 /**
@@ -31,6 +31,8 @@ export type LoadableAgent = {
   source: 'server' | 'scan';
   /** True when the on-disk endpoint does not match the server's URL. */
   endpointMismatch: boolean;
+  /** When set, the agent cannot be loaded and this is the human-readable reason. */
+  blockedReason: string | null;
 };
 
 export type DiscoverLoadableAgentsParams = {
@@ -102,6 +104,7 @@ export async function discoverLoadableAgentsOnHost(
             ownerName: nameOwners.get(agent.name) ?? null,
             source: 'server',
             endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
+            blockedReason: blockedReasonFor(agent, server.apiUrl),
           });
         }
       } catch (error) {
@@ -144,6 +147,7 @@ export async function discoverLoadableAgentsOnHost(
               ownerName: null,
               source: 'scan',
               endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
+              blockedReason: blockedReasonFor(agent, server.apiUrl),
             });
           }
         }
@@ -163,6 +167,13 @@ export async function discoverLoadableAgentsOnHost(
   }
 
   return { agents: [...seen.values()] };
+}
+
+function blockedReasonFor(agent: DiscoveredConfiguredAgent, serverApiUrl: string): string | null {
+  if (agent.alreadyAgent) return 'Already loaded in this Console';
+  if (!sameApiEndpoint(agent.apiEndpoint, serverApiUrl))
+    return 'Endpoint does not match this server';
+  return null;
 }
 
 /**
@@ -228,5 +239,6 @@ export async function discoverLoadableAgentsInDir(params: {
     ownerName: null,
     source: 'scan' as const,
     endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
+    blockedReason: blockedReasonFor(agent, server.apiUrl),
   }));
 }

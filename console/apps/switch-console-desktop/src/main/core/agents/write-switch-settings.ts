@@ -472,7 +472,7 @@ export function existingAgentIdInSlot(
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
-  params: { slug: string } & SwitchSettingsCredentials
+  params: { slug: string; expectedAgentId?: string } & SwitchSettingsCredentials
 ): Promise<void> {
   const relPath = agentSettingsRelativePath(params.slug);
   const existingRaw = await workspaceFs.read(relPath);
@@ -483,6 +483,25 @@ export async function writeNeutralAgentSettingsFs(
       relPath,
       existingEndpoint,
       incomingEndpoint: params.apiEndpoint,
+    });
+  }
+
+  // Defence in depth: if the slot holds a same-endpoint identity that is NOT
+  // the one we are about to write, refuse — it belongs to a colleague's agent
+  // and overwriting it would destroy their token (CHOO-2560). Callers that have
+  // already verified the overwrite is safe pass `expectedAgentId` to bypass this
+  // guard for their own agent (e.g. runAddAgent after its pre-mint DB lookup).
+  const slotAgentId = existingAgentIdInSlot(existingRaw, params.apiEndpoint);
+  if (
+    slotAgentId !== null &&
+    slotAgentId !== params.agentId &&
+    slotAgentId !== params.expectedAgentId
+  ) {
+    throw new ExistingAgentCredentialsError({
+      slug: params.slug,
+      relPath,
+      existingAgentId: slotAgentId,
+      incomingAgentId: params.agentId,
     });
   }
 
