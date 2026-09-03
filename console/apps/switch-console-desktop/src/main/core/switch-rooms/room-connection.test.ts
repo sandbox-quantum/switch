@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InjectionTarget } from './injection-sink';
-import { type PromptInjector, RoomConnection } from './room-connection';
+import { MAX_ROOM_TURN_MS, type PromptInjector, RoomConnection } from './room-connection';
 import { resolveSessionControl } from './session-control';
 import type { AgentBridgeEvent, AttachmentRef } from './switch-event-format';
 
@@ -1451,6 +1451,228 @@ describe('repointing a restored session', () => {
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/connection/subscribe'))).toBe(
       false
     );
+    conn.stop();
+  });
+});
+
+/**
+ * A turn that cannot end (CHOO-2274).
+ *
+ * Measured on a live deployment: a session reported `working` against a room it
+ * no longer held, every five seconds, for 32 hours. The server rejected each
+ * report — the room id it carried was null — and nothing here noticed, because
+ * the only thing that ever closed a turn was the agent going idle, and that
+ * signal was never coming. Three ways out now: the room being withdrawn, the
+ * report being refused, and the clock.
+ */
+describe('a turn that cannot end', () => {
+  function pushable() {
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+    });
+    return { stream, push: (frame: string) => controller.enqueue(encoder.encode(frame)) };
+  }
+
+  /** A session already in a room, already mid-turn: exactly the shape the
+   * stuck session was in. `spawnTurn` opens the turn as `start()` runs. */
+  function workingSession(opts: { runtimeStateStatus?: number } = {}) {
+    const { stream, push } = pushable();
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        return { ok: true, status: 200, body: stream, text: async (): Promise<string> => '' };
+      }
+      if (u.includes('/runtime-state') && opts.runtimeStateStatus) {
+        return {
+          ok: false,
+          status: opts.runtimeStateStatus,
+          text: async (): Promise<string> => 'room_id must be a string',
+        };
+      }
+      return { ok: true, status: 200, text: async (): Promise<string> => '' };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      spawnTurn: { threadId: 'thread-1', anchorId: 'msg-1' },
+      log: silentLog,
+    });
+    conn.start();
+    return { conn, fetchMock, push };
+  }
+
+  function loggedAt(level: 'warn' | 'error', fragment: string): boolean {
+    return silentLog[level].mock.calls.some((c) => String(c[0]).includes(fragment));
+  }
+
+  /** runtime-state posts only: the heartbeat keeps beating regardless, and it
+   * is the reporting that must stop. */
+  function reports(fetchMock: { mock: { calls: unknown[][] } }): number {
+    return fetchMock.mock.calls.filter((c) => String(c[0]).includes('/runtime-state')).length;
+  }
+
+  beforeEach(() => {
+    silentLog.debug.mockClear();
+    silentLog.info.mockClear();
+    silentLog.warn.mockClear();
+    silentLog.error.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('ends when the server withdraws the room', async () => {
+    const { conn, fetchMock, push } = workingSession();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runtimeStates(fetchMock)).toContain('working');
+
+    push(`event: subscription_changed\ndata: ${JSON.stringify({ rooms: [] })}\n\n`);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(loggedAt('warn', 'the room was withdrawn')).toBe(true);
+    expect(conn.room).toBeNull();
+
+    // The ticker is what kept the 422s coming; nothing more may be reported.
+    const settled = reports(fetchMock);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reports(fetchMock)).toBe(settled);
+    conn.stop();
+  });
+
+  it('gives up when the room keeps refusing the report', async () => {
+    const { conn, fetchMock } = workingSession({ runtimeStateStatus: 422 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Five consecutive refusals: the opening push plus four ticks.
+    await vi.advanceTimersByTimeAsync(4 * 5_000);
+    expect(loggedAt('error', 'abandoning the turn')).toBe(true);
+
+    const settled = reports(fetchMock);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reports(fetchMock)).toBe(settled);
+    conn.stop();
+  });
+
+  it('gives up when the turn outruns the wall clock', async () => {
+    const { conn, fetchMock } = workingSession();
+    await vi.advanceTimersByTimeAsync(0);
+
+    vi.setSystemTime(Date.now() + MAX_ROOM_TURN_MS);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(loggedAt('error', 'outrun the cap')).toBe(true);
+    // The room is told the turn is over rather than left showing "working".
+    expect(runtimeStates(fetchMock).at(-1)).toBe('idle');
+
+    const settled = reports(fetchMock);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reports(fetchMock)).toBe(settled);
+    conn.stop();
+  });
+
+  it('keeps ticking while the reports land', async () => {
+    const { conn, fetchMock } = workingSession();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(loggedAt('error', 'abandoning the turn')).toBe(false);
+    expect(runtimeStates(fetchMock).filter((s) => s === 'working').length).toBeGreaterThan(4);
+    conn.stop();
+  });
+});
+
+/**
+ * A room the server refuses outright.
+ *
+ * The open is refused, not the room — so the connection never gets as far as a
+ * room list, and re-declaring the same dead room means never connecting again.
+ * Measured on a live deployment at roughly 29 errors a minute, for over a day,
+ * with no path back.
+ */
+describe('a room the server refuses', () => {
+  beforeEach(() => {
+    silentLog.warn.mockClear();
+    silentLog.error.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is surfaced and dropped, and the session is left room-less', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (!u.includes('/events')) {
+        return { ok: true, status: 200, text: async (): Promise<string> => '' };
+      }
+      if (u.includes('rooms=')) {
+        return {
+          ok: false,
+          status: 403,
+          body: null,
+          text: async (): Promise<string> =>
+            JSON.stringify({ detail: 'Room not found: room-gone' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({ start() {} }),
+        text: async (): Promise<string> => '',
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const refused: { roomId: string; status: number }[] = [];
+    const rooms: (string | null)[] = [];
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-gone',
+      roomName: null,
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: vi.fn() }) },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      onRoomChanged: (room) => rooms.push(room),
+      onRoomRejected: ({ roomId, status }) => refused.push({ roomId, status }),
+      log: silentLog,
+    });
+    conn.start();
+    await flush(8);
+
+    expect(refused).toEqual([{ roomId: 'room-gone', status: 403 }]);
+    expect(rooms).toEqual([null]);
+    expect(conn.room).toBeNull();
+    expect(silentLog.error.mock.calls.some((c) => String(c[0]).includes('refused the room'))).toBe(
+      true
+    );
+
+    const opens = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('/events'));
+    expect(opens).toHaveLength(2);
+    expect(opens[1]).not.toContain('rooms=');
     conn.stop();
   });
 });

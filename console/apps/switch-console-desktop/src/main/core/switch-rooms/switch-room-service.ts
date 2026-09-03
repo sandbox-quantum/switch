@@ -186,6 +186,24 @@ class SwitchRoomService implements IDisposable {
     switchNotificationPoller.connect(ctx, persisted.roomId, persisted.roomName);
   }
 
+  /**
+   * Forget the persisted room for a session whose room the server refused.
+   *
+   * The persisted row is what a restart re-declares, and a room id outlives
+   * the room it named: keep it and the next launch opens a connection naming a
+   * room that no longer exists, which the server refuses outright. Nothing
+   * else in the restore path can tell the difference, so the refusal has to be
+   * spent here or it repeats for the life of the install.
+   */
+  async forgetRefusedRoom(sessionId: string, roomId: string): Promise<void> {
+    log.error('SwitchRoomService: forgetting the persisted room — the server refused it', {
+      event: 'switch_room_forgotten_after_refusal',
+      sessionId,
+      roomId,
+    });
+    await forgetRoomConnections([sessionId]);
+  }
+
   /** Session ids that had a live room connection before the last shutdown. */
   async listPersistedSessionIds(): Promise<string[]> {
     return listPersistedRoomSessionIds();

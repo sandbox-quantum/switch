@@ -284,6 +284,19 @@ class SwitchNotificationPoller {
           switchRoomService.clearSession(ctx.sessionId);
         }
       },
+      // A refused room must not survive the process. The in-memory clear
+      // arrives a moment later on the room-changed path above; this is the
+      // durable half, and without it every restart re-declares the same dead
+      // room and is refused all over again.
+      onRoomRejected: ({ roomId }) => {
+        void switchRoomService.forgetRefusedRoom(ctx.sessionId, roomId).catch((error) => {
+          log.warn('SwitchNotificationPoller: failed to forget a refused room', {
+            sessionId: ctx.sessionId,
+            roomId,
+            error: String(error),
+          });
+        });
+      },
       log,
     });
     this.connections.set(ctx.sessionId, connection);
