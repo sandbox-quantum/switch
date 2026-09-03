@@ -51,13 +51,16 @@ def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
         return False
 
     client._is_mentioned = lambda event: AgentClient._is_mentioned(client, event)
+    client._addressed_without_lookup = lambda event, meta: (
+        AgentClient._addressed_without_lookup(client, event, meta)
+    )
     client._is_mentioned_via_alias = _no
     client._is_mentioned_via_role = _no
     return client
 
 
 async def _addressed(client: SimpleNamespace, event: object, meta: RoomMeta) -> bool:
-    return await AgentClient._compute_addressed(client, event, meta)
+    return await AgentClient._compute_addressed(client, None, event, meta)
 
 
 @pytest.mark.asyncio

@@ -147,7 +147,7 @@ function ObservationCard({
         attempt did fail, and hiding the reason leaves a row that silently
         refuses to move off "Update available" with nothing to explain why.
       */}
-      {step.error && <p className="text-destructive text-xs">{step.error}</p>}
+      {step.error && <p className="text-xs text-destructive">{step.error}</p>}
       {step.output && <FailureOutput output={step.output} />}
     </div>
   );
@@ -385,7 +385,7 @@ function AgentTypeDetail({
               />
             </div>
             {row.plugin.state === 'failed' && row.plugin.error && (
-              <p className="text-destructive text-xs">{row.plugin.error}</p>
+              <p className="text-xs text-destructive">{row.plugin.error}</p>
             )}
             {row.plugin.state === 'failed' && row.plugin.output && (
               <FailureOutput output={row.plugin.output} />

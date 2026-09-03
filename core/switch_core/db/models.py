@@ -117,8 +117,11 @@ class Agent(Base):
     client_id: Mapped[str] = mapped_column(
         Text, ForeignKey("clients.id"), unique=True, nullable=False
     )
+    # Indexed because bearer-token auth resolves the key row and then looks the
+    # agent up by this column on every authenticated request, heartbeats
+    # included — without it that is a sequential scan per beat.
     api_key_id: Mapped[str] = mapped_column(
-        Text, ForeignKey("api_keys.id"), nullable=False
+        Text, ForeignKey("api_keys.id"), nullable=False, index=True
     )
     owner_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("users.id"), nullable=True
@@ -415,6 +418,21 @@ class Reference(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     value: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ReferenceType(Base):
+    __tablename__ = "reference_types"
+
+    type: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), nullable=False)
+    read_visibility: Mapped[str] = mapped_column(Text, nullable=False)
+    write_visibility: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    value_hint: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

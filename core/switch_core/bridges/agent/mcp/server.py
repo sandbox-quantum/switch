@@ -115,6 +115,7 @@ def create_mcp_app(
         starlette_app,
         agent_store=agent_store,
         api_key_store=api_key_store,
+        api_key_cache=protocol.api_key_cache,
         session_factory=protocol.session_factory,
         oidc_validator=oidc_validator,
     )

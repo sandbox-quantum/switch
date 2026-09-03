@@ -520,7 +520,12 @@ class CollaborationAdapter(ABC):
         elif state == "awaiting-input":
             await self.send_typing(channel_id, agent_name, True)
             await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
         else:
             await self.send_typing(channel_id, agent_name, False)
@@ -617,8 +622,14 @@ class CollaborationAdapter(ABC):
         mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
+        detail: str | None = None,
     ) -> str | None:
-        """Post a message nudging the operator that the agent needs input.
+        """Post a message nudging the operator that the agent needs attention.
+
+        ``detail``, when set, is the reason the session stalled — an API or auth
+        failure the agent cannot recover from on its own. It replaces the
+        generic "needs your input" wording so the operator knows what is wrong
+        before clicking through.
 
         `mention_handle` is the agent owner's account on this platform, or None
         when there is nobody to reach — no owner, or an owner who has not said
@@ -629,11 +640,14 @@ class CollaborationAdapter(ABC):
         Returns the posted message ref so callers that can remove it (Slack,
         Mattermost) track it for cleanup when the turn ends."""
         label = await self.agent_label_for_body(agent_name)
+        reason = detail.strip() if detail and detail.strip() else ""
+        need = f"hit an error: {reason}" if reason else "needs your input"
+        lead = "⚠️ " if reason else ""
         if mention_handle:
-            text = f"@{mention_handle} **{label}** needs your input."
+            text = f"@{mention_handle} {lead}**{label}** {need}."
         else:
             text = (
-                f"**{label}** needs your input — but nobody here is linked "
+                f"{lead}**{label}** {need} — but nobody here is linked "
                 f"to its owner, so this pings no one. Link your "
                 f"{self.platform_name} account in Switch Console to be notified."
             )

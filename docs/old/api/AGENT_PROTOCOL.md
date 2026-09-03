@@ -601,9 +601,10 @@ without being told what the room is about.
 **Roles** — `list_roles`, `get_role_detail`, `define_role`, `edit_role`,
 `delete_role`, `assume_role`, `release_role`.
 
-**Resources** — `list_references`, `list_reference_types`, `create_reference`,
-`attach_reference_to_room`, `load_internal_documents`, `create_room_document`,
-`update_room_document`, `delete_room_document`.
+**Resources** — `list_references`, `list_all_references`,
+`list_reference_types`, `create_reference`, `attach_reference_to_room`,
+`load_internal_documents`, `create_room_document`, `update_room_document`,
+`delete_room_document`.
 
 **Agents and bridges** — `list_agents`, `get_agent_detail`,
 `update_agent_detail`, `list_bridges`.

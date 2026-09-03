@@ -44,6 +44,114 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.23.0] - 2026-09-03
+
+#### Performance
+- **Matrix I/O no longer runs inside a database transaction.**
+  `add_agents_to_room`, `remove_agents_from_room` and `delete_room` each held a
+  connection-pool slot open across a fan-out of Matrix invites/kicks (up to 10s
+  per call), a major contributor to pool exhaustion under load. The three now
+  read short, commit, then do the Matrix work holding nothing — ordered so
+  Matrix membership can never exceed what the database records (a crash leaves
+  an under-privileged, repairable agent, never one silently reading a room
+  Switch has no record of) (#354).
+- **Per-client sync-cursor writes are staggered.** With one Matrix client per
+  participant (hundreds in a single process) and the throttle interval equal to
+  the sync long-poll, every client persisted its cursor in the same instant on
+  an idle instance — a periodic burst of concurrent one-row transactions that
+  starved the pool and cost heartbeats their connection. A sync that carried
+  nothing durable no longer earns a write, and the writes that remain no longer
+  align (#357).
+
+#### Changed
+- On the collaboration bridges, a turn that ends on an error now renders as the
+  stall it is — the reason is shown as why the turn stopped, not streamed as an
+  in-progress step under a spinner (#356).
+
+### [0.22.1] - 2026-09-02
+
+#### Performance
+- **Agent Bridge no longer holds a database connection while doing other
+  work.** Under load the connection pool could be exhausted by slots checked
+  out and left idle in transaction, which surfaced as `QueuePool limit ...
+  connection timed out` and, because heartbeats share the same pool, as
+  fleet-wide agent loss. Three fixes: a request never takes a second pool
+  checkout while holding one (targeted messages to owner-only agents were the
+  common trigger); the message path collapses six checkouts to one on an
+  internal room and two on a bridged one; and authentication is taken off the
+  heartbeat path via a single outer join plus a narrow in-process cache of
+  resolved credentials (#351).
+
+#### Added
+- New operator settings for the above: `AGENT_AUTH_CACHE_TTL_SECONDS` and
+  `AGENT_AUTH_CACHE_MAX_ENTRIES` tune the credential cache (set the TTL to `0`
+  to disable it), and the opt-in `DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT`
+  (default off) turns a leaked idle-in-transaction slot into a loud error. All
+  three are exposed as Helm chart values (#351).
+
+#### Fixed
+- Rejoin the two Alembic migration heads left by the parallel 0.22.0 merges, so
+  `alembic upgrade head` is unambiguous again — deploys from main were failing
+  on the two heads (#351).
+
+### [0.22.0] - 2026-09-02
+
+#### Added
+- Agents can carry an optional human display name, stored on the agent and
+  surfaced over the agent protocol (agent detail) and the gateway (#326).
+- **User-defined external reference types.** Reference types are no longer a
+  closed set of four. Any signed-in user can define one — slug, display name,
+  agent-facing instructions, value hint and a read/write visibility pair,
+  exactly like a Reference — from the new **Reference types** tab under
+  Resources, or over `POST /references/reference-types`. The four built-ins
+  (Google Drive, Confluence, GitHub, Jira) stay in code, cannot be edited or
+  deleted, and win any slug collision. Agents see the types their owner can
+  read, via `list_reference_types`; each entry now also carries `value_hint`
+  and `origin` (`builtin` or `user`). A type's visibility gates who may *pick*
+  it, never delivery of its instructions for a reference already attached to a
+  room — the attachment is the grant.
+- **`list_all_references` lets an agent discover references across the whole
+  instance.** Until now an agent only saw the references attached to its
+  current room. The result is scoped to what the agent's owner may read.
+  Three optional filters narrow it — `name_contains`, `type` and `owner_name`
+  — and they are ANDed. Each row carries the reference's metadata but never
+  its `value`. When the caller is connected to exactly one room, each row also
+  reports `attached_to_current_room`. An agent can therefore find a reference
+  and attach it in the same turn.
+
+#### Changed
+- **A reference value must now carry at least one URL.** An empty `urls` list
+  was already rejected, but an absent `urls` key silently validated to an empty
+  list and was stored. It is now a 400. Existing rows still read fine; the
+  failure appears the first time someone saves one — including a no-op save
+  from the reference detail page. Find them before upgrading and give each a
+  real URL:
+
+  ```sql
+  SELECT id, type FROM "references"
+  WHERE value->'urls' = '[]'::jsonb OR NOT (value ? 'urls');
+  ```
+- **`GET /references/reference-types` now requires a session** and returns
+  401 without one. It was the last unauthenticated route on the references
+  router; the set it returns is per-caller now, so it cannot be answered
+  anonymously.
+
+#### Fixed
+- Discord: create the room on the first command, not only on the first message
+  (#341).
+- Deeplinks: replaced the handoff page with a branded two-state design (#339).
+
+#### Performance
+- Agent bridge: take the sequential scan off the heartbeat path and size the DB
+  pool for it, backed by a new index on `agents.api_key_id` (#344).
+
+### [0.21.1] - 2026-09-01
+
+#### Fixed
+- Slack: normalize typed command mentions so commands addressed with a typed
+  `@agent` are recognized (#316).
+- Slack: resolve agent mentions that crossed a workspace boundary (#327).
+
 ### [0.21.0] - 2026-08-25
 
 #### Added
@@ -1071,6 +1179,48 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.32.0] - 2026-09-03
+
+#### Added
+- **A session that dies on an API error now says so.** A Claude Code turn that
+  fails on expired credentials, quota or a provider outage fires `StopFailure`,
+  which nothing listened for — the channel just went quiet and the operator had
+  to open the TUI to find out why. It now maps onto the `error` status and
+  carries the reason through, so the deeplink ping names what broke instead of a
+  bare "needs your input" (#356).
+
+#### Changed
+- **Sidecar upgrades are taken under live sessions now, except a major.** A
+  sidecar whose build differed from the client's used to be left alone whenever
+  it owned a session and upgraded only once idle, so a busy host could sit on a
+  stale sidecar indefinitely. The upgrade (a few seconds of room injection) is
+  now taken while sessions run; a major bump still waits for idle (#356).
+- Registering an agent with a name that isn't accepted now offers a valid slug
+  instead of rejecting it, and shows the rejected-name message as an error
+  banner (#325).
+- Bundles agent-runtime 0.4.1 (deleted-room / heartbeat backoff fixes), sidecar
+  1.9.7 (reaps dead tmux targets), and the updated connectors (Claude Code
+  0.9.12, Codex 0.3.13, OpenCode 0.1.8).
+- **Local-server mode now bundles switch-core 0.23.0** (was 0.21.0) — the pinned
+  images and standalone compose it pulls move up to the current release.
+
+#### Fixed
+- An errored turn no longer reads as a fresh request for input: the stalled
+  prompt that follows a failure is suppressed so it doesn't bury the reason, and
+  on the Slack card the reason is marked as a stall rather than streamed under a
+  spinner as if it were progress (#356).
+
+### [0.31.3] - 2026-09-01
+
+#### Added
+- The disabled "Add agent" button now explains why on hover, splitting the
+  not-ready tooltip into distinct checking and blocked messages (#314).
+
+#### Changed
+- Bundles agent-runtime 0.3.4 (reaps orphaned agent runtimes at boot) and the
+  updated connectors (Claude Code 0.9.11, Codex 0.3.12, OpenCode 0.1.7) and
+  sidecar 1.9.6.
 
 ### [0.31.2] - 2026-08-27
 
@@ -2487,6 +2637,32 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.4.1] - 2026-09-03
+
+#### Fixed
+- **A deleted room no longer wedges the whole connection.** When the client
+  declared a room the server had dropped, the server refused the entire
+  connection; the client reopened and re-declared the same room, so it was
+  refused again — an unbreakable loop (measured at ~29 errors/min for over a
+  day). A refusal that names one of our rooms is now terminal for that room: it
+  is dropped, reported at error level, and the reduced room list is pushed over
+  the same callback the server's own updates use, so the reopen is a strictly
+  smaller request and cannot spin. Refusals that name no room keep their
+  existing transport backoff (#353).
+- **The heartbeat now backs off when the connection is rejected.** A 404/409 on
+  `/connection/beat` means we are not attached and only a reopen helps, but the
+  loop treated "the server answered" as recovery and beat on at full cadence —
+  one rejected request every two seconds against a connection that could never
+  reopen. A rejection now counts as a beat that did not land: reopen, then
+  double the interval to the 30s cap on the same curve as every other failure;
+  the first beat that lands returns to base cadence (#353).
+
+#### Added
+- Reap orphaned agent runtimes at boot: `reapOrphanedRuntimes` is now part of
+  the package's public surface so the runtime and Switch Console share one
+  definition of an abandoned runtime, and a session started on a dead host is
+  cleaned up on the next start (#309).
+
 ### [0.3.3] - 2026-08-27
 
 #### Fixed
@@ -2609,6 +2785,21 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.7] - 2026-09-03
+
+#### Fixed
+- Reap dead tmux targets so a pane whose tmux session has gone is not treated as
+  a live one (#336).
+
+#### Changed
+- Rebuilt on agent-runtime 0.4.1 (a deleted room no longer wedges the whole
+  connection, and the heartbeat backs off when the connection is rejected).
+
+### [1.9.6] - 2026-09-01
+
+#### Changed
+- Rebuilt on agent-runtime 0.3.4, which reaps orphaned agent runtimes at boot.
+
 ### [1.9.5]
 
 #### Changed
@@ -2699,6 +2890,19 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.12] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
+### [0.9.11] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
 
 ### [0.9.10] - 2026-08-27
 #### Changed
@@ -2923,6 +3127,19 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.13] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skills updated: document user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
+### [0.3.12] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
+
 ### [0.3.11] - 2026-08-27
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.3` (was `0.3.2`) — picks up the
@@ -3100,6 +3317,20 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.8] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. (Delivered at the next Switch Console update, which
+  rewrites the embedded connector.)
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
+### [0.1.7] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
 
 ### [0.1.6] - 2026-08-27
 #### Changed

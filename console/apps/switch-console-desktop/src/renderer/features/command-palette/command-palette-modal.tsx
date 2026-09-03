@@ -455,7 +455,7 @@ export function CommandPaletteModal({
               </Command.Empty>
             )}
             {searchResult.status === 'failed' && (
-              <div className="text-destructive px-3 py-6 text-center text-sm">
+              <div className="px-3 py-6 text-center text-sm text-destructive">
                 Search failed for &ldquo;{query}&rdquo;. This is an error, not an empty result — see
                 the log for details.
               </div>

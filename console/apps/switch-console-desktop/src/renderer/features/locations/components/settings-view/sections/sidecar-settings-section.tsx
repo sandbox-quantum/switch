@@ -162,14 +162,14 @@ export function SidecarSettingsSection({ agentId }: { agentId: string }) {
               {data.verdict === 'other-install' &&
                 'Another Switch Console install on this host deployed the running sidecar, from the same release as yours. Neither build is newer, so this one leaves it alone rather than the two of you replacing it in turn. Use Restart to run your build instead — the other install will then leave yours alone.'}
               {data.verdict === 'upgrade-pending' &&
-                `An update is ready but held back because ${data.liveSessions} session${
+                `A major update is ready but held back because ${data.liveSessions} session${
                   data.liveSessions === 1 ? ' is' : 's are'
-                } running. It applies next time the sidecar is idle — or use Restart to apply it now (running sessions reconnect automatically).`}
+                } running — a major version can change the state format those sessions are recorded in. It applies next time the sidecar is idle — or use Restart to apply it now (running sessions reconnect automatically).`}
             </p>
 
             <Button
               variant="outline"
-              className="text-destructive hover:text-destructive ml-auto"
+              className="ml-auto text-destructive hover:text-destructive"
               disabled={busy || !data.running}
               onClick={() => stop.mutate()}
             >

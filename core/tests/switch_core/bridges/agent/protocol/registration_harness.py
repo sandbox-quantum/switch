@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
@@ -69,6 +70,7 @@ def make_service(
     svc.session_factory = session_factory  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
     svc.api_key_store = ApiKeyStore()  # type: ignore[attr-defined]
+    svc.api_key_cache = ApiKeyCache(ttl_seconds=5.0, max_entries=8)  # type: ignore[attr-defined]
     svc.client_lifecycle = FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = NoBridges()  # type: ignore[attr-defined]
     svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]

@@ -40,6 +40,7 @@ from testcontainers.postgres import PostgresContainer
 
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
@@ -68,6 +69,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -145,6 +147,7 @@ class SessionEnv:
     external_user_store: ExternalUserStore
     api_key_store: ApiKeyStore
     reference_store: ReferenceStore
+    reference_type_store: ReferenceTypeStore
     document_store: DocumentStore
     package_store: PackageStore
     room_link_store: RoomLinkStore
@@ -392,6 +395,7 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         external_user_store=ExternalUserStore(),
         api_key_store=ApiKeyStore(),
         reference_store=ReferenceStore(),
+        reference_type_store=ReferenceTypeStore(),
         document_store=DocumentStore(),
         package_store=PackageStore(),
         room_link_store=RoomLinkStore(),
@@ -439,6 +443,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
 
     resource_service = ResourceService(
         reference_store=session_env.reference_store,
+        reference_type_store=session_env.reference_type_store,
         document_store=session_env.document_store,
         package_store=session_env.package_store,
         room_link_store=session_env.room_link_store,
@@ -502,6 +507,10 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=session_env.api_key_store,
+        api_key_cache=ApiKeyCache(
+            ttl_seconds=config.agent_auth_cache_ttl_seconds,
+            max_entries=config.agent_auth_cache_max_entries,
+        ),
         external_user_store=session_env.external_user_store,
         bridge_store=session_env.bridge_store,
         session_factory=session_factory,

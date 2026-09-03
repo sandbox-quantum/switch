@@ -76,7 +76,7 @@ export const DeleteRoomModal = observer(function DeleteRoomModal({
             themselves are kept.
           </p>
         )}
-        {error && <p className="text-destructive text-xs">{error}</p>}
+        {error && <p className="text-xs text-destructive">{error}</p>}
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose} disabled={isDeleting}>
