@@ -5,11 +5,8 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Literal, NamedTuple
+from typing import Literal
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from switch_core.addressing import SenderKind, can_address, parse_policy
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
@@ -39,7 +36,6 @@ from switch_core.bridges.resource.events import (
     RoomDocumentUpdateResponse,
 )
 from switch_core.bridges.resource.tracker import ResourceRequestTracker
-from switch_core.clients.admin_messages import ADMIN_MARKER
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import (
     NAME_CHAR as _NAME_CHAR,
@@ -60,6 +56,13 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery.addressing import (
+    ADDRESSING_DENIED_MESSAGE,
+    ADDRESSING_UNCLAIMED_MESSAGE,
+    AddressingDecision,
+    AddressingResolver,
+    IncomingMessage,
+)
 from switch_core.events import (
     CommandEvent,
     MediationLlmResponse,
@@ -190,45 +193,11 @@ def _offline_owner_message(
     return f"{opening} {terminal}\n\n```\n{cmd}\n```"
 
 
-# Posted (once, guarded by AUTO_REPLY_FLAG) when a sender tags this agent but
-# the agent's scoped addressing policy does not permit that sender to address
-# it here. The message is demoted to unaddressed room chatter; this reply is
-# the sender's only feedback that the attempt was rejected.
-_ADDRESSING_DENIED_MESSAGE = (
-    "You're not permitted to direct messages to me in this room — my operator "
-    "has restricted who can address me here."
-)
-
-
-# The same refusal, for the case worth telling apart: the agent answers only to
-# its owner, and the sender's chat account is not linked to any Switch user, so
-# it cannot be recognised as the owner even if it is. Without this the owner
-# gets refused by their own agent with no idea why.
-_ADDRESSING_UNCLAIMED_MESSAGE = (
-    "I only take instructions from my owner, and this chat account isn't "
-    "linked to a Switch user yet — so I can't tell whether that's you. If it "
-    "is, link this account to your Switch user in Switch Console and try again."
-)
-
-
-class _SenderPrincipal(NamedTuple):
-    """Who a Matrix sender turned out to be, in the terms a policy is written
-    in. `user_ids` and `owner_user_id` are the two ways a symbolic subject
-    resolves, and are mutually exclusive: a human has claimants, an agent has
-    an owner."""
-
-    kind: SenderKind
-    id: str
-    user_ids: list[str]
-    owner_user_id: str | None
-
-
-class _AddressingDecision(NamedTuple):
-    """The outcome of checking a sender against an agent's addressing policy,
-    carrying the wording to reply with so the caller need not re-derive why."""
-
-    allowed: bool
-    refusal: str
+# The refusal wording lives with the decision that produces it. Kept under
+# these names because they are how the rest of the package and its tests refer
+# to them.
+_ADDRESSING_DENIED_MESSAGE = ADDRESSING_DENIED_MESSAGE
+_ADDRESSING_UNCLAIMED_MESSAGE = ADDRESSING_UNCLAIMED_MESSAGE
 
 
 # Shown to an agent addressed here while it holds a role in THIS room but the
@@ -285,6 +254,17 @@ class AgentClient(ClientBase[ClientConfig]):
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )
         self._agent: Agent | None = None
+        # Addressing is decided from stores, not from this client, so the same
+        # rules can decide for a message read out of the log.
+        self._addressing = AddressingResolver(
+            session_factory=self.session_factory,
+            room_store=room_store,
+            room_role_store=room_role_store,
+            client_store=self.client_store,
+            agent_store=agent_store,
+            external_user_store=external_user_store,
+            live_agent_ids=connections.live_agent_ids,
+        )
         self._room_meta: dict[str, RoomMeta | None] = {}
         # In-flight multi-attachment groups, by group id, with their safety-net
         # timers. Both are cleared when a group completes or times out, so a
@@ -1188,141 +1168,37 @@ class AgentClient(ClientBase[ClientConfig]):
 
     # ── Mention detection ─────────────────────────────────────────────────────
 
-    async def _compute_addressed(self, event: InboundMessage, meta: RoomMeta) -> bool:
-        """Whether this message addresses this agent (expects a response).
-
-        Direct rooms always address. Otherwise the agent is addressed by an
-        `@name` mention OR by an `@<role>` tag for a room-role it currently
-        holds (see `_is_mentioned_via_role`).
-
-        **A system message never addresses anyone**, whatever the room type.
-        Switch's own notices — a command's answer, "Added X to this room", the
-        guidance shown when someone tags the app itself — are output, not a
-        request for a reply. Two ways they were read as one: in a direct room
-        every message addresses the agent, so running `/list-agents` in a 1:1
-        chat had the agent start a session to respond to its own roster; and in
-        any room, a notice that lists the agents present writes each `@name`,
-        which tagged every one of them. The marker exists to say "generated by
-        Switch"; this is it being honoured.
-        """
-        if ADMIN_MARKER in (event.content):
-            return False
-        if meta.channel_type == "direct":
-            return True
-        if self._is_mentioned(event):
-            return True
-        if await self._is_mentioned_via_alias(event, meta.room_id):
-            return True
-        return await self._is_mentioned_via_role(event, meta.room_id)
-
-    async def _resolve_sender_principal(
-        self, session: AsyncSession, matrix_user_id: str
-    ) -> _SenderPrincipal | None:
-        """Resolve a Matrix sender to an addressing principal.
-
-        Maps the sender's mxid to its Client, then to either an Agent (an
-        agent-to-agent attempt) or an ExternalUser (a human on a bridge).
-        Returns ``None`` when the sender has no such record — an
-        unresolvable identity that a restricted agent should not trust.
-
-        The two symbolic subjects resolve from different fields, and only one
-        applies to any given sender: ``user_ids`` are the Switch users who have
-        claimed a human's platform account (empty for an agent — an agent is
-        never its owner, even its owner's own), and ``owner_user_id`` is who
-        owns an agent sender (None for a human).
-        """
-        client = await self.client_store.get_by_matrix_user_id(session, matrix_user_id)
-        if client is None:
-            return None
-        agent = await self._agent_store.get_by_client_id(session, client.id)
-        if agent is not None:
-            return _SenderPrincipal("agent", agent.id, [], agent.owner_id)
-        external_user = await self._external_user_store.get_by_client_id(
-            session, client.id
+    @staticmethod
+    def _as_incoming(event: InboundMessage) -> IncomingMessage:
+        """The parts of a bus event that addressing is decided from."""
+        return IncomingMessage(
+            sender=event.sender,
+            body=getattr(event, "body", "") or "",
+            formatted_body=getattr(event, "formatted_body", None),
+            content=event.content,
         )
-        if external_user is not None:
-            claimants = await self._external_user_store.claimant_ids(
-                session, external_user.id
-            )
-            return _SenderPrincipal("user", external_user.id, claimants, None)
-        return None
+
+    async def _compute_addressed(self, event: InboundMessage, meta: RoomMeta) -> bool:
+        return await self._addressing.addresses(
+            agent=self.agent,
+            agent_matrix_id=self.matrix_user_id,
+            room_id=meta.room_id,
+            channel_type=meta.channel_type,
+            message=self._as_incoming(event),
+        )
 
     async def _addressing_allowed(
         self, matrix_sender: str, room_id: str
-    ) -> _AddressingDecision:
-        """Whether `matrix_sender` may address this agent in `room_id`, per the
-        agent's scoped addressing policy.
+    ) -> AddressingDecision:
+        """Whether `matrix_sender` may address this agent in `room_id`.
 
-        An agent with no policy is open to anyone, so this returns allowed
-        without a DB round-trip. With a policy set it is deny-by-default: an
-        unresolvable sender is rejected (fail-closed). A denial carries the
-        wording to send back, which differs when the sender looks like someone
-        whose platform identity simply has not been claimed yet.
+        The agent is re-read rather than taken from the cached one: the policy
+        is the thing being enforced, and enforcing a stale copy of it is the
+        one way this check can be wrong in the dangerous direction.
         """
         agent = await self._fresh_agent()
-        policy = parse_policy(agent.addressing_policy)
-        if policy.is_open():
-            return _AddressingDecision(allowed=True, refusal="")
-        async with self.session_factory() as session:
-            principal = await self._resolve_sender_principal(session, matrix_sender)
-            room = await self._room_store.get(session, room_id)
-        if principal is None:
-            logger.warning(
-                "Addressing denied for %s: unresolvable sender %s in room %s",
-                self.agent.name,
-                matrix_sender,
-                room_id,
-            )
-            return _AddressingDecision(
-                allowed=False, refusal=_ADDRESSING_DENIED_MESSAGE
-            )
-        sender_kind, sender_id, sender_user_ids = (
-            principal.kind,
-            principal.id,
-            principal.user_ids,
-        )
-        group_id = room.group_id if room is not None else None
-        allowed = can_address(
-            policy,
-            room_id=room_id,
-            group_id=group_id,
-            sender_kind=sender_kind,
-            sender_id=sender_id,
-            sender_user_ids=sender_user_ids,
-            sender_owner_user_id=principal.owner_user_id,
-            owner_user_id=agent.owner_id,
-        )
-        if allowed:
-            return _AddressingDecision(allowed=True, refusal="")
-        unclaimed = (
-            sender_kind == "user"
-            and not sender_user_ids
-            and policy.requires_owner_identity()
-        )
-        if unclaimed:
-            logger.warning(
-                "Addressing denied for %s: sender %s in room %s has not been "
-                "claimed by any Switch user, so an owner-scoped rule cannot "
-                "match them — the owner may need to link this identity",
-                self.agent.name,
-                sender_id,
-                room_id,
-            )
-        else:
-            logger.warning(
-                "Addressing denied for %s: %s %s not permitted in room %s",
-                self.agent.name,
-                sender_kind,
-                sender_id,
-                room_id,
-            )
-        return _AddressingDecision(
-            allowed=False,
-            refusal=(
-                _ADDRESSING_UNCLAIMED_MESSAGE
-                if unclaimed
-                else _ADDRESSING_DENIED_MESSAGE
-            ),
+        return await self._addressing.permitted(
+            agent=agent, room_id=room_id, sender=matrix_sender
         )
 
     async def _gate_addressed(
@@ -1369,57 +1245,18 @@ class AgentClient(ClientBase[ClientConfig]):
         return _mention_regex(self.agent.name).search(_strip_emphasis(text)) is not None
 
     async def _text_tags_my_alias(self, text: str, room_id: str) -> bool:
-        """True when `text` `@`-tags this agent's room alias at a token boundary.
-
-        The alias is looked up live (like a role lease) so a change takes effect
-        on the next message without any per-client cache to invalidate.
-        """
-        if "@" not in text:
-            return False
-        async with self.session_factory() as session:
-            alias = await self._room_store.get_alias(session, room_id, self.agent.id)
-        if not alias:
-            return False
-        return _mention_regex(alias).search(text) is not None
-
-    async def _is_mentioned_via_alias(
-        self, event: InboundMessage, room_id: str
-    ) -> bool:
-        """True when the message body tags this agent's room alias.
-
-        A room alias addresses the agent exactly like its real name, so an
-        `@<alias>` mention routes here just as `@<name>` does.
-        """
-        return await self._text_tags_my_alias(getattr(event, "body", "") or "", room_id)
+        return await self._addressing.mentions_alias(
+            agent=self.agent,
+            room_id=room_id,
+            message=IncomingMessage(sender="", body=text),
+        )
 
     async def _text_tags_my_role(self, text: str, room_id: str) -> bool:
-        """True when `text` `@`-tags a room-role this agent LIVE-holds.
-
-        Only a live lease counts, so "held" means the same thing here as in
-        `!roles` and the moderator warning: a stale lease (session gone, role
-        auto-released → shown free) does NOT route here — the moderator flags
-        it as unassigned instead. A holder whose session merely hopped to
-        another room still matches, because that lease is kept alive by the
-        renewal loop. The moderator holds no role, so this is a no-op for it.
-        """
-        if "@" not in text:
-            return False
-        async with self.session_factory() as session:
-            role_name = await self._room_role_store.agent_room_role(
-                session, room_id, self.agent.id, self._connections.live_agent_ids()
-            )
-        if not role_name:
-            return False
-        return _mention_regex(role_name).search(_strip_emphasis(text)) is not None
-
-    async def _is_mentioned_via_role(self, event: InboundMessage, room_id: str) -> bool:
-        """True when the message body tags a room-role this agent holds.
-
-        Tagging `@<role>` addresses whichever agent holds that role, so an
-        interchangeable agent can be reached by responsibility rather than by
-        name.
-        """
-        return await self._text_tags_my_role(getattr(event, "body", "") or "", room_id)
+        return await self._addressing.mentions_role(
+            agent=self.agent,
+            room_id=room_id,
+            message=IncomingMessage(sender="", body=text),
+        )
 
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
@@ -1436,14 +1273,10 @@ class AgentClient(ClientBase[ClientConfig]):
         return str(event.sender).split(":")[0].lstrip("@")
 
     def _is_mentioned(self, event: InboundMessage) -> bool:
-        # Media events (RoomMessageImage/File) have no formatted_body; fall back
-        # to a plain-text mention scan on the body (the caption, for media).
-        formatted_body = getattr(event, "formatted_body", None)
-        if formatted_body is not None and self.matrix_user_id in formatted_body:
-            return True
-        return (
-            _mention_regex(self.agent.name).search(_strip_emphasis(event.body))
-            is not None
+        return self._addressing.mentions_name(
+            agent=self.agent,
+            agent_matrix_id=self.matrix_user_id,
+            message=self._as_incoming(event),
         )
 
     def _strip_mention(self, text: str) -> str:

@@ -3,13 +3,21 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from switch_core.clients.agent_client import (
-    _ADDRESSING_DENIED_MESSAGE,
-    _ADDRESSING_UNCLAIMED_MESSAGE,
-    AUTO_REPLY_FLAG,
-    AgentClient,
-    _AddressingDecision,
-    _SenderPrincipal,
+from switch_core.clients.agent_client import AUTO_REPLY_FLAG, AgentClient
+from switch_core.delivery.addressing import (
+    ADDRESSING_DENIED_MESSAGE as _ADDRESSING_DENIED_MESSAGE,
+)
+from switch_core.delivery.addressing import (
+    ADDRESSING_UNCLAIMED_MESSAGE as _ADDRESSING_UNCLAIMED_MESSAGE,
+)
+from switch_core.delivery.addressing import (
+    AddressingDecision as _AddressingDecision,
+)
+from switch_core.delivery.addressing import (
+    AddressingResolver,
+)
+from switch_core.delivery.addressing import (
+    SenderPrincipal as _SenderPrincipal,
 )
 from switch_core.transport import InboundMessage, RoomRef
 
@@ -56,7 +64,7 @@ class TestResolveSenderPrincipal:
             return list(claimants)
 
         return SimpleNamespace(
-            client_store=SimpleNamespace(get_by_matrix_user_id=_get_by_mxid),
+            _client_store=SimpleNamespace(get_by_matrix_user_id=_get_by_mxid),
             _agent_store=SimpleNamespace(get_by_client_id=_agent_by_client),
             _external_user_store=SimpleNamespace(
                 get_by_client_id=_ext_by_client, claimant_ids=_claimant_ids
@@ -71,7 +79,7 @@ class TestResolveSenderPrincipal:
             agent=SimpleNamespace(id="agent-7", owner_id="user-1"),
             external_user=None,
         )
-        result = await AgentClient._resolve_sender_principal(
+        result = await AddressingResolver.resolve_sender(
             client, object(), "@a:switch.local"
         )
         assert result == ("agent", "agent-7", [], "user-1")
@@ -83,7 +91,7 @@ class TestResolveSenderPrincipal:
             external_user=SimpleNamespace(id="ext-3"),
             claimants=["user-1"],
         )
-        result = await AgentClient._resolve_sender_principal(
+        result = await AddressingResolver.resolve_sender(
             client, object(), "@u:switch.local"
         )
         assert result == ("user", "ext-3", ["user-1"], None)
@@ -97,7 +105,7 @@ class TestResolveSenderPrincipal:
             external_user=SimpleNamespace(id="ext-3"),
             claimants=["user-1", "user-2"],
         )
-        result = await AgentClient._resolve_sender_principal(
+        result = await AddressingResolver.resolve_sender(
             client, object(), "@u:switch.local"
         )
         assert result == ("user", "ext-3", ["user-1", "user-2"], None)
@@ -109,14 +117,14 @@ class TestResolveSenderPrincipal:
             agent=None,
             external_user=SimpleNamespace(id="ext-3"),
         )
-        result = await AgentClient._resolve_sender_principal(
+        result = await AddressingResolver.resolve_sender(
             client, object(), "@u:switch.local"
         )
         assert result == ("user", "ext-3", [], None)
 
     async def test_unknown_client_is_none(self) -> None:
         client = self._client(client=None, agent=None, external_user=None)
-        result = await AgentClient._resolve_sender_principal(
+        result = await AddressingResolver.resolve_sender(
             client, object(), "@ghost:switch.local"
         )
         assert result is None
@@ -127,7 +135,7 @@ class TestResolveSenderPrincipal:
         client = self._client(
             client=SimpleNamespace(id="c1"), agent=None, external_user=None
         )
-        result = await AgentClient._resolve_sender_principal(
+        result = await AddressingResolver.resolve_sender(
             client, object(), "@system:switch.local"
         )
         assert result is None
@@ -141,14 +149,11 @@ def _allowed_client(
     group_id: str | None = None,
     owner_id: str | None = None,
 ) -> SimpleNamespace:
-    """Fake client for _addressing_allowed: the agent carries `policy` and is
-    owned by `owner_id`, the sender resolves to `principal` (kind, id,
-    claimants) owned by `sender_owner_id`, and the room has `group_id`."""
+    """Fake resolver for `permitted`: the agent carries `policy` and is owned
+    by `owner_id`, the sender resolves to `principal` (kind, id, claimants)
+    owned by `sender_owner_id`, and the room has `group_id`."""
 
     agent = SimpleNamespace(name="fixer", addressing_policy=policy, owner_id=owner_id)
-
-    async def _fresh_agent():  # type: ignore[no-untyped-def]
-        return agent
 
     async def _resolve(_session, _mxid):  # type: ignore[no-untyped-def]
         if principal is None:
@@ -161,15 +166,16 @@ def _allowed_client(
 
     return SimpleNamespace(
         agent=agent,
-        _fresh_agent=_fresh_agent,
-        session_factory=_session_factory,
-        _resolve_sender_principal=_resolve,
+        _session_factory=_session_factory,
+        resolve_sender=_resolve,
         _room_store=SimpleNamespace(get=_get_room),
     )
 
 
 async def _decide(client: SimpleNamespace, room_id: str = "room-1"):  # type: ignore[no-untyped-def]
-    return await AgentClient._addressing_allowed(client, "@u:switch.local", room_id)
+    return await AddressingResolver.permitted(
+        client, agent=client.agent, room_id=room_id, sender="@u:switch.local"
+    )
 
 
 class TestAddressingAllowed:
