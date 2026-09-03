@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@shared/core/providers/agentEvents';
-import { deriveAgentStatus } from './derive-agent-status';
+import { deriveAgentStatus, deriveErrorDetail } from './derive-agent-status';
 
 function event(partial: Partial<AgentEvent> & Pick<AgentEvent, 'type'>): AgentEvent {
   return {
@@ -31,5 +31,23 @@ describe('deriveAgentStatus', () => {
 
   it('returns null for a notification with no type', () => {
     expect(deriveAgentStatus(event({ type: 'notification', payload: {} }))).toBeNull();
+  });
+});
+
+describe('deriveErrorDetail', () => {
+  it('returns the error message for an error event', () => {
+    expect(
+      deriveErrorDetail(
+        event({ type: 'error', payload: { message: 'authentication_failed — token expired' } })
+      )
+    ).toBe('authentication_failed — token expired');
+  });
+
+  it('returns undefined for an error with no message and for other events', () => {
+    expect(deriveErrorDetail(event({ type: 'error', payload: { message: '  ' } }))).toBeUndefined();
+    expect(deriveErrorDetail(event({ type: 'error', payload: {} }))).toBeUndefined();
+    expect(
+      deriveErrorDetail(event({ type: 'stop', payload: { message: 'done' } }))
+    ).toBeUndefined();
   });
 });

@@ -320,11 +320,12 @@ class SwitchNotificationPoller {
   onAgentStatusChange(
     sessionId: string,
     status: AgentStatus,
-    notificationType?: NotificationType
+    notificationType?: NotificationType,
+    detail?: string
   ): void {
     const connection = this.connections.get(sessionId);
     if (!connection) return;
-    connection.onAgentStatusChange(status, notificationType);
+    connection.onAgentStatusChange(status, notificationType, detail);
   }
 
   /**

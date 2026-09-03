@@ -749,7 +749,11 @@ export class RoomConnection {
    * room while a room-triggered turn is active — local TUI work must not show
    * "working on it" in the bridged channel, nor ping the operator.
    */
-  onAgentStatusChange(status: AgentStatus, notificationType?: NotificationType): void {
+  onAgentStatusChange(
+    status: AgentStatus,
+    notificationType?: NotificationType,
+    detail?: string
+  ): void {
     if (this.stopped) return;
     if (toRuntimeState(status) === 'awaiting-input') {
       this.log.debug('RoomConnection: status -> awaiting-input', {
@@ -763,7 +767,7 @@ export class RoomConnection {
     }
     if (this.roomTurnActive) {
       const next = toRuntimeState(status);
-      this.setRuntimeState(next);
+      this.setRuntimeState(next, detail);
       if (next === 'idle') {
         this.roomTurnActive = false;
         this.currentThreadId = null;
@@ -788,7 +792,7 @@ export class RoomConnection {
     this.tryFlush();
   }
 
-  private setRuntimeState(state: RuntimeState): void {
+  private setRuntimeState(state: RuntimeState, detail?: string): void {
     // `awaiting-input` always re-surfaces: each report is a fresh request for
     // operator input (Claude emits one per notification, not on a timer), so it
     // must ping again even when the previous state was already awaiting-input —
@@ -810,7 +814,7 @@ export class RoomConnection {
       return;
     }
     this.stopActivityTicker();
-    void this.postRuntimeState(state, this.currentThreadId).catch((error) => {
+    void this.postRuntimeState(state, this.currentThreadId, {}, detail).catch((error) => {
       if (this.abort.signal.aborted) return;
       this.log.warn('RoomConnection: failed to set runtime state', {
         roomId: this.roomId,

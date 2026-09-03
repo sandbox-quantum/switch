@@ -218,8 +218,31 @@ describe('SidecarRuntime (multi-session)', () => {
     await runtime.handleHook(switchRoomHook('room-2', PTY_B));
     await runtime.handleHook(statusHook('start', PTY_A));
 
-    expect(created[0].conn.onAgentStatusChange).toHaveBeenCalledWith('working', undefined);
+    expect(created[0].conn.onAgentStatusChange).toHaveBeenCalledWith(
+      'working',
+      undefined,
+      undefined
+    );
     expect(created[1].conn.onAgentStatusChange).not.toHaveBeenCalled();
+  });
+
+  it('forwards the failure reason with an error status', async () => {
+    const { runtime, created } = makeRuntime();
+    await runtime.handleHook(switchRoomHook('room-1', PTY_A));
+    await runtime.handleHook({
+      ptyId: PTY_A,
+      type: 'stop-failure',
+      body: JSON.stringify({
+        error_type: 'authentication_failed',
+        error_message: 'credentials have expired',
+      }),
+    });
+
+    expect(created[0].conn.onAgentStatusChange).toHaveBeenCalledWith(
+      'error',
+      undefined,
+      'authentication_failed — credentials have expired'
+    );
   });
 
   it('reports a room live only while its pane is up', async () => {
