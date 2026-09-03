@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from nio import RoomMessagesError, RoomSendError
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.transport import (
     MessageTransport,
     TransportError,
@@ -91,6 +92,69 @@ async def test_send_message_raises_rather_than_returning_an_error() -> None:
 
     with pytest.raises(TransportError, match="nope"):
         await _transport(nio).send_message("!r:s", "hi", sender_name="Alice")
+
+
+async def test_send_media_with_a_caption_keeps_the_filename_separate() -> None:
+    # The rich-media-caption convention: body carries the caption, and the real
+    # filename rides alongside so it is not lost.
+    nio = _FakeNio()
+
+    await _transport(nio).send_media(
+        "!r:s",
+        "mxc://s/abc",
+        "cat.png",
+        "image/png",
+        5,
+        sender_name="Alice",
+        msgtype="m.image",
+        caption="look at this",
+    )
+
+    _, _, content = nio.room_send_calls[0]
+    assert content["body"] == "look at this"
+    assert content["filename"] == "cat.png"
+    assert content["url"] == "mxc://s/abc"
+    assert content["info"] == {"mimetype": "image/png", "size": 5}
+
+
+async def test_send_media_without_a_caption_uses_the_filename_as_body() -> None:
+    nio = _FakeNio()
+
+    await _transport(nio).send_media(
+        "!r:s",
+        "mxc://s/abc",
+        "cat.png",
+        "image/png",
+        5,
+        sender_name="Alice",
+        msgtype="m.image",
+    )
+
+    _, _, content = nio.room_send_calls[0]
+    assert content["body"] == "cat.png"
+    # No caption means nothing to disambiguate, so no separate filename key.
+    assert "filename" not in content
+
+
+async def test_send_media_marks_a_multi_file_group() -> None:
+    # Matrix has no multi-attachment event, so N files share a group id that
+    # receivers coalesce back into one message.
+    nio = _FakeNio()
+    group = {"id": "g1", "index": 0, "total": 2}
+
+    await _transport(nio).send_media(
+        "!r:s",
+        "mxc://s/abc",
+        "cat.png",
+        "image/png",
+        5,
+        sender_name="Alice",
+        msgtype="m.image",
+        group=group,
+    )
+
+    _, _, content = nio.room_send_calls[0]
+    assert content[ATTACHMENT_GROUP_KEY] == group
 
 
 async def test_send_event_carries_the_type_through() -> None:

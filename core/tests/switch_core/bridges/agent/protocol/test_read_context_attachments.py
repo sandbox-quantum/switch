@@ -2,51 +2,59 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import nio
-
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.transport import (
+    HistoryPage,
+    InboundEvent,
+    InboundMedia,
+    InboundMessage,
+)
+from tests.switch_core.transport.fake import FakeTransport
 
 
-def _image_event() -> nio.RoomMessageImage:
-    return nio.RoomMessageImage.from_dict(
-        {
-            "type": "m.room.message",
-            "event_id": "$img",
-            "sender": "@alice:s",
-            "origin_server_ts": 1700000000000,
-            "content": {
-                "msgtype": "m.image",
-                "body": "what's this?",
-                "filename": "cat.png",
-                "url": "mxc://s/abc",
-                "info": {"mimetype": "image/png", "size": 1234},
-                "sender_name": "Alice",
-            },
-        }
+def _image_event() -> InboundMedia:
+    content = {
+        "msgtype": "m.image",
+        "body": "what's this?",
+        "filename": "cat.png",
+        "url": "mxc://s/abc",
+        "info": {"mimetype": "image/png", "size": 1234},
+        "sender_name": "Alice",
+    }
+    return InboundMedia(
+        room_id="!room",
+        event_id="$img",
+        sender="@alice:s",
+        timestamp=1700000000000,
+        content=content,
+        body="what's this?",
+        sender_name="Alice",
+        msgtype="m.image",
+        uri="mxc://s/abc",
+        filename="cat.png",
+        mimetype="image/png",
+        size=1234,
     )
 
 
-def _text_event() -> nio.RoomMessageText:
-    return nio.RoomMessageText.from_dict(
-        {
-            "type": "m.room.message",
-            "event_id": "$txt",
-            "sender": "@bob:s",
-            "origin_server_ts": 1700000001000,
-            "content": {"msgtype": "m.text", "body": "hello", "sender_name": "Bob"},
-        }
+def _text_event() -> InboundMessage:
+    content = {"msgtype": "m.text", "body": "hello", "sender_name": "Bob"}
+    return InboundMessage(
+        room_id="!room",
+        event_id="$txt",
+        sender="@bob:s",
+        timestamp=1700000001000,
+        content=content,
+        body="hello",
+        sender_name="Bob",
     )
 
 
-def _build_service(chunk: list[object]) -> ProtocolService:
-    async def _room_messages(matrix_room_id: str, start: str | None, limit: int):
-        # No continuation token: this page is the start of the room.
-        return SimpleNamespace(chunk=chunk, end=None)
-
-    fake_client = SimpleNamespace(
-        nio_client=SimpleNamespace(room_messages=_room_messages)
-    )
+def _build_service(chunk: list[InboundEvent]) -> ProtocolService:
+    # No continuation token: this page is the start of the room.
+    transport = FakeTransport(history=HistoryPage(events=list(chunk), next_token=None))
+    fake_client = SimpleNamespace(transport=transport)
 
     async def _require(agent_id: str, room_id: str):
         return SimpleNamespace(matrix_room_id="!room")

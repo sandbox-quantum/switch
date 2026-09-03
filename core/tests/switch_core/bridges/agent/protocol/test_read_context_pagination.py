@@ -11,105 +11,108 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import nio
-
 from switch_core.bridges.agent.protocol import service
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
+from switch_core.transport import (
+    HistoryPage,
+    InboundEvent,
+    InboundMembership,
+    InboundMessage,
+    SeekDirection,
+)
+
+ROOM = "!room:s"
 
 
-def _msg(event_id: str, ts: int, body: str = "hi") -> SimpleNamespace:
-    return SimpleNamespace(
+def _msg(event_id: str, ts: int, body: str = "hi") -> InboundMessage:
+    return InboundMessage(
+        room_id=ROOM,
         event_id=event_id,
         sender="@u:s",
         timestamp=ts,
-        body=body,
         content={"sender_name": "U"},
+        body=body,
+        sender_name="U",
     )
 
 
-def _join(event_id: str, ts: int, user: str, displayname: str) -> nio.RoomMemberEvent:
-    return nio.RoomMemberEvent.from_dict(
-        {
-            "type": "m.room.member",
-            "event_id": event_id,
-            "sender": user,
-            "state_key": user,
-            "origin_server_ts": ts,
-            "content": {"membership": "join", "displayname": displayname},
-        }
+def _join(event_id: str, ts: int, user: str, displayname: str) -> InboundMembership:
+    return InboundMembership(
+        room_id=ROOM,
+        event_id=event_id,
+        sender=user,
+        timestamp=ts,
+        content={"membership": "join", "displayname": displayname},
+        state_key=user,
+        membership="join",
+        prev_membership=None,
+        display_name=displayname,
     )
 
 
-def _rename(event_id: str, ts: int, user: str, displayname: str) -> nio.RoomMemberEvent:
+def _rename(event_id: str, ts: int, user: str, displayname: str) -> InboundMembership:
     """A display-name change: membership join, but they were already here."""
-    return nio.RoomMemberEvent.from_dict(
-        {
-            "type": "m.room.member",
-            "event_id": event_id,
-            "sender": user,
-            "state_key": user,
-            "origin_server_ts": ts,
-            "content": {"membership": "join", "displayname": displayname},
-            "unsigned": {"prev_content": {"membership": "join"}},
-        }
+    return InboundMembership(
+        room_id=ROOM,
+        event_id=event_id,
+        sender=user,
+        timestamp=ts,
+        content={"membership": "join", "displayname": displayname},
+        state_key=user,
+        membership="join",
+        prev_membership="join",
+        display_name=displayname,
     )
 
 
-class _PagedNio:
-    """Homeserver stand-in that hands out history one page at a time.
+class _PagedTransport:
+    """Transport stand-in that hands out history one page at a time.
 
-    `seek_to` mimics a server that answers timestamp_to_event: the page index
-    the token lands on. None means the server cannot answer, so the caller has
-    to scan back instead.
+    `seek_to` mimics a transport that can answer a timestamp seek: the page
+    index the token lands on. None means it cannot answer, so the caller has to
+    scan back instead.
     """
 
-    access_token = "tok"
-
-    def __init__(self, pages: list[list[Any]], seek_to: int | None = None) -> None:
+    def __init__(
+        self, pages: list[list[InboundEvent]], seek_to: int | None = None
+    ) -> None:
         self._pages = pages
         self._seek_to = seek_to
         self.requested_starts: list[str | None] = []
 
-    async def room_messages(
-        self, room_id: str, start: str | None = None, limit: int = 0
-    ) -> SimpleNamespace:
+    async def read_history(
+        self, room_id: str, *, start: str | None, limit: int
+    ) -> HistoryPage:
         self.requested_starts.append(start)
         index = 0 if start is None else int(start)
         if index >= len(self._pages):
-            return SimpleNamespace(chunk=[], end=None)
+            return HistoryPage(events=[], next_token=None)
         is_last = index == len(self._pages) - 1
-        return SimpleNamespace(
-            chunk=self._pages[index],
-            end=None if is_last else str(index + 1),
+        return HistoryPage(
+            events=list(self._pages[index]),
+            next_token=None if is_last else str(index + 1),
         )
 
-    async def send(self, method: str, path: str, headers: Any = None) -> Any:
-        if self._seek_to is None:
-            return SimpleNamespace(status=404)
+    async def seek_by_timestamp(
+        self, room_id: str, timestamp_ms: int, *, direction: SeekDirection
+    ) -> str | None:
+        return None if self._seek_to is None else str(self._seek_to)
 
-        async def _json() -> dict[str, str]:
-            return {"event_id": "$anchor"}
-
-        return SimpleNamespace(status=200, json=_json)
-
-    async def room_context(self, room_id: str, event_id: str, limit: int = 1) -> Any:
-        return SimpleNamespace(start=str(self._seek_to))
-
-    async def room_get_event(self, room_id: str, event_id: str) -> Any:
-        return object.__new__(nio.RoomGetEventError)
+    async def get_event(self, room_id: str, event_id: str) -> InboundEvent | None:
+        return None
 
 
-def _service(nio_client: _PagedNio) -> ProtocolService:
+def _service(transport: _PagedTransport) -> ProtocolService:
     svc = object.__new__(ProtocolService)
     svc.connections = ConnectionRegistry()
 
     async def _require(agent_id: str, room_id: str) -> SimpleNamespace:
-        return SimpleNamespace(matrix_room_id="!room:s")
+        return SimpleNamespace(matrix_room_id=ROOM)
 
     svc.require_room_member = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
-        get_by_agent_id=lambda agent_id: SimpleNamespace(nio_client=nio_client)
+        get_by_agent_id=lambda agent_id: SimpleNamespace(transport=transport)
     )
     return svc
 
@@ -121,38 +124,40 @@ def _roots(result: dict[str, Any]) -> list[str]:
 class TestPagination:
     async def test_follows_continuation_token_across_pages(self) -> None:
         # Three pages of one message each — the old code saw only the first.
-        nio_client = _PagedNio(
+        transport = _PagedTransport(
             [[_msg("e3", 300)], [_msg("e2", 200)], [_msg("e1", 100)]]
         )
-        svc = _service(nio_client)
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=10)
 
         assert sorted(_roots(result)) == ["e1", "e2", "e3"]
-        assert nio_client.requested_starts == [None, "1", "2"]
+        assert transport.requested_starts == [None, "1", "2"]
 
     async def test_state_events_do_not_consume_the_message_budget(self) -> None:
         # A page full of events that reach nobody must not end the read.
         noise = [
-            SimpleNamespace(
+            InboundEvent(
+                room_id=ROOM,
                 event_id=f"$n{i}",
                 sender="@s:s",
                 timestamp=500 - i,
-                body=None,
                 content={},
             )
             for i in range(20)
         ]
-        nio_client = _PagedNio([noise, [_msg("e1", 100)]])
-        svc = _service(nio_client)
+        transport = _PagedTransport([noise, [_msg("e1", 100)]])
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=5)
 
         assert _roots(result) == ["e1"]
 
     async def test_stops_at_limit_and_reports_truncated(self) -> None:
-        nio_client = _PagedNio([[_msg("e3", 300), _msg("e2", 200)], [_msg("e1", 100)]])
-        svc = _service(nio_client)
+        transport = _PagedTransport(
+            [[_msg("e3", 300), _msg("e2", 200)], [_msg("e1", 100)]]
+        )
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=2)
 
@@ -161,8 +166,8 @@ class TestPagination:
         assert result["oldest_timestamp"] == 200
 
     async def test_reaching_room_start_is_not_truncated(self) -> None:
-        nio_client = _PagedNio([[_msg("e2", 200)], [_msg("e1", 100)]])
-        svc = _service(nio_client)
+        transport = _PagedTransport([[_msg("e2", 200)], [_msg("e1", 100)]])
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=50)
 
@@ -174,13 +179,13 @@ class TestWindowing:
     async def test_before_pages_backwards_instead_of_filtering(self) -> None:
         # Everything older than the cutoff lives on later pages. The old code
         # filtered page one, found nothing, and returned empty.
-        nio_client = _PagedNio(
+        transport = _PagedTransport(
             [
                 [_msg("new2", 900), _msg("new1", 800)],
                 [_msg("old2", 200), _msg("old1", 100)],
             ]
         )
-        svc = _service(nio_client)
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=10, before_ms=500)
 
@@ -197,7 +202,7 @@ class TestWindowing:
             for p in range(service.HISTORY_MAX_PAGES + 5)
         ]
         pages = [*newer, [_msg("wanted", 100)]]
-        svc = _service(_PagedNio(pages))
+        svc = _service(_PagedTransport(pages))
 
         result = await svc.read_context("agent", "room", limit=10, before_ms=500)
 
@@ -205,7 +210,7 @@ class TestWindowing:
 
     async def test_gives_up_loudly_rather_than_scanning_forever(self) -> None:
         endless = [[_msg(f"n{p}", 10_000 - p)] for p in range(200)]
-        svc = _service(_PagedNio(endless))
+        svc = _service(_PagedTransport(endless))
 
         result = await svc.read_context("agent", "room", limit=10, before_ms=500)
 
@@ -219,18 +224,18 @@ class TestWindowing:
             [_msg("new", 9_000)],
             [_msg("old", 100)],
         ]
-        nio_client = _PagedNio(pages, seek_to=1)
-        svc = _service(nio_client)
+        transport = _PagedTransport(pages, seek_to=1)
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=10, before_ms=500)
 
         assert _roots(result) == ["old"]
         # Jumped straight to the window instead of paging over page 0.
-        assert nio_client.requested_starts == ["1"]
+        assert transport.requested_starts == ["1"]
 
     async def test_since_stops_the_walk_once_the_window_is_covered(self) -> None:
-        nio_client = _PagedNio([[_msg("e2", 900)], [_msg("e1", 100)]])
-        svc = _service(nio_client)
+        transport = _PagedTransport([[_msg("e2", 900)], [_msg("e1", 100)]])
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=50, since_ms=500)
 
@@ -241,8 +246,8 @@ class TestWindowing:
 
 class TestJoins:
     async def test_join_appears_in_the_timeline(self) -> None:
-        nio_client = _PagedNio([[_join("$j", 100, "@alice:s", "Alice")]])
-        svc = _service(nio_client)
+        transport = _PagedTransport([[_join("$j", 100, "@alice:s", "Alice")]])
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=10)
 
@@ -252,16 +257,16 @@ class TestJoins:
         assert entry["sender"] == "@alice:s"
 
     async def test_display_name_change_is_not_an_arrival(self) -> None:
-        nio_client = _PagedNio([[_rename("$r", 100, "@alice:s", "Alice II")]])
-        svc = _service(nio_client)
+        transport = _PagedTransport([[_rename("$r", 100, "@alice:s", "Alice II")]])
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=10)
 
         assert result["threads"] == []
 
     async def test_messages_are_labelled_as_messages(self) -> None:
-        nio_client = _PagedNio([[_msg("e1", 100)]])
-        svc = _service(nio_client)
+        transport = _PagedTransport([[_msg("e1", 100)]])
+        svc = _service(transport)
 
         result = await svc.read_context("agent", "room", limit=10)
 

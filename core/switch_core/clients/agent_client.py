@@ -356,9 +356,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        member_name = event.content.get("displayname") or event.state_key.split(":")[
-            0
-        ].lstrip("@")
+        member_name = event.display_name or event.state_key.split(":")[0].lstrip("@")
         # `listening` tells each connector whether THIS receiving agent is
         # configured to react to join events in this room. The event is always
         # delivered; the connector decides whether to surface it.

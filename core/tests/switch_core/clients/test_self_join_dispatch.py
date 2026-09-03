@@ -107,9 +107,7 @@ async def test_rejoining_after_leaving_is_a_fresh_arrival() -> None:
     await client._handle_member_event(_room(), _member_event())
     await client._handle_member_event(
         _room(),
-        _member_event(
-            membership="leave", prev_membership="join", timestamp=3000
-        ),
+        _member_event(membership="leave", prev_membership="join", timestamp=3000),
     )
     await client._handle_member_event(
         _room(), _member_event(prev_membership="leave", timestamp=4000)

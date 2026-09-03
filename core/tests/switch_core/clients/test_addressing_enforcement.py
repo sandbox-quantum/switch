@@ -11,6 +11,7 @@ from switch_core.clients.agent_client import (
     _AddressingDecision,
     _SenderPrincipal,
 )
+from switch_core.transport import InboundMessage, RoomRef
 
 
 @asynccontextmanager
@@ -22,17 +23,18 @@ def _meta(room_id: str = "room-1") -> SimpleNamespace:
     return SimpleNamespace(room_id=room_id)
 
 
-def _event(
-    sender: str = "@u:switch.local", auto_reply: bool = False
-) -> SimpleNamespace:
+def _event(sender: str = "@u:switch.local", auto_reply: bool = False) -> InboundMessage:
     content: dict = {"sender_name": "human"}
     if auto_reply:
         content[AUTO_REPLY_FLAG] = True
-    return SimpleNamespace(
-        sender=sender,
-        body="@fixer help",
-        content=content,
+    return InboundMessage(
+        room_id="!matrix:switch.local",
         event_id="$evt",
+        sender=sender,
+        timestamp=1700000000000,
+        content=content,
+        body="@fixer help",
+        sender_name="human",
     )
 
 
@@ -384,8 +386,8 @@ def _gate_client(*, allowed: bool, refusal: str = _ADDRESSING_DENIED_MESSAGE):  
     return client
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id="!matrix:switch.local")
+def _room() -> RoomRef:
+    return RoomRef(room_id="!matrix:switch.local")
 
 
 class TestGateAddressed:

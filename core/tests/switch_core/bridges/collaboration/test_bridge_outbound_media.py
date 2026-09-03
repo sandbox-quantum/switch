@@ -120,7 +120,7 @@ class _FakeAdapter:
 
 def _fake_bridge(
     *,
-    download: object = SimpleNamespace(body=b"bytes"),
+    download: DownloadResult | TransportError = DownloadResult(body=b"bytes"),
     matrix_to_external: dict[str, str] | None = None,
     max_bytes: int = 1024,
 ) -> SimpleNamespace:
@@ -164,15 +164,19 @@ def _fake_bridge(
         BridgeCore._flush_incomplete_outbound_group.__get__(ns)
     )
 
-    async def _nio_download(mxc: str):
+    async def _download_media(uri: str) -> DownloadResult:
+        if isinstance(download, TransportError):
+            raise download
         return download
 
-    ns.client = SimpleNamespace(nio_client=SimpleNamespace(download=_nio_download))
+    ns.client = SimpleNamespace(
+        transport=SimpleNamespace(download_media=_download_media)
+    )
     return ns
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id="!room:s")
+def _room() -> RoomRef:
+    return RoomRef("!room:s")
 
 
 async def test_image_relays_via_send_attachment_and_records_map() -> None:
@@ -273,7 +277,7 @@ async def test_non_image_file_relays_natively() -> None:
 
 
 async def test_download_failure_posts_disclosed_fallback() -> None:
-    bridge = _fake_bridge(download=DownloadError("boom"))
+    bridge = _fake_bridge(download=TransportError("boom"))
 
     await BridgeCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client
@@ -285,7 +289,7 @@ async def test_download_failure_posts_disclosed_fallback() -> None:
 
 
 async def test_oversize_media_posts_disclosed_fallback() -> None:
-    bridge = _fake_bridge(download=SimpleNamespace(body=b"too big"), max_bytes=3)
+    bridge = _fake_bridge(download=DownloadResult(body=b"too big"), max_bytes=3)
 
     await BridgeCore.handle_outbound_media(
         bridge, _room(), _media_event(), bridge.client

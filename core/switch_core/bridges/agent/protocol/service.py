@@ -1492,23 +1492,19 @@ class ProtocolService:
 
     @staticmethod
     def _message_dict(event: Any) -> dict[str, Any]:
-        """Build the agent-facing message dict from a nio event."""
-        content = event.source.get("content", {}) if hasattr(event, "source") else {}
-        sender_name = content.get("sender_name")
-        if not sender_name:
-            sender_name = event.sender
+        """Build the agent-facing message dict from an inbound event."""
+        sender_name = getattr(event, "sender_name", None) or event.sender
         body = getattr(event, "body", None)
 
         attachments: list[dict[str, Any]] = []
         if isinstance(event, InboundMedia):
-            info = content.get("info", {}) or {}
             attachments.append(
                 {
-                    "filename": content.get("filename") or body,
-                    "mimetype": str(info.get("mimetype", "")),
-                    "size": int(info.get("size", 0) or 0),
-                    "mxc": str(event.uri),
-                    "msgtype": str(content.get("msgtype", "")),
+                    "filename": event.filename or body,
+                    "mimetype": event.mimetype or "",
+                    "size": event.size or 0,
+                    "mxc": event.uri,
+                    "msgtype": event.msgtype,
                 }
             )
 
@@ -1518,7 +1514,7 @@ class ProtocolService:
             "sender": event.sender,
             "sender_name": sender_name,
             "body": body,
-            "timestamp": getattr(event, "server_timestamp", None),
+            "timestamp": getattr(event, "timestamp", None),
             "attachments": attachments,
         }
 
@@ -1532,20 +1528,19 @@ class ProtocolService:
         """
         if event.membership != "join" or event.prev_membership == "join":
             return None
-        content = event.content or {}
-        name = content.get("displayname") or event.state_key
+        name = event.display_name or event.state_key
         return {
             "id": event.event_id,
             "kind": "room_join",
             "sender": event.state_key,
             "sender_name": name,
             "body": f"{name} joined the room",
-            "timestamp": getattr(event, "server_timestamp", None),
+            "timestamp": event.timestamp,
             "attachments": [],
         }
 
     def _timeline_entry(self, event: Any) -> dict[str, Any] | None:
-        """Map a nio timeline event to an agent-facing entry, or None to skip.
+        """Map a timeline event to an agent-facing entry, or None to skip.
 
         Messages and joins are the timeline; every other state event (leaves,
         topic changes, power levels) is noise an agent cannot act on.
@@ -1560,16 +1555,10 @@ class ProtocolService:
     def _thread_root_id(event: Any) -> str:
         """Return the thread root id for an event.
 
-        A message that carries an m.thread relation belongs to that root;
-        anything else is its own root (a top-level message).
+        A threaded reply belongs to its root; anything else is its own root.
         """
-        if hasattr(event, "source"):
-            relates = event.source.get("content", {}).get("m.relates_to") or {}
-            if relates.get("rel_type") == "m.thread":
-                root = relates.get("event_id")
-                if root:
-                    return str(root)
-        return str(event.event_id)
+        root = getattr(event, "thread_root_id", None)
+        return str(root) if root else str(event.event_id)
 
     async def read_context(
         self,
@@ -1663,7 +1652,7 @@ class ProtocolService:
                 seek_pages += 1
 
             for event in chunk:
-                ts = getattr(event, "server_timestamp", None)
+                ts = getattr(event, "timestamp", None)
                 # Newer than the window: keep walking back towards it.
                 if before_ms is not None and ts is not None and ts >= before_ms:
                     continue

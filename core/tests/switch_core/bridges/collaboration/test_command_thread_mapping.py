@@ -35,9 +35,7 @@ def _fake_bridge(
     lookup = external_to_matrix or {}
 
     async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
-        async def _send_event(
-            _room_id: str, _type: str, content: dict
-        ) -> SendResult:
+        async def _send_event(_room_id: str, _type: str, content: dict) -> SendResult:
             sent_content.append(content)
             if isinstance(send_result, TransportError):
                 raise send_result
