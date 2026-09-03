@@ -1180,6 +1180,37 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.0] - 2026-09-03
+
+#### Added
+- **A session that dies on an API error now says so.** A Claude Code turn that
+  fails on expired credentials, quota or a provider outage fires `StopFailure`,
+  which nothing listened for — the channel just went quiet and the operator had
+  to open the TUI to find out why. It now maps onto the `error` status and
+  carries the reason through, so the deeplink ping names what broke instead of a
+  bare "needs your input" (#356).
+
+#### Changed
+- **Sidecar upgrades are taken under live sessions now, except a major.** A
+  sidecar whose build differed from the client's used to be left alone whenever
+  it owned a session and upgraded only once idle, so a busy host could sit on a
+  stale sidecar indefinitely. The upgrade (a few seconds of room injection) is
+  now taken while sessions run; a major bump still waits for idle (#356).
+- Registering an agent with a name that isn't accepted now offers a valid slug
+  instead of rejecting it, and shows the rejected-name message as an error
+  banner (#325).
+- Bundles agent-runtime 0.4.1 (deleted-room / heartbeat backoff fixes), sidecar
+  1.9.7 (reaps dead tmux targets), and the updated connectors (Claude Code
+  0.9.12, Codex 0.3.13, OpenCode 0.1.8).
+- **Local-server mode now bundles switch-core 0.23.0** (was 0.21.0) — the pinned
+  images and standalone compose it pulls move up to the current release.
+
+#### Fixed
+- An errored turn no longer reads as a fresh request for input: the stalled
+  prompt that follows a failure is suppressed so it doesn't bury the reason, and
+  on the Slack card the reason is marked as a stall rather than streamed under a
+  spinner as if it were progress (#356).
+
 ### [0.31.3] - 2026-09-01
 
 #### Added
@@ -2754,6 +2785,16 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.7] - 2026-09-03
+
+#### Fixed
+- Reap dead tmux targets so a pane whose tmux session has gone is not treated as
+  a live one (#336).
+
+#### Changed
+- Rebuilt on agent-runtime 0.4.1 (a deleted room no longer wedges the whole
+  connection, and the heartbeat backs off when the connection is rejected).
+
 ### [1.9.6] - 2026-09-01
 
 #### Changed
@@ -2849,6 +2890,14 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.12] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
 
 ### [0.9.11] - 2026-09-01
 #### Changed
@@ -3078,6 +3127,14 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.13] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skills updated: document user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
 ### [0.3.12] - 2026-09-01
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
@@ -3260,6 +3317,15 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.8] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. (Delivered at the next Switch Console update, which
+  rewrites the embedded connector.)
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
 
 ### [0.1.7] - 2026-09-01
 #### Changed
