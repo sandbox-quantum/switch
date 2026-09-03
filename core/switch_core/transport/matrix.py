@@ -394,7 +394,9 @@ class MatrixTransport:
             raise TransportError(
                 f"Failed to send {event_type} to {room_id}: {resp.message}"
             )
-        return SendResult(event_id=resp.event_id)
+        return SendResult(
+            event_id=resp.event_id, event_type=event_type, content=content
+        )
 
     async def upload_media(
         self, data: bytes, content_type: str, filename: str

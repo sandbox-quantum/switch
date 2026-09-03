@@ -24,6 +24,7 @@ from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.client_factory import matrix_transport_for
 from switch_core.clients.resource_manager_client import ResourceManagerClient
 from switch_core.clients.user_client import UserClient
+from tests.switch_core.transport.fake import FakeMessageRecorder
 
 
 def _base_kwargs() -> dict[str, Any]:
@@ -38,6 +39,7 @@ def _base_kwargs() -> dict[str, Any]:
         "transport_factory": matrix_transport_for,
         "session_state": {"access_token": None, "device_id": None},
         "next_batch_token": None,
+        "message_recorder": FakeMessageRecorder(),
     }
 
 

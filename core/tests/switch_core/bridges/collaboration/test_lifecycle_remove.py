@@ -50,6 +50,7 @@ def _service(
         matrix_admin=MagicMock(),
         session_factory=session_factory,
         config=MagicMock(),
+        message_recorder=MagicMock(),
     )
 
 

@@ -103,7 +103,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.transport.send_event(
+        await self.send_event(
             room.room_id,
             "com.switch.resource.load_response",
             response.model_dump(mode="json"),
@@ -157,7 +157,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.transport.send_event(
+        await self.send_event(
             room.room_id,
             "com.switch.resource.room_document_create_response",
             response.model_dump(mode="json"),
@@ -209,7 +209,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.transport.send_event(
+        await self.send_event(
             room.room_id,
             "com.switch.resource.room_document_update_response",
             response.model_dump(mode="json"),
@@ -262,7 +262,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.transport.send_event(
+        await self.send_event(
             room.room_id,
             "com.switch.resource.room_document_delete_response",
             response.model_dump(mode="json"),

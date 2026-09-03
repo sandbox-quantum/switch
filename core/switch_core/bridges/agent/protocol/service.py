@@ -1398,7 +1398,7 @@ class ProtocolService:
                 "No live client for agent %s; skipping runtime-state emit", agent_id
             )
             return
-        await client.transport.send_event(
+        await client.send_event(
             matrix_room_id,
             "com.switch.agent.runtime_state",
             {
@@ -1863,7 +1863,7 @@ class ProtocolService:
                     duration_ms=event.duration_ms,
                     cost=event.cost,
                 )
-                await client.transport.send_event(
+                await client.send_event(
                     room.matrix_room_id,
                     "com.switch.report.tool_call",
                     tool_event.model_dump(exclude_none=True),
@@ -1878,7 +1878,7 @@ class ProtocolService:
                     duration_ms=event.duration_ms,
                     cost=event.cost,
                 )
-                await client.transport.send_event(
+                await client.send_event(
                     room.matrix_room_id,
                     "com.switch.report.llm_call",
                     llm_event.model_dump(exclude_none=True),
@@ -1938,7 +1938,7 @@ class ProtocolService:
 
         client = self.client_lifecycle.get_by_agent_id(requester_id)
         if client and client.transport:
-            await client.transport.send_event(
+            await client.send_event(
                 room.matrix_room_id,
                 "com.switch.task.delegate",
                 {
@@ -1973,7 +1973,7 @@ class ProtocolService:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            await client.transport.send_event(
+            await client.send_event(
                 room.matrix_room_id,
                 "com.switch.task.accept",
                 {
@@ -2006,7 +2006,7 @@ class ProtocolService:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            await client.transport.send_event(
+            await client.send_event(
                 room.matrix_room_id,
                 "com.switch.task.update",
                 {
@@ -2040,7 +2040,7 @@ class ProtocolService:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            await client.transport.send_event(
+            await client.send_event(
                 room.matrix_room_id,
                 "com.switch.task.finalise",
                 {
@@ -2070,7 +2070,7 @@ class ProtocolService:
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client and client.transport:
-            await client.transport.send_event(
+            await client.send_event(
                 room.matrix_room_id,
                 "com.switch.task.cancel",
                 {
@@ -3374,7 +3374,7 @@ class ProtocolService:
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.transport.send_event(
+        await client.send_event(
             room.matrix_room_id,
             "com.switch.mediation.tool_request",
             {
@@ -3416,7 +3416,7 @@ class ProtocolService:
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.transport.send_event(
+        await client.send_event(
             room.matrix_room_id,
             "com.switch.mediation.llm_request",
             {
@@ -3459,7 +3459,7 @@ class ProtocolService:
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await rm.transport.send_event(
+        await rm.send_event(
             room.matrix_room_id,
             "com.switch.mediation.tool_result",
             {
@@ -3508,7 +3508,7 @@ class ProtocolService:
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.transport.send_event(
+        await client.send_event(
             room.matrix_room_id,
             "com.switch.resource.load_request",
             {
@@ -3554,7 +3554,7 @@ class ProtocolService:
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.transport.send_event(
+        await client.send_event(
             room.matrix_room_id,
             "com.switch.resource.room_document_create_request",
             {
@@ -3610,7 +3610,7 @@ class ProtocolService:
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.transport.send_event(
+        await client.send_event(
             room.matrix_room_id,
             "com.switch.resource.room_document_update_request",
             {
@@ -3662,7 +3662,7 @@ class ProtocolService:
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.transport.send_event(
+        await client.send_event(
             room.matrix_room_id,
             "com.switch.resource.room_document_delete_request",
             {
@@ -3714,7 +3714,7 @@ class ProtocolService:
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await rm.transport.send_event(
+        await rm.send_event(
             room.matrix_room_id,
             "com.switch.mediation.llm_response",
             {

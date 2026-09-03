@@ -37,6 +37,7 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
+from switch_core.messages import MessageRecorder
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -45,6 +46,7 @@ from switch_core.transport import (
     InboundMessage,
     MessageTransport,
     RoomRef,
+    SendResult,
     TransportError,
     TransportHandlers,
 )
@@ -80,6 +82,7 @@ class ClientBase[ConfigT: ClientConfig]:
         config: ConfigT,
         transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
         session_state: dict[str, str | None],
+        message_recorder: MessageRecorder,
         next_batch_token: str | None = None,
     ) -> None:
         self.client_id = client_id
@@ -90,6 +93,7 @@ class ClientBase[ConfigT: ClientConfig]:
         self.session_factory = session_factory
         self.client_store = client_store
         self.config = config
+        self.message_recorder = message_recorder
 
         # Credentials the transport owns. Stored and handed back unread, so
         # what authentication needs is the transport's business alone.
@@ -621,6 +625,20 @@ class ClientBase[ConfigT: ClientConfig]:
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)
             return None
+        await self._record(room_id, result)
+        return result.event_id
+
+    async def send_event(
+        self, room_id: str, event_type: str, content: dict[str, object]
+    ) -> str:
+        """Send a custom event, e.g. one of the `com.switch.*` types.
+
+        Raises rather than returning None: unlike a chat message, these events
+        carry protocol state, and a caller that proceeds as though one was
+        delivered when it was not corrupts whatever it was coordinating.
+        """
+        result = await self._transport.send_event(room_id, event_type, content)
+        await self._record(room_id, result)
         return result.event_id
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
@@ -675,7 +693,17 @@ class ClientBase[ConfigT: ClientConfig]:
         except TransportError as exc:
             logger.error("Failed to send media to %s: %s", room_id, exc)
             return None
+        await self._record(room_id, result)
         return result.event_id
+
+    async def _record(self, room_id: str, result: SendResult) -> None:
+        await self.message_recorder.record(
+            transport_room_id=room_id,
+            result=result,
+            sender_matrix_id=self.matrix_user_id,
+            sender_client_id=self.client_id,
+            sender_name=self.display_name,
+        )
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
         await self._transport.set_typing(room_id, is_typing)

@@ -646,9 +646,7 @@ class BridgeCore:
             }
 
         try:
-            if puppet.transport is None:
-                raise TransportError(f"puppet {puppet.client_id} is not connected")
-            result = await puppet.transport.send_event(
+            event_id = await puppet.send_event(
                 matrix_room_id, "com.switch.command", content
             )
         except TransportError as exc:
@@ -667,7 +665,7 @@ class BridgeCore:
         if existing_matrix_root is None and thread_root_post is not None:
             await self._record_message_map(
                 external_channel_id=cmd.channel_id,
-                matrix_event_id=result.event_id,
+                matrix_event_id=event_id,
                 external_post_id=thread_root_post,
             )
 

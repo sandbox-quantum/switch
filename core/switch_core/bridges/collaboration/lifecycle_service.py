@@ -22,6 +22,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.matrix_admin import MatrixAdmin
+from switch_core.messages import MessageRecorder
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -64,6 +65,7 @@ class CollaborationBridgeLifecycleService:
         matrix_admin: MatrixAdmin,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        message_recorder: MessageRecorder,
     ) -> None:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
@@ -76,6 +78,7 @@ class CollaborationBridgeLifecycleService:
         self._matrix_admin = matrix_admin
         self._session_factory = session_factory
         self._config = config
+        self._message_recorder = message_recorder
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -419,6 +422,7 @@ class CollaborationBridgeLifecycleService:
             client_store=self._client_store,
             config=BridgeClientConfig(bridge_id=bridge_id),
             transport_factory=matrix_transport_for,
+            message_recorder=self._message_recorder,
             session_state={
                 "access_token": bridge_client_record.access_token,
                 "device_id": bridge_client_record.device_id,

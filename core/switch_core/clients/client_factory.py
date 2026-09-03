@@ -8,6 +8,7 @@ from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.messages import MessageRecorder
 from switch_core.transport import MessageTransport
 from switch_core.transport.matrix import MatrixTransport
 
@@ -36,10 +37,12 @@ class ClientFactory:
         client_store: ClientStore,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        message_recorder: MessageRecorder,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
         self._config = config
+        self._message_recorder = message_recorder
         self._registry: dict[
             str, tuple[type[ClientBase[ClientConfig]], dict[str, object]]
         ] = {}
@@ -68,6 +71,7 @@ class ClientFactory:
             client_store=self._client_store,
             config=config,
             transport_factory=matrix_transport_for,
+            message_recorder=self._message_recorder,
             session_state={
                 "access_token": record.access_token,
                 "device_id": record.device_id,

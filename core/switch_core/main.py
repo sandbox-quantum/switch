@@ -73,6 +73,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -90,6 +91,7 @@ from switch_core.matrix_admin import (
     ensure_admin_exists,
     wait_for_homeserver,
 )
+from switch_core.messages import MessageRecorder
 from switch_core.room_service import RoomService
 from switch_core.version import switch_core_version
 
@@ -210,6 +212,12 @@ async def run() -> None:
     room_link_store = RoomLinkStore()
     room_group_store = RoomGroupStore()
     room_role_store = RoomRoleStore()
+    message_store = MessageStore()
+    message_recorder = MessageRecorder(
+        session_factory=session_factory,
+        room_store=room_store,
+        message_store=message_store,
+    )
 
     # ── Seed admin user + registration key ──────────────────────────────────
     await _seed_admin_user(session_factory, user_store, config)
@@ -246,6 +254,7 @@ async def run() -> None:
         client_store=client_store,
         session_factory=session_factory,
         config=config,
+        message_recorder=message_recorder,
     )
     client_factory.register(
         "agent",
@@ -297,6 +306,7 @@ async def run() -> None:
         matrix_admin=matrix_admin,
         session_factory=session_factory,
         config=config,
+        message_recorder=message_recorder,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
