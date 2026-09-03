@@ -12,6 +12,7 @@ from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
+from switch_core.clients.client_factory import matrix_transport_for
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
 from switch_core.db.stores.agent_store import AgentStore
@@ -417,8 +418,11 @@ class CollaborationBridgeLifecycleService:
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=BridgeClientConfig(bridge_id=bridge_id),
-            device_id=bridge_client_record.device_id,
-            access_token=bridge_client_record.access_token,
+            transport_factory=matrix_transport_for,
+            session_state={
+                "access_token": bridge_client_record.access_token,
+                "device_id": bridge_client_record.device_id,
+            },
             next_batch_token=bridge_client_record.next_batch_token,
         )
 

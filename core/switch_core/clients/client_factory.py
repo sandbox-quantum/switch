@@ -14,7 +14,7 @@ from switch_core.transport.matrix import MatrixTransport
 logger = logging.getLogger(__name__)
 
 
-def _matrix_transport_for(client: ClientBase[ClientConfig]) -> MessageTransport:
+def matrix_transport_for(client: ClientBase[ClientConfig]) -> MessageTransport:
     """Build the transport a client runs on.
 
     Choosing the implementation is the factory's job, so a client never names
@@ -67,7 +67,7 @@ class ClientFactory:
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=config,
-            transport_factory=_matrix_transport_for,
+            transport_factory=matrix_transport_for,
             session_state={
                 "access_token": record.access_token,
                 "device_id": record.device_id,
