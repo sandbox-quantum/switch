@@ -257,6 +257,9 @@ export class RoomConnection {
   private busy = false;
   /** Last runtime state we pushed to the bridge, to avoid redundant calls. */
   private runtimeState: RuntimeState = 'idle';
+  /** Why the current `awaiting-input` was reported, when it was an error. Null
+   * for an ordinary request for input, and cleared as soon as work resumes. */
+  private awaitingReason: string | null = null;
   /**
    * True while the session is handling a turn kicked off by an addressed room
    * message. Only then does runtime state surface to the room — local TUI work
@@ -799,6 +802,20 @@ export class RoomConnection {
     // e.g. a follow-up prompt with no intervening `working` event we observed.
     // `working`/`idle` stay deduped: one "working on it…" / one clear is enough.
     if (state !== 'awaiting-input' && this.runtimeState === state) return;
+    // The exception to that: a session that just died on an error goes quiet at
+    // its prompt, and Claude reports the idle prompt as one more request for
+    // input. Reported as-is that is a second, reasonless ping seconds after the
+    // one naming the failure — it reads as a new request and buries the reason.
+    // The turn is still the errored one until work resumes, so say nothing more
+    // until it does.
+    if (state === 'awaiting-input' && this.awaitingReason !== null && !detail) {
+      this.log.debug('RoomConnection: awaiting-input with no reason follows an error — skipping', {
+        roomId: this.roomId,
+        reason: this.awaitingReason,
+      });
+      return;
+    }
+    this.awaitingReason = state === 'awaiting-input' ? (detail ?? null) : null;
     const wasWorking = this.runtimeState === 'working';
     this.runtimeState = state;
     // A fresh state clears the activity line: a new "working" turn starts from

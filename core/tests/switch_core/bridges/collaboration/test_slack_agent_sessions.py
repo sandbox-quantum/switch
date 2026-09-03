@@ -259,6 +259,31 @@ def test_the_same_activity_is_not_sent_twice() -> None:
     assert len(_chunks(client)) == 1
 
 
+def test_a_stalled_turn_is_flagged_rather_than_shown_as_progress() -> None:
+    """A detail on `awaiting-input` is why the turn died, not a step the agent
+    is taking. Unmarked it reads as work in progress."""
+    adapter, client = _adapter()
+
+    _run(_state(adapter, "working", detail="reading the codebase"))
+    _run(_state(adapter, "awaiting-input", detail="authentication_failed — expired"))
+
+    assert [c["title"] for c in _chunks(client)] == [
+        "reading the codebase",
+        "⚠️ authentication_failed — expired",
+    ]
+
+
+def test_an_ordinary_request_for_input_is_not_flagged() -> None:
+    """Only a reason gets the warning mark — a plain request for input keeps
+    the generic step it has always had."""
+    adapter, client = _adapter()
+
+    _run(_state(adapter, "working", detail="reading the codebase"))
+    _run(_state(adapter, "awaiting-input"))
+
+    assert [c["title"] for c in _chunks(client)] == ["reading the codebase", "Working"]
+
+
 def test_switch_markup_is_stripped_from_a_step() -> None:
     """A card's title is plain text, so markup arrives as literal underscores
     and backticks — which is exactly how it looked in the pilot."""
