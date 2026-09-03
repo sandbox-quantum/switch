@@ -1,12 +1,15 @@
 import uuid
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
+    Integer,
     Table,
     Text,
     UniqueConstraint,
@@ -853,4 +856,86 @@ class FeatureFlag(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+# ── Messages ─────────────────────────────────────────────────────────────────
+
+
+class Message(Base):
+    """A message as it was sent into a room.
+
+    Written alongside the send to the message bus, which remains the source of
+    truth for history until the read path moves here. Rows are therefore a
+    parallel record, not yet an authoritative one: a write that fails after a
+    successful send leaves a gap, by design, so that a database problem cannot
+    make messaging less reliable.
+
+    Every participant in a room is a Switch-owned client, so recording each
+    send captures the whole room exactly once — including messages a human
+    originates on a bridged platform, which enter through that user's puppet.
+
+    `content` is the full event body as sent. The columns beside it are
+    denormalised out of it for querying; for a custom `com.switch.*` event
+    they are mostly null and `content` carries everything.
+    """
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_room_seq", "room_id", "seq"),
+        Index(
+            "ix_messages_thread_root",
+            "room_id",
+            "thread_root_event_id",
+            postgresql_where=text("thread_root_event_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    # Total order across all rooms, and the cursor the read path pages on:
+    # created_at ties on messages sent in the same transaction.
+    seq: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=True), unique=True, nullable=False
+    )
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    transport_event_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    sender_matrix_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_client_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("clients.id", ondelete="SET NULL"), nullable=True
+    )
+    sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    msgtype: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    formatted_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thread_root_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    sent_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MessageAttachment(Base):
+    """A file carried by a message.
+
+    One row per file, so a multi-file send is several rows against one message
+    in the order they were sent.
+    """
+
+    __tablename__ = "message_attachments"
+    __table_args__ = (Index("ix_message_attachments_message", "message_id"),)
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    message_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    uri: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mimetype: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
