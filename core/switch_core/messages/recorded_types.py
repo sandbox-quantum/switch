@@ -56,12 +56,7 @@ PERSISTED_ELSEWHERE = frozenset(
 # they want a table shaped for querying them, not the conversation log.
 TELEMETRY = frozenset({"com.switch.report.tool_call", "com.switch.report.llm_call"})
 
-# Declared and dispatched, but nothing in switch_core sends them.
-NOT_SENT = frozenset(
-    {"com.switch.permission.request", "com.switch.permission.response"}
-)
-
-NOT_RECORDED = EPHEMERAL | RPC | PERSISTED_ELSEWHERE | TELEMETRY | NOT_SENT
+NOT_RECORDED = EPHEMERAL | RPC | PERSISTED_ELSEWHERE | TELEMETRY
 
 # The observe prefix is reserved and unimplemented; no type under it exists to
 # name individually yet.

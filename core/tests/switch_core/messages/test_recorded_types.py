@@ -9,7 +9,6 @@ from switch_core.clients.client_base import ClientBase
 from switch_core.messages.recorded_types import (
     EPHEMERAL,
     NOT_RECORDED,
-    NOT_SENT,
     PERSISTED_ELSEWHERE,
     RPC,
     TELEMETRY,
@@ -38,7 +37,7 @@ def test_classification_names_no_type_that_is_never_dispatched():
 
 
 def test_the_buckets_do_not_overlap():
-    buckets = [EPHEMERAL, RPC, PERSISTED_ELSEWHERE, TELEMETRY, NOT_SENT]
+    buckets = [EPHEMERAL, RPC, PERSISTED_ELSEWHERE, TELEMETRY]
     total = sum(len(bucket) for bucket in buckets)
     assert total == len(NOT_RECORDED)
 

@@ -164,19 +164,3 @@ class AgentRuntimeStateEvent(SwitchEvent):
     # the agent really has. Unchanged between reports (e.g. the periodic
     # activity refresh) means the indicator stays where it is.
     anchor_event_id: str | None = None
-
-
-# ── Permission ────────────────────────────────────────────────────────────────
-
-
-class PermissionRequest(SwitchEvent):
-    request_id: str
-    agent_id: str
-    action: str
-    details: dict[str, object] | None = None
-
-
-class PermissionResponse(SwitchEvent):
-    request_id: str
-    approved: bool
-    responder_id: str

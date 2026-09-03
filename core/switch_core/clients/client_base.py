@@ -27,8 +27,6 @@ from switch_core.events import (
     MediationLlmResponse,
     MediationToolRequest,
     MediationToolResult,
-    PermissionRequest,
-    PermissionResponse,
     SwitchEvent,
     TaskAccept,
     TaskCancel,
@@ -371,11 +369,6 @@ class ClientBase[ConfigT: ClientConfig]:
             AgentRuntimeStateEvent,
             "on_agent_runtime_state",
         ),
-        "com.switch.permission.request": (PermissionRequest, "on_permission_request"),
-        "com.switch.permission.response": (
-            PermissionResponse,
-            "on_permission_response",
-        ),
         "com.switch.resource.load_request": (
             ResourceLoadRequest,
             "on_resource_load_request",
@@ -556,16 +549,6 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def on_agent_runtime_state(
         self, room: RoomRef, event: AgentRuntimeStateEvent
-    ) -> None:
-        pass
-
-    async def on_permission_request(
-        self, room: RoomRef, event: PermissionRequest
-    ) -> None:
-        pass
-
-    async def on_permission_response(
-        self, room: RoomRef, event: PermissionResponse
     ) -> None:
         pass
 
