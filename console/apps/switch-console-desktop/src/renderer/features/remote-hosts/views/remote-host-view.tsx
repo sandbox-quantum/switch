@@ -104,12 +104,15 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
   }, [blocked, plan.isLoading, startPrepare]);
 
   // Resolve the Switch server for this host: prefer a managed server on this
-  // host, then the active server, then the first available.
+  // host, then the active server, then the first available. Read the
+  // observables outside useMemo so MobX tracks them and React sees them change.
+  const servers = switchServersStore.servers;
+  const activeServer = switchServersStore.activeServer;
   const serverId = useMemo(() => {
-    const managed = switchServersStore.servers.find((s) => s.sshHost === sshHost && s.managed);
+    const managed = servers.find((s) => s.sshHost === sshHost && s.managed);
     if (managed) return managed.id;
-    return switchServersStore.activeServer?.id ?? switchServersStore.servers[0]?.id ?? null;
-  }, [sshHost]);
+    return activeServer?.id ?? servers[0]?.id ?? null;
+  }, [sshHost, servers, activeServer]);
 
   const status = deriveHostStatus(reachability, plan.data ?? null);
   const { prerequisites, agentTypes } = useMemo(
