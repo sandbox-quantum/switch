@@ -21,7 +21,7 @@ import {
   sessionChangedChannel,
 } from '@shared/core/sessions/sessionEvents';
 import { dbContextResolver } from './db-context-resolver';
-import { deriveAgentStatus } from './derive-agent-status';
+import { deriveAgentStatus, deriveErrorDetail } from './derive-agent-status';
 import { parseHookEvent } from './event-enricher';
 import { HookServer, type RawHookRequest } from './hook-server';
 import { isAppFocused, maybeShowNotification } from './notification';
@@ -34,7 +34,7 @@ function determineSoundEvent(
   event: AgentEvent,
   status: AgentStatus
 ): 'needs_attention' | 'session_complete' | undefined {
-  if (status === 'awaiting-input') return 'needs_attention';
+  if (status === 'awaiting-input' || status === 'error') return 'needs_attention';
   if (status === 'completed' && event.type === 'stop') return 'session_complete';
   return undefined;
 }
@@ -210,7 +210,12 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
       // ipcMain), so an in-process emit never reaches an in-process listener — the
       // poller would otherwise never observe a turn finishing and would release
       // its gate only via the 60s fallback.
-      switchNotificationPoller.onAgentStatusChange(event.sessionId, status, notificationType);
+      switchNotificationPoller.onAgentStatusChange(
+        event.sessionId,
+        status,
+        notificationType,
+        deriveErrorDetail(event)
+      );
 
       await db
         .update(sessions)

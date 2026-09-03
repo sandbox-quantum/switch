@@ -32,6 +32,7 @@ export const plugin = definePlugin(
         'start',
         'notification',
         'stop',
+        'stop-failure',
         'tool-use',
         'tool-done',
         'tool-use-failure',

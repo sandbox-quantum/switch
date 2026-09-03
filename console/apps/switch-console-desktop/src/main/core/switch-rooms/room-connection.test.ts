@@ -669,6 +669,61 @@ describe('RoomConnection', () => {
     conn.stop();
   });
 
+  it('reports an error as awaiting-input carrying the reason', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+
+    conn.onAgentStatusChange('error', undefined, 'authentication_failed — expired');
+    await flush();
+
+    expect(runtimeStates(fetchMock)).toContain('awaiting-input');
+    expect(runtimeDetails(fetchMock)).toContain('authentication_failed — expired');
+    conn.stop();
+  });
+
+  it('does not ping again for the idle prompt that follows an error', async () => {
+    // Claude reports its ready prompt as one more request for input seconds
+    // after the failure. Passed on, that is a second reasonless ping that
+    // buries the one naming the error.
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+
+    conn.onAgentStatusChange('error', undefined, 'server_error — upstream 503');
+    await flush();
+    conn.onAgentStatusChange('awaiting-input', 'idle_prompt');
+    await flush();
+
+    const awaiting = fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes('/runtime-state'))
+      .map((c) => JSON.parse((c[1] as RequestInit).body as string))
+      .filter((b) => b.state === 'awaiting-input');
+    expect(awaiting).toHaveLength(1);
+    expect(awaiting[0].detail).toBe('server_error — upstream 503');
+    conn.stop();
+  });
+
+  it('pings again for a genuine request for input once work has resumed', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+
+    conn.onAgentStatusChange('error', undefined, 'rate_limit');
+    await flush();
+    conn.onAgentStatusChange('working');
+    await flush();
+    conn.onAgentStatusChange('awaiting-input', 'permission_prompt');
+    await flush();
+
+    const awaiting = fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes('/runtime-state'))
+      .map((c) => JSON.parse((c[1] as RequestInit).body as string))
+      .filter((b) => b.state === 'awaiting-input');
+    expect(awaiting).toHaveLength(2);
+    conn.stop();
+  });
+
   it('stops posting after stop()', async () => {
     const target: InjectionTarget = { write: vi.fn() };
     const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);

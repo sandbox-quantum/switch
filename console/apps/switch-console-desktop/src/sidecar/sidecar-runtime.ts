@@ -1,6 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { deriveAgentStatus } from '@main/core/agent-hooks/derive-agent-status';
+import { deriveAgentStatus, deriveErrorDetail } from '@main/core/agent-hooks/derive-agent-status';
 import type { ContextResolver, ParsedHookEvent } from '@main/core/agent-hooks/event-enricher';
 import { parseHookEvent } from '@main/core/agent-hooks/event-enricher';
 import type { RawHookRequest } from '@main/core/agent-hooks/hook-server';
@@ -24,7 +24,8 @@ export interface ManagedConnection {
   stop(): void;
   onAgentStatusChange(
     status: Parameters<RoomConnection['onAgentStatusChange']>[0],
-    notificationType?: Parameters<RoomConnection['onAgentStatusChange']>[1]
+    notificationType?: Parameters<RoomConnection['onAgentStatusChange']>[1],
+    detail?: Parameters<RoomConnection['onAgentStatusChange']>[2]
   ): void;
   reportActivity(detail: string): void;
   /** The connection id this session's tool calls are expected to arrive on. */
@@ -183,7 +184,11 @@ export class SidecarRuntime {
         parsed.event.type === 'notification' ? parsed.event.payload.notificationType : undefined;
       // Route to the session the event came from — not every connection.
       const session = this.sessions.get(parsed.event.sessionId);
-      session?.connection.onAgentStatusChange(status, notificationType);
+      session?.connection.onAgentStatusChange(
+        status,
+        notificationType,
+        deriveErrorDetail(parsed.event)
+      );
       return;
     }
 

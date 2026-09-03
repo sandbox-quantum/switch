@@ -786,7 +786,12 @@ class SlackAdapter(CollaborationAdapter):
         elif state == "awaiting-input":
             # Leave the working indicator up; add a ping and track it.
             ref = await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -977,12 +982,16 @@ class SlackAdapter(CollaborationAdapter):
         else:
             self._session_owner.pop(key, None)
 
+        # A detail on `awaiting-input` is the reason a turn died, not a step the
+        # agent is taking. Streamed unmarked it reads as progress — a spinner
+        # over "the turn ended on an error" — so it is flagged as the stall it is.
+        step_detail = f"⚠️ {detail}" if state == "awaiting-input" and detail else detail
         await self._drive_stream(
             channel_id,
             thread_ts,
             agent_name,
             working=working,
-            detail=detail,
+            detail=step_detail,
             deeplink_url=deeplink_url,
         )
 
