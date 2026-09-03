@@ -63,6 +63,23 @@ export function sidecarMajor(version: string | null): number {
 }
 
 /**
+ * Whether replacing a sidecar on `runningVersion` with this build crosses a
+ * major — the one upgrade that waits for the sidecar to go idle rather than
+ * taking live sessions through a restart.
+ *
+ * A major is where the durable state schema may move, and a sidecar refuses to
+ * read state written by a newer one, so a half-taken major upgrade can strand
+ * the sessions it was meant to carry. Everything below a major is a few seconds
+ * of lost room injection, which is not worth deferring for.
+ *
+ * The launcher's deploy policy and the settings panel's verdict both ask this,
+ * so they cannot drift into offering an Update that does nothing.
+ */
+export function isMajorUpgrade(runningVersion: string | null, clientVersion: string): boolean {
+  return sidecarMajor(clientVersion) > sidecarMajor(runningVersion);
+}
+
+/**
  * A version as numbers; a missing or unparseable part reads as 0.
  *
  * Two-part versions still parse, and must keep doing so: sidecars deployed

@@ -134,6 +134,10 @@ The relational schema is defined in
 - **Reference** / **Document** / **Package** — the attachable resource library
   (external pointers, internal docs, and bundles), each with independent
   read/write visibility.
+- **ReferenceType** — a user-defined external reference type (slug, display
+  name, agent-facing instructions, value hint) with its own read/write
+  visibility. Four built-in types (Google Drive, Confluence, GitHub, Jira) ship
+  in code rather than as rows and win any slug collision.
 - **CollaborationBridge** — configured external chat bridges.
 - **ServerConnector** — a Switch-hosted connector driving an external agent host
   (e.g. OpenCode) from the server, rather than the agent connecting in.
@@ -358,10 +362,10 @@ Auth-bypass path prefixes for the Bearer middleware are enumerated in
   [`core/switch_core/authz.py`](../core/switch_core/authz.py). The subject is
   always a **user** principal; an agent-initiated request resolves to the
   agent's owner and inherits exactly that owner's permissions. `role == "admin"`
-  is a global bypass. Owned entities (Rooms, References, Documents, Packages)
-  carry independent `read_visibility` and `write_visibility` (`public` /
-  `private`); the rule is uniform across them and only their *default*
-  visibility differs. `authz` has no I/O, so it is trivially testable and call
+  is a global bypass. Owned entities (Rooms, References, ReferenceTypes,
+  Documents, Packages) carry independent `read_visibility` and
+  `write_visibility` (`public` / `private`); the rule is uniform across them and
+  only their *default* visibility differs. `authz` has no I/O, so it is trivially testable and call
   sites route through it (`require(...)`).
 - **Room scoping** — an agent only receives events for, and can only act in,
   rooms it is a member of. Cross-room resource access is validated server-side

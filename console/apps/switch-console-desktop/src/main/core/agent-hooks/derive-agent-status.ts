@@ -20,3 +20,15 @@ export function deriveAgentStatus(event: AgentEvent): AgentStatus | null {
   }
   return null;
 }
+
+/**
+ * The reason line for an `error` event, for surfacing on the bridged channel
+ * beside the session deeplink. Undefined for every other event, and for an
+ * error the provider reported without any detail. Pure, for the same reason
+ * `deriveAgentStatus` is.
+ */
+export function deriveErrorDetail(event: AgentEvent): string | undefined {
+  if (event.type !== 'error') return undefined;
+  const message = event.payload.message?.trim();
+  return message ? message : undefined;
+}

@@ -383,10 +383,31 @@ describe('RemoteSidecarLauncher versioning', () => {
     expect(await makeLauncher(host).probeExisting()).toEqual(ENDPOINT);
   });
 
-  it('defers an available upgrade while the sidecar has live sessions', async () => {
+  it('takes an upgrade within the major even while sessions are live', async () => {
+    // Live sessions used to hold this back, which left the busiest hosts — the
+    // ones most likely to need the fix — on a stale build indefinitely. The
+    // restart costs a few seconds of room injection: panes are separate tmux
+    // sessions, agents re-read the endpoint file, and the durable state
+    // re-adopts each pane's room on boot.
     const { host, calls } = makeHost({
       existingSidecar: true,
       readyHash: 'hash-old',
+      liveSessions: 2,
+    });
+
+    await makeLauncher(host).deployAndLaunch();
+
+    expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(true);
+  });
+
+  it('defers a MAJOR upgrade while the sidecar has live sessions', async () => {
+    // A major is where the durable state schema may move, and a sidecar refuses
+    // to read state written by a newer one — so a major taken under live
+    // sessions risks stranding the sessions it was meant to carry.
+    const { host, calls } = makeHost({
+      existingSidecar: true,
+      readyHash: 'hash-old',
+      readyVersion: '0.9',
       liveSessions: 2,
     });
 
@@ -394,6 +415,19 @@ describe('RemoteSidecarLauncher versioning', () => {
 
     expect(endpoint).toEqual(ENDPOINT);
     expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(false);
+  });
+
+  it('takes a major upgrade once the sidecar is idle', async () => {
+    const { host, calls } = makeHost({
+      existingSidecar: true,
+      readyHash: 'hash-old',
+      readyVersion: '0.9',
+      liveSessions: 0,
+    });
+
+    await makeLauncher(host).deployAndLaunch();
+
+    expect(calls.some((c) => c.command === 'tmux' && c.args[0] === 'kill-session')).toBe(true);
   });
 
   it('takes the upgrade once the sidecar is idle', async () => {

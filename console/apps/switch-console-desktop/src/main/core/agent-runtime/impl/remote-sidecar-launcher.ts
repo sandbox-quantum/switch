@@ -17,6 +17,7 @@ import {
 } from '../../../../sidecar/sidecar-paths';
 import {
   compareSidecarVersions,
+  isMajorUpgrade,
   MIN_SUPPORTED_SIDECAR_MAJOR,
   SIDECAR_CLIENT_MAJOR,
   SIDECAR_VERSION,
@@ -632,10 +633,18 @@ export class RemoteSidecarLauncher {
    *    it would be a downgrade.
    *  - same version, another install's build → reattach; neither of us can claim
    *    to be the upgrade, so whoever got there first keeps it.
-   *  - different build, no live sessions → upgrade, since nothing is disturbed.
-   *  - different build, live sessions → reattach and record that an upgrade is
-   *    pending, rather than interrupting work in flight for a build difference.
-   *    The next launch with an idle sidecar picks it up.
+   *  - different build within the same major → upgrade, live sessions or not.
+   *    A restart costs a few seconds of room injection and nothing else: agent
+   *    panes are separate tmux sessions, running agents re-read the port and
+   *    token from the endpoint file, and the durable state re-adopts each pane's
+   *    room on boot. Waiting for an idle sidecar instead meant a busy host — the
+   *    one being used, and so the one most likely to hit whatever the upgrade
+   *    fixes — could sit on a stale build indefinitely.
+   *  - a major bump with live sessions → reattach and record that an upgrade is
+   *    pending. A major is where the durable state schema may move, and a
+   *    sidecar refuses to read state written by a newer one, so taking it under
+   *    live sessions risks stranding them. The next launch with an idle sidecar
+   *    picks it up, or the operator's Restart takes it deliberately.
    */
   private async decideExisting(localHash: string): Promise<SidecarEndpoint | null> {
     const ready = await this.readRunning();
@@ -694,21 +703,27 @@ export class RemoteSidecarLauncher {
       return this.toEndpoint(ready);
     }
 
-    const liveSessions = await this.runningSessionCount();
-    if (liveSessions > 0) {
-      this.log.warn(
-        'RemoteSidecarLauncher: sidecar upgrade pending — deferring while sessions run',
-        {
-          sidecarTmuxName: this.sidecarTmuxName,
-          runningHash: ready.hash,
-          localHash,
-          liveSessions,
-        }
-      );
-      return this.toEndpoint(ready);
+    if (isMajorUpgrade(ready.version, SIDECAR_VERSION)) {
+      const liveSessions = await this.runningSessionCount();
+      if (liveSessions > 0) {
+        this.log.warn(
+          'RemoteSidecarLauncher: major sidecar upgrade pending — deferring while sessions run',
+          {
+            sidecarTmuxName: this.sidecarTmuxName,
+            runningVersion: ready.version,
+            clientVersion: SIDECAR_VERSION,
+            runningHash: ready.hash,
+            localHash,
+            liveSessions,
+          }
+        );
+        return this.toEndpoint(ready);
+      }
     }
-    this.log.debug('RemoteSidecarLauncher: upgrading idle sidecar to the current bundle', {
+    this.log.debug('RemoteSidecarLauncher: upgrading sidecar to the current bundle', {
       sidecarTmuxName: this.sidecarTmuxName,
+      runningVersion: ready.version,
+      clientVersion: SIDECAR_VERSION,
       runningHash: ready.hash,
       localHash,
     });

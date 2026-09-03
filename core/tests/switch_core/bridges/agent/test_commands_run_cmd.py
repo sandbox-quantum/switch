@@ -16,6 +16,11 @@ from switch_core.bridges.agent.commands import (
 from switch_core.events import CommandEvent
 
 
+@asynccontextmanager
+async def _session_factory():  # type: ignore[no-untyped-def]
+    yield object()
+
+
 class TestRoleArg:
     """The role to name in the output is the SECOND @token; the first targets
     the agent (see _addressed_by_first_mention)."""
@@ -44,14 +49,15 @@ def _addr_client(name: str, held_role: str | None = None) -> SimpleNamespace:
     def _args_tag_my_name(text: str) -> bool:
         return _tag(name, text)
 
-    async def _text_tags_my_role(text: str, _room_id: str) -> bool:
+    async def _text_tags_my_role(_session: Any, text: str, _room_id: str) -> bool:
         return held_role is not None and _tag(held_role, text)
 
-    async def _text_tags_my_alias(_text: str, _room_id: str) -> bool:
+    async def _text_tags_my_alias(_session: Any, _text: str, _room_id: str) -> bool:
         return False
 
     return SimpleNamespace(
         agent=SimpleNamespace(name=name),
+        session_factory=_session_factory,
         _args_tag_my_name=_args_tag_my_name,
         _text_tags_my_role=_text_tags_my_role,
         _text_tags_my_alias=_text_tags_my_alias,
@@ -186,10 +192,6 @@ def _event(args: str) -> CommandEvent:
 def _fake_client(*, role_exists: bool) -> SimpleNamespace:
     sent: list[str] = []
 
-    @asynccontextmanager
-    async def _session_factory():  # type: ignore[no-untyped-def]
-        yield object()
-
     async def _resolve_room_meta(_matrix_room_id: str):  # type: ignore[no-untyped-def]
         return SimpleNamespace(room_id="room-1", name="Feature Room", bridge_id=None)
 
@@ -202,7 +204,7 @@ def _fake_client(*, role_exists: bool) -> SimpleNamespace:
     async def _send_message(_room_id, body, **_kw):  # type: ignore[no-untyped-def]
         sent.append(body)
 
-    async def _owner_handle_in(_agent, _bridge_id):  # type: ignore[no-untyped-def]
+    async def _owner_handle_in(_session, _agent, _bridge_id):  # type: ignore[no-untyped-def]
         # No linked owner: these cover the connect command, not the mention.
         return None
 

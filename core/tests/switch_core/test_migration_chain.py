@@ -51,13 +51,19 @@ def test_single_head() -> None:
 
 def test_every_down_revision_exists() -> None:
     """A migration pointing at a revision that was renamed or removed breaks
-    the walk, and does so only when the chain is actually replayed."""
+    the walk, and does so only when the chain is actually replayed.
+
+    A merge revision names several parents, so compare against
+    `_all_down_revisions`, which is a tuple either way.
+    """
     script = _script_directory()
     known = {revision.revision for revision in script.walk_revisions()}
     dangling = {
-        revision.revision: revision.down_revision
+        revision.revision: tuple(
+            parent for parent in revision._all_down_revisions if parent not in known
+        )
         for revision in script.walk_revisions()
-        if revision.down_revision is not None and revision.down_revision not in known
+        if any(parent not in known for parent in revision._all_down_revisions)
     }
     assert not dangling, f"migrations pointing at unknown parents: {dangling}"
 

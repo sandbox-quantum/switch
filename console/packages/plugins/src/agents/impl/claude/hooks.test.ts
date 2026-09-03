@@ -164,6 +164,38 @@ describe('buildClaudeHookConfig', () => {
     });
   });
 
+  it('registers StopFailure, whose parse is delegated to the generic parser', async () => {
+    const fs = createMemoryFs();
+    await buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' });
+
+    const settings = JSON.parse((await fs.read(CLAUDE_SETTINGS_PATH))!) as {
+      hooks: Record<string, NestedHookEntry[]>;
+    };
+    expect(settings.hooks.StopFailure).toHaveLength(1);
+
+    const { parseHookEvent } = buildClaudeHookConfig();
+    expect(
+      parseHookEvent('stop-failure', {
+        error_type: 'authentication_failed',
+        error_message: 'Vertex AI\n  credentials have expired',
+      })
+    ).toEqual({
+      kind: 'status',
+      type: 'error',
+      title: 'authentication_failed',
+      message: 'authentication_failed — Vertex AI credentials have expired',
+    });
+
+    // Either half may be missing; never surface an empty error.
+    expect(parseHookEvent('stop-failure', { error_type: 'rate_limit' })).toMatchObject({
+      message: 'rate_limit',
+    });
+    expect(parseHookEvent('stop-failure', {})).toMatchObject({
+      type: 'error',
+      message: 'the turn ended on an error',
+    });
+  });
+
   it('leaves matcher-less hooks (Stop) without a matcher field', async () => {
     const fs = createMemoryFs();
     await buildClaudeHookConfig().writeHooks(fs, [], { platform: 'linux' });

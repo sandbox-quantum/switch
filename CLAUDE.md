@@ -171,8 +171,9 @@ commands, room workflow, or anything an agent-facing client needs to know:
   `connectors/codex-plugin/skills/switch/SKILL.md` *and*
   `connectors/opencode-plugin/skills/switch/SKILL.md` so the documented workflow
   matches actual behavior on every host.
-  `core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` asserts the
-  count, so it fails rather than letting a host quietly go undocumented.
+  `core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` compares the
+  three `## Tool index` sections against each other and against the tools the
+  server actually registers, so a host left undocumented fails there.
 - **Diff the skills against each other after editing.** They are deliberately not identical
   (host-specific wording for tool namespacing, event delivery, attachments, and
   MCP registration), so diff them to confirm

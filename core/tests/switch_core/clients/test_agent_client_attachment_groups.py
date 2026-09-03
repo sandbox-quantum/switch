@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
 import nio
 
 import switch_core.clients.agent_client as ac
-from switch_core.clients.agent_client import AgentClient
+from switch_core.clients.agent_client import AgentClient, _GateOutcome
 from switch_core.clients.room_meta import RoomMeta
 
 
@@ -43,6 +44,11 @@ def _media_event(
     )
 
 
+@asynccontextmanager
+async def _session_factory():  # type: ignore[no-untyped-def]
+    yield object()
+
+
 class _FakeQueue:
     def __init__(self) -> None:
         self.events: list[Any] = []
@@ -58,25 +64,30 @@ def _fake_client() -> SimpleNamespace:
     async def _resolve_room_meta(_matrix_room_id: str) -> RoomMeta:
         return meta
 
-    async def _compute_addressed(event: Any, _meta: RoomMeta) -> bool:
+    async def _addressed(event: Any, _meta: RoomMeta) -> bool:
         # Mirrors production, where addressing is read off the message text.
         # Standing in a constant `True` here is what let the coalescing bug
         # through: every part looked addressed, including the caption-less ones
         # that in reality address nobody.
         return f"@{ns.agent.name}" in getattr(event, "body", "")
 
+    async def _fresh_agent(_session: Any) -> Any:
+        return ns.agent
+
     async def _gate_addressed(
-        _room: Any, _event: Any, _meta: Any, _root: Any, is_addressed: bool
-    ) -> bool:
-        return is_addressed
+        _session: Any, _agent: Any, _event: Any, _meta: Any
+    ) -> _GateOutcome:
+        return _GateOutcome(addressed=True, refusal=None)
 
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="agent-a"),
+        session_factory=_session_factory,
         _event_buffer=queue,
         _attachment_groups={},
         _attachment_group_timers={},
         _resolve_room_meta=_resolve_room_meta,
-        _compute_addressed=_compute_addressed,
+        _addressed=_addressed,
+        _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
         queue=queue,
     )

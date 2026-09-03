@@ -43,7 +43,9 @@ def _auto_session_claude_agent() -> SimpleNamespace:
 
 
 def _client(owner_handle: str | None) -> SimpleNamespace:
-    async def _owner_handle_in(_agent: object, _bridge_id: object) -> str | None:
+    async def _owner_handle_in(
+        _session: object, _agent: object, _bridge_id: object
+    ) -> str | None:
         return owner_handle
 
     return SimpleNamespace(owner_handle_in=_owner_handle_in)
@@ -54,6 +56,7 @@ async def _reply(
 ) -> str:
     return await AgentClient._unavailable_reply(
         client,
+        None,
         _meta(),
         agent,
         "louisa",

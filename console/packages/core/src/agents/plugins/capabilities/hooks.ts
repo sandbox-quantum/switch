@@ -1,6 +1,7 @@
 import z from 'zod';
 import { definePluginCapability } from '../../../lib/plugins/capability';
 import type { PluginFs } from '../../runtime/fs';
+import { HOOK_EVENTS } from './hooks-types';
 import type { CanonicalHookEvent, HookCommandOptions, HookRegistration } from './hooks-types';
 
 export type { HookRegistration };
@@ -43,19 +44,7 @@ export const hooksCapability = definePluginCapability<IHooksBehavior>()(
     z.object({
       kind: z.literal('config'),
       scope: z.enum(['global', 'workspace']),
-      supportedEvents: z.array(
-        z.enum([
-          'notification',
-          'stop',
-          'session',
-          'start',
-          'tool-use',
-          'tool-done',
-          'tool-use-failure',
-          'subagent',
-          'subagent-done',
-        ])
-      ),
+      supportedEvents: z.array(z.enum(HOOK_EVENTS)),
       /**
        * Whether the agent fires a hook when its session comes up, before any
        * turn. That signal is what tells Switch Console a spawned session is
@@ -69,19 +58,7 @@ export const hooksCapability = definePluginCapability<IHooksBehavior>()(
     z.object({
       kind: z.literal('plugin'),
       scope: z.enum(['global', 'workspace']),
-      supportedEvents: z.array(
-        z.enum([
-          'notification',
-          'stop',
-          'session',
-          'start',
-          'tool-use',
-          'tool-done',
-          'tool-use-failure',
-          'subagent',
-          'subagent-done',
-        ])
-      ),
+      supportedEvents: z.array(z.enum(HOOK_EVENTS)),
       /**
        * Whether the agent fires a hook when its session comes up, before any
        * turn. That signal is what tells Switch Console a spawned session is

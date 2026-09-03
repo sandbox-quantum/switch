@@ -16,6 +16,7 @@ vi.mock('./switch-notification-poller', () => ({
 }));
 
 const dbInsert = vi.fn();
+const dbDelete = vi.fn();
 vi.mock('@main/db/client', () => {
   const where = () => Promise.resolve([] as unknown[]);
   const from = () => ({ where });
@@ -27,6 +28,10 @@ vi.mock('@main/db/client', () => {
       insert: () => {
         dbInsert();
         return { values };
+      },
+      delete: () => {
+        dbDelete();
+        return { where: () => Promise.resolve(undefined) };
       },
     },
   };
@@ -46,6 +51,7 @@ describe('SwitchRoomService', () => {
     switchRoomService.dispose();
     emit.mockClear();
     dbInsert.mockClear();
+    dbDelete.mockClear();
   });
 
   it('records a connection and emits a change', () => {
@@ -139,5 +145,23 @@ describe('SwitchRoomService', () => {
   it('setSessionRoom does persist (contrast with the mirror path)', async () => {
     switchRoomService.setSessionRoom(ctx, 'room-a', 'agent-1', 'Room A');
     await vi.waitFor(() => expect(dbInsert).toHaveBeenCalled());
+  });
+
+  it('drops the persisted room when the server refuses it', async () => {
+    // The persisted row is what a restart re-declares. A room id outlives the
+    // room it named, so leaving it there means the next launch opens a
+    // connection the server refuses outright — for as long as the install
+    // lives.
+    switchRoomService.setSessionRoom(ctx, 'room-gone', 'agent-1', null);
+    await switchRoomService.forgetRefusedRoom('session-1', 'room-gone');
+    expect(dbDelete).toHaveBeenCalled();
+  });
+
+  it('a session ending does not drop its persisted room', async () => {
+    // clearSession runs on every session exit, and the row is exactly what a
+    // resumed session is restored from.
+    switchRoomService.setSessionRoom(ctx, 'room-a', 'agent-1', null);
+    switchRoomService.clearSession('session-1');
+    expect(dbDelete).not.toHaveBeenCalled();
   });
 });
