@@ -102,7 +102,11 @@ class ControlService implements IInitializable, IDisposable {
           sendJson(res, 404, { error: 'session not found' });
           return;
         }
-        await sessionService.teardown(session.id, 'terminate');
+        const teardownResult = await sessionService.teardown(session.id, 'terminate');
+        if (!teardownResult.success) {
+          sendJson(res, 500, { error: teardownResult.error.type });
+          return;
+        }
         sendJson(res, 200, { ok: true });
       }
     );
