@@ -1,34 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import time
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import markdown
 from nio import (
-    AsyncClient,
     InviteMemberEvent,
-    JoinedRoomsError,
-    LoginError,
     MatrixRoom,
-    ProfileSetDisplayNameError,
     ReactionEvent,
     RoomMemberEvent,
     RoomMessageMedia,
     RoomMessageText,
-    RoomSendError,
-    RoomTypingError,
-    SyncError,
-    SyncResponse,
     UnknownEvent,
-    UploadError,
 )
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.resource.events import (
     ResourceLoadRequest,
     ResourceLoadResponse,
@@ -58,6 +46,11 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
+from switch_core.transport import TransportError, TransportHandlers
+from switch_core.transport.matrix import MatrixTransport
+
+if TYPE_CHECKING:
+    from nio import AsyncClient
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +95,7 @@ class ClientBase[ConfigT: ClientConfig]:
         self.access_token = access_token
         self.next_batch_token = next_batch_token
 
-        self.nio_client: AsyncClient | None = None
+        self.transport: MatrixTransport | None = None
         self.room_join_times: dict[str, int] = {}
         self._room_joined_events: dict[str, asyncio.Event] = {}
         # Rooms this client has already announced its arrival in. Distinct from
@@ -121,17 +114,13 @@ class ClientBase[ConfigT: ClientConfig]:
         await self._ready.wait()
 
     async def set_display_name(self, display_name: str) -> None:
-        """Change the name this client shows under in Matrix.
+        """Change the name this client shows under.
 
         The user id is an address and stays put; this is the label rooms
         render. Used to correct a puppet filed under a platform id before the
         platform would say who the person was.
         """
-        resp = await self.client.set_displayname(display_name)
-        if isinstance(resp, ProfileSetDisplayNameError):
-            raise RuntimeError(
-                f"Could not set the display name of {self.matrix_user_id}: {resp}"
-            )
+        await self._transport.set_display_name(display_name)
         self.display_name = display_name
 
     def _joined_event(self, room_id: str) -> asyncio.Event:
@@ -146,15 +135,7 @@ class ClientBase[ConfigT: ClientConfig]:
         self._joined_event(room_id).set()
 
     async def _is_joined_on_server(self, room_id: str) -> bool:
-        resp = await self.client.joined_rooms()
-        if isinstance(resp, JoinedRoomsError):
-            logger.error(
-                "Failed to list joined rooms for %s: %s",
-                self.matrix_user_id,
-                resp.message,
-            )
-            return False
-        return room_id in resp.rooms
+        return room_id in await self._transport.joined_rooms()
 
     async def wait_joined(self, room_id: str, timeout: float) -> bool:
         """Block until this client is a member of `room_id`, up to `timeout`
@@ -182,12 +163,42 @@ class ClientBase[ConfigT: ClientConfig]:
         return True
 
     @property
-    def client(self) -> AsyncClient:
-        if self.nio_client is None:
+    def _transport(self) -> MatrixTransport:
+        if self.transport is None:
             raise RuntimeError(
                 f"Client {self.matrix_user_id} is not connected — call start() first"
             )
-        return self.nio_client
+        return self.transport
+
+    @property
+    def nio_client(self) -> AsyncClient | None:
+        """The raw nio client, for call sites not yet expressed on the port.
+
+        Assigning to it attaches a transport around the given client, which is
+        how tests substitute a double. Connection details are read defensively
+        because a double may be attached to a client that was never
+        initialised.
+        """
+        transport = getattr(self, "transport", None)
+        return None if transport is None else transport.raw_client
+
+    @nio_client.setter
+    def nio_client(self, client: AsyncClient | None) -> None:
+        if client is None:
+            self.transport = None
+            return
+        self.transport = MatrixTransport(
+            server_url=getattr(self, "server_url", ""),
+            user_id=getattr(self, "matrix_user_id", ""),
+            password=getattr(self, "password", ""),
+            device_id=getattr(self, "device_id", None),
+            access_token=getattr(self, "access_token", None),
+            client=client,
+        )
+
+    @property
+    def client(self) -> AsyncClient:
+        return self._transport.raw_client
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -202,9 +213,7 @@ class ClientBase[ConfigT: ClientConfig]:
         retries = 0
         while self._running:
             try:
-                await self.client.sync_forever(
-                    timeout=30000, since=self.next_batch_token
-                )
+                await self._transport.receive_forever(since=self.next_batch_token)
                 retries = 0
             except Exception:
                 if not self._running:
@@ -232,20 +241,22 @@ class ClientBase[ConfigT: ClientConfig]:
         self._running = False
         await self._persist_state(force=True)
         await self.teardown()
-        if self.nio_client:
-            await self.nio_client.close()
+        if self.transport is not None:
+            await self.transport.close()
 
     def setup(self) -> None:
-        self.client.add_event_callback(self._handle_message, RoomMessageText)
-        # RoomMessageMedia is the base of RoomMessageImage / RoomMessageFile, so
-        # one callback covers every media msgtype.
-        self.client.add_event_callback(self._handle_media, RoomMessageMedia)
-        self.client.add_event_callback(self._handle_reaction, ReactionEvent)
-        self.client.add_event_callback(self._handle_member_event, RoomMemberEvent)
-        self.client.add_event_callback(self._handle_custom_event, UnknownEvent)
-        self.client.add_event_callback(self._handle_invite, InviteMemberEvent)  # type: ignore[arg-type]
-        self.client.add_response_callback(self._handle_sync, SyncResponse)
-        self.client.add_response_callback(self._handle_sync_error, SyncError)
+        self._transport.register_handlers(
+            TransportHandlers(
+                on_message=self._handle_message,
+                on_media=self._handle_media,
+                on_reaction=self._handle_reaction,
+                on_member_event=self._handle_member_event,
+                on_custom_event=self._handle_custom_event,
+                on_invite=self._handle_invite,
+                on_sync=self._handle_sync,
+                on_sync_error=self._handle_sync_error,
+            )
+        )
 
     async def teardown(self) -> None:
         pass
@@ -253,28 +264,26 @@ class ClientBase[ConfigT: ClientConfig]:
     # ── Authentication ─────────────────────────────────────────────────────────
 
     async def _create_client(self) -> None:
-        self.nio_client = AsyncClient(self.server_url, self.matrix_user_id)
-
-        if self.access_token and self.device_id:
-            self.client.access_token = self.access_token
-            self.client.device_id = self.device_id
-            logger.info(
-                "Client %s restored session from stored token", self.matrix_user_id
-            )
-        elif self.password:
-            resp = await self.client.login(self.password)
-            if isinstance(resp, LoginError):
-                raise RuntimeError(
-                    f"Login failed for {self.matrix_user_id}: {resp.message}"
-                )
-            self.device_id = resp.device_id
-            self.access_token = self.client.access_token
+        had_session = bool(self.access_token and self.device_id)
+        self.transport = MatrixTransport(
+            server_url=self.server_url,
+            user_id=self.matrix_user_id,
+            password=self.password,
+            device_id=self.device_id,
+            access_token=self.access_token,
+        )
+        await self.transport.connect()
+        self._absorb_session_state()
+        if not had_session:
             await self._persist_state(force=True)
-            logger.info("Client %s authenticated via password", self.matrix_user_id)
-        else:
-            raise RuntimeError(f"No credentials available for {self.matrix_user_id}")
 
         self._ready.set()
+
+    def _absorb_session_state(self) -> None:
+        """Copy transport-owned credentials back so they can be persisted."""
+        state = self._transport.session_state
+        self.access_token = state["access_token"]
+        self.device_id = state["device_id"]
 
     # ── Internal event handlers (filtering + dispatch to hooks) ────────────────
 
@@ -470,20 +479,21 @@ class ClientBase[ConfigT: ClientConfig]:
         except Exception:
             logger.exception("Error in handler for %s in %s", event.type, room.room_id)
 
-    async def _handle_sync(self, response: SyncResponse) -> None:
-        if response.next_batch and response.next_batch != self.next_batch_token:
-            self.next_batch_token = response.next_batch
+    async def _handle_sync(self, next_batch: str) -> None:
+        if next_batch and next_batch != self.next_batch_token:
+            self.next_batch_token = next_batch
             await self._persist_state()
 
-    async def _handle_sync_error(self, response: SyncError) -> None:
-        logger.error("Sync error for %s: %s", self.matrix_user_id, response.message)
+    async def _handle_sync_error(self, message: str) -> None:
+        logger.error("Sync error for %s: %s", self.matrix_user_id, message)
         if self.password:
             logger.info("Attempting re-login for %s", self.matrix_user_id)
-            resp = await self.client.login(self.password)
-            if isinstance(resp, LoginError):
-                logger.error(
-                    "Re-login failed for %s: %s", self.matrix_user_id, resp.message
-                )
+            try:
+                await self._transport.relogin()
+            except TransportError as exc:
+                logger.error("%s", exc)
+                return
+            self._absorb_session_state()
 
     # ── Filtering ──────────────────────────────────────────────────────────────
 
@@ -636,61 +646,29 @@ class ClientBase[ConfigT: ClientConfig]:
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
     ) -> str | None:
-        content: dict[str, object] = {
-            "msgtype": "m.text",
-            "body": body,
-            "sender_name": self.display_name,
-        }
-        # Caller-supplied content fields (e.g. a `com.switch.*` marker) are
-        # merged in. They ride on the plain m.room.message — the body still
-        # renders normally; the extra keys are metadata other clients can read.
-        if extra_content:
-            content.update(extra_content)
-
-        if format == "markdown":
-            html = markdown.markdown(body)
-            if mentions:
-                for user_id in mentions:
-                    local = user_id.split(":")[0].lstrip("@")
-                    pill = f'<a href="https://matrix.to/#/{user_id}">{local}</a>'
-                    html = html.replace(f"@{local}", pill)
-            content["format"] = "org.matrix.custom.html"
-            content["formatted_body"] = html
-
-        # Threaded reply: relate this message to the thread root via a pure
-        # m.thread relation (no m.in_reply_to fallback). The root id must be an
-        # actual thread root — callers normalise mid-thread ids upstream.
-        if thread_root_id is not None:
-            content["m.relates_to"] = {
-                "rel_type": "m.thread",
-                "event_id": thread_root_id,
-            }
-
-        resp = await self.client.room_send(room_id, "m.room.message", content)
-
-        if isinstance(resp, RoomSendError):
-            logger.error("Failed to send message to %s: %s", room_id, resp.message)
+        try:
+            result = await self._transport.send_message(
+                room_id,
+                body,
+                sender_name=self.display_name,
+                format=format,
+                mentions=mentions,
+                thread_root_id=thread_root_id,
+                extra_content=extra_content,
+            )
+        except TransportError as exc:
+            logger.error("Failed to send message to %s: %s", room_id, exc)
             return None
-
-        return resp.event_id  # type: ignore[no-any-return]
+        return result.event_id
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
-        """Upload bytes to the Matrix media repository and return the mxc URI.
+        """Upload bytes to the media store and return the URI referencing them.
 
         Raises on failure — a media upload that silently returns None would
         produce a broken event referencing nothing.
         """
-        resp, _ = await self.client.upload(
-            data_provider=io.BytesIO(data),
-            content_type=content_type,
-            filename=filename,
-            filesize=len(data),
-        )
-        if isinstance(resp, UploadError):
-            raise RuntimeError(
-                f"Failed to upload media '{filename}' to Matrix: {resp.message}"
-            )
-        return resp.content_uri  # type: ignore[no-any-return]
+        result = await self._transport.upload_media(data, content_type, filename)
+        return result.uri
 
     async def send_media(
         self,
@@ -719,53 +697,33 @@ class ClientBase[ConfigT: ClientConfig]:
         receivers coalesce back into one logical message. Absent the field, an
         event is simply a group of one.
         """
-        content: dict[str, object] = {
-            "msgtype": msgtype,
-            "body": caption if caption else filename,
-            "url": mxc,
-            "info": {"mimetype": mimetype, "size": size},
-            "sender_name": self.display_name,
-        }
-        if caption:
-            content["filename"] = filename
-        if group is not None:
-            content[ATTACHMENT_GROUP_KEY] = group
-        if thread_root_id is not None:
-            content["m.relates_to"] = {
-                "rel_type": "m.thread",
-                "event_id": thread_root_id,
-            }
-
-        resp = await self.client.room_send(room_id, "m.room.message", content)
-
-        if isinstance(resp, RoomSendError):
-            logger.error("Failed to send media to %s: %s", room_id, resp.message)
+        try:
+            result = await self._transport.send_media(
+                room_id,
+                mxc,
+                filename,
+                mimetype,
+                size,
+                sender_name=self.display_name,
+                msgtype=msgtype,
+                caption=caption,
+                thread_root_id=thread_root_id,
+                group=group,
+            )
+        except TransportError as exc:
+            logger.error("Failed to send media to %s: %s", room_id, exc)
             return None
-
-        return resp.event_id  # type: ignore[no-any-return]
+        return result.event_id
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
-        logger.debug(
-            "Setting typing %s in room %s for matrix user %s",
-            is_typing,
-            room_id,
-            self.matrix_user_id,
-        )
-        resp = await self.client.room_typing(room_id, is_typing)
-        if isinstance(resp, RoomTypingError):
-            logger.error("Failed to set typing in %s: %s", room_id, resp.message)
+        await self._transport.set_typing(room_id, is_typing)
 
     # ── Room operations ────────────────────────────────────────────────────────
 
     async def join_room(self, room_id: str) -> None:
-        resp = await self.client.join(room_id)
-        if hasattr(resp, "room_id"):
+        if await self._transport.join_room(room_id):
             self._mark_joined(room_id, int(time.time() * 1000))
             logger.info("Client %s joined %s", self.matrix_user_id, room_id)
-        else:
-            logger.error(
-                "Client %s failed to join %s: %s", self.matrix_user_id, room_id, resp
-            )
 
     # ── State persistence ──────────────────────────────────────────────────────
 
