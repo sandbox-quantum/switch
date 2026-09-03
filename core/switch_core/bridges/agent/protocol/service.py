@@ -8,16 +8,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
-from nio import (
-    DownloadError,
-    RoomContextError,
-    RoomGetEventError,
-    RoomMemberEvent,
-    RoomMessageMedia,
-    RoomMessagesError,
-)
 from sqlalchemy import func, select
 
 from switch_core.addressing import (
@@ -90,6 +81,11 @@ from switch_core.events import (
 )
 from switch_core.events import (
     ToolCallReport as MatrixToolCallReport,
+)
+from switch_core.transport import (
+    InboundMedia,
+    InboundMembership,
+    TransportError,
 )
 
 if TYPE_CHECKING:
@@ -897,17 +893,13 @@ class ProtocolService:
         root. If the event does not exist in the room we fail loud rather than
         post into a non-existent thread.
         """
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected to Matrix")
-        resp = await client.nio_client.room_get_event(matrix_room_id, thread_id)
-        if isinstance(resp, RoomGetEventError):
+        event = await client.transport.get_event(matrix_room_id, thread_id)
+        if event is None:
             raise ValueError(f"thread_id not found in room: {thread_id}")
-        relates = resp.event.source.get("content", {}).get("m.relates_to") or {}
-        if relates.get("rel_type") == "m.thread":
-            root = relates.get("event_id")
-            if root:
-                return str(root)
-        return thread_id
+        root = getattr(event, "thread_root_id", None)
+        return str(root) if root else thread_id
 
     async def send_message(
         self,
@@ -1401,12 +1393,12 @@ class ProtocolService:
         anchor_event_id: str | None = None,
     ) -> None:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.nio_client is None:
+        if client is None or client.transport is None:
             logger.debug(
                 "No live client for agent %s; skipping runtime-state emit", agent_id
             )
             return
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             matrix_room_id,
             "com.switch.agent.runtime_state",
             {
@@ -1508,14 +1500,14 @@ class ProtocolService:
         body = getattr(event, "body", None)
 
         attachments: list[dict[str, Any]] = []
-        if isinstance(event, RoomMessageMedia):
+        if isinstance(event, InboundMedia):
             info = content.get("info", {}) or {}
             attachments.append(
                 {
                     "filename": content.get("filename") or body,
                     "mimetype": str(info.get("mimetype", "")),
                     "size": int(info.get("size", 0) or 0),
-                    "mxc": str(event.url),
+                    "mxc": str(event.uri),
                     "msgtype": str(content.get("msgtype", "")),
                 }
             )
@@ -1531,7 +1523,7 @@ class ProtocolService:
         }
 
     @staticmethod
-    def _join_dict(event: RoomMemberEvent) -> dict[str, Any] | None:
+    def _join_dict(event: InboundMembership) -> dict[str, Any] | None:
         """Build a timeline entry for someone joining the room.
 
         Only a transition *into* join counts: a display-name change or avatar
@@ -1558,7 +1550,7 @@ class ProtocolService:
         Messages and joins are the timeline; every other state event (leaves,
         topic changes, power levels) is noise an agent cannot act on.
         """
-        if isinstance(event, RoomMemberEvent):
+        if isinstance(event, InboundMembership):
             return self._join_dict(event)
         if getattr(event, "body", None):
             return self._message_dict(event)
@@ -1616,7 +1608,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected to Matrix")
 
         # Walk backwards page by page until the window is satisfied. A single
@@ -1652,19 +1644,17 @@ class ProtocolService:
                     seek_pages,
                 )
                 break
-            resp = await client.nio_client.room_messages(
+            page = await client.transport.read_history(
                 room.matrix_room_id, start=start, limit=HISTORY_PAGE_SIZE
             )
-            if isinstance(resp, RoomMessagesError):
-                raise ValueError(f"Failed to fetch room history: {resp.message}")
 
-            chunk = list(resp.chunk)
-            end = getattr(resp, "end", None)
+            chunk = list(page.events)
+            end = page.next_token
             # A page that contributes nothing because everything on it is
             # newer than `before` is a seek, not a read.
             reached_window = before_ms is None or any(
-                getattr(e, "server_timestamp", None) is not None
-                and getattr(e, "server_timestamp") < before_ms
+                getattr(e, "timestamp", None) is not None
+                and getattr(e, "timestamp") < before_ms
                 for e in chunk
             )
             if reached_window:
@@ -1755,48 +1745,11 @@ class ProtocolService:
         back the slow way. A failure here costs speed, not correctness, so it
         is logged and swallowed rather than raised.
         """
-        nio_client = client.nio_client
-        if nio_client is None:
+        if client.transport is None:
             return None
-        path = (
-            f"/_matrix/client/v1/rooms/{quote(matrix_room_id, safe='')}"
-            f"/timestamp_to_event?ts={before_ms}&dir=b"
+        return await client.transport.seek_by_timestamp(
+            matrix_room_id, before_ms, direction="backward"
         )
-        try:
-            resp = await nio_client.send(
-                "GET",
-                path,
-                headers={"Authorization": f"Bearer {nio_client.access_token}"},
-            )
-            if resp.status != 200:
-                logger.info(
-                    "timestamp_to_event unavailable in %s (HTTP %d); "
-                    "falling back to scanning back to the window",
-                    matrix_room_id,
-                    resp.status,
-                )
-                return None
-            event_id = (await resp.json()).get("event_id")
-        except Exception:
-            logger.warning(
-                "timestamp_to_event failed in %s; falling back to scanning",
-                matrix_room_id,
-                exc_info=True,
-            )
-            return None
-        if not event_id:
-            return None
-
-        context = await nio_client.room_context(matrix_room_id, event_id, limit=1)
-        if isinstance(context, RoomContextError):
-            logger.info(
-                "Could not anchor pagination at %s in %s; scanning instead",
-                event_id,
-                matrix_room_id,
-            )
-            return None
-        start_token = context.start
-        return str(start_token) if start_token else None
 
     async def _fetch_root(
         self, client: ClientBase[Any], matrix_room_id: str, root_id: str
@@ -1806,10 +1759,10 @@ class ProtocolService:
         Failure is degraded-but-functional: we return an elided stub (keeping
         the replies attached to a known id) rather than dropping the thread.
         """
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected to Matrix")
-        resp = await client.nio_client.room_get_event(matrix_room_id, root_id)
-        if isinstance(resp, RoomGetEventError):
+        event = await client.transport.get_event(matrix_room_id, root_id)
+        if event is None:
             logger.warning(
                 "Could not fetch thread root %s in %s; returning elided stub",
                 root_id,
@@ -1824,7 +1777,7 @@ class ProtocolService:
                 "timestamp": None,
                 "elided": True,
             }
-        return self._message_dict(resp.event)
+        return self._message_dict(event)
 
     async def download_media(
         self, agent_id: str, room_id: str, mxc: str
@@ -1838,13 +1791,14 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected to Matrix")
 
-        resp = await client.nio_client.download(mxc=mxc)
-        if isinstance(resp, DownloadError):
-            raise ValueError(f"Failed to download media {mxc}: {resp.message}")
-        return resp.body, resp.content_type, resp.filename
+        try:
+            resp = await client.transport.download_media(mxc)
+        except TransportError as exc:
+            raise ValueError(f"Failed to download media {mxc}: {exc}") from exc
+        return resp.body, resp.content_type or "", resp.filename
 
     # ── Events ───────────────────────────────────────────────────────────────
 
@@ -1907,7 +1861,7 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected to Matrix")
 
         for event in events:
@@ -1920,7 +1874,7 @@ class ProtocolService:
                     duration_ms=event.duration_ms,
                     cost=event.cost,
                 )
-                await client.nio_client.room_send(
+                await client.transport.send_event(
                     room.matrix_room_id,
                     "com.switch.report.tool_call",
                     tool_event.model_dump(exclude_none=True),
@@ -1935,7 +1889,7 @@ class ProtocolService:
                     duration_ms=event.duration_ms,
                     cost=event.cost,
                 )
-                await client.nio_client.room_send(
+                await client.transport.send_event(
                     room.matrix_room_id,
                     "com.switch.report.llm_call",
                     llm_event.model_dump(exclude_none=True),
@@ -1994,8 +1948,8 @@ class ProtocolService:
             task_id = task.id
 
         client = self.client_lifecycle.get_by_agent_id(requester_id)
-        if client and client.nio_client:
-            await client.nio_client.room_send(
+        if client and client.transport:
+            await client.transport.send_event(
                 room.matrix_room_id,
                 "com.switch.task.delegate",
                 {
@@ -2029,8 +1983,8 @@ class ProtocolService:
             await session.commit()
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.nio_client:
-            await client.nio_client.room_send(
+        if client and client.transport:
+            await client.transport.send_event(
                 room.matrix_room_id,
                 "com.switch.task.accept",
                 {
@@ -2062,8 +2016,8 @@ class ProtocolService:
             await session.commit()
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.nio_client:
-            await client.nio_client.room_send(
+        if client and client.transport:
+            await client.transport.send_event(
                 room.matrix_room_id,
                 "com.switch.task.update",
                 {
@@ -2096,8 +2050,8 @@ class ProtocolService:
             await session.commit()
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.nio_client:
-            await client.nio_client.room_send(
+        if client and client.transport:
+            await client.transport.send_event(
                 room.matrix_room_id,
                 "com.switch.task.finalise",
                 {
@@ -2126,8 +2080,8 @@ class ProtocolService:
             await session.commit()
 
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client and client.nio_client:
-            await client.nio_client.room_send(
+        if client and client.transport:
+            await client.transport.send_event(
                 room.matrix_room_id,
                 "com.switch.task.cancel",
                 {
@@ -3425,13 +3379,13 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected")
 
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             room.matrix_room_id,
             "com.switch.mediation.tool_request",
             {
@@ -3467,13 +3421,13 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected")
 
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             room.matrix_room_id,
             "com.switch.mediation.llm_request",
             {
@@ -3510,13 +3464,13 @@ class ProtocolService:
         if not rm_clients:
             raise ValueError("Resource manager client not running")
         rm = rm_clients[0]
-        if rm.nio_client is None:
+        if rm.transport is None:
             raise ValueError("Resource manager client not connected")
 
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await rm.nio_client.room_send(
+        await rm.transport.send_event(
             room.matrix_room_id,
             "com.switch.mediation.tool_result",
             {
@@ -3559,13 +3513,13 @@ class ProtocolService:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        if client.nio_client is None:
+        if client.transport is None:
             raise ValueError("Agent client not connected")
 
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             room.matrix_room_id,
             "com.switch.resource.load_request",
             {
@@ -3605,13 +3559,13 @@ class ProtocolService:
 
         room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.nio_client is None:
+        if client is None or client.transport is None:
             raise ValueError("Agent client not connected")
 
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             room.matrix_room_id,
             "com.switch.resource.room_document_create_request",
             {
@@ -3661,13 +3615,13 @@ class ProtocolService:
 
         room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.nio_client is None:
+        if client is None or client.transport is None:
             raise ValueError("Agent client not connected")
 
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             room.matrix_room_id,
             "com.switch.resource.room_document_update_request",
             {
@@ -3713,13 +3667,13 @@ class ProtocolService:
 
         room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
-        if client is None or client.nio_client is None:
+        if client is None or client.transport is None:
             raise ValueError("Agent client not connected")
 
         future = self.resource_request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await client.nio_client.room_send(
+        await client.transport.send_event(
             room.matrix_room_id,
             "com.switch.resource.room_document_delete_request",
             {
@@ -3765,13 +3719,13 @@ class ProtocolService:
         if not rm_clients:
             raise ValueError("Resource manager client not running")
         rm = rm_clients[0]
-        if rm.nio_client is None:
+        if rm.transport is None:
             raise ValueError("Resource manager client not connected")
 
         future = self.request_tracker.register(
             request_id, agent_id, room.matrix_room_id
         )
-        await rm.nio_client.room_send(
+        await rm.transport.send_event(
             room.matrix_room_id,
             "com.switch.mediation.llm_response",
             {

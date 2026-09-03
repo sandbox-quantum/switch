@@ -9,11 +9,10 @@ greeting unreachable on every room an agent is invited to, which is all of them.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from switch_core.clients.client_base import ClientBase
+from switch_core.transport import InboundMembership, RoomRef
 
 MATRIX_ROOM_ID = "!matrix:switch.local"
 SELF = "@switch-agent-1:switch.local"
@@ -36,8 +35,8 @@ class _Client(ClientBase):
         self.member_events.append(event.state_key)
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id=MATRIX_ROOM_ID)
+def _room() -> RoomRef:
+    return RoomRef(room_id=MATRIX_ROOM_ID)
 
 
 def _member_event(
@@ -45,15 +44,16 @@ def _member_event(
     state_key: str = SELF,
     membership: str = "join",
     prev_membership: str | None = "invite",
-    server_timestamp: int = 2000,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+    timestamp: int = 2000,
+) -> InboundMembership:
+    return InboundMembership(
+        room_id=MATRIX_ROOM_ID,
+        event_id="$member",
+        sender=state_key,
+        timestamp=timestamp,
         state_key=state_key,
         membership=membership,
         prev_membership=prev_membership,
-        server_timestamp=server_timestamp,
-        sender=state_key,
-        content={},
     )
 
 
@@ -85,7 +85,7 @@ async def test_profile_update_is_not_an_arrival() -> None:
     client = _Client()
 
     await client._handle_member_event(
-        _room(), _member_event(prev_membership="join", server_timestamp=3000)
+        _room(), _member_event(prev_membership="join", timestamp=3000)
     )
 
     assert client.self_joins == []
@@ -95,7 +95,7 @@ async def test_profile_update_is_not_an_arrival() -> None:
 async def test_join_predating_this_process_is_not_announced() -> None:
     client = _Client()
 
-    await client._handle_member_event(_room(), _member_event(server_timestamp=500))
+    await client._handle_member_event(_room(), _member_event(timestamp=500))
 
     assert client.self_joins == []
 
@@ -108,11 +108,11 @@ async def test_rejoining_after_leaving_is_a_fresh_arrival() -> None:
     await client._handle_member_event(
         _room(),
         _member_event(
-            membership="leave", prev_membership="join", server_timestamp=3000
+            membership="leave", prev_membership="join", timestamp=3000
         ),
     )
     await client._handle_member_event(
-        _room(), _member_event(prev_membership="leave", server_timestamp=4000)
+        _room(), _member_event(prev_membership="leave", timestamp=4000)
     )
 
     assert client.self_joins == [MATRIX_ROOM_ID, MATRIX_ROOM_ID]

@@ -22,9 +22,9 @@ def _msg(event_id: str, ts: int, body: str = "hi") -> SimpleNamespace:
     return SimpleNamespace(
         event_id=event_id,
         sender="@u:s",
-        server_timestamp=ts,
+        timestamp=ts,
         body=body,
-        source={"content": {"sender_name": "U"}},
+        content={"sender_name": "U"},
     )
 
 
@@ -137,9 +137,9 @@ class TestPagination:
             SimpleNamespace(
                 event_id=f"$n{i}",
                 sender="@s:s",
-                server_timestamp=500 - i,
+                timestamp=500 - i,
                 body=None,
-                source={"content": {}},
+                content={},
             )
             for i in range(20)
         ]

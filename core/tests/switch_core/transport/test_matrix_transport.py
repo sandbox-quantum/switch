@@ -101,11 +101,32 @@ async def test_send_event_carries_the_type_through() -> None:
     assert nio.room_send_calls[0][1] == "com.switch.task.accept"
 
 
-async def test_read_history_returns_a_page_with_its_cursor() -> None:
-    page = await _transport(_FakeNio()).read_history("!r:s", start=None, limit=10)
+async def test_read_history_returns_neutral_events_and_its_cursor() -> None:
+    nio = _FakeNio()
 
-    assert page.events == ["e1", "e2"]
+    async def _chunk(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(
+            chunk=[
+                SimpleNamespace(
+                    event_id="$1",
+                    sender="@a:s",
+                    server_timestamp=7,
+                    body="hello",
+                    source={"content": {"body": "hello"}},
+                )
+            ],
+            end="tok-2",
+        )
+
+    nio.room_messages = _chunk  # type: ignore[assignment]
+
+    page = await _transport(nio).read_history("!r:s", start=None, limit=10)
+
     assert page.next_token == "tok-2"
+    assert [e.event_id for e in page.events] == ["$1"]
+    # History arrives already converted, so callers never see a nio type.
+    assert page.events[0].room_id == "!r:s"
+    assert page.events[0].timestamp == 7
 
 
 async def test_read_history_raises_on_failure() -> None:

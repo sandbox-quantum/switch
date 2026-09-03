@@ -88,7 +88,7 @@ class TestDispatchPopulatesThreadId:
         unknown = SimpleNamespace(
             type="com.switch.command",
             event_id=event_id,
-            source={"content": content},
+            content=content,
         )
         await ClientBase._handle_custom_event(
             fake_self, SimpleNamespace(room_id="!m"), unknown

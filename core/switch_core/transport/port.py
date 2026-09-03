@@ -71,6 +71,10 @@ class MessageTransport(Protocol):
         """Release the connection. Safe to call when never connected."""
         ...
 
+    async def relogin(self) -> None:
+        """Re-authenticate after the session was rejected mid-stream."""
+        ...
+
     def register_handlers(self, handlers: TransportHandlers) -> None:
         """Bind inbound callbacks. Call before `receive_forever`."""
         ...

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -40,8 +41,14 @@ from switch_core.transport.port import TransportHandlers
 from switch_core.transport.types import (
     DownloadResult,
     HistoryPage,
+    InboundCustomEvent,
+    InboundEvent,
+    InboundMedia,
+    InboundMembership,
+    InboundMessage,
     MessageFormat,
     NotConnectedError,
+    RoomRef,
     SeekDirection,
     SendResult,
     TransportError,
@@ -51,6 +58,129 @@ from switch_core.transport.types import (
 logger = logging.getLogger(__name__)
 
 SYNC_TIMEOUT_MS = 30000
+
+
+@dataclass(frozen=True)
+class _RoomIdOnly:
+    """Stands in for a room object when only the id is known.
+
+    History and single-event fetches return events without the room they came
+    from, but the converters only ever read the id.
+    """
+
+    room_id: str
+
+
+def _content(event: Any) -> dict[str, object]:
+    source = getattr(event, "source", None) or {}
+    content = source.get("content") or {}
+    return dict(content)
+
+
+def _thread_root_of(content: dict[str, object], event_id: str) -> str | None:
+    """The thread this event belongs to, or None when it is top level.
+
+    Matrix threads are flat: an event either relates to a root or is one.
+    """
+    relates = content.get("m.relates_to") or {}
+    if isinstance(relates, dict) and relates.get("rel_type") == "m.thread":
+        root = relates.get("event_id")
+        return str(root) if root else None
+    return None
+
+
+def to_room_ref(room: Any) -> RoomRef:
+    return RoomRef(room_id=room.room_id)
+
+
+def to_inbound_message(room: Any, event: Any) -> InboundMessage:
+    content = _content(event)
+    return InboundMessage(
+        room_id=room.room_id,
+        event_id=event.event_id,
+        sender=event.sender,
+        timestamp=event.server_timestamp,
+        content=content,
+        body=getattr(event, "body", "") or "",
+        sender_name=content.get("sender_name"),  # type: ignore[arg-type]
+        formatted_body=getattr(event, "formatted_body", None),
+        msgtype=str(content.get("msgtype") or "m.text"),
+        thread_root_id=_thread_root_of(content, event.event_id),
+    )
+
+
+def to_inbound_media(room: Any, event: Any) -> InboundMedia:
+    content = _content(event)
+    info = content.get("info") or {}
+    if not isinstance(info, dict):
+        info = {}
+    return InboundMedia(
+        room_id=room.room_id,
+        event_id=event.event_id,
+        sender=event.sender,
+        timestamp=event.server_timestamp,
+        content=content,
+        body=getattr(event, "body", "") or "",
+        sender_name=content.get("sender_name"),  # type: ignore[arg-type]
+        uri=str(getattr(event, "url", "") or ""),
+        filename=content.get("filename") or getattr(event, "body", None),  # type: ignore[arg-type]
+        mimetype=info.get("mimetype"),
+        size=info.get("size"),
+        msgtype=str(content.get("msgtype") or "m.file"),
+        thread_root_id=_thread_root_of(content, event.event_id),
+        group=content.get(ATTACHMENT_GROUP_KEY),  # type: ignore[arg-type]
+    )
+
+
+def to_inbound_membership(room: Any, event: Any) -> InboundMembership:
+    content = _content(event)
+    return InboundMembership(
+        room_id=room.room_id,
+        event_id=getattr(event, "event_id", ""),
+        sender=getattr(event, "sender", ""),
+        timestamp=getattr(event, "server_timestamp", 0),
+        content=content,
+        state_key=getattr(event, "state_key", ""),
+        membership=getattr(event, "membership", ""),
+        prev_membership=getattr(event, "prev_membership", None),
+        display_name=content.get("displayname"),  # type: ignore[arg-type]
+    )
+
+
+def to_inbound_custom(room: Any, event: Any) -> InboundCustomEvent:
+    content = _content(event)
+    return InboundCustomEvent(
+        room_id=room.room_id,
+        event_id=event.event_id,
+        sender=event.sender,
+        timestamp=getattr(event, "server_timestamp", 0),
+        content=content,
+        event_type=event.type,
+        thread_root_id=_thread_root_of(content, event.event_id),
+    )
+
+
+def to_inbound(room: Any, event: Any) -> InboundEvent:
+    """Convert a timeline event to the DTO matching its kind."""
+    if isinstance(event, RoomMessageMedia):
+        return to_inbound_media(room, event)
+    if isinstance(event, RoomMessageText):
+        return to_inbound_message(room, event)
+    if isinstance(event, RoomMemberEvent):
+        return to_inbound_membership(room, event)
+    if isinstance(event, UnknownEvent):
+        return to_inbound_custom(room, event)
+    return to_inbound_event(room, event)
+
+
+def to_inbound_event(room: Any, event: Any) -> InboundEvent:
+    return InboundEvent(
+        room_id=room.room_id,
+        event_id=getattr(event, "event_id", ""),
+        sender=getattr(event, "sender", ""),
+        timestamp=getattr(event, "server_timestamp", 0),
+        content=_content(event),
+    )
 
 
 def _thread_relation(thread_root_id: str) -> dict[str, object]:
@@ -140,20 +270,23 @@ class MatrixTransport:
         self._handlers = handlers
         client = self.raw_client
 
-        if handlers.on_message is not None:
-            client.add_event_callback(handlers.on_message, RoomMessageText)  # type: ignore[arg-type]
-        if handlers.on_media is not None:
-            # RoomMessageMedia is the base of RoomMessageImage / RoomMessageFile,
-            # so one callback covers every media msgtype.
-            client.add_event_callback(handlers.on_media, RoomMessageMedia)  # type: ignore[arg-type]
-        if handlers.on_reaction is not None:
-            client.add_event_callback(handlers.on_reaction, ReactionEvent)  # type: ignore[arg-type]
-        if handlers.on_member_event is not None:
-            client.add_event_callback(handlers.on_member_event, RoomMemberEvent)  # type: ignore[arg-type]
-        if handlers.on_custom_event is not None:
-            client.add_event_callback(handlers.on_custom_event, UnknownEvent)  # type: ignore[arg-type]
-        if handlers.on_invite is not None:
-            client.add_event_callback(handlers.on_invite, InviteMemberEvent)  # type: ignore[arg-type]
+        def bind(handler: Any, convert: Any, kind: Any) -> None:
+            if handler is None:
+                return
+
+            async def _cb(room: Any, event: Any) -> None:
+                await handler(to_room_ref(room), convert(room, event))
+
+            client.add_event_callback(_cb, kind)
+
+        bind(handlers.on_message, to_inbound_message, RoomMessageText)
+        # RoomMessageMedia is the base of RoomMessageImage / RoomMessageFile, so
+        # one callback covers every media msgtype.
+        bind(handlers.on_media, to_inbound_media, RoomMessageMedia)
+        bind(handlers.on_reaction, to_inbound_event, ReactionEvent)
+        bind(handlers.on_member_event, to_inbound_membership, RoomMemberEvent)
+        bind(handlers.on_custom_event, to_inbound_custom, UnknownEvent)
+        bind(handlers.on_invite, to_inbound_membership, InviteMemberEvent)
 
         if handlers.on_sync is not None:
             on_sync = handlers.on_sync
@@ -298,11 +431,11 @@ class MatrixTransport:
 
     # ── History ───────────────────────────────────────────────────────────────
 
-    async def get_event(self, room_id: str, event_id: str) -> Any | None:
+    async def get_event(self, room_id: str, event_id: str) -> InboundEvent | None:
         resp = await self.raw_client.room_get_event(room_id, event_id)
         if isinstance(resp, RoomGetEventError):
             return None
-        return resp.event
+        return to_inbound(_RoomIdOnly(room_id), resp.event)
 
     async def read_history(
         self, room_id: str, *, start: str | None, limit: int
@@ -310,7 +443,11 @@ class MatrixTransport:
         resp = await self.raw_client.room_messages(room_id, start=start, limit=limit)
         if isinstance(resp, RoomMessagesError):
             raise TransportError(f"Failed to read history in {room_id}: {resp.message}")
-        return HistoryPage(events=list(resp.chunk), next_token=resp.end)
+        room = _RoomIdOnly(room_id)
+        return HistoryPage(
+            events=[to_inbound(room, event) for event in resp.chunk],
+            next_token=resp.end,
+        )
 
     async def seek_by_timestamp(
         self, room_id: str, timestamp_ms: int, *, direction: SeekDirection

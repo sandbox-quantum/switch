@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from nio import MatrixRoom
-
 from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.resource.events import (
     ResourceLoadRequest,
@@ -25,6 +23,7 @@ from switch_core.events import (
     MediationResult,
     MediationToolRequest,
 )
+from switch_core.transport import RoomRef
 
 logger = logging.getLogger(__name__)
 
@@ -46,21 +45,21 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
         self._request_tracker = request_tracker
 
     async def on_mediation_tool_request(
-        self, room: MatrixRoom, event: MediationToolRequest
+        self, room: RoomRef, event: MediationToolRequest
     ) -> None:
         verdict, reason = await self._check_tool_access(event.agent_id, event.tool_id)
         result = MediationResult(verdict=verdict, reason=reason)
         self._request_tracker.resolve(event.request_id, result)
 
     async def on_mediation_llm_request(
-        self, room: MatrixRoom, event: MediationLlmRequest
+        self, room: RoomRef, event: MediationLlmRequest
     ) -> None:
         verdict, reason = await self._check_model_access(event.agent_id, event.model_id)
         result = MediationResult(verdict=verdict, reason=reason)
         self._request_tracker.resolve(event.request_id, result)
 
     async def on_resource_load_request(
-        self, room: MatrixRoom, event: ResourceLoadRequest
+        self, room: RoomRef, event: ResourceLoadRequest
     ) -> None:
         """Fetch the requested documents and reply with a load_response.
 
@@ -69,7 +68,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
         actually attached here — preventing cross-room access.
         """
         response: ResourceLoadResponse
-        if self.nio_client is None:
+        if self.transport is None:
             logger.error(
                 "Resource manager not connected; cannot send load response %s",
                 event.request_id,
@@ -104,16 +103,16 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.nio_client.room_send(
+        await self.transport.send_event(
             room.room_id,
             "com.switch.resource.load_response",
             response.model_dump(mode="json"),
         )
 
     async def on_room_document_create_request(
-        self, room: MatrixRoom, event: RoomDocumentCreateRequest
+        self, room: RoomRef, event: RoomDocumentCreateRequest
     ) -> None:
-        if self.nio_client is None:
+        if self.transport is None:
             logger.error(
                 "Resource manager not connected; cannot reply to %s", event.request_id
             )
@@ -158,16 +157,16 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.nio_client.room_send(
+        await self.transport.send_event(
             room.room_id,
             "com.switch.resource.room_document_create_response",
             response.model_dump(mode="json"),
         )
 
     async def on_room_document_update_request(
-        self, room: MatrixRoom, event: RoomDocumentUpdateRequest
+        self, room: RoomRef, event: RoomDocumentUpdateRequest
     ) -> None:
-        if self.nio_client is None:
+        if self.transport is None:
             logger.error(
                 "Resource manager not connected; cannot reply to %s", event.request_id
             )
@@ -210,16 +209,16 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.nio_client.room_send(
+        await self.transport.send_event(
             room.room_id,
             "com.switch.resource.room_document_update_response",
             response.model_dump(mode="json"),
         )
 
     async def on_room_document_delete_request(
-        self, room: MatrixRoom, event: RoomDocumentDeleteRequest
+        self, room: RoomRef, event: RoomDocumentDeleteRequest
     ) -> None:
-        if self.nio_client is None:
+        if self.transport is None:
             logger.error(
                 "Resource manager not connected; cannot reply to %s", event.request_id
             )
@@ -263,7 +262,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
                 error=str(exc),
             )
 
-        await self.nio_client.room_send(
+        await self.transport.send_event(
             room.room_id,
             "com.switch.resource.room_document_delete_response",
             response.model_dump(mode="json"),

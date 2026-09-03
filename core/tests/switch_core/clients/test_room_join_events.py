@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from switch_core.bridges.agent.protocol.types import AgentEvent, RoomJoinPayload
 from switch_core.clients.agent_client import AgentClient, RoomMeta
+from switch_core.transport import InboundMembership, RoomRef
 
 
 class _FakeQueue:
@@ -62,23 +63,26 @@ def _member_event(
     prev_membership: str | None = "leave",
     state_key: str = "@alice:switch.local",
     displayname: str | None = "Alice",
-    server_timestamp: int = 123,
-) -> SimpleNamespace:
+    timestamp: int = 123,
+) -> InboundMembership:
     content: dict[str, object] = {}
     if displayname is not None:
         content["displayname"] = displayname
-    return SimpleNamespace(
+    return InboundMembership(
+        room_id="!matrix:switch.local",
+        event_id="$member",
+        sender=state_key,
+        timestamp=timestamp,
+        content=content,
+        state_key=state_key,
         membership=membership,
         prev_membership=prev_membership,
-        state_key=state_key,
-        content=content,
-        server_timestamp=server_timestamp,
+        display_name=displayname,
     )
 
 
-async def _run(client: SimpleNamespace, event: SimpleNamespace) -> None:
-    room = SimpleNamespace(room_id="!matrix:switch.local")
-    await AgentClient.on_member_event(client, room, event)
+async def _run(client: SimpleNamespace, event: InboundMembership) -> None:
+    await AgentClient.on_member_event(client, RoomRef("!matrix:switch.local"), event)
 
 
 class TestRoomJoinEnqueue:

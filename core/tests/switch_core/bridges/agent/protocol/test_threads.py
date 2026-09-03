@@ -24,9 +24,9 @@ def _ev(
     return SimpleNamespace(
         event_id=event_id,
         sender=sender,
-        server_timestamp=ts,
+        timestamp=ts,
         body=body,
-        source={"content": content},
+        content=content,
     )
 
 

@@ -32,7 +32,7 @@ def _event(body: str, sender_name: str = "alice") -> SimpleNamespace:
     return SimpleNamespace(
         body=body,
         sender=f"@{sender_name}:switch.local",
-        source={"content": {"sender_name": sender_name}},
+        content={"sender_name": sender_name},
     )
 
 

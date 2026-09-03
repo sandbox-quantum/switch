@@ -23,17 +23,20 @@ import pytest
 from switch_core.clients.admin_messages import ADMIN_MARKER, admin_extra_content
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.transport import InboundMessage
 
 
-def _event(body: str, *, admin: bool = False) -> SimpleNamespace:
+def _event(body: str, *, admin: bool = False) -> InboundMessage:
     content: dict = {"body": body}
     if admin:
         content.update(admin_extra_content(None))
-    return SimpleNamespace(
-        body=body,
-        formatted_body=None,
+    return InboundMessage(
+        room_id="!room:server",
+        event_id="$evt",
         sender="@switch-admin:switch.local",
-        source={"content": content},
+        timestamp=1,
+        content=content,
+        body=body,
     )
 
 
@@ -100,7 +103,7 @@ async def test_the_marker_alone_is_enough_whatever_type_it_carries() -> None:
     from switch_core.clients.admin_messages import AdminMessageType
 
     event = _event("Added flintai-sdk.ts to this room.")
-    event.source["content"].update(admin_extra_content(AdminMessageType.COMMAND_RESULT))
-    assert ADMIN_MARKER in event.source["content"]
+    event.content.update(admin_extra_content(AdminMessageType.COMMAND_RESULT))
+    assert ADMIN_MARKER in event.content
 
     assert await _addressed(_client(), event, _meta("direct")) is False

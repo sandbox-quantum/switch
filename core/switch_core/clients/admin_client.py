@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from nio import MatrixRoom, RoomMessage, RoomMessageText
-
 from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.clients.admin_messages import (
@@ -26,6 +24,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import CommandEvent
+from switch_core.transport import InboundMessage, RoomRef
 
 if TYPE_CHECKING:
     from switch_core.room_service import RoomService
@@ -79,8 +78,8 @@ class AdminClient(ClientBase[ClientConfig]):
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
-    async def on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
-        content = event.source.get("content", {}) or {}
+    async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
+        content = event.content
         # Never react to admin/system messages — including our own notices —
         # so the rail can't loop on itself.
         if ADMIN_MARKER in content:
@@ -93,16 +92,13 @@ class AdminClient(ClientBase[ClientConfig]):
         if meta is None:
             return
 
-        thread_id: str | None = None
-        relates = content.get("m.relates_to") or {}
-        if relates.get("rel_type") == "m.thread":
-            thread_id = relates.get("event_id")
+        thread_id = event.thread_root_id
         thread_root = thread_id if thread_id is not None else event.event_id
 
         await self._warn_unreachable_roles(room, event, meta.room_id, thread_root)
         await self._warn_absent_agents(room, event, meta.room_id, thread_root)
 
-    async def on_command(self, room: MatrixRoom, event: CommandEvent) -> None:
+    async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         await dispatch_admin_command(self, room, event)
 
     async def reply_command(
@@ -127,8 +123,8 @@ class AdminClient(ClientBase[ClientConfig]):
 
     async def _warn_unreachable_roles(
         self,
-        room: MatrixRoom,
-        event: RoomMessage,
+        room: RoomRef,
+        event: InboundMessage,
         room_id: str,
         thread_id: str | None,
     ) -> None:
@@ -169,8 +165,8 @@ class AdminClient(ClientBase[ClientConfig]):
 
     async def _warn_absent_agents(
         self,
-        room: MatrixRoom,
-        event: RoomMessage,
+        room: RoomRef,
+        event: InboundMessage,
         room_id: str,
         thread_id: str | None,
     ) -> None:
@@ -241,7 +237,7 @@ class AdminClient(ClientBase[ClientConfig]):
             extra_content=admin_extra_content(message_type),
         )
 
-    def _sender_handle(self, event: RoomMessage) -> str:
+    def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.
 
         Prefers the bridge-provided `sender_name` (the external username, which
@@ -249,7 +245,7 @@ class AdminClient(ClientBase[ClientConfig]):
         Mattermost); falls back to the mxid localpart for a native Matrix user
         (paired with `mentions=[event.sender]` so Matrix renders a pill).
         """
-        content = event.source.get("content", {}) or {}
+        content = event.content
         name = content.get("sender_name")
         if name:
             return str(name)

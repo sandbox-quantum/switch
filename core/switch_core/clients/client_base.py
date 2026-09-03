@@ -5,15 +5,6 @@ import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
-from nio import (
-    InviteMemberEvent,
-    MatrixRoom,
-    ReactionEvent,
-    RoomMemberEvent,
-    RoomMessageMedia,
-    RoomMessageText,
-    UnknownEvent,
-)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -46,11 +37,20 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
-from switch_core.transport import TransportError, TransportHandlers
-from switch_core.transport.matrix import MatrixTransport
+from switch_core.transport import (
+    InboundCustomEvent,
+    InboundEvent,
+    InboundMedia,
+    InboundMembership,
+    InboundMessage,
+    MessageTransport,
+    RoomRef,
+    TransportError,
+    TransportHandlers,
+)
 
 if TYPE_CHECKING:
-    from nio import AsyncClient
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +78,8 @@ class ClientBase[ConfigT: ClientConfig]:
         session_factory: async_sessionmaker[AsyncSession],
         client_store: ClientStore,
         config: ConfigT,
-        device_id: str | None = None,
-        access_token: str | None = None,
+        transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
+        session_state: dict[str, str | None],
         next_batch_token: str | None = None,
     ) -> None:
         self.client_id = client_id
@@ -91,11 +91,13 @@ class ClientBase[ConfigT: ClientConfig]:
         self.client_store = client_store
         self.config = config
 
-        self.device_id = device_id
-        self.access_token = access_token
+        # Credentials the transport owns. Stored and handed back unread, so
+        # what authentication needs is the transport's business alone.
+        self.session_state = session_state
         self.next_batch_token = next_batch_token
 
-        self.transport: MatrixTransport | None = None
+        self._transport_factory = transport_factory
+        self.transport: MessageTransport | None = None
         self.room_join_times: dict[str, int] = {}
         self._room_joined_events: dict[str, asyncio.Event] = {}
         # Rooms this client has already announced its arrival in. Distinct from
@@ -163,42 +165,12 @@ class ClientBase[ConfigT: ClientConfig]:
         return True
 
     @property
-    def _transport(self) -> MatrixTransport:
+    def _transport(self) -> MessageTransport:
         if self.transport is None:
             raise RuntimeError(
                 f"Client {self.matrix_user_id} is not connected — call start() first"
             )
         return self.transport
-
-    @property
-    def nio_client(self) -> AsyncClient | None:
-        """The raw nio client, for call sites not yet expressed on the port.
-
-        Assigning to it attaches a transport around the given client, which is
-        how tests substitute a double. Connection details are read defensively
-        because a double may be attached to a client that was never
-        initialised.
-        """
-        transport = getattr(self, "transport", None)
-        return None if transport is None else transport.raw_client
-
-    @nio_client.setter
-    def nio_client(self, client: AsyncClient | None) -> None:
-        if client is None:
-            self.transport = None
-            return
-        self.transport = MatrixTransport(
-            server_url=getattr(self, "server_url", ""),
-            user_id=getattr(self, "matrix_user_id", ""),
-            password=getattr(self, "password", ""),
-            device_id=getattr(self, "device_id", None),
-            access_token=getattr(self, "access_token", None),
-            client=client,
-        )
-
-    @property
-    def client(self) -> AsyncClient:
-        return self._transport.raw_client
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -264,30 +236,22 @@ class ClientBase[ConfigT: ClientConfig]:
     # ── Authentication ─────────────────────────────────────────────────────────
 
     async def _create_client(self) -> None:
-        had_session = bool(self.access_token and self.device_id)
-        self.transport = MatrixTransport(
-            server_url=self.server_url,
-            user_id=self.matrix_user_id,
-            password=self.password,
-            device_id=self.device_id,
-            access_token=self.access_token,
-        )
+        before = dict(self.session_state)
+        self.transport = self._transport_factory(self)
         await self.transport.connect()
         self._absorb_session_state()
-        if not had_session:
+        if self.session_state != before:
             await self._persist_state(force=True)
 
         self._ready.set()
 
     def _absorb_session_state(self) -> None:
-        """Copy transport-owned credentials back so they can be persisted."""
-        state = self._transport.session_state
-        self.access_token = state["access_token"]
-        self.device_id = state["device_id"]
+        """Take back whatever the transport wants persisted, without reading it."""
+        self.session_state = dict(self._transport.session_state)
 
     # ── Internal event handlers (filtering + dispatch to hooks) ────────────────
 
-    async def _handle_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
+    async def _handle_message(self, room: RoomRef, event: InboundMessage) -> None:
         if self._should_ignore(room, event):
             return
         try:
@@ -297,7 +261,7 @@ class ClientBase[ConfigT: ClientConfig]:
                 "Error in on_message for %s in %s", self.matrix_user_id, room.room_id
             )
 
-    async def _handle_media(self, room: MatrixRoom, event: RoomMessageMedia) -> None:
+    async def _handle_media(self, room: RoomRef, event: InboundMedia) -> None:
         if self._should_ignore(room, event):
             return
         try:
@@ -307,7 +271,7 @@ class ClientBase[ConfigT: ClientConfig]:
                 "Error in on_media for %s in %s", self.matrix_user_id, room.room_id
             )
 
-    async def _handle_reaction(self, room: MatrixRoom, event: ReactionEvent) -> None:
+    async def _handle_reaction(self, room: RoomRef, event: InboundEvent) -> None:
         if self._should_ignore(room, event):
             return
         try:
@@ -318,11 +282,11 @@ class ClientBase[ConfigT: ClientConfig]:
             )
 
     async def _handle_member_event(
-        self, room: MatrixRoom, event: RoomMemberEvent
+        self, room: RoomRef, event: InboundMembership
     ) -> None:
         if event.state_key == self.matrix_user_id:
             if event.membership == "join":
-                self._mark_joined(room.room_id, event.server_timestamp)
+                self._mark_joined(room.room_id, event.timestamp)
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into
                 # membership is an arrival. Joins predating this process are not
@@ -330,7 +294,7 @@ class ClientBase[ConfigT: ClientConfig]:
                 # the same join does not announce it twice.
                 if (
                     event.prev_membership != "join"
-                    and event.server_timestamp >= self._startup_ts
+                    and event.timestamp >= self._startup_ts
                     and room.room_id not in self._self_join_dispatched
                 ):
                     self._self_join_dispatched.add(room.room_id)
@@ -357,7 +321,7 @@ class ClientBase[ConfigT: ClientConfig]:
                 room.room_id,
             )
 
-    async def _handle_invite(self, room: MatrixRoom, event: InviteMemberEvent) -> None:
+    async def _handle_invite(self, room: RoomRef, event: InboundMembership) -> None:
         try:
             await self.on_invite(room, event)
         except Exception:
@@ -433,22 +397,24 @@ class ClientBase[ConfigT: ClientConfig]:
         ),
     }
 
-    async def _handle_custom_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
+    async def _handle_custom_event(
+        self, room: RoomRef, event: InboundCustomEvent
+    ) -> None:
         if self._should_ignore(room, event):
             return
 
-        entry = self._EVENT_DISPATCH.get(event.type)
+        entry = self._EVENT_DISPATCH.get(event.event_type)
         if entry is None:
-            if event.type.startswith("com.switch.observe."):
+            if event.event_type.startswith("com.switch.observe."):
                 logger.warning(
                     "Observe event %s not yet supported in %s",
-                    event.type,
+                    event.event_type,
                     room.room_id,
                 )
             else:
                 logger.error(
                     "Unhandled custom event type %s in %s",
-                    event.type,
+                    event.event_type,
                     room.room_id,
                 )
             return
@@ -456,10 +422,12 @@ class ClientBase[ConfigT: ClientConfig]:
         event_class, method_name = entry
         try:
             typed_event = event_class(
-                **event.source.get("content", {}),
+                **event.content,
             )
         except Exception:
-            logger.exception("Failed to parse %s event in %s", event.type, room.room_id)
+            logger.exception(
+                "Failed to parse %s event in %s", event.event_type, room.room_id
+            )
             return
 
         # Command results reply into the command's thread. When the command was
@@ -468,16 +436,14 @@ class ClientBase[ConfigT: ClientConfig]:
         # Otherwise the command itself roots the thread — use its own event id.
         # The id is not part of the event content, so inject it here.
         if isinstance(typed_event, CommandEvent):
-            relates = event.source.get("content", {}).get("m.relates_to") or {}
-            if relates.get("rel_type") == "m.thread":
-                typed_event.thread_id = relates.get("event_id")
-            else:
-                typed_event.thread_id = event.event_id
+            typed_event.thread_id = event.thread_root_id or event.event_id
 
         try:
             await getattr(self, method_name)(room, typed_event)
         except Exception:
-            logger.exception("Error in handler for %s in %s", event.type, room.room_id)
+            logger.exception(
+                "Error in handler for %s in %s", event.event_type, room.room_id
+            )
 
     async def _handle_sync(self, next_batch: str) -> None:
         if next_batch and next_batch != self.next_batch_token:
@@ -497,140 +463,136 @@ class ClientBase[ConfigT: ClientConfig]:
 
     # ── Filtering ──────────────────────────────────────────────────────────────
 
-    def _should_ignore(self, room: MatrixRoom, event: object) -> bool:
-        sender = getattr(event, "sender", None)
-        if sender == self.matrix_user_id:
+    def _should_ignore(self, room: RoomRef, event: InboundEvent) -> bool:
+        if event.sender == self.matrix_user_id:
             return True
 
-        server_ts = getattr(event, "server_timestamp", None)
-        if server_ts is not None:
+        if event.timestamp:
             join_time = self.room_join_times.get(room.room_id, self._startup_ts)
-            if server_ts < join_time:
+            if event.timestamp < join_time:
                 return True
 
         return False
 
     # ── Event hooks (subclasses override) ──────────────────────────────────────
 
-    async def on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
+    async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
         pass
 
-    async def on_media(self, room: MatrixRoom, event: RoomMessageMedia) -> None:
+    async def on_media(self, room: RoomRef, event: InboundMedia) -> None:
         pass
 
-    async def on_reaction(self, room: MatrixRoom, event: ReactionEvent) -> None:
+    async def on_reaction(self, room: RoomRef, event: InboundEvent) -> None:
         pass
 
-    async def on_self_join(self, room: MatrixRoom, event: RoomMemberEvent) -> None:
+    async def on_self_join(self, room: RoomRef, event: InboundMembership) -> None:
         pass
 
-    async def on_member_event(self, room: MatrixRoom, event: RoomMemberEvent) -> None:
+    async def on_member_event(self, room: RoomRef, event: InboundMembership) -> None:
         pass
 
-    async def on_invite(self, room: MatrixRoom, event: InviteMemberEvent) -> None:
+    async def on_invite(self, room: RoomRef, event: InboundMembership) -> None:
         logger.info(
             "Client %s auto-accepting invite to %s", self.matrix_user_id, room.room_id
         )
         await self.join_room(room.room_id)
 
-    async def on_command(self, room: MatrixRoom, event: CommandEvent) -> None:
+    async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         pass
 
     async def on_mediation_tool_request(
-        self, room: MatrixRoom, event: MediationToolRequest
+        self, room: RoomRef, event: MediationToolRequest
     ) -> None:
         pass
 
     async def on_mediation_llm_request(
-        self, room: MatrixRoom, event: MediationLlmRequest
+        self, room: RoomRef, event: MediationLlmRequest
     ) -> None:
         pass
 
     async def on_mediation_tool_result(
-        self, room: MatrixRoom, event: MediationToolResult
+        self, room: RoomRef, event: MediationToolResult
     ) -> None:
         pass
 
     async def on_mediation_llm_response(
-        self, room: MatrixRoom, event: MediationLlmResponse
+        self, room: RoomRef, event: MediationLlmResponse
     ) -> None:
         pass
 
-    async def on_tool_call_report(
-        self, room: MatrixRoom, event: ToolCallReport
-    ) -> None:
+    async def on_tool_call_report(self, room: RoomRef, event: ToolCallReport) -> None:
         pass
 
-    async def on_llm_call_report(self, room: MatrixRoom, event: LlmCallReport) -> None:
+    async def on_llm_call_report(self, room: RoomRef, event: LlmCallReport) -> None:
         pass
 
-    async def on_task_delegate(self, room: MatrixRoom, event: TaskDelegate) -> None:
+    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
         pass
 
-    async def on_task_accept(self, room: MatrixRoom, event: TaskAccept) -> None:
+    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
         pass
 
-    async def on_task_update(self, room: MatrixRoom, event: TaskUpdate) -> None:
+    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
         pass
 
-    async def on_task_finalise(self, room: MatrixRoom, event: TaskFinalise) -> None:
+    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
         pass
 
-    async def on_task_cancel(self, room: MatrixRoom, event: TaskCancel) -> None:
+    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
         pass
 
     async def on_agent_runtime_state(
-        self, room: MatrixRoom, event: AgentRuntimeStateEvent
+        self, room: RoomRef, event: AgentRuntimeStateEvent
     ) -> None:
         pass
 
     async def on_permission_request(
-        self, room: MatrixRoom, event: PermissionRequest
+        self, room: RoomRef, event: PermissionRequest
     ) -> None:
         pass
 
     async def on_permission_response(
-        self, room: MatrixRoom, event: PermissionResponse
+        self, room: RoomRef, event: PermissionResponse
     ) -> None:
         pass
 
     async def on_resource_load_request(
-        self, room: MatrixRoom, event: ResourceLoadRequest
+        self, room: RoomRef, event: ResourceLoadRequest
     ) -> None:
         pass
 
     async def on_room_document_create_request(
-        self, room: MatrixRoom, event: RoomDocumentCreateRequest
+        self, room: RoomRef, event: RoomDocumentCreateRequest
     ) -> None:
         pass
 
     async def on_room_document_create_response(
-        self, room: MatrixRoom, event: RoomDocumentCreateResponse
+        self, room: RoomRef, event: RoomDocumentCreateResponse
     ) -> None:
         pass
 
     async def on_room_document_update_request(
-        self, room: MatrixRoom, event: RoomDocumentUpdateRequest
+        self, room: RoomRef, event: RoomDocumentUpdateRequest
     ) -> None:
         pass
 
     async def on_room_document_update_response(
-        self, room: MatrixRoom, event: RoomDocumentUpdateResponse
+        self, room: RoomRef, event: RoomDocumentUpdateResponse
     ) -> None:
         pass
 
     async def on_room_document_delete_request(
-        self, room: MatrixRoom, event: RoomDocumentDeleteRequest
+        self, room: RoomRef, event: RoomDocumentDeleteRequest
     ) -> None:
         pass
 
     async def on_room_document_delete_response(
-        self, room: MatrixRoom, event: RoomDocumentDeleteResponse
+        self, room: RoomRef, event: RoomDocumentDeleteResponse
     ) -> None:
         pass
 
     async def on_resource_load_response(
-        self, room: MatrixRoom, event: ResourceLoadResponse
+        self, room: RoomRef, event: ResourceLoadResponse
     ) -> None:
         pass
 
@@ -738,9 +700,8 @@ class ClientBase[ConfigT: ClientConfig]:
                 await self.client_store.update_state(
                     session,
                     self.client_id,
-                    access_token=self.access_token,
-                    device_id=self.device_id,
                     next_batch_token=self.next_batch_token,
+                    **self.session_state,
                 )
                 await session.commit()
             self._last_sync_persist = now

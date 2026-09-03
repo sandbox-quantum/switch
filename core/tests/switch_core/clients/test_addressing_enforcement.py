@@ -31,7 +31,7 @@ def _event(
     return SimpleNamespace(
         sender=sender,
         body="@fixer help",
-        source={"content": content},
+        content=content,
         event_id="$evt",
     )
 

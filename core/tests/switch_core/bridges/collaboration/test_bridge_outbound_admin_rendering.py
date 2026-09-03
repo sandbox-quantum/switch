@@ -12,10 +12,10 @@ relay path at the time, so nothing caught it.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.collaboration.bridge_core import ADMIN_MARKER, BridgeCore
+from switch_core.transport import InboundMessage, RoomRef
 
 BODY = "**Agents in this room:**\n- **scout** — Claude Code"
 
@@ -84,17 +84,18 @@ async def _none(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-def _event(*, admin: bool) -> Any:
+def _event(*, admin: bool) -> InboundMessage:
     content: dict[str, Any] = {}
     if admin:
         content[ADMIN_MARKER] = {"type": "command_result"}
-    else:
-        content["sender_name"] = "scout"
-    return SimpleNamespace(
-        sender="@someone:switch.local",
-        body=BODY,
+    return InboundMessage(
+        room_id="!r:switch.local",
         event_id="$e1",
-        source={"content": content},
+        sender="@someone:switch.local",
+        timestamp=1700000000000,
+        content=content,
+        body=BODY,
+        sender_name=None if admin else "scout",
     )
 
 
@@ -102,7 +103,7 @@ async def test_an_admin_event_reaches_the_adapter_unrendered() -> None:
     adapter = _RecordingAdapter()
 
     await _bridge(adapter).handle_outbound_message(
-        SimpleNamespace(room_id="!r:switch.local"), _event(admin=True)
+        RoomRef("!r:switch.local"), _event(admin=True)
     )
 
     # Handed on as written, for admin_message to render once.
@@ -116,7 +117,7 @@ async def test_an_admin_event_is_not_rendered_twice() -> None:
     adapter = _RecordingAdapter()
 
     await _bridge(adapter).handle_outbound_message(
-        SimpleNamespace(room_id="!r:switch.local"), _event(admin=True)
+        RoomRef("!r:switch.local"), _event(admin=True)
     )
 
     rendered = adapter.translate_outbound(adapter.admin_calls[0])
@@ -130,7 +131,7 @@ async def test_an_agent_message_is_still_rendered_by_the_relay() -> None:
     adapter = _RecordingAdapter()
 
     await _bridge(adapter).handle_outbound_message(
-        SimpleNamespace(room_id="!r:switch.local"), _event(admin=False)
+        RoomRef("!r:switch.local"), _event(admin=False)
     )
 
     assert adapter.admin_calls == []

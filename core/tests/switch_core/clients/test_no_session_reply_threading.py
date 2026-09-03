@@ -9,6 +9,7 @@ from switch_core.clients.agent_client import (
     AUTO_REPLY_FLAG,
     AgentClient,
 )
+from switch_core.transport import InboundMessage, RoomRef
 
 
 class _Recorder:
@@ -74,25 +75,26 @@ def _fake_self(
     return ns
 
 
-def _event(thread_id: str | None, *, is_auto_reply: bool = False) -> SimpleNamespace:
+def _event(thread_id: str | None, *, is_auto_reply: bool = False) -> InboundMessage:
     content: dict[str, object] = {"sender_name": "louisa"}
-    if thread_id is not None:
-        content["m.relates_to"] = {"rel_type": "m.thread", "event_id": thread_id}
     if is_auto_reply:
         content[AUTO_REPLY_FLAG] = True
-    return SimpleNamespace(
-        body="@cc-bug-fixing can you help",
-        sender="@switch-mattermost-louisa:switch.local",
+    return InboundMessage(
+        room_id="!matrix:server",
         event_id="$trigger",
-        server_timestamp=0,
-        source={"content": content},
+        sender="@switch-mattermost-louisa:switch.local",
+        timestamp=0,
+        content=content,
+        body="@cc-bug-fixing can you help",
+        sender_name="louisa",
+        thread_root_id=thread_id,
     )
 
 
 @pytest.mark.asyncio
 async def test_no_session_reply_threads_under_triggering_mention() -> None:
     send_message = _Recorder()
-    room = SimpleNamespace(room_id="!matrix:server")
+    room = RoomRef(room_id="!matrix:server")
     await AgentClient.on_message(
         _fake_self(send_message), room, _event(thread_id="$thread-root")
     )
@@ -114,7 +116,7 @@ async def test_no_session_reply_not_triggered_by_another_auto_reply() -> None:
     # must not ping-pong. A message already flagged as an auto-reply gets no
     # reply, so the loop can never form.
     send_message = _Recorder()
-    room = SimpleNamespace(room_id="!matrix:server")
+    room = RoomRef(room_id="!matrix:server")
     await AgentClient.on_message(
         _fake_self(send_message),
         room,
@@ -130,7 +132,7 @@ async def test_no_session_reply_does_not_double_tag_the_asker() -> None:
     # configured operator). When that's the same person as the asker, we must
     # tag them once, not "@louisa @louisa".
     send_message = _Recorder()
-    room = SimpleNamespace(room_id="!matrix:server")
+    room = RoomRef(room_id="!matrix:server")
     await AgentClient.on_message(
         _fake_self(
             send_message, unavailable_reply="@louisa\n\nmy operator should run …"
@@ -150,7 +152,7 @@ async def test_no_session_reply_tags_distinct_asker_and_operator() -> None:
     # When the reply's embedded mention is a DIFFERENT person (the operator),
     # both the asker and that operator are tagged.
     send_message = _Recorder()
-    room = SimpleNamespace(room_id="!matrix:server")
+    room = RoomRef(room_id="!matrix:server")
     await AgentClient.on_message(
         _fake_self(
             send_message, unavailable_reply="@operator\n\nmy operator should run …"
@@ -182,7 +184,7 @@ class TestStartingSessionNoticeGoesWhereItWasAsked:
     @pytest.mark.asyncio
     async def test_asked_at_the_root_it_answers_at_the_root(self) -> None:
         send_message = _Recorder()
-        room = SimpleNamespace(room_id="!matrix:server")
+        room = RoomRef(room_id="!matrix:server")
 
         await AgentClient.on_message(
             _fake_self(send_message, unavailable_reply=_STARTING_SESSION_MESSAGE),
@@ -199,7 +201,7 @@ class TestStartingSessionNoticeGoesWhereItWasAsked:
         # The other half of the rule — replying at the root here would strand
         # the notice away from the conversation it belongs to.
         send_message = _Recorder()
-        room = SimpleNamespace(room_id="!matrix:server")
+        room = RoomRef(room_id="!matrix:server")
 
         await AgentClient.on_message(
             _fake_self(send_message, unavailable_reply=_STARTING_SESSION_MESSAGE),
@@ -223,7 +225,7 @@ class TestTerminalReplyThreadsOffTheTrigger:
     @pytest.mark.asyncio
     async def test_asked_at_the_root_it_opens_a_thread_on_the_trigger(self) -> None:
         send_message = _Recorder()
-        room = SimpleNamespace(room_id="!matrix:server")
+        room = RoomRef(room_id="!matrix:server")
 
         await AgentClient.on_message(
             _fake_self(send_message), room, _event(thread_id=None)
@@ -237,7 +239,7 @@ class TestTerminalReplyThreadsOffTheTrigger:
         # Already in a thread: the trigger's thread root IS that thread, so it
         # lands there rather than starting a nested one.
         send_message = _Recorder()
-        room = SimpleNamespace(room_id="!matrix:server")
+        room = RoomRef(room_id="!matrix:server")
 
         await AgentClient.on_message(
             _fake_self(send_message), room, _event(thread_id="$thread-root")

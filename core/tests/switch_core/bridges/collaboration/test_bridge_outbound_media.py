@@ -4,10 +4,13 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-import nio
-from nio import DownloadError
-
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
+from switch_core.transport import (
+    DownloadResult,
+    InboundMedia,
+    RoomRef,
+    TransportError,
+)
 
 
 def _media_event(
@@ -21,7 +24,7 @@ def _media_event(
     group: dict[str, Any] | None = None,
     mimetype: str = "image/png",
     event_id: str = "$media-event",
-) -> nio.RoomMessageMedia:
+) -> InboundMedia:
     content: dict[str, Any] = {
         "msgtype": msgtype,
         "body": body,
@@ -36,15 +39,21 @@ def _media_event(
         content["sender_name"] = sender_name
     if thread_root is not None:
         content["m.relates_to"] = {"rel_type": "m.thread", "event_id": thread_root}
-    cls = nio.RoomMessageImage if msgtype == "m.image" else nio.RoomMessageFile
-    return cls.from_dict(
-        {
-            "type": "m.room.message",
-            "event_id": event_id,
-            "sender": sender,
-            "origin_server_ts": 1700000000000,
-            "content": content,
-        }
+    return InboundMedia(
+        room_id="!room:s",
+        event_id=event_id,
+        sender=sender,
+        timestamp=1700000000000,
+        content=content,
+        body=body,
+        sender_name=sender_name,
+        msgtype=msgtype,
+        uri="mxc://s/abc",
+        filename=filename or body,
+        mimetype=mimetype,
+        size=5,
+        thread_root_id=thread_root,
+        group=group,
     )
 
 

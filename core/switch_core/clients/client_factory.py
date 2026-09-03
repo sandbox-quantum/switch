@@ -8,8 +8,25 @@ from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.transport import MessageTransport
+from switch_core.transport.matrix import MatrixTransport
 
 logger = logging.getLogger(__name__)
+
+
+def _matrix_transport_for(client: ClientBase[ClientConfig]) -> MessageTransport:
+    """Build the transport a client runs on.
+
+    Choosing the implementation is the factory's job, so a client never names
+    one.
+    """
+    return MatrixTransport(
+        server_url=client.server_url,
+        user_id=client.matrix_user_id,
+        password=client.password,
+        device_id=client.session_state.get("device_id"),
+        access_token=client.session_state.get("access_token"),
+    )
 
 
 class ClientFactory:
@@ -50,8 +67,11 @@ class ClientFactory:
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=config,
-            device_id=record.device_id,
-            access_token=record.access_token,
+            transport_factory=_matrix_transport_for,
+            session_state={
+                "access_token": record.access_token,
+                "device_id": record.device_id,
+            },
             next_batch_token=record.next_batch_token,
             **extra_kwargs,
         )

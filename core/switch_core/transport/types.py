@@ -94,17 +94,17 @@ class InboundMessage(InboundEvent):
 
 
 @dataclass(frozen=True)
-class InboundMedia(InboundEvent):
-    """An attachment. `uri` is the handle to pass back to `download_media`."""
+class InboundMedia(InboundMessage):
+    """An attachment. `uri` is the handle to pass back to `download_media`.
 
-    body: str = ""
-    sender_name: str | None = None
+    A media event is a message that happens to carry a file, so code that only
+    cares about sender, body or thread can treat the two alike.
+    """
+
     uri: str = ""
     filename: str | None = None
     mimetype: str | None = None
     size: int | None = None
-    msgtype: str = "m.file"
-    thread_root_id: str | None = None
     group: dict[str, object] | None = None
 
 
