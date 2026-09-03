@@ -2582,7 +2582,25 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
-### [0.3.4] - 2026-09-01
+### [0.4.1] - 2026-09-03
+
+#### Fixed
+- **A deleted room no longer wedges the whole connection.** When the client
+  declared a room the server had dropped, the server refused the entire
+  connection; the client reopened and re-declared the same room, so it was
+  refused again — an unbreakable loop (measured at ~29 errors/min for over a
+  day). A refusal that names one of our rooms is now terminal for that room: it
+  is dropped, reported at error level, and the reduced room list is pushed over
+  the same callback the server's own updates use, so the reopen is a strictly
+  smaller request and cannot spin. Refusals that name no room keep their
+  existing transport backoff (#353).
+- **The heartbeat now backs off when the connection is rejected.** A 404/409 on
+  `/connection/beat` means we are not attached and only a reopen helps, but the
+  loop treated "the server answered" as recovery and beat on at full cadence —
+  one rejected request every two seconds against a connection that could never
+  reopen. A rejection now counts as a beat that did not land: reopen, then
+  double the interval to the 30s cap on the same curve as every other failure;
+  the first beat that lands returns to base cadence (#353).
 
 #### Added
 - Reap orphaned agent runtimes at boot: `reapOrphanedRuntimes` is now part of
