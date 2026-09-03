@@ -88,6 +88,19 @@ vi.mock('./setAgentAutoSession', () => ({
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/db/client', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  },
+}));
+vi.mock('@main/db/schema', () => ({ agents: { id: 'id', switchAgentId: 'switchAgentId' } }));
+vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
 
 const { addAgent } = await import('./add-agent');
 const { trackEvent } = await import('@main/core/telemetry/telemetry-service');

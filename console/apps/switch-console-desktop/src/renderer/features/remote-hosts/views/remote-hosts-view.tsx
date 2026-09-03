@@ -11,6 +11,22 @@
  * status pill — so hosts and agents read as one product.
  */
 
+/**
+ * Volatile flag: the SSH host alias just added by the Add Host modal, consumed
+ * once by `remote-host-view.tsx` to auto-expand the Load Existing Agents
+ * section on the post-add-host page visit.
+ */
+export let justAddedHost: string | null = null;
+
+/** Consume the flag — returns the value and clears it. */
+export function consumeJustAddedHost(sshHost: string): boolean {
+  if (justAddedHost === sshHost) {
+    justAddedHost = null;
+    return true;
+  }
+  return false;
+}
+
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Plus, Server, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -201,7 +217,8 @@ export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage
                 onboarded: sshHosts,
                 onAdded: (sshHost) => {
                   invalidate();
-                  openHost(sshHost);
+                  justAddedHost = sshHost;
+                  navigate('remoteHost', { sshHost });
                 },
               })
             }

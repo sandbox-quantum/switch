@@ -472,7 +472,7 @@ export function existingAgentIdInSlot(
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
-  params: { slug: string; expectedAgentId?: string } & SwitchSettingsCredentials
+  params: { slug: string } & SwitchSettingsCredentials
 ): Promise<void> {
   const relPath = agentSettingsRelativePath(params.slug);
   const existingRaw = await workspaceFs.read(relPath);
@@ -483,19 +483,6 @@ export async function writeNeutralAgentSettingsFs(
       relPath,
       existingEndpoint,
       incomingEndpoint: params.apiEndpoint,
-    });
-  }
-
-  // Defence in depth: if the slot holds a same-endpoint identity that is NOT
-  // the one we are about to write, refuse — it belongs to a colleague's agent
-  // and overwriting it would destroy their token (CHOO-2560).
-  const slotAgentId = existingAgentIdInSlot(existingRaw, params.apiEndpoint);
-  if (slotAgentId !== null && slotAgentId !== params.agentId) {
-    throw new ExistingAgentCredentialsError({
-      slug: params.slug,
-      relPath,
-      existingAgentId: slotAgentId,
-      incomingAgentId: params.agentId,
     });
   }
 
