@@ -143,24 +143,13 @@ class MessageStore:
         Paging on `seq` rather than a timestamp keeps the cursor exact: within
         a room it is a total order with no ties, and `create` assigns it in
         commit order, so no row can be skipped or repeated between pages.
-        """
-        result = await session.execute(
-            select(Message)
-            .where(Message.room_id == room_id, Message.seq > after_seq)
-            .order_by(Message.seq)
-            .limit(limit)
-        )
-        return list(result.scalars().all())
 
-    async def list_after_seq(
-        self, session: AsyncSession, room_id: str, after_seq: int, *, limit: int
-    ) -> list[Message]:
-        """The next rows in a room after a delivery cursor, oldest first.
-
-        Oldest first because this feeds delivery rather than a reader: a
-        consumer must see the room in the order it happened, and must be able
-        to stop part-way and resume from the last row it handled. `seq` is
-        exclusive, so re-running with the same cursor delivers nothing twice.
+        This is also what a delivery cursor reads: it must see the room in the
+        order it happened, and must be able to stop part-way and resume from
+        the last row it handled. `after_seq` is exclusive, so re-reading with
+        the same cursor delivers nothing twice. Passing 0 also skips
+        reconstructed history, which is numbered below zero — a backfill is
+        not something to deliver.
         """
         result = await session.execute(
             select(Message)
