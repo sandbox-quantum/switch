@@ -60,4 +60,4 @@ export const RELEASE_REPO_NAME = 'switch';
 // core/pyproject.toml is the first step of cutting a switch-core release, and a
 // derived pin would immediately point local-server mode at images that are not
 // on the registry yet.
-export const COMPATIBLE_SWITCH_VERSION = '0.21.0';
+export const COMPATIBLE_SWITCH_VERSION = '0.23.0';
