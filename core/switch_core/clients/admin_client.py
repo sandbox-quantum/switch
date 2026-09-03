@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal, Unpack
 
 from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
@@ -10,7 +10,11 @@ from switch_core.clients.admin_messages import (
     AdminMessageType,
     admin_extra_content,
 )
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.client_base import (
+    ClientBase,
+    ClientBaseKwargs,
+    ClientConfig,
+)
 from switch_core.clients.mentions import (
     mention_regex,
     strip_emphasis,
@@ -59,7 +63,7 @@ class AdminClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
         frontend_base_url: str | None,
-        **kwargs: Any,
+        **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:
         super().__init__(**kwargs)
         self._agent_store = agent_store

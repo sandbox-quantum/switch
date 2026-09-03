@@ -5,7 +5,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Unpack
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
@@ -36,7 +36,11 @@ from switch_core.bridges.resource.events import (
     RoomDocumentUpdateResponse,
 )
 from switch_core.bridges.resource.tracker import ResourceRequestTracker
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.client_base import (
+    ClientBase,
+    ClientBaseKwargs,
+    ClientConfig,
+)
 from switch_core.clients.mentions import (
     NAME_CHAR as _NAME_CHAR,
 )
@@ -235,9 +239,9 @@ class AgentClient(ClientBase[ClientConfig]):
         resource_request_tracker: ResourceRequestTracker,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
-        **kwargs: object,
+        **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:
-        super().__init__(**kwargs)  # type: ignore[arg-type]
+        super().__init__(**kwargs)
         self._event_buffer = event_buffer
         self._agent_store = agent_store
         self._room_store = room_store

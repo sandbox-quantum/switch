@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Unpack
 
 from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.resource.events import (
@@ -15,7 +15,11 @@ from switch_core.bridges.resource.events import (
     RoomDocumentUpdateResponse,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.client_base import (
+    ClientBase,
+    ClientBaseKwargs,
+    ClientConfig,
+)
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import (
@@ -36,7 +40,7 @@ class ResourceManagerClient(ClientBase[ClientConfig]):
         room_store: RoomStore,
         resource_service: ResourceService,
         request_tracker: RequestTracker,
-        **kwargs: Any,
+        **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
     ) -> None:
         super().__init__(**kwargs)
         self._agent_store = agent_store

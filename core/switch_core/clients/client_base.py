@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -62,6 +62,35 @@ SYNC_BACKOFF_CAP = 60.0
 
 class ClientConfig(BaseModel):
     pass
+
+
+class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
+    """What every `ClientBase` subclass must forward to `ClientBase`.
+
+    Subclasses take their own arguments and pass the rest through. Spelled as
+    `**kwargs: Any`, that pass-through is invisible to the type checker on both
+    sides: the subclass cannot be told it is missing something, and a caller
+    cannot be told it is passing something that no longer exists. A stale
+    `device_id=` type-checked clean that way and took all four collaboration
+    bridges down at startup — the credential had moved into `session_state`
+    and nothing said so until the process refused to start.
+
+    Declaring the shape here and unpacking it restores both checks without
+    making every subclass restate eleven parameters.
+    """
+
+    client_id: str
+    matrix_user_id: str
+    display_name: str
+    password: str
+    server_url: str
+    session_factory: async_sessionmaker[AsyncSession]
+    client_store: ClientStore
+    config: ConfigT
+    transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport]
+    session_state: dict[str, str | None]
+    message_recorder: MessageRecorder
+    next_batch_token: NotRequired[str | None]
 
 
 class ClientBase[ConfigT: ClientConfig]:

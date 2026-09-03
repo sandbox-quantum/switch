@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -15,11 +16,15 @@ from switch_core.transport.matrix import MatrixTransport
 logger = logging.getLogger(__name__)
 
 
-def matrix_transport_for(client: ClientBase[ClientConfig]) -> MessageTransport:
+def matrix_transport_for(client: ClientBase[Any]) -> MessageTransport:
     """Build the transport a client runs on.
 
     Choosing the implementation is the factory's job, so a client never names
     one.
+
+    The config type is `Any` because nothing here reads the config: a factory
+    that works for every client would otherwise have to be re-typed for each
+    subclass, since `ClientBase` is invariant in it.
     """
     return MatrixTransport(
         server_url=client.server_url,
