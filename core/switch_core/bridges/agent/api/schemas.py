@@ -352,6 +352,7 @@ class AgentInfo(BaseModel):
     id: str
     name: str
     description: str
+    display_name: str | None
 
 
 class TaskAgentsResponse(BaseModel):
