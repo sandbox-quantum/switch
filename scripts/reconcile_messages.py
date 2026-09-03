@@ -72,6 +72,17 @@ def _report(reconciliation: RoomReconciliation, *, verbose: bool) -> None:
             for name, count in sorted(reconciliation.ignored_by_type.items())
         )
         print(f"    not sends, so not compared: {counts}")
+    if reconciliation.unverifiable_by_type:
+        counts = ", ".join(
+            f"{name}={count}"
+            for name, count in sorted(reconciliation.unverifiable_by_type.items())
+        )
+        print(f"    rows the bus walk cannot check: {counts}")
+    if not reconciliation.anchored:
+        print(
+            "    the oldest recorded event was not found on the bus, so the "
+            "start of the window is approximate"
+        )
     if not verbose:
         return
     for event_id in reconciliation.missing_rows:

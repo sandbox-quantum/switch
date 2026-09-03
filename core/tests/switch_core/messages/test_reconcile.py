@@ -175,15 +175,15 @@ class TestAgreement:
             [
                 HistoryPage(
                     events=[
-                        _event("$a", now),
                         InboundMembership(
                             room_id="!room:test",
                             event_id="$join",
                             sender="@someone:test",
-                            timestamp=_ms(now),
+                            timestamp=_ms(now + timedelta(seconds=1)),
                             state_key="@someone:test",
                             membership="join",
                         ),
+                        _event("$a", now),
                     ],
                     next_token=None,
                 )
@@ -215,6 +215,164 @@ class TestAgreement:
         assert report.compared_nothing
         assert transport.reads == 0
         assert "nothing to compare" in report.summary()
+
+
+class TestTheWindowBoundary:
+    """The oldest recorded message is the one most likely to be misjudged.
+
+    Its row is written after its send is accepted, so the row's `sent_at` is
+    always a little later than the event's own timestamp. A window that began
+    at the row would exclude the event that produced it, and every room would
+    report its first message as drift for as long as it existed.
+    """
+
+    async def test_the_first_recorded_message_is_not_reported_as_drift(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        sent = datetime.now(UTC)
+        recorded_at = sent + timedelta(milliseconds=40)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$first", recorded_at))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$first", sent)], next_token=None)]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.agreed == 1
+        assert report.anchored
+
+    async def test_history_before_the_anchor_is_still_left_alone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Admitting the anchor from before the window must not admit its
+        neighbours: the walk stops at it, it does not step over it."""
+        sent = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$first", sent + timedelta(milliseconds=40)))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[
+                        _event("$first", sent),
+                        _event("$older", sent - timedelta(seconds=1)),
+                    ],
+                    next_token=None,
+                )
+            ]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.missing_rows == []
+
+    async def test_an_anchor_the_bus_has_lost_is_declared_not_hidden(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$gone", now))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$other", now)], next_token=None)]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert not report.anchored
+        assert "WINDOW UNANCHORED" in report.summary()
+
+
+class TestRowsWithNothingToCompareAgainst:
+    """The bus walk discards whole categories of event. A row of one of those
+    categories has no counterpart by construction, and calling that "recorded
+    but never sent" would report the same rows as drift on every run."""
+
+    async def test_a_recorded_arrival_is_not_drift(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$a", now))
+            session.add(
+                _row(
+                    room.id,
+                    "$join",
+                    now + timedelta(seconds=1),
+                    event_type="m.room.member",
+                    msgtype=None,
+                    body=None,
+                    content={"membership": "join"},
+                )
+            )
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$a", now)], next_token=None)]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.unverifiable_by_type == {"m.room.member": 1}
+        assert "1 rows not checkable" in report.summary()
+
+    async def test_a_row_written_before_its_type_was_denied_is_not_drift(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """These exist on real deployments: the recorder kept every type before
+        the log was scoped, and those rows outlive the change."""
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$a", now))
+            session.add(
+                _row(
+                    room.id,
+                    "$legacy",
+                    now + timedelta(seconds=1),
+                    event_type="com.switch.agent.runtime_state",
+                    msgtype=None,
+                    body=None,
+                    content={"state": "busy"},
+                )
+            )
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$a", now)], next_token=None)]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.unverifiable_by_type == {"com.switch.agent.runtime_state": 1}
 
 
 class TestDrift:
@@ -408,15 +566,15 @@ class TestDrift:
             [
                 HistoryPage(
                     events=[
-                        _event("$msg", now),
                         InboundCustomEvent(
                             room_id="!room:test",
                             event_id="$state",
                             sender="@agent:test",
-                            timestamp=_ms(now),
+                            timestamp=_ms(now + timedelta(seconds=1)),
                             content={"state": "busy"},
                             event_type="com.switch.agent.runtime_state",
                         ),
+                        _event("$msg", now),
                     ],
                     next_token=None,
                 )
@@ -441,7 +599,9 @@ class TestPaging:
         now = datetime.now(UTC)
         async with session_factory() as session:
             room = await _make_room(session)
-            for n in range(3):
+            # Oldest first, so `seq` runs the same way the recorder assigns it:
+            # the anchor is the room's first message, not its last.
+            for n in (2, 1, 0):
                 session.add(_row(room.id, f"$p{n}", now - timedelta(minutes=n)))
             await session.commit()
             room_id = room.id
@@ -472,17 +632,21 @@ class TestPaging:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """A server that returns the cursor it was given would otherwise loop
-        forever."""
+        forever.
+
+        The anchor is deliberately absent from the bus, since a walk that finds
+        it stops there and never reaches a second page.
+        """
         now = datetime.now(UTC)
         async with session_factory() as session:
             room = await _make_room(session)
-            session.add(_row(room.id, "$a", now))
+            session.add(_row(room.id, "$vanished", now))
             await session.commit()
             room_id = room.id
 
         transport = PagingTransport(
             [
-                HistoryPage(events=[_event("$a", now)], next_token="stuck"),
+                HistoryPage(events=[], next_token="stuck"),
                 HistoryPage(events=[], next_token="stuck"),
             ]
         )
@@ -492,4 +656,4 @@ class TestPaging:
             report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
 
         assert transport.reads == 2
-        assert report.clean
+        assert not report.anchored
