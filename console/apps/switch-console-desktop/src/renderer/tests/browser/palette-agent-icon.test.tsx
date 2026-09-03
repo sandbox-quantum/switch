@@ -60,6 +60,7 @@ function remoteAgent(iconUrl: string | null): RemoteAgentSummary {
     ownerId: null,
     ownerName: null,
     knownAgentType: 'claude-code',
+    knownAgentOptions: null,
     addressingPolicy: null,
     iconUrl,
     createdAt: '2026-01-01T00:00:00.000Z',

@@ -23,6 +23,11 @@ import { createAgent } from './createAgent';
 import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
+import {
+  discoverLoadableAgentsInDir,
+  discoverLoadableAgentsOnHost,
+  type DiscoverLoadableAgentsParams,
+} from './discover-loadable-agents';
 import { discoverLocationAgents } from './discover-location-agents';
 import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
@@ -85,6 +90,10 @@ export const agentsController = createRPCController({
   }) => discoverLocationAgents(params),
   discoverConfiguredAgents: (params: { sshHost: string | null; dir: string; serverId: string }) =>
     discoverConfiguredAgents(params),
+  discoverLoadableAgentsOnHost: (params: DiscoverLoadableAgentsParams) =>
+    discoverLoadableAgentsOnHost(params),
+  discoverLoadableAgentsInDir: (params: { sshHost: string; dir: string; serverId: string }) =>
+    discoverLoadableAgentsInDir(params),
   attachConfiguredAgents: (params: AttachConfiguredAgentsParams) => attachConfiguredAgents(params),
   getAgents: (locationId?: string) => getAgents(locationId),
   getAgentById: (agentId: string) => getAgentById(agentId),

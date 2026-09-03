@@ -184,6 +184,10 @@ export type RemoteAgentSummary = {
   ownerId: string | null;
   ownerName: string | null;
   knownAgentType: string | null;
+  /** The agent's known-agent options, including `repo_dir` when the server
+   * recorded one. Null for agents registered before the field existed or when
+   * the server omits it. */
+  knownAgentOptions: Record<string, unknown> | null;
   /** Who may address the agent, or null when it is open to everyone. On the
    * summary as well as the detail, so "which of these agents answers only its
    * owner" is one list read rather than a read per agent. Null also for a

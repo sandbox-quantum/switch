@@ -346,6 +346,7 @@ type AgentSummaryJson = {
   owner_id?: string | null;
   owner_name: string | null;
   known_agent_type: string | null;
+  known_agent_options?: Record<string, unknown> | null;
   addressing_policy?: AddressingPolicy | null;
   icon_url?: string | null;
   created_at: string;
@@ -363,6 +364,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
     ownerId: json.owner_id ?? null,
     ownerName: json.owner_name,
     knownAgentType: json.known_agent_type,
+    knownAgentOptions: json.known_agent_options ?? null,
     addressingPolicy: json.addressing_policy ?? null,
     iconUrl: json.icon_url ?? null,
     createdAt: json.created_at,
