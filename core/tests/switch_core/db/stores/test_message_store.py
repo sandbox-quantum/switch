@@ -8,11 +8,12 @@ page on, a `transport_event_id` that admits a duplicate, and FK actions
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 from sqlalchemy import delete
-from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Client, Message, MessageAttachment, Room
@@ -187,30 +188,128 @@ class TestSeq:
         assert seqs == sorted(seqs)
         assert len(set(seqs)) == len(seqs)
 
-    async def test_seq_cannot_be_supplied_by_the_caller(
+    async def test_the_store_owns_seq_not_the_caller(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """`Identity(always=True)` means the sequence, not the writer, owns the
-        cursor — otherwise a caller could reuse a value a reader has passed."""
+        """A caller that picked its own number could hand a reader a value it
+        has already paged past."""
         store = MessageStore()
         async with session_factory() as session:
             room = await _make_room(session, "alpha")
-            with pytest.raises(ProgrammingError, match="GENERATED ALWAYS"):
-                await store.create(session, _message(room.id, "$forced", seq=1), [])
+            created = await store.create(
+                session, _message(room.id, "$forced", seq=999), []
+            )
+            await session.commit()
 
-    async def test_seq_is_a_total_order_across_rooms(
+        assert created.seq == 1
+
+    async def test_seq_starts_at_one_in_every_room(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Numbering is per room, so one busy room does not push another
+        room's first message to a large number."""
         store = MessageStore()
         async with session_factory() as session:
             room_a = await _make_room(session, "alpha")
             room_b = await _make_room(session, "beta")
-            first = await store.create(session, _message(room_a.id, "$a1"), [])
-            second = await store.create(session, _message(room_b.id, "$b1"), [])
-            third = await store.create(session, _message(room_a.id, "$a2"), [])
+            a1 = await store.create(session, _message(room_a.id, "$a1"), [])
+            a2 = await store.create(session, _message(room_a.id, "$a2"), [])
+            b1 = await store.create(session, _message(room_b.id, "$b1"), [])
             await session.commit()
 
-        assert first.seq < second.seq < third.seq
+        assert (a1.seq, a2.seq, b1.seq) == (1, 2, 1)
+
+    async def test_two_rooms_may_hold_the_same_seq(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The uniqueness that matters is per room. A global constraint would
+        reject this, and it is not a conflict."""
+        store = MessageStore()
+        async with session_factory() as session:
+            room_a = await _make_room(session, "alpha")
+            room_b = await _make_room(session, "beta")
+            await store.create(session, _message(room_a.id, "$a1"), [])
+            await store.create(session, _message(room_b.id, "$b1"), [])
+            await session.commit()
+
+    async def test_a_room_cannot_hold_the_same_seq_twice(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The constraint is what makes the cursor trustworthy, so prove it is
+        really on the table rather than only in the store's arithmetic."""
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            await store.create(session, _message(room.id, "$a1"), [])
+            await session.commit()
+            room_id = room.id
+
+        async with session_factory() as session:
+            duplicate = _message(room_id, "$a2", seq=1)
+            session.add(duplicate)
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+
+class TestSeqUnderConcurrency:
+    """The reason `seq` is not an identity column.
+
+    A sequence allocates when the INSERT runs, so two concurrent writers take
+    their numbers immediately and may commit in the other order — leaving a
+    row visible only *behind* a cursor that has already moved past it. These
+    tests hold one transaction open and watch what the other one does, which
+    is the only way to tell the two designs apart.
+    """
+
+    async def test_a_second_writer_to_the_same_room_waits(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            await session.commit()
+            room_id = room.id
+
+        async with session_factory() as holder:
+            first = await store.create(holder, _message(room_id, "$first"), [])
+            assert first.seq == 1
+
+            async with session_factory() as waiter:
+                blocked = asyncio.ensure_future(
+                    store.create(waiter, _message(room_id, "$second"), [])
+                )
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(blocked), timeout=0.5)
+
+                # Releasing the lock is what lets the second writer number
+                # itself, and it can only do so after the first is committed.
+                await holder.commit()
+                second = await blocked
+                await waiter.commit()
+
+        assert second.seq == 2
+
+    async def test_writers_to_different_rooms_do_not_wait(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Serialising every room against every other one would make this a
+        global write lock, which is not the trade being made."""
+        store = MessageStore()
+        async with session_factory() as session:
+            room_a = await _make_room(session, "alpha")
+            room_b = await _make_room(session, "beta")
+            await session.commit()
+            room_a_id, room_b_id = room_a.id, room_b.id
+
+        async with session_factory() as holder, session_factory() as other:
+            await store.create(holder, _message(room_a_id, "$a1"), [])
+            created = await asyncio.wait_for(
+                store.create(other, _message(room_b_id, "$b1"), []), timeout=5
+            )
+            await other.commit()
+            await holder.commit()
+
+        assert created.seq == 1
 
 
 class TestListForRoom:

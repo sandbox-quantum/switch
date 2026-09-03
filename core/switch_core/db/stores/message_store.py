@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Message, MessageAttachment
@@ -15,7 +15,10 @@ class MessageStore:
 
         Attachments are numbered by their order in the list, which is the order
         they were sent in.
+
+        The caller must not have set `seq`; this assigns it.
         """
+        message.seq = await self._next_seq(session, message.room_id)
         session.add(message)
         await session.flush()
         for position, attachment in enumerate(attachments):
@@ -24,6 +27,44 @@ class MessageStore:
             session.add(attachment)
         await session.flush()
         return message
+
+    async def _next_seq(self, session: AsyncSession, room_id: str) -> int:
+        """The next position in this room, allocated in commit order.
+
+        A database sequence — `Identity`, `SERIAL`, `nextval` — is the obvious
+        way to number rows and the wrong one here. It hands out a number when
+        the INSERT runs, not when the transaction commits, and it does so
+        outside transaction control so the number is never given back. Two
+        concurrent senders therefore take 7 and 8, and if 8 commits first a
+        reader paging on `seq > n` can advance its cursor past 8 while 7 is
+        still in flight. When 7 lands it is behind the cursor and is never
+        read again: a message that was delivered, recorded, and silently
+        skipped. Rare, unreproducible, and invisible — the worst shape of bug
+        this table could have.
+
+        So the number is allocated under a lock held to commit. Writers to the
+        same room serialise, which makes `seq` order and commit order the same
+        order, which is the only property a cursor actually needs. The lock is
+        an advisory one keyed on the room: it takes no row lock, so it cannot
+        deadlock against anything that updates the room itself, and Postgres
+        releases it at commit or rollback whatever happens. Two rooms whose
+        ids collide in the hash serialise against each other needlessly and
+        are otherwise unaffected.
+
+        The cost is per-room serialisation of a single INSERT on a path that
+        has already returned to the caller — the send completed before
+        recording began. Rooms do not contend with each other.
+        """
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),
+            {"room_id": room_id},
+        )
+        result = await session.execute(
+            select(func.coalesce(func.max(Message.seq), 0)).where(
+                Message.room_id == room_id
+            )
+        )
+        return int(result.scalar_one()) + 1
 
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str
@@ -36,11 +77,11 @@ class MessageStore:
     async def list_for_room(
         self, session: AsyncSession, room_id: str, *, after_seq: int, limit: int
     ) -> list[Message]:
-        """Oldest first, from just after `after_seq`.
+        """Oldest first, from just after `after_seq`. Pass 0 to start.
 
-        Paging on `seq` rather than a timestamp keeps the cursor exact: it is a
-        total order with no ties, so no row can be skipped or repeated between
-        pages.
+        Paging on `seq` rather than a timestamp keeps the cursor exact: within
+        a room it is a total order with no ties, and `create` assigns it in
+        commit order, so no row can be skipped or repeated between pages.
         """
         result = await session.execute(
             select(Message)

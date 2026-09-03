@@ -7,7 +7,6 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
-    Identity,
     Index,
     Integer,
     Table,
@@ -882,7 +881,7 @@ class Message(Base):
 
     __tablename__ = "messages"
     __table_args__ = (
-        Index("ix_messages_room_seq", "room_id", "seq"),
+        UniqueConstraint("room_id", "seq", name="uq_messages_room_seq"),
         Index(
             "ix_messages_thread_root",
             "room_id",
@@ -892,11 +891,13 @@ class Message(Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    # Total order across all rooms, and the cursor the read path pages on:
-    # created_at ties on messages sent in the same transaction.
-    seq: Mapped[int] = mapped_column(
-        BigInteger, Identity(always=True), unique=True, nullable=False
-    )
+    # Position within the room, from 1, and the cursor the read path pages on.
+    # Assigned by MessageStore.create under a per-room lock rather than by a
+    # sequence: a sequence hands out numbers when a statement runs, not when it
+    # commits, so a row can commit after one with a higher number and a reader
+    # paging on `seq > n` would step straight over it. See the store for the
+    # argument in full.
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     room_id: Mapped[str] = mapped_column(
         Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
     )

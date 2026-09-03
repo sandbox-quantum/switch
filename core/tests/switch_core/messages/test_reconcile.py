@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from itertools import count
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -55,10 +56,17 @@ async def _make_room(session: AsyncSession) -> Room:
     return room
 
 
+_seq = count(1)
+
+
 def _row(
     room_id: str, event_id: str, sent_at: datetime, **overrides: object
 ) -> Message:
+    """`seq` is assigned by MessageStore.create; these rows bypass it, so the
+    helper numbers them. Reconciliation matches on event id and never reads
+    `seq`, so only distinctness matters here."""
     fields: dict[str, object] = {
+        "seq": next(_seq),
         "room_id": room_id,
         "transport_event_id": event_id,
         "sender_matrix_id": "@agent:test",
