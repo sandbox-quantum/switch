@@ -63,7 +63,11 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.resource_manager_client import ResourceManagerClient
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
-from switch_core.db.engine import create_engine_from_config, create_session_factory
+from switch_core.db.engine import (
+    create_engine_from_config,
+    create_session_factory,
+    create_unpooled_engine,
+)
 from switch_core.db.models import ApiKey, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -92,6 +96,7 @@ from switch_core.matrix_admin import (
     wait_for_homeserver,
 )
 from switch_core.messages import MessageRecorder
+from switch_core.messages.notify import MessageListener
 from switch_core.room_service import RoomService
 from switch_core.version import switch_core_version
 
@@ -178,6 +183,10 @@ async def run() -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     engine = create_engine_from_config(config)
     session_factory = create_session_factory(engine)
+    # Its connection is held rather than borrowed, so it builds its own outside
+    # the pool. Nothing subscribes yet; it starts with the server so that the
+    # subscription exists before the first consumer needs it.
+    message_listener = MessageListener(lambda: create_unpooled_engine(config))
 
     # ── Matrix homeserver admin ──────────────────────────────────────────────
     await wait_for_homeserver(config.matrix_server)
@@ -427,11 +436,13 @@ async def run() -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
+            await message_listener.start()
             try:
                 yield
             finally:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
+                await message_listener.stop()
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 

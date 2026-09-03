@@ -1,6 +1,7 @@
 import uuid
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -19,6 +21,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from switch_core.db.base import Base
+from switch_core.db.notify_ddl import (
+    CREATE_NOTIFY_FUNCTION,
+    CREATE_NOTIFY_TRIGGER,
+    DROP_NOTIFY_TRIGGER,
+)
 
 
 def _uuid() -> str:
@@ -944,3 +951,60 @@ class MessageAttachment(Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class DeliveryCursor(Base):
+    """How far one agent has been delivered in one room.
+
+    The cursor it replaces lived in memory in the event buffer, so a restart
+    resumed from wherever that buffer happened to be rather than from what the
+    agent had actually been given. Persisting it makes "what has this agent
+    seen" outlive the process, which is what lets delivery be driven from the
+    table instead of from a live connection.
+
+    `last_seq` is a position in the room, not a count: `seq` is a per-room
+    total order, so "everything up to n" is unambiguous and re-reading from it
+    is idempotent. It is only ever advanced, never rewound — a cursor that
+    could go backwards would redeliver, and a redelivered message is
+    indistinguishable to a reader from a new one.
+    """
+
+    __tablename__ = "delivery_cursors"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# `create_all` builds the schema for tests; the trigger has to come with it or
+# the delivery tests would exercise a table that announces nothing. Real
+# databases get the same DDL from a migration.
+event.listen(
+    Message.__table__,
+    "after_create",
+    DDL(CREATE_NOTIFY_FUNCTION).execute_if(dialect="postgresql"),
+)
+event.listen(
+    Message.__table__,
+    "after_create",
+    DDL(CREATE_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+event.listen(
+    Message.__table__,
+    "before_drop",
+    DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)

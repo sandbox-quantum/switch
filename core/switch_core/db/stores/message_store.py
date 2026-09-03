@@ -94,6 +94,24 @@ class MessageStore:
         )
         return list(result.scalars().all())
 
+    async def list_after_seq(
+        self, session: AsyncSession, room_id: str, after_seq: int, *, limit: int
+    ) -> list[Message]:
+        """The next rows in a room after a delivery cursor, oldest first.
+
+        Oldest first because this feeds delivery rather than a reader: a
+        consumer must see the room in the order it happened, and must be able
+        to stop part-way and resume from the last row it handled. `seq` is
+        exclusive, so re-running with the same cursor delivers nothing twice.
+        """
+        result = await session.execute(
+            select(Message)
+            .where(Message.room_id == room_id, Message.seq > after_seq)
+            .order_by(Message.seq)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def list_timeline(
         self,
         session: AsyncSession,
