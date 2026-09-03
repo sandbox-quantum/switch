@@ -177,6 +177,29 @@ class TestDelivery:
 
         assert calls == 2, "the subscribe wake-up, then one for the whole burst"
 
+    async def test_reconstructed_history_is_not_announced(
+        self,
+        listener: MessageListener,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A backfill writes thousands of rows numbered below zero. Nobody is
+        waiting for them — every cursor is above those positions by
+        construction — so waking the room to read nothing is pure noise."""
+        async with session_factory() as session:
+            room_id = await _make_room(session)
+            await session.commit()
+
+        woken = Woken()
+        listener.subscribe(room_id, woken)
+        await woken.wait()
+        woken.rooms.clear()
+
+        async with session_factory() as session:
+            await _write(session, room_id, -1)
+
+        await asyncio.sleep(0.5)
+        assert woken.rooms == []
+
     async def test_unsubscribing_stops_the_wake_ups(
         self,
         listener: MessageListener,

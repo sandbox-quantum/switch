@@ -42,6 +42,13 @@ NOTIFY_TRIGGER_NAME = "messages_notify"
 CREATE_NOTIFY_FUNCTION = f"""
 CREATE OR REPLACE FUNCTION {NOTIFY_FUNCTION_NAME}() RETURNS trigger AS $$
 BEGIN
+    -- Reconstructed history is numbered below zero and is not news. A backfill
+    -- inserts thousands of rows nobody is waiting for, and announcing them
+    -- would wake every subscriber in the room to read nothing, because their
+    -- cursors are above these positions by construction.
+    IF NEW.seq <= 0 THEN
+        RETURN NULL;
+    END IF;
     PERFORM pg_notify(
         '{MESSAGE_CHANNEL}',
         json_build_object(

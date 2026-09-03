@@ -31,6 +31,64 @@ class MessageStore:
         await session.flush()
         return message
 
+    async def create_historical(
+        self,
+        session: AsyncSession,
+        message: Message,
+        attachments: list[MessageAttachment],
+    ) -> Message:
+        """Persist a message that predates recording, numbered below zero.
+
+        Reconstructed history cannot take positions above the live log: `seq`
+        orders the room, and giving a message from last month a number above
+        one from this morning would put it at the top of every read. It cannot
+        take positions among the live rows either — they are taken, and
+        renumbering to make room would move every cursor that points at them.
+
+        So it counts down from zero. Ordering by `seq` still walks the room in
+        the order it happened, `(room_id, seq)` stays unique, and the sign
+        carries a fact worth being able to read off a row: **positive is what
+        Switch recorded as it happened, negative is what was reconstructed
+        afterwards.**
+
+        The sign is load-bearing for delivery, not just descriptive. A cursor
+        starts at 0, so backfilling a year of history delivers none of it —
+        which is the only sane answer, since nobody wants last March's
+        messages pushed at them tonight.
+
+        The caller must not have set `seq`; this assigns it. `sent_at` is the
+        caller's to set, and must be when the message was *sent* rather than
+        when this row was written, or the reconstructed history lands in the
+        wrong place in every time window.
+        """
+        message.seq = await self._previous_seq(session, message.room_id)
+        session.add(message)
+        await session.flush()
+        for position, attachment in enumerate(attachments):
+            attachment.message_id = message.id
+            attachment.position = position
+            session.add(attachment)
+        await session.flush()
+        return message
+
+    async def _previous_seq(self, session: AsyncSession, room_id: str) -> int:
+        """The next position below the room's oldest, at most -1.
+
+        Same lock as `_next_seq`, for the same reason and against the same
+        contenders: two backfills of one room must not pick the same number,
+        and the uniqueness constraint would otherwise be the thing that noticed.
+        """
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),
+            {"room_id": room_id},
+        )
+        result = await session.execute(
+            select(func.coalesce(func.min(Message.seq), 0)).where(
+                Message.room_id == room_id
+            )
+        )
+        return min(int(result.scalar_one()), 0) - 1
+
     async def _next_seq(self, session: AsyncSession, room_id: str) -> int:
         """The next position in this room, allocated in commit order.
 

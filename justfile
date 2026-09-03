@@ -110,6 +110,15 @@ migrate:
 reconcile-messages *args:
     uv run --project core python scripts/reconcile_messages.py {{ args }}
 
+# ── Reconstruct room history from the bus into the message log ────────────────
+# Rows exist only from when the recorder was deployed; everything older is on
+# the homeserver and invisible to agents now that reads come from Postgres.
+# This walks each room to its start and writes what is missing, numbered below
+# the live log so nothing is redelivered. Safe to re-run. Start with --dry-run.
+#   just backfill-messages --dry-run --room <id>
+backfill-messages *args:
+    uv run --project core python scripts/backfill_messages.py {{ args }}
+
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"
