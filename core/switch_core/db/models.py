@@ -104,6 +104,7 @@ class ClientRoom(Base):
 
 class Agent(Base):
     __tablename__ = "agents"
+    __table_args__ = (Index("ix_agents_parent_agent_id", "parent_agent_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -621,6 +622,7 @@ class ExternalUserClaim(Base):
     """
 
     __tablename__ = "external_user_claims"
+    __table_args__ = (Index("ix_external_user_claims_user_id", "user_id"),)
 
     external_user_id: Mapped[str] = mapped_column(
         Text,
@@ -666,6 +668,8 @@ class AgentSession(Base):
             text("coalesce(room_id, '')"),
             unique=True,
         ),
+        Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
+        Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
