@@ -384,6 +384,45 @@ class TestDrift:
 
         assert [m.field_name for m in report.mismatches] == ["uri"]
 
+    async def test_an_event_the_recorder_does_not_keep_is_counted_not_reported(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Bus traffic is absent by design. Reporting it as a missing row would
+        drown the one row that really went astray."""
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$msg", now))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[
+                        _event("$msg", now),
+                        InboundCustomEvent(
+                            room_id="!room:test",
+                            event_id="$state",
+                            sender="@agent:test",
+                            timestamp=_ms(now),
+                            content={"state": "busy"},
+                            event_type="com.switch.agent.runtime_state",
+                        ),
+                    ],
+                    next_token=None,
+                )
+            ]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.compared == 1
+        assert report.ignored_by_type == {"com.switch.agent.runtime_state": 1}
+
 
 class TestPaging:
     async def test_it_keeps_paging_until_the_window_is_covered(

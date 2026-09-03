@@ -15,7 +15,10 @@ every report says which window it covered.
 
 Events the bus replays that a send never produced — membership changes and
 the like — are counted by type rather than dropped, so a category nobody
-thought about shows up as unclassified instead of as agreement.
+thought about shows up as unclassified instead of as agreement. Custom event
+types the recorder deliberately does not keep are counted the same way, under
+their own type name: they are absent by design, and calling that drift would
+make the report worthless.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from typing import TYPE_CHECKING, cast
 from sqlalchemy import func, select
 
 from switch_core.db.models import Message
+from switch_core.messages.recorded_types import should_record
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -201,7 +205,11 @@ async def _read_back_to(
             if raw.timestamp < since_ms:
                 reached_window_start = True
                 continue
-            if isinstance(raw, InboundMessage | InboundCustomEvent):
+            if isinstance(raw, InboundCustomEvent) and not should_record(
+                raw.event_type
+            ):
+                ignored[raw.event_type] = ignored.get(raw.event_type, 0) + 1
+            elif isinstance(raw, InboundMessage | InboundCustomEvent):
                 events[raw.event_id] = raw
             else:
                 name = type(raw).__name__

@@ -11,6 +11,9 @@ alternative — failing the send because the database is unhappy — would make
 messaging less reliable than it is today, which is not a trade this step is
 willing to make. Failures are logged at error, never swallowed silently, and
 reconciling the two records is part of moving the read path over.
+
+What gets a row is decided in `recorded_types`: the conversation, not every
+event that crosses the bus.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from typing import TYPE_CHECKING
 from switch_core.db.models import Message, MessageAttachment
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.messages.recorded_types import should_record
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -54,6 +58,8 @@ class MessageRecorder:
         sender_client_id: str,
         sender_name: str,
     ) -> None:
+        if not should_record(result.event_type):
+            return
         try:
             await self._record(
                 transport_room_id=transport_room_id,

@@ -307,6 +307,31 @@ class TestRecordsWhatWasSent:
         }
         assert attachments == []
 
+    async def test_bus_traffic_is_not_recorded_at_all(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The log is the conversation. A runtime-state ping is not part of it,
+        and it is the highest-volume thing on the bus."""
+        async with session_factory() as session:
+            _, matrix_room_id, client_id = await _make_room(session)
+            await session.commit()
+
+        await _record(
+            session_factory,
+            matrix_room_id,
+            client_id,
+            SendResult(
+                event_id="$evt8",
+                event_type="com.switch.agent.runtime_state",
+                content={"state": "busy"},
+            ),
+        )
+
+        async with session_factory() as session:
+            found = await MessageStore().get_by_transport_event_id(session, "$evt8")
+
+        assert found is None
+
 
 class TestFailingToRecordNeverReachesTheCaller:
     async def test_an_unknown_room_is_warned_about_not_raised(
