@@ -51,6 +51,7 @@ export type TelemetryAgentCreateFailure =
   | 'unauthenticated'
   | 'name_conflict'
   | 'credentials_conflict'
+  | 'already_configured'
   | 'invalid_name'
   /**
    * The two the other way into this — dropping a folder on the sidebar — hits

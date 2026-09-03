@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
+import { eq } from 'drizzle-orm';
 import { locationManager } from '@main/core/locations/location-manager';
 import { checkIsValidDirectory } from '@main/core/locations/path-utils';
 import { ensureLocation, getLocationByHostDir } from '@main/core/locations/store';
@@ -9,6 +10,8 @@ import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import { entryPointOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { db } from '@main/db/client';
+import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
@@ -18,7 +21,7 @@ import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
 import { syncAgentConfig } from './agent-config-sync';
-import { foreignCredentialsOwner } from './agent-credentials-slot';
+import { foreignCredentialsOwner, sameEndpointAgentId } from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkspaceFsFor } from './agent-workspace-fs';
@@ -69,6 +72,7 @@ export type AddAgentResult =
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
   | { kind: 'credentials-conflict'; endpoint: string }
+  | { kind: 'already-configured' }
   | { kind: 'invalid-name'; message: string }
   | { kind: 'error'; message: string };
 
@@ -80,6 +84,7 @@ const ADD_AGENT_FAILURE_REASON: Record<
   unauthenticated: 'unauthenticated',
   'name-conflict': 'name_conflict',
   'credentials-conflict': 'credentials_conflict',
+  'already-configured': 'already_configured',
   'invalid-name': 'invalid_name',
   error: 'error',
 };
@@ -177,6 +182,28 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       kind: 'credentials-conflict',
       endpoint: foreignEndpoint,
     });
+  }
+
+  // The cross-deployment check above passes when the slot belongs to the SAME
+  // server. That is safe when this install already manages the agent (the name
+  // check on L160 covers it), but not when the file was written by another
+  // Console — its agent is in this install's blind spot. Minting here would
+  // overwrite the existing identity and destroy its token (CHOO-2560).
+  const slotAgentId = await sameEndpointAgentId(
+    params.sshHost,
+    params.dir,
+    params.name,
+    server.apiUrl
+  );
+  if (slotAgentId !== null) {
+    const [knownLocally] = await db
+      .select({ id: agentsTable.id })
+      .from(agentsTable)
+      .where(eq(agentsTable.switchAgentId, slotAgentId))
+      .limit(1);
+    if (!knownLocally) {
+      return reportFailedCreate(params, { kind: 'already-configured' });
+    }
   }
 
   const registered = await registerAgentIdentity(server, {

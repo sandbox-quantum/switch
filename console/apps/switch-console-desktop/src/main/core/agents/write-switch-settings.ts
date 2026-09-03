@@ -368,6 +368,36 @@ export class ForeignAgentCredentialsError extends Error {
 }
 
 /**
+ * The credentials file for this agent name already belongs to a different
+ * agent on the SAME Switch deployment. Writing would overwrite that agent's
+ * identity and destroy its API token — the same hazard as
+ * {@link ForeignAgentCredentialsError}, but between agents on the same server
+ * rather than across deployments (CHOO-2560).
+ */
+export class ExistingAgentCredentialsError extends Error {
+  readonly slug: string;
+  readonly relPath: string;
+  readonly existingAgentId: string;
+  readonly incomingAgentId: string;
+
+  constructor(params: {
+    slug: string;
+    relPath: string;
+    existingAgentId: string;
+    incomingAgentId: string;
+  }) {
+    super(
+      `${params.relPath} in this directory already holds credentials for agent ${params.existingAgentId} on this Switch server. Writing it would overwrite that agent's identity and destroy its API token, which cannot be recovered. Load the existing agent instead, or use a different agent name.`
+    );
+    this.name = 'ExistingAgentCredentialsError';
+    this.slug = params.slug;
+    this.relPath = params.relPath;
+    this.existingAgentId = params.existingAgentId;
+    this.incomingAgentId = params.incomingAgentId;
+  }
+}
+
+/**
  * Read the per-agent credentials slot for `slug` and report the Switch
  * deployment it already belongs to, when that is a different one. Callers use
  * this BEFORE minting an identity, so a collision is refused without leaving an
@@ -381,6 +411,46 @@ export async function foreignCredentialsOwnerFs(
 ): Promise<string | null> {
   const existingRaw = await workspaceFs.read(agentSettingsRelativePath(slug));
   return foreignCredentialsEndpoint(existingRaw, apiEndpoint);
+}
+
+/**
+ * The `SWITCH_AGENT_ID` already in a credentials slot when the file belongs to
+ * the SAME deployment — otherwise null (no file, not a provisioned agent, or a
+ * different deployment).
+ *
+ * This is the inverse of {@link foreignCredentialsEndpoint}: that one catches
+ * a different-server collision; this one catches a same-server collision where
+ * the identity exists on-disk but is unknown to this install's database — i.e.
+ * a colleague's agent that would be clobbered by a blind write.
+ *
+ * Pure: takes the existing file text (or null when absent/unreadable).
+ */
+export function existingAgentIdInSlot(
+  existingRaw: string | null,
+  apiEndpoint: string
+): string | null {
+  if (existingRaw === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(existingRaw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+  const env = (parsed as Record<string, unknown>).env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return null;
+
+  const existingEndpoint = (env as Record<string, unknown>).SWITCH_API_ENDPOINT;
+  if (typeof existingEndpoint !== 'string' || existingEndpoint.trim() === '') return null;
+
+  if (!sameApiEndpoint(existingEndpoint, apiEndpoint)) return null;
+
+  const agentId = (env as Record<string, unknown>).SWITCH_AGENT_ID;
+  if (typeof agentId !== 'string' || agentId.trim() === '') return null;
+
+  return agentId;
 }
 
 /**
@@ -402,7 +472,7 @@ export async function foreignCredentialsOwnerFs(
  */
 export async function writeNeutralAgentSettingsFs(
   workspaceFs: PluginFs,
-  params: { slug: string } & SwitchSettingsCredentials
+  params: { slug: string; expectedAgentId?: string } & SwitchSettingsCredentials
 ): Promise<void> {
   const relPath = agentSettingsRelativePath(params.slug);
   const existingRaw = await workspaceFs.read(relPath);
@@ -413,6 +483,19 @@ export async function writeNeutralAgentSettingsFs(
       relPath,
       existingEndpoint,
       incomingEndpoint: params.apiEndpoint,
+    });
+  }
+
+  // Defence in depth: if the slot holds a same-endpoint identity that is NOT
+  // the one we are about to write, refuse — it belongs to a colleague's agent
+  // and overwriting it would destroy their token (CHOO-2560).
+  const slotAgentId = existingAgentIdInSlot(existingRaw, params.apiEndpoint);
+  if (slotAgentId !== null && slotAgentId !== params.agentId) {
+    throw new ExistingAgentCredentialsError({
+      slug: params.slug,
+      relPath,
+      existingAgentId: slotAgentId,
+      incomingAgentId: params.agentId,
     });
   }
 
