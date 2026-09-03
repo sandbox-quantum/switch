@@ -219,13 +219,17 @@ export function LoadExistingAgentsSection({
           ) : (
             <>
               <div className="flex items-center justify-between">
-                <button
-                  type="button"
-                  className="text-xs text-foreground-muted hover:text-foreground"
-                  onClick={toggleAll}
-                >
-                  {selected.size === selectableAgents.length ? 'Deselect all' : 'Select all'}
-                </button>
+                {selectableAgents.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-foreground-muted hover:text-foreground"
+                    onClick={toggleAll}
+                  >
+                    {selected.size > 0 && selected.size === selectableAgents.length
+                      ? 'Deselect all'
+                      : 'Select all'}
+                  </button>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"
