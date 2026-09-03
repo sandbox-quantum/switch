@@ -673,6 +673,54 @@ def test_runtime_state_detail_edits_message_in_place() -> None:
     assert adapter._working_msg[("C123", "agent-bot")].message_ref == "C123:999.9"
 
 
+def test_runtime_state_awaiting_input_pings_operator() -> None:
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(
+        adapter.apply_runtime_state(
+            "C123",
+            "agent-bot",
+            "awaiting-input",
+            mention_handle="louis",
+            thread_root_id=None,
+            deeplink_url="https://gw.example/deeplink/session?x=1",
+        )
+    )
+
+    assert len(fake.calls) == 1
+    assert "needs your input" in fake.calls[0]["text"]
+    assert "gw.example/deeplink/session" in fake.calls[0]["text"]
+
+
+def test_runtime_state_awaiting_input_with_detail_names_the_error() -> None:
+    # A stalled session (expired credentials, quota, provider outage) reports
+    # awaiting-input with the reason — the ping must say what broke, not the
+    # generic "needs your input", and still carry the session link.
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(
+        adapter.apply_runtime_state(
+            "C123",
+            "agent-bot",
+            "awaiting-input",
+            mention_handle="louis",
+            thread_root_id=None,
+            deeplink_url="https://gw.example/deeplink/session?x=1",
+            detail="authentication_failed — credentials have expired",
+        )
+    )
+
+    assert len(fake.calls) == 1
+    text = fake.calls[0]["text"]
+    assert "hit an error: authentication_failed — credentials have expired" in text
+    assert "needs your input" not in text
+    assert "gw.example/deeplink/session" in text
+
+
 def test_runtime_state_idle_clears_working_message() -> None:
     adapter = _adapter()
     fake = _FakeWebClient()

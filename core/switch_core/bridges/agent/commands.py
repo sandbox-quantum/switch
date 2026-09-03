@@ -74,9 +74,10 @@ async def _addressed_by_name_or_role(
         return True
     if client._args_tag_my_name(args):
         return True
-    if await client._text_tags_my_alias(args, room_id):
-        return True
-    return await client._text_tags_my_role(args, room_id)
+    async with client.session_factory() as session:
+        if await client._text_tags_my_alias(session, args, room_id):
+            return True
+        return await client._text_tags_my_role(session, args, room_id)
 
 
 async def _addressed_by_first_mention(
@@ -120,9 +121,10 @@ async def _first_token_is_me(client: AgentClient, first: str, room_id: str) -> b
     """Whether `@first` names this agent — by name, room alias, or a held role."""
     if client._args_tag_my_name(f"@{first}"):
         return True
-    if await client._text_tags_my_alias(f"@{first}", room_id):
-        return True
-    return await client._text_tags_my_role(f"@{first}", room_id)
+    async with client.session_factory() as session:
+        if await client._text_tags_my_alias(session, f"@{first}", room_id):
+            return True
+        return await client._text_tags_my_role(session, f"@{first}", room_id)
 
 
 async def _check_control_target(
@@ -291,7 +293,8 @@ async def _dispatch_control_command(
     the room at all (`no_live_session_msg`) vs. a live session that can't be
     controlled from here — e.g. not started from Switch Console (`no_session_msg`).
     """
-    agent = await client._fresh_agent()
+    async with client.session_factory() as session:
+        agent = await client._fresh_agent(session)
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
 
@@ -956,19 +959,20 @@ async def _cmd_run_cmd(
     # started session lands in the room AND assumes the role in one command.
     # An unknown role is NOT folded in — we warn instead of silently dropping.
     role = _role_arg(event.args)
-    role_known = False
-    if role is not None:
-        async with client.session_factory() as session:
-            role_obj = await client._room_role_store.get_role(
-                session, meta.room_id, role
-            )
-        role_known = role_obj is not None
+    async with client.session_factory() as session:
+        role_obj = (
+            await client._room_role_store.get_role(session, meta.room_id, role)
+            if role is not None
+            else None
+        )
+        owner_handle = await client.owner_handle_in(session, agent, meta.bridge_id)
+    role_known = role_obj is not None
 
     msg = spec.start_session_instructions(
         options,
         agent,
         meta.name,
-        await client.owner_handle_in(agent, meta.bridge_id),
+        owner_handle,
         assume_role=role if role_known else None,
     )
     if msg is None:

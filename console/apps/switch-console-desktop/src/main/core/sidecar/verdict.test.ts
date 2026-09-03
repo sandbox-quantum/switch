@@ -43,8 +43,17 @@ describe('verdictFor', () => {
     expect(verdict({ hash: 'other', version: '1.6' })).toBe('upgrade-available');
   });
 
-  it('upgrade-pending when a different build is running but busy', () => {
-    expect(verdict({ hash: 'other', liveSessions: 3 })).toBe('upgrade-pending');
+  it('upgrade-available when a busy sidecar is only a build behind', () => {
+    // Live sessions survive the restart, so they no longer hold an upgrade back.
+    expect(verdict({ hash: 'other', liveSessions: 3 })).toBe('upgrade-available');
+  });
+
+  it('upgrade-pending when a busy sidecar is a MAJOR behind', () => {
+    expect(verdict({ hash: 'other', version: '0.9', liveSessions: 3 })).toBe('upgrade-pending');
+  });
+
+  it('upgrade-available for a major bump once the sidecar is idle', () => {
+    expect(verdict({ hash: 'other', version: '0.9', liveSessions: 0 })).toBe('upgrade-available');
   });
 
   it('newer-on-host rather than offering a downgrade', () => {

@@ -19,10 +19,14 @@ class _FakeSessionCM:
 
 class _FakeRoomStore:
     def __init__(
-        self, rooms: list[Any], client_ids_by_room: dict[str, list[str]]
+        self,
+        rooms: list[Any],
+        client_ids_by_room: dict[str, list[str]],
+        agent_clients_by_room: dict[str, dict[str, str]],
     ) -> None:
         self._rooms = rooms
         self._client_ids_by_room = client_ids_by_room
+        self._agent_clients_by_room = agent_clients_by_room
         self.added: list[tuple[str, str]] = []
 
     async def get_all(
@@ -32,6 +36,11 @@ class _FakeRoomStore:
 
     async def get_client_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._client_ids_by_room.get(room_id, []))
+
+    async def get_member_agent_clients(
+        self, session: Any, room_id: str
+    ) -> dict[str, str]:
+        return dict(self._agent_clients_by_room.get(room_id, {}))
 
     async def add_client(self, session: Any, client_id: str, room_id: str) -> None:
         self.added.append((client_id, room_id))
@@ -66,8 +75,9 @@ def _build_service(
     rooms: list[Any],
     client_ids_by_room: dict[str, list[str]],
     by_type: dict[str, list[Any]],
+    agent_clients_by_room: dict[str, dict[str, str]] | None = None,
 ) -> tuple[RoomService, _FakeRoomStore, _FakeMatrix]:
-    room_store = _FakeRoomStore(rooms, client_ids_by_room)
+    room_store = _FakeRoomStore(rooms, client_ids_by_room, agent_clients_by_room or {})
     matrix = _FakeMatrix()
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
@@ -77,7 +87,7 @@ def _build_service(
     return svc, room_store, matrix
 
 
-class TestReconcileSystemClients:
+class TestReconcileRoomClients:
     async def test_backfills_missing_admin_into_existing_room(self) -> None:
         # A room created before the admin client existed: it has the other
         # system clients but not the admin. Reconcile invites + records it.
@@ -88,7 +98,7 @@ class TestReconcileSystemClients:
             by_type={"admin": [_admin()]},
         )
 
-        await svc.reconcile_system_clients()
+        await svc.reconcile_room_clients()
 
         assert matrix.invited == [("!mx:switch.local", "@switch-admin:switch.local")]
         assert room_store.added == [("admin-client", "room-1")]
@@ -101,7 +111,7 @@ class TestReconcileSystemClients:
             by_type={"admin": [_admin()]},
         )
 
-        await svc.reconcile_system_clients()
+        await svc.reconcile_room_clients()
 
         assert matrix.invited == []
         assert room_store.added == []
@@ -117,7 +127,7 @@ class TestReconcileSystemClients:
             by_type={"admin": [_admin()]},
         )
 
-        await svc.reconcile_system_clients()
+        await svc.reconcile_room_clients()
 
         assert ("!live:switch.local", "@switch-admin:switch.local") in matrix.invited
         assert ("!arch:switch.local", "@switch-admin:switch.local") in matrix.invited
@@ -132,7 +142,38 @@ class TestReconcileSystemClients:
             by_type={},
         )
 
-        await svc.reconcile_system_clients()
+        await svc.reconcile_room_clients()
+
+        assert matrix.invited == []
+        assert room_store.added == []
+
+    async def test_reinvites_an_agent_whose_invite_never_landed(self) -> None:
+        # `add_agents_to_room` writes the membership row, invites, then records
+        # `room_clients`. A crash in that window leaves the member with no
+        # `room_clients` row, which is exactly what is repaired here.
+        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        svc, room_store, matrix = _build_service(
+            rooms=[room],
+            client_ids_by_room={"room-1": []},
+            by_type={},
+            agent_clients_by_room={"room-1": {"agent-client": "@fixer:switch.local"}},
+        )
+
+        await svc.reconcile_room_clients()
+
+        assert matrix.invited == [("!mx:switch.local", "@fixer:switch.local")]
+        assert room_store.added == [("agent-client", "room-1")]
+
+    async def test_an_agent_already_recorded_is_left_alone(self) -> None:
+        room = SimpleNamespace(id="room-1", matrix_room_id="!mx:switch.local")
+        svc, room_store, matrix = _build_service(
+            rooms=[room],
+            client_ids_by_room={"room-1": ["agent-client"]},
+            by_type={},
+            agent_clients_by_room={"room-1": {"agent-client": "@fixer:switch.local"}},
+        )
+
+        await svc.reconcile_room_clients()
 
         assert matrix.invited == []
         assert room_store.added == []

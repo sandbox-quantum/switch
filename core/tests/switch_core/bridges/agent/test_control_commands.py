@@ -46,7 +46,7 @@ def _client(
         integration_profile={"command_capabilities": {"reset": command_level}},
     )
 
-    async def _fresh_agent() -> SimpleNamespace:
+    async def _fresh_agent(_session: Any) -> SimpleNamespace:
         return agent
 
     async def _resolve_room_meta(_matrix_room_id: str) -> SimpleNamespace:

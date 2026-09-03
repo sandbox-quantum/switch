@@ -35,6 +35,9 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.slack.agent_groups import (
+    SlackAgentGroupDirectory,
+)
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
 
 logger = logging.getLogger(__name__)
@@ -226,6 +229,13 @@ class SlackAdapter(CollaborationAdapter):
     # opened for it — which was most turns.
     runtime_state_follows_anchor: ClassVar[bool] = True
 
+    # Every Slack bridge in this process shares one, because resolving a
+    # mention that crossed a workspace boundary means reading a group another
+    # bridge minted. Rebind it to a fresh instance to isolate a test.
+    agent_group_directory: ClassVar[SlackAgentGroupDirectory] = (
+        SlackAgentGroupDirectory()
+    )
+
     def __init__(self, *, config: SlackConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -374,6 +384,7 @@ class SlackAdapter(CollaborationAdapter):
                 pass
             self._socket_client = None
         self._web_client = None
+        self.agent_group_directory.forget(self._team_id)
         logger.info("Slack adapter stopped")
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -779,7 +790,12 @@ class SlackAdapter(CollaborationAdapter):
         elif state == "awaiting-input":
             # Leave the working indicator up; add a ping and track it.
             ref = await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -970,12 +986,16 @@ class SlackAdapter(CollaborationAdapter):
         else:
             self._session_owner.pop(key, None)
 
+        # A detail on `awaiting-input` is the reason a turn died, not a step the
+        # agent is taking. Streamed unmarked it reads as progress — a spinner
+        # over "the turn ended on an error" — so it is flagged as the stall it is.
+        step_detail = f"⚠️ {detail}" if state == "awaiting-input" and detail else detail
         await self._drive_stream(
             channel_id,
             thread_ts,
             agent_name,
             working=working,
-            detail=detail,
+            detail=step_detail,
             deeplink_url=deeplink_url,
         )
 
@@ -1566,6 +1586,7 @@ class SlackAdapter(CollaborationAdapter):
         await self._web_client.usergroups_disable(usergroup=group_id)
         self._agent_group_ids.pop(folded, None)
         self._agent_group_names.pop(group_id, None)
+        self.agent_group_directory.discard(self._team_id, group_id)
         self._agent_groups_disabled[folded] = group_id
         logger.info("Disabled Slack user group %s for agent %s", group_id, agent_name)
 
@@ -1710,6 +1731,7 @@ class SlackAdapter(CollaborationAdapter):
     def _remember_agent_group(self, group_id: str, agent_name: str) -> None:
         self._agent_group_ids[agent_name.casefold()] = group_id
         self._agent_group_names[group_id] = agent_name
+        self.agent_group_directory.add(self._team_id, group_id, agent_name)
 
     @staticmethod
     def _usergroup_handle(agent_name: str) -> str:
@@ -1787,6 +1809,7 @@ class SlackAdapter(CollaborationAdapter):
             else:
                 self._remember_agent_group(group_id, name)
 
+        self.agent_group_directory.replace(self._team_id, self._agent_group_names)
         self._agent_groups_loaded = True
         logger.info(
             "Loaded %d Slack agent user groups (%d disabled, %d other groups seen)",
@@ -2432,11 +2455,19 @@ class SlackAdapter(CollaborationAdapter):
         resolves to its real name. Groups we do not know are left untouched: a
         workspace's own group is not an agent, and rewriting it would invent a
         mention of someone who does not exist.
+
+        An id this workspace never minted may still be an agent's. On an
+        Enterprise Grid org the composer offers a sibling workspace's group, so
+        the mention arrives here naming a group only that bridge knows —
+        consulting the shared directory is what keeps the agent addressable
+        from either side of the org.
         """
 
         def _replace(match: re.Match[str]) -> str:
             group_id = match.group(1)
-            agent_name = self._agent_group_names.get(group_id)
+            agent_name = self._agent_group_names.get(
+                group_id
+            ) or self.agent_group_directory.resolve(group_id)
             if agent_name:
                 return f"@{agent_name}"
             label = match.group(2)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, _is_public_path
 from switch_core.bridges.agent.deeplink import router
 
@@ -22,6 +23,7 @@ def _client_with_auth() -> TestClient:
         BearerAuthMiddleware,
         agent_store=None,  # type: ignore[arg-type]
         api_key_store=None,  # type: ignore[arg-type]
+        api_key_cache=ApiKeyCache(ttl_seconds=0, max_entries=1),
         session_factory=None,  # type: ignore[arg-type]
     )
     return TestClient(app, follow_redirects=False)
@@ -53,19 +55,20 @@ class TestDeeplinkHandoff:
         assert resp.status_code == 200
         assert 'href="switchdash://session"' in resp.text
 
-    def test_it_tries_to_close_the_tab_and_says_so_when_it_cannot(self) -> None:
-        # Browsers only let a script close a window a script opened, and this
-        # one was opened by a click in Teams — so the close usually fails and
-        # the page has to end on a true statement rather than a spinner.
+    def test_page_shows_waiting_and_success_states(self) -> None:
         resp = _client().get("/deeplink/session", params={"room": "r"})
 
-        assert "window.close()" in resp.text
-        assert "You can close this tab" in resp.text
+        assert "window.close()" not in resp.text
+        assert "visibilitychange" in resp.text
+        assert "Opening Switch Console" in resp.text
+        assert "Switch Console is open" in resp.text
+        assert "Open manually" in resp.text
 
     def test_a_manual_link_survives_without_javascript(self) -> None:
         resp = _client().get("/deeplink/session", params={"room": "r"})
 
-        assert 'id="target" href="switchdash://session?room=r"' in resp.text
+        assert 'href="switchdash://session?room=r"' in resp.text
+        assert "Open manually" in resp.text
 
 
 class TestDeeplinkQueryIsEscaped:

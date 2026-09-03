@@ -86,6 +86,14 @@ export interface SwitchEventStreamDeps {
    * the agent's tool calls.
    */
   onRooms?: (rooms: string[]) => void;
+  /**
+   * A room we declared that the server refuses to serve, and has therefore
+   * been dropped from the declared set.
+   *
+   * Terminal for that room: the id outlives the room, so whatever remembers it
+   * has to forget, or the next connection declares the same dead room again.
+   */
+  onRoomRejected?: (info: { roomId: string; status: number; detail: string }) => void;
   /** Fired when the server reports missed events it cannot replay. */
   onGap(info: { fromSequence: number; reason: string }): void;
   /** Fired when another stream took this connection over, or it was closed. */
@@ -147,6 +155,39 @@ export class SwitchEventStream {
     const rooms = raw.filter((r): r is string => typeof r === 'string');
     this.rooms = rooms;
     this.deps.onRooms?.(rooms);
+  }
+
+  /**
+   * Give up on a declared room the server refuses, keeping the connection.
+   *
+   * The server refuses the **whole** connection when one declared room cannot
+   * be served, so re-declaring it means never connecting again: a room id
+   * outlives its room, and nothing else in the open path would ever notice.
+   * The room is dropped, the refusal is reported at error level, and the room
+   * list goes out over the same callback the server's own updates arrive on,
+   * so anything holding the room learns it is gone.
+   *
+   * Only rooms the body actually names are dropped. A refusal that names none
+   * of them says nothing about which room is at fault — it stays a transport
+   * error and keeps its backoff.
+   */
+  private dropRefusedRooms(status: number, body: string): boolean {
+    if (status !== 403 && status !== 404) return false;
+    const refused = this.rooms.filter((room) => body.includes(room));
+    if (refused.length === 0) return false;
+    const remaining = this.rooms.filter((room) => !refused.includes(room));
+    const detail = body.slice(0, 500);
+    this.deps.log.error('SwitchEventStream: the server refused a declared room — dropping it', {
+      event: 'switch_stream_room_refused',
+      status,
+      rooms: refused,
+      remaining,
+      detail,
+    });
+    this.rooms = remaining;
+    for (const roomId of refused) this.deps.onRoomRejected?.({ roomId, status, detail });
+    this.deps.onRooms?.(remaining);
+    return true;
   }
 
   private async subscribe(roomId: string): Promise<void> {
@@ -223,7 +264,13 @@ export class SwitchEventStream {
         });
 
         if (!resp.ok || !resp.body) {
-          throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+          const body = await resp.text();
+          // Reopening without the refused room is a different request from the
+          // one that just failed, and the declared set strictly shrinks, so
+          // this cannot spin: retry now rather than serving the backoff a
+          // transport failure earned.
+          if (this.dropRefusedRooms(resp.status, body)) continue;
+          throw new Error(`HTTP ${resp.status}: ${body}`);
         }
 
         backoff = INITIAL_BACKOFF_MS;
@@ -315,9 +362,12 @@ export class SwitchEventStream {
    *
    * A 404 or 409 means we are not receiving — the connection expired, or it has
    * no stream attached. Both are recovered by reopening, which resumes from the
-   * cursor. Failing quietly here is the one thing that must not happen: a client
-   * that has stopped receiving while believing it is connected is exactly the
-   * bug this transport exists to remove.
+   * cursor, and both count as a beat that did not land: the remedy is a reopen,
+   * and a reopen that keeps being refused is a client that cannot succeed and
+   * must not be retried at full rate forever. Failing quietly here is the one
+   * thing that must not happen: a client that has stopped receiving while
+   * believing it is connected is exactly the bug this transport exists to
+   * remove.
    *
    * While beats succeed the cadence is fixed and short — the server declares the
    * connection dead without them. While they fail it backs off, because a beat
@@ -333,19 +383,24 @@ export class SwitchEventStream {
     let failures = 0;
     let backoff = BEAT_INTERVAL_MS;
 
-    const fail = (error: unknown): void => {
+    /** Count a beat that did not land and slow the loop down. Returns whether
+     * to report this one: the first, then powers of two, so a permanent
+     * failure costs a handful of lines rather than one per beat. */
+    const slowDown = (): boolean => {
       failures += 1;
-      // Report the first failure, then on a curve: powers of two, so a
-      // permanent outage costs a handful of lines rather than one per beat.
-      if ((failures & (failures - 1)) === 0) {
-        log.warn('SwitchEventStream: heartbeat failed', {
-          event: 'switch_beat_failed',
-          endpoint: this.deps.creds.apiEndpoint,
-          failures,
-          error: String(error),
-        });
-      }
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+      return (failures & (failures - 1)) === 0;
+    };
+
+    const fail = (error: unknown): void => {
+      if (!slowDown()) return;
+      log.warn('SwitchEventStream: heartbeat failed', {
+        event: 'switch_beat_failed',
+        endpoint: this.deps.creds.apiEndpoint,
+        failures,
+        error: String(error),
+        backoffMs: backoff,
+      });
     };
 
     while (!signal.aborted) {
@@ -355,16 +410,22 @@ export class SwitchEventStream {
           cursor: this.cursor,
         });
         if (resp.status === 404 || resp.status === 409) {
-          // Not an outage: the server answered. We are simply not attached, so
-          // reopen at the normal cadence rather than backing off.
-          log.warn('SwitchEventStream: heartbeat rejected — reopening', {
-            event: 'switch_beat_rejected',
-            status: resp.status,
-            connectionId,
-          });
+          // The server answered, so this is not an outage — but it is not a
+          // beat that landed either: we are not attached, and only a reopen
+          // fixes that. Reopen, and slow down all the same. A reopen that
+          // keeps being refused is a client that cannot currently succeed,
+          // and it must not spend the endpoint at full rate while it fails.
+          const report = slowDown();
           this.reopen();
-          failures = 0;
-          backoff = BEAT_INTERVAL_MS;
+          if (report) {
+            log.warn('SwitchEventStream: heartbeat rejected — reopening', {
+              event: 'switch_beat_rejected',
+              status: resp.status,
+              connectionId,
+              failures,
+              backoffMs: backoff,
+            });
+          }
         } else if (!resp.ok) {
           fail(new Error(`HTTP ${resp.status}`));
         } else {

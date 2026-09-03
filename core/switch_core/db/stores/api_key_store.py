@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import ApiKey
+from switch_core.db.models import Agent, ApiKey
 
 
 class ApiKeyStore:
@@ -17,6 +17,26 @@ class ApiKeyStore:
             select(ApiKey).where(ApiKey.key_hash == key_hash)
         )
         return result.scalar_one_or_none()
+
+    async def get_with_agent_by_hash(
+        self, session: AsyncSession, key_hash: str
+    ) -> tuple[ApiKey, Agent | None] | None:
+        """The key and the agent it belongs to, in one round trip.
+
+        `None` when no key matches. The agent is `None` for a key nothing
+        claims — a registration token, or an agent key whose agent is gone.
+        This pair answers every authenticated request, so it is the one query
+        worth not splitting in two.
+        """
+        result = await session.execute(
+            select(ApiKey, Agent)
+            .outerjoin(Agent, Agent.api_key_id == ApiKey.id)
+            .where(ApiKey.key_hash == key_hash)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row[0], row[1]
 
     async def get_by_user(self, session: AsyncSession, user_id: str) -> list[ApiKey]:
         result = await session.execute(select(ApiKey).where(ApiKey.user_id == user_id))

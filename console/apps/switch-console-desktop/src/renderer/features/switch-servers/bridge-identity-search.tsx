@@ -158,7 +158,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
         onRelease={(person) => void handleRelease(person)}
       />
 
-      {error && <p className="text-destructive text-xs">{error}</p>}
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 });
@@ -209,7 +209,7 @@ function DirectoryResults({
   }
   if (fetchError) {
     return (
-      <p className="text-destructive text-xs">
+      <p className="text-xs text-destructive">
         {failureText(fetchError, 'Could not search the directory.')}
       </p>
     );
@@ -236,13 +236,13 @@ function DirectoryResults({
   }
   if (result.kind === 'unauthenticated') {
     return (
-      <p className="text-destructive text-xs">
+      <p className="text-xs text-destructive">
         Your session for this server expired. Sign in again, then retry.
       </p>
     );
   }
   if (result.kind === 'error') {
-    return <p className="text-destructive text-xs">{result.message}</p>;
+    return <p className="text-xs text-destructive">{result.message}</p>;
   }
   // Set when the platform has no directory and the server answered from the
   // accounts it has already seen. The list is real but cannot be complete, so

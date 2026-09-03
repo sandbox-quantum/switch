@@ -13,8 +13,9 @@ Model:
   - Owned entities carry a nullable owner plus independent `read_visibility`
     and `write_visibility` ("public" | "private").
 
-The rule is uniform across References, Documents, Packages, and Rooms — the
-only difference between them lives in their *default* visibility, not here.
+The rule is uniform across References, ReferenceTypes, Documents, Packages, and
+Rooms — the only difference between them lives in their *default* visibility,
+not here.
 
 This module is deliberately pure (no DB, no I/O) so it is trivially testable
 and so a future relationship-based backend can replace `can` without touching
@@ -47,8 +48,8 @@ class Principal:
 class Authorizable(Protocol):
     """Structural interface for any entity `can` arbitrates over.
 
-    Satisfied by the Reference, Document, Package, and Room ORM models — no
-    base class required. Declared as read-only properties so that a model
+    Satisfied by the Reference, ReferenceType, Document, Package, and Room ORM
+    models — no base class required. Declared as read-only properties so a model
     with a non-nullable ``owner_id: str`` still satisfies ``str | None``
     (mutable Protocol attributes would be invariant).
     """

@@ -30,6 +30,7 @@ from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url, validate_icon_url
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.agent_detail import (
     apply_agent_options,
     assemble_agent_detail,
@@ -136,6 +137,17 @@ class AgentExistsError(Exception):
     caller did not opt into re-registration via ``overwrite=True``."""
 
 
+def _describe_room(room: Room) -> RoomDescriptor:
+    return RoomDescriptor(
+        id=room.id,
+        name=room.name,
+        description=room.description,
+        matrix_room_id=room.matrix_room_id,
+        archived=room.archived_at is not None,
+        bridge_id=room.bridge_id,
+    )
+
+
 class ProtocolService:
     def __init__(
         self,
@@ -153,6 +165,7 @@ class ProtocolService:
         resource_request_tracker: ResourceRequestTracker,
         resource_service: ResourceService,
         api_key_store: ApiKeyStore,
+        api_key_cache: ApiKeyCache,
         external_user_store: ExternalUserStore,
         bridge_store: CollaborationBridgeStore,
         session_factory: async_sessionmaker[AsyncSession],
@@ -179,6 +192,10 @@ class ProtocolService:
         self.resource_request_tracker = resource_request_tracker
         self.resource_service = resource_service
         self.api_key_store = api_key_store
+        # Shared with the bearer-auth middleware for the same reason as
+        # `connections`: a key this service rotates must stop authenticating
+        # requests on every door at once.
+        self.api_key_cache = api_key_cache
         self.external_user_store = external_user_store
         self.bridge_store = bridge_store
         self.session_factory = session_factory
@@ -532,6 +549,7 @@ class ProtocolService:
             )
 
         await session.commit()
+        self.api_key_cache.invalidate_agent(existing.id)
         return existing.id
 
     async def _create_bridge_identities(
@@ -686,6 +704,7 @@ class ProtocolService:
         async with self.session_factory() as session:
             await self.agent_store.delete(session, resolved_id)
             await session.commit()
+        self.api_key_cache.invalidate_agent(resolved_id)
 
         await self.client_lifecycle.remove(client_id)
 
@@ -697,21 +716,20 @@ class ProtocolService:
             room = await self.room_store.get(session, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        return RoomDescriptor(
-            id=room.id,
-            name=room.name,
-            description=room.description,
-            matrix_room_id=room.matrix_room_id,
-        )
+        return _describe_room(room)
 
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
-        room = await self.get_room(room_id)
         async with self.session_factory() as session:
-            agent_ids = await self.room_store.get_agent_ids(session, room_id)
-        if agent_id not in agent_ids:
+            found = await self.room_store.get_with_membership(
+                session, room_id, agent_id
+            )
+        if found is None:
+            raise ValueError(f"Room not found: {room_id}")
+        room, is_member = found
+        if not is_member:
             raise PermissionError("Agent is not a member of this room")
-        return room
+        return _describe_room(room)
 
     async def list_rooms(
         self, agent_id: str, *, include_archived: bool = False
@@ -724,16 +742,7 @@ class ProtocolService:
             rooms = await self.room_store.get_rooms_for_agent(
                 session, agent_id, include_archived=include_archived
             )
-        return [
-            RoomDescriptor(
-                id=r.id,
-                name=r.name,
-                description=r.description,
-                matrix_room_id=r.matrix_room_id,
-                archived=r.archived_at is not None,
-            )
-            for r in rooms
-        ]
+        return [_describe_room(r) for r in rooms]
 
     async def list_participants(self, room_id: str) -> list[ParticipantDescriptor]:
         """List all agents and users in a room."""
@@ -820,9 +829,27 @@ class ProtocolService:
         if not agent_ids:
             return {}
         async with self.session_factory() as session:
-            result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
-            agents = list(result.scalars().all())
-            return await self._compute_statuses(session, agents, room_id)
+            return await self.get_agent_statuses_by_ids_in_session(
+                session, room_id, agent_ids
+            )
+
+    async def get_agent_statuses_by_ids_in_session(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        agent_ids: list[str],
+    ) -> dict[str, AgentStatus]:
+        """`get_agent_statuses_by_ids` for a caller that already holds a session.
+
+        A request handler with its own open transaction must use this: taking a
+        second checkout while holding the first makes the request queue against
+        the pool for a slot it is itself occupying.
+        """
+        if not agent_ids:
+            return {}
+        result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        agents = list(result.scalars().all())
+        return await self._compute_statuses(session, agents, room_id)
 
     async def get_agent_status(self, agent_id: str, room_id: str) -> AgentStatus:
         async with self.session_factory() as session:
@@ -923,7 +950,7 @@ class ProtocolService:
         # inbound message arrived. The message itself is already delivered, so a
         # failure here is degraded-but-functional, not a reason to fail the send.
         try:
-            await self.set_typing(agent_id, room_id, False)
+            await self._set_typing(agent_id, room, False)
         except Exception:
             logger.warning(
                 "Failed to clear typing indicator for room %s", room_id, exc_info=True
@@ -1005,7 +1032,7 @@ class ProtocolService:
                 raise ValueError(f"Failed to send media message for '{filename}'")
             posted.append({"event_id": event_id, "mxc": mxc, "filename": filename})
         try:
-            await self.set_typing(agent_id, room_id, False)
+            await self._set_typing(agent_id, room, False)
         except Exception:
             logger.warning(
                 "Failed to clear typing indicator for room %s", room_id, exc_info=True
@@ -1018,6 +1045,7 @@ class ProtocolService:
 
     async def _require_can_address(
         self,
+        session: AsyncSession,
         target: Agent,
         *,
         room_id: str,
@@ -1031,6 +1059,7 @@ class ProtocolService:
         :meth:`_can_address` and reported instead.
         """
         if await self._can_address(
+            session,
             target,
             room_id=room_id,
             group_id=group_id,
@@ -1044,6 +1073,7 @@ class ProtocolService:
 
     async def _can_address(
         self,
+        session: AsyncSession,
         target: Agent,
         *,
         room_id: str,
@@ -1057,12 +1087,15 @@ class ProtocolService:
         the `agents` dimension, or through an `owner_agents` rule when both are
         owned by the same person. The sender is looked up only once the target
         is actually restricted, so the open case stays a single read.
+
+        Reads through the caller's `session`: every caller already holds one,
+        and taking a second while the first is open queues a request behind
+        the pool for its own slot.
         """
         policy = parse_policy(target.addressing_policy)
         if policy.is_open():
             return True
-        async with self.session_factory() as session:
-            sender = await self.agent_store.get(session, sender_agent_id)
+        sender = await self.agent_store.get(session, sender_agent_id)
         return can_address(
             policy,
             room_id=room_id,
@@ -1175,6 +1208,7 @@ class ProtocolService:
                 if target_agent is None:
                     continue
                 if not await self._can_address(
+                    session,
                     target_agent,
                     room_id=room_id,
                     group_id=group_id,
@@ -1224,29 +1258,35 @@ class ProtocolService:
         bridge) are a no-op — there is no external channel to surface the
         indicator to.
         """
-        await self.require_room_member(agent_id, room_id)
-        async with self.session_factory() as session:
-            agent = await self.agent_store.get(session, agent_id)
-            room = await self.room_store.get(session, room_id)
-        if agent is None:
-            raise ValueError(f"Agent not found: {agent_id}")
-        if room is None:
-            raise ValueError(f"Room not found: {room_id}")
+        room = await self.require_room_member(agent_id, room_id)
+        await self._set_typing(agent_id, room, is_typing)
 
+    async def _set_typing(
+        self, agent_id: str, room: RoomDescriptor, is_typing: bool
+    ) -> None:
+        """Surface a typing indicator for a room the caller already resolved.
+
+        Membership is the caller's to establish; an internal-only room costs
+        no query at all, since the bridge is already known to be absent.
+        """
         if room.bridge_id is None:
             logger.debug(
                 "Room %s has no collaboration bridge; skipping typing indicator",
-                room_id,
+                room.id,
             )
             return
 
         bridge_core = self.collab_lifecycle.get(room.bridge_id)
         if bridge_core is None:
             raise ValueError(
-                f"Collaboration bridge {room.bridge_id} for room {room_id} "
+                f"Collaboration bridge {room.bridge_id} for room {room.id} "
                 "is not running"
             )
-        await bridge_core.handle_outbound_typing(room_id, agent.name, is_typing)
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+        if agent is None:
+            raise ValueError(f"Agent not found: {agent_id}")
+        await bridge_core.handle_outbound_typing(room.id, agent.name, is_typing)
 
     async def update_status(self, agent_id: str, room_id: str, detail: str) -> None:
         """Send a status message to a room."""
@@ -1930,12 +1970,14 @@ class ProtocolService:
         # so it is subject to the same allow-list as a message. Unlike the
         # message path (which demotes to unaddressed) a task is explicit, so a
         # denied delegation fails loud rather than silently vanishing.
-        await self._require_can_address(
-            performer,
-            room_id=room.id,
-            group_id=room_row.group_id if room_row is not None else None,
-            sender_agent_id=requester_id,
-        )
+        async with self.session_factory() as session:
+            await self._require_can_address(
+                session,
+                performer,
+                room_id=room.id,
+                group_id=room_row.group_id if room_row is not None else None,
+                sender_agent_id=requester_id,
+            )
 
         async with self.session_factory() as session:
             task = Task(
@@ -2688,15 +2730,28 @@ class ProtocolService:
             await self.agent_session_store.touch_heartbeat(session, agent_id, room_id)
             await session.commit()
 
-    def list_reference_types(self) -> list[dict[str, Any]]:
-        """Enumerate the Reference sub-types registered on this Switch
-        instance. Each entry carries `type`, `display_name`,
-        `instructions`, and `value_schema` (JSON Schema for the
-        per-type value payload). Used by agents preparing a
-        `create_reference` call."""
-        from switch_core.bridges.resource.registry import REFERENCE_TYPES
+    async def list_reference_types(self, agent_id: str) -> list[dict[str, Any]]:
+        """Enumerate the Reference types the calling agent may pick from.
 
-        return [spec.to_public_dict() for spec in REFERENCE_TYPES.values()]
+        The set is per-caller: every built-in, plus every user-defined type
+        the agent's owner can read. Each entry carries `type`,
+        `display_name`, `instructions`, `value_schema`, `value_hint` and
+        `origin`. Used by agents preparing a `create_reference` call.
+
+        An ownerless agent resolves as an anonymous principal and sees the
+        built-ins plus the public types; reading the list needs no owner.
+        """
+        async with self.session_factory() as session:
+            _agent, owner_id, is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            views = await self.resource_service.list_reference_types_for_principal(
+                session, user_id=owner_id, is_admin=is_admin
+            )
+        return [
+            view.spec.to_public_dict(origin="builtin" if view.is_builtin else "user")
+            for view in views
+        ]
 
     async def create_reference(
         self,
@@ -2716,7 +2771,7 @@ class ProtocolService:
         owner (anonymous agents cannot own resources).
         """
         async with self.session_factory() as session:
-            _agent, owner_id, _is_admin = await self._resolve_acting_identity(
+            _agent, owner_id, is_admin = await self._resolve_acting_identity(
                 session, agent_id
             )
             if owner_id is None:
@@ -2726,6 +2781,7 @@ class ProtocolService:
             ref = await self.resource_service.create_reference(
                 session,
                 owner_id=owner_id,
+                is_admin=is_admin,
                 read_visibility=read_visibility,
                 write_visibility=write_visibility,
                 type=type,
@@ -2763,6 +2819,57 @@ class ProtocolService:
                 is_admin=is_admin,
             )
             await session.commit()
+
+    async def list_all_references(
+        self,
+        agent_id: str,
+        name_contains: str | None,
+        type: str | None,
+        owner_name: str | None,
+        current_room_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """List the references the agent's owner may read, across the instance.
+
+        Filters are ANDed; a None filter is ignored. `owner_name` is matched
+        against the resolved owner name exactly, like `list_agents`, so a name
+        no user carries yields an empty list. Rows carry no `value`: this is
+        discovery, and the value arrives via `list_references` once attached.
+
+        When `current_room_id` is given, each row reports whether it is already
+        attached to that room; when it is None the key is left out entirely, so
+        an absent key never reads as "not attached".
+        """
+        async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if owner_id is None:
+                raise ValueError(
+                    f"Agent {agent_id} has no owner_id and cannot list references"
+                )
+            pairs = await self.resource_service.list_references_with_owner_names(
+                session,
+                owner_id,
+                is_admin=owner_is_admin,
+                name_contains=name_contains,
+                type=type,
+                owner_name=owner_name,
+            )
+            attached_ids: set[str] | None = None
+            if current_room_id is not None:
+                attached_ids = await self.resource_service.list_room_reference_ids(
+                    session, current_room_id
+                )
+            return [
+                self.resource_service.reference_to_summary(
+                    ref,
+                    name,
+                    attached_to_current_room=None
+                    if attached_ids is None
+                    else ref.id in attached_ids,
+                )
+                for ref, name in pairs
+            ]
 
     async def link_rooms(
         self,

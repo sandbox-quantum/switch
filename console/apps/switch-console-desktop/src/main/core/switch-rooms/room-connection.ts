@@ -44,6 +44,21 @@ const CONTROL_STEP_GAP_MS = 600;
 // While a turn is working, re-push the activity line this often with a refreshed
 // elapsed-time suffix (e.g. "· 15s") so a long-running step visibly ticks.
 const ACTIVITY_TICK_INTERVAL_MS = 5_000;
+// Two bounds on a working turn, because a turn that never ends re-pushes its
+// activity line every tick for as long as the process lives. One was observed
+// running for 32 hours against a room the session no longer held, rejected
+// every five seconds. Both give up loudly rather than keep a room reading
+// "working on it" against a turn nobody is going to close.
+//
+// The failure cap catches the case where the report itself is refused — the
+// server is answering, and answering that this report can never be accepted,
+// so repeating it is the definition of a loop that cannot succeed.
+const MAX_ACTIVITY_REPORT_FAILURES = 5;
+// The wall clock catches everything else: a turn whose completion signal was
+// lost (an interrupt fires no hook) leaves reports succeeding forever against
+// work that finished long ago. Set well past any real turn, so reaching it is
+// evidence of a bug rather than of a slow agent.
+export const MAX_ROOM_TURN_MS = 4 * 60 * 60 * 1000;
 
 export type SwitchCredentials = { agentId: string; apiEndpoint: string; token: string };
 
@@ -211,6 +226,14 @@ export interface RoomConnectionDeps {
    * `connect_to_room` call landed on.
    */
   onRoomChanged?: (roomId: string | null) => void;
+  /**
+   * The server has refused a room this connection declared — it is gone, or
+   * this agent may no longer subscribe to it. The stream has dropped it, so
+   * anything that remembers the room has to forget it here: a room id we keep
+   * is a room id we re-declare on the next connection, and the server refuses
+   * the whole connection over it.
+   */
+  onRoomRejected?: (info: { roomId: string; status: number; detail: string }) => void;
   log: RoomConnectionLogger;
 }
 
@@ -257,6 +280,9 @@ export class RoomConnection {
   private busy = false;
   /** Last runtime state we pushed to the bridge, to avoid redundant calls. */
   private runtimeState: RuntimeState = 'idle';
+  /** Why the current `awaiting-input` was reported, when it was an error. Null
+   * for an ordinary request for input, and cleared as soon as work resumes. */
+  private awaitingReason: string | null = null;
   /**
    * True while the session is handling a turn kicked off by an addressed room
    * message. Only then does runtime state surface to the room — local TUI work
@@ -278,6 +304,8 @@ export class RoomConnection {
   private workingStartedAt = 0;
   /** Ticker that re-pushes the activity line with a refreshed elapsed suffix. */
   private activityTicker: ReturnType<typeof setInterval> | null = null;
+  /** Consecutive rejected activity reports, reset by the first that lands. */
+  private activityFailures = 0;
   private busyFallback: ReturnType<typeof setTimeout> | null = null;
   private humanGateTimer: ReturnType<typeof setTimeout> | null = null;
   private noTargetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -295,6 +323,10 @@ export class RoomConnection {
   private spawnTurn: SpawnTurn | null;
   /** Notified whenever the server tells us which room this session is in. */
   private readonly onRoomChanged: ((roomId: string | null) => void) | null;
+  /** Notified when the server refuses a room we declared. */
+  private readonly onRoomRejected:
+    | ((info: { roomId: string; status: number; detail: string }) => void)
+    | null;
   /**
    * The last room we passed to `onRoomChanged`. Deliberately not seeded from
    * the declared room: a connection opened declaring one is *told* the same
@@ -331,6 +363,7 @@ export class RoomConnection {
     this.startCursor = deps.startCursor;
     this.spawnTurn = deps.spawnTurn ?? null;
     this.onRoomChanged = deps.onRoomChanged ?? null;
+    this.onRoomRejected = deps.onRoomRejected ?? null;
     this.log = deps.log;
   }
 
@@ -349,6 +382,7 @@ export class RoomConnection {
       startCursor: this.startCursor,
       onEvent: (event) => this.handleEvent(event),
       onRooms: (rooms) => this.adoptRoom(rooms),
+      onRoomRejected: (info) => this.handleRoomRejected(info),
       onGap: (info) => this.handleGap(info),
       onEvicted: (reason) =>
         this.log.warn('RoomConnection: connection evicted', {
@@ -440,11 +474,13 @@ export class RoomConnection {
    */
   private adoptRoom(rooms: string[]): void {
     const next = rooms[0] ?? null;
-    // Against what we last *reported*, not what we hold: a session launched
-    // into a room declares it at open and the server confirms the same value,
-    // which is the only signal the rest of the app ever gets that the session
-    // is in that room.
-    if (next === this.reportedRoom) return;
+    // Against what we last *reported*, not merely what we hold: a session
+    // launched into a room declares it at open and the server confirms the
+    // same value, which is the only signal the rest of the app ever gets that
+    // the session is in that room. What we hold still has to agree, or a room
+    // declared but never confirmed — then refused — would read as "no change"
+    // and nobody would learn it had gone.
+    if (next === this.reportedRoom && next === this.roomId) return;
 
     const previous = this.roomId;
     this.roomId = next;
@@ -459,9 +495,63 @@ export class RoomConnection {
       roomId: next,
     });
     this.onRoomChanged?.(next);
-    if (next && !this.openSpawnTurn()) {
+    if (next === null) {
+      // The room has been taken and there is nowhere left to report. A turn
+      // left open here is the 32-hour "working on it" bug: every field it
+      // needs is still set, so the ticker keeps pushing runtime state at a
+      // room this connection no longer covers, and the server rejects each
+      // one. End it here — the same clearing stop() does — rather than let it
+      // keep asking for something that cannot be granted.
+      this.log.warn('RoomConnection: the room was withdrawn — ending the turn', {
+        event: 'room_connection_room_withdrawn',
+        sessionId: this.sessionId,
+        previous,
+        turnWasActive: this.roomTurnActive,
+      });
+      this.clearRoomTurn();
+      return;
+    }
+    if (!this.openSpawnTurn()) {
       void this.postRuntimeState('idle', null).catch(() => {});
     }
+  }
+
+  /**
+   * A declared room the server refuses. Terminal, not transient.
+   *
+   * The stream has already dropped it, which arrives here as an empty room
+   * list and ends the turn. What this adds is the disclosure — at error level,
+   * because a session pointed at a room that does not exist is broken and not
+   * merely quiet — and the hand-off to whoever persisted the room, so a
+   * restart does not resurrect it.
+   */
+  private handleRoomRejected(info: { roomId: string; status: number; detail: string }): void {
+    this.log.error('RoomConnection: the server refused the room this session declared', {
+      event: 'room_connection_room_refused',
+      sessionId: this.sessionId,
+      roomId: info.roomId,
+      status: info.status,
+      detail: info.detail,
+    });
+    this.onRoomRejected?.(info);
+  }
+
+  /**
+   * Drop the current room turn without reporting into the room.
+   *
+   * For the cases where reporting is impossible or is itself what is failing:
+   * the room is gone, or the report is being refused. Every caller says why at
+   * warn or error level — a turn that ends without the room being told is a
+   * degraded outcome and must not be silent.
+   */
+  private clearRoomTurn(): void {
+    this.roomTurnActive = false;
+    this.currentThreadId = null;
+    this.currentAnchorId = null;
+    this.runtimeState = 'idle';
+    this.lastActivityDetail = null;
+    this.activityFailures = 0;
+    this.stopActivityTicker();
   }
 
   /** Stop the loops and clear any lingering runtime-state surface. */
@@ -749,7 +839,11 @@ export class RoomConnection {
    * room while a room-triggered turn is active — local TUI work must not show
    * "working on it" in the bridged channel, nor ping the operator.
    */
-  onAgentStatusChange(status: AgentStatus, notificationType?: NotificationType): void {
+  onAgentStatusChange(
+    status: AgentStatus,
+    notificationType?: NotificationType,
+    detail?: string
+  ): void {
     if (this.stopped) return;
     if (toRuntimeState(status) === 'awaiting-input') {
       this.log.debug('RoomConnection: status -> awaiting-input', {
@@ -763,7 +857,7 @@ export class RoomConnection {
     }
     if (this.roomTurnActive) {
       const next = toRuntimeState(status);
-      this.setRuntimeState(next);
+      this.setRuntimeState(next, detail);
       if (next === 'idle') {
         this.roomTurnActive = false;
         this.currentThreadId = null;
@@ -788,20 +882,37 @@ export class RoomConnection {
     this.tryFlush();
   }
 
-  private setRuntimeState(state: RuntimeState): void {
+  private setRuntimeState(state: RuntimeState, detail?: string): void {
     // `awaiting-input` always re-surfaces: each report is a fresh request for
     // operator input (Claude emits one per notification, not on a timer), so it
     // must ping again even when the previous state was already awaiting-input —
     // e.g. a follow-up prompt with no intervening `working` event we observed.
     // `working`/`idle` stay deduped: one "working on it…" / one clear is enough.
     if (state !== 'awaiting-input' && this.runtimeState === state) return;
+    // The exception to that: a session that just died on an error goes quiet at
+    // its prompt, and Claude reports the idle prompt as one more request for
+    // input. Reported as-is that is a second, reasonless ping seconds after the
+    // one naming the failure — it reads as a new request and buries the reason.
+    // The turn is still the errored one until work resumes, so say nothing more
+    // until it does.
+    if (state === 'awaiting-input' && this.awaitingReason !== null && !detail) {
+      this.log.debug('RoomConnection: awaiting-input with no reason follows an error — skipping', {
+        roomId: this.roomId,
+        reason: this.awaitingReason,
+      });
+      return;
+    }
+    this.awaitingReason = state === 'awaiting-input' ? (detail ?? null) : null;
     const wasWorking = this.runtimeState === 'working';
     this.runtimeState = state;
     // A fresh state clears the activity line: a new "working" turn starts from
     // the generic indicator, and idle/awaiting-input carry no activity.
     this.lastActivityDetail = null;
     if (state === 'working') {
-      if (!wasWorking) this.workingStartedAt = Date.now();
+      if (!wasWorking) {
+        this.workingStartedAt = Date.now();
+        this.activityFailures = 0;
+      }
       this.startActivityTicker();
       // Post the "working on it…" message with an elapsed suffix right away so
       // the timer ticks from the start of the turn, not only once the first
@@ -810,7 +921,7 @@ export class RoomConnection {
       return;
     }
     this.stopActivityTicker();
-    void this.postRuntimeState(state, this.currentThreadId).catch((error) => {
+    void this.postRuntimeState(state, this.currentThreadId, {}, detail).catch((error) => {
       if (this.abort.signal.aborted) return;
       this.log.warn('RoomConnection: failed to set runtime state', {
         roomId: this.roomId,
@@ -848,13 +959,32 @@ export class RoomConnection {
   /** Push the current activity line (base + elapsed) to the bridge. */
   private pushActivity(): void {
     const detail = this.composeActivityDetail();
-    void this.postRuntimeState('working', this.currentThreadId, {}, detail).catch((error) => {
-      if (this.abort.signal.aborted) return;
-      this.log.warn('RoomConnection: failed to report activity', {
-        roomId: this.roomId,
-        error: String(error),
-      });
-    });
+    void this.postRuntimeState('working', this.currentThreadId, {}, detail).then(
+      () => {
+        this.activityFailures = 0;
+      },
+      (error) => {
+        if (this.abort.signal.aborted) return;
+        this.activityFailures += 1;
+        if (this.activityFailures < MAX_ACTIVITY_REPORT_FAILURES) {
+          this.log.warn('RoomConnection: failed to report activity', {
+            roomId: this.roomId,
+            failures: this.activityFailures,
+            error: String(error),
+          });
+          return;
+        }
+        this.log.error('RoomConnection: abandoning the turn — the room keeps refusing it', {
+          event: 'room_connection_turn_abandoned',
+          reason: 'activity_report_refused',
+          sessionId: this.sessionId,
+          roomId: this.roomId,
+          failures: this.activityFailures,
+          error: String(error),
+        });
+        this.clearRoomTurn();
+      }
+    );
   }
 
   private startActivityTicker(): void {
@@ -862,6 +992,25 @@ export class RoomConnection {
     this.activityTicker = setInterval(() => {
       if (this.stopped || !this.roomTurnActive || this.runtimeState !== 'working') {
         this.stopActivityTicker();
+        return;
+      }
+      const elapsed = Date.now() - this.workingStartedAt;
+      if (elapsed >= MAX_ROOM_TURN_MS) {
+        // Past any turn a real agent runs, so the completion signal was lost
+        // rather than late. Clear the room's "working on it" instead of
+        // leaving it to age indefinitely, and say plainly that we gave up —
+        // the session may well still be working, and the room will no longer
+        // show it.
+        this.log.error('RoomConnection: abandoning the turn — it has outrun the cap', {
+          event: 'room_connection_turn_abandoned',
+          reason: 'max_turn_duration',
+          sessionId: this.sessionId,
+          roomId: this.roomId,
+          elapsedMs: elapsed,
+          capMs: MAX_ROOM_TURN_MS,
+        });
+        this.clearRoomTurn();
+        void this.postRuntimeState('idle', null).catch(() => {});
         return;
       }
       this.pushActivity();

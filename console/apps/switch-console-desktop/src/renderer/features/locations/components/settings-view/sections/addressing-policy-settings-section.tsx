@@ -166,7 +166,7 @@ function AddressingPolicyRow({
         onOpenMessagingApps={() => navigate('server', { serverId })}
         disabled={mutation.isPending}
       />
-      {error && <span className="text-destructive text-xs">{error}</span>}
+      {error && <span className="text-xs text-destructive">{error}</span>}
       {policyHasDeadRule(value) && (
         <span className="text-xs text-foreground-warning">
           Not saved — a rule admits nobody. It is kept here until it names a sender.

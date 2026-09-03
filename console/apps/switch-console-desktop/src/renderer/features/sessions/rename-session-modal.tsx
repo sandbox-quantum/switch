@@ -113,9 +113,9 @@ export const RenameSessionModal = observer(function RenameSessionModal({
               autoFocus
             />
             {validationMessage && !isUnchanged && (
-              <p className="text-destructive mt-1 text-xs">{validationMessage}</p>
+              <p className="mt-1 text-xs text-destructive">{validationMessage}</p>
             )}
-            {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
+            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
           </Field>
         </FieldGroup>
       </DialogContentArea>

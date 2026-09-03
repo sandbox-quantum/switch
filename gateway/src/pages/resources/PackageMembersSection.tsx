@@ -24,7 +24,6 @@ import {
   useDocuments,
   usePackageDocuments,
   usePackageReferences,
-  useReferenceTypes,
   useReferences,
 } from "../../data/hooks";
 
@@ -35,7 +34,6 @@ interface Props {
 
 export default function PackageMembersSection({ packageId, canMutate }: Props) {
   const navigate = useNavigate();
-  const { data: types } = useReferenceTypes();
   const { data: pkgRefs, loading: refsLoading, refetch: refetchRefs } =
     usePackageReferences(packageId);
   const { data: pkgDocs, loading: docsLoading, refetch: refetchDocs } =
@@ -47,12 +45,6 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
   const [removeWarning, setRemoveWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const typeLabel = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const t of types ?? []) m[t.type] = t.display_name;
-    return m;
-  }, [types]);
 
   const refIds = useMemo(
     () => new Set((pkgRefs ?? []).map((r) => r.id)),
@@ -70,10 +62,10 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
         .map((r) => ({
           id: r.id,
           primary: r.name || "(unnamed)",
-          secondary: typeLabel[r.type] ?? r.type,
+          secondary: r.type_display_name ?? `${r.type} (unknown type)`,
           search: `${r.name} ${r.description} ${r.type}`.toLowerCase(),
         })),
-    [allRefs, refIds, typeLabel],
+    [allRefs, refIds],
   );
   const docOptions = useMemo<PickerOption[]>(
     () =>
@@ -193,7 +185,10 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                 }}
                 onClick={() => navigate(`/resources/references/${r.id}`)}
               >
-                <Chip label={typeLabel[r.type] ?? r.type} size="small" />
+                <Chip
+                  label={r.type_display_name ?? `${r.type} (unknown type)`}
+                  size="small"
+                />
                 <Typography variant="body2" sx={{ flexGrow: 1 }}>
                   {r.name || "(unnamed)"}
                 </Typography>

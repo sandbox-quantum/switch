@@ -49,10 +49,7 @@ class _FakeClient:
 
 def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> ProtocolService:
     async def _require(agent_id: str, room_id: str):
-        return SimpleNamespace(matrix_room_id="!room")
-
-    async def _set_typing(agent_id: str, room_id: str, is_typing: bool) -> None:
-        pass
+        return SimpleNamespace(id=room_id, matrix_room_id="!room", bridge_id=None)
 
     async def _resolve_thread_root(client_: Any, matrix_room_id: str, thread_id: str):
         return f"root-of-{thread_id}"
@@ -66,7 +63,6 @@ def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> ProtocolServ
         get_by_agent_id=lambda agent_id: client
     )
     svc.config = SimpleNamespace(agent_media_max_bytes=max_bytes)  # type: ignore[assignment]
-    svc.set_typing = _set_typing  # type: ignore[assignment]
     svc._resolve_thread_root = _resolve_thread_root  # type: ignore[assignment]
     return svc
 
