@@ -227,3 +227,35 @@ class TestMembership:
             await provisioning.invite_to_room("sw_room_nowhere", "@a:test")
         with pytest.raises(ProvisioningError):
             await provisioning.invite_to_room(transport_room_id, "@nobody:test")
+
+    async def test_a_recorded_member_is_still_woken(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A row is not proof that a running client is watching the room.
+
+        Something else may have written it, and there is a window at startup
+        where a client is running but not yet on the bus. Returning early on
+        the row would make a deaf membership permanent: every later
+        invitation would find the same row and stop.
+        """
+        async with session_factory() as session:
+            room = await _room(session)
+            client = await _client(session)
+            await session.commit()
+            transport_room_id, user_id = room.matrix_room_id, client.matrix_user_id
+
+        woken: list[str] = []
+
+        async def _handler(invited_to: str) -> None:
+            woken.append(invited_to)
+
+        provisioning = _provisioning(session_factory)
+        await provisioning.invite_to_room(transport_room_id, user_id)
+
+        invites = InviteBus()
+        invites.register(user_id, _handler)
+        await _provisioning(session_factory, invites).invite_to_room(
+            transport_room_id, user_id
+        )
+
+        assert woken == [transport_room_id]

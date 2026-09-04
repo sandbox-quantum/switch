@@ -111,6 +111,14 @@ class PostgresProvisioning:
 
         A live client joins itself, which is what leaves its transport
         watching the room. Already a member is success, per the port.
+
+        The wake-up is rung even when the membership is already recorded, and
+        that is deliberate. A row is no longer proof that a running client is
+        subscribed to the room — something else may have written it, and there
+        is a window at startup where a client is running but not yet on the
+        bus. Returning early on the row would make that state permanent, since
+        every later invitation would find the same row and stop. Membership is
+        what has to be exactly-once; a wake-up is cheap and idempotent.
         """
         async with self._session_factory() as session:
             switch_room_id, client_id, display_name = await self._resolve(
@@ -119,10 +127,10 @@ class PostgresProvisioning:
             existing = await session.get(
                 ClientRoom, {"client_id": client_id, "room_id": switch_room_id}
             )
-            if existing is not None:
-                return
 
         if await self._invites.invite(user_id, room_id):
+            return
+        if existing is not None:
             return
 
         async with self._session_factory() as session:
