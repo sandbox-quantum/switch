@@ -1864,6 +1864,28 @@ class SlackAdapter(CollaborationAdapter):
         message = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"[\2](\1)", message)
         return re.sub(r"<(https?://[^>]+)>", r"\1", message)
 
+    @staticmethod
+    def _unwrap_code_span(text: str) -> str:
+        """Return the inside of a message that is *entirely* one Slack code span
+        (```x``` or `x`), else the stripped text unchanged.
+
+        Slack keeps the backticks in the delivered text, so a `!cmd` in a code
+        span no longer starts with "!" and gets treated as chatter instead of a
+        command. This happens a lot when people copy-paste a command. Unwrapping
+        a whole-message span lets it run, while a span sitting inside prose (e.g.
+        "run `!remove-alias @bot` to undo") is left alone.
+        """
+        stripped = text.strip()
+        for fence in ("```", "`"):
+            if (
+                len(stripped) > 2 * len(fence)
+                and stripped.startswith(fence)
+                and stripped.endswith(fence)
+                and fence not in stripped[len(fence) : -len(fence)]
+            ):
+                return stripped[len(fence) : -len(fence)].strip()
+        return stripped
+
     def prime_mention_targets(self, targets: dict[str, str]) -> None:
         for name, external_id in targets.items():
             self._remember_mention_target(name, external_id)
@@ -2060,6 +2082,8 @@ class SlackAdapter(CollaborationAdapter):
 
         message_ref = f"{channel_id}:{message_ts}"
         stripped = text.strip()
+        if user_id and not bot_id:
+            stripped = self._unwrap_code_span(stripped)
         if stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
