@@ -33,6 +33,8 @@ import { makePtyId } from '@shared/core/pty/ptyId';
 import {
   sessionTranscriptChannel,
   type SessionTranscript,
+  type TranscriptDecidedBy,
+  type TranscriptRoomOrigin,
   type TranscriptUpdate,
   type TranscriptUserSource,
 } from '@shared/core/sessions/session-transcript';
@@ -265,14 +267,35 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     }
   }
 
-  async sendTurn(text: string, source: TranscriptUserSource): Promise<{ turnId: string }> {
+  async sendTurn(
+    text: string,
+    source: TranscriptUserSource,
+    room?: TranscriptRoomOrigin & { body: string }
+  ): Promise<{ turnId: string }> {
     const adapter = providerAdapterRegistry.get(this.providerId);
     const turnId = randomUUID();
     const result = await adapter.sendTurn({ sessionId: this.params.sessionId, turnId, text });
     // A steered message joins the turn already running, so the transcript has
     // to file it under that turn rather than the id we minted for it.
     const effectiveTurnId = result.steeredInto ?? result.turnId;
-    this.publish(this.transcript.recordUserTurn({ turnId: effectiveTurnId, text, source }));
+    this.publish(
+      this.transcript.recordUserTurn({
+        turnId: effectiveTurnId,
+        text,
+        source,
+        ...(room
+          ? {
+              room: {
+                sender: room.sender,
+                roomId: room.roomId,
+                roomName: room.roomName,
+                messageId: room.messageId,
+              },
+              displayText: room.body,
+            }
+          : {}),
+      })
+    );
     return { turnId: effectiveTurnId };
   }
 
@@ -284,7 +307,15 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     await providerAdapterRegistry.get(this.providerId).interruptTurn(this.params.sessionId);
   }
 
-  async respondToRequest(requestId: string, decision: ApprovalDecision): Promise<void> {
+  async respondToRequest(
+    requestId: string,
+    decision: ApprovalDecision,
+    decidedBy: TranscriptDecidedBy
+  ): Promise<void> {
+    // Recorded before the send: the provider's `request.resolved` rebuilds the
+    // entry from the one held here, so noting it afterwards would race that
+    // echo — and the card would show a resolved request with nobody behind it.
+    this.publish(this.transcript.noteDecidedBy(requestId, decidedBy));
     await providerAdapterRegistry
       .get(this.providerId)
       .respondToRequest(this.params.sessionId, requestId, decision);

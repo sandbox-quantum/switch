@@ -37,12 +37,31 @@ export interface TranscriptItem {
 /** Where a user message came from, so the transcript can label room traffic. */
 export type TranscriptUserSource = 'console' | 'room' | 'system';
 
+/**
+ * The room message a `user` entry was built from. The model is still sent
+ * `text` — the Switch envelope, which carries the ids it answers with — and
+ * this is what a person is shown instead of it.
+ */
+export interface TranscriptRoomOrigin {
+  sender: string;
+  roomId: string;
+  roomName: string | null;
+  messageId: string;
+}
+
+/** Who answered a request: the console's own card, or a reply in the room. */
+export type TranscriptDecidedBy = 'console' | 'room';
+
 export type TranscriptEntry =
   | {
       kind: 'user';
       id: string;
       turnId: string;
       text: string;
+      /** Present when the message came over a room: who said it, and where. */
+      room?: TranscriptRoomOrigin;
+      /** What to show instead of `text` — the body without the envelope. */
+      displayText?: string;
       source: TranscriptUserSource;
       createdAt: string;
     }
@@ -65,6 +84,8 @@ export type TranscriptEntry =
       options: ApprovalOption[];
       state: 'open' | 'resolved';
       decision?: ApprovalDecision;
+      /** Set once answered, so the card can say where the answer came from. */
+      decidedBy?: TranscriptDecidedBy;
       createdAt: string;
     }
   | {

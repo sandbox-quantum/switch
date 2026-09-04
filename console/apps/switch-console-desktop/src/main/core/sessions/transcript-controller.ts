@@ -52,9 +52,11 @@ export const sessionTranscriptController = createRPCController({
     requestId: string;
     decision: ApprovalDecision;
   }): Promise<void> {
+    // This RPC is the console's own card; the room answers through the relay.
     await requireProviderRuntime(params.sessionId).respondToRequest(
       params.requestId,
-      params.decision
+      params.decision,
+      'console'
     );
   },
   async respondToUserInput(params: {

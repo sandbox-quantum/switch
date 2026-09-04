@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
-import type { InjectionSink } from './injection-sink';
+import type { InjectedRoomMessage, InjectionSink, InjectionTarget } from './injection-sink';
 import type { SessionControl } from './session-control';
 import { buildSessionDeeplink } from './session-deeplink';
 import {
@@ -38,6 +38,13 @@ const HUMAN_GATE_RETRY_MS = 500;
 // to go; without a retry of its own it waits for an unrelated event that on a
 // fresh session may never come.
 const NO_TARGET_RETRY_MS = 500;
+// How long a room message may be held for the next turn before it is delivered
+// into the running one instead. Only a provider session holds at all (see
+// ProviderInjectionSink), and holding is the better default — but a turn can run
+// for as long as the agent keeps working, and a message nobody sees is worse
+// than one that arrives as an aside. Long enough that an ordinary turn finishes
+// first; short enough that the sender is not left waiting on a whole afternoon.
+const HELD_MESSAGE_MAX_MS = 5 * 60 * 1000;
 // Gap between steps of a multi-step control command (e.g. reset's `/clear` then
 // the reconnect prompt), so a TUI settles one before the next is typed.
 const CONTROL_STEP_GAP_MS = 600;
@@ -141,6 +148,17 @@ interface QueuedInjection {
    * that is not a room message.
    */
   message: MessagePayload | null;
+  /**
+   * The room the event came from, as the event itself reported it. Not read
+   * back from the connection at delivery: the room this connection holds is the
+   * server's to set and is briefly null between the stream opening and the
+   * claim landing — which is exactly when a spawned session's first message
+   * goes out.
+   */
+  roomId: string;
+  /** When this was queued, so a message held behind a long turn can be
+   *  delivered anyway rather than wait for it indefinitely. */
+  queuedAt: number;
 }
 
 /** Provider-specific keystroke payload builder, injected to keep the core free
@@ -754,6 +772,7 @@ export class RoomConnection {
       threadId,
       messageId,
       message: event.type === 'message' ? (event.payload as MessagePayload) : null,
+      roomId: event.room_id,
     });
   }
 
@@ -842,7 +861,7 @@ export class RoomConnection {
     }
   }
 
-  private enqueue(injection: QueuedInjection): void {
+  private enqueue(injection: Omit<QueuedInjection, 'queuedAt'>): void {
     if (this.stopped) return;
     // Before the queue rather than at the flush: an intercepted message is not
     // a delayed delivery, it is not a delivery at all, and letting it into the
@@ -856,7 +875,7 @@ export class RoomConnection {
       });
       return;
     }
-    this.queue.push(injection);
+    this.queue.push({ ...injection, queuedAt: Date.now() });
     // Together with `switch_message_injected` below, these two say whether a
     // message that reached the session ever made it into the pane — the
     // question every "the agent ignored me" report comes down to.
@@ -1062,6 +1081,52 @@ export class RoomConnection {
     }
   }
 
+  /**
+   * The message behind an injection, taken apart for a target that can show it.
+   *
+   * Only for an addressed room message: everything else — a join, a task, a
+   * gap warning — is a line the app wrote, with no sender to attribute it to.
+   */
+  private roomMessageMeta(item: QueuedInjection): InjectedRoomMessage | undefined {
+    if (!item.addressed || !item.message) return undefined;
+    return {
+      sender: item.message.sender_name,
+      body: item.message.body,
+      roomId: item.roomId,
+      roomName: this.roomName,
+      messageId: item.message.message_id,
+    };
+  }
+
+  /**
+   * Tell the session a message it is about to receive was held past the cap.
+   *
+   * A message steered into a running turn is answered as an aside to whatever
+   * the agent was already doing, which is exactly the failure the hold exists to
+   * avoid — so when the hold gives up, the session's own record says so rather
+   * than leaving a mid-turn interruption looking like a fresh request.
+   */
+  private async sayHeldDelivery(
+    target: InjectionTarget,
+    item: QueuedInjection,
+    heldForMs: number
+  ): Promise<void> {
+    try {
+      await target.control?.({
+        kind: 'notice',
+        text:
+          `A room message from ${item.message?.sender_name ?? 'the room'} waited ` +
+          `${formatElapsed(heldForMs)} for the running turn to finish and was delivered into it.`,
+      });
+    } catch (error) {
+      this.log.warn('RoomConnection: could not announce a mid-turn delivery', {
+        roomId: this.roomId,
+        sessionId: this.sessionId,
+        error: String(error),
+      });
+    }
+  }
+
   private tryFlush(): void {
     if (this.stopped || this.queue.length === 0) return;
 
@@ -1097,23 +1162,40 @@ export class RoomConnection {
       return;
     }
 
+    // Set when the message about to go out waited past the cap, so it can say
+    // so in the session once it has actually been handed over.
+    let heldPastCapMs: number | null = null;
     if (this.sink.isBusy?.()) {
       // Mid-turn. Only a provider session says so, and only because a turn sent
       // now joins the running one instead of starting its own — see
       // ProviderInjectionSink. Come back when it has finished; a control
       // command does not come through here and is never held.
-      if (!this.noTargetTimer) {
-        this.log.debug('RoomConnection: injection deferred — the session is mid-turn', {
-          roomId: this.roomId,
-          sessionId: this.sessionId,
-          queued: this.queue.length,
-        });
-        this.noTargetTimer = setTimeout(() => {
-          this.noTargetTimer = null;
-          this.tryFlush();
-        }, NO_TARGET_RETRY_MS);
+      const heldFor = Date.now() - (this.queue[0]?.queuedAt ?? Date.now());
+      if (heldFor < HELD_MESSAGE_MAX_MS) {
+        if (!this.noTargetTimer) {
+          this.log.debug('RoomConnection: injection deferred — the session is mid-turn', {
+            roomId: this.roomId,
+            sessionId: this.sessionId,
+            queued: this.queue.length,
+          });
+          this.noTargetTimer = setTimeout(() => {
+            this.noTargetTimer = null;
+            this.tryFlush();
+          }, NO_TARGET_RETRY_MS);
+        }
+        return;
       }
-      return;
+      // Past the cap. Steered into the running turn is a worse delivery than
+      // its own turn; it is a far better one than never, and the session says
+      // in the transcript that this is what happened.
+      heldPastCapMs = heldFor;
+      this.log.warn('RoomConnection: delivering a held room message into the running turn', {
+        event: 'switch_message_held_too_long',
+        roomId: this.roomId,
+        sessionId: this.sessionId,
+        heldForMs: heldFor,
+        queued: this.queue.length,
+      });
     }
 
     const target = this.sink.acquire();
@@ -1141,11 +1223,18 @@ export class RoomConnection {
     const item = this.queue.shift()!;
     const { payload, submitSequence, submitDelayMs } = this.injector.build(item.text);
 
+    if (heldPastCapMs !== null) {
+      // Before the write, so the transcript reads in the order it happened: the
+      // explanation, then the message it explains. Outside the try, because a
+      // target that cannot say this is no reason to requeue the message.
+      void this.sayHeldDelivery(target, item, heldPastCapMs);
+    }
+
     try {
       // Always write the submit keystroke separately, after the text has been
       // delivered. Writing both in one chunk makes TUIs (Claude) treat the
       // trailing Enter as part of the pasted input, leaving the text unsent.
-      target.write(payload);
+      target.write(payload, this.roomMessageMeta(item));
       this.log.info('RoomConnection: injected message into target', {
         event: 'switch_message_injected',
         roomId: this.roomId,

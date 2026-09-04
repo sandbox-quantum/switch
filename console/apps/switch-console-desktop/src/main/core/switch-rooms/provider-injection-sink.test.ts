@@ -64,7 +64,25 @@ describe('ProviderInjectionSink', () => {
   it('delivers a write as a room-sourced turn', () => {
     const runtime = makeRuntime();
     new ProviderInjectionSink('session-1', runtime, vi.fn()).write('[Switch] hello agent');
-    expect(runtime.sendTurn).toHaveBeenCalledWith('[Switch] hello agent', 'room');
+    expect(runtime.sendTurn).toHaveBeenCalledWith('[Switch] hello agent', 'room', undefined);
+  });
+
+  /**
+   * The turn text stays the envelope — it carries the ids the agent answers
+   * with — and the metadata rides alongside so the transcript can show the
+   * person who wrote it instead.
+   */
+  it('passes the room message alongside the envelope it sends', () => {
+    const runtime = makeRuntime();
+    const meta = {
+      sender: 'Someone',
+      body: 'hello agent',
+      roomId: 'room-1',
+      roomName: 'Room One',
+      messageId: 'msg-1',
+    };
+    new ProviderInjectionSink('session-1', runtime, vi.fn()).write('[Switch] envelope', meta);
+    expect(runtime.sendTurn).toHaveBeenCalledWith('[Switch] envelope', 'room', meta);
   });
 
   it('sends nothing for an empty write', () => {

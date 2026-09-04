@@ -10,21 +10,39 @@ type NoticeEntry = Extract<TranscriptEntry, { kind: 'notice' }>;
 
 const SOURCE_TAGS = { room: 'from room', system: 'system' } as const;
 
+/** A room id is no use as a label; the leading segment at least distinguishes
+ *  one room from another until the name is known. */
+function shortRoomId(roomId: string): string {
+  const bare = roomId.replace(/^[!#]/, '');
+  const local = bare.split(':')[0] ?? bare;
+  return local.length > 8 ? `${local.slice(0, 8)}…` : local;
+}
+
 /**
  * A message from a person — or, when it came over a room, from whoever
  * addressed the agent there. Set apart from the agent's own replies by
  * alignment and a surface rather than a name, which would be a name per
  * message for a conversation that only ever has two sides.
+ *
+ * A room message is the exception: it has a sender and a place, and the text
+ * the agent was actually sent is a Switch envelope wrapped around ids nobody
+ * reading this needs. So the header names them and the body is what was typed.
  */
 export const UserMessage = observer(function UserMessage({ entry }: { entry: UserEntry }) {
-  const tag = entry.source === 'console' ? null : SOURCE_TAGS[entry.source];
+  const room = entry.room;
+  const tag = entry.source === 'console' || room ? null : SOURCE_TAGS[entry.source];
   return (
     <div className="flex flex-col items-end gap-1">
       {tag && (
         <span className="text-tiny tracking-wide text-foreground-passive uppercase">{tag}</span>
       )}
+      {room && (
+        <span className="text-tiny text-foreground-passive">
+          {room.sender} · #{room.roomName ?? shortRoomId(room.roomId)}
+        </span>
+      )}
       <div className="max-w-[85%] rounded-lg rounded-tr-sm border border-border bg-background-1 px-3 py-2 text-sm whitespace-pre-wrap text-foreground">
-        {entry.text}
+        {entry.displayText ?? entry.text}
       </div>
     </div>
   );

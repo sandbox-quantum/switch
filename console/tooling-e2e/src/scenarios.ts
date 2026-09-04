@@ -221,25 +221,29 @@ export const question: Scenario = (harness) =>
   scenario('question', async (record) => {
     const since = await ask(
       harness,
-      'before answering, ask me one clarifying question offering exactly the options ' +
-        `${CHOICES.join(', ')} — list all three — then wait for my answer and reply with ` +
-        'the single word I chose.'
+      'before answering, ask me one clarifying multiple-choice question using your ' +
+        'ask-the-user tool (the question tool, not a plain message): "Which color?" with ' +
+        `exactly the options ${CHOICES.join(', ')}. Then reply with the single word I chose.`
     );
 
     const asked = await expectBotPost(harness, {
       since,
       record,
-      // The options may arrive as a native prompt rendered into the room or as
-      // ordinary prose; all this asserts is that all three were offered.
-      predicate: (post) => CHOICES.every((choice) => lower(post).includes(choice)),
-      describe: `a question listing the options ${CHOICES.join('/')}`,
+      // The console relays the native question into the room as a numbered
+      // list; a plain-prose question would also list the three options, so the
+      // numbering is what proves the relay path was taken.
+      predicate: (post) =>
+        CHOICES.every((choice) => lower(post).includes(choice)) && /\b2\.\s/.test(post.message),
+      describe: `a relayed question numbering the options ${CHOICES.join('/')}`,
     });
 
-    const answeredAt = await ask(harness, CHOSEN);
+    // Answer by number, which only the relay understands; the acknowledgement it
+    // posts names the choice too, so the agent's own reply must be told apart.
+    const answeredAt = await ask(harness, '2');
     const answer = await expectBotPost(harness, {
       since: answeredAt,
       record,
-      predicate: (post) => lower(post).includes(CHOSEN),
+      predicate: (post) => lower(post).includes(CHOSEN) && !post.message.trimStart().startsWith('✅'),
       describe: `a reply naming my choice '${CHOSEN}'`,
     });
 

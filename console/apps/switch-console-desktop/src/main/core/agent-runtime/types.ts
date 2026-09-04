@@ -1,6 +1,8 @@
 import type { ApprovalDecision, UserInputAnswers } from '@switch-console/agent-providers';
 import type {
   SessionTranscript,
+  TranscriptDecidedBy,
+  TranscriptRoomOrigin,
   TranscriptUpdate,
   TranscriptUserSource,
 } from '@shared/core/sessions/session-transcript';
@@ -49,8 +51,15 @@ export interface ProviderSessionRuntime {
   /**
    * Send a user turn. `source` labels who it came from so the transcript can
    * tell a message typed in the console from one relayed out of a Switch room.
+   *
+   * `room` accompanies a room message: `text` stays the Switch envelope the
+   * agent needs, and this is what the transcript shows in its place.
    */
-  sendTurn(text: string, source: TranscriptUserSource): Promise<{ turnId: string }>;
+  sendTurn(
+    text: string,
+    source: TranscriptUserSource,
+    room?: TranscriptRoomOrigin & { body: string }
+  ): Promise<{ turnId: string }>;
   /**
    * Whether a turn is in flight. A caller that has a choice about when to
    * speak — the room, which can hold a message — asks first, because a turn
@@ -59,7 +68,13 @@ export interface ProviderSessionRuntime {
   isTurnRunning(): boolean;
   /** Stop the running turn, if there is one. */
   interrupt(): Promise<void>;
-  respondToRequest(requestId: string, decision: ApprovalDecision): Promise<void>;
+  /** `decidedBy` is recorded on the request so the card says where the answer
+   *  came from — the console's own buttons, or a reply in the room. */
+  respondToRequest(
+    requestId: string,
+    decision: ApprovalDecision,
+    decidedBy: TranscriptDecidedBy
+  ): Promise<void>;
   respondToUserInput(requestId: string, answers: UserInputAnswers): Promise<void>;
   /** Record a line the app itself has to say, not the agent — a control command
    *  that only half applies, a degraded mode. */

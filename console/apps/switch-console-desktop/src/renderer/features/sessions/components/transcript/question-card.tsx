@@ -1,4 +1,4 @@
-import { MessageCircleQuestionMark } from 'lucide-react';
+import { Check, MessageCircleQuestionMark } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import type { SessionTranscriptStore } from '@renderer/features/sessions/stores/session-transcript-store';
@@ -46,6 +46,44 @@ export const QuestionCard = observer(function QuestionCard({
     }
   };
 
+  // Once answered the inputs go: a radio group still offering four options
+  // beside the one that was chosen reads as a question still open.
+  if (resolved) {
+    return (
+      <div
+        role="group"
+        aria-label="Question from the agent"
+        className="rounded-lg border border-border bg-background-1 px-3 py-2.5"
+      >
+        <div className="flex items-start gap-2">
+          <Check className="mt-0.5 size-4 shrink-0 text-foreground-success" />
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            {entry.questions.map((question) => {
+              const answered = entry.answers?.[question.id];
+              return (
+                <div key={question.id} className="min-w-0">
+                  {question.header && (
+                    <p className="text-tiny font-medium tracking-wide text-foreground-muted uppercase">
+                      {question.header}
+                    </p>
+                  )}
+                  <p className="mt-0.5 text-sm text-foreground-muted">{question.question}</p>
+                  <p className="mt-1 text-xs text-foreground">
+                    {answered === undefined
+                      ? 'Answered'
+                      : Array.isArray(answered)
+                        ? answered.join(', ')
+                        : answered}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       role="group"
@@ -57,9 +95,8 @@ export const QuestionCard = observer(function QuestionCard({
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           {entry.questions.map((question) => {
             const draft = draftFor(question.id);
-            const answered = resolved ? entry.answers?.[question.id] : undefined;
             return (
-              <fieldset key={question.id} className="min-w-0" disabled={resolved || submitting}>
+              <fieldset key={question.id} className="min-w-0" disabled={submitting}>
                 {question.header && (
                   <legend className="text-tiny font-medium tracking-wide text-foreground-muted uppercase">
                     {question.header}
@@ -129,26 +166,19 @@ export const QuestionCard = observer(function QuestionCard({
                     onChange={(event) => setDraft(question.id, { custom: event.target.value })}
                   />
                 )}
-                {resolved && answered !== undefined && (
-                  <p className="mt-1.5 text-tiny text-foreground-passive">
-                    Answered: {Array.isArray(answered) ? answered.join(', ') : answered}
-                  </p>
-                )}
               </fieldset>
             );
           })}
-          {!resolved && (
-            <div>
-              <Button
-                size="xs"
-                disabled={!answers || submitting}
-                onClick={() => void submit()}
-                aria-label="Submit answers"
-              >
-                Submit
-              </Button>
-            </div>
-          )}
+          <div>
+            <Button
+              size="xs"
+              disabled={!answers || submitting}
+              onClick={() => void submit()}
+              aria-label="Submit answers"
+            >
+              Submit
+            </Button>
+          </div>
         </div>
       </div>
     </div>

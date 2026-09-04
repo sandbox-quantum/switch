@@ -1,6 +1,6 @@
 import type { ProviderSessionRuntime } from '@main/core/agent-runtime/types';
 import { log } from '@main/lib/logger';
-import type { InjectionSink, InjectionTarget } from './injection-sink';
+import type { InjectedRoomMessage, InjectionSink, InjectionTarget } from './injection-sink';
 import type { PromptInjector } from './room-connection';
 import type { SessionControlAction } from './session-control';
 
@@ -18,7 +18,9 @@ import type { SessionControlAction } from './session-control';
  * it arrived as an aside to a turn that was wrapping up: the agent answered it
  * in its closing text and never posted the answer to the room, so the room saw
  * nothing at all. So `isBusy` holds a room message until the turn ends, and
- * `RoomConnection` comes back for it. `acquire` stays unconditional: a control
+ * `RoomConnection` comes back for it — up to the cap it enforces, past which a
+ * message steered into the running turn beats one nobody ever answers.
+ * `acquire` stays unconditional: a control
  * command such as `!interrupt` is needed exactly while the session is busy.
  *
  * `sendTurn` is asynchronous while `InjectionTarget.write` is not — deliberately
@@ -57,9 +59,12 @@ export class ProviderInjectionSink implements InjectionSink, InjectionTarget {
     return false;
   }
 
-  write(data: string): void {
+  write(data: string, meta?: InjectedRoomMessage): void {
     if (!data) return;
-    void this.runtime.sendTurn(data, 'room').catch((error: unknown) => {
+    // `data` is what the agent is sent — the Switch envelope, ids and all. The
+    // metadata rides alongside so the transcript can show the person who wrote
+    // it and what they wrote, rather than the envelope built around it.
+    void this.runtime.sendTurn(data, 'room', meta).catch((error: unknown) => {
       log.error('ProviderInjectionSink: the session refused a room message', {
         event: 'provider_room_turn_refused',
         sessionId: this.sessionId,

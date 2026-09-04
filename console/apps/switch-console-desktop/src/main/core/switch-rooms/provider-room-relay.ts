@@ -284,7 +284,7 @@ class ProviderRoomRelay {
     parsed: Exclude<ParsedAnswer, { kind: 'unparsed' }>
   ): Promise<void> {
     if (parsed.kind === 'approval') {
-      await binding.runtime.respondToRequest(pending.requestId, parsed.decision);
+      await binding.runtime.respondToRequest(pending.requestId, parsed.decision, 'room');
       await this.post(binding, room, `✅ ${parsed.label}`);
       return;
     }

@@ -18,6 +18,7 @@ import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import { agentRuntimeKind } from '@shared/core/agents/agent-provider-config';
+import type { TranscriptRoomOrigin } from '@shared/core/sessions/session-transcript';
 import {
   listAutoSessionAgentIds,
   listAutoSessionSubagents,
@@ -29,7 +30,7 @@ import {
   readSwitchAgentCredentialsFromSettings,
   type SwitchAgentCredentials,
 } from './switch-credentials';
-import { formatEventForInjection } from './switch-event-format';
+import { formatEventForInjection, type MessagePayload } from './switch-event-format';
 import { type SpawnTurn, switchNotificationPoller } from './switch-notification-poller';
 import { postRoomMessage } from './switch-room-client';
 import { switchRoomService } from './switch-room-service';
@@ -45,6 +46,17 @@ function spawnTurnOf(event: AgentBridgeEvent): SpawnTurn | null {
   if (event.type !== 'message') return null;
   const msg = event.payload as { thread_id?: string | null; message_id?: string | null };
   return { threadId: msg.thread_id ?? null, anchorId: msg.message_id ?? null };
+}
+
+/**
+ * The message a spawn is for, taken apart for the session's transcript.
+ *
+ * The line the session is sent is the same Switch envelope an injected message
+ * carries, ids and all; this is what a person is shown in its place. Only a
+ * message has one — a command or a join is the app talking, not a person.
+ */
+function triggerMessageOf(event: AgentBridgeEvent): MessagePayload | null {
+  return event.type === 'message' ? (event.payload as MessagePayload) : null;
 }
 
 const SPAWN_MAX_ATTEMPTS = 3;
@@ -626,7 +638,13 @@ class AutoSessionWatcher {
     const timer = setTimeout(() => watcher.inFlight.delete(roomId), INFLIGHT_TTL_MS);
     watcher.inFlight.set(roomId, timer);
 
-    void this.spawnForRoom(watcher, roomId, triggerLine, requesterNameOf(event)).catch((error) => {
+    void this.spawnForRoom(
+      watcher,
+      roomId,
+      triggerLine,
+      triggerMessageOf(event),
+      requesterNameOf(event)
+    ).catch((error) => {
       log.warn('AutoSessionWatcher: spawn failed', {
         localAgentId: watcher.localAgentId,
         roomId,
@@ -644,7 +662,11 @@ class AutoSessionWatcher {
    * session exists and is in the room, but the thing it exists to answer never
    * reached it.
    */
-  private async deliverTrigger(sessionId: string, triggerLine: string): Promise<void> {
+  private async deliverTrigger(
+    sessionId: string,
+    triggerLine: string,
+    origin: (TranscriptRoomOrigin & { body: string }) | null
+  ): Promise<void> {
     const runtime = sessionRuntimeManager.getAgent(sessionId);
     if (!isProviderRuntime(runtime)) {
       log.error('AutoSessionWatcher: no provider runtime to hand the trigger to', {
@@ -653,7 +675,11 @@ class AutoSessionWatcher {
       });
       return;
     }
-    await runtime.sendTurn(triggerLine, 'room').catch((error: unknown) => {
+    // Same shape an injected message arrives in: the envelope is what the agent
+    // is sent, and the sender, the room and the body are what the transcript
+    // shows in its place. Without it the session's very first entry — the one
+    // it exists to answer — is the only one that reads as raw protocol.
+    await runtime.sendTurn(triggerLine, 'room', origin ?? undefined).catch((error: unknown) => {
       log.error('AutoSessionWatcher: the spawned session refused its trigger', {
         event: 'auto_session_trigger_refused',
         sessionId,
@@ -666,6 +692,7 @@ class AutoSessionWatcher {
     watcher: AgentWatcher,
     roomId: string,
     triggerLine: string | null,
+    triggerMessage: MessagePayload | null,
     requesterName: string | null
   ): Promise<void> {
     // Bypass permissions only if this agent is configured to. Auto-started
@@ -691,7 +718,10 @@ class AutoSessionWatcher {
         // its connection already claiming the room, which is what puts it under
         // the room in the sidebar from the moment it appears rather than after
         // the agent gets round to connect_to_room.
-        switchNotificationPoller.noteIntendedRoom(sessionId, roomId, null);
+        // With the name we already looked up for the title: it is what the room
+        // is called everywhere the session mentions it, and nothing else tells
+        // the connection — the name is not on the wire.
+        switchNotificationPoller.noteIntendedRoom(sessionId, roomId, roomName);
         const result = await sessionService.createSession({
           id: sessionId,
           agentId: watcher.localAgentId,
@@ -738,7 +768,17 @@ class AutoSessionWatcher {
             });
           }
           if (providerBacked && triggerLine !== null) {
-            await this.deliverTrigger(result.data.session.id, triggerLine);
+            await this.deliverTrigger(
+              result.data.session.id,
+              triggerLine,
+              triggerMessage && {
+                sender: triggerMessage.sender_name,
+                body: triggerMessage.body,
+                roomId,
+                roomName,
+                messageId: triggerMessage.message_id,
+              }
+            );
           }
           return;
         }

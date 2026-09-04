@@ -420,6 +420,121 @@ describe('RoomConnection', () => {
     command.conn.stop();
   });
 
+  /**
+   * The written text stays the Switch envelope — the agent answers with the ids
+   * in it — so a target that shows a person the message needs the parts of it
+   * separately. A terminal ignores the second argument entirely.
+   */
+  it('hands the target who said what, alongside the envelope it writes', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn } = connect({ acquire: () => target }, [messageEvent(true)]);
+
+    await flush();
+
+    const [text, meta] = vi.mocked(target.write).mock.calls[0] as [string, unknown];
+    expect(text).toContain('addressed you');
+    expect(meta).toEqual({
+      sender: 'Someone',
+      body: 'hello agent',
+      roomId: 'room-1',
+      roomName: 'Room One',
+      messageId: 'msg-1',
+    });
+    conn.stop();
+  });
+
+  /**
+   * The room this connection holds is the server's to set, and it is briefly
+   * null between the stream opening and the claim landing — which is exactly
+   * when a spawned session's first message goes out. Read back from the
+   * connection, that message reached the transcript with no room at all.
+   */
+  it('names the room the message came from, not the one the connection holds', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const fetchMock = makeFetch([messageEvent(true)]);
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: null,
+      roomName: null,
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => target },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      spawnTurn: null,
+      log: silentLog,
+    });
+    conn.start();
+
+    await flush();
+
+    expect(vi.mocked(target.write).mock.calls[0]?.[1]).toMatchObject({
+      roomId: 'room-1',
+      roomName: null,
+      sender: 'Someone',
+    });
+    conn.stop();
+  });
+
+  it('carries no sender for a line the app wrote rather than a person', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn } = connect({ acquire: () => target }, [
+      {
+        type: 'task_delegate',
+        room_id: 'room-1',
+        payload: { task_id: 't1', summary: 'do a thing', description: 'the thing' },
+      } as AgentBridgeEvent,
+    ]);
+
+    await flush();
+
+    expect(vi.mocked(target.write).mock.calls[0]?.[1]).toBeUndefined();
+    conn.stop();
+  });
+
+  /**
+   * The hold is right until it isn't: a turn runs for as long as the agent keeps
+   * working, and a message nobody ever sees is worse than one answered as an
+   * aside. Past the cap it goes in anyway, and the session is told that is what
+   * happened so a mid-turn interruption is not mistaken for a fresh request.
+   */
+  it('delivers a room message held past the cap into the running turn, and says so', async () => {
+    vi.useFakeTimers();
+    try {
+      const control = vi.fn(async () => true);
+      const target: InjectionTarget = { write: vi.fn(), control };
+      const { conn } = connect({ acquire: () => target, isBusy: () => true }, [messageEvent(true)]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(target.write).not.toHaveBeenCalled();
+
+      // Still held four minutes in — the ordinary turn finishes first.
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(target.write).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(60_000 + 500);
+
+      expect(vi.mocked(target.write).mock.calls[0]?.[0]).toContain('addressed you');
+      expect(control).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'notice',
+          text: expect.stringContaining('delivered into it'),
+        })
+      );
+      expect(silentLog.warn).toHaveBeenCalledWith(
+        'RoomConnection: delivering a held room message into the running turn',
+        expect.objectContaining({ event: 'switch_message_held_too_long' })
+      );
+      conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('delivers the message once the session has a terminal to type into', async () => {
     // The bug this guards (CHOO-2173): a session auto-started to answer a room
     // message opens this connection before its terminal exists, so the very

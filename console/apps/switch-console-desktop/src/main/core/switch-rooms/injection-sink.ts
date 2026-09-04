@@ -2,12 +2,32 @@ import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
 import type { SessionControlAction } from './session-control';
 
 /**
+ * Who said what, and where, for a write that carries an addressed room message.
+ *
+ * The written text stays the full Switch envelope — it carries the ids the
+ * agent answers with — so this is the same message taken apart, for a target
+ * that can show a person the sender and the body rather than the envelope.
+ */
+export interface InjectedRoomMessage {
+  sender: string;
+  body: string;
+  roomId: string;
+  roomName: string | null;
+  messageId: string;
+}
+
+/**
  * A live destination for injected prompt keystrokes. Locally this is the
  * agent's PTY (write goes straight to node-pty); on a remote VM the sidecar
  * implements this over `tmux send-keys` into the agent's tmux pane.
  */
 export interface InjectionTarget {
-  write(data: string): void;
+  /**
+   * `meta` accompanies an addressed room message. A terminal has nowhere to put
+   * it and ignores it; a target with a transcript records it so the entry reads
+   * as "who, in which room" instead of as the envelope.
+   */
+  write(data: string, meta?: InjectedRoomMessage): void;
   /**
    * Run a session-control step the target knows how to run itself, returning
    * whether it did. Only a target with a real runtime behind it implements

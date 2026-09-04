@@ -3,9 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const resolveSessionAgent = vi.hoisted(() => vi.fn());
 const loadSessionWithAgent = vi.hoisted(() => vi.fn());
 const mapSessionRowToSession = vi.hoisted(() => vi.fn(() => ({ id: 'session-1' })));
-const update = vi.hoisted(() =>
-  vi.fn(() => ({ set: () => ({ where: async () => undefined }) }))
-);
+const update = vi.hoisted(() => vi.fn(() => ({ set: () => ({ where: async () => undefined }) })));
 
 vi.mock('@main/db/client', () => ({ db: { update } }));
 vi.mock('@main/db/schema', () => ({ sessions: { id: 'id' } }));

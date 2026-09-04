@@ -170,6 +170,39 @@ describe('ProviderTranscript', () => {
       });
     });
 
+    /**
+     * The provider's own resolution says nothing about who answered, and it
+     * rebuilds the entry from the one held here — so the answerer is recorded
+     * before the send and has to survive the echo that follows it.
+     */
+    it('keeps who answered across the provider’s own resolution', () => {
+      const transcript = new ProviderTranscript('session-1');
+      transcript.apply(
+        event({
+          type: 'request.opened',
+          turnId: 't1',
+          requestId: 'r1',
+          requestType: 'command_execution_approval',
+          title: 'rm -rf build',
+          options: [{ decision: 'accept', label: 'Allow once' }],
+        })
+      );
+      transcript.noteDecidedBy('r1', 'room');
+      transcript.apply(event({ type: 'request.resolved', requestId: 'r1', decision: 'accept' }));
+
+      expect(transcript.snapshot().entries[0]).toMatchObject({
+        kind: 'request',
+        state: 'resolved',
+        decision: 'accept',
+        decidedBy: 'room',
+      });
+    });
+
+    it('has nobody to attribute a request it never saw opened to', () => {
+      const transcript = new ProviderTranscript('session-1');
+      expect(transcript.noteDecidedBy('ghost', 'console')).toEqual([]);
+    });
+
     it('ignores a resolution for a request it never saw opened', () => {
       const transcript = new ProviderTranscript('session-1');
       expect(
@@ -217,6 +250,29 @@ describe('ProviderTranscript', () => {
       turnId: 't1',
       text: 'do the thing',
       source: 'room',
+    });
+  });
+
+  /**
+   * A room message is sent to the agent as the Switch envelope, ids and all,
+   * and shown to a person as who said what. Both are kept: the text is what
+   * went over, the rest is what is drawn.
+   */
+  it('keeps the envelope it sent and the message a person wrote', () => {
+    const transcript = new ProviderTranscript('session-1');
+    transcript.recordUserTurn({
+      turnId: 't1',
+      text: '[Switch] Someone addressed you in room room-1 (message_id $abc): @agent hello',
+      source: 'room',
+      room: { sender: 'Someone', roomId: 'room-1', roomName: 'Room One', messageId: '$abc' },
+      displayText: '@agent hello',
+    });
+
+    expect(transcript.snapshot().entries[0]).toMatchObject({
+      kind: 'user',
+      text: expect.stringContaining('message_id $abc'),
+      displayText: '@agent hello',
+      room: { sender: 'Someone', roomName: 'Room One' },
     });
   });
 

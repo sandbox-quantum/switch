@@ -145,7 +145,7 @@ describe.skipIf(!RUN)('ProviderAgentRuntime against a real OpenCode', () => {
         true
       );
 
-      await runtime.respondToRequest(requestId, 'accept');
+      await runtime.respondToRequest(requestId, 'accept', 'console');
       await waitFor(() => resolvedRequest(runtime, requestId), 5 * 60_000);
       await waitFor(() => turnFinished(runtime), 5 * 60_000);
 

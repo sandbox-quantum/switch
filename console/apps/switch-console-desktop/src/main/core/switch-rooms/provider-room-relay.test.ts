@@ -192,7 +192,7 @@ describe('ProviderRoomRelay', () => {
 
     expect(providerRoomRelay.consume('session-1', message('1'))).toBe(true);
     await vi.waitFor(() => expect(runtime.respondToRequest).toHaveBeenCalled());
-    expect(runtime.respondToRequest).toHaveBeenCalledWith('r1', 'accept');
+    expect(runtime.respondToRequest).toHaveBeenCalledWith('r1', 'accept', 'room');
     await vi.waitFor(() => expect(postedBodies()).toContain('✅ Allow once'));
   });
 
@@ -227,7 +227,9 @@ describe('ProviderRoomRelay', () => {
     expect(runtime.respondToRequest).not.toHaveBeenCalled();
 
     expect(providerRoomRelay.consume('session-1', message('deny'))).toBe(true);
-    await vi.waitFor(() => expect(runtime.respondToRequest).toHaveBeenCalledWith('r1', 'decline'));
+    await vi.waitFor(() =>
+      expect(runtime.respondToRequest).toHaveBeenCalledWith('r1', 'decline', 'room')
+    );
   });
 
   it('leaves an ordinary message alone when nothing is pending', () => {

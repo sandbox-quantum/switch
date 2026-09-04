@@ -1,7 +1,9 @@
 import type { ProviderRuntimeEvent } from '@switch-console/agent-providers';
 import type {
   SessionTranscript,
+  TranscriptDecidedBy,
   TranscriptEntry,
+  TranscriptRoomOrigin,
   TranscriptSessionState,
   TranscriptTurn,
   TranscriptUpdate,
@@ -74,6 +76,10 @@ export class ProviderTranscript {
     turnId: string;
     text: string;
     source: TranscriptUserSource;
+    /** The room message this turn was built from, when it came from a room.
+     *  `text` stays the envelope the agent is sent; this is what is shown. */
+    room?: TranscriptRoomOrigin;
+    displayText?: string;
   }): TranscriptUpdate[] {
     this.userMessages += 1;
     return this.put({
@@ -81,9 +87,24 @@ export class ProviderTranscript {
       id: `user:${params.turnId}:${this.userMessages}`,
       turnId: params.turnId,
       text: params.text,
+      ...(params.room ? { room: params.room } : {}),
+      ...(params.displayText !== undefined ? { displayText: params.displayText } : {}),
       source: params.source,
       createdAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Record who is answering an open request, before the answer is sent.
+   *
+   * Before rather than after, because the provider's own `request.resolved`
+   * carries no such thing and this entry is rebuilt from the one held here when
+   * it lands — recording it afterwards would race the echo and lose to it.
+   */
+  noteDecidedBy(requestId: string, decidedBy: TranscriptDecidedBy): TranscriptUpdate[] {
+    const existing = this.entryIndex.get(requestId);
+    if (existing?.kind !== 'request') return [];
+    return this.put({ ...existing, decidedBy });
   }
 
   /** A line the app itself has to say — a control command, a degraded mode. */
