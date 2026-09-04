@@ -1,3 +1,4 @@
+import { promises as fs } from 'node:fs';
 import { loadEnv, shortId, type HarnessEnv } from './env.ts';
 import {
   isValidMattermostUsername,
@@ -121,6 +122,9 @@ export async function setupHarness(
   env: HarnessEnv,
   options: SetupOptions = {}
 ): Promise<Harness> {
+  const reused = await readManifest(env.manifestPath);
+  if (reused) return reuseHarness(env, reused);
+
   const runId = shortId();
   const agentName = agentNameFor(runId, options.prefix);
 
@@ -190,6 +194,74 @@ export async function setupHarness(
       apiEndpoint: env.switchApiUrl,
     });
   }
+
+  await waitForBridgeReady(harness);
+  await writeManifest(env.manifestPath, harness);
+  return harness;
+}
+
+/**
+ * What a setup made, written down so another process can act on it.
+ *
+ * A Switch Console session can only be started for an agent that already exists
+ * in the console's database, and the console reads that database at launch. So
+ * a run that needs a live provider session is necessarily two processes: one
+ * that registers the agent and creates the room, then the console, then the
+ * scenarios. Everything here is what the second process cannot re-derive —
+ * above all the agent's API key, which registration returns exactly once.
+ */
+export interface HarnessManifest {
+  runId: string;
+  agent: RegisteredAgent;
+  roomId: string;
+  channelId: string;
+}
+
+async function writeManifest(path: string | null, harness: Harness): Promise<void> {
+  if (!path) return;
+  const manifest: HarnessManifest = {
+    runId: harness.runId,
+    agent: harness.agent,
+    roomId: harness.room.id,
+    channelId: harness.channel.id,
+  };
+  await fs.writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+}
+
+async function readManifest(path: string | null): Promise<HarnessManifest | null> {
+  if (!path) return null;
+  try {
+    return JSON.parse(await fs.readFile(path, 'utf8')) as HarnessManifest;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rebuild a harness around an agent and room a previous process created. The
+ * bridge-readiness probe still runs: this process has proved nothing about the
+ * bot's websocket, and reusing an agent is not evidence its socket is up now.
+ */
+async function reuseHarness(env: HarnessEnv, manifest: HarnessManifest): Promise<Harness> {
+  const switchClient = new SwitchClient({
+    apiUrl: env.switchApiUrl,
+    registrationToken: env.agentRegistrationToken,
+    gatewayAdminEmail: env.gatewayAdminEmail,
+    gatewayAdminPassword: env.gatewayAdminPassword,
+  });
+  const mattermost = new MattermostClient({ url: env.mattermostUrl, token: env.mattermostToken });
+
+  const harness: Harness = {
+    env,
+    switch: switchClient,
+    mattermost,
+    agent: manifest.agent,
+    bot: await mattermost.waitForBotUser(manifest.agent.name, 30_000),
+    channel: await mattermost.getChannel(manifest.channelId),
+    room: await switchClient.getRoom(manifest.roomId),
+    human: await mattermost.me(),
+    runId: manifest.runId,
+  };
 
   await waitForBridgeReady(harness);
   return harness;
@@ -287,6 +359,12 @@ export async function teardownHarness(
         `channel '${harness.channel.name}' (${harness.channel.id}) in place.`
     );
     return;
+  }
+
+  // Before anything is deleted: a manifest that outlives its agent sends the
+  // next run at a room that is gone.
+  if (harness.env.manifestPath) {
+    await fs.rm(harness.env.manifestPath, { force: true }).catch(() => undefined);
   }
 
   if (harness.env.agentRepoDir) {

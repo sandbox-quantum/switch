@@ -57,6 +57,32 @@ export function isNoSessionNotice(post: MattermostPost): boolean {
 }
 
 /**
+ * Switch's own running commentary, posted **as the agent's bot** while a session
+ * works: the activity ticker, the "needs your input" ping, the acknowledgement
+ * of a control command.
+ *
+ * They have to be told apart from agent output for the same reason as the
+ * no-session notices — the author is identical. `interrupt` is where it bites:
+ * its predicate is "a post containing a digit", and `⚙️ Working on it… · 0s`
+ * satisfies that without the agent having started anything, so the scenario
+ * passed on a session that was in fact blocked on an approval.
+ */
+const RUNTIME_STATUS_MARKERS = [
+  '_working on it…_',
+  '✓ done ·',
+  '✓ input received',
+  'needs your input.',
+  'starting a session to handle this',
+  'interrupted my current turn',
+];
+
+/** Whether a post is Switch narrating the session rather than the agent speaking. */
+export function isRuntimeStatusPost(post: MattermostPost): boolean {
+  const text = post.message.toLowerCase();
+  return RUNTIME_STATUS_MARKERS.some((marker) => text.includes(marker));
+}
+
+/**
  * Turn a no-session notice into the failure it is. Every scenario funnels its
  * "the agent said nothing useful" path through here so the report names the
  * cause — no session — instead of a bare timeout.
@@ -130,9 +156,11 @@ async function expectBotPost(
   const { match, transcript } = await harness.mattermost.waitForPost({
     channelId: harness.channel.id,
     fromUserId: harness.bot.id,
-    // A no-session notice is never a match, however permissive the caller's
-    // predicate — it is Switch talking, not the agent.
-    predicate: (post) => !isNoSessionNotice(post) && params.predicate(post),
+    // Neither a no-session notice nor Switch's activity commentary is ever a
+    // match, however permissive the caller's predicate — both are Switch
+    // talking on the bot's account, not the agent.
+    predicate: (post) =>
+      !isNoSessionNotice(post) && !isRuntimeStatusPost(post) && params.predicate(post),
     sinceMs: params.since,
     deadlineMs: params.deadlineMs ?? REPLY_DEADLINE_MS,
   });

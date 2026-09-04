@@ -154,7 +154,7 @@ describe('RoomConnection', () => {
   });
 
   function connect(
-    sink: { acquire: () => InjectionTarget | null },
+    sink: { acquire: () => InjectionTarget | null; isBusy?: () => boolean },
     events: AgentBridgeEvent[],
     isHumanTyping: () => boolean = () => false,
     spawnTurn: { threadId: string | null; anchorId: string | null } | null = null
@@ -392,6 +392,32 @@ describe('RoomConnection', () => {
       expect.objectContaining({ queued: 1 })
     );
     conn.stop();
+  });
+
+  /**
+   * A provider session says it is busy while a turn runs, because a turn sent
+   * then is steered into the running one instead of starting its own. The gate
+   * is on messages only: `!interrupt` is executed through the acquired target
+   * and is wanted precisely while the session is busy — gating `acquire` on it
+   * instead dropped every interrupt with "no live target".
+   */
+  it('holds a room message while the session is mid-turn but still runs a command', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const busy = { acquire: () => target, isBusy: () => true };
+
+    const message = connect(busy, [messageEvent(true)]);
+    await flush();
+    expect(target.write).not.toHaveBeenCalled();
+    expect(silentLog.debug).toHaveBeenCalledWith(
+      'RoomConnection: injection deferred — the session is mid-turn',
+      expect.objectContaining({ queued: 1 })
+    );
+    message.conn.stop();
+
+    const command = connect(busy, [commandEvent('interrupt')]);
+    await flush();
+    expect(target.write).toHaveBeenCalledWith('\x1b');
+    command.conn.stop();
   });
 
   it('delivers the message once the session has a terminal to type into', async () => {

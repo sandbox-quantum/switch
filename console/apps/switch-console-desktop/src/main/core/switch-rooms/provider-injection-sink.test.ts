@@ -14,6 +14,7 @@ function makeRuntime(overrides: Partial<ProviderSessionRuntime> = {}): ProviderS
     interrupt: vi.fn(async () => {}),
     respondToRequest: vi.fn(async () => {}),
     respondToUserInput: vi.fn(async () => {}),
+    isTurnRunning: vi.fn(() => false),
     notice: vi.fn(),
     getTranscript: vi.fn(),
     subscribe: vi.fn(() => () => {}),
@@ -28,12 +29,36 @@ describe('ProviderInjectionSink', () => {
 
   /**
    * The PTY sinks defer while a terminal boots and while its opening prompt
-   * goes in. A provider session has neither, so deferring would only delay a
-   * message that could have been delivered.
+   * goes in. A provider session has neither, and `acquire` must stay
+   * unconditional besides: `!interrupt` is executed through the acquired
+   * target, and it is wanted precisely while a turn is running.
    */
-  it('is always ready — there is no terminal to wait for', () => {
-    const sink = new ProviderInjectionSink('session-1', makeRuntime(), vi.fn());
-    expect(sink.acquire()).toBe(sink);
+  it('is always acquirable, running turn or not', () => {
+    const idle = new ProviderInjectionSink('session-1', makeRuntime(), vi.fn());
+    expect(idle.acquire()).toBe(idle);
+    const busy = new ProviderInjectionSink(
+      'session-1',
+      makeRuntime({ isTurnRunning: () => true }),
+      vi.fn()
+    );
+    expect(busy.acquire()).toBe(busy);
+  });
+
+  /**
+   * A turn sent mid-turn is steered into the running one rather than starting
+   * its own, and a room message is a new request rather than a correction of
+   * what the agent is already doing. Steered, it was answered as an aside to a
+   * turn that was ending and never posted to the room at all.
+   */
+  it('reports busy while a turn is running so the message waits for the next one', () => {
+    expect(new ProviderInjectionSink('session-1', makeRuntime(), vi.fn()).isBusy()).toBe(false);
+    expect(
+      new ProviderInjectionSink(
+        'session-1',
+        makeRuntime({ isTurnRunning: () => true }),
+        vi.fn()
+      ).isBusy()
+    ).toBe(true);
   });
 
   it('delivers a write as a room-sourced turn', () => {

@@ -17,6 +17,13 @@ export interface HarnessEnv {
   mattermostTeam: string;
   /** Working directory the console session under test runs OpenCode from. */
   agentRepoDir: string | null;
+  /**
+   * Where a setup records the agent and room it created, so a later process can
+   * reuse them instead of registering its own. Needed because a Switch Console
+   * session can only be pointed at an agent that already exists: seed first,
+   * start the console, then run the scenarios against the same agent.
+   */
+  manifestPath: string | null;
   /** Leave the channel and agent behind after the run (for debugging). */
   keepArtifacts: boolean;
 }
@@ -105,6 +112,7 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
     mattermostToken: required.MATTERMOST_TOKEN as string,
     mattermostTeam: required.MATTERMOST_TEAM as string,
     agentRepoDir: get('SWITCH_E2E_AGENT_DIR') ?? null,
+    manifestPath: get('SWITCH_E2E_MANIFEST') ?? null,
     keepArtifacts: (get('SWITCH_E2E_KEEP') ?? '') === '1',
   };
 }

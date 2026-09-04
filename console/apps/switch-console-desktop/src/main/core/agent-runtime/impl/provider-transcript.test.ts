@@ -220,6 +220,31 @@ describe('ProviderTranscript', () => {
     });
   });
 
+  /**
+   * A message steered into a running turn belongs to that turn, so keying the
+   * entry by turn id made the second overwrite the first — the transcript
+   * showed the interjection and lost the request it was answering.
+   */
+  it('keeps both messages when one is steered into a running turn', () => {
+    const transcript = new ProviderTranscript('session-1');
+    transcript.recordUserTurn({ turnId: 't1', text: 'do the thing', source: 'room' });
+    transcript.recordUserTurn({ turnId: 't1', text: 'and also this', source: 'room' });
+
+    const users = transcript.snapshot().entries.filter((entry) => entry.kind === 'user');
+    expect(users.map((entry) => entry.text)).toEqual(['do the thing', 'and also this']);
+  });
+
+  it('reports a turn as running only while it is', () => {
+    const transcript = new ProviderTranscript('session-1');
+    expect(transcript.hasRunningTurn()).toBe(false);
+
+    transcript.apply(event({ type: 'turn.started', turnId: 't1' }));
+    expect(transcript.hasRunningTurn()).toBe(true);
+
+    transcript.apply(event({ type: 'turn.completed', turnId: 't1', outcome: 'completed' }));
+    expect(transcript.hasRunningTurn()).toBe(false);
+  });
+
   it('turns a runtime error into both an error state and a notice', () => {
     const transcript = new ProviderTranscript('session-1');
     const updates = transcript.apply(event({ type: 'runtime.error', message: 'server died' }));

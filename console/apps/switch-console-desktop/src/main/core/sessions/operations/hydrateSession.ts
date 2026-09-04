@@ -35,13 +35,21 @@ export async function hydrateSession(sessionId: string): Promise<void> {
   const config = row.config ?? {};
   const session = mapSessionRowToSession(row, loaded.providerId, loaded.name);
 
-  // A provider session has no terminal to open, so hydrating one is either its
-  // first start or nothing at all. Re-running `start` on a live session would
-  // ask the adapter to create a second session under the same id, which it
-  // refuses — correctly, but there is no reason to ask.
+  // A provider session has no terminal to open and no pane to attach to, so it
+  // never goes through the attachment pool: hydrating one is starting it.
+  //
+  // Not only on a first spawn. The adapter's session lives in this process, so
+  // a session restored after the app restarted has to be started again — its
+  // provider is gone, whatever the row remembers. Starting one that is already
+  // up is what must not happen, and the runtime's own guard is what stops it,
+  // rather than a proxy for it here that reads a restart as "already running".
   if (isProviderRuntime(agent)) {
-    if (!isFirstSpawn) return;
-    await agent.start(session, undefined, false, config.initialPrompt);
+    await agent.start(
+      session,
+      undefined,
+      !isFirstSpawn,
+      isFirstSpawn ? config.initialPrompt : undefined
+    );
     return;
   }
 

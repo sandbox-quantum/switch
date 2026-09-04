@@ -25,6 +25,15 @@ export interface InjectionTarget {
  */
 export interface InjectionSink {
   acquire(): InjectionTarget | null;
+  /**
+   * Whether the session is mid-turn and a room message should wait for the next
+   * one. Separate from `acquire` because the two answer different questions:
+   * `acquire` is "can this session be driven at all", which a control command
+   * such as `!interrupt` needs to be true *precisely while* the session is
+   * busy. Absent means never busy — a terminal takes what it is typed whenever
+   * it is live.
+   */
+  isBusy?(): boolean;
 }
 
 /** Injects into a local PTY tracked by the in-process registry. */

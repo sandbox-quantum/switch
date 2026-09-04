@@ -160,7 +160,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       cwd: input.cwd,
       env: input.env,
       config: buildConfigFile(input.runtimeMode, input.mcpServers),
-      permission: permissionRulesFor(input.runtimeMode),
+      permission: permissionRulesFor(input.runtimeMode, Object.keys(input.mcpServers)),
       ...(input.resume ? { resumeNativeSessionId: input.resume.nativeSessionId } : {}),
       ...(model ? { model } : {}),
     });
@@ -588,14 +588,19 @@ export class OpencodeAdapter implements ProviderAdapter {
     const turnId = record.activeTurnId;
     if (turnId === undefined) return;
     record.pendingApprovals.set(id, { turnId });
+    const title = permissionTitle(permission, patterns);
+    const command = metadata['command'];
     this.emit(
       record,
       {
         type: 'request.opened',
         requestId: id,
         requestType: toRequestType(permission, record.mcpNames),
-        title: patterns[0] ?? permission,
-        ...(typeof metadata['command'] === 'string' ? { detail: metadata['command'] } : {}),
+        title,
+        // Only when it says something the title does not: for a short `bash`
+        // the pattern *is* the command, and a card showing it twice reads as
+        // two different things to check.
+        ...(typeof command === 'string' && command !== title ? { detail: command } : {}),
         options: APPROVAL_OPTIONS,
       },
       turnId,
@@ -818,6 +823,19 @@ function toolTitle(
     return pick('description') ?? pick('prompt')?.slice(0, 120) ?? stateTitle ?? tool;
   }
   return stateTitle ?? tool;
+}
+
+/**
+ * What the person being asked is shown.
+ *
+ * OpenCode's pattern is the specific thing at stake — the command for `bash`,
+ * the path for `edit` — and is the better title when it is one. A tool with
+ * nothing to narrow reports `*`, which names nothing at all, so the permission
+ * itself is the title there.
+ */
+export function permissionTitle(permission: string, patterns: string[]): string {
+  const pattern = patterns[0];
+  return pattern === undefined || pattern === '' || pattern === '*' ? permission : pattern;
 }
 
 export function toRequestType(permission: string, mcpNames: string[]): RequestType {

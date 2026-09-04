@@ -17,6 +17,7 @@ import {
   createOpencodeAdapter,
   fromPermissionReply,
   type OpencodeAdapter,
+  permissionTitle,
   toolItemType,
   toPermissionReply,
   toQuestionAnswers,
@@ -300,6 +301,9 @@ describe('OpencodeAdapter approvals and questions', () => {
     const opened = await recorder.waitFor('request.opened', () => true, 1_000);
     expect(opened.requestType).toBe('command_execution_approval');
     expect(opened.title).toBe('echo hi');
+    // The pattern already *is* the command; repeating it as the detail put the
+    // same string on the card twice, reading as two things to check.
+    expect(opened.detail).toBeUndefined();
     expect(opened.options.map((option) => option.decision)).toContain('acceptForSession');
 
     await adapter.respondToRequest('switch-session', 'per_1', 'acceptForSession');
@@ -490,15 +494,36 @@ describe('OpencodeAdapter mappings', () => {
   });
 
   it('maps runtime modes onto permissions that never ask in full access', () => {
-    expect(permissionConfigFor('full-access')['*']).toBe('allow');
-    expect(permissionConfigFor('approval-required')['bash']).toBe('ask');
-    expect(permissionConfigFor('approval-required')['edit']).toBe('ask');
-    expect(permissionConfigFor('auto-accept-edits')['edit']).toBe('allow');
-    expect(permissionConfigFor('auto-accept-edits')['bash']).toBe('ask');
-    expect(permissionRulesFor('full-access').every((rule) => rule.action === 'allow')).toBe(true);
+    expect(permissionConfigFor('full-access', [])['*']).toBe('allow');
+    expect(permissionConfigFor('approval-required', [])['bash']).toBe('ask');
+    expect(permissionConfigFor('approval-required', [])['edit']).toBe('ask');
+    expect(permissionConfigFor('auto-accept-edits', [])['edit']).toBe('allow');
+    expect(permissionConfigFor('auto-accept-edits', [])['bash']).toBe('ask');
+    expect(permissionRulesFor('full-access', []).every((rule) => rule.action === 'allow')).toBe(
+      true
+    );
     expect(
-      permissionRulesFor('auto-accept-edits').find((rule) => rule.permission === 'edit')?.action
+      permissionRulesFor('auto-accept-edits', []).find((rule) => rule.permission === 'edit')?.action
     ).toBe('allow');
+  });
+
+  it('never asks about a tool from an MCP server the caller registered', () => {
+    // A session's MCP servers are the ones Switch put there — for Switch
+    // Console, the room protocol. An agent that must ask the room before it may
+    // speak in the room cannot deliver the question either.
+    expect(permissionConfigFor('approval-required', ['switch'])['switch_*']).toBe('allow');
+    expect(
+      permissionRulesFor('approval-required', ['switch']).find(
+        (rule) => rule.permission === 'switch_*'
+      )?.action
+    ).toBe('allow');
+    expect(permissionConfigFor('approval-required', ['switch'])['bash']).toBe('ask');
+  });
+
+  it('titles an approval with the pattern only when the pattern names something', () => {
+    expect(permissionTitle('bash', ['rm -rf /'])).toBe('rm -rf /');
+    expect(permissionTitle('switch_connect_to_room', ['*'])).toBe('switch_connect_to_room');
+    expect(permissionTitle('webfetch', [])).toBe('webfetch');
   });
 
   it('maps MCP specs onto OpenCode server entries', () => {

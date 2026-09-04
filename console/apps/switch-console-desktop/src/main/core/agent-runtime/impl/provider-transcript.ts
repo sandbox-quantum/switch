@@ -38,6 +38,8 @@ export class ProviderTranscript {
   /** Provider item id → the assistant entry deltas for it append to. */
   private readonly assistantEntries = new Map<string, string>();
   private trimmed = false;
+  /** Counts the user messages recorded, so each one gets an id of its own. */
+  private userMessages = 0;
 
   constructor(private readonly sessionId: string) {}
 
@@ -56,15 +58,27 @@ export class ProviderTranscript {
     };
   }
 
-  /** A turn the console or a room started, recorded before the provider sees it. */
+  /** Whether a turn is in flight — the provider is working on something. */
+  hasRunningTurn(): boolean {
+    return this.turns.some((turn) => turn.status === 'running');
+  }
+
+  /**
+   * A turn the console or a room started, recorded before the provider sees it.
+   *
+   * The id counts rather than naming the turn: a message steered into a running
+   * turn belongs to that turn, so keying by turn id made the second message
+   * overwrite the first and the conversation lost what it was answering.
+   */
   recordUserTurn(params: {
     turnId: string;
     text: string;
     source: TranscriptUserSource;
   }): TranscriptUpdate[] {
+    this.userMessages += 1;
     return this.put({
       kind: 'user',
-      id: `user:${params.turnId}`,
+      id: `user:${params.turnId}:${this.userMessages}`,
       turnId: params.turnId,
       text: params.text,
       source: params.source,

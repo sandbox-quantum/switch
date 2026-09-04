@@ -7,11 +7,19 @@ import type { SessionControlAction } from './session-control';
 /**
  * Delivers a room message to a provider-backed session as a turn.
  *
- * The PTY sinks exist because a TUI has to be typed into — hence a readiness
- * gate, a bracketed-paste payload and a submit keystroke. None of that applies
- * here: `sendTurn` is a call, it is accepted or it throws, and a session that
- * is up is always ready for one. So `acquire` never defers, and the "write"
- * is the turn.
+ * The PTY sinks exist because a TUI has to be typed into — hence a bracketed-
+ * paste payload and a submit keystroke. Neither applies here: `sendTurn` is a
+ * call, it is accepted or it throws, and the "write" is the turn.
+ *
+ * A busy gate does apply, for a different reason. A turn sent while one is
+ * running is *steered into* it rather than starting its own, and a room message
+ * is not a correction of what the agent is already doing — it is a new request,
+ * from someone who may not even be the person who made the last one. Steered,
+ * it arrived as an aside to a turn that was wrapping up: the agent answered it
+ * in its closing text and never posted the answer to the room, so the room saw
+ * nothing at all. So `isBusy` holds a room message until the turn ends, and
+ * `RoomConnection` comes back for it. `acquire` stays unconditional: a control
+ * command such as `!interrupt` is needed exactly while the session is busy.
  *
  * `sendTurn` is asynchronous while `InjectionTarget.write` is not — deliberately
  * so, because `RoomConnection` treats a write as delivery and a rejection as a
@@ -30,6 +38,10 @@ export class ProviderInjectionSink implements InjectionSink, InjectionTarget {
 
   acquire(): InjectionTarget | null {
     return this;
+  }
+
+  isBusy(): boolean {
+    return this.runtime.isTurnRunning();
   }
 
   /** The two control steps a runtime can run for itself. */

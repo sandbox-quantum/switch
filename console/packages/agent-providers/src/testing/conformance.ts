@@ -358,7 +358,13 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       if (!options.mcpServers || Object.keys(options.mcpServers).length === 0) {
         throw new Error('mcp-registered needs options.mcpServers or a skip reason');
       }
+      // Deliberately the mode that asks about everything else. A session's MCP
+      // servers are the ones the caller registered for it — for Switch Console
+      // the room protocol — so calling one must not stop for an approval. It
+      // did, and the session then sat waiting for a human to allow the tool it
+      // needed in order to reach that human.
       const { adapter, recorder, sessionId, input } = await setup({
+        runtimeMode: 'approval-required',
         mcpServers: options.mcpServers,
       });
       await adapter.startSession(input);
@@ -367,11 +373,14 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       await adapter.sendTurn({
         sessionId,
         turnId,
-        text: `List the names of the MCP tools available to you from the server(s) named ${names}. Reply with the tool names only, comma separated. Do not call any tool.`,
+        text:
+          `Call the echo tool from the MCP server named ${names} with the text ` +
+          `${TOKEN}, then reply with what it returned.`,
       });
       const done = await recorder.waitFor('turn.completed', (e) => e.turnId === turnId, timeoutMs);
       expect(done.outcome).toBe('completed');
-      expect(recorder.assistantText(turnId).length).toBeGreaterThan(0);
+      expect(recorder.ofType('request.opened')).toEqual([]);
+      expect(recorder.assistantText(turnId)).toContain(TOKEN);
     });
   });
 }

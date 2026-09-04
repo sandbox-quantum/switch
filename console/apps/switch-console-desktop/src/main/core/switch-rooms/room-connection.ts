@@ -1097,6 +1097,25 @@ export class RoomConnection {
       return;
     }
 
+    if (this.sink.isBusy?.()) {
+      // Mid-turn. Only a provider session says so, and only because a turn sent
+      // now joins the running one instead of starting its own — see
+      // ProviderInjectionSink. Come back when it has finished; a control
+      // command does not come through here and is never held.
+      if (!this.noTargetTimer) {
+        this.log.debug('RoomConnection: injection deferred — the session is mid-turn', {
+          roomId: this.roomId,
+          sessionId: this.sessionId,
+          queued: this.queue.length,
+        });
+        this.noTargetTimer = setTimeout(() => {
+          this.noTargetTimer = null;
+          this.tryFlush();
+        }, NO_TARGET_RETRY_MS);
+      }
+      return;
+    }
+
     const target = this.sink.acquire();
     if (!target) {
       // Not ready to be typed into — the terminal is still starting, or the

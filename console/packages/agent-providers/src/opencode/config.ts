@@ -48,20 +48,42 @@ function editAction(mode: RuntimeMode): OpencodePermissionAction {
 }
 
 /**
+ * The permission keys covering the tools of the MCP servers the caller
+ * registered. OpenCode names an MCP permission `<server>_<tool>` and matches a
+ * permission key as a glob, so one entry per server covers its whole surface.
+ *
+ * They are allowed rather than asked about because the session's own
+ * `XDG_CONFIG_HOME` hides the user's MCP registrations: every server a session
+ * has is one the caller put there for it to use. For Switch Console that is the
+ * room protocol, and a session that must ask a human before it may speak in the
+ * room cannot answer the room at all — including to ask.
+ */
+function mcpPermissionKeys(mcpNames: string[]): string[] {
+  return mcpNames.map((name) => `${name}_*`);
+}
+
+/**
  * The `permission` block for the session's own config file. It governs the
  * paths that never consult the per-session ruleset — OpenCode evaluates
  * doom-loop detection and subagent sessions against the agent's config.
  */
-export function permissionConfigFor(mode: RuntimeMode): Record<string, OpencodePermissionAction> {
+export function permissionConfigFor(
+  mode: RuntimeMode,
+  mcpNames: string[]
+): Record<string, OpencodePermissionAction> {
   if (mode === 'full-access') return { '*': 'allow', external_directory: 'allow' };
   const config: Record<string, OpencodePermissionAction> = { '*': 'ask', edit: editAction(mode) };
   for (const permission of NEVER_ASK) config[permission] = 'allow';
+  for (const permission of mcpPermissionKeys(mcpNames)) config[permission] = 'allow';
   for (const permission of ASK_UNLESS_ALLOWED) config[permission] = 'ask';
   return config;
 }
 
 /** The per-session ruleset passed to `session.create` and re-asserted on resume. */
-export function permissionRulesFor(mode: RuntimeMode): OpencodePermissionRule[] {
+export function permissionRulesFor(
+  mode: RuntimeMode,
+  mcpNames: string[]
+): OpencodePermissionRule[] {
   if (mode === 'full-access') {
     return [
       { permission: '*', pattern: '*', action: 'allow' },
@@ -72,6 +94,11 @@ export function permissionRulesFor(mode: RuntimeMode): OpencodePermissionRule[] 
     { permission: '*', pattern: '*', action: 'ask' },
     { permission: 'edit', pattern: '*', action: editAction(mode) },
     ...NEVER_ASK.map((permission) => ({ permission, pattern: '*', action: 'allow' as const })),
+    ...mcpPermissionKeys(mcpNames).map((permission) => ({
+      permission,
+      pattern: '*',
+      action: 'allow' as const,
+    })),
     ...ASK_UNLESS_ALLOWED.map((permission) => ({
       permission,
       pattern: '*',
@@ -109,7 +136,7 @@ export function buildConfigFile(
 ): OpencodeConfigFile {
   return {
     $schema: 'https://opencode.ai/config.json',
-    permission: permissionConfigFor(mode),
+    permission: permissionConfigFor(mode, Object.keys(servers)),
     mcp: mcpConfigFor(servers),
   };
 }

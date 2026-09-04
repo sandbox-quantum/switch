@@ -51,6 +51,12 @@ export interface ProviderSessionRuntime {
    * tell a message typed in the console from one relayed out of a Switch room.
    */
   sendTurn(text: string, source: TranscriptUserSource): Promise<{ turnId: string }>;
+  /**
+   * Whether a turn is in flight. A caller that has a choice about when to
+   * speak — the room, which can hold a message — asks first, because a turn
+   * sent now joins the running one instead of starting its own.
+   */
+  isTurnRunning(): boolean;
   /** Stop the running turn, if there is one. */
   interrupt(): Promise<void>;
   respondToRequest(requestId: string, decision: ApprovalDecision): Promise<void>;

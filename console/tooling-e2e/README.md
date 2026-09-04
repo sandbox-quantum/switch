@@ -57,6 +57,7 @@ beside this file. Never commit one.
 | `MATTERMOST_TEAM` | yes | Team **slug** (e.g. `switch`), not its display name. |
 | `SWITCH_E2E_AGENT_DIR` | no | Working directory of the session under test. When set, the agent's credentials are written into it (see below) and it is sent to Switch as the agent's `repo_dir`. |
 | `SWITCH_E2E_KEEP` | no | `1` leaves the agent, room and channel behind for inspection. |
+| `SWITCH_E2E_MANIFEST` | no | File the setup records its agent and room in, so a second process can reuse them instead of registering its own. See "Seeding first" below. |
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | no | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | no | How long setup waits for a live session (default 2 min). |
 
@@ -91,6 +92,32 @@ finds nothing. Set `SWITCH_E2E_AGENT_DIR` and the harness writes (and removes)
 that file itself, matching `writeNeutralAgentSettingsFs` in
 `src/main/core/agents/write-switch-settings.ts`; otherwise add the agent in
 Switch Console by hand between setup and the first scenario.
+
+### Seeding first
+
+The order is forced when the session is auto-started rather than opened by hand:
+Switch Console can only start a session for an agent that is already in its
+database, and it reads that database at launch. So the agent has to exist before
+the console starts, and the console has to be up before the first scenario
+posts — three steps, in three processes.
+
+`src/seed.ts` is the first of them. It does exactly what `beforeAll` does —
+register the agent, create the room and channel, write the credentials — and
+records the result in `SWITCH_E2E_MANIFEST`, above all the agent's API key,
+which registration returns exactly once:
+
+```bash
+SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
+  node --experimental-strip-types src/seed.ts
+# add the agent to the console's database, pointed at that working directory,
+# with provider_config {"version":"2","providerId":"opencode","values":{},"runtime":"provider"};
+# start Switch Console
+SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
+  ../node_modules/.bin/vitest run src/run.integration.test.ts
+```
+
+Setup finds the manifest, reuses what is in it rather than registering a second
+agent, and deletes it during teardown — so a manifest never outlives its room.
 
 ## The scenarios
 

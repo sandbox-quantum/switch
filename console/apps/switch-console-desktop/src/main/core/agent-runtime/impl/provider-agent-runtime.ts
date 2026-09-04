@@ -276,6 +276,10 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     return { turnId: effectiveTurnId };
   }
 
+  isTurnRunning(): boolean {
+    return this.transcript.hasRunningTurn();
+  }
+
   async interrupt(): Promise<void> {
     await providerAdapterRegistry.get(this.providerId).interruptTurn(this.params.sessionId);
   }
@@ -311,7 +315,14 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
 
   private publish(updates: TranscriptUpdate[]): void {
     for (const update of updates) {
-      events.emit(sessionTranscriptChannel, { sessionId: this.params.sessionId, update });
+      // Topic'd on the session: the renderer's store subscribes per session, so
+      // an untopic'd emit lands on a channel nobody is listening to and the
+      // panel shows the snapshot it opened with, for ever.
+      events.emit(
+        sessionTranscriptChannel,
+        { sessionId: this.params.sessionId, update },
+        this.params.sessionId
+      );
       for (const listener of [...this.listeners]) {
         try {
           listener(update);
