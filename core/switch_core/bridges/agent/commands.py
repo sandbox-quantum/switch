@@ -1016,7 +1016,8 @@ async def _cmd_agents_greet(
     event: CommandEvent,
     is_direct: bool,
 ) -> None:
-    agent = await client._fresh_agent()
+    async with client.session_factory() as session:
+        agent = await client._fresh_agent(session)
     if is_direct:
         label = agent_label(agent.display_name, agent.name)
         await _reply(client, room, event, f"Hi! I'm {label} — how can I help?")

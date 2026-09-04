@@ -102,7 +102,7 @@ def _build_client(
     async def _list_for_room(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(documents or [])
 
-    async def _fresh_agent():  # type: ignore[no-untyped-def]
+    async def _fresh_agent(_session):  # type: ignore[no-untyped-def]
         return this_agent
 
     client = SimpleNamespace(
