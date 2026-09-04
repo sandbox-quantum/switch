@@ -39,7 +39,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from switch_core.db.models import Message, MessageAttachment
-from switch_core.db.models import Room as RoomModel
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE, should_record
 from switch_core.transport import (
@@ -101,19 +100,23 @@ class BackfillReport:
 
 
 async def _mark_backfilled(
-    session_factory: async_sessionmaker[AsyncSession], room: Room
+    session_factory: async_sessionmaker[AsyncSession],
+    room: Room,
+    store: MessageStore,
 ) -> None:
     """Record that this room has been walked to its start.
 
-    Only on a clean finish. A walk that stopped at the page limit leaves the
-    room partly reconstructed, and marking that as done would strand the rest
+    Through the store, so a dry run withholds it along with everything else it
+    withholds. Marking a room that a dry run only pretended to write would
+    leave the real run with nothing to do and no way to say so.
+
+    Only on a clean finish, too. A walk that stopped at the page limit leaves
+    the room partly reconstructed, and calling that done would strand the rest
     of its history the next time round.
     """
     async with session_factory() as session:
-        row = await session.get(RoomModel, room.id)
-        if row is not None:
-            row.history_backfilled_at = datetime.now(UTC)  # type: ignore[assignment]
-            await session.commit()
+        await store.mark_history_backfilled(session, room.id)
+        await session.commit()
 
 
 async def backfill_room(
@@ -154,7 +157,7 @@ async def backfill_room(
 
         end = page.next_token
         if not end or end == start:
-            await _mark_backfilled(session_factory, room)
+            await _mark_backfilled(session_factory, room, store)
             return report
         start = end
 

@@ -93,6 +93,14 @@ class _ReadOnlyStore(MessageStore):
     async def create_historical(self, session, message, attachments):  # type: ignore[no-untyped-def]
         return message
 
+    async def mark_history_backfilled(self, session, room_id):  # type: ignore[no-untyped-def]
+        """A room a dry run walked has not been backfilled.
+
+        Marking it would make the walk that wrote nothing look like the one
+        that did, and the real run afterwards would find no rooms left to do.
+        """
+        return None
+
 
 async def _run(args: argparse.Namespace) -> int:
     config = SwitchConfig()

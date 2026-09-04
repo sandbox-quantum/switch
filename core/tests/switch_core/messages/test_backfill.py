@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.cli.backfill import _ReadOnlyStore
 from switch_core.db.models import Message, Room
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.messages import backfill_room
@@ -167,6 +168,57 @@ class TestNumbering:
 
         rows = await _rows(session_factory, room.id)
         assert rows[0].sent_at == _at(10)
+
+
+class TestCompletionMark:
+    """A room is marked done only by a walk that really wrote it.
+
+    The mark is what stops a re-run re-reading every page of every room. It is
+    also what a dry run must not leave behind: the documented first step is a
+    dry run, and if that marked every room, the real run afterwards would find
+    nothing to do and say so as though the work were finished.
+    """
+
+    async def test_a_completed_walk_marks_the_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$a", 10, "a")], next_token=None)]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            await backfill_room(transport, session_factory, room, store=MessageStore())
+
+        async with session_factory() as session:
+            written = await session.get(Room, room.id)
+            assert written is not None
+            assert written.history_backfilled_at is not None
+
+    async def test_a_dry_run_marks_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Otherwise the dry run disables the real one, silently."""
+        async with session_factory() as session:
+            room = await _make_room(session)
+
+        transport = PagingTransport(
+            [HistoryPage(events=[_event("$a", 10, "a")], next_token=None)]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room.id)  # type: ignore[assignment]
+            report = await backfill_room(
+                transport, session_factory, room, store=_ReadOnlyStore()
+            )
+
+        assert report.written == 1
+        async with session_factory() as session:
+            untouched = await session.get(Room, room.id)
+            assert untouched is not None
+            assert untouched.history_backfilled_at is None
+            assert await _rows(session_factory, room.id) == []
 
 
 class TestIdempotence:
