@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
@@ -44,6 +45,7 @@ from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachm
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
 from switch_core.transport.content import media_content, message_content
+from switch_core.transport.invites import InviteBus
 from switch_core.transport.port import Handler, TransportHandlers
 from switch_core.transport.types import (
     DownloadResult,
@@ -106,6 +108,7 @@ class PostgresTransport:
         message_store: MessageStore,
         media_store: MediaStore,
         listener: MessageListener,
+        invites: InviteBus,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -115,6 +118,7 @@ class PostgresTransport:
         self._message_store = message_store
         self._media_store = media_store
         self._listener = listener
+        self._invites = invites
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
         # to a handler. Both are keyed by the Switch room id, which is what
@@ -170,11 +174,36 @@ class PostgresTransport:
         for transport_room_id in await self.joined_rooms():
             await self._watch(transport_room_id)
         self._receiving = True
+        self._invites.register(self.user_id, self._on_invited)
         try:
             await self._closed.wait()
         finally:
             self._receiving = False
+            self._invites.unregister(self.user_id)
             self._unwatch_all()
+
+    async def _on_invited(self, transport_room_id: str) -> None:
+        """Someone added this client to a room while it was running.
+
+        Handed to `on_invite` rather than joined here, because auto-accepting
+        is the client's decision and it already has one — the same one it made
+        when the invitation arrived over sync.
+        """
+        handler = self._handlers.on_invite
+        if handler is None:
+            return
+        await handler(
+            RoomRef(room_id=transport_room_id),
+            InboundMembership(
+                room_id=transport_room_id,
+                event_id=new_event_id(),
+                sender=self.user_id,
+                timestamp=_now_ms(),
+                state_key=self.user_id,
+                membership="invite",
+                display_name=self.display_name,
+            ),
+        )
 
     async def _watch(self, transport_room_id: str) -> None:
         """Start delivering a room, from wherever it is right now."""
@@ -566,6 +595,10 @@ def to_inbound(
         size=file.size,
         group=group if isinstance(group, dict) else None,
     )
+
+
+def _now_ms() -> int:
+    return int(datetime.now(UTC).timestamp() * 1000)
 
 
 def _epoch_ms(sent_at: Any) -> int:

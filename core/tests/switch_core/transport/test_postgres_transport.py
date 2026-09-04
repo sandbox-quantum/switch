@@ -32,6 +32,7 @@ from switch_core.transport import (
     TransportError,
     TransportHandlers,
 )
+from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import PostgresTransport
 
 
@@ -125,6 +126,7 @@ def _transport(
         message_store=MessageStore(),
         media_store=MediaStore(),
         listener=listener or _FakeListener(),
+        invites=InviteBus(),
     )
 
 
