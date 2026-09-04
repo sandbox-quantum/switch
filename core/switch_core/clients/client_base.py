@@ -21,7 +21,7 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
-from switch_core.messages import MessageRecorder
+from switch_core.messages.recording import MessageRecording
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -75,7 +75,7 @@ class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
     config: ConfigT
     transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport]
     session_state: dict[str, str | None]
-    message_recorder: MessageRecorder
+    message_recorder: MessageRecording
     next_batch_token: NotRequired[str | None]
 
 
@@ -95,7 +95,7 @@ class ClientBase[ConfigT: ClientConfig]:
         config: ConfigT,
         transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
         session_state: dict[str, str | None],
-        message_recorder: MessageRecorder,
+        message_recorder: MessageRecording,
         next_batch_token: str | None = None,
     ) -> None:
         self.client_id = client_id

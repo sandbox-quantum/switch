@@ -56,7 +56,11 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.base import Base
-from switch_core.db.engine import create_engine_from_config, create_session_factory
+from switch_core.db.engine import (
+    create_engine_from_config,
+    create_session_factory,
+    create_unpooled_engine,
+)
 from switch_core.db.models import User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -65,6 +69,8 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.media_store import MediaStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -78,7 +84,10 @@ from switch_core.matrix_admin import (
     ensure_admin_exists,
     wait_for_homeserver,
 )
+from switch_core.messages import MessageRecorder
+from switch_core.messages.notify import MessageListener
 from switch_core.room_service import RoomService
+from switch_core.transport.invites import InviteBus
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -450,6 +459,16 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         client_store=session_env.client_store,
         session_factory=session_factory,
         config=config,
+        message_recorder=MessageRecorder(
+            session_factory=session_factory,
+            room_store=session_env.room_store,
+            message_store=MessageStore(),
+        ),
+        room_store=session_env.room_store,
+        message_store=MessageStore(),
+        media_store=MediaStore(),
+        listener=MessageListener(lambda: create_unpooled_engine(config)),
+        invites=InviteBus(),
     )
     client_factory.register(
         "agent",
