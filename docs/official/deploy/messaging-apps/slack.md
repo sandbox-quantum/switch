@@ -238,7 +238,7 @@ If the bot is refused, make the groups by hand: one whose handle or name is exac
 
 While an agent is working, Slack draws a live progress card under the agent's own name and icon, linking back to the session in Switch Console. It's an indicator rather than a record, so it goes when the turn ends. This is what declaring the app an **Agent** in the manifest buys you.
 
-Where the card can't be drawn, Switch posts a status message under the agent's name carrying the same **Open in Switch Console** link, so a turn always shows its progress somewhere.
+Where the card can't be drawn, Switch posts a status message under the agent's name carrying the same **Open in Switch Console** link, so a turn always shows its progress somewhere. In both cases the progress message carries a **Stop** button that interrupts the running turn (no manifest change needed — interactivity is already enabled).
 
 Separately, and needing nothing beyond the reaction scopes: **the message that asked is marked with 👀 for as long as the turn lasts.** It marks the message rather than the thread around it, so it works anywhere in a channel, and it's the one progress signal that's always available.
 

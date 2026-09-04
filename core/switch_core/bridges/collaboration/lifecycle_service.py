@@ -165,6 +165,18 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.renders_custom_url_schemes
 
+    def supports_interactive_stop(self, bridge_type: str) -> bool:
+        """Whether this platform puts a Stop button on its progress surface.
+
+        Read from the adapter class for the same reason as
+        `supports_channel_creation`. An unknown type is reported as not
+        supporting it, matching the base class default.
+        """
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            return False
+        return adapter_cls.supports_interactive_stop
+
     def get_config_schema(self, bridge_type: str) -> dict[str, object]:
         config_cls = self._config_registry.get(bridge_type)
         if config_cls is None:

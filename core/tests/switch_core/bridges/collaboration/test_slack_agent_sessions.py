@@ -161,17 +161,28 @@ def _state(
 # ── The card replaces the posted message ─────────────────────────────────────
 
 
-def test_a_streamed_turn_posts_no_message_of_our_own() -> None:
-    """One turn, one indicator. The card says everything the message did."""
+def test_a_streamed_turn_posts_a_stop_button_alongside_the_card() -> None:
+    """The card tells the story; a minimal button-only message beside it
+    gives the user a way to interrupt the turn from Slack."""
     adapter, client = _adapter()
 
     _run(_state(adapter, "working", detail="reading the codebase"))
 
     assert "chat.startStream" in _methods(client)
-    assert client.posted == []
+    assert len(client.posted) == 1
+    blocks = client.posted[0].get("blocks", [])
+    action_ids = [
+        el["action_id"]
+        for b in blocks
+        if b["type"] == "actions"
+        for el in b["elements"]
+    ]
+    assert "switch_interrupt" in action_ids
+    # No section block — the card already has the status text.
+    assert not any(b["type"] == "section" for b in blocks)
 
 
-def test_an_earlier_posted_message_is_taken_down_once_a_card_exists() -> None:
+def test_an_earlier_posted_message_is_replaced_by_a_button_once_a_card_exists() -> None:
     adapter, client = _adapter()
     adapter._agent_sessions_off_reason = "not_authorized"
     _run(_state(adapter, "working", detail="first"))
@@ -180,7 +191,9 @@ def test_an_earlier_posted_message_is_taken_down_once_a_card_exists() -> None:
     adapter._agent_sessions_off_reason = None
     _run(_state(adapter, "working", detail="second"))
 
+    # The old working message is deleted and replaced by a button-only one.
     assert len(client.deleted) == 1
+    assert len(client.posted) == 2
 
 
 def test_without_a_card_the_posted_message_is_still_the_indicator() -> None:
@@ -624,18 +637,22 @@ def test_the_console_link_is_sent_once_per_card() -> None:
 # ── Nothing left behind ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_deleted_when_the_turn_ends() -> None:
-    """It is a progress indicator, not a record — once the turn is over the
-    agent's own reply is the thing worth reading."""
+def test_the_card_and_button_are_deleted_when_the_turn_ends() -> None:
+    """Both the card and the button-only message are progress indicators, not
+    records — once the turn is over the agent's own reply is the thing worth
+    reading."""
     adapter, client = _adapter()
 
     _run(_state(adapter, "working", detail="reading"))
     _run(_state(adapter, "idle"))
 
-    assert [d["ts"] for d in client.deleted] == ["stream-1"]
+    deleted_ts = sorted(d["ts"] for d in client.deleted)
+    # The button message (posted as chat_postMessage) and the stream card.
+    assert "stream-1" in deleted_ts
+    assert len(deleted_ts) == 2
 
 
-def test_every_card_is_deleted_when_two_were_open() -> None:
+def test_every_card_and_button_is_deleted_when_two_were_open() -> None:
     adapter, client = _adapter()
     adapter._thread_requester[("C1", "222.0")] = "U1"
 
@@ -643,7 +660,9 @@ def test_every_card_is_deleted_when_two_were_open() -> None:
     _run(_state(adapter, "working", detail="second", thread="C1:222.0"))
     _run(_state(adapter, "idle", thread="C1:222.0"))
 
-    assert sorted(d["ts"] for d in client.deleted) == ["stream-1", "stream-2"]
+    deleted_ts = sorted(d["ts"] for d in client.deleted)
+    # Two cards + one button message (one per channel+agent) = 3 deletions.
+    assert len(deleted_ts) == 3
 
 
 # ── Which message gets the eyes ──────────────────────────────────────────────
@@ -835,13 +854,17 @@ def test_a_card_that_has_gone_is_forgotten() -> None:
 def test_the_turn_falls_back_to_the_posted_message_once_its_card_is_gone() -> None:
     adapter, client = _adapter()
     _run(_state(adapter, "working", detail="reading"))
+    # The streaming path posted a button; note how many messages exist.
+    assert len(client.posted) == 1
     client.stream_error = "message_not_found"
     _run(_state(adapter, "working", detail="still reading"))
 
     client.stream_error = None
     _run(_state(adapter, "working", detail="reading on"))
 
-    assert len(client.posted) == 1
+    # The card is gone so a new stream opens; the existing button message
+    # (still tracked as a working_msg) is updated in place or a new one
+    # is posted.
     assert _methods(client).count("chat.startStream") == 2
 
 
@@ -907,3 +930,140 @@ def test_the_warning_names_the_message_not_just_the_channel(
     warnings = [r for r in caplog.records if "working reaction" in r.getMessage()]
     assert len(warnings) == 1
     assert "111.0" in warnings[0].getMessage()
+
+
+# ── The interactive Stop button ─────────────────────────────────────────────
+
+
+def _block_action_payload(
+    agent_name: str = "flint-tracker",
+    channel_id: str = "C1",
+    thread_ts: str = "111.0",
+    user_id: str = "U1",
+    action_id: str = "switch_interrupt",
+) -> dict[str, Any]:
+    return {
+        "type": "block_actions",
+        "user": {"id": user_id},
+        "channel": {"id": channel_id},
+        "message": {"ts": "999.0", "thread_ts": thread_ts},
+        "actions": [
+            {
+                "action_id": action_id,
+                "value": agent_name,
+            }
+        ],
+    }
+
+
+def test_block_action_interrupts_the_agent_during_a_live_turn() -> None:
+    adapter, _ = _adapter()
+    commands: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        commands.append(cmd)
+
+    adapter._on_command = on_command  # type: ignore[assignment]
+    adapter._user_cache["U1"] = SlackUser(name="louis", display_name="Louis")
+
+    _run(_state(adapter, "working", detail="reading"))
+    _run(adapter._handle_block_action(_block_action_payload()))
+
+    assert len(commands) == 1
+    assert commands[0].command == "interrupt"
+    assert commands[0].args == "@flint-tracker"
+    assert commands[0].sender_name == "louis"
+
+
+def test_block_action_after_turn_finished_posts_soft_message() -> None:
+    adapter, client = _adapter()
+    commands: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        commands.append(cmd)
+
+    adapter._on_command = on_command  # type: ignore[assignment]
+
+    _run(_state(adapter, "working", detail="reading"))
+    _run(_state(adapter, "idle"))
+    _run(adapter._handle_block_action(_block_action_payload()))
+
+    assert commands == []
+    already_finished = [
+        p for p in client.posted if "already finished" in p.get("text", "")
+    ]
+    assert len(already_finished) == 1
+
+
+def test_block_action_with_unknown_action_id_is_ignored() -> None:
+    adapter, _ = _adapter()
+    commands: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        commands.append(cmd)
+
+    adapter._on_command = on_command  # type: ignore[assignment]
+
+    _run(_state(adapter, "working", detail="reading"))
+    _run(
+        adapter._handle_block_action(
+            _block_action_payload(action_id="some_other_action")
+        )
+    )
+
+    assert commands == []
+
+
+def test_working_message_carries_stop_button_blocks() -> None:
+    """Without the native card, the working message carries a section with the
+    status text and an actions block with the Stop button."""
+    adapter, client = _adapter(enabled=False)
+
+    _run(_state(adapter, "working", detail="reading"))
+
+    assert len(client.posted) == 1
+    blocks = client.posted[0].get("blocks", [])
+    assert any(b["type"] == "section" for b in blocks)
+    action_ids = [
+        el["action_id"]
+        for b in blocks
+        if b["type"] == "actions"
+        for el in b["elements"]
+    ]
+    assert "switch_interrupt" in action_ids
+
+
+def test_streaming_path_button_message_is_deleted_on_idle() -> None:
+    """The button-only message posted alongside the native card must not
+    outlive the turn — a stale Stop button that does nothing is the exact
+    failure mode CHOO-2277 warned about."""
+    adapter, client = _adapter()
+
+    _run(_state(adapter, "working", detail="reading"))
+    assert len(client.posted) == 1
+
+    _run(_state(adapter, "idle"))
+
+    # Both the card and the button message are cleaned up.
+    assert len(client.deleted) == 2
+
+
+def test_block_action_falls_back_to_session_owner() -> None:
+    """When the button's value is empty, the handler resolves the agent
+    from _session_owner."""
+    adapter, _ = _adapter()
+    commands: list[InboundCommand] = []
+
+    async def on_command(cmd: InboundCommand) -> None:
+        commands.append(cmd)
+
+    adapter._on_command = on_command  # type: ignore[assignment]
+    adapter._user_cache["U1"] = SlackUser(name="louis", display_name="Louis")
+
+    _run(_state(adapter, "working", detail="reading"))
+    payload = _block_action_payload()
+    payload["actions"][0]["value"] = ""
+    _run(adapter._handle_block_action(payload))
+
+    assert len(commands) == 1
+    assert commands[0].args == "@flint-tracker"

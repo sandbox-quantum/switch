@@ -115,6 +115,13 @@ class CollaborationAdapter(ABC):
     #: that trade is the platform's to make.
     runtime_state_follows_anchor: ClassVar[bool] = False
 
+    #: Whether the adapter puts a Stop button on its progress surface so a
+    #: running turn can be interrupted from the messaging app itself.
+    #:
+    #: False by default: only platforms with interactive message components
+    #: can wire a click back to the interrupt path.
+    supports_interactive_stop: ClassVar[bool] = False
+
     def __init__(self) -> None:
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
