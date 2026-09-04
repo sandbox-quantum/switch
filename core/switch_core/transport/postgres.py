@@ -171,7 +171,17 @@ class PostgresTransport:
         while it was away is a delivery-cursor question, and delivery cursors
         are a layer above this one.
         """
-        for transport_room_id in await self.joined_rooms():
+        rooms = await self.joined_rooms()
+        if not rooms:
+            logger.error(
+                "Client %s is receiving but is a member of no room: it will "
+                "hear nothing until something adds it to one. Under Matrix "
+                "membership lived on the homeserver; here it is the "
+                "client_rooms table, so a client whose rows were never "
+                "written is silent rather than broken",
+                self.user_id,
+            )
+        for transport_room_id in rooms:
             await self._watch(transport_room_id)
         self._receiving = True
         self._invites.register(self.user_id, self._on_invited)

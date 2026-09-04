@@ -457,6 +457,36 @@ class CollaborationBridgeLifecycleService:
             )
             await session.commit()
 
+    async def _record_bridge_memberships(self, bridge_id: str, client_id: str) -> None:
+        """Make the bridge's rooms its recorded memberships before it starts.
+
+        A bridge belongs in every room it carries, and that was expressed by
+        inviting its client and letting the homeserver hold the membership —
+        so nothing wrote it down. Once `client_rooms` became what a client
+        reads its rooms from, a bridge that had never been re-invited was in
+        none of them: it still received from the platform, because inbound
+        posts into a room by id, and relayed nothing back out.
+
+        Run at every start rather than repaired once, because the rooms a
+        bridge carries change while it is stopped.
+        """
+        async with self._session_factory() as session:
+            rooms = await self._room_store.get_by_bridge(session, bridge_id)
+            added = 0
+            for room in rooms:
+                members = await self._room_store.get_client_ids(session, room.id)
+                if client_id in members:
+                    continue
+                await self._room_store.add_client(session, client_id, room.id)
+                added += 1
+            await session.commit()
+        if added:
+            logger.info(
+                "Recorded bridge %s as a member of %d room(s) it carries",
+                bridge_id,
+                added,
+            )
+
     async def _run_bridge(
         self,
         bridge_id: str,
@@ -464,6 +494,7 @@ class CollaborationBridgeLifecycleService:
         bridge_client: BridgeClient,
     ) -> None:
         try:
+            await self._record_bridge_memberships(bridge_id, bridge_client.client_id)
             await bridge_core.start()
             await bridge_client.start()
         except Exception:

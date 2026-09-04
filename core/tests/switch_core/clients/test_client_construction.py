@@ -131,10 +131,15 @@ def test_only_the_factory_names_a_transport_implementation() -> None:
     anything. Nothing failed — messages simply stopped crossing.
 
     That is invisible in review, so scan for the cause instead. Any module that
-    can name an implementation can pick the wrong one.
+    can reach an implementation can pick the wrong one.
+
+    Guarded per module rather than per symbol: an implementation's module is
+    private, so one added later is covered the day it lands instead of the day
+    someone remembers to extend a list of names, and putting a module in
+    `allowed` is a deliberate act a reviewer sees.
     """
     package = pathlib.Path(__file__).resolve().parents[3] / "switch_core"
-    implementations = {"matrix_transport_for", "MatrixTransport", "PostgresTransport"}
+    private = {"switch_core.transport.matrix", "switch_core.transport.postgres"}
     allowed = {
         "clients/client_factory.py",
         "transport/matrix.py",
@@ -148,13 +153,20 @@ def test_only_the_factory_names_a_transport_implementation() -> None:
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            for alias in node.names:
-                if alias.name in implementations:
-                    offenders.append(f"{relative}: {alias.name}")
+            imported: list[str] = []
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                # `from switch_core.transport import postgres` reaches the same
+                # module by importing its name from the package.
+                imported = [node.module] + [
+                    f"{node.module}.{alias.name}" for alias in node.names
+                ]
+            for name in imported:
+                if name in private:
+                    offenders.append(f"{relative}: {name}")
 
     assert offenders == [], (
-        "ask ClientFactory.transport_for for a transport rather than naming "
-        f"one; these modules choose for themselves: {offenders}"
+        "ask ClientFactory.transport_for for a transport rather than reaching "
+        f"for one; these modules choose for themselves: {offenders}"
     )
