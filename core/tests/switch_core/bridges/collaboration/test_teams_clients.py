@@ -421,6 +421,8 @@ def test_remove_reaction_error_raises() -> None:
                 reaction="1f440_eyes",
             )
         )
+
+
 # ── a permission granted while we hold a token ───────────────────────────────
 
 

@@ -166,6 +166,8 @@ def _strip_leading_mention(text: str) -> str:
 # Teams reaction id for 👀, put on the message an agent is working on for the
 # whole turn. Teams names reactions by id, not by unicode.
 _WORKING_REACTION = "1f440_eyes"
+
+
 def _aad_failure_message(exc: Exception) -> str:
     """Reduce an AAD token failure to the sentence an operator can act on.
 
