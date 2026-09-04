@@ -35,6 +35,22 @@ import { useAllHostSetupPlans } from '../setup/use-host-setup';
 
 export const REMOTE_HOSTS_QUERY_KEY = ['remote-hosts'];
 
+/**
+ * Volatile flag: the SSH host alias just added by the Add Host modal, consumed
+ * once by `remote-host-view.tsx` to auto-expand the Load Existing Agents
+ * section on the post-add-host page visit.
+ */
+export let justAddedHost: string | null = null;
+
+/** Consume the flag — returns the value and clears it. */
+export function consumeJustAddedHost(sshHost: string): boolean {
+  if (justAddedHost === sshHost) {
+    justAddedHost = null;
+    return true;
+  }
+  return false;
+}
+
 type HostFilter = 'all' | 'ready' | 'attention';
 
 type RemoteHost = { sshHost: string; name: string };
@@ -201,7 +217,8 @@ export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage
                 onboarded: sshHosts,
                 onAdded: (sshHost) => {
                   invalidate();
-                  openHost(sshHost);
+                  justAddedHost = sshHost;
+                  navigate('remoteHost', { sshHost });
                 },
               })
             }

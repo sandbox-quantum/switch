@@ -211,6 +211,53 @@ describe('LocationManagerStore agent onboarding', () => {
   });
 });
 
+describe('LocationManagerStore reload', () => {
+  const stubLocation = {} as LocationStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.openLocation.mockResolvedValue({ success: true });
+  });
+
+  it('mounts a newly-appeared location on reload', async () => {
+    const store = new LocationManagerStore();
+    // First load: no locations, no agents.
+    mocks.getLocations.mockResolvedValueOnce([]);
+    mocks.getAgents.mockResolvedValueOnce([]);
+    await store.load();
+    expect(store.locations.size).toBe(0);
+
+    // An agent was loaded externally — reload should pick it up.
+    mocks.getLocations.mockResolvedValueOnce([location({ id: 'new-loc' })]);
+    mocks.getAgents.mockResolvedValueOnce([agent({ locationId: 'new-loc' })]);
+    await store.reload();
+    expect(store.locations.has('new-loc')).toBe(true);
+  });
+
+  it('drops a location whose last agent was removed on reload', async () => {
+    const store = new LocationManagerStore();
+    store.locations.set('stale-loc', stubLocation);
+
+    // The DB still has the location row but no agents point at it.
+    mocks.getLocations.mockResolvedValueOnce([location({ id: 'stale-loc' })]);
+    mocks.getAgents.mockResolvedValueOnce([]);
+    await store.reload();
+    expect(store.locations.has('stale-loc')).toBe(false);
+  });
+
+  it('preserves a pending-creation location during reload', async () => {
+    const store = new LocationManagerStore();
+    store.locations.set('onboarding-loc', stubLocation);
+    store.pendingCreationIds.add('onboarding-loc');
+
+    // A concurrent CRUD event triggers reload while onboarding is in flight.
+    mocks.getLocations.mockResolvedValueOnce([]);
+    mocks.getAgents.mockResolvedValueOnce([]);
+    await store.reload();
+    expect(store.locations.has('onboarding-loc')).toBe(true);
+  });
+});
+
 describe('LocationManagerStore removeAgent', () => {
   // removeAgent only gets/deletes the location by key, so a placeholder stands in
   // for the (heavy) real LocationStore.
@@ -231,11 +278,12 @@ describe('LocationManagerStore removeAgent', () => {
     const store = new LocationManagerStore();
     store.locations.set('loc', stubLocation);
 
-    await store.removeAgent('loc', 'a', { deleteInSwitch: false });
+    await store.removeAgent('loc', 'a', { deleteInSwitch: false, removeProvisionedFiles: false });
 
     expect(mocks.deleteAgent).toHaveBeenCalledWith({
       agentId: 'a',
       deleteInSwitch: false,
+      removeProvisionedFiles: false,
       trigger: 'user',
     });
     expect(store.locations.has('loc')).toBe(true);
@@ -250,11 +298,12 @@ describe('LocationManagerStore removeAgent', () => {
     const store = new LocationManagerStore();
     store.locations.set('loc', stubLocation);
 
-    await store.removeAgent('loc', 'a', { deleteInSwitch: true });
+    await store.removeAgent('loc', 'a', { deleteInSwitch: true, removeProvisionedFiles: false });
 
     expect(mocks.deleteAgent).toHaveBeenCalledWith({
       agentId: 'a',
       deleteInSwitch: true,
+      removeProvisionedFiles: false,
       trigger: 'user',
     });
     expect(store.locations.has('loc')).toBe(false);
@@ -269,9 +318,9 @@ describe('LocationManagerStore removeAgent', () => {
     const store = new LocationManagerStore();
     store.locations.set('loc', stubLocation);
 
-    await expect(store.removeAgent('loc', 'a', { deleteInSwitch: true })).rejects.toThrow(
-      'gateway down'
-    );
+    await expect(
+      store.removeAgent('loc', 'a', { deleteInSwitch: true, removeProvisionedFiles: false })
+    ).rejects.toThrow('gateway down');
     expect(store.locations.has('loc')).toBe(true);
     expect(agentsStore.byLocation.get('loc')?.map((x) => x.id)).toEqual(['a']);
   });

@@ -31,9 +31,11 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { deriveHostStatus } from '@shared/core/remote-hosts/host-status';
 import { isHostBlocked } from '@shared/core/remote-hosts/reachability';
+import { switchServersStore } from '../../switch-servers/switch-servers-store';
 import { hostReachabilityStore } from '../host-reachability-store';
 import { hostSetupStore } from '../host-setup-store';
 import { HostUnreachablePanel } from '../host-unreachable-panel';
+import { LoadExistingAgentsSection } from '../load-existing-agents-section';
 import { SetupDetailSheet, type SheetTarget } from '../setup/setup-detail-sheet';
 import {
   AgentTypeRowItem,
@@ -51,7 +53,7 @@ import {
   useSkipSetupStep,
   useUpdateSetupStep,
 } from '../setup/use-host-setup';
-import { REMOTE_HOSTS_QUERY_KEY } from './remote-hosts-view';
+import { consumeJustAddedHost, REMOTE_HOSTS_QUERY_KEY } from './remote-hosts-view';
 
 function useSshHost(): string {
   return useParams('remoteHost').params.sshHost;
@@ -59,6 +61,7 @@ function useSshHost(): string {
 
 export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
   const sshHost = useSshHost();
+  const [justAdded] = useState(() => consumeJustAddedHost(sshHost));
   const { navigate } = useNavigate();
 
   const hosts = useQuery({
@@ -99,6 +102,17 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
     if (blocked || plan.isLoading) return;
     startPrepare();
   }, [blocked, plan.isLoading, startPrepare]);
+
+  // Resolve the Switch server for this host: prefer a managed server on this
+  // host, then the active server, then the first available. Read the
+  // observables outside useMemo so MobX tracks them and React sees them change.
+  const servers = switchServersStore.servers;
+  const activeServer = switchServersStore.activeServer;
+  const serverId = useMemo(() => {
+    const managed = servers.find((s) => s.sshHost === sshHost && s.managed);
+    if (managed) return managed.id;
+    return activeServer?.id ?? servers[0]?.id ?? null;
+  }, [sshHost, servers, activeServer]);
 
   const status = deriveHostStatus(reachability, plan.data ?? null);
   const { prerequisites, agentTypes } = useMemo(
@@ -264,6 +278,14 @@ export const RemoteHostMainPanel = observer(function RemoteHostMainPanel() {
                       </div>
                     ))}
                   </section>
+                )}
+
+                {serverId && (
+                  <LoadExistingAgentsSection
+                    sshHost={sshHost}
+                    serverId={serverId}
+                    initiallyOpen={justAdded}
+                  />
                 )}
               </div>
             )}

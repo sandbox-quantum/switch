@@ -19,6 +19,17 @@ export const externalLinkOpenRequestedChannel = defineEvent<{ url: string }>(
 );
 
 /**
+ * An agent row was created, updated or deleted in the main process
+ * (main → renderer). Bridges the main-only `agentEvents` bus so renderer
+ * stores and queries can react to agent CRUD from any path — Add Agent,
+ * Load existing agents, Remove agent — without each call site having to
+ * remember a manual refetch (CHOO-2560).
+ */
+export const agentsChangedChannel = defineEvent<{ kind: 'created' | 'updated' | 'deleted' }>(
+  'agents:changed'
+);
+
+/**
  * A mouse back/forward button pressed on Windows, where those buttons arrive as
  * an `app-command` on the window rather than as a mouse event in the page.
  * Elsewhere the renderer sees them directly and this never fires.

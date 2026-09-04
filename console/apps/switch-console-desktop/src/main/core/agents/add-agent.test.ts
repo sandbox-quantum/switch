@@ -88,6 +88,19 @@ vi.mock('./setAgentAutoSession', () => ({
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/db/client', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  },
+}));
+vi.mock('@main/db/schema', () => ({ agents: { id: 'id', switchAgentId: 'switchAgentId' } }));
+vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
 
 const { addAgent } = await import('./add-agent');
 const { trackEvent } = await import('@main/core/telemetry/telemetry-service');
@@ -219,6 +232,31 @@ describe('addAgent', () => {
     expect(
       await (h.state.workspace as PluginFs).read(agentSettingsRelativePath('codex-hoot'))
     ).toBe(theirs);
+  });
+
+  it('refuses when same-server credentials exist but the agent is unknown to this install (CHOO-2560)', async () => {
+    // A colleague's Console provisioned this agent on the same Switch server.
+    // The credentials file carries the same endpoint, but its agent id is not
+    // in this install's database (the mock returns []). Minting over it would
+    // destroy their token.
+    const colleague = JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.example.com',
+        SWITCH_API_TOKEN: 'colleague-token',
+        SWITCH_AGENT_ID: 'colleague-agent',
+      },
+    });
+    h.state.workspace = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: colleague });
+
+    const result = await addAgent(params());
+
+    expect(result).toEqual({ kind: 'already-configured' });
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+    expect(h.createAgent).not.toHaveBeenCalled();
+    // The colleague's file is intact.
+    expect(
+      await (h.state.workspace as PluginFs).read(agentSettingsRelativePath('codex-hoot'))
+    ).toBe(colleague);
   });
 
   it('refuses a name already taken in the location, without minting an identity', async () => {

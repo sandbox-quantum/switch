@@ -82,6 +82,7 @@ describe('deleteAgentsForServer', () => {
 
     expect(mocks.deleteAgent).toHaveBeenCalledWith('agent-a', {
       deleteInSwitch: false,
+      removeProvisionedFiles: true,
       // Wiping a server is one action, not a person deleting each agent.
       trigger: 'server_teardown',
     });
