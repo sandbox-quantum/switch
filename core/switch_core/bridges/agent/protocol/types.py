@@ -92,6 +92,11 @@ class RoomDescriptor(BaseModel):
     id: str
     name: str
     description: str
+    transport_room_id: str
+    # Deprecated alias of `transport_room_id`, sent for the compatibility
+    # window. Connectors are installed copies and only update when someone
+    # clicks Update, so both names are carried until the shipped ones have
+    # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
     archived: bool = False
     # The room's collaboration bridge, or None for an internal-only room.
@@ -148,6 +153,11 @@ class RoomDetailDescriptor(BaseModel):
     channel_type: str | None
     admin_mode: bool
     instructions: str | None
+    transport_room_id: str
+    # Deprecated alias of `transport_room_id`, sent for the compatibility
+    # window. Connectors are installed copies and only update when someone
+    # clicks Update, so both names are carried until the shipped ones have
+    # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
     created_at: str
     bridge_id: str | None

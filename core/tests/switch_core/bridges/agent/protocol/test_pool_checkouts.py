@@ -94,7 +94,6 @@ async def _seed(
                 matrix_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
-                password="x",
             )
             session.add_all([key, client])
             await session.flush()
@@ -280,6 +279,7 @@ class TestTyping:
             id="room-1",
             name="room",
             description="d",
+            transport_room_id="!r:test",
             matrix_room_id="!r:test",
             bridge_id="bridge-1",
         )
