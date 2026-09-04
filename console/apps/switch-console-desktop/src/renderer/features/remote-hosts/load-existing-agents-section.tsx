@@ -6,10 +6,7 @@
  * selects which to load (attach); agents that need a provider pick get one
  * inline. Already-loaded agents appear disabled.
  *
- * Discovery is explicit: the host is only scanned when the user asks
- * (SSHing into a box and walking $HOME unprompted is presumptuous on a
- * colleague's host). Placed persistently in `remote-host-view.tsx`, and
- * auto-expanded when the host was just added (the post-add-host prompt).
+ * Discovery is explicit: the host is only scanned when the user asks.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -24,7 +21,6 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -72,7 +68,6 @@ export function LoadExistingAgentsSection({
   initiallyOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(initiallyOpen);
-  // Discovery runs only once the user asks — never on mere expand.
   const [scanStarted, setScanStarted] = useState(false);
   const queryClient = useQueryClient();
   const showRemoveConfig = useShowModal('removeAgentConfigModal');
@@ -83,7 +78,6 @@ export function LoadExistingAgentsSection({
     enabled: isOpen && scanStarted,
   });
 
-  // Agents found by manual directory scans (outside the auto-discovery scope).
   const [manualAgents, setManualAgents] = useState<LoadableAgentRow[]>([]);
   // Server URL for endpoint-mismatch copy; either discovery source reports it.
   const [manualServerApiUrl, setManualServerApiUrl] = useState<string | null>(null);
@@ -96,7 +90,6 @@ export function LoadExistingAgentsSection({
     return [...auto, ...manualAgents.filter((a) => !seen.has(`${a.dir}\0${a.name}`))];
   }, [discovery.data, manualAgents]);
 
-  // Per-row provider overrides for agents discovered without a provider.
   const [providerOverrides, setProviderOverrides] = useState<Record<string, AgentProviderId>>({});
 
   const setProviderFor = useCallback((key: string, providerId: AgentProviderId) => {
@@ -105,7 +98,6 @@ export function LoadExistingAgentsSection({
 
   // Selection state: keys are "dir\0name".
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Rows with their detail panel expanded.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggleAgent = useCallback((key: string) => {
@@ -136,7 +128,6 @@ export function LoadExistingAgentsSection({
     }
   }, [selectableAgents, selected.size]);
 
-  // Group selected agents by directory for the attach call.
   const selectedByDir = useMemo(() => {
     const byDir = new Map<string, Array<{ name: string; providerId: AgentProviderId }>>();
     for (const key of selected) {
@@ -150,7 +141,6 @@ export function LoadExistingAgentsSection({
     return byDir;
   }, [selected, agents, providerOverrides]);
 
-  // Whether every selected agent has a provider assigned.
   const allSelectedHaveProvider = useMemo(() => {
     for (const key of selected) {
       const agent = agents.find((a) => `${a.dir}\0${a.name}` === key);
@@ -193,9 +183,6 @@ export function LoadExistingAgentsSection({
         description: names.join(', '),
       });
       setSelected(new Set());
-      // agentEvents is a main-process bus; the sidebar only refreshes when the
-      // renderer store reloads (same as the Add Agent flow does after create).
-      await agentsStore.load();
       void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
     },
     onError: (error) => {
@@ -249,7 +236,6 @@ export function LoadExistingAgentsSection({
     [showRemoveConfig, sshHost, removeMutation]
   );
 
-  // Manual directory scan.
   const [manualDir, setManualDir] = useState('');
   const manualScan = useMutation({
     mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
