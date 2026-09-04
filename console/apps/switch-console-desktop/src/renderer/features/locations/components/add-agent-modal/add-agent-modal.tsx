@@ -293,6 +293,17 @@ export const AddAgentModal = observer(function AddAgentModal({
       });
       return;
     }
+    if (result.kind === 'directory-missing') {
+      toast({
+        title: 'That working directory cannot be used. Nothing was created.',
+        description:
+          result.inspection.status === 'file'
+            ? `${result.inspection.dir} is a file on ${result.sshHost}.`
+            : `Neither ${result.inspection.dir} nor its parent exists on ${result.sshHost} — create the parent directory first.`,
+        variant: 'destructive',
+      });
+      return;
+    }
     if (result.kind === 'invalid-name') {
       toast({
         title: 'That agent name cannot be used',

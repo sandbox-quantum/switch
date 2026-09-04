@@ -2,6 +2,9 @@ import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
+const inspectRemoteDir = vi.hoisted(() => vi.fn());
+vi.mock('./remote-dir', () => ({ inspectRemoteDir }));
+
 /** In-memory {@link PluginFs} keyed by the exact relative paths the writers use. */
 function fakeFs(seed: Record<string, string> = {}): PluginFs {
   const files = new Map<string, string>(Object.entries(seed));
@@ -123,6 +126,20 @@ describe('addAgent', () => {
     h.state.repoAgents = h.repoAgents;
     h.state.workspace = fakeFs();
     h.registerAgentIdentity.mockResolvedValue({ kind: 'created', id: 'sw-1', apiKey: 'tok-123' });
+  });
+
+  it('refuses a remote directory whose parent is missing, before minting (CHOO-1416)', async () => {
+    inspectRemoteDir.mockResolvedValue({ dir: '/home/u/agents/deploy', status: 'missing' });
+
+    const result = await addAgent(params({ sshHost: 'vm-1', dir: '/home/u/agents/deploy' }));
+
+    expect(result.kind).toBe('directory-missing');
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  it('never inspects the remote directory for a local add', async () => {
+    await addAgent(params());
+    expect(inspectRemoteDir).not.toHaveBeenCalled();
   });
 
   it('writes name-keyed credentials for a provider with no repo-agent definitions', async () => {
