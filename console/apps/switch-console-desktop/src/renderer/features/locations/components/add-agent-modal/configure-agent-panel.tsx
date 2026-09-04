@@ -234,6 +234,7 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
  */
 export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState }) {
   const nameId = useId();
+  const displayNameId = useId();
   const descriptionId = useId();
   const instructionsId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -284,7 +285,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
                   // button; without moving focus first it falls to the body and
                   // the tab order restarts.
                   onClick={() => {
-                    form.setAgentName(form.suggestedName);
+                    form.acceptSuggestedName();
                     nameRef.current?.focus();
                   }}
                 >
@@ -307,6 +308,22 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
             agent it is.
           </span>
         )}
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor={displayNameId}>
+          Display name <span className="text-foreground-muted">(optional)</span>
+        </FieldLabel>
+        <Input
+          id={displayNameId}
+          placeholder={form.agentName.length > 0 ? form.agentName : 'How to show this agent'}
+          value={form.displayName}
+          onChange={(e) => form.setDisplayName(e.target.value)}
+        />
+        <span className="text-xs text-foreground-muted">
+          The name this agent is shown under on Slack, Discord and other chat platforms. Leave it
+          empty and it shows up under its identifier.
+        </span>
       </Field>
 
       <Field>

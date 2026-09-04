@@ -60,6 +60,7 @@ services:
       MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
+      MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
       # Both of these exist for Switch Console's embedded room view (CHOO-1674):
       # the onboarding checklist opens a modal over a dimmed page inside the
       # pane, and Mattermost only turns known schemes into links, so without

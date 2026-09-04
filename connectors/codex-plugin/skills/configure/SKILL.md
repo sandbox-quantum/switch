@@ -181,7 +181,8 @@ it, never write it to any file.
 Switch validates the name against `^[a-z0-9][a-z0-9._-]*$` — lowercase letters,
 digits, dots, hyphens, underscores; must start with a letter or digit. **No
 spaces, no `@`, no uppercase.** The name is used in Matrix room handles and
-`@mention` syntax.
+`@mention` syntax; an agent's human-readable display name is a separate
+optional field, so this one only has to route.
 
 Suggest a default that **identifies the user**, not just the repo. Agent names
 are visible to everyone in the rooms the agent joins. If two developers both

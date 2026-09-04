@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+
+# Matches a live `@<handle>` mention token (same char class Switch re-parses).
+_MENTION = re.compile(r"@[A-Za-z0-9._-]+")
 
 
 class _Room(SimpleNamespace):
@@ -56,7 +60,13 @@ def _event(args: str) -> SimpleNamespace:
     return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
 
 
-_ALICE = SimpleNamespace(id="a1", name="claude-code.alice")
+def _agent(
+    agent_id: str, name: str, display_name: str | None = None
+) -> SimpleNamespace:
+    return SimpleNamespace(id=agent_id, name=name, display_name=display_name)
+
+
+_ALICE = _agent("a1", "claude-code.alice")
 
 
 class TestInviteCommand:
@@ -94,6 +104,62 @@ class TestInviteCommand:
         await _cmd_invite(client, _Room(room_id="!m:x"), _event(""), False)
         assert added == []
         assert "Usage" in posted[0]
+
+
+class TestInviteCommandDisplayNames:
+    async def test_added_notice_names_the_agent_and_keeps_its_identifier(self) -> None:
+        agent = _agent("a1", "switchdev", "Switch Dev")
+        client, posted, added = _build_client(
+            registry={"switchdev": agent}, room_agent_ids=[]
+        )
+        await _cmd_invite(client, _Room(room_id="!m:x"), _event("@switchdev"), False)
+        # Routing still goes by the identifier, whatever it is displayed as.
+        assert added == [("room-1", ["switchdev"])]
+        assert "Added **Switch Dev (`switchdev`)** to this room." == posted[0]
+
+    async def test_already_present_notice_names_the_agent(self) -> None:
+        agent = _agent("a1", "switchdev", "Switch Dev")
+        client, posted, _added = _build_client(
+            registry={"switchdev": agent}, room_agent_ids=["a1"]
+        )
+        await _cmd_invite(client, _Room(room_id="!m:x"), _event("@switchdev"), False)
+        assert "**Switch Dev (`switchdev`)** is already in this room." == posted[0]
+
+    async def test_no_display_name_names_the_identifier_once(self) -> None:
+        client, posted, _added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert "Added **claude-code.alice** to this room." == posted[0]
+        assert "(`claude-code.alice`)" not in posted[0]
+
+    async def test_display_name_cannot_ping_the_channel(self) -> None:
+        agent = _agent("a1", "switchdev", "@everyone")
+        client, posted, _added = _build_client(
+            registry={"switchdev": agent}, room_agent_ids=[]
+        )
+        await _cmd_invite(client, _Room(room_id="!m:x"), _event("@switchdev"), False)
+        assert _MENTION.search(posted[0]) is None
+        assert "switchdev" in posted[0]
+
+    async def test_display_name_cannot_forge_a_link(self) -> None:
+        agent = _agent("a1", "switchdev", "[here](https://example.invalid)")
+        client, posted, _added = _build_client(
+            registry={"switchdev": agent}, room_agent_ids=["a1"]
+        )
+        await _cmd_invite(client, _Room(room_id="!m:x"), _event("@switchdev"), False)
+        assert "](https://example.invalid)" not in posted[0]
+
+    async def test_unknown_token_is_echoed_verbatim(self) -> None:
+        agent = _agent("a1", "switchdev", "Switch Dev")
+        client, posted, _added = _build_client(
+            registry={"switchdev": agent}, room_agent_ids=[]
+        )
+        await _cmd_invite(client, _Room(room_id="!m:x"), _event("@switchdevv"), False)
+        assert "No agent named `switchdevv`" in posted[0]
+        assert "Switch Dev" not in posted[0]
 
 
 class TestInviteCommandRegistration:

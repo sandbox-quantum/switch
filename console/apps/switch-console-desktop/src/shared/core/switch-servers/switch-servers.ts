@@ -176,7 +176,6 @@ export type PasswordLoginParams = {
 export type RemoteAgentSummary = {
   id: string;
   name: string;
-  displayName: string | null;
   description: string;
   connectorType: string;
   /** Switch user id of the agent's owner, or null for an agent registered
@@ -195,6 +194,10 @@ export type RemoteAgentSummary = {
    * name-derived avatar instead, so the fallback can change without every
    * agent needing rewriting. */
   iconUrl: string | null;
+  /** The human label chat platforms render the agent under, or null when it has
+   * none and is shown under `name`. Presentation only — `name` remains the key
+   * rooms, sessions and lookups are routed by. */
+  displayName: string | null;
   createdAt: string;
 };
 

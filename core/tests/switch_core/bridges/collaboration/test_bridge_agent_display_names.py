@@ -30,7 +30,7 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
-from switch_core.bridges.collaboration.models import InboundMessage
+from switch_core.bridges.collaboration.models import InboundMessage, OutboundAttachment
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -1171,6 +1171,25 @@ def _teams_body(activity: dict[str, Any]) -> str:
     return _teams_card(activity)["body"][1]["text"]  # type: ignore[no-any-return]
 
 
+def test_teams_card_names_the_agent_by_its_display_name() -> None:
+    """Teams has one bot identity and no name field, so every surface that
+    names the agent is inside the card or the notification preview."""
+    bridge = _bridge(_agent("worker", "Worker Bee"))
+    adapter, connector = _teams_adapter(bridge)
+
+    _run(adapter.send_message(TEAMS_CHAT, "worker", "hello"))
+
+    activity = connector.sends[0]
+    card = _teams_card(activity)
+    assert _teams_header(activity) == "Worker Bee"
+    assert card["fallbackText"] == "Worker Bee: hello"
+    assert activity["summary"] == "Worker Bee: hello"
+    assert card["body"][0]["columns"][0]["items"][0]["altText"] == "Worker Bee"
+    assert "worker" not in _teams_header(activity)
+    assert "worker" not in card["fallbackText"]
+    assert "worker" not in activity["summary"]
+
+
 def test_teams_card_names_the_agent_by_its_identifier_without_one() -> None:
     bridge = _bridge(_agent("worker", None))
     adapter, connector = _teams_adapter(bridge)
@@ -1181,6 +1200,32 @@ def test_teams_card_names_the_agent_by_its_identifier_without_one() -> None:
     assert _teams_header(activity) == "worker"
     assert _teams_card(activity)["fallbackText"] == "worker: hello"
     assert activity["summary"] == "worker: hello"
+
+
+def test_teams_awaiting_input_ping_uses_the_display_name_in_both_header_and_body() -> (
+    None
+):
+    """The ping is a card like any other message, so the label has to reach the
+    header AND the prose the base class writes — the identifier neither."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, connector = _teams_adapter(bridge)
+
+    _run(
+        adapter._apply_runtime_state(
+            TEAMS_CHAT,
+            "switchdev",
+            "awaiting-input",
+            mention_handle="Alice Example",
+            thread_root_id=None,
+            deeplink_url=None,
+        )
+    )
+
+    activity = connector.sends[-1]
+    assert _teams_header(activity) == "Switch Dev"
+    assert "Switch Dev" in _teams_body(activity)
+    assert "switchdev" not in _teams_body(activity)
+    assert "switchdev" not in _teams_header(activity)
 
 
 def test_teams_resolves_an_agent_once_per_send() -> None:
@@ -1279,6 +1324,32 @@ def test_teams_body_escape_cases(label: str, expected: str) -> None:
     assert adapter.escape_label_for_body(label) == expected
 
 
+def test_teams_puts_the_defused_label_only_where_markdown_renders() -> None:
+    """`altText` and `summary` render no markup, so a zero-width space in them
+    is pollution a screen reader and a notification toast would carry for
+    nothing. The header and `fallbackText` do render markdown and must carry
+    the defused form. Every other Teams test here uses a name whose two forms
+    coincide, so none of them can catch a slot swapped to the wrong one."""
+    bridge = _bridge(_agent("switchdev", "@alice the Bot"))
+    adapter, connector = _teams_adapter(bridge)
+
+    _run(adapter.send_message(TEAMS_CHAT, "switchdev", "hello"))
+
+    activity = connector.sends[0]
+    card = _teams_card(activity)
+    alt_text = card["body"][0]["columns"][0]["items"][0]["altText"]
+
+    assert _teams_header(activity) == "@\u200balice the Bot"
+    assert card["fallbackText"] == "@\u200balice the Bot: hello"
+    assert "@alice the Bot" not in _teams_header(activity)
+    assert "@alice the Bot" not in card["fallbackText"]
+
+    assert alt_text == "@alice the Bot"
+    assert activity["summary"] == "@alice the Bot: hello"
+    assert "@\u200balice the Bot" not in alt_text
+    assert "@\u200balice the Bot" not in activity["summary"]
+
+
 def test_a_teams_display_name_cannot_forge_a_link_in_the_header() -> None:
     """An Adaptive Card TextBlock renders markdown links, and the header is
     where the speaker's name goes — so `[text](url)` in a name is a destination
@@ -1351,6 +1422,17 @@ def _telegram_mark(text: str) -> str:
     return text.split()[0]
 
 
+def test_telegram_prefixes_a_message_with_the_display_name() -> None:
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, bot = _telegram_adapter(bridge)
+
+    _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
+
+    text = bot.messages[0]["text"]
+    assert text.endswith("<b>Switch Dev</b>: on it")
+    assert "switchdev" not in text
+
+
 def test_telegram_prefixes_a_message_with_the_identifier_without_one() -> None:
     bridge = _bridge(_agent("switchdev", None))
     adapter, bot = _telegram_adapter(bridge)
@@ -1358,6 +1440,116 @@ def test_telegram_prefixes_a_message_with_the_identifier_without_one() -> None:
     _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
 
     assert bot.messages[0]["text"].endswith("<b>switchdev</b>: on it")
+
+
+def test_telegram_attachment_caption_uses_the_display_name() -> None:
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, bot = _telegram_adapter(bridge)
+
+    _run(
+        adapter.send_attachment(
+            TELEGRAM_CHAT, "switchdev", "chart.png", "image/png", b"x", "the chart"
+        )
+    )
+
+    caption = bot.photos[0]["caption"]
+    assert caption.endswith("<b>Switch Dev</b>: the chart")
+    assert "switchdev" not in caption
+
+
+def test_telegram_album_caption_uses_the_display_name() -> None:
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, bot = _telegram_adapter(bridge)
+    files = [
+        OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a"),
+        OutboundAttachment(filename="b.png", mimetype="image/png", data=b"b"),
+    ]
+
+    _run(adapter.send_attachments(TELEGRAM_CHAT, "switchdev", files, "two charts"))
+
+    caption = bot.albums[0]["media"][0].caption
+    assert caption.endswith("<b>Switch Dev</b>: two charts")
+    assert "switchdev" not in caption
+
+
+def test_telegram_runtime_status_edit_keeps_the_display_name() -> None:
+    """The live "working on it…" card is edited in place rather than reposted,
+    and that edit rebuilds the prefix itself instead of going through
+    `send_message`."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, bot = _telegram_adapter(bridge)
+
+    for detail in ("Reading foo.py", "Editing foo.py"):
+        _run(
+            adapter._apply_runtime_state(
+                TELEGRAM_CHAT,
+                "switchdev",
+                "working",
+                mention_handle=None,
+                thread_root_id=None,
+                detail=detail,
+            )
+        )
+
+    edited = bot.edits[0]["text"]
+    assert "<b>Switch Dev</b>" in edited
+    assert "switchdev" not in edited
+    assert "Editing foo.py" in edited
+
+
+def test_telegram_escapes_a_display_name_exactly_once_in_the_prefix() -> None:
+    """The prefix is finished HTML, escaped by `_attribute` and nothing else,
+    so one `html.escape` is the whole of what it needs. The body escape inserts
+    zero-width spaces rather than entities, so it cannot contribute a second
+    round here."""
+    bridge = _bridge(_agent("switchdev", "R&D <Bot>"))
+    adapter, bot = _telegram_adapter(bridge)
+
+    _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
+
+    text = bot.messages[0]["text"]
+    assert text.endswith("<b>R&amp;D &lt;Bot&gt;</b>: on it")
+    assert "&amp;amp;" not in text
+
+
+def test_telegram_escapes_a_display_name_exactly_once_in_the_ping() -> None:
+    """The other pipeline, and the one that double-escaped: the base builds the
+    ping text around the label and hands the whole line to `translate_outbound`,
+    which escapes it. Both halves of this message carry the same name, and both
+    must have been escaped once."""
+    bridge = _bridge(_agent("switchdev", "R&D <Bot>"))
+    adapter, bot = _telegram_adapter(bridge)
+
+    _run(
+        adapter._apply_runtime_state(
+            TELEGRAM_CHAT,
+            "switchdev",
+            "awaiting-input",
+            mention_handle="opslead",
+            thread_root_id=None,
+        )
+    )
+
+    text = bot.messages[-1]["text"]
+    assert text.count("R&amp;D &lt;Bot&gt;") == 2
+    assert "&amp;amp;" not in text
+    assert "&lt;b&gt;" not in text
+
+
+def test_telegram_marks_two_agents_sharing_a_display_name_apart() -> None:
+    """The mark is the only thing distinguishing agents under one bot identity.
+    Keyed on the label, two agents a person happened to name the same would be
+    indistinguishable — which is the whole failure the mark exists to prevent."""
+    bridge = _bridge(_agent("scout", "Switch Dev"), _agent("ranger", "Switch Dev"))
+    adapter, bot = _telegram_adapter(bridge)
+
+    _run(adapter.send_message(TELEGRAM_CHAT, "scout", "one"))
+    _run(adapter.send_message(TELEGRAM_CHAT, "ranger", "two"))
+
+    scout, ranger = bot.messages[0]["text"], bot.messages[1]["text"]
+    assert _telegram_mark(scout) != _telegram_mark(ranger)
+    assert "<b>Switch Dev</b>" in scout
+    assert "<b>Switch Dev</b>" in ranger
 
 
 def test_a_telegram_agents_mark_does_not_move_when_it_is_renamed() -> None:
@@ -1438,6 +1630,62 @@ def test_a_telegram_display_name_cannot_forge_a_link() -> None:
     assert "<a href" not in text
 
 
+def test_a_telegram_display_name_cannot_mention_from_the_prefix() -> None:
+    """The prefix is message text, not a name field, so it takes the escaped
+    label too. Telegram links a bare `@handle` out of ordinary text with no
+    markup involved, so an undefused prefix notifies that account without ever
+    producing the `tg://user` anchor the ping-half tests look for — which is
+    why this asserts on the handle rather than on the anchor."""
+    bridge = _bridge(_agent("switchdev", "@ceo_person"))
+    adapter, bot = _telegram_adapter(bridge)
+    adapter._username_to_id["ceo_person"] = 777
+
+    _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
+
+    text = bot.messages[-1]["text"]
+    assert "@\u200bceo_person" in text
+    assert "@ceo_person" not in text
+
+
+def test_telegram_defuses_the_label_in_every_prefix_it_builds() -> None:
+    """Four call sites build a prefix; the plain send is only one of them. An
+    attachment caption, an album caption and the in-place runtime edit each
+    assemble their own, so each has to reach for the escaped label itself."""
+    bridge = _bridge(_agent("switchdev", "@ceo_person"))
+    adapter, bot = _telegram_adapter(bridge)
+    files = [
+        OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a"),
+        OutboundAttachment(filename="b.png", mimetype="image/png", data=b"b"),
+    ]
+
+    _run(
+        adapter.send_attachment(
+            TELEGRAM_CHAT, "switchdev", "chart.png", "image/png", b"x", "the chart"
+        )
+    )
+    _run(adapter.send_attachments(TELEGRAM_CHAT, "switchdev", files, "two charts"))
+    for detail in ("Reading foo.py", "Editing foo.py"):
+        _run(
+            adapter._apply_runtime_state(
+                TELEGRAM_CHAT,
+                "switchdev",
+                "working",
+                mention_handle=None,
+                thread_root_id=None,
+                detail=detail,
+            )
+        )
+
+    built = [
+        bot.photos[0]["caption"],
+        bot.albums[0]["media"][0].caption,
+        bot.edits[0]["text"],
+    ]
+    for prefix in built:
+        assert "@\u200bceo_person" in prefix
+        assert "@ceo_person" not in prefix
+
+
 def test_telegram_still_delivers_a_mention_the_agent_wrote() -> None:
     """The defusal must land on the label alone — an agent that meant to tag
     someone still tags them."""
@@ -1454,6 +1702,32 @@ def test_telegram_still_delivers_a_mention_the_agent_wrote() -> None:
     assert '<a href="tg://user?id=777">@opslead</a>' in bot.messages[-1]["text"]
 
 
+def test_telegram_resolves_an_agent_once_per_send() -> None:
+    """The prefix needs the label and the mark; both come off one row, so one
+    message must be one query."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, _bot = _telegram_adapter(bridge)
+
+    _run(adapter.send_message(TELEGRAM_CHAT, "switchdev", "on it"))
+
+    assert bridge._agent_store.lookups == ["switchdev"]  # type: ignore[attr-defined]
+
+
+def test_telegram_resolves_an_agent_once_for_a_whole_album() -> None:
+    """An album is one message however many files it carries. Resolving inside
+    the per-file loop made it one query per file, growing with the batch."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, _bot = _telegram_adapter(bridge)
+    files = [
+        OutboundAttachment(filename="a.png", mimetype="image/png", data=b"a"),
+        OutboundAttachment(filename="b.png", mimetype="image/png", data=b"b"),
+    ]
+
+    _run(adapter.send_attachments(TELEGRAM_CHAT, "switchdev", files, "two charts"))
+
+    assert bridge._agent_store.lookups == ["switchdev"]  # type: ignore[attr-defined]
+
+
 # ── Mattermost ───────────────────────────────────────────────────────────────
 
 
@@ -1463,8 +1737,10 @@ MATTERMOST_CHANNEL = "mm-channel-1"
 def _mattermost_adapter(
     bridge: BridgeCore | None,
 ) -> tuple[MattermostAdapter, list[str]]:
-    """Mattermost reaches the label through the inherited operator ping alone,
-    so the capture is of `send_message` rather than of a platform client."""
+    """Mattermost carries the label in two places: the inherited operator ping,
+    covered here, and the per-agent bot's own `display_name`, covered by the
+    identity tests below. This capture is of `send_message` rather than of a
+    platform client because the ping never reaches one."""
     adapter = MattermostAdapter(
         config=MattermostConnectionConfig(
             url="http://mattermost.invalid",
@@ -1583,3 +1859,286 @@ def test_mattermost_still_delivers_the_owner_ping() -> None:
     )
 
     assert sent[-1].startswith("@opslead ")
+
+
+# ── Mattermost bot identities ────────────────────────────────────────────────
+#
+# Mattermost is the one platform that gives an agent an account of its own. Its
+# `username` is the routing handle — the mention, the channel member-list key,
+# the key an existing bot is adopted back by — and is also constrained to 3-22
+# lowercase alphanumerics, so it stays the identifier. The bot's separate
+# `display_name` field is the presentation half, and the only place the label
+# may land.
+
+
+class _MattermostAdmin:
+    """The slice of a Mattermost `Driver` the identity path reaches.
+
+    Every `_mm_api` call goes through `client.make_request`, so the fake
+    answers at that level and records the calls verbatim — the assertions are
+    about the exact bodies Switch sends to `/bots`."""
+
+    def __init__(self, bots: list[dict[str, Any]], name_display: str | None) -> None:
+        self._bots = bots
+        self._name_display = name_display
+        self.requests: list[tuple[str, str, dict[str, Any] | None]] = []
+        self.client = SimpleNamespace(make_request=self._make_request)
+        self.teams = SimpleNamespace(add_user_to_team=lambda team_id, body: None)
+
+    def _make_request(
+        self, method: str, endpoint: str, options: dict[str, Any] | None = None
+    ) -> Any:
+        self.requests.append((method, endpoint, options))
+        payload = self._respond(method, endpoint, options)
+        return SimpleNamespace(json=lambda: payload)
+
+    def _respond(
+        self, method: str, endpoint: str, options: dict[str, Any] | None
+    ) -> Any:
+        if method == "get" and endpoint == "/config":
+            if self._name_display is None:
+                raise RuntimeError("config is readable by system admins only")
+            return {"TeamSettings": {"TeammateNameDisplay": self._name_display}}
+        if method == "get" and endpoint.startswith("/bots?"):
+            return self._bots
+        if method == "post" and endpoint == "/bots":
+            assert options is not None
+            return {"user_id": f"bot-{options['username']}"}
+        if method == "put" and endpoint.startswith("/bots/"):
+            return {}
+        if method == "post" and endpoint.endswith("/tokens"):
+            return {"token": "placeholder-bot-token"}
+        raise AssertionError(f"unexpected Mattermost call: {method} {endpoint}")
+
+    def bodies(self, method: str, endpoint: str) -> list[dict[str, Any] | None]:
+        return [
+            options for m, e, options in self.requests if m == method and e == endpoint
+        ]
+
+
+class _MattermostBot:
+    """A per-agent bot driver. It logs in and then parks in its websocket, as
+    the real one does — the identity path starts that thread as a daemon and
+    never joins it."""
+
+    def login(self) -> None:
+        return None
+
+    async def init_websocket(self, handler: Any) -> None:
+        await asyncio.Event().wait()
+
+
+def _mattermost_identity_adapter(
+    bridge: BridgeCore, bots: list[dict[str, Any]], name_display: str | None
+) -> tuple[MattermostAdapter, _MattermostAdmin]:
+    """An adapter wired for `create_agent_identity`: a fake admin driver, and
+    stubs for the icon upload (its own concern, covered elsewhere) and the bot
+    driver factory. `name_display` of None makes the config read fail, which is
+    what a non-admin bridge account sees."""
+    adapter = MattermostAdapter(
+        config=MattermostConnectionConfig(
+            url="http://mattermost.invalid",
+            admin_user="admin",
+            admin_password="pw",
+            team_name="team",
+        )
+    )
+    admin = _MattermostAdmin(bots, name_display)
+    adapter._admin_driver = admin  # type: ignore[assignment]
+    adapter._team_id = "team-1"
+    adapter.set_agent_presentation_resolver(bridge._agent_presentation)
+
+    async def set_bot_icon(bot_id: str, agent_name: str) -> None:
+        return None
+
+    adapter._set_bot_icon = set_bot_icon  # type: ignore[method-assign]
+    adapter._create_driver = lambda **kwargs: _MattermostBot()  # type: ignore[assignment,method-assign,return-value]
+    return adapter, admin
+
+
+def _create_mattermost_identity(adapter: MattermostAdapter, *agent_names: str) -> None:
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        for name in agent_names:
+            await adapter.create_agent_identity(name, "a Switch agent")
+
+    _run(_go())
+
+
+def test_mattermost_creates_the_bot_under_the_display_name() -> None:
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "full_name")
+
+    _create_mattermost_identity(adapter, "switchdev")
+
+    assert admin.bodies("post", "/bots") == [
+        {
+            "username": "switchdev",
+            "display_name": "Switch Dev",
+            "description": "Switch agent: a Switch agent",
+        }
+    ]
+
+
+def test_a_mattermost_bot_username_is_never_the_display_name() -> None:
+    """The hazard the whole split exists for: a username is the routing handle
+    and is also constrained to lowercase alphanumerics, so a label like this
+    one would not even be a legal username."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev (EMEA)"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "full_name")
+
+    _create_mattermost_identity(adapter, "switchdev")
+
+    body = admin.bodies("post", "/bots")[0]
+    assert body is not None
+    assert body["username"] == "switchdev"
+    assert adapter._agent_bots["switchdev"]["username"] == "switchdev"
+    assert adapter._bot_id_to_username == {"bot-switchdev": "switchdev"}
+
+
+def test_a_mattermost_bot_display_name_is_not_escaped_for_message_text() -> None:
+    """`display_name` is a name field Mattermost renders on its own, so it
+    takes the label verbatim. Sending the body form instead would bake the
+    zero-width spaces that defuse markup into the stored name — invisible in a
+    diff, and permanent on the account."""
+    bridge = _bridge(_agent("switchdev", "Switch @ Dev [EMEA]"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "full_name")
+
+    _create_mattermost_identity(adapter, "switchdev")
+
+    body = admin.bodies("post", "/bots")[0]
+    assert body is not None
+    assert body["display_name"] == "Switch @ Dev [EMEA]"
+    assert "​" not in body["display_name"]
+
+
+def test_a_mattermost_bot_falls_back_to_the_identifier() -> None:
+    bridge = _bridge(_agent("switchdev", None))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "full_name")
+
+    _create_mattermost_identity(adapter, "switchdev")
+
+    body = admin.bodies("post", "/bots")[0]
+    assert body is not None
+    assert body["display_name"] == "switchdev"
+
+
+def test_adopting_a_mattermost_bot_repairs_a_stale_display_name() -> None:
+    """The icon is re-applied on the adopt path as well as the create path, so
+    a renamed agent whose bot already exists must not be the one thing that
+    keeps its old name forever."""
+    existing = {
+        "user_id": "bot-switchdev",
+        "username": "switchdev",
+        "display_name": "Switch Dev",
+    }
+    bridge = _bridge(_agent("switchdev", "Switch Developer"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [existing], "full_name")
+
+    _create_mattermost_identity(adapter, "switchdev")
+
+    assert admin.bodies("put", "/bots/bot-switchdev") == [
+        {"display_name": "Switch Developer"}
+    ]
+    assert admin.bodies("post", "/bots") == []
+
+
+def test_adopting_a_mattermost_bot_leaves_a_current_display_name_alone() -> None:
+    existing = {
+        "user_id": "bot-switchdev",
+        "username": "switchdev",
+        "display_name": "Switch Dev",
+    }
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [existing], "full_name")
+
+    _create_mattermost_identity(adapter, "switchdev")
+
+    assert [m for m, _e, _o in admin.requests if m == "put"] == []
+
+
+def _name_display_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and "TeammateNameDisplay" in r.getMessage()
+    ]
+
+
+def test_mattermost_warns_when_the_server_will_not_render_display_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`TeammateNameDisplay` defaults to "username", under which the display
+    name is stored and never seen. Setting it silently would be the degrade
+    that looks fine."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, _admin = _mattermost_identity_adapter(bridge, [], "username")
+
+    with caplog.at_level("WARNING"):
+        _create_mattermost_identity(adapter, "switchdev")
+
+    assert len(_name_display_warnings(caplog)) == 1
+    assert "will not appear in the post header" in _name_display_warnings(caplog)[0]
+
+
+def test_mattermost_does_not_warn_when_the_server_renders_display_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, _admin = _mattermost_identity_adapter(bridge, [], "full_name")
+
+    with caplog.at_level("WARNING"):
+        _create_mattermost_identity(adapter, "switchdev")
+
+    assert _name_display_warnings(caplog) == []
+
+
+def test_mattermost_does_not_warn_when_no_agent_has_a_display_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Nothing to render, nothing to warn about — and no reason to ask the
+    server about a setting that changes nothing here."""
+    bridge = _bridge(_agent("switchdev", None))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "username")
+
+    with caplog.at_level("WARNING"):
+        _create_mattermost_identity(adapter, "switchdev")
+
+    assert _name_display_warnings(caplog) == []
+    assert [e for _m, e, _o in admin.requests if e == "/config"] == []
+
+
+def test_mattermost_reads_the_name_display_setting_once_per_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bridge = _bridge(_agent("switchdev", "Switch Dev"), _agent("opsbot", "Ops Bot"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], "username")
+
+    with caplog.at_level("WARNING"):
+        _create_mattermost_identity(adapter, "switchdev", "opsbot")
+
+    assert [e for _m, e, _o in admin.requests if e == "/config"] == ["/config"]
+    assert len(_name_display_warnings(caplog)) == 1
+
+
+def test_a_mattermost_bot_is_created_even_when_the_setting_cannot_be_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The server config is readable by a system admin only. Not knowing is
+    said out loud, and is not a reason to leave the agent without a bot."""
+    bridge = _bridge(_agent("switchdev", "Switch Dev"))
+    adapter, admin = _mattermost_identity_adapter(bridge, [], None)
+
+    with caplog.at_level("WARNING"):
+        _create_mattermost_identity(adapter, "switchdev")
+
+    body = admin.bodies("post", "/bots")[0]
+    assert body is not None
+    assert body["display_name"] == "Switch Dev"
+    assert "switchdev" in adapter._agent_bots
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and "server config" in r.getMessage()
+    ]
+    assert len(warnings) == 1

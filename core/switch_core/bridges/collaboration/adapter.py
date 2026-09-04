@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import ClassVar
 
+from switch_core.agent_display_name import defuse_label_markup
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -22,8 +23,6 @@ from switch_core.bridges.collaboration.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-_ZERO_WIDTH_SPACE = "\u200b"
 
 
 def format_elapsed(seconds: float) -> str:
@@ -931,9 +930,7 @@ class CollaborationAdapter(ABC):
         unbalance the run around it. That is cosmetic, and the line held here
         is that forged markup is closed while broken formatting is not worth
         an escape that would show up in every ordinary name."""
-        return label.replace("@", "@" + _ZERO_WIDTH_SPACE).replace(
-            "]", "]" + _ZERO_WIDTH_SPACE
-        )
+        return defuse_label_markup(label)
 
     async def agent_rendering(self, agent_name: str) -> AgentRendering:
         """Everything a send needs to present an agent, from ONE lookup.

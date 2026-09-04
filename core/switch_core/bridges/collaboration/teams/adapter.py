@@ -808,18 +808,15 @@ class TeamsAdapter(CollaborationAdapter):
         return self._last_post.get(channel_id)
 
     async def _message_activity(self, sender_name: str, body: str) -> dict[str, Any]:
-        icon_url = await self.agent_icon_url(sender_name)
+        agent = await self.agent_rendering(sender_name)
         mentions = self._mention_entities(body)
         return {
             "type": "message",
             # Notification/preview text; without it Teams renders a
             # "cards.unsupported" placeholder in toasts, mobile, and link previews.
-            "summary": f"{sender_name}: {body}",
-            "attachments": [
-                card_attachment(
-                    agent_message_card(sender_name, body, icon_url, mentions=mentions)
-                )
-            ],
+            # Plain text, rendered by no markup engine, so the label goes in raw.
+            "summary": f"{agent.field_label}: {body}",
+            "attachments": [card_attachment(agent_message_card(agent, body, mentions))],
         }
 
     # ── Messaging ────────────────────────────────────────────────────────────
