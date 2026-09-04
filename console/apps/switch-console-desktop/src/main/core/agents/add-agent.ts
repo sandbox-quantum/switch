@@ -14,6 +14,7 @@ import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { isUsableRemoteDir, type RemoteDirInspection } from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
@@ -25,6 +26,7 @@ import { resolveWorkspaceFsFor } from './agent-workspace-fs';
 import { createAgent } from './createAgent';
 import { knownAgentTypeForProvider } from './known-agent-type';
 import { registerAgentIdentity } from './register-agent-identity';
+import { inspectRemoteDir } from './remote-dir';
 import { reconcileAgentAutoSessionFromGateway } from './setAgentAutoSession';
 import { writeNeutralAgentSettingsFs } from './write-switch-settings';
 
@@ -70,6 +72,11 @@ export type AddAgentResult =
   | { kind: 'name-conflict' }
   | { kind: 'credentials-conflict'; endpoint: string }
   | { kind: 'invalid-name'; message: string }
+  /** The remote working directory is unusable: it is a file, or neither it nor
+   * its parent exists so the credentials write cannot create it. Reported
+   * before anything is minted, so no Switch-side agent is left behind
+   * (CHOO-1416). */
+  | { kind: 'directory-missing'; sshHost: string; inspection: RemoteDirInspection }
   | { kind: 'error'; message: string };
 
 /** The result's discriminant as a reportable code. Never its message. */
@@ -81,6 +88,7 @@ const ADD_AGENT_FAILURE_REASON: Record<
   'name-conflict': 'name_conflict',
   'credentials-conflict': 'credentials_conflict',
   'invalid-name': 'invalid_name',
+  'directory-missing': 'directory_missing',
   error: 'error',
 };
 
@@ -142,6 +150,20 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
       kind: 'error',
       message: `Invalid directory: ${params.dir}`,
     });
+  }
+  if (params.sshHost !== null) {
+    // Checked before minting: the directory is the one free-text input in the
+    // flow, and failing at write time used to leave an agent registered on the
+    // gateway with nothing on disk (CHOO-1416). A missing directory under an
+    // existing parent still goes through — the first write creates it.
+    const inspection = await inspectRemoteDir(params.sshHost, params.dir);
+    if (!isUsableRemoteDir(inspection)) {
+      return reportFailedCreate(params, {
+        kind: 'directory-missing',
+        sshHost: params.sshHost,
+        inspection,
+      });
+    }
   }
 
   const server = await getServer(params.serverId);

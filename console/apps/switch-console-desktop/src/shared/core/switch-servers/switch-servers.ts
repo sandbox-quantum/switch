@@ -9,6 +9,8 @@
  * in the encrypted secrets store, never in plain settings.
  */
 
+import type { RemoteDirInspection } from '@shared/core/remote-hosts/remote-dir';
+
 /**
  * Origin (protocol + host + port, lowercased) of a URL, or null if unparseable.
  * Agents are matched to servers by origin rather than full URL: an agent's
@@ -709,6 +711,10 @@ export type ProvisionAgentResult =
    * the Switch deployment at `endpoint` — another install's agent. Refused
    * before minting, so nothing was created. */
   | { kind: 'credentials-conflict'; endpoint: string }
+  /** The remote working directory is unusable — a file, or its parent is
+   * missing too. Produced by the add-agent path, which checks before minting
+   * (CHOO-1416). */
+  | { kind: 'directory-missing'; sshHost: string; inspection: RemoteDirInspection }
   | RegisterIdentityFailure;
 
 /**
