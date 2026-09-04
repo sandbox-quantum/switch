@@ -20,9 +20,10 @@ export type RemoteDirStatus =
   /** Exists, but is a regular file. */
   | 'file'
   /**
-   * Neither the directory nor its parent exists. This is the failing case: a
-   * working directory's FS is rooted at the directory itself, and its recursive
-   * mkdir will not create anything above that root.
+   * Does not exist and cannot be created: its parent is absent, or is not a
+   * directory. This is the failing case: a working directory's FS is rooted at
+   * the directory itself, and its recursive mkdir will not create anything
+   * above that root.
    */
   | 'missing';
 

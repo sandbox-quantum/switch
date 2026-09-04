@@ -299,7 +299,7 @@ export const AddAgentModal = observer(function AddAgentModal({
         description:
           result.inspection.status === 'file'
             ? `${result.inspection.dir} is a file on ${result.sshHost}.`
-            : `Neither ${result.inspection.dir} nor its parent exists on ${result.sshHost} — create the parent directory first.`,
+            : `${result.inspection.dir} cannot be created on ${result.sshHost}: its parent directory is missing or is not a directory. Create the parent first.`,
         variant: 'destructive',
       });
       return;
