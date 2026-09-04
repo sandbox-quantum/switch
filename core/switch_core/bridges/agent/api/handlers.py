@@ -101,8 +101,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MEDIATION_TIMEOUT_SECONDS = 10.0
-
 
 def parse_timestamp_ms(iso: str) -> int:
     dt = datetime.fromisoformat(iso)
@@ -1277,8 +1275,6 @@ async def pre_tool_call(
             req.room_id,
             req.tool_name,
             req.arguments,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1304,8 +1300,6 @@ async def pre_llm_request(
             req.room_id,
             req.model,
             req.messages,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1331,8 +1325,6 @@ async def post_tool_result(
             req.room_id,
             req.tool_name,
             req.result,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1358,8 +1350,6 @@ async def post_llm_response(
             req.room_id,
             req.model,
             req.response,
-            req.request_id,
-            MEDIATION_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

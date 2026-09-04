@@ -7,13 +7,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from nio import (
-    DownloadError,
-    MatrixRoom,
-    RoomMessageMedia,
-    RoomMessageText,
-    RoomSendError,
-)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -42,8 +35,18 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import AgentRuntimeStateEvent
-from switch_core.matrix_admin import MatrixAdmin
+from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
+from switch_core.transport import (
+    InboundMedia as TransportMedia,
+)
+from switch_core.transport import (
+    InboundMessage as TransportMessage,
+)
+from switch_core.transport import (
+    RoomRef,
+    TransportError,
+)
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -116,7 +119,7 @@ class BridgeCore:
         client_store: ClientStore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         matrix_server_name: str,
         bridge_client_matrix_user_id: str,
@@ -657,16 +660,16 @@ class BridgeCore:
                 "event_id": existing_matrix_root,
             }
 
-        resp = await puppet.client.room_send(
-            matrix_room_id, "com.switch.command", content
-        )
-
-        if isinstance(resp, RoomSendError):
+        try:
+            event_id = await puppet.send_event(
+                matrix_room_id, "com.switch.command", content
+            )
+        except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",
                 cmd.command,
                 matrix_room_id,
-                resp.message,
+                exc,
             )
             return
 
@@ -678,15 +681,15 @@ class BridgeCore:
             # Anchor in memory before the DB write: the write awaits a query that
             # yields the loop, and a fast reply (e.g. !help) relayed in that gap
             # would miss the row and land at the channel root. Popped on commit.
-            self._prerecord_message_map(resp.event_id, thread_root_post)
+            self._prerecord_message_map(event_id, thread_root_post)
             try:
                 await self._record_message_map(
                     external_channel_id=cmd.channel_id,
-                    matrix_event_id=resp.event_id,
+                    matrix_event_id=event_id,
                     external_post_id=thread_root_post,
                 )
             finally:
-                self._pending_message_maps.pop(resp.event_id, None)
+                self._pending_message_maps.pop(event_id, None)
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1250,7 +1253,7 @@ class BridgeCore:
     # ── Outbound (room → platform) ──────────────────────────────────────────
 
     async def handle_outbound_message(
-        self, room: MatrixRoom, event: RoomMessageText
+        self, room: RoomRef, event: TransportMessage
     ) -> None:
         logger.debug(
             "[BRIDGE-OUT] matrix event from=%s room=%s body=%s",
@@ -1270,9 +1273,9 @@ class BridgeCore:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
 
-        event_content = event.source.get("content", {}) or {}
+        event_content = event.content
         admin_marker = event_content.get(ADMIN_MARKER)
-        sender_name = event_content.get("sender_name")
+        sender_name = event.sender_name
         # An admin/system message renders natively per bridge (admin_message)
         # rather than on behalf of its Matrix sender, so it needs no sender_name.
         if sender_name is None and admin_marker is None:
@@ -1351,8 +1354,8 @@ class BridgeCore:
 
     async def handle_outbound_media(
         self,
-        room: MatrixRoom,
-        event: RoomMessageMedia,
+        room: RoomRef,
+        event: TransportMedia,
         client: ClientBase[Any],
     ) -> None:
         """Relay a Matrix media event (an agent-sent image/file) out to the
@@ -1386,8 +1389,8 @@ class BridgeCore:
             logger.debug("[BRIDGE-OUT] no channel mapping for room %s", room.room_id)
             return
 
-        event_content = event.source.get("content", {}) or {}
-        sender_name = event_content.get("sender_name")
+        event_content = event.content
+        sender_name = event.sender_name
         if sender_name is None:
             logger.error(
                 "No sender_name in media event from %s — skipping outbound",
@@ -1414,7 +1417,7 @@ class BridgeCore:
         )
 
         message_ref: str | None
-        data = await self._download_matrix_media(client, event.url, filename)
+        data = await self._download_matrix_media(client, event.uri, filename)
         if data is None or len(data) > self._max_attachment_bytes:
             if data is not None:
                 logger.warning(
@@ -1570,18 +1573,17 @@ class BridgeCore:
         if not mxc:
             logger.error("[BRIDGE-OUT] media event for %s has no mxc URI", filename)
             return None
-        if client.nio_client is None:
+        if client.transport is None:
             logger.error(
                 "[BRIDGE-OUT] bridge client not connected; cannot fetch %s", mxc
             )
             return None
-        resp = await client.nio_client.download(mxc=mxc)
-        if isinstance(resp, DownloadError):
-            logger.error(
-                "[BRIDGE-OUT] failed to download media %s: %s", mxc, resp.message
-            )
+        try:
+            resp = await client.transport.download_media(mxc)
+        except TransportError as exc:
+            logger.error("[BRIDGE-OUT] failed to download media %s: %s", mxc, exc)
             return None
-        return resp.body  # type: ignore[no-any-return]
+        return resp.body
 
     async def handle_outbound_typing(
         self, room_id: str, agent_name: str, is_typing: bool
@@ -1594,7 +1596,7 @@ class BridgeCore:
         await self._adapter.send_typing(channel_id, agent_name, is_typing)
 
     async def handle_agent_runtime_state(
-        self, room: MatrixRoom, event: AgentRuntimeStateEvent
+        self, room: RoomRef, event: AgentRuntimeStateEvent
     ) -> None:
         """Resolve the channel and let the adapter surface the runtime state.
 

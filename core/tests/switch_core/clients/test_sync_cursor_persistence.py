@@ -8,6 +8,11 @@ pool on an otherwise idle instance.
 
 Two properties fix that and are asserted here: an idle sync does not earn a
 write at all, and the clients that do write are spread out rather than aligned.
+
+Whether a given batch counted as idle is the transport's judgement, not this
+one's — it is the only thing that can see what the batch held, and it says so
+as the `durable` flag these tests pass in. What that flag is derived from is
+covered in `tests/switch_core/transport/test_sync_durability.py`.
 """
 
 from __future__ import annotations
@@ -15,15 +20,6 @@ from __future__ import annotations
 import time
 
 import pytest
-from nio import (
-    DeviceList,
-    DeviceOneTimeKeyCount,
-    InviteInfo,
-    RoomInfo,
-    Rooms,
-    SyncResponse,
-    Timeline,
-)
 
 from switch_core.clients.client_base import (
     SYNC_STATE_INTERVAL,
@@ -31,6 +27,7 @@ from switch_core.clients.client_base import (
     SYNC_STATE_MAX_STALENESS,
     ClientBase,
 )
+from tests.switch_core.transport.fake import FakeMessageRecorder
 
 ROOM = "!room:switch.local"
 
@@ -57,8 +54,6 @@ class _Store:
         session: object,
         client_id: str,
         *,
-        access_token: str | None,
-        device_id: str | None,
         next_batch_token: str | None,
     ) -> None:
         self.writes.append(next_batch_token)
@@ -81,6 +76,9 @@ class _Client(ClientBase):
             session_factory=_Session,  # type: ignore[arg-type]
             client_store=_Store(),  # type: ignore[arg-type]
             config=ClientBase.config_class(),
+            transport_factory=lambda client: object(),  # type: ignore[arg-type,return-value]
+            session_state={},
+            message_recorder=FakeMessageRecorder(),
             next_batch_token="s0",
         )
         # Pin the jittered interval so the throttle assertions are deterministic.
@@ -90,39 +88,6 @@ class _Client(ClientBase):
     def writes(self) -> list[str | None]:
         store: _Store = self.client_store  # type: ignore[assignment]
         return store.writes
-
-
-def _sync(
-    next_batch: str,
-    *,
-    timeline: list[object] | None = None,
-    state: list[object] | None = None,
-    ephemeral: list[object] | None = None,
-    invite: bool = False,
-    to_device: list[object] | None = None,
-) -> SyncResponse:
-    join = {
-        ROOM: RoomInfo(
-            timeline=Timeline(
-                events=list(timeline or []), limited=False, prev_batch=None
-            ),
-            state=list(state or []),
-            ephemeral=list(ephemeral or []),
-            account_data=[],
-        )
-    }
-    return SyncResponse(
-        next_batch=next_batch,
-        rooms=Rooms(
-            invite={ROOM: InviteInfo(invite_state=[])} if invite else {},
-            join=join,
-            leave={},
-        ),
-        device_key_count=DeviceOneTimeKeyCount(curve25519=None, signed_curve25519=None),
-        device_list=DeviceList(changed=[], left=[]),
-        to_device_events=list(to_device or []),
-        presence_events=[],
-    )
 
 
 @pytest.mark.asyncio
@@ -136,7 +101,7 @@ async def test_idle_sync_advances_the_cursor_without_writing() -> None:
     client._last_sync_persist = time.monotonic() - 10 * SYNC_STATE_INTERVAL
 
     for i in range(1, 6):
-        await client._handle_sync(_sync(f"s{i}"))
+        await client._handle_sync(f"s{i}", False)
 
     assert client.writes == []
     # The cursor still moved, so the next sync does not refetch.
@@ -145,34 +110,24 @@ async def test_idle_sync_advances_the_cursor_without_writing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ephemeral_only_sync_does_not_earn_a_write() -> None:
+async def test_a_batch_the_transport_called_idle_does_not_earn_a_write() -> None:
     """Typing notices and read receipts advance the token and mean nothing."""
     client = _Client()
     client._last_sync_persist = time.monotonic() - 10 * SYNC_STATE_INTERVAL
 
-    await client._handle_sync(_sync("s1", ephemeral=[object()]))
+    await client._handle_sync("s1", False)
 
     assert client.writes == []
     assert client.next_batch_token == "s1"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"timeline": [object()]},
-        {"state": [object()]},
-        {"invite": True},
-        {"to_device": [object()]},
-    ],
-    ids=["timeline", "state", "invite", "to_device"],
-)
-async def test_durable_events_are_persisted(kwargs: dict[str, object]) -> None:
+async def test_durable_events_are_persisted() -> None:
     """Anything a restart would replay to a handler must move the cursor."""
     client = _Client()
     client._last_sync_persist = time.monotonic() - 10 * SYNC_STATE_INTERVAL
 
-    await client._handle_sync(_sync("s1", **kwargs))  # type: ignore[arg-type]
+    await client._handle_sync("s1", True)
 
     assert client.writes == ["s1"]
 
@@ -183,11 +138,11 @@ async def test_a_stale_cursor_is_flushed_even_while_idle() -> None:
     client = _Client()
     client._last_sync_persist = time.monotonic() - (SYNC_STATE_MAX_STALENESS - 1)
 
-    await client._handle_sync(_sync("s1"))
+    await client._handle_sync("s1", False)
     assert client.writes == []
 
     client._last_sync_persist = time.monotonic() - (SYNC_STATE_MAX_STALENESS + 1)
-    await client._handle_sync(_sync("s2"))
+    await client._handle_sync("s2", False)
 
     assert client.writes == ["s2"]
     assert client._sync_state_dirty is False
@@ -199,9 +154,9 @@ async def test_busy_clients_are_still_throttled() -> None:
     client = _Client()
     client._last_sync_persist = time.monotonic() - 10 * SYNC_STATE_INTERVAL
 
-    await client._handle_sync(_sync("s1", timeline=[object()]))
-    await client._handle_sync(_sync("s2", timeline=[object()]))
-    await client._handle_sync(_sync("s3", timeline=[object()]))
+    await client._handle_sync("s1", True)
+    await client._handle_sync("s2", True)
+    await client._handle_sync("s3", True)
 
     assert client.writes == ["s1"]
     assert client.next_batch_token == "s3"
@@ -212,7 +167,7 @@ async def test_an_unchanged_cursor_is_ignored() -> None:
     client = _Client()
     client._last_sync_persist = time.monotonic() - 10 * SYNC_STATE_INTERVAL
 
-    await client._handle_sync(_sync("s0", timeline=[object()]))
+    await client._handle_sync("s0", True)
 
     assert client.writes == []
 
@@ -229,6 +184,9 @@ def _real_clients(count: int) -> list[ClientBase]:
             session_factory=None,  # type: ignore[arg-type]
             client_store=None,  # type: ignore[arg-type]
             config=ClientBase.config_class(),
+            transport_factory=lambda client: object(),  # type: ignore[arg-type,return-value]
+            session_state={},
+            message_recorder=FakeMessageRecorder(),
         )
         for i in range(count)
     ]

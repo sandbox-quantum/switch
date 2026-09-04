@@ -29,6 +29,8 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.delivery.addressing import AddressingResolver
+from switch_core.transport import InboundMessage, RoomRef
 
 MATRIX_ROOM_ID = "!r:test"
 
@@ -126,6 +128,14 @@ def _client(
     client._agent_session_store = AgentSessionStore()
     client._external_user_store = ExternalUserStore()
     client._connections = ConnectionRegistry()
+    client._addressing = AddressingResolver(
+        room_store=client._room_store,
+        room_role_store=client._room_role_store,
+        client_store=client.client_store,
+        agent_store=client._agent_store,
+        external_user_store=client._external_user_store,
+        live_agent_ids=client._connections.live_agent_ids,
+    )
     client._frontend_base_url = None
     client._room_meta = {
         MATRIX_ROOM_ID: RoomMeta(
@@ -150,19 +160,20 @@ def _client(
     return client
 
 
-def _message(body: str, sender: str = "@switch-slack-louisa:test") -> Any:
-    return SimpleNamespace(
-        body=body,
-        formatted_body=None,
-        sender=sender,
+def _message(body: str, sender: str = "@switch-slack-louisa:test") -> InboundMessage:
+    return InboundMessage(
+        room_id=MATRIX_ROOM_ID,
         event_id="$trigger",
-        server_timestamp=0,
-        source={"content": {"body": body, "sender_name": "louisa"}},
+        sender=sender,
+        timestamp=0,
+        content={"body": body, "sender_name": "louisa"},
+        body=body,
+        sender_name="louisa",
     )
 
 
-def _room() -> Any:
-    return SimpleNamespace(room_id=MATRIX_ROOM_ID)
+def _room() -> RoomRef:
+    return RoomRef(room_id=MATRIX_ROOM_ID)
 
 
 class TestInboundMessageCheckouts:

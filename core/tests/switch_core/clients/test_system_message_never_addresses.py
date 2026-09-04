@@ -23,17 +23,21 @@ import pytest
 from switch_core.clients.admin_messages import ADMIN_MARKER, admin_extra_content
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.delivery.addressing import AddressingResolver
+from switch_core.transport import InboundMessage
 
 
-def _event(body: str, *, admin: bool = False) -> SimpleNamespace:
+def _event(body: str, *, admin: bool = False) -> InboundMessage:
     content: dict = {"body": body}
     if admin:
         content.update(admin_extra_content(None))
-    return SimpleNamespace(
-        body=body,
-        formatted_body=None,
+    return InboundMessage(
+        room_id="!room:server",
+        event_id="$evt",
         sender="@switch-admin:switch.local",
-        source={"content": content},
+        timestamp=1,
+        content=content,
+        body=body,
     )
 
 
@@ -42,7 +46,12 @@ def _meta(channel_type: str) -> RoomMeta:
 
 
 def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
-    client = SimpleNamespace(
+    """A resolver with the two store-backed checks stubbed out.
+
+    Only the name mention is left live: alias and role routing have their own
+    tests, and what these pin is that the marker beats all three.
+    """
+    resolver = SimpleNamespace(
         agent=SimpleNamespace(name=name),
         matrix_user_id=f"@switch-agent-{name}:switch.local",
     )
@@ -50,17 +59,31 @@ def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
     async def _no(*_a: object, **_k: object) -> bool:
         return False
 
-    client._is_mentioned = lambda event: AgentClient._is_mentioned(client, event)
-    client._addressed_without_lookup = lambda event, meta: (
-        AgentClient._addressed_without_lookup(client, event, meta)
+    resolver.mentions_name = lambda **kw: AddressingResolver.mentions_name(
+        resolver, **kw
     )
-    client._is_mentioned_via_alias = _no
-    client._is_mentioned_via_role = _no
-    return client
+    resolver.addressed_without_lookup = lambda **kw: (
+        AddressingResolver.addressed_without_lookup(resolver, **kw)
+    )
+    resolver.mentions_alias = _no
+    resolver.mentions_role = _no
+    return resolver
 
 
-async def _addressed(client: SimpleNamespace, event: object, meta: RoomMeta) -> bool:
-    return await AgentClient._compute_addressed(client, None, event, meta)
+async def _addressed(
+    resolver: SimpleNamespace, event: InboundMessage, meta: RoomMeta
+) -> bool:
+    # `object()` stands in for the session the caller owns: the marker and the
+    # name mention are answered before any store is consulted.
+    return await AddressingResolver.addresses(
+        resolver,
+        object(),
+        agent=resolver.agent,
+        agent_matrix_id=resolver.matrix_user_id,
+        room_id=meta.room_id,
+        channel_type=meta.channel_type,
+        message=AgentClient._as_incoming(event),
+    )
 
 
 @pytest.mark.asyncio
@@ -103,7 +126,7 @@ async def test_the_marker_alone_is_enough_whatever_type_it_carries() -> None:
     from switch_core.clients.admin_messages import AdminMessageType
 
     event = _event("Added flintai-sdk.ts to this room.")
-    event.source["content"].update(admin_extra_content(AdminMessageType.COMMAND_RESULT))
-    assert ADMIN_MARKER in event.source["content"]
+    event.content.update(admin_extra_content(AdminMessageType.COMMAND_RESULT))
+    assert ADMIN_MARKER in event.content
 
     assert await _addressed(_client(), event, _meta("direct")) is False

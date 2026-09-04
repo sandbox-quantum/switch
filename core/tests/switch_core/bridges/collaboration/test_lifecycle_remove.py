@@ -50,6 +50,7 @@ def _service(
         matrix_admin=MagicMock(),
         session_factory=session_factory,
         config=MagicMock(),
+        client_factory=MagicMock(),
     )
 
 
@@ -225,3 +226,31 @@ class TestTheBridgeClientName:
         localpart = _bridge_client_localpart("slack", "Ops & Eng (US)")
 
         assert re.fullmatch(r"[a-z0-9._=/-]+", localpart)
+
+
+@pytest.mark.asyncio
+async def test_a_starting_bridge_is_recorded_in_the_rooms_it_carries(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Membership is a row now, and nothing had ever written the bridge's.
+
+    Its rooms were expressed by inviting it and letting the homeserver
+    remember; once a client reads its rooms from `client_rooms`, a bridge with
+    no rows is in none of them and relays nothing outward — while still
+    receiving, because inbound posts into a room by id.
+    """
+    service = _service(session_factory)
+    async with session_factory() as session:
+        bridge_id, client_id = await _make_bridge(session)
+        room_id = await _make_bridged_room(session, bridge_id=bridge_id)
+        other_bridge_id, _ = await _make_bridge(session)
+        elsewhere_id = await _make_bridged_room(session, bridge_id=other_bridge_id)
+        await session.commit()
+
+    await service._record_bridge_memberships(bridge_id, client_id)
+    # Again, because a bridge starts more than once.
+    await service._record_bridge_memberships(bridge_id, client_id)
+
+    async with session_factory() as session:
+        assert await RoomStore().get_client_ids(session, room_id) == [client_id]
+        assert await RoomStore().get_client_ids(session, elsewhere_id) == []

@@ -6,8 +6,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
-from nio import MatrixRoom
-
 from switch_core.agent_display_name import agent_label, agent_label_with_identifier
 from switch_core.aliases import (
     AliasError,
@@ -24,6 +22,7 @@ from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.events import CommandEvent
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
     from switch_core.clients.admin_client import AdminClient
@@ -45,9 +44,7 @@ AGENT_GREETINGS = [
     "Hi there! Just @{name} me when you're ready.",
 ]
 
-CommandHandler = Callable[
-    ["AgentClient", MatrixRoom, CommandEvent, bool], Awaitable[None]
-]
+CommandHandler = Callable[["AgentClient", RoomRef, CommandEvent, bool], Awaitable[None]]
 # (client, args, room_id) -> whether THIS agent is addressed by the command.
 # Targeting is a per-command policy (see Command.addressed) rather than a fixed
 # rule in on_command, so a command like `run-cmd` can interpret its args its
@@ -58,7 +55,7 @@ CommandTargeting = Callable[["AgentClient", str, str], Awaitable[bool]]
 # system message when the command is misused (bad/missing target) and does
 # nothing when usage is valid; it never executes the command itself.
 CommandAdminCheck = Callable[
-    ["AdminClient", MatrixRoom, CommandEvent, "RoomMeta"], Awaitable[None]
+    ["AdminClient", RoomRef, CommandEvent, "RoomMeta"], Awaitable[None]
 ]
 
 
@@ -129,7 +126,7 @@ async def _first_token_is_me(client: AgentClient, first: str, room_id: str) -> b
 
 
 async def _check_control_target(
-    host: AdminClient, room: MatrixRoom, event: CommandEvent, meta: RoomMeta
+    host: AdminClient, room: RoomRef, event: CommandEvent, meta: RoomMeta
 ) -> None:
     """Admin-side usage feedback for a target-required control command.
 
@@ -238,7 +235,7 @@ class Command:
 
 async def _reply(
     client: AgentClient | AdminClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     body: str,
     *,
@@ -261,7 +258,7 @@ async def _reply(
 
 
 async def _cmd_help(
-    client: AgentClient, room: MatrixRoom, event: CommandEvent, _is_direct: bool
+    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     lines = ["**Available commands:**"]
     for cmd in COMMANDS:
@@ -273,7 +270,7 @@ async def _cmd_help(
 
 async def _dispatch_control_command(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     command: str,
     *,
@@ -367,7 +364,7 @@ async def _dispatch_control_command(
 
 
 async def _cmd_reset(
-    client: AgentClient, room: MatrixRoom, event: CommandEvent, _is_direct: bool
+    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -388,7 +385,7 @@ async def _cmd_reset(
 
 
 async def _cmd_compact(
-    client: AgentClient, room: MatrixRoom, event: CommandEvent, _is_direct: bool
+    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -408,7 +405,7 @@ async def _cmd_compact(
 
 
 async def _cmd_interrupt(
-    client: AgentClient, room: MatrixRoom, event: CommandEvent, _is_direct: bool
+    client: AgentClient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     await _dispatch_control_command(
         client,
@@ -429,7 +426,7 @@ async def _cmd_interrupt(
 
 async def _cmd_list_room_agents(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -457,7 +454,7 @@ async def _cmd_list_room_agents(
 
 async def _cmd_list_aliases(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -489,7 +486,7 @@ async def _cmd_list_aliases(
 
 async def _cmd_set_alias(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -559,7 +556,7 @@ async def _cmd_set_alias(
 
 async def _cmd_remove_alias(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -611,7 +608,7 @@ async def _cmd_remove_alias(
 
 async def _cmd_invite(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -730,7 +727,7 @@ def _format_status_lines(
 
 async def _cmd_status(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -772,7 +769,7 @@ async def _cmd_status(
 
 async def _cmd_roles(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -810,7 +807,7 @@ async def _cmd_roles(
 
 async def _cmd_list_documents(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -856,7 +853,7 @@ async def _cmd_list_documents(
 
 async def _cmd_list_references(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -892,7 +889,7 @@ async def _cmd_list_references(
 
 async def _cmd_room_url(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -919,7 +916,7 @@ async def _cmd_room_url(
 
 async def _cmd_list_all_agents(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -951,7 +948,7 @@ def _role_arg(args: str) -> str | None:
 
 async def _cmd_run_cmd(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     _is_direct: bool,
 ) -> None:
@@ -1012,7 +1009,7 @@ async def _cmd_run_cmd(
 
 async def _cmd_agents_greet(
     client: AgentClient,
-    room: MatrixRoom,
+    room: RoomRef,
     event: CommandEvent,
     is_direct: bool,
 ) -> None:
@@ -1219,7 +1216,7 @@ COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
 
 
 async def dispatch_command(
-    client: AgentClient, room: MatrixRoom, event: CommandEvent, is_direct: bool
+    client: AgentClient, room: RoomRef, event: CommandEvent, is_direct: bool
 ) -> bool:
     """Runs a command.
 
@@ -1244,7 +1241,7 @@ async def dispatch_command(
 
 
 async def dispatch_admin_command(
-    host: AdminClient, room: MatrixRoom, event: CommandEvent
+    host: AdminClient, room: RoomRef, event: CommandEvent
 ) -> None:
     """Run an admin-owned command on the admin client.
 

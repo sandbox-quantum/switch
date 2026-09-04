@@ -208,6 +208,26 @@ switchCore:
   # idempotent. Disable only if you run migrations out-of-band.
   migrations:
     preUpgradeJob: true
+  # One-off migration steps for the move onto the Postgres message store. Both
+  # read the homeserver, so they only work while Tuwunel is still deployed, and
+  # both are off by default: they belong to one release, not to every release.
+  #
+  #   1. enable backfill with dryRun: true, upgrade, read the Job's log
+  #   2. set dryRun: false, upgrade again
+  #   3. enable reconcile, upgrade, confirm it exits clean
+  #   4. set MESSAGE_TRANSPORT=postgres
+  #   5. turn both back off
+  #
+  # Backfill is idempotent and its rows are numbered below the live sequence,
+  # so it can be re-run and nobody is redelivered old history.
+  backfill:
+    enabled: false
+    dryRun: true
+    # Exit 0 when there is no history to walk. For an install with no rooms
+    # yet, where a failed Job would be reporting an empty database as a fault.
+    allowEmpty: false
+  reconcile:
+    enabled: false
   resources:
     requests:
       memory: "512Mi"

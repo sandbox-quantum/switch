@@ -8,6 +8,7 @@ from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.events import CommandEvent
+from switch_core.transport import InboundMessage, RoomRef
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -30,18 +31,22 @@ def _no_connections() -> SimpleNamespace:
     )
 
 
-def _event(body: str, sender_name: str = "alice") -> SimpleNamespace:
+def _event(body: str, sender_name: str = "alice") -> InboundMessage:
     """A room message as the admin client sees it: body + sender + the
     bridge-provided sender_name in content (used to tag the asker)."""
-    return SimpleNamespace(
-        body=body,
+    return InboundMessage(
+        room_id="!matrix:switch.local",
+        event_id="$evt",
         sender=f"@{sender_name}:switch.local",
-        source={"content": {"sender_name": sender_name}},
+        timestamp=1700000000000,
+        content={"sender_name": sender_name},
+        body=body,
+        sender_name=sender_name,
     )
 
 
-def _room() -> SimpleNamespace:
-    return SimpleNamespace(room_id="!matrix:switch.local")
+def _room() -> RoomRef:
+    return RoomRef(room_id="!matrix:switch.local")
 
 
 def _admin_client(
