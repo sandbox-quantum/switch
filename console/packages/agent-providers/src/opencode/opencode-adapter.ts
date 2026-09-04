@@ -520,7 +520,10 @@ export class OpencodeAdapter implements ProviderAdapter {
       type,
       status,
       title: toolTitle(type, part.tool, input, 'title' in state ? state.title : undefined),
-      toolName: part.tool,
+      // `toolName` is the tool everywhere except a subagent, where the contract
+      // asks for the agent behind it — `task` is the mechanism, not the agent,
+      // and rendering it left the row saying "Subagent · task".
+      ...(type === 'subagent' ? subagentName(input) : { toolName: part.tool }),
       ...(state.status === 'completed' ? { text: state.output } : {}),
       ...(state.status === 'error' ? { text: state.error } : {}),
       payload: { tool: part.tool, input, status: state.status },
@@ -786,6 +789,22 @@ export function toQuestionAnswers(answers: UserInputAnswers): string[][] {
     positional.push(answer === undefined ? [] : Array.isArray(answer) ? answer : [answer]);
   }
   return positional;
+}
+
+/**
+ * The agent a `task` call delegates to, when its input names one.
+ *
+ * OpenCode has changed the key across versions and other hosts spell it
+ * differently again, so the first of the known spellings that carries a string
+ * wins. None of them present is a real outcome — the row then says "Subagent"
+ * and nothing it cannot stand behind.
+ */
+export function subagentName(input: Record<string, unknown>): { toolName?: string } {
+  for (const key of ['subagent_type', 'subagentType', 'agent', 'subagent']) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim() !== '') return { toolName: value.trim() };
+  }
+  return {};
 }
 
 export function toolItemType(tool: string, mcpNames: string[]): ItemType {

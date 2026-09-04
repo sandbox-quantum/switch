@@ -18,6 +18,7 @@ import {
   fromPermissionReply,
   type OpencodeAdapter,
   permissionTitle,
+  subagentName,
   toolItemType,
   toPermissionReply,
   toQuestionAnswers,
@@ -518,6 +519,15 @@ describe('OpencodeAdapter mappings', () => {
       )?.action
     ).toBe('allow');
     expect(permissionConfigFor('approval-required', ['switch'])['bash']).toBe('ask');
+  });
+
+  it('names the agent a task delegates to, and nothing when the input does not', () => {
+    // `task` is the mechanism, not the agent — putting it in `toolName` left
+    // the activity row reading "Subagent · task".
+    expect(subagentName({ subagent_type: 'general' })).toEqual({ toolName: 'general' });
+    expect(subagentName({ agent: 'reviewer' })).toEqual({ toolName: 'reviewer' });
+    expect(subagentName({ description: 'read the readme' })).toEqual({});
+    expect(subagentName({ agent: '  ' })).toEqual({});
   });
 
   it('titles an approval with the pattern only when the pattern names something', () => {

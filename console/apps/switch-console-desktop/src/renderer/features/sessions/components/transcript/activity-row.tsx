@@ -33,15 +33,22 @@ const ITEM_ICONS: Record<ItemType, LucideIcon> = {
 
 /** What the row says before its title: a category, or the agent behind a subagent. */
 function itemLabel(item: TranscriptItem): string | null {
-  if (item.type === 'subagent') return `Subagent · ${item.toolName ?? item.title}`;
+  if (item.type === 'subagent') {
+    return item.toolName ? `Subagent · ${item.toolName}` : 'Subagent';
+  }
   if (item.type === 'reasoning') return 'Thinking…';
   if (item.type === 'mcp_tool_call' || item.type === 'tool_call') return item.toolName ?? null;
   return null;
 }
 
-/** The row's own text, when the label has not already said it. */
+/**
+ * The row's own text, when the label has not already said it.
+ *
+ * A subagent's title is what it was asked to do, which is the only thing on the
+ * row worth reading; it used to say "running" / "finished" instead, duplicating
+ * the spinner and dropping the task on the floor.
+ */
 function itemTitle(item: TranscriptItem): string {
-  if (item.type === 'subagent') return item.status === 'in_progress' ? 'running' : 'finished';
   if (item.type === 'reasoning') return '';
   return item.title;
 }
