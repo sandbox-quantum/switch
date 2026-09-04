@@ -262,9 +262,7 @@ export function AgentIdentityFields({ form }: { form: ConfigureAgentFormState })
           ref={nameRef}
           placeholder="Name this agent"
           value={form.agentName}
-          onChange={(e) =>
-            form.setAgentName(e.target.value.replace(/[A-Z]/g, (c) => c.toLowerCase()))
-          }
+          onChange={(e) => form.setAgentName(e.target.value)}
           aria-invalid={form.nameIsRejected}
         />
         {form.nameIsRejected ? (

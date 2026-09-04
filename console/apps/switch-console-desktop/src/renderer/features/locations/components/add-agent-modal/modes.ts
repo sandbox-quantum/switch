@@ -40,7 +40,11 @@ export type PickModeState = ReturnType<typeof usePickMode>;
  * was on screen, so the name and description the user had typed vanished.
  */
 export function useConfigureAgentForm() {
-  const [agentName, setAgentName] = useState('');
+  const [agentName, setAgentNameFolded] = useState('');
+  // What was typed, before the identifier folded it to lowercase. The slug
+  // offer hands this back as the display name, so the capitals in a typed
+  // "Switch Dev" outlive an identifier that cannot hold them.
+  const [typedName, setTypedName] = useState('');
   // The label chat platforms render the agent under. Optional: an agent with
   // none is shown under its identifier.
   const [displayName, setDisplayNameRaw] = useState('');
@@ -77,6 +81,19 @@ export function useConfigureAgentForm() {
   }, []);
 
   /**
+   * Uppercase is the one thing the charset rejects that the reader never means
+   * — nobody wants a capital in a routing handle they did not know was one —
+   * so it is folded as they type rather than held against them. Everything
+   * else the charset refuses is left alone for the rejection banner and its
+   * slug offer to answer, because rewriting text under the cursor is worse
+   * than an error.
+   */
+  const setAgentName = useCallback((value: string) => {
+    setTypedName(value);
+    setAgentNameFolded(value.replace(/[A-Z]/g, (c) => c.toLowerCase()));
+  }, []);
+
+  /**
    * What the run location implies, for as long as the user has not answered
    * themselves: an agent on a host is put there to run unattended, and a
    * permission prompt nobody is watching stalls the session. Kept as a
@@ -107,9 +124,9 @@ export function useConfigureAgentForm() {
    */
   const acceptSuggestedName = useCallback(() => {
     if (suggestedName === '') return;
-    if (!displayNameTouched) setDisplayNameRaw(agentName);
+    if (!displayNameTouched) setDisplayNameRaw(typedName);
     setAgentName(suggestedName);
-  }, [agentName, displayNameTouched, suggestedName]);
+  }, [typedName, displayNameTouched, suggestedName, setAgentName]);
 
   return {
     agentName,
