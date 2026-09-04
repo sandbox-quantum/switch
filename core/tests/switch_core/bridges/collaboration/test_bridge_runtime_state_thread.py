@@ -44,6 +44,7 @@ class _FakeAdapter:
         detail: str | None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[dict[str, Any]] | None = None,
     ) -> None:
         self.applied.append(thread_root_id)
         self.trigger_threads.append(trigger_thread_root_id)

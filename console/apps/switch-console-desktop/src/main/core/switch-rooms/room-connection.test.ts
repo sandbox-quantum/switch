@@ -122,6 +122,13 @@ function runtimeDetails(fetchMock: ReturnType<typeof makeFetch>): (string | null
     .map((c) => JSON.parse((c[1] as RequestInit).body as string).detail);
 }
 
+/** The `active_subagents` list carried on each runtime-state post. */
+function runtimeSubagents(fetchMock: ReturnType<typeof makeFetch>): unknown[][] {
+  return fetchMock.mock.calls
+    .filter((c) => String(c[0]).includes('/runtime-state'))
+    .map((c) => JSON.parse((c[1] as RequestInit).body as string).active_subagents);
+}
+
 function runtimeAnchors(fetchMock: ReturnType<typeof makeFetch>): (string | null)[] {
   return fetchMock.mock.calls
     .filter((c) => String(c[0]).includes('/runtime-state'))
@@ -746,6 +753,110 @@ describe('RoomConnection', () => {
       .filter((c) => String(c[0]).includes('/runtime-state'))
       .map((c) => JSON.parse((c[1] as RequestInit).body as string))[0];
     expect(body.control_capabilities).toEqual({ reset: true, compact: true, interrupt: true });
+    conn.stop();
+  });
+
+  /**
+   * Subagents a session delegates to (CHOO-2555). Claude Code's
+   * SubagentStart/SubagentStop hooks are the only signal that one is live, and
+   * each hook carries both surfaces — the activity line and the list — so it
+   * reports the turn once rather than twice.
+   */
+  it('reports a spawned subagent in one post, and drops it in one more', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+    const before = runtimeSubagents(fetchMock).length;
+
+    conn.reportSubagent({
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: false,
+      detail: '_Delegating to_ `Explore`',
+    });
+    await flush();
+
+    expect(runtimeSubagents(fetchMock).length).toBe(before + 1);
+    expect(runtimeSubagents(fetchMock).at(-1)).toEqual([
+      { agent_id: 'sub-1', agent_name: 'Explore', state: 'working', detail: null },
+    ]);
+    expect(runtimeDetails(fetchMock).at(-1)).toMatch(/^_Delegating to_ `Explore`/);
+
+    conn.reportSubagent({
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: true,
+      detail: '_Subagent_ `Explore` _finished_',
+    });
+    await flush();
+
+    expect(runtimeSubagents(fetchMock).length).toBe(before + 2);
+    expect(runtimeSubagents(fetchMock).at(-1)).toEqual([]);
+    expect(runtimeDetails(fetchMock).at(-1)).toMatch(/^_Subagent_ `Explore` _finished_/);
+    conn.stop();
+  });
+
+  it('reports every live subagent, keyed by id', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+
+    conn.reportSubagent({
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: false,
+      detail: '_Delegating to_ `Explore`',
+    });
+    conn.reportSubagent({
+      agentId: 'sub-2',
+      agentName: 'Plan',
+      finished: false,
+      detail: '_Delegating to_ `Plan`',
+    });
+    await flush();
+
+    expect(runtimeSubagents(fetchMock).at(-1)).toEqual([
+      { agent_id: 'sub-1', agent_name: 'Explore', state: 'working', detail: null },
+      { agent_id: 'sub-2', agent_name: 'Plan', state: 'working', detail: null },
+    ]);
+    conn.stop();
+  });
+
+  it('clears the subagents when the turn ends', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+    conn.reportSubagent({
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: false,
+      detail: '_Delegating to_ `Explore`',
+    });
+    await flush();
+
+    conn.onAgentStatusChange('idle');
+    await flush();
+
+    expect(runtimeSubagents(fetchMock).at(-1)).toEqual([]);
+    conn.stop();
+  });
+
+  it('does not push a subagent outside a working room turn', async () => {
+    const target: InjectionTarget = { write: vi.fn() };
+    // No addressed message → no active turn.
+    const { conn, fetchMock } = connect({ acquire: () => target }, []);
+    await flush();
+    const before = runtimeSubagents(fetchMock).length;
+
+    conn.reportSubagent({
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: false,
+      detail: '_Delegating to_ `Explore`',
+    });
+    await flush();
+
+    expect(runtimeSubagents(fetchMock).length).toBe(before);
     conn.stop();
   });
 

@@ -29,6 +29,7 @@ class AgentRuntimeStateStore:
         state: str,
         deeplink_url: str | None = None,
         control_capabilities: dict | None = None,
+        active_subagents: list | None = None,
     ) -> None:
         now = datetime.now(UTC)
         stmt = insert(AgentRuntimeState).values(
@@ -37,6 +38,7 @@ class AgentRuntimeStateStore:
             state=state,
             deeplink_url=deeplink_url,
             control_capabilities=control_capabilities,
+            active_subagents=active_subagents,
             updated_at=now,
         )
         set_: dict[str, object] = {"state": state, "updated_at": now}
@@ -49,6 +51,10 @@ class AgentRuntimeStateStore:
         # report carries none and must not wipe the last-known capabilities.
         if control_capabilities is not None:
             set_["control_capabilities"] = control_capabilities
+        # Same preserve-on-omit rule for active subagents: only update when
+        # explicitly provided.
+        if active_subagents is not None:
+            set_["active_subagents"] = active_subagents
         stmt = stmt.on_conflict_do_update(
             constraint="uq_agent_runtime_states_agent_room",
             set_=set_,

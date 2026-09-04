@@ -17,6 +17,7 @@ from pydantic import Field
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.commands import Command as InRoomCommand
 from switch_core.bridges.collaboration.adapter import (
+    ActiveSubagent,
     CollaborationAdapter,
     LiveRuntimeIndicator,
 )
@@ -610,6 +611,7 @@ class DiscordAdapter(CollaborationAdapter):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Render runtime state as persistent, truly-deletable status messages.
 
@@ -636,7 +638,7 @@ class DiscordAdapter(CollaborationAdapter):
             await self._clear_input_pings(channel_id, agent_name)
             # Posted under the agent's own name/icon, so the body just states
             # the activity — no need to repeat the agent name in the text.
-            body = self._working_body(detail, deeplink_url)
+            body = self._working_body(detail, deeplink_url, active_subagents)
             existing = self._working_msg.get(key)
             if existing is not None:
                 await self.update_message(channel_id, existing.message_ref, body)
@@ -1065,6 +1067,17 @@ class DiscordAdapter(CollaborationAdapter):
         return []
 
     # ── Translation ──────────────────────────────────────────────────────────
+
+    def _escape_text(self, text: str) -> str:
+        """Escape markdown special characters for Discord.
+
+        Discord renders markdown natively, so user-supplied text (agent names,
+        detail strings) must escape markdown metacharacters to prevent
+        unintended formatting in status messages."""
+        escape_chars = ["\\", "*", "_", "`", "~", "|", "[", "]"]
+        for char in escape_chars:
+            text = text.replace(char, f"\\{char}")
+        return text
 
     def translate_outbound(self, content: str) -> str:
         # Discord renders markdown natively (bold, code, headers, masked

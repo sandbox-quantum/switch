@@ -4,8 +4,8 @@ import type { RawHookRequest } from './hook-server';
 
 const ctx: AgentHookContext = {
   sessionId: 'session-1',
-  providerId: 'claude-code',
-  ptyId: 'claude-code::session-1',
+  providerId: 'claude',
+  ptyId: 'claude::session-1',
 };
 
 const fixedResolver: ContextResolver = async () => ctx;
@@ -236,6 +236,75 @@ describe('parseHookEvent', () => {
       expect.any(String),
       expect.objectContaining({ toolResponseType: 'string', toolResponseKeys: undefined })
     );
+  });
+
+  /**
+   * The Claude connector's SubagentStart / SubagentStop hooks. They are the only
+   * signal that a delegation started or finished — the Agent tool call itself
+   * names no target — so both the activity line and the live subagent list are
+   * derived from them.
+   */
+  it('parses a SubagentStart hook into a subagent event', async () => {
+    const parsed = await parseHookEvent(
+      raw('subagent', { agent_id: 'sub-1', agent_type: 'Explore' }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual({
+      kind: 'subagent',
+      ctx,
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: false,
+      detail: '_Delegating to_ `Explore`',
+    });
+  });
+
+  it('parses a SubagentStop hook as finished', async () => {
+    const parsed = await parseHookEvent(
+      raw('subagent-done', { agent_id: 'sub-1', agent_type: 'Explore' }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual({
+      kind: 'subagent',
+      ctx,
+      agentId: 'sub-1',
+      agentName: 'Explore',
+      finished: true,
+      detail: '_Subagent_ `Explore` _finished_',
+    });
+  });
+
+  it('falls back to the agent type, then to a placeholder, for an unnamed subagent', async () => {
+    const typed = await parseHookEvent(
+      raw('subagent', { agent_type: 'Explore' }),
+      fixedResolver,
+      log
+    );
+    expect(typed).toMatchObject({ kind: 'subagent', agentId: 'Explore', agentName: 'Explore' });
+
+    const bare = await parseHookEvent(raw('subagent', {}), fixedResolver, log);
+    expect(bare).toMatchObject({
+      kind: 'subagent',
+      agentId: 'subagent',
+      agentName: 'subagent',
+      detail: '_Delegating to a subagent_',
+    });
+  });
+
+  it('leaves an Agent tool call alone — it names no subagent', async () => {
+    // The Agent tool's input carries no id for the subagent it starts, so a
+    // tool-use hook must not be read as one.
+    const parsed = await parseHookEvent(
+      raw('tool-use', { tool_name: 'Task', tool_input: { subagent_type: 'Explore' } }),
+      fixedResolver,
+      log
+    );
+
+    expect(parsed).toEqual({ kind: 'ignore' });
   });
 
   it('throws when the context resolver cannot resolve the ptyId', async () => {

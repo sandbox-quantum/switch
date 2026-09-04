@@ -627,6 +627,11 @@ async def set_runtime_state(
             detail=req.detail,
             control_capabilities=req.control_capabilities,
             anchor_event_id=req.anchor_event_id,
+            active_subagents=(
+                [sa.model_dump() for sa in req.active_subagents]
+                if req.active_subagents is not None
+                else None
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
