@@ -290,6 +290,20 @@ class RoomStore:
         )
         await session.flush()
 
+    async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
+        """The rooms a client is a member of.
+
+        The mirror of `get_client_ids`, and what a client asks for when it
+        wants to know where it belongs — over Matrix that question went to the
+        homeserver, which answered from the same memberships this table holds.
+        """
+        result = await session.execute(
+            select(Room)
+            .join(ClientRoom, ClientRoom.room_id == Room.id)
+            .where(ClientRoom.client_id == client_id)
+        )
+        return list(result.scalars().all())
+
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)
