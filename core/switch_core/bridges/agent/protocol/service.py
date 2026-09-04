@@ -321,7 +321,8 @@ class ProtocolService:
             InvalidIconUrl: ``icon_url`` is malformed or points somewhere unsafe.
             InvalidDisplayName: ``display_name`` is over-long or unsafe to render.
             AgentExistsError: agent with this name exists and ``overwrite`` is
-                False.
+                False, or the existing agent is owned by another user (the name
+                is global, but re-registration stays within the owner's tenant).
         """
         if not _VALID_NAME_RE.match(name):
             raise ValueError(
@@ -344,6 +345,18 @@ class ProtocolService:
         async with self.session_factory() as session:
             existing = await self.agent_store.get_by_name(session, name)
             if existing and not overwrite:
+                raise AgentExistsError(
+                    f"Agent already exists: {name!r}. "
+                    "Pass overwrite=True to re-register (rotates API key, "
+                    "replaces integration profile)."
+                )
+            if existing and existing.owner_id != owner_id:
+                # Agent names are a global namespace, but re-registration must
+                # stay inside the caller's own tenant. Overwriting an agent
+                # owned by someone else would mint the caller a live API key for
+                # that agent (whose owner_id is left unchanged) and delete the
+                # real owner's key, i.e. a cross-tenant takeover. Report it as a
+                # plain name clash so ownership is never disclosed.
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
                     "Pass overwrite=True to re-register (rotates API key, "
@@ -2261,14 +2274,14 @@ class ProtocolService:
         agent_name: str,
         include_subagents: bool = False,
     ) -> None:
-        """Invite an agent to a room. Requires write access to the room.
+        """Invite an agent to a room. Requires room membership (or owner/admin).
 
         When ``include_subagents`` is set, the invited agent's subagents
         (child agents) are added alongside it.
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_roster_change(session, agent_id, room_id)
             if include_subagents:
                 target = await self.agent_store.get_by_name(session, agent_name)
                 if target is None:
@@ -2289,7 +2302,7 @@ class ProtocolService:
         room_id: str,
         user_names: list[str],
     ) -> list[str]:
-        """Add human users to an existing bridged room. Requires write access.
+        """Add human users to a bridged room. Requires room membership (or owner/admin).
 
         The room must already be bridged; each name is resolved against the
         room's bridge, added to its external channel, and joined to the Matrix
@@ -2297,7 +2310,7 @@ class ProtocolService:
         were skipped); an empty list means every requested user was added.
         """
         async with self.session_factory() as session:
-            await self._require_room_action(session, agent_id, room_id, "write")
+            await self._require_room_roster_change(session, agent_id, room_id)
         try:
             return await self.room_service.add_users_to_room(room_id, user_names)
         except ValueError as e:
@@ -2336,6 +2349,30 @@ class ProtocolService:
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
         require(Principal(owner_id, owner_is_admin), action, room)
+        return room
+
+    async def _require_room_roster_change(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> Room:
+        """Authorize changing a room's roster (inviting agents, adding users).
+
+        Changing WHO is in a room must not be granted by a public
+        ``write_visibility``: that would let any agent add itself to any
+        default-visibility room and unlock the member-gated operations (read
+        context, post, tasks). Confine roster changes to the room's owner, an
+        admin, or an agent that is already a member.
+        """
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        room = await self.room_store.get(session, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        if owner_is_admin or (room.owner_id is not None and room.owner_id == owner_id):
+            return room
+        member_ids = await self.room_store.get_agent_ids(session, room_id)
+        if agent_id not in member_ids:
+            raise PermissionError("Not authorized to change this room's membership")
         return room
 
     # ── Room roles ──────────────────────────────────────────────────────────

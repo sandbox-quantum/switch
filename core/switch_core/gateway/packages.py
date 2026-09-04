@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, require_room_access
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_resource_service,
+    get_room_store,
     get_session,
     get_user_store,
 )
@@ -378,9 +380,11 @@ async def list_room_packages(
     room_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[PackageDetail]:
+    await require_room_access(session, room_store, room_id, user, "read")
     pkgs = await resource_service.list_room_packages(session, room_id)
     return await _enrich(session, pkgs, resource_service, user_store)
 
@@ -391,9 +395,11 @@ async def attach_package_to_room(
     package_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> PackageDetail:
+    await require_room_access(session, room_store, room_id, user, "write")
     try:
         await resource_service.attach_package_to_room(
             session,
@@ -419,7 +425,9 @@ async def detach_package_from_room(
     package_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> None:
+    await require_room_access(session, room_store, room_id, user, "write")
     await resource_service.detach_package_from_room(session, room_id, package_id)
     await session.commit()

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.config import SwitchConfig
+from switch_core.db.models import User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth_routes import auth_config
 
@@ -55,6 +56,7 @@ class TestOidcCallback:
         token = {
             "userinfo": {
                 "email": "alice@example.com",
+                "email_verified": True,
                 "sub": "okta|123",
                 "name": "Alice",
             }
@@ -77,7 +79,74 @@ class TestOidcCallback:
             assert user is not None
             assert user.role == "user"
             assert user.password_hash is None
-            assert user.metadata_ == {"oidc_sub": "okta|123"}
+            assert user.metadata_ == {
+                "oidc_iss": "https://idp.example",
+                "oidc_sub": "okta|123",
+            }
+
+    async def test_unverified_email_is_rejected(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token = {
+            "userinfo": {
+                "email": "mallory@example.com",
+                "email_verified": False,
+                "sub": "okta|9",
+                "name": "Mallory",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 401
+
+    async def test_email_collision_with_existing_account_is_rejected(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A verified token whose email matches an existing account but whose
+        # subject does not must not take that account over.
+        from switch_core.gateway.auth import hash_password
+
+        async with session_factory() as session:
+            admin = User(
+                name="Admin",
+                email="admin@example.com",
+                role="admin",
+                password_hash=hash_password("pw"),
+            )
+            await UserStore().create(session, admin)
+            await session.commit()
+
+        token = {
+            "userinfo": {
+                "email": "admin@example.com",
+                "email_verified": True,
+                "sub": "okta|attacker",
+                "name": "Not Admin",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    user_store=UserStore(),
+                )
+            assert exc.value.status_code == 409
 
     async def test_missing_email_claim_raises_401(
         self,
