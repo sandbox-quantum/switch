@@ -244,6 +244,18 @@ describe('LocationManagerStore reload', () => {
     await store.reload();
     expect(store.locations.has('stale-loc')).toBe(false);
   });
+
+  it('preserves a pending-creation location during reload', async () => {
+    const store = new LocationManagerStore();
+    store.locations.set('onboarding-loc', stubLocation);
+    store.pendingCreationIds.add('onboarding-loc');
+
+    // A concurrent CRUD event triggers reload while onboarding is in flight.
+    mocks.getLocations.mockResolvedValueOnce([]);
+    mocks.getAgents.mockResolvedValueOnce([]);
+    await store.reload();
+    expect(store.locations.has('onboarding-loc')).toBe(true);
+  });
 });
 
 describe('LocationManagerStore removeAgent', () => {
