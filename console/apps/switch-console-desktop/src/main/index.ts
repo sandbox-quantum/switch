@@ -15,6 +15,7 @@ import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { resolveAgentServers } from './core/agents/resolve-servers';
 import { appService } from './core/app/service';
+import { controlService } from './core/control-api/control-service';
 import { localDependencyManager } from './core/dependencies/dependency-managers';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
@@ -163,6 +164,10 @@ void app.whenReady().then(async () => {
     log.error('Failed to start agent event service:', e);
   });
 
+  controlService.initialize().catch((e) => {
+    log.error('Failed to start control API service:', e);
+  });
+
   registerRPCRouter(rpcRouter, ipcMain, withRPCLogContext);
 
   void reconcileResourceSampler();
@@ -264,6 +269,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   logAppExit('before-quit');
   agentHookService.dispose();
+  controlService.dispose();
   stopResourceSampler();
   localServerService.dispose();
   remoteServerService.dispose();
