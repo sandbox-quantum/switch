@@ -71,6 +71,10 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> ProtocolServi
     svc.client_lifecycle = _FakeClientLifecycle(session_factory)  # type: ignore[attr-defined]
     svc.collab_lifecycle = _NoBridges()  # type: ignore[attr-defined]
     svc.config = SimpleNamespace(jwt_secret_key="test-secret")  # type: ignore[attr-defined]
+    # Duck-typed: the attribute exists on ProtocolService after the api-key
+    # cache landed on main; a no-op stand-in keeps this test valid on both
+    # sides of that merge.
+    svc.api_key_cache = SimpleNamespace(invalidate_agent=lambda *a, **k: None)  # type: ignore[attr-defined]
     return svc
 
 
