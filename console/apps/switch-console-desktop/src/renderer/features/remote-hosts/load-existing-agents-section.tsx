@@ -240,7 +240,6 @@ export function LoadExistingAgentsSection({
   const manualScan = useMutation({
     mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
     onSuccess: (found) => {
-      setScanStarted(true);
       setManualServerApiUrl(found.serverApiUrl);
       setManualAgents((prev) => {
         const keys = new Set(prev.map((a) => `${a.dir}\0${a.name}`));
@@ -269,7 +268,7 @@ export function LoadExistingAgentsSection({
 
       {isOpen && (
         <div className="space-y-3 px-3 pb-2">
-          {!scanStarted ? (
+          {!scanStarted && manualAgents.length === 0 ? (
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-foreground-muted">
                 Find agents already configured on this host and load them into this Console. Nothing
