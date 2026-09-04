@@ -258,7 +258,8 @@ class ProtocolService:
             InvalidIconUrl: ``icon_url`` is malformed or points somewhere unsafe.
             InvalidDisplayName: ``display_name`` is over-long or unsafe to render.
             AgentExistsError: agent with this name exists and ``overwrite`` is
-                False.
+                False, or the existing agent is owned by another user (the name
+                is global, but re-registration stays within the owner's tenant).
         """
         if not _VALID_NAME_RE.match(name):
             raise ValueError(
@@ -281,6 +282,18 @@ class ProtocolService:
         async with self.session_factory() as session:
             existing = await self.agent_store.get_by_name(session, name)
             if existing and not overwrite:
+                raise AgentExistsError(
+                    f"Agent already exists: {name!r}. "
+                    "Pass overwrite=True to re-register (rotates API key, "
+                    "replaces integration profile)."
+                )
+            if existing and existing.owner_id != owner_id:
+                # Agent names are a global namespace, but re-registration must
+                # stay inside the caller's own tenant. Overwriting an agent
+                # owned by someone else would mint the caller a live API key for
+                # that agent (whose owner_id is left unchanged) and delete the
+                # real owner's key, i.e. a cross-tenant takeover. Report it as a
+                # plain name clash so ownership is never disclosed.
                 raise AgentExistsError(
                     f"Agent already exists: {name!r}. "
                     "Pass overwrite=True to re-register (rotates API key, "
