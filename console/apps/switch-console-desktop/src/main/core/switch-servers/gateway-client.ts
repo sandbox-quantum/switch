@@ -317,6 +317,11 @@ export async function registerKnownAgent(
      * one. Required rather than optional so a create flow states which it
      * means instead of dropping the user's choice by forgetting the field. */
     iconUrl: string | null;
+    /** The label chat platforms render the agent under, or null to leave it
+     * unset and be shown under `name`. Required rather than optional for the
+     * same reason as `iconUrl`: the create form holds a label the user typed,
+     * and an omitted field would drop it without saying so. */
+    displayName: string | null;
   }
 ): Promise<RegisteredAgent> {
   const res = await gatewayFetch(server, '/agents/register', {
@@ -328,6 +333,7 @@ export async function registerKnownAgent(
       description: params.description,
       options: params.options,
       icon_url: params.iconUrl,
+      display_name: params.displayName,
       overwrite: false,
     },
   });
@@ -349,6 +355,7 @@ type AgentSummaryJson = {
   known_agent_type: string | null;
   addressing_policy?: AddressingPolicy | null;
   icon_url?: string | null;
+  display_name?: string | null;
   created_at: string;
 };
 
@@ -367,6 +374,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
     knownAgentType: json.known_agent_type,
     addressingPolicy: json.addressing_policy ?? null,
     iconUrl: json.icon_url ?? null,
+    displayName: json.display_name ?? null,
     createdAt: json.created_at,
   };
 }
