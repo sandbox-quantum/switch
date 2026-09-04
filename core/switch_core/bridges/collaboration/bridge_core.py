@@ -510,6 +510,13 @@ class BridgeCore:
                     matrix_room_id,
                 )
 
+        # Where later replies should find this conversation: the thread's own
+        # key when this message sits inside a thread (so the NEXT reply in a
+        # directly-created thread resolves), its own ref when top-level (so a
+        # thread created FROM this post resolves). Mirrors
+        # _handle_inbound_command, which already anchors on root_id.
+        thread_anchor_post = msg.root_id or msg.message_ref
+
         # An attachment the platform offered but we could not relay must be
         # visible in the room, not swallowed. Append it to the message body so
         # both the agent and the humans see that a file went missing.
@@ -535,12 +542,16 @@ class BridgeCore:
                     matrix_room_id,
                 )
                 return
-            # Record the correlation so a later reply (either direction) threads.
-            await self._record_message_map(
-                external_channel_id=msg.channel_id,
-                matrix_event_id=event_id,
-                external_post_id=msg.message_ref,
-            )
+            # Record the correlation so a later reply (either direction)
+            # threads. Only the first bridged message of a thread anchors it —
+            # once the anchor resolves, thread_root_id is set and re-recording
+            # would just shadow it.
+            if thread_root_id is None:
+                await self._record_message_map(
+                    external_channel_id=msg.channel_id,
+                    matrix_event_id=event_id,
+                    external_post_id=thread_anchor_post,
+                )
             return
 
         # Caption convention: the text rides as the caption on the first
@@ -586,11 +597,11 @@ class BridgeCore:
             if index == 0:
                 first_event_id = event_id
 
-        if first_event_id is not None:
+        if first_event_id is not None and thread_root_id is None:
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
                 matrix_event_id=first_event_id,
-                external_post_id=msg.message_ref,
+                external_post_id=thread_anchor_post,
             )
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
