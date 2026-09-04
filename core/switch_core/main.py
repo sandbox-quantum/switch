@@ -331,7 +331,7 @@ async def run() -> None:
         matrix_admin=matrix_admin,
         session_factory=session_factory,
         config=config,
-        message_recorder=message_recorder,
+        client_factory=client_factory,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────

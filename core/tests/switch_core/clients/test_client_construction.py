@@ -120,3 +120,41 @@ def test_no_call_site_passes_transport_credentials_to_a_client() -> None:
         "clients take an opaque `session_state`, not individual credentials; "
         f"these call sites still pass them: {offenders}"
     )
+
+
+def test_only_the_factory_names_a_transport_implementation() -> None:
+    """A client's bus is one decision, made in one place.
+
+    The collaboration bridges named `matrix_transport_for` directly, so the
+    transport setting reached every agent and no bridge: agents talked in rows,
+    bridges talked to the homeserver, and neither side saw the other or logged
+    anything. Nothing failed — messages simply stopped crossing.
+
+    That is invisible in review, so scan for the cause instead. Any module that
+    can name an implementation can pick the wrong one.
+    """
+    package = pathlib.Path(__file__).resolve().parents[3] / "switch_core"
+    implementations = {"matrix_transport_for", "MatrixTransport", "PostgresTransport"}
+    allowed = {
+        "clients/client_factory.py",
+        "transport/matrix.py",
+        "transport/postgres.py",
+    }
+    offenders: list[str] = []
+
+    for path in package.rglob("*.py"):
+        relative = path.relative_to(package).as_posix()
+        if relative in allowed:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            for alias in node.names:
+                if alias.name in implementations:
+                    offenders.append(f"{relative}: {alias.name}")
+
+    assert offenders == [], (
+        "ask ClientFactory.transport_for for a transport rather than naming "
+        f"one; these modules choose for themselves: {offenders}"
+    )

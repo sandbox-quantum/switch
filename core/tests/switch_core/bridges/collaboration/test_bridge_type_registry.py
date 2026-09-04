@@ -47,7 +47,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         matrix_admin=None,  # type: ignore[arg-type]
         session_factory=None,  # type: ignore[arg-type]
         config=None,  # type: ignore[arg-type]
-        message_recorder=None,  # type: ignore[arg-type]
+        client_factory=None,  # type: ignore[arg-type]
     )
 
 

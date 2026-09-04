@@ -12,7 +12,7 @@ from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
-from switch_core.clients.client_factory import matrix_transport_for
+from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
 from switch_core.db.stores.agent_store import AgentStore
@@ -21,7 +21,6 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.messages import MessageRecorder
 from switch_core.provisioning import Provisioning
 
 if TYPE_CHECKING:
@@ -65,7 +64,7 @@ class CollaborationBridgeLifecycleService:
         matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
-        message_recorder: MessageRecorder,
+        client_factory: ClientFactory,
     ) -> None:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
@@ -78,7 +77,7 @@ class CollaborationBridgeLifecycleService:
         self._matrix_admin = matrix_admin
         self._session_factory = session_factory
         self._config = config
-        self._message_recorder = message_recorder
+        self._client_factory = client_factory
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -421,8 +420,8 @@ class CollaborationBridgeLifecycleService:
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=BridgeClientConfig(bridge_id=bridge_id),
-            transport_factory=matrix_transport_for,
-            message_recorder=self._message_recorder,
+            transport_factory=self._client_factory.transport_for,
+            message_recorder=self._client_factory.recorder(),
             session_state={
                 "access_token": bridge_client_record.access_token,
                 "device_id": bridge_client_record.device_id,

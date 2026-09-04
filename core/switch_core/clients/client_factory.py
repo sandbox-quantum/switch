@@ -92,8 +92,8 @@ class ClientFactory:
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=config,
-            transport_factory=self._transport_for,
-            message_recorder=self._recorder(),
+            transport_factory=self.transport_for,
+            message_recorder=self.recorder(),
             session_state={
                 "access_token": record.access_token,
                 "device_id": record.device_id,
@@ -102,7 +102,17 @@ class ClientFactory:
             **extra_kwargs,
         )
 
-    def _transport_for(self, client: ClientBase[Any]) -> MessageTransport:
+    def transport_for(self, client: ClientBase[Any]) -> MessageTransport:
+        """The transport every client in the process runs on.
+
+        Public because not every client is built by `create`: a collaboration
+        bridge's client is constructed by its own lifecycle service, which
+        carries per-bridge state the registry cannot hold. It still has to make
+        the same choice, and a caller that named an implementation directly
+        would put its clients on a different bus from everyone else's — agents
+        talking in rows while bridges talk to a homeserver, each side healthy
+        and neither reaching the other.
+        """
         if self._config.message_transport == "matrix":
             return matrix_transport_for(client)
         return PostgresTransport(
@@ -117,7 +127,7 @@ class ClientFactory:
             invites=self._invites,
         )
 
-    def _recorder(self) -> MessageRecording:
+    def recorder(self) -> MessageRecording:
         """The recorder that goes with the transport.
 
         Paired here rather than configured separately: a transport that stores
