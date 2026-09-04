@@ -21,8 +21,8 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.matrix_admin import MatrixAdmin
 from switch_core.messages import MessageRecorder
+from switch_core.provisioning import Provisioning
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -62,7 +62,7 @@ class CollaborationBridgeLifecycleService:
         client_store: ClientStore,
         client_lifecycle: ClientLifecycleService,
         room_service: RoomService,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
         message_recorder: MessageRecorder,

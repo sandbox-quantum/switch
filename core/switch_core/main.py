@@ -94,6 +94,7 @@ from switch_core.matrix_admin import (
 )
 from switch_core.messages import MessageRecorder
 from switch_core.messages.notify import MessageListener
+from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomService
 from switch_core.version import switch_core_version
 
@@ -531,7 +532,7 @@ async def _shutdown(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
-    matrix_admin: MatrixAdmin,
+    matrix_admin: Provisioning,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True
