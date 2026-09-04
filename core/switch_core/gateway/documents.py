@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Document, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, require_room_access
 from switch_core.gateway.dependencies import (
     get_agent_store,
     get_resource_service,
+    get_room_store,
     get_session,
     get_user_store,
 )
@@ -296,8 +298,10 @@ async def list_room_documents(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[DocumentSummary]:
+    await require_room_access(session, room_store, room_id, user, "read")
     docs = await resource_service.list_room_documents(session, room_id)
     return await _enrich_summaries(
         session, docs, resource_service, user_store, agent_store
@@ -312,8 +316,10 @@ async def attach_document_to_room(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> DocumentDetail:
+    await require_room_access(session, room_store, room_id, user, "write")
     try:
         await resource_service.attach_document_to_room(
             session,
@@ -339,10 +345,12 @@ async def detach_document_from_room(
     document_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> None:
     """For globally-owned docs: detach from the room. For room-scoped docs:
     hard-delete them entirely (since they live only in this room)."""
+    await require_room_access(session, room_store, room_id, user, "write")
     doc = await resource_service.get_room_scoped_document_or_none(
         session, room_id, document_id
     )
@@ -363,11 +371,13 @@ async def get_room_document(
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> DocumentDetail:
     """Fetch a document by id within the context of a room. Accepts both
-    room-scoped documents (read-only) and globally-attached documents.
-    Bypasses visibility checks since room access implies access to its docs."""
+    room-scoped documents (read-only) and globally-attached documents. Room
+    read access is required and, once granted, implies access to its docs."""
+    await require_room_access(session, room_store, room_id, user, "read")
     docs = await resource_service.list_room_documents(session, room_id)
     doc = next((d for d in docs if d.id == document_id), None)
     if doc is None:
