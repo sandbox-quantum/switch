@@ -60,7 +60,7 @@ type LoadableAgentRow = {
   blockedReason: string | null;
 };
 
-const LOAD_AGENTS_QUERY_KEY = 'load-existing-agents';
+export const LOAD_AGENTS_QUERY_KEY = 'load-existing-agents';
 
 export function LoadExistingAgentsSection({
   sshHost,
