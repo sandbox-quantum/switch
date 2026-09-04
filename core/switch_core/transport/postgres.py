@@ -130,6 +130,12 @@ class PostgresTransport:
         self._watching: dict[str, str] = {}
         self._receiving = False
         self._closed = asyncio.Event()
+        # Rooms this client has been told moved but has not read yet, and the
+        # signal its delivery loop waits on. A set because a room that moved
+        # twice while the loop was busy is still one read.
+        self._pending: set[str] = set()
+        self._wake = asyncio.Event()
+        self._delivering = False
         # A room's transport id never changes, so this only grows and never
         # goes stale.
         self._room_ids: dict[str, str] = {}
@@ -184,6 +190,7 @@ class PostgresTransport:
                 "written is silent rather than broken",
                 self.user_id,
             )
+        delivery = asyncio.create_task(self._deliver_forever())
         for transport_room_id in rooms:
             await self._watch(transport_room_id)
         self._receiving = True
@@ -194,6 +201,46 @@ class PostgresTransport:
             self._receiving = False
             self._invites.unregister(self.user_id)
             self._unwatch_all()
+            delivery.cancel()
+
+    async def _deliver_forever(self) -> None:
+        """This client's own delivery loop: its rooms, one at a time.
+
+        The listener fans out to every subscriber from a single task, so
+        anything a waker awaits is awaited by every other client's delivery
+        too — and a waker awaits its handler, which for a bridge is an HTTP
+        call to Slack that can sit in a rate limit for seconds. Doing the work
+        here instead means a stalled bridge stalls itself.
+
+        Serial within the client, deliberately. Two concurrent runs for one
+        room would both read the same cursor and deliver the same rows twice,
+        and a redelivered message is indistinguishable to a reader from a new
+        one. Overlapping wake-ups collapse into one more pass instead, which
+        also bounds this client to one outstanding read.
+        """
+        while True:
+            await self._wake.wait()
+            self._wake.clear()
+            rooms = list(self._pending)
+            self._pending.clear()
+            self._delivering = True
+            try:
+                for room_id in rooms:
+                    try:
+                        await self._drain_room(room_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # One room's failure is not the other rooms' problem,
+                        # and this loop is the only delivery this client has.
+                        logger.error(
+                            "Delivery failed for client %s in room %s",
+                            self.user_id,
+                            room_id,
+                            exc_info=True,
+                        )
+            finally:
+                self._delivering = False
 
     async def _on_invited(self, transport_room_id: str) -> None:
         """Someone added this client to a room while it was running.
@@ -251,9 +298,22 @@ class PostgresTransport:
         await handler(RoomRef(room_id=event.room_id), event)
 
     async def _on_room_advanced(self, room_id: str) -> None:
+        """The listener's waker: note the room and return.
+
+        It must not deliver. The listener fans out from one task, so time
+        spent here is time no other client in the process is being delivered
+        to.
+        """
+        if room_id not in self._watching:
+            return
+        self._pending.add(room_id)
+        self._wake.set()
+
+    async def _drain_room(self, room_id: str) -> None:
         """Read what this client has not seen in one room, and hand it over.
 
-        Called by the listener, which promises only that the room moved. The
+        Driven by this client's own loop, which promises only that the room
+        moved — and never that it moved once. The
         cursor is this transport's own, so a coalesced announcement, a
         duplicate, or a wake-up after a reconnect all reduce to the same
         thing: read from where I was, and advance.
@@ -501,6 +561,14 @@ class PostgresTransport:
 
         Returns True for an existing membership as well as a new one: the
         caller asked to be in the room, and it is.
+
+        Watching is decided separately from the row, and that split is the
+        point. Membership and subscription used to be one fact — the
+        homeserver's join *was* what a sync loop delivered — but a row can now
+        be written by something other than this client, and a client that
+        returned early on finding one would be a member of a room it never
+        reads, with no later join able to repair it. So the row is written
+        once and the subscription is taken whenever it is missing.
         """
         async with self._session_factory() as session:
             switch_room_id = await self._resolve_room(session, room_id)
@@ -508,6 +576,8 @@ class PostgresTransport:
                 ClientRoom, {"client_id": self.client_id, "room_id": switch_room_id}
             )
             if existing is not None:
+                if self._receiving:
+                    await self._watch(room_id)
                 return True
             await self._room_store.add_client(session, self.client_id, switch_room_id)
             arrival = Message(

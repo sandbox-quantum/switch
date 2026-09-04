@@ -71,6 +71,15 @@ async def _watched_room(transport: PostgresTransport) -> str:
     raise AssertionError("the transport never started watching a room")
 
 
+async def _settled(transport: PostgresTransport) -> None:
+    """Wait until a transport has nothing left to read."""
+    for _ in range(500):
+        if not transport._pending and not transport._delivering:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("the transport never finished delivering")
+
+
 class _FakeListener:
     """Stands in for the notify listener, so a test can say "the room moved".
 
@@ -89,8 +98,19 @@ class _FakeListener:
         self.wakers.get(room_id, set()).discard(waker)
 
     async def announce(self, room_id: str) -> None:
+        """Say the room moved, and wait for the reading it provokes.
+
+        A waker only notes the room now — each transport reads on its own
+        loop, so that a client whose handler is slow cannot hold up anyone
+        else's delivery. Waiting for those loops to go idle is what makes a
+        test assert on what was delivered rather than on the timing.
+        """
+        woken = []
         for waker in list(self.wakers.get(room_id, ())):
             await waker(room_id)
+            woken.append(waker.__self__)
+        for transport in woken:
+            await _settled(transport)
 
 
 class _Received:
@@ -638,3 +658,128 @@ class TestPresence:
         )
 
         assert received.events == []
+
+
+class TestOneClientCannotStallAnother:
+    """The listener fans out to every subscriber from a single task.
+
+    So whatever a waker awaits, every other client in the process waits for
+    too — and a handler can be a bridge posting to Slack, which is a network
+    call that sits in a rate limit for seconds. Under Matrix each client had
+    its own sync loop and got this isolation for free; here it is built.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    async def test_being_woken_does_not_deliver_on_the_caller_s_time(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(room)
+        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        switch_room_id = await _watched_room(transport)
+
+        await transport.send_message(room, "hello", sender_name="agent one")
+        # The waker itself, rather than the fake's announce, which waits for
+        # the reading it provokes.
+        await transport._on_room_advanced(switch_room_id)
+
+        assert received.events == []
+        assert transport._pending == {switch_room_id}
+
+        await _settled(transport)
+        assert [event.body for event in received.events] == ["hello"]
+
+    async def test_rooms_that_moved_while_it_was_busy_are_read_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Coalescing is what keeps the loop serial without falling behind:
+        a room announced three times is still one read, and running those
+        concurrently would deliver the same rows three times."""
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(room)
+        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        switch_room_id = await _watched_room(transport)
+
+        await transport.send_message(room, "hello", sender_name="agent one")
+        await transport._on_room_advanced(switch_room_id)
+        await transport._on_room_advanced(switch_room_id)
+        await transport._on_room_advanced(switch_room_id)
+        await _settled(transport)
+
+        assert [event.body for event in received.events] == ["hello"]
+
+
+class TestJoiningARoomAlreadyRecorded:
+    """Membership and subscription are two facts now.
+
+    The homeserver's join *was* what a sync loop delivered, so one implied the
+    other. A `client_rooms` row can be written by something other than this
+    client, and a join that returned early on finding one would leave a
+    running client a member of a room it never reads.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    async def test_it_starts_watching_and_writes_no_second_arrival(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            switch_room_id, room, client_id, user_id = await _make_room(session)
+            elsewhere_id, elsewhere, _, _ = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(room)
+        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        await _watched_room(transport)
+
+        # Somebody else records the membership — what a moderation invite does
+        # when nothing is listening for this client.
+        async with session_factory() as session:
+            await RoomStore().add_client(session, client_id, elsewhere_id)
+            await session.commit()
+
+        assert await transport.join_room(elsewhere) is True
+        # Joining again must not announce a second arrival to the room.
+        assert await transport.join_room(elsewhere) is True
+
+        assert elsewhere_id in transport._watching
+        async with session_factory() as session:
+            rows = await MessageStore().list_for_room(
+                session, elsewhere_id, after_seq=0, limit=10
+            )
+        assert rows == []
