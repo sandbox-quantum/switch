@@ -783,3 +783,80 @@ class TestJoiningARoomAlreadyRecorded:
                 session, elsewhere_id, after_seq=0, limit=10
             )
         assert rows == []
+
+
+class TestHearingYourOwnArrival:
+    """A client learns it joined by being told, as it always did.
+
+    The homeserver turned a join into an event and delivered it to everyone —
+    including the client it was about, down its own connection — and code
+    downstream (the greeting an agent posts on entering a room) fired on
+    receiving it. Writing the row and then watching from the head steps over
+    it: the room hears the arrival and the arriving client does not.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    async def test_joining_while_receiving_delivers_the_join_to_itself(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            _, later, _, _ = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(room)
+        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        await _watched_room(transport)
+
+        await transport.join_room(later)
+        await _settled(transport)
+
+        assert len(received.events) == 1
+        event = received.events[0]
+        assert isinstance(event, InboundMembership)
+        assert event.state_key == user_id
+        assert event.membership == "join"
+        assert event.room_id == later
+
+    async def test_it_hears_the_join_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The cursor starts just below the arrival, not at the room's start:
+        a client joining a room with history must not be handed all of it."""
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            _, later, other_id, other_user = await _make_room(session)
+            await session.commit()
+
+        talker = _transport(session_factory, client_id=other_id, user_id=other_user)
+        await talker.join_room(later)
+        await talker.send_message(later, "said before anyone joined", sender_name="a")
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(room)
+        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        await _watched_room(transport)
+
+        await transport.join_room(later)
+        await _settled(transport)
+        await _settled(transport)
+
+        kinds = [type(event) for event in received.events]
+        assert kinds == [InboundMembership]

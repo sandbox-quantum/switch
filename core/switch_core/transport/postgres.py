@@ -265,18 +265,40 @@ class PostgresTransport:
             ),
         )
 
-    async def _watch(self, transport_room_id: str) -> None:
-        """Start delivering a room, from wherever it is right now."""
+    async def _watch(
+        self, transport_room_id: str, *, from_seq: int | None = None
+    ) -> None:
+        """Start delivering a room, from its head or from a given position.
+
+        `from_seq` exists so a client can hear its own arrival. Over Matrix a
+        join came back down the joining client's own connection — the
+        homeserver turned it into an event and delivered it to everyone,
+        including the person it was about — and code downstream learned it had
+        joined by being told. Writing the row and then watching from the head
+        steps over the client's own footprint: the room hears the arrival and
+        the arriving client does not.
+
+        Restoring the loop-back rather than dispatching the one handler that
+        noticed keeps every guard downstream in play, and covers whatever else
+        depended on hearing its own join.
+        """
         async with self._session_factory() as session:
             room_id = await self._resolve_room(session, transport_room_id)
             if room_id in self._cursors:
                 return
-            self._cursors[room_id] = await self._message_store.head_seq(
-                session, room_id
+            self._cursors[room_id] = (
+                from_seq
+                if from_seq is not None
+                else await self._message_store.head_seq(session, room_id)
             )
         self._watching[room_id] = transport_room_id
         self._listener.subscribe(room_id, self._on_room_advanced)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
+        if from_seq is not None:
+            # The announcement for anything already written went out before
+            # this subscription existed, so nothing will wake the loop for it.
+            self._pending.add(room_id)
+            self._wake.set()
 
     def _unwatch_all(self) -> None:
         for room_id, transport_room_id in self._watching.items():
@@ -598,8 +620,11 @@ class PostgresTransport:
             )
             await self._message_store.create(session, arrival, [])
             await session.commit()
+            arrival_seq = arrival.seq
         if self._receiving:
-            await self._watch(room_id)
+            # From just before the arrival, so this client reads its own join
+            # the way every other member does.
+            await self._watch(room_id, from_seq=arrival_seq - 1)
         return True
 
     async def joined_rooms(self) -> list[str]:
