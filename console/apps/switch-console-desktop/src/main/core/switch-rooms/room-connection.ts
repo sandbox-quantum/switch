@@ -560,6 +560,7 @@ export class RoomConnection {
     this.currentAnchorId = null;
     this.runtimeState = 'idle';
     this.lastActivityDetail = null;
+    this.subagents.clear();
     this.activityFailures = 0;
     this.stopActivityTicker();
   }
@@ -921,7 +922,7 @@ export class RoomConnection {
     // A fresh state clears the activity line: a new "working" turn starts from
     // the generic indicator, and idle/awaiting-input carry no activity.
     this.lastActivityDetail = null;
-    if (state !== 'working') this.subagents.clear();
+    if (state !== 'working' || !wasWorking) this.subagents.clear();
     if (state === 'working') {
       if (!wasWorking) {
         this.workingStartedAt = Date.now();
