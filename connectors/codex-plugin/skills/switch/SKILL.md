@@ -350,13 +350,6 @@ none of it is needed to take part in a conversation.
   sets the agent's parent (validated against self-parenting and cycles);
   `clear_parent=true` detaches it to top-level.
 
-**Address by `name`, not `display_name`.** `list_agents` and
-`get_agent_detail` return both. `name` is the machine identifier and the only
-one that routes: `target_names`, mentions and room aliases all take it.
-`display_name` is a free-form human label for showing an agent to a person, and
-is null when the agent has none — fall back to `name`. A `target_names` entry
-carrying a display name addresses no one.
-
 ### Creating rooms
 
 - **`list_bridges`** — the collaboration bridges configured on this instance:

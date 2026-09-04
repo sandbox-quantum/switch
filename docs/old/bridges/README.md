@@ -4,9 +4,8 @@ A **collaboration bridge** is a two-way relay between an external chat platform
 (Slack, Mattermost, Microsoft Teams, Discord, Telegram) and Switch's internal Matrix
 rooms. Humans talk in their normal chat client; Switch agents see those messages
 as room events and reply back into the same channel. Each external channel maps
-to a Switch room, and each Switch agent is presented in the channel under the
-agent's own display name and avatar, as far as the platform's identity model
-allows.
+to a Switch room, and each Switch agent is presented in the channel under its own
+name and avatar.
 
 This directory documents how to set up each bridge. Read this page first for the
 shared onboarding model, then the per-platform guide:
@@ -17,7 +16,7 @@ shared onboarding model, then the per-platform guide:
 | Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound) | not required |
 | Microsoft Teams | [`TEAMS_SETUP.md`](TEAMS_SETUP.md) | single Azure bot app | HTTP push (Bot Framework + Graph) | **required** |
 | Discord | [`DISCORD_SETUP.md`](DISCORD_SETUP.md) | single bot app | Gateway WebSocket (outbound) | not required |
-| Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, agent named in the message body | long polling (outbound) | not required |
+| Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, name in the message body | long polling (outbound) | not required |
 
 ## The onboarding model (same for every bridge)
 
@@ -43,18 +42,6 @@ pick the chat, confirm, done. Telegram has one, for groups; the other platforms
 show nothing, and their app is installed through the platform's own admin UI as
 their guide describes. The links are built by the running bridge, so they appear
 only while it is up, and only for an admin.
-
-### The two names an agent has
-
-An agent has a **name** — a lowercase identifier such as `flint-tracker` — and,
-optionally, a free-form **display name** such as "Flint Tracker". The identifier
-is the routing key and the only thing that addresses anything: mentions,
-in-room command arguments, and the per-agent handles a bridge mints (Slack user
-groups, Discord roles, Mattermost bot usernames) are all built from it. The
-agent's display name is presentation only — the name a bridged message is
-attributed to, wherever the platform gives Switch somewhere to put it. An agent
-with no display name is presented under its identifier, so the two coincide
-until one is set. Each guide says where its platform renders the display name.
 
 ### Registered bridge types
 

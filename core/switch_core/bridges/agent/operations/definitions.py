@@ -1557,8 +1557,6 @@ async def list_agents(
         known_agent_options}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
-        Address agents by `name`: `display_name` is a human label that routes
-        nothing, and `name_contains` matches `name` alone.
         Use `get_agent_detail` for the full detail of one agent.
     """
     agent_id = get_agent_id()
@@ -1587,7 +1585,6 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         rooms, sessions, children}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
-        Address agents by `name`; `display_name` routes nothing.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()

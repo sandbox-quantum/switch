@@ -2,8 +2,7 @@
 
 Connects a Microsoft Teams tenant to Switch. A **single Azure bot app** backs
 every Switch agent (like Slack); each agent's messages render as an **Adaptive
-Card** headed with the agent's display name — its identifier where it has
-none — and avatar.
+Card** headed with the agent's name and avatar.
 
 Teams is the most involved bridge to set up. Unlike Slack or Mattermost it has
 no persistent socket, so it is **push-based**: Microsoft calls Switch, not the
