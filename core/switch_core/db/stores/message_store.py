@@ -127,6 +127,20 @@ class MessageStore:
         )
         return int(result.scalar_one()) + 1
 
+    async def head_seq(self, session: AsyncSession, room_id: str) -> int:
+        """The room's current position, or 0 when nothing has been sent.
+
+        What a subscriber starts from when it wants everything after now
+        rather than everything. Reconstructed history is numbered below zero,
+        so an empty live log answers 0 whatever has been backfilled into it.
+        """
+        result = await session.execute(
+            select(func.coalesce(func.max(Message.seq), 0)).where(
+                Message.room_id == room_id
+            )
+        )
+        return max(int(result.scalar_one()), 0)
+
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str
     ) -> Message | None:

@@ -1,18 +1,20 @@
-"""Sending over Postgres: what lands, and what refuses to pretend.
+"""Sending and receiving over Postgres.
 
 These run against a real database because the whole point of the transport is
 what the table ends up holding — the seq allocation, the denormalised columns
 and the attachment row are the behaviour, not an implementation detail behind
 it.
 
-The unimplemented halves are tested too. A transport that quietly returns
-nothing from `receive_forever` would look like a working deployment with a
-silent room, which is the one failure this codebase refuses to ship.
+Media is still unbuilt, and that is tested too: a transport that quietly
+returns nothing would look like a working deployment with a silent room, which
+is the one failure this codebase refuses to ship.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,7 +22,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import Client, Room
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.transport import MessageTransport, TransportError
+from switch_core.transport import (
+    InboundCustomEvent,
+    InboundMedia,
+    InboundMembership,
+    InboundMessage,
+    MessageTransport,
+    TransportError,
+    TransportHandlers,
+)
 from switch_core.transport.postgres import PostgresTransport
 
 
@@ -44,11 +54,66 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
     return room.id, room.matrix_room_id, client.id, client.matrix_user_id
 
 
+async def _watched_room(transport: PostgresTransport) -> str:
+    """Wait until the transport is watching a room, and name it.
+
+    `receive_forever` resolves memberships against the database before it
+    subscribes, so a test that sends immediately after starting it would race
+    the subscription rather than test anything.
+    """
+    for _ in range(200):
+        if transport._watching:
+            return next(iter(transport._watching))
+        await asyncio.sleep(0.01)
+    raise AssertionError("the transport never started watching a room")
+
+
+class _FakeListener:
+    """Stands in for the notify listener, so a test can say "the room moved".
+
+    The real listener is a trigger and a LISTEN, covered by its own tests
+    against a live database. What matters here is what the transport does when
+    it is woken, which is a question about cursors and conversion.
+    """
+
+    def __init__(self) -> None:
+        self.wakers: dict[str, set] = {}
+
+    def subscribe(self, room_id: str, waker) -> None:
+        self.wakers.setdefault(room_id, set()).add(waker)
+
+    def unsubscribe(self, room_id: str, waker) -> None:
+        self.wakers.get(room_id, set()).discard(waker)
+
+    async def announce(self, room_id: str) -> None:
+        for waker in list(self.wakers.get(room_id, ())):
+            await waker(room_id)
+
+
+class _Received:
+    """Collects what the transport handed to each handler."""
+
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def handlers(self) -> TransportHandlers:
+        return TransportHandlers(
+            on_message=self._take,
+            on_media=self._take,
+            on_member_event=self._take,
+            on_custom_event=self._take,
+        )
+
+    async def _take(self, _room, event) -> None:
+        self.events.append(event)
+
+
 def _transport(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     client_id: str,
     user_id: str,
+    listener: _FakeListener | None = None,
 ) -> PostgresTransport:
     return PostgresTransport(
         user_id=user_id,
@@ -57,6 +122,7 @@ def _transport(
         session_factory=session_factory,
         room_store=RoomStore(),
         message_store=MessageStore(),
+        listener=listener or _FakeListener(),
     )
 
 
@@ -259,13 +325,6 @@ class TestRooms:
 
 
 class TestWhatIsNotBuiltYet:
-    async def test_receiving_refuses_rather_than_going_quiet(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        transport = _transport(session_factory, client_id="c", user_id="@a:test")
-        with pytest.raises(NotImplementedError):
-            await transport.receive_forever(since=None)
-
     async def test_media_storage_refuses_rather_than_losing_the_bytes(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -274,3 +333,159 @@ class TestWhatIsNotBuiltYet:
             await transport.upload_media(b"x", "text/plain", "a.txt")
         with pytest.raises(NotImplementedError):
             await transport.download_media("blob://1")
+
+
+class TestReceiving:
+    """What a woken transport hands to its handlers.
+
+    Delivery is driven by the announcement the database makes on every insert;
+    a fake listener stands in for it so these tests are about the cursor and
+    the conversion rather than about the trigger, which has its own.
+    """
+
+    async def _receiving(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> tuple[PostgresTransport, _FakeListener, _Received, str, str]:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        received = _Received()
+        transport = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        transport.register_handlers(received.handlers())
+        await transport.join_room(transport_room_id)
+        task = asyncio.create_task(transport.receive_forever(since=None))
+        self._tasks.append((task, transport))
+        await _watched_room(transport)
+        return transport, listener, received, transport_room_id, user_id
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[tuple[asyncio.Task, PostgresTransport]] = []
+        yield
+        for task, _ in self._tasks:
+            task.cancel()
+
+    async def test_a_message_arrives_as_a_message(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        transport, listener, received, room, _ = await self._receiving(session_factory)
+
+        sent = await transport.send_message(room, "hello", sender_name="agent one")
+        await listener.announce(await _watched_room(transport))
+
+        assert len(received.events) == 1
+        event = received.events[0]
+        assert isinstance(event, InboundMessage)
+        assert event.event_id == sent.event_id
+        assert event.body == "hello"
+        # The room a handler is given is the transport-side id it knows, not
+        # the internal one the listener announces.
+        assert event.room_id == room
+
+    async def test_the_cursor_starts_at_the_head_and_does_not_repeat(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A restart is not a replay.
+
+        Everything before this transport started receiving is already someone
+        else's problem — a delivery cursor's — and redelivering it would be
+        indistinguishable to a reader from it being said again.
+        """
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        listener = _FakeListener()
+        writer = _transport(session_factory, client_id=client_id, user_id=user_id)
+        await writer.send_message(room, "said before anyone listened", sender_name="a")
+
+        received = _Received()
+        reader = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        reader.register_handlers(received.handlers())
+        await reader.join_room(room)
+        task = asyncio.create_task(reader.receive_forever(since=None))
+        self._tasks.append((task, reader))
+        switch_room_id = await _watched_room(reader)
+        await listener.announce(switch_room_id)
+        assert received.events == []
+
+        await writer.send_message(room, "said after", sender_name="a")
+        await listener.announce(switch_room_id)
+        await listener.announce(switch_room_id)
+
+        bodies = [event.body for event in received.events]
+        assert bodies == ["said after"]
+
+    async def test_a_file_arrives_as_media(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        transport, listener, received, room, _ = await self._receiving(session_factory)
+
+        await transport.send_media(
+            room,
+            "blob://7",
+            "notes.txt",
+            "text/plain",
+            12,
+            sender_name="agent one",
+            msgtype="m.file",
+        )
+        await listener.announce(await _watched_room(transport))
+
+        event = received.events[0]
+        assert isinstance(event, InboundMedia)
+        assert event.uri == "blob://7"
+        assert event.filename == "notes.txt"
+        assert event.mimetype == "text/plain"
+        assert event.size == 12
+
+    async def test_a_custom_event_arrives_as_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        transport, listener, received, room, _ = await self._receiving(session_factory)
+
+        await transport.send_event(room, "com.switch.command", {"command": "roles"})
+        await listener.announce(await _watched_room(transport))
+
+        event = received.events[0]
+        assert isinstance(event, InboundCustomEvent)
+        assert event.event_type == "com.switch.command"
+        assert event.content == {"command": "roles"}
+
+    async def test_an_arrival_is_delivered_to_the_members_watching(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Joining writes the arrival, so the room learns about it the same way
+        it learns about anything else: a row it has not read yet."""
+        transport, listener, received, room, _ = await self._receiving(session_factory)
+
+        async with session_factory() as session:
+            newcomer = Client(
+                matrix_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
+                display_name="the newcomer",
+                type="agent",
+                password="x",
+            )
+            session.add(newcomer)
+            await session.commit()
+            newcomer_id, newcomer_mxid = newcomer.id, newcomer.matrix_user_id
+
+        joiner = _transport(
+            session_factory, client_id=newcomer_id, user_id=newcomer_mxid
+        )
+        joiner.display_name = "the newcomer"
+        await joiner.join_room(room)
+        await listener.announce(await _watched_room(transport))
+
+        event = received.events[0]
+        assert isinstance(event, InboundMembership)
+        assert event.state_key == newcomer_mxid
+        assert event.membership == "join"
+        assert event.display_name == "the newcomer"
