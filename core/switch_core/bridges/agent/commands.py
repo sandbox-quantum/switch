@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from nio import MatrixRoom
 
+from switch_core.agent_display_name import agent_label, agent_label_with_identifier
 from switch_core.aliases import (
     AliasError,
     check_alias_collisions,
@@ -448,7 +449,8 @@ async def _cmd_list_room_agents(
             agent = await client._agent_store.get(session, agent_id)
             if agent:
                 desc = f" — {agent.description}" if agent.description else ""
-                lines.append(f"- **{agent.name}**{desc}")
+                label = agent_label_with_identifier(agent.display_name, agent.name)
+                lines.append(f"- **{label}**{desc}")
 
     await _reply(client, room, event, "\n".join(lines))
 
@@ -472,11 +474,15 @@ async def _cmd_list_aliases(
         lines = ["**Aliases in this room:**"]
         for agent_id, alias in aliases.items():
             agent = await client._agent_store.get(session, agent_id)
-            name = agent.name if agent else agent_id
+            label = (
+                agent_label_with_identifier(agent.display_name, agent.name)
+                if agent
+                else agent_id
+            )
             # Render the alias WITHOUT a leading `@`: this text is posted as a
             # room message, and a live `@<alias>` would be re-parsed as a mention
             # and address the aliased agent.
-            lines.append(f"- `{alias}` → **{name}**")
+            lines.append(f"- `{alias}` → **{label}**")
 
     await _reply(client, room, event, "\n".join(lines))
 
@@ -547,7 +553,7 @@ async def _cmd_set_alias(
         client,
         room,
         event,
-        f"Alias set — address **{target.name}** as `{alias}` in this room.",
+        f"Alias set — address **{agent_label_with_identifier(target.display_name, target.name)}** as `{alias}` in this room.",
     )
 
 
@@ -642,7 +648,10 @@ async def _cmd_invite(
         room_agent_ids = await client._room_store.get_agent_ids(session, meta.room_id)
         if target.id in room_agent_ids:
             await _reply(
-                client, room, event, f"**{target.name}** is already in this room."
+                client,
+                room,
+                event,
+                f"**{agent_label_with_identifier(target.display_name, target.name)}** is already in this room.",
             )
             return
 
@@ -654,7 +663,12 @@ async def _cmd_invite(
     await cast("AdminClient", client)._room_service.add_agents_to_room(
         meta.room_id, agent_names=[target.name]
     )
-    await _reply(client, room, event, f"Added **{target.name}** to this room.")
+    await _reply(
+        client,
+        room,
+        event,
+        f"Added **{agent_label_with_identifier(target.display_name, target.name)}** to this room.",
+    )
 
 
 # Emoji + label shown per status by the !status command.
@@ -680,20 +694,22 @@ def _format_status_lines(
     runtime_states: dict[str, str],
     deeplinks: dict[str, str],
 ) -> str:
-    """Render the !status summary: one line per agent (sorted by name) with
-    its presence emoji + label, runtime state (if any), agent_type, task
-    capabilities, and a Switch Console deeplink to its session when one is known.
+    """Render the !status summary: one line per agent (sorted by the name it is
+    shown under) with its presence emoji + label, runtime state (if any),
+    agent_type, task capabilities, and a Switch Console deeplink to its session
+    when one is known.
 
     The deeplink is shown only for an agent whose session is LIVE in this room:
     the stored link is per (agent, room) and survives a room switch, so once the
     session moves away it would point at a session no longer here. Gating on
     LIVE keeps the link from going stale when an agent hops rooms."""
     lines = ["**Agent status in this room:**"]
-    for agent in sorted(agents, key=lambda a: a.name):
+    for agent in sorted(agents, key=lambda a: (a.display_name or a.name).lower()):
         status = statuses.get(agent.id, AgentStatus.NO_SESSION)
         emoji, label = _STATUS_DISPLAY.get(status, ("", status.value))
         runtime = _RUNTIME_STATE_DISPLAY.get(runtime_states.get(agent.id, ""))
-        head = f"{emoji} **{agent.name}** — {label}"
+        name = agent_label_with_identifier(agent.display_name, agent.name)
+        head = f"{emoji} **{name}** — {label}"
         if runtime is not None:
             head += f" · {runtime}"
         parts = [head, agent.agent_type]
@@ -777,7 +793,7 @@ async def _cmd_roles(
         for holder_id in {h for ids in holders.values() for h in ids}:
             holder = await client._agent_store.get(session, holder_id)
             if holder is not None:
-                holder_names[holder_id] = holder.name
+                holder_names[holder_id] = agent_label(holder.display_name, holder.name)
 
     lines = ["**Roles in this room:**"]
     for role in roles:
@@ -821,7 +837,9 @@ async def _cmd_list_documents(
             if d.created_by_agent_id:
                 agent = await client._agent_store.get(session, d.created_by_agent_id)
                 if agent:
-                    creator = f" — created by {agent.name}"
+                    creator = (
+                        f" — created by {agent_label(agent.display_name, agent.name)}"
+                    )
             desc = f" — {d.description}" if d.description else ""
             if client._frontend_base_url is None:
                 name_md = f"**{d.name}**"
@@ -915,7 +933,8 @@ async def _cmd_list_all_agents(
     lines = ["**Available agents:**"]
     for agent in agents:
         desc = f" — {agent.description}" if agent.description else ""
-        lines.append(f"- **{agent.name}**{desc}")
+        label = agent_label_with_identifier(agent.display_name, agent.name)
+        lines.append(f"- **{label}**{desc}")
     await _reply(client, room, event, "\n".join(lines))
 
 
@@ -997,11 +1016,14 @@ async def _cmd_agents_greet(
     event: CommandEvent,
     is_direct: bool,
 ) -> None:
-    name = client.agent.name
+    agent = await client._fresh_agent()
     if is_direct:
-        await _reply(client, room, event, f"Hi! I'm {name} — how can I help?")
+        label = agent_label(agent.display_name, agent.name)
+        await _reply(client, room, event, f"Hi! I'm {label} — how can I help?")
     else:
-        greeting = random.choice(AGENT_GREETINGS).format(name=name)
+        # `@{name}` here is a live mention handle the reader tags back, so it
+        # stays the identifier whatever the agent is displayed as.
+        greeting = random.choice(AGENT_GREETINGS).format(name=agent.name)
         await _reply(client, room, event, greeting)
 
 

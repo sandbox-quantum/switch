@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -7,6 +8,9 @@ from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.events import CommandEvent
+
+# Matches a live `@<handle>` mention token (same char class Switch re-parses).
+_MENTION = re.compile(r"@[A-Za-z0-9._-]+")
 
 
 def _no_connections() -> SimpleNamespace:
@@ -177,7 +181,11 @@ class TestAdminUnreachableRoleWarning:
 
 class TestAdminAbsentAgentWarning:
     async def test_warns_when_agent_absent(self) -> None:
-        agents = {"web-searcher": SimpleNamespace(id="a-web", name="web-searcher")}
+        agents = {
+            "web-searcher": SimpleNamespace(
+                id="a-web", name="web-searcher", display_name=None
+            )
+        }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher can you look this up?")
         await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
@@ -187,7 +195,11 @@ class TestAdminAbsentAgentWarning:
         assert _marker_type(sent[0]) == AdminMessageType.ABSENT_AGENT.value
 
     async def test_warning_tags_the_asker(self) -> None:
-        agents = {"web-searcher": SimpleNamespace(id="a-web", name="web-searcher")}
+        agents = {
+            "web-searcher": SimpleNamespace(
+                id="a-web", name="web-searcher", display_name=None
+            )
+        }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher ping", sender_name="carol")
         await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
@@ -195,7 +207,11 @@ class TestAdminAbsentAgentWarning:
         assert sent[0]["mentions"] == ["@carol:switch.local"]
 
     async def test_warning_threads_under_trigger(self) -> None:
-        agents = {"web-searcher": SimpleNamespace(id="a-web", name="web-searcher")}
+        agents = {
+            "web-searcher": SimpleNamespace(
+                id="a-web", name="web-searcher", display_name=None
+            )
+        }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher ping")
         await AdminClient._warn_absent_agents(
@@ -204,7 +220,11 @@ class TestAdminAbsentAgentWarning:
         assert sent[0]["thread_root_id"] == "thread-42"
 
     async def test_no_warning_when_agent_is_member(self) -> None:
-        agents = {"web-searcher": SimpleNamespace(id="a-web", name="web-searcher")}
+        agents = {
+            "web-searcher": SimpleNamespace(
+                id="a-web", name="web-searcher", display_name=None
+            )
+        }
         client, sent = _admin_client(members={"a-web"}, agents_by_name=agents)
         event = _event("@web-searcher status?")
         await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
@@ -218,7 +238,11 @@ class TestAdminAbsentAgentWarning:
         assert sent == []
 
     async def test_prefix_name_not_falsely_warned(self) -> None:
-        agents = {"cc-bug-fixing": SimpleNamespace(id="a-ccbf", name="cc-bug-fixing")}
+        agents = {
+            "cc-bug-fixing": SimpleNamespace(
+                id="a-ccbf", name="cc-bug-fixing", display_name=None
+            )
+        }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@cc-bug-fixing-2 please run")
         await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
@@ -234,8 +258,12 @@ class TestAdminAbsentAgentWarning:
 
     async def test_combines_multiple_absent_agents(self) -> None:
         agents = {
-            "web-searcher": SimpleNamespace(id="a-web", name="web-searcher"),
-            "doc-expert": SimpleNamespace(id="a-doc", name="doc-expert"),
+            "web-searcher": SimpleNamespace(
+                id="a-web", name="web-searcher", display_name=None
+            ),
+            "doc-expert": SimpleNamespace(
+                id="a-doc", name="doc-expert", display_name=None
+            ),
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher @doc-expert can you pair up?")
@@ -244,6 +272,56 @@ class TestAdminAbsentAgentWarning:
         assert "web-searcher" in sent[0]["body"]
         assert "doc-expert" in sent[0]["body"]
         assert "aren't in this room" in sent[0]["body"]
+
+    async def test_warning_names_the_agent_and_keeps_its_identifier(self) -> None:
+        # The reader just mistyped a mention, so the identifier they have to
+        # retype has to stay on the line beside the label.
+        agents = {
+            "switchdev": SimpleNamespace(
+                id="a-sd", name="switchdev", display_name="Switch Dev"
+            )
+        }
+        client, sent = _admin_client(agents_by_name=agents)
+        event = _event("@switchdev can you look this up?")
+        await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
+        assert "**Switch Dev (`switchdev`)**" in sent[0]["body"]
+
+    async def test_warning_without_a_display_name_names_it_once(self) -> None:
+        agents = {
+            "switchdev": SimpleNamespace(id="a-sd", name="switchdev", display_name=None)
+        }
+        client, sent = _admin_client(agents_by_name=agents)
+        event = _event("@switchdev ping")
+        await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
+        assert "**switchdev**" in sent[0]["body"]
+        assert "(`switchdev`)" not in sent[0]["body"]
+
+    async def test_warning_display_name_cannot_ping_the_channel(self) -> None:
+        agents = {
+            "switchdev": SimpleNamespace(
+                id="a-sd", name="switchdev", display_name="@everyone"
+            )
+        }
+        client, sent = _admin_client(agents_by_name=agents)
+        event = _event("@switchdev ping", sender_name="carol")
+        await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
+        body = sent[0]["body"]
+        # The one live mention left is the asker the notice is addressed to.
+        assert _MENTION.findall(body) == ["@carol"]
+        assert "switchdev" in body
+
+    async def test_warning_display_name_cannot_forge_a_link(self) -> None:
+        agents = {
+            "switchdev": SimpleNamespace(
+                id="a-sd",
+                name="switchdev",
+                display_name="[here](https://example.invalid)",
+            )
+        }
+        client, sent = _admin_client(agents_by_name=agents)
+        event = _event("@switchdev ping")
+        await AdminClient._warn_absent_agents(client, _room(), event, "room-1", None)
+        assert "](https://example.invalid)" not in sent[0]["body"]
 
 
 def _cmd_event(command: str, args: str = "") -> CommandEvent:
