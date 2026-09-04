@@ -67,7 +67,6 @@ ingress:
 #    chart then renders no Secret and the values below are ignored. That Secret
 #    must contain these keys:
 #      POSTGRES_PASSWORD (unless postgresql.existingSecret is set),
-#      MATRIX_REGISTRATION_SHARED_SECRET, MATRIX_ADMIN_PASSWORD,
 #      AGENT_REGISTRATION_TOKEN, JWT_SECRET_KEY, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
@@ -77,8 +76,6 @@ secrets:
   # chart manages its own Secret from the values below.
   existingSecret: ""
   postgresPassword: ""
-  matrixRegistrationSharedSecret: ""
-  matrixAdminPassword: ""
   agentRegistrationToken: ""
   jwtSecretKey: ""
   gatewayAdminEmail: ""
@@ -197,9 +194,12 @@ switchCore:
         # Secret holding the cert; cert-manager creates it from the annotation
         # above, or reference a pre-created TLS Secret.
         secretName: ""
-  # switch-core keeps live Matrix sync sessions in memory, so it MUST run as a
-  # single replica — a second replica would double every client and split
-  # session state. This is enforced at render time; do not raise it.
+  # switch-core MUST run as a single replica. Four things live in the process
+  # rather than the database: the per-agent event buffer, the invite bus, the
+  # ephemeral (presence) bus, and the message listener's subscriber registry. A
+  # second replica would hold its own copy of each, so a signal raised in one
+  # would never reach a client attached to the other. This is enforced at
+  # render time; do not raise it.
   replicaCount: 1
   # Run DB migrations (alembic upgrade head) as a pre-upgrade hook Job, before
   # the new pods roll, so a failed migration blocks the upgrade instead of
@@ -208,26 +208,6 @@ switchCore:
   # idempotent. Disable only if you run migrations out-of-band.
   migrations:
     preUpgradeJob: true
-  # One-off migration steps for the move onto the Postgres message store. Both
-  # read the homeserver, so they only work while Tuwunel is still deployed, and
-  # both are off by default: they belong to one release, not to every release.
-  #
-  #   1. enable backfill with dryRun: true, upgrade, read the Job's log
-  #   2. set dryRun: false, upgrade again
-  #   3. enable reconcile, upgrade, confirm it exits clean
-  #   4. set MESSAGE_TRANSPORT=postgres
-  #   5. turn both back off
-  #
-  # Backfill is idempotent and its rows are numbered below the live sequence,
-  # so it can be re-run and nobody is redelivered old history.
-  backfill:
-    enabled: false
-    dryRun: true
-    # Exit 0 when there is no history to walk. For an install with no rooms
-    # yet, where a failed Job would be reporting an empty database as a fault.
-    allowEmpty: false
-  reconcile:
-    enabled: false
   resources:
     requests:
       memory: "512Mi"
@@ -252,32 +232,23 @@ gateway:
       memory: "128Mi"
       cpu: "200m"
 
-# ── Tuwunel (Matrix homeserver) ───────────────────────────────────────────────
-# The internal message bus. switch-core points here. RocksDB-backed (no Postgres
-# dependency); data lives on its own PVC.
-tuwunel:
-  image: jevolk/tuwunel:v1.7.1
-  imagePullPolicy: IfNotPresent
-  # Every Matrix user id is @localpart:<serverName>, so changing this on an
-  # existing deployment orphans all accounts.
+# ── Retained homeserver disk ──────────────────────────────────────────────────
+# Switch no longer runs a homeserver, but its volume still holds every media
+# blob and the raw history — the backfill moved the messages into Postgres and
+# not the files, so this is their only copy. Left claimed, and annotated
+# keep, so an upgrade does not destroy it. Set false once you have decided you
+# do not want that data; there is no getting it back.
+retainTuwunelData: true
+# Must match what the volume was created with. Shrinking a PVC is rejected.
+retainedTuwunelDataSize: 10Gi
+
+# ── Client identity ───────────────────────────────────────────────────────────
+# The server half of every client id (@localpart:<serverName>). Nothing is
+# contacted at it — it is a naming scheme, not an address — but the ids are
+# stable public handles, so changing it on an existing deployment orphans every
+# account.
+clientIdentity:
   serverName: "switch.local"
-  allowFederation: false
-  allowRegistration: false
-  maxRequestSize: "20000000"
-  # Set if the image runs as non-root and can't write the PVC, e.g. {fsGroup: 1000}.
-  podSecurityContext: {}
-  service:
-    type: ClusterIP
-    port: 8008
-  persistence:
-    size: 10Gi
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "250m"
-    limits:
-      memory: "2Gi"
-      cpu: "1000m"
 
 # ── Mattermost ───────────────────────────────────────────────────────────────
 mattermost:
@@ -404,5 +375,5 @@ postgresql:
 # This chart ships no backup jobs on purpose — an on-cluster backup shares the
 # storage backend it is meant to protect, and every target already has stronger,
 # portable primitives (CSI VolumeSnapshots, managed-DB backups, Velero). See
-# BACKUP.md for what to back up (the Tuwunel volume holds the Matrix signing key
+# BACKUP.md for what to back up (the Postgres volume holds every room and message
 # — the irreplaceable server identity) and how, plus samples/volumesnapshot.example.yaml.

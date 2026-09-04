@@ -7,21 +7,9 @@
 #   RELEASE          -> your Helm release name (kubectl get pvc to confirm)
 #   csi-snapclass    -> your VolumeSnapshotClass (kubectl get volumesnapshotclass)
 #
-# For the strongest Tuwunel consistency, scale it to 0 before snapshotting:
-#   kubectl scale deploy/RELEASE-tuwunel --replicas=0
 #   kubectl apply -f this-file
-#   kubectl scale deploy/RELEASE-tuwunel --replicas=1
 #
 # These are one-off snapshots. For scheduled snapshots use snapscheduler or Velero.
----
-apiVersion: snapshot.storage.k8s.io/v1
-kind: VolumeSnapshot
-metadata:
-  name: tuwunel-snapshot   # the Matrix signing key — the critical one
-spec:
-  volumeSnapshotClassName: csi-snapclass
-  source:
-    persistentVolumeClaimName: RELEASE-tuwunel-data
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot

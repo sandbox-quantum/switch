@@ -22,7 +22,7 @@ just run                 # run switch-core locally (:8000)
 just gateway-dev         # run the gateway frontend (separate terminal)
 ```
 
-`just up` starts the **supporting services** in Docker — Tuwunel, PostgreSQL and
+`just up` starts the **supporting services** in Docker — PostgreSQL and
 Mattermost. You run **switch-core** and the **gateway** yourself so you get
 hot-reload while developing: `just run` (switch-core on `:8000`) and
 `just gateway-dev` (the frontend), each in its own terminal. Stop the stack with
@@ -39,7 +39,7 @@ Run `just` with no arguments to list every recipe. The most-used ones:
 |---|---|
 | `just init-env` | Generate `.env` with freshly generated secrets (no default login) |
 | `just up` / `just down` | Start / stop the local dev stack |
-| `just reset` | Stop the stack and wipe volumes (incl. the Tuwunel database) |
+| `just reset` | Stop the stack and wipe volumes |
 | `just standalone-up` / `just standalone-down` | Start / stop the full standalone stack (no dev tooling) |
 | `just standalone-reset` | Stop the standalone stack and wipe its volumes |
 | `just run` | Run switch-core locally (`python -m switch_core.main`) |

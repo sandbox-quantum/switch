@@ -14,8 +14,6 @@ To access services via port-forward:
   # Mattermost
   kubectl port-forward svc/{{ include "switch.fullname" . }}-mattermost 8065:8065 -n {{ .Release.Namespace }}
 
-  # Tuwunel (Matrix homeserver)
-  kubectl port-forward svc/{{ include "switch.fullname" . }}-tuwunel 8008:8008 -n {{ .Release.Namespace }}
 
 Or use `just pf-all` to forward all services at once.
 {{ if eq .Values.ingress.mode "managed" }}
@@ -93,9 +91,7 @@ in-cluster half. See docs/bridges/TEAMS_SETUP.md.
 {{- end }}
 
 ⚠  BACK UP YOUR DATA — this chart ships no backup jobs.
-The Tuwunel volume ({{ include "switch.fullname" . }}-tuwunel-data) holds the
-Matrix signing key: your homeserver's identity. Lose it and every account is
-orphaned and this server can never be restored — so back it up. Also back up
-Postgres (all app + Mattermost state). See BACKUP.md and
+Postgres holds everything: every room, every message, every account, and the
+Mattermost database. Back it up. See BACKUP.md and
 samples/volumesnapshot.example.yaml for the recommended approaches
 (CSI VolumeSnapshots, pg_dump / managed-DB backups, Velero).

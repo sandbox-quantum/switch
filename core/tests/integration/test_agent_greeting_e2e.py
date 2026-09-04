@@ -1,9 +1,9 @@
-"""End-to-end test for the agent self-join greeting over a real Matrix homeserver.
+"""End-to-end test for the agent self-join greeting over the real transport.
 
 Drives the genuine path: RoomService creates a room and invites the agent →
-the agent's AgentClient sync loop sees the invite → auto-joins → on_self_join
-posts the greeting. The assertion reads the room timeline back off the
-homeserver, so nothing is inferred from in-process state.
+the agent's AgentClient sees the invite → auto-joins → on_self_join posts the
+greeting. The assertion reads the room timeline back out of the messages table,
+so nothing is inferred from in-process state.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from switch_core.db.models import Agent, CollaborationBridge, Room
+from switch_core.db.models import Agent, CollaborationBridge, Message, Room
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness, SessionEnv
 
@@ -31,34 +31,28 @@ async def _wait_joined(
 
 
 async def _timeline_messages(
-    session_env: SessionEnv, matrix_room_id: str
-) -> list[dict]:
-    """Every m.room.message in the room, read back off the homeserver as admin."""
-    admin = session_env.matrix_admin
-    resp = await admin._http.get(
-        f"/_matrix/client/r0/rooms/{matrix_room_id}/messages",
-        params={"dir": "b", "limit": 100},
-        headers={"Authorization": f"Bearer {admin.access_token}"},
-    )
-    resp.raise_for_status()
-    return [
-        event
-        for event in resp.json().get("chunk", [])
-        if event.get("type") == "m.room.message"
-    ]
+    harness: Harness, session_env: SessionEnv, room_id: str
+) -> list[Message]:
+    """Every m.room.message in the room, read back out of the messages table."""
+    async with harness.session_factory() as session:  # type: ignore[operator]
+        rows = await session_env.message_store.list_for_room(
+            session, room_id, after_seq=0, limit=100
+        )
+    return [row for row in rows if row.event_type == "m.room.message"]
 
 
 async def _wait_for_message_from(
+    harness: Harness,
     session_env: SessionEnv,
-    matrix_room_id: str,
+    room_id: str,
     sender_localpart: str,
     timeout: float = 20,
-) -> dict | None:
+) -> Message | None:
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        for event in await _timeline_messages(session_env, matrix_room_id):
-            if event.get("sender", "").startswith(f"@{sender_localpart}"):
-                return event
+        for row in await _timeline_messages(harness, session_env, room_id):
+            if row.sender_matrix_id.startswith(f"@{sender_localpart}"):
+                return row
         await asyncio.sleep(0.5)
     return None
 
@@ -82,13 +76,16 @@ async def test_agent_posts_greeting_on_join(
     await _wait_joined(client, matrix_room_id)
 
     greeting = await _wait_for_message_from(
-        session_env, matrix_room_id, client.matrix_user_id.split(":")[0].lstrip("@")
+        harness,
+        session_env,
+        result.room.id,
+        client.matrix_user_id.split(":")[0].lstrip("@"),
     )
 
     assert greeting is not None, (
         "agent joined the room but never posted a self-join greeting"
     )
-    assert "e2e-greeter" in greeting["content"]["body"]
+    assert "e2e-greeter" in greeting.content["body"]
 
 
 async def test_no_greeting_when_the_bridge_has_them_disabled(
@@ -135,8 +132,9 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
     await _wait_joined(joiner_client, matrix_room_id)
 
     greeting = await _wait_for_message_from(
+        harness,
         session_env,
-        matrix_room_id,
+        result.room.id,
         joiner_client.matrix_user_id.split(":")[0].lstrip("@"),
         timeout=8,
     )

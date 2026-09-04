@@ -21,9 +21,6 @@ import pytest
 from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_base import ClientBase, ClientConfig
-from switch_core.clients.client_factory import matrix_transport_for
-from switch_core.clients.user_client import UserClient
-from tests.switch_core.transport.fake import FakeMessageRecorder
 
 
 def _base_kwargs() -> dict[str, Any]:
@@ -31,14 +28,9 @@ def _base_kwargs() -> dict[str, Any]:
         "client_id": "client-1",
         "matrix_user_id": "@switch-agent-1:switch.local",
         "display_name": "agent-one",
-        "password": "pw",
-        "server_url": "https://matrix.example",
         "session_factory": object(),
         "client_store": object(),
-        "transport_factory": matrix_transport_for,
-        "session_state": {"access_token": None, "device_id": None},
-        "next_batch_token": None,
-        "message_recorder": FakeMessageRecorder(),
+        "transport_factory": lambda client: object(),
     }
 
 
@@ -46,8 +38,6 @@ def test_client_base_takes_what_the_factory_passes() -> None:
     client = ClientBase(config=ClientConfig(), **_base_kwargs())
 
     assert client.client_id == "client-1"
-    # Credentials are held opaquely, not unpacked into named attributes.
-    assert client.session_state == {"access_token": None, "device_id": None}
 
 
 def test_bridge_client_construction_matches_its_lifecycle_call_site() -> None:
@@ -60,7 +50,7 @@ def test_bridge_client_construction_matches_its_lifecycle_call_site() -> None:
     assert client.config.bridge_id == "bridge-1"
 
 
-@pytest.mark.parametrize("cls", [UserClient, AdminClient])
+@pytest.mark.parametrize("cls", [AdminClient])
 def test_every_registered_client_type_constructs(cls: type) -> None:
     base = _base_kwargs()
     # Collaborators the factory injects as extra kwargs differ per class, so
@@ -83,12 +73,12 @@ def test_every_registered_client_type_constructs(cls: type) -> None:
     assert isinstance(client, ClientBase)
 
 
-def test_no_client_holds_matrix_credentials_directly() -> None:
-    """The transport owns them; a client that reads them is a Matrix client."""
+def test_no_client_holds_transport_credentials() -> None:
+    """A client is a row, not a session: there is nothing to authenticate."""
     client = ClientBase(config=ClientConfig(), **_base_kwargs())
 
-    assert not hasattr(client, "access_token")
-    assert not hasattr(client, "device_id")
+    for attribute in ("access_token", "device_id", "password", "session_state"):
+        assert not hasattr(client, attribute)
 
 
 def test_no_call_site_passes_transport_credentials_to_a_client() -> None:
@@ -100,7 +90,7 @@ def test_no_call_site_passes_transport_credentials_to_a_client() -> None:
     for the argument itself.
     """
     package = pathlib.Path(__file__).resolve().parents[3] / "switch_core"
-    retired = {"device_id", "access_token"}
+    retired = {"device_id", "access_token", "session_state", "next_batch_token"}
     offenders: list[str] = []
 
     for path in package.rglob("*.py"):
@@ -117,18 +107,18 @@ def test_no_call_site_passes_transport_credentials_to_a_client() -> None:
                 offenders.append(f"{path.relative_to(package)}: {name}({arg}=...)")
 
     assert offenders == [], (
-        "clients take an opaque `session_state`, not individual credentials; "
-        f"these call sites still pass them: {offenders}"
+        "a client carries no transport credentials; these call sites still "
+        f"pass them: {offenders}"
     )
 
 
 def test_only_the_factory_names_a_transport_implementation() -> None:
     """A client's bus is one decision, made in one place.
 
-    The collaboration bridges named `matrix_transport_for` directly, so the
-    transport setting reached every agent and no bridge: agents talked in rows,
-    bridges talked to the homeserver, and neither side saw the other or logged
-    anything. Nothing failed — messages simply stopped crossing.
+    The collaboration bridges once built their own transport directly, so a
+    change of transport reached every agent and no bridge: each side was
+    healthy, neither reached the other, and nothing was logged. Nothing
+    failed — messages simply stopped crossing.
 
     That is invisible in review, so scan for the cause instead. Any module that
     can reach an implementation can pick the wrong one.
@@ -139,10 +129,9 @@ def test_only_the_factory_names_a_transport_implementation() -> None:
     `allowed` is a deliberate act a reviewer sees.
     """
     package = pathlib.Path(__file__).resolve().parents[3] / "switch_core"
-    private = {"switch_core.transport.matrix", "switch_core.transport.postgres"}
+    private = {"switch_core.transport.postgres"}
     allowed = {
         "clients/client_factory.py",
-        "transport/matrix.py",
         "transport/postgres.py",
         # The migration commands are the exception the rule is not about. They
         # exist to read the homeserver — that is the whole job — and they must

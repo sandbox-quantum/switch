@@ -25,12 +25,6 @@ from switch_core.transport.types import (
 )
 
 Handler = Callable[[Any, Any], Awaitable[None]]
-# (cursor, durable). `durable` says whether the batch carried anything a
-# restart would have to replay, so the client can decide how urgently to
-# persist the cursor. The transport decides it: only it can see what the batch
-# held, and saying so as a bool keeps its event classes out of the client.
-SyncHandler = Callable[[str, bool], Awaitable[None]]
-SyncErrorHandler = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -47,8 +41,6 @@ class TransportHandlers:
     on_member_event: Handler | None = None
     on_custom_event: Handler | None = None
     on_invite: Handler | None = None
-    on_sync: SyncHandler | None = None
-    on_sync_error: SyncErrorHandler | None = None
 
 
 @runtime_checkable
@@ -57,36 +49,20 @@ class MessageTransport(Protocol):
 
     # ── Session ───────────────────────────────────────────────────────────────
 
-    @property
-    def session_state(self) -> dict[str, str | None]:
-        """Opaque credentials to persist so a restart can resume.
-
-        The shape is transport-defined; callers store and hand it back
-        unread.
-        """
-        ...
-
     async def connect(self) -> None:
-        """Authenticate, restoring a stored session when one is available."""
+        """Prepare the connection for use."""
         ...
 
     async def close(self) -> None:
         """Release the connection. Safe to call when never connected."""
         ...
 
-    async def relogin(self) -> None:
-        """Re-authenticate after the session was rejected mid-stream."""
-        ...
-
     def register_handlers(self, handlers: TransportHandlers) -> None:
         """Bind inbound callbacks. Call before `receive_forever`."""
         ...
 
-    async def receive_forever(self, *, since: str | None) -> None:
-        """Deliver inbound events to the registered handlers until closed.
-
-        `since` resumes from a cursor previously reported to `on_sync`.
-        """
+    async def receive_forever(self) -> None:
+        """Deliver inbound events to the registered handlers until closed."""
         ...
 
     # ── Outbound ──────────────────────────────────────────────────────────────

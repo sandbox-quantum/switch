@@ -1,19 +1,19 @@
-"""Integration-test infrastructure: real Postgres + Tuwunel (Matrix) via testcontainers.
+"""Integration-test infrastructure: a real Postgres via testcontainers.
 
-Unlike the unit suite (which fakes the nio client), these fixtures boot a real
-Matrix homeserver and wire up the subset of `switch_core.main:run()` the feature
-under test needs, in-process. This lets a test drive the genuine path
-RoomService → Matrix invite/join → AgentClient sync loop → EventBuffer.
+Unlike the unit suite (which fakes the transport), these fixtures boot a real
+database and wire up the subset of `switch_core.main:run()` the feature under
+test needs, in-process. Messaging, membership and provisioning all run against
+that database, so a test drives the genuine path RoomService → provisioning →
+AgentClient receive loop → EventBuffer.
 
-The two containers mirror the `postgres` / `tuwunel` services in
-`deploy/local/docker-compose.yml` (see constants below — keep in sync). They get
-ephemeral host ports, so the suite coexists with a running `just up` dev stack.
+The container mirrors the `postgres` service in
+`deploy/local/docker-compose.yml` (see constants below — keep in sync). It gets
+an ephemeral host port, so the suite coexists with a running `just up` dev stack.
 
-Isolation model: the containers, the Postgres database, its schema, and the Matrix
-admin are **session-scoped** (built once). Between tests the per-test `harness`
-fixture resets Postgres rows with TRUNCATE and rebuilds the in-memory services, so
-tests don't pay a per-test CREATE DATABASE. The Matrix homeserver is *not* reset —
-its users/rooms persist across the session — so tests must use unique agent names.
+Isolation model: the container, the Postgres database, its schema and the
+(stateless) stores are **session-scoped** (built once). Between tests the
+per-test `harness` fixture resets rows with TRUNCATE and rebuilds the in-memory
+services, so tests don't pay a per-test CREATE DATABASE.
 """
 
 from __future__ import annotations
@@ -23,9 +23,6 @@ import json
 import os
 import shutil
 import subprocess
-import time
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
@@ -35,7 +32,6 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
-from testcontainers.core.container import DockerContainer
 from testcontainers.postgres import PostgresContainer
 
 # Importing models registers every table on Base.metadata for create_all.
@@ -79,35 +75,18 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.matrix_admin import (
-    MatrixAdmin,
-    ensure_admin_exists,
-    wait_for_homeserver,
-)
-from switch_core.messages import MessageRecorder
 from switch_core.messages.notify import MessageListener
+from switch_core.provisioning import Provisioning
+from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
-TUWUNEL_IMAGE = "jevolk/tuwunel:v1.7.1"
-TUWUNEL_ENV = {
-    "TUWUNEL_SERVER_NAME": "localhost",
-    "TUWUNEL_DATABASE_PATH": "/var/lib/tuwunel",
-    "TUWUNEL_ADDRESS": "0.0.0.0",
-    "TUWUNEL_PORT": "8008",
-    "TUWUNEL_ALLOW_FEDERATION": "false",
-    "TUWUNEL_ALLOW_REGISTRATION": "false",
-    "TUWUNEL_MAX_REQUEST_SIZE": "20000000",
-}
 
 # ── Throwaway test constants (not secrets — local ephemeral infra) ──────────────
 SERVER_NAME = "localhost"
-SHARED_SECRET = "dev-secret"
-ADMIN_USER = "admin"
-ADMIN_PASSWORD = "admin"
 JWT_SECRET = "dev-jwt-secret-test"
 REGISTRATION_TOKEN = "dev-test-token"
 GATEWAY_ADMIN_EMAIL = "admin@switch.local"
@@ -133,19 +112,17 @@ class _NoBridges:
 @dataclass
 class StackInfo:
     pg: PostgresContainer
-    matrix_url: str
 
 
 @dataclass
 class SessionEnv:
-    """Session-scoped pieces shared by every test: the engine/schema, the Matrix
-    admin, and the (stateless) stores. The per-test `harness` fixture builds the
-    in-memory services on top of these."""
+    """Session-scoped pieces shared by every test: the engine/schema and the
+    (stateless) stores. The per-test `harness` fixture builds the in-memory
+    services on top of these."""
 
     config: SwitchConfig
     engine: AsyncEngine
     session_factory: object
-    matrix_admin: MatrixAdmin
     agent_store: AgentStore
     agent_session_store: AgentSessionStore
     room_store: RoomStore
@@ -161,22 +138,8 @@ class SessionEnv:
     room_link_store: RoomLinkStore
     room_role_store: RoomRoleStore
     user_store: UserStore
-
-
-def _wait_matrix_ready(matrix_url: str, timeout_s: float = 60.0) -> None:
-    """Block until the homeserver answers the client-versions probe."""
-    deadline = time.monotonic() + timeout_s
-    last_err: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(
-                f"{matrix_url}/_matrix/client/versions", timeout=5
-            ):
-                return
-        except (urllib.error.URLError, ConnectionError, OSError) as err:
-            last_err = err
-            time.sleep(0.5)
-    raise RuntimeError(f"Tuwunel not ready at {matrix_url}: {last_err}")
+    message_store: MessageStore
+    media_store: MediaStore
 
 
 def _ensure_docker_host() -> None:
@@ -210,17 +173,8 @@ def _ensure_docker_host() -> None:
 @pytest.fixture(scope="session")
 def switch_stack() -> Iterator[StackInfo]:
     _ensure_docker_host()
-    tuwunel = DockerContainer(TUWUNEL_IMAGE).with_exposed_ports(8008)
-    for key, value in TUWUNEL_ENV.items():
-        tuwunel = tuwunel.with_env(key, value)
-    tuwunel = tuwunel.with_env("TUWUNEL_REGISTRATION_SHARED_SECRET", SHARED_SECRET)
-
-    with PostgresContainer(POSTGRES_IMAGE) as pg, tuwunel:
-        host = tuwunel.get_container_host_ip()
-        port = tuwunel.get_exposed_port(8008)
-        matrix_url = f"http://{host}:{port}"
-        _wait_matrix_ready(matrix_url)
-        yield StackInfo(pg=pg, matrix_url=matrix_url)
+    with PostgresContainer(POSTGRES_IMAGE) as pg:
+        yield StackInfo(pg=pg)
 
 
 def _build_config(stack: StackInfo, db_name: str) -> SwitchConfig:
@@ -231,11 +185,7 @@ def _build_config(stack: StackInfo, db_name: str) -> SwitchConfig:
         db_user=pg.username,
         db_password=pg.password,
         db_name=db_name,
-        matrix_server=stack.matrix_url,
         matrix_server_name=SERVER_NAME,
-        matrix_admin_user=ADMIN_USER,
-        matrix_admin_password=ADMIN_PASSWORD,
-        matrix_registration_shared_secret=SHARED_SECRET,
         agent_registration_token=REGISTRATION_TOKEN,
         jwt_secret_key=JWT_SECRET,
         gateway_admin_email=GATEWAY_ADMIN_EMAIL,
@@ -258,8 +208,8 @@ class Harness:
     """In-process switch-core wiring for integration tests.
 
     Holds the real services and exposes the few operations a test needs:
-    register agents, start their Matrix sync clients, and reach the RoomService
-    / EventBuffer.
+    register agents, start their clients, and reach the RoomService /
+    EventBuffer.
     """
 
     def __init__(
@@ -299,9 +249,9 @@ class Harness:
         return result
 
     async def start_clients(self, timeout: float = 20.0) -> None:
-        """Start every registered agent's Matrix client and await readiness.
+        """Start every registered agent's client and await readiness.
 
-        `start_all` launches each client's sync loop as a background task; the
+        `start_all` launches each client's receive loop as a background task; the
         client only loads its Agent (so `get_by_agent_id` resolves) once that
         task has run. Poll until each is present and ready before returning.
         """
@@ -375,25 +325,10 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    await wait_for_homeserver(config.matrix_server)
-    await ensure_admin_exists(
-        server_url=config.matrix_server,
-        username=config.matrix_admin_user,
-        password=config.matrix_admin_password,
-        shared_secret=config.matrix_registration_shared_secret,
-    )
-    matrix_admin = await MatrixAdmin.create(
-        server_url=config.matrix_server,
-        admin_user=config.matrix_admin_user,
-        admin_password=config.matrix_admin_password,
-        shared_secret=config.matrix_registration_shared_secret,
-    )
-
     env = SessionEnv(
         config=config,
         engine=engine,
         session_factory=session_factory,
-        matrix_admin=matrix_admin,
         agent_store=AgentStore(),
         agent_session_store=AgentSessionStore(),
         room_store=RoomStore(),
@@ -409,11 +344,12 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
         room_link_store=RoomLinkStore(),
         room_role_store=RoomRoleStore(),
         user_store=UserStore(),
+        message_store=MessageStore(),
+        media_store=MediaStore(),
     )
     try:
         yield env
     finally:
-        await matrix_admin.close()
         await engine.dispose()
         admin_conn = await asyncpg.connect(admin_dsn)
         try:
@@ -426,8 +362,6 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
-    # Reset Postgres state from the previous test (Tuwunel is session-scoped and
-    # is not reset — tests use unique agent names to avoid Matrix collisions).
     await _truncate_all(session_env.engine)
 
     config = session_env.config
@@ -447,6 +381,13 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     connections = ConnectionRegistry()
     collab_lifecycle = _NoBridges()
 
+    # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
+    # nothing is delivered to a client until this connection is up.
+    message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    await message_listener.start()
+    invites = InviteBus()
+    ephemeral = EphemeralBus()
+
     resource_service = ResourceService(
         reference_store=session_env.reference_store,
         reference_type_store=session_env.reference_type_store,
@@ -456,21 +397,24 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         session_factory=session_factory,
     )
 
+    provisioning: Provisioning = PostgresProvisioning(
+        session_factory=session_factory,
+        room_store=session_env.room_store,
+        client_store=session_env.client_store,
+        message_store=session_env.message_store,
+        invites=invites,
+    )
+
     client_factory = ClientFactory(
         client_store=session_env.client_store,
         session_factory=session_factory,
         config=config,
-        message_recorder=MessageRecorder(
-            session_factory=session_factory,
-            room_store=session_env.room_store,
-            message_store=MessageStore(),
-        ),
         room_store=session_env.room_store,
-        message_store=MessageStore(),
-        media_store=MediaStore(),
-        listener=MessageListener(lambda: create_unpooled_engine(config)),
-        invites=InviteBus(),
-        ephemeral=EphemeralBus(),
+        message_store=session_env.message_store,
+        media_store=session_env.media_store,
+        listener=message_listener,
+        invites=invites,
+        ephemeral=ephemeral,
     )
     client_factory.register(
         "agent",
@@ -491,7 +435,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     client_factory.register("bridge", ClientBase)
 
     client_lifecycle = ClientLifecycleService(
-        matrix_admin=session_env.matrix_admin,
+        matrix_admin=provisioning,
         client_store=session_env.client_store,
         client_factory=client_factory,
         session_factory=session_factory,
@@ -499,7 +443,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     )
 
     room_service = RoomService(
-        matrix_admin=session_env.matrix_admin,
+        matrix_admin=provisioning,
         room_store=session_env.room_store,
         agent_store=session_env.agent_store,
         client_lifecycle=client_lifecycle,
@@ -543,6 +487,8 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
     try:
         yield h
     finally:
-        # Stop the agents' sync loops before the next test truncates, so none is
-        # mid-query against a table being cleared.
+        # Stop the agents' receive loops before the next test truncates, so none
+        # is mid-query against a table being cleared.
         await client_lifecycle.stop_all()
+        await message_listener.stop()
+        await provisioning.close()

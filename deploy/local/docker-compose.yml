@@ -29,22 +29,6 @@ services:
       postgres:
         condition: service_healthy
 
-  tuwunel:
-    image: jevolk/tuwunel:v1.7.1
-    ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8008:8008"
-    volumes:
-      - tuwuneldata:/var/lib/tuwunel
-    environment:
-      TUWUNEL_SERVER_NAME: localhost
-      TUWUNEL_DATABASE_PATH: /var/lib/tuwunel
-      TUWUNEL_ADDRESS: 0.0.0.0
-      TUWUNEL_PORT: "8008"
-      TUWUNEL_ALLOW_FEDERATION: "false"
-      TUWUNEL_ALLOW_REGISTRATION: "false"
-      TUWUNEL_REGISTRATION_SHARED_SECRET: ${MATRIX_REGISTRATION_SHARED_SECRET}
-      TUWUNEL_MAX_REQUEST_SIZE: "20000000"
-
   mattermost:
     image: mattermost/mattermost-team-edition:latest
     platform: linux/amd64
@@ -94,4 +78,3 @@ services:
 volumes:
   pgdata:
   mmdata:
-  tuwuneldata:

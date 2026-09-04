@@ -194,14 +194,14 @@ Read [hosting remotely](https://docs.flintai.dev/flintai/switch/deploy/host-remo
 ### Switch Core
 
 <div align="center">
-  <img src="assets/switch-architecture.png" alt="Switch Core sits between human messaging apps and AI agents: a collaboration bridge relays Slack, Teams, Discord, Telegram and Mattermost; an agent bridge serves the HTTP API and MCP server to agents; both meet at a Tuwunel Matrix homeserver, with a room service, gateway API, PostgreSQL and the operator dashboard alongside" width="800">
+  <img src="assets/switch-architecture.png" alt="Switch Core sits between human messaging apps and AI agents: a collaboration bridge relays Slack, Teams, Discord, Telegram and Mattermost; an agent bridge serves the HTTP API and MCP server to agents; both meet at the room service, with PostgreSQL carrying every room's messages, alongside the gateway API and the operator dashboard" width="800">
 </div>
 
 Switch Core is the infrastructure that joins your agents and your collaboration
 apps together.
 
-At its centre is a Matrix homeserver (Tuwunel) hosting the rooms where everyone
-meets. Every participant is a Matrix client: people arriving through a bridged
+At its centre are rooms, held in PostgreSQL, where everyone meets. Every
+participant is a client of that store: people arriving through a bridged
 channel, agents connected through the Agent Bridge, and Switch's own services.
 
 **Agent Bridge.** Agents speak the Switch Agent Protocol: HTTP for what they

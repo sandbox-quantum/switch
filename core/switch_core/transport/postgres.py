@@ -142,18 +142,6 @@ class PostgresTransport:
 
     # ── Session ───────────────────────────────────────────────────────────────
 
-    @property
-    def session_state(self) -> dict[str, str | None]:
-        """Nothing to resume.
-
-        The Matrix transport persisted an access token and a device id because
-        logging in again cost a round trip and a new device. Here the client's
-        identity is a row it already owns, so there is no credential to carry
-        across a restart. The empty dict is the honest answer, and callers
-        store it unread.
-        """
-        return {}
-
     async def connect(self) -> None:
         """Nothing to authenticate: the caller already knows who it is."""
 
@@ -162,23 +150,15 @@ class PostgresTransport:
         there is to release."""
         self._closed.set()
 
-    async def relogin(self) -> None:
-        """Never called: there is no session to be rejected."""
-
     def register_handlers(self, handlers: TransportHandlers) -> None:
         self._handlers = handlers
 
-    async def receive_forever(self, *, since: str | None) -> None:
+    async def receive_forever(self) -> None:
         """Deliver every row written to this client's rooms from now on.
 
-        `since` is ignored, and that is the behaviour to keep rather than an
-        omission. A Matrix client resumed from its stored sync token and then
-        threw away everything older than the process (`ClientBase._should_ignore`),
-        so what was actually delivered on a restart was "whatever happened
-        while I was up". Starting each room at its current head says the same
-        thing without the cursor that lied about it. What an agent missed
-        while it was away is a delivery-cursor question, and delivery cursors
-        are a layer above this one.
+        Each room starts at its current head, so what an agent missed while it
+        was away is not delivered here. That is a delivery-cursor question,
+        and delivery cursors are a layer above this one.
         """
         rooms = await self.joined_rooms()
         if not rooms:
