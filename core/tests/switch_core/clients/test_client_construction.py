@@ -144,6 +144,14 @@ def test_only_the_factory_names_a_transport_implementation() -> None:
         "clients/client_factory.py",
         "transport/matrix.py",
         "transport/postgres.py",
+        # The migration commands are the exception the rule is not about. They
+        # exist to read the homeserver — that is the whole job — and they must
+        # do it whatever transport the running server is on, which is how a
+        # backfill can still be run after the flip. A client picking its own
+        # bus is the bug; a one-off command naming the bus it is migrating
+        # away from is the point.
+        "cli/backfill.py",
+        "cli/reconcile.py",
     }
     offenders: list[str] = []
 
