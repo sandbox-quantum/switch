@@ -12,7 +12,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-import markdown
 from nio import (
     AsyncClient,
     DownloadError,
@@ -35,6 +34,7 @@ from nio import (
 )
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
+from switch_core.transport.content import media_content, message_content
 from switch_core.transport.port import TransportHandlers
 from switch_core.transport.types import (
     DownloadResult,
@@ -180,15 +180,6 @@ def to_inbound_event(room: Any, event: Any) -> InboundEvent:
     )
 
 
-def _thread_relation(thread_root_id: str) -> dict[str, object]:
-    """A pure `m.thread` relation, with no `m.in_reply_to` fallback.
-
-    The root id must already be an actual thread root; mid-thread ids are
-    normalised upstream.
-    """
-    return {"rel_type": "m.thread", "event_id": thread_root_id}
-
-
 class MatrixTransport:
     """Carries Switch messages over a Matrix homeserver."""
 
@@ -317,30 +308,14 @@ class MatrixTransport:
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
     ) -> SendResult:
-        content: dict[str, object] = {
-            "msgtype": "m.text",
-            "body": body,
-            "sender_name": sender_name,
-        }
-        # Caller-supplied content fields (e.g. a `com.switch.*` marker) are
-        # merged in. They ride on the plain m.room.message — the body still
-        # renders normally; the extra keys are metadata other clients can read.
-        if extra_content:
-            content.update(extra_content)
-
-        if format == "markdown":
-            html = markdown.markdown(body)
-            if mentions:
-                for user_id in mentions:
-                    local = user_id.split(":")[0].lstrip("@")
-                    pill = f'<a href="https://matrix.to/#/{user_id}">{local}</a>'
-                    html = html.replace(f"@{local}", pill)
-            content["format"] = "org.matrix.custom.html"
-            content["formatted_body"] = html
-
-        if thread_root_id is not None:
-            content["m.relates_to"] = _thread_relation(thread_root_id)
-
+        content = message_content(
+            body,
+            sender_name=sender_name,
+            format=format,
+            mentions=mentions,
+            thread_root_id=thread_root_id,
+            extra_content=extra_content,
+        )
         return await self._room_send(room_id, "m.room.message", content)
 
     async def send_event(
@@ -365,22 +340,17 @@ class MatrixTransport:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
     ) -> SendResult:
-        # When a caption is given it becomes the event body, with the real
-        # filename carried separately per the rich-media-caption convention.
-        content: dict[str, object] = {
-            "msgtype": msgtype,
-            "body": caption if caption else filename,
-            "url": uri,
-            "info": {"mimetype": mimetype, "size": size},
-            "sender_name": sender_name,
-        }
-        if caption:
-            content["filename"] = filename
-        if group is not None:
-            content[ATTACHMENT_GROUP_KEY] = group
-        if thread_root_id is not None:
-            content["m.relates_to"] = _thread_relation(thread_root_id)
-
+        content = media_content(
+            uri,
+            filename,
+            mimetype,
+            size,
+            sender_name=sender_name,
+            msgtype=msgtype,
+            caption=caption,
+            thread_root_id=thread_root_id,
+            group=group,
+        )
         return await self._room_send(room_id, "m.room.message", content)
 
     async def _room_send(

@@ -2,9 +2,10 @@
 
 The whole value of this check is that its verdict can be trusted. So the tests
 that matter most are the ones proving it does not cry drift over things that
-are legitimately different — history predating the recorder, membership events
-that were never sends — and the one proving it does not report a room it could
-not fully read as clean.
+are legitimately different — history predating the recorder, membership
+changes that were never arrivals, arrivals predating the path that records
+them — and the one proving it does not report a room it could not fully read
+as clean.
 """
 
 from __future__ import annotations
@@ -79,6 +80,33 @@ def _row(
     }
     fields.update(overrides)
     return Message(**fields)
+
+
+def _join_row(room_id: str, event_id: str, sent_at: datetime) -> Message:
+    return _row(
+        room_id,
+        event_id,
+        sent_at,
+        event_type="m.room.member",
+        msgtype=None,
+        body=None,
+        content={"membership": "join"},
+    )
+
+
+def _join_event(event_id: str, at: datetime, **overrides: object) -> InboundMembership:
+    fields: dict[str, object] = {
+        "room_id": "!room:test",
+        "event_id": event_id,
+        "sender": "@agent:test",
+        "timestamp": _ms(at),
+        "content": {"membership": "join"},
+        "state_key": "@agent:test",
+        "membership": "join",
+        "prev_membership": "invite",
+    }
+    fields.update(overrides)
+    return InboundMembership(**fields)  # type: ignore[arg-type]
 
 
 def _event(event_id: str, at: datetime, **overrides: object) -> InboundMessage:
@@ -195,7 +223,9 @@ class TestAgreement:
             report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
 
         assert report.clean
-        assert report.ignored_by_type == {"InboundMembership": 1}
+        assert report.ignored_by_type == {
+            "m.room.member (before arrivals were recorded)": 1
+        }
 
     async def test_a_room_with_nothing_recorded_reports_that_plainly(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -302,34 +332,35 @@ class TestTheWindowBoundary:
         assert "WINDOW UNANCHORED" in report.summary()
 
 
-class TestRowsWithNothingToCompareAgainst:
-    """The bus walk discards whole categories of event. A row of one of those
-    categories has no counterpart by construction, and calling that "recorded
-    but never sent" would report the same rows as drift on every run."""
+class TestArrivalsAndRowsWithNothingToCompareAgainst:
+    """Arrivals are compared from the point the log holds one; the categories
+    the bus walk still discards have no counterpart by construction, and
+    calling those "recorded but never sent" would report the same rows as
+    drift on every run."""
 
-    async def test_a_recorded_arrival_is_not_drift(
+    async def test_an_arrival_the_bus_agrees_with_is_checked_not_skipped(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Recording arrivals is the newest write path there is, so leaving it
+        out of the check made the least proven part the unchecked part."""
         now = datetime.now(UTC)
         async with session_factory() as session:
             room = await _make_room(session)
             session.add(_row(room.id, "$a", now))
-            session.add(
-                _row(
-                    room.id,
-                    "$join",
-                    now + timedelta(seconds=1),
-                    event_type="m.room.member",
-                    msgtype=None,
-                    body=None,
-                    content={"membership": "join"},
-                )
-            )
+            session.add(_join_row(room.id, "$join", now + timedelta(seconds=2)))
             await session.commit()
             room_id = room.id
 
         transport = PagingTransport(
-            [HistoryPage(events=[_event("$a", now)], next_token=None)]
+            [
+                HistoryPage(
+                    events=[
+                        _join_event("$join", now + timedelta(seconds=1)),
+                        _event("$a", now),
+                    ],
+                    next_token=None,
+                )
+            ]
         )
 
         async with session_factory() as session:
@@ -337,8 +368,110 @@ class TestRowsWithNothingToCompareAgainst:
             report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
 
         assert report.clean
-        assert report.unverifiable_by_type == {"m.room.member": 1}
-        assert "1 rows not checkable" in report.summary()
+        assert report.compared == 2
+        assert report.agreed == 2
+        assert report.unverifiable_by_type == {}
+
+    async def test_an_arrival_the_log_missed_is_drift(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$a", now))
+            session.add(_join_row(room.id, "$join", now + timedelta(seconds=2)))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[
+                        _join_event("$later", now + timedelta(seconds=3)),
+                        _join_event("$join", now + timedelta(seconds=1)),
+                        _event("$a", now),
+                    ],
+                    next_token=None,
+                )
+            ]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.missing_rows == ["$later"]
+
+    async def test_an_arrival_older_than_the_log_is_counted_not_reported(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Every room was joined long before arrivals were recorded, so a join
+        from before the log's first one cannot have a row."""
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$a", now))
+            session.add(_join_row(room.id, "$join", now + timedelta(seconds=3)))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[
+                        _join_event("$join", now + timedelta(seconds=2)),
+                        _join_event("$ancient", now + timedelta(seconds=1)),
+                        _event("$a", now),
+                    ],
+                    next_token=None,
+                )
+            ]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.ignored_by_type == {
+            "m.room.member (before arrivals were recorded)": 1
+        }
+
+    async def test_a_leave_is_never_compared(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            room = await _make_room(session)
+            session.add(_row(room.id, "$a", now))
+            session.add(_join_row(room.id, "$join", now + timedelta(seconds=2)))
+            await session.commit()
+            room_id = room.id
+
+        transport = PagingTransport(
+            [
+                HistoryPage(
+                    events=[
+                        _join_event(
+                            "$leave",
+                            now + timedelta(seconds=3),
+                            membership="leave",
+                            prev_membership="join",
+                        ),
+                        _join_event("$join", now + timedelta(seconds=1)),
+                        _event("$a", now),
+                    ],
+                    next_token=None,
+                )
+            ]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)  # type: ignore[assignment]
+            report = await reconcile_room(transport, session, room)  # type: ignore[arg-type]
+
+        assert report.clean
+        assert report.ignored_by_type == {"m.room.member": 1}
 
     async def test_a_row_written_before_its_type_was_denied_is_not_drift(
         self, session_factory: async_sessionmaker[AsyncSession]

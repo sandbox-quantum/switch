@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.bridges.agent.protocol.service import ProtocolService
 from switch_core.db.models import Client, Message, MessageAttachment, Room
@@ -71,6 +72,7 @@ async def _write(
     event_type: str = "m.room.message",
     msgtype: str | None = "m.text",
     attachments: list[MessageAttachment] | None = None,
+    content: dict[str, object] | None = None,
 ) -> Message:
     message = Message(
         room_id=room_id,
@@ -83,7 +85,7 @@ async def _write(
         body=body,
         formatted_body=None,
         thread_root_event_id=thread_root,
-        content={"body": body} if body else {},
+        content=content if content is not None else ({"body": body} if body else {}),
         sent_at=_at(at),
     )
     return await MessageStore().create(session, message, attachments or [])
@@ -182,6 +184,73 @@ class TestEntries:
 
         names = [a["filename"] for a in result["threads"][0]["root"]["attachments"]]
         assert names == ["one.pdf", "two.pdf"]
+
+    async def test_a_multi_file_message_is_reassembled_from_its_parts(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The bus has no event that carries two files, so a two-file message
+        is two events sharing a group marker and two rows. History has to put
+        them back together the way a live receiver does — otherwise it reads as
+        two messages, the second captioned with a filename."""
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            for index, (event_id, body, name) in enumerate(
+                [("$part0", "two files", "one.pdf"), ("$part1", "two.pdf", "two.pdf")]
+            ):
+                await _write(
+                    session,
+                    room_id,
+                    client_id,
+                    event_id,
+                    body=body,
+                    at=index,
+                    msgtype="m.file",
+                    attachments=[
+                        MessageAttachment(uri=f"mxc://s/{name}", filename=name)
+                    ],
+                    content={
+                        "body": body,
+                        ATTACHMENT_GROUP_KEY: {"id": "g1", "index": index, "total": 2},
+                    },
+                )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        assert len(result["threads"]) == 1
+        root = result["threads"][0]["root"]
+        assert root["id"] == "$part0"
+        assert root["body"] == "two files"
+        assert [a["filename"] for a in root["attachments"]] == ["one.pdf", "two.pdf"]
+
+    async def test_a_group_cut_off_by_the_window_returns_what_is_there(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A page ending mid-group shows the parts it read rather than dropping
+        them: the lowest index present leads."""
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$part1",
+                body="two.pdf",
+                at=1,
+                msgtype="m.file",
+                attachments=[MessageAttachment(uri="mxc://s/two", filename="two.pdf")],
+                content={
+                    "body": "two.pdf",
+                    ATTACHMENT_GROUP_KEY: {"id": "g1", "index": 1, "total": 2},
+                },
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        root = result["threads"][0]["root"]
+        assert root["id"] == "$part1"
+        assert [a["filename"] for a in root["attachments"]] == ["two.pdf"]
 
     async def test_an_arrival_is_labelled_and_phrased_on_read(
         self, session_factory: async_sessionmaker[AsyncSession]

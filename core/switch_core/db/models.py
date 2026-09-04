@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Table,
     Text,
     UniqueConstraint,
@@ -104,6 +105,7 @@ class ClientRoom(Base):
 
 class Agent(Base):
     __tablename__ = "agents"
+    __table_args__ = (Index("ix_agents_parent_agent_id", "parent_agent_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -621,6 +623,7 @@ class ExternalUserClaim(Base):
     """
 
     __tablename__ = "external_user_claims"
+    __table_args__ = (Index("ix_external_user_claims_user_id", "user_id"),)
 
     external_user_id: Mapped[str] = mapped_column(
         Text,
@@ -666,6 +669,8 @@ class AgentSession(Base):
             text("coalesce(room_id, '')"),
             unique=True,
         ),
+        Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
+        Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -987,6 +992,41 @@ class DeliveryCursor(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class MediaBlob(Base):
+    """The bytes behind an attachment.
+
+    Media used to live in the homeserver's own store, reached by an opaque
+    handle that travelled on the message. The handle is still opaque and still
+    travels on the message; only what is behind it changed. Callers must not
+    parse `uri` — it is a key, and the store behind it is free to become object
+    storage without the protocol noticing.
+
+    `bytea` rather than a large object: attachments are capped
+    (`agent_media_max_bytes`, 20MB by default) and are written and read whole,
+    which is exactly what TOAST handles well and what large objects add
+    lifecycle problems to. A blob that would not fit is rejected at the edge,
+    loudly, as it already is.
+
+    Rows are not reference-counted against the attachments pointing at them.
+    Deleting a room deletes its messages; the bytes it referenced are then
+    unreferenced and a later sweep can find them by that. Cascading from the
+    attachment instead would delete the bytes of a file that two messages
+    quote.
+    """
+
+    __tablename__ = "media_blobs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    uri: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Unpack
 
-from switch_core.clients.client_base import ClientBase, ClientConfig
+from switch_core.clients.client_base import (
+    ClientBase,
+    ClientBaseKwargs,
+    ClientConfig,
+)
 from switch_core.events import AgentRuntimeStateEvent
 from switch_core.transport import InboundMedia, InboundMessage, RoomRef
 
@@ -20,7 +24,12 @@ class BridgeClientConfig(ClientConfig):
 class BridgeClient(ClientBase[BridgeClientConfig]):
     config_class = BridgeClientConfig
 
-    def __init__(self, *, bridge_core: BridgeCore, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        bridge_core: BridgeCore,
+        **kwargs: Unpack[ClientBaseKwargs[BridgeClientConfig]],
+    ) -> None:
         super().__init__(**kwargs)
         self._bridge_core = bridge_core
 
