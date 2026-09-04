@@ -42,6 +42,10 @@ export type LoadableAgent = {
 export type DiscoverLoadableAgentsParams = {
   sshHost: string;
   serverId: string;
+  /** When true, run a depth-limited `find` over `$HOME` in addition to the
+   *  cheap server-assisted discovery. Off by default — the walk can be slow
+   *  on large VMs. */
+  includeHomeScan?: boolean;
 };
 
 export type DiscoverLoadableAgentsResult = {
@@ -141,7 +145,8 @@ export async function discoverLoadableAgentsOnHost(
     });
   }
 
-  // --- Source 2: Bounded $HOME scan ---
+  // --- Source 2: Bounded $HOME scan (opt-in) ---
+  if (!params.includeHomeScan) return { agents: [...seen.values()], serverApiUrl: server.apiUrl };
   try {
     const scannedDirs = await findSwitchAgentDirsOnHost(params.sshHost);
     for (const dir of scannedDirs) {
