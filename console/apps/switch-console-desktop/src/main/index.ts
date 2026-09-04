@@ -11,6 +11,7 @@ import { registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
 import { agentHookService } from './core/agent-hooks/agent-hook-service';
 import { reapOrphanedAgentRuntimes } from './core/agent-runtime/reap-orphaned-runtimes';
+import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { resolveAgentServers } from './core/agents/resolve-servers';
@@ -226,6 +227,7 @@ void app.whenReady().then(async () => {
       log.error('Failed to initialise remote watchers at startup:', e);
     }
     try {
+      bridgeAgentEventsToRenderer();
       await initializeRemoteDiscovery();
     } catch (e) {
       log.error('Failed to initialise remote session discovery at startup:', e);
