@@ -15,15 +15,21 @@ export type DeleteAgentModalArgs = {
   agentId: string;
   /** Display name for the agent (its Switch name, falling back to the location). */
   agentLabel: string;
+  /** The agent's host (null = this machine), for naming where its files live. */
+  sshHost: string | null;
+  /** The agent's working directory, for naming where its files live. */
+  dir: string | null;
 };
 
-/** What the confirm resolves with: whether to also delete the agent in Switch. */
-export type DeleteAgentModalResult = { deleteInSwitch: boolean };
+/** What the confirm resolves with: what to tear down beyond this Console's row. */
+export type DeleteAgentModalResult = { deleteInSwitch: boolean; removeProvisionedFiles: boolean };
 
 type Props = BaseModalProps<DeleteAgentModalResult> & DeleteAgentModalArgs;
 
-export function DeleteAgentModal({ agentLabel, onSuccess, onClose }: Props) {
+export function DeleteAgentModal({ agentLabel, sshHost, dir, onSuccess, onClose }: Props) {
   const [deleteInSwitch, setDeleteInSwitch] = useState(false);
+  const [removeProvisionedFiles, setRemoveProvisionedFiles] = useState(false);
+  const filesPlace = dir ? (sshHost ? `${sshHost}:${dir}` : dir) : null;
 
   return (
     <>
@@ -33,9 +39,31 @@ export function DeleteAgentModal({ agentLabel, onSuccess, onClose }: Props) {
       <DialogContentArea className="flex flex-col gap-4 pt-0">
         <p className="text-sm text-foreground-muted">
           <span className="font-medium text-foreground">{agentLabel}</span> will be removed from
-          Switch Console and the Switch credentials it stored on this machine will be cleared. The
-          folder stays on the filesystem.
+          Switch Console. Its working directory, the credentials stored there, and any running
+          sidecar are untouched unless you choose below.
         </p>
+
+        {filesPlace && (
+          <label className="group/field flex cursor-pointer items-start gap-2.5">
+            <Checkbox
+              checked={removeProvisionedFiles}
+              onCheckedChange={(checked) => setRemoveProvisionedFiles(checked === true)}
+              className="mt-0.5"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">
+                Also delete its files on <code className="break-all">{filesPlace}</code>
+              </span>
+              <span className="text-xs text-foreground-muted">
+                Removes the credentials and definition files provisioned in the working directory
+                and stops the agent{"'"}s sidecar.
+                {sshHost
+                  ? ' On a shared host these may belong to another install — an agent you loaded rather than created should usually keep them.'
+                  : ''}
+              </span>
+            </span>
+          </label>
+        )}
 
         <label className="group/field flex cursor-pointer items-start gap-2.5">
           <Checkbox
@@ -56,7 +84,10 @@ export function DeleteAgentModal({ agentLabel, onSuccess, onClose }: Props) {
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <ConfirmButton variant="destructive" onClick={() => onSuccess({ deleteInSwitch })}>
+        <ConfirmButton
+          variant="destructive"
+          onClick={() => onSuccess({ deleteInSwitch, removeProvisionedFiles })}
+        >
           {deleteInSwitch ? 'Remove & delete in Switch' : 'Remove'}
         </ConfirmButton>
       </DialogFooter>

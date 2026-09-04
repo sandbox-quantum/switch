@@ -231,11 +231,12 @@ describe('LocationManagerStore removeAgent', () => {
     const store = new LocationManagerStore();
     store.locations.set('loc', stubLocation);
 
-    await store.removeAgent('loc', 'a', { deleteInSwitch: false });
+    await store.removeAgent('loc', 'a', { deleteInSwitch: false, removeProvisionedFiles: false });
 
     expect(mocks.deleteAgent).toHaveBeenCalledWith({
       agentId: 'a',
       deleteInSwitch: false,
+      removeProvisionedFiles: false,
       trigger: 'user',
     });
     expect(store.locations.has('loc')).toBe(true);
@@ -250,11 +251,12 @@ describe('LocationManagerStore removeAgent', () => {
     const store = new LocationManagerStore();
     store.locations.set('loc', stubLocation);
 
-    await store.removeAgent('loc', 'a', { deleteInSwitch: true });
+    await store.removeAgent('loc', 'a', { deleteInSwitch: true, removeProvisionedFiles: false });
 
     expect(mocks.deleteAgent).toHaveBeenCalledWith({
       agentId: 'a',
       deleteInSwitch: true,
+      removeProvisionedFiles: false,
       trigger: 'user',
     });
     expect(store.locations.has('loc')).toBe(false);
@@ -269,9 +271,9 @@ describe('LocationManagerStore removeAgent', () => {
     const store = new LocationManagerStore();
     store.locations.set('loc', stubLocation);
 
-    await expect(store.removeAgent('loc', 'a', { deleteInSwitch: true })).rejects.toThrow(
-      'gateway down'
-    );
+    await expect(
+      store.removeAgent('loc', 'a', { deleteInSwitch: true, removeProvisionedFiles: false })
+    ).rejects.toThrow('gateway down');
     expect(store.locations.has('loc')).toBe(true);
     expect(agentsStore.byLocation.get('loc')?.map((x) => x.id)).toEqual(['a']);
   });

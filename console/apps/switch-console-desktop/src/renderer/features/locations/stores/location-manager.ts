@@ -297,6 +297,9 @@ export class LocationManagerStore {
           rpc.agents.deleteAgent({
             agentId: agent.id,
             deleteInSwitch: false,
+            // Removing a location forgets it here; files on disk (possibly a
+            // shared host's) stay put.
+            removeProvisionedFiles: false,
             trigger: 'user',
           })
         )
@@ -318,7 +321,7 @@ export class LocationManagerStore {
   async removeAgent(
     locationId: string,
     agentId: string,
-    options: { deleteInSwitch: boolean }
+    options: { deleteInSwitch: boolean; removeProvisionedFiles: boolean }
   ): Promise<void> {
     // A directory is a flat container of independent agents (CHOO-1440), so
     // deleting one must remove only that agent — its siblings, and the location
@@ -341,6 +344,7 @@ export class LocationManagerStore {
       await rpc.agents.deleteAgent({
         agentId,
         deleteInSwitch: options.deleteInSwitch,
+        removeProvisionedFiles: options.removeProvisionedFiles,
         trigger: 'user',
       });
       // Reconcile against the source of truth (also corrects the optimistic guess).
