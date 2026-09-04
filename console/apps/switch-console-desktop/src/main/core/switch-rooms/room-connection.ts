@@ -305,11 +305,18 @@ export class RoomConnection {
   /** Last activity line (without the elapsed suffix), to skip redundant refreshes. */
   private lastActivityDetail: string | null = null;
   /**
-   * Subagents the session has spawned and not yet finished, keyed by the id the
-   * hook reported. Per-turn: reported with runtime state while the turn works,
-   * and cleared when it ends.
+   * Subagents the session has spawned and not yet finished, oldest first.
+   * Per-turn: reported with runtime state while the turn works, and cleared
+   * when it ends.
+   *
+   * Not keyed by the hook's `agent_id`: Claude Code does not report the same
+   * `agent_id` on a named subagent's SubagentStart and its matching
+   * SubagentStop (observed: Stop carries a different id and no `agent_type`
+   * at all), so id-matching silently never removes a finished entry. A finish
+   * instead removes the oldest still-tracked entry — right whenever subagents
+   * finish in roughly the order they started, which is the common case.
    */
-  private readonly subagents = new Map<string, SubagentActivity>();
+  private readonly subagents: SubagentActivity[] = [];
   /** Monotonic timestamp the current working turn began, for the elapsed suffix. */
   private workingStartedAt = 0;
   /** Ticker that re-pushes the activity line with a refreshed elapsed suffix. */
@@ -560,7 +567,7 @@ export class RoomConnection {
     this.currentAnchorId = null;
     this.runtimeState = 'idle';
     this.lastActivityDetail = null;
-    this.subagents.clear();
+    this.subagents.length = 0;
     this.activityFailures = 0;
     this.stopActivityTicker();
   }
@@ -569,7 +576,7 @@ export class RoomConnection {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
-    this.subagents.clear();
+    this.subagents.length = 0;
     // Clear any lingering runtime-state surface before aborting (the abort
     // signal would cancel the request, so fire it unsignalled and best-effort).
     // The server's heartbeat-expiry sweep is the backstop if this never lands.
@@ -670,7 +677,7 @@ export class RoomConnection {
           deeplink_url: this.sessionDeeplink(),
           detail: detail ?? null,
           control_capabilities: this.control.capabilities,
-          active_subagents: [...this.subagents.values()].slice(0, MAX_REPORTED_SUBAGENTS),
+          active_subagents: this.subagents.slice(0, MAX_REPORTED_SUBAGENTS),
         }),
       },
       RUNTIME_STATE_REQUEST_TIMEOUT_MS,
@@ -922,7 +929,7 @@ export class RoomConnection {
     // A fresh state clears the activity line: a new "working" turn starts from
     // the generic indicator, and idle/awaiting-input carry no activity.
     this.lastActivityDetail = null;
-    if (state !== 'working' || !wasWorking) this.subagents.clear();
+    if (state !== 'working' || !wasWorking) this.subagents.length = 0;
     if (state === 'working') {
       if (!wasWorking) {
         this.workingStartedAt = Date.now();
@@ -976,9 +983,9 @@ export class RoomConnection {
   }): void {
     if (this.stopped) return;
     if (ev.finished) {
-      this.subagents.delete(ev.agentId);
+      this.subagents.shift();
     } else {
-      this.subagents.set(ev.agentId, {
+      this.subagents.push({
         agent_id: ev.agentId,
         agent_name: ev.agentName,
         state: 'working',

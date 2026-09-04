@@ -796,7 +796,7 @@ describe('RoomConnection', () => {
     conn.stop();
   });
 
-  it('reports every live subagent, keyed by id', async () => {
+  it('reports every live subagent, oldest first', async () => {
     const target: InjectionTarget = { write: vi.fn() };
     const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
     await flush();
@@ -819,6 +819,33 @@ describe('RoomConnection', () => {
       { agent_id: 'sub-1', agent_name: 'Explore', state: 'working', detail: null },
       { agent_id: 'sub-2', agent_name: 'Plan', state: 'working', detail: null },
     ]);
+    conn.stop();
+  });
+
+  it('clears the oldest live subagent on finish, even when the id does not match its start', async () => {
+    // Claude Code does not report the same `agent_id` on a named subagent's
+    // SubagentStart and its matching SubagentStop — observed against a real
+    // session: Stop carried a different id than Start, and no agent_type at
+    // all. Matching by id would silently never clear the entry.
+    const target: InjectionTarget = { write: vi.fn() };
+    const { conn, fetchMock } = connect({ acquire: () => target }, [messageEvent(true)]);
+    await flush();
+
+    conn.reportSubagent({
+      agentId: 'a49d9f4615dafd11c',
+      agentName: 'Explore',
+      finished: false,
+      detail: '_Delegating to_ `Explore`',
+    });
+    conn.reportSubagent({
+      agentId: 'a3afb248729cd8edf',
+      agentName: 'subagent',
+      finished: true,
+      detail: '_Subagent finished_',
+    });
+    await flush();
+
+    expect(runtimeSubagents(fetchMock).at(-1)).toEqual([]);
     conn.stop();
   });
 
