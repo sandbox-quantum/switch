@@ -34,11 +34,17 @@ make the report worthless.
 
 **Both sides apply that filter, not just the bus side.** A row of a type the
 bus walk discards has nothing to be compared against, so measuring it against
-an empty set reports it as recorded-but-never-sent every run, forever. Two
-kinds exist: arrivals, which are recorded but were never a send, and rows for
-types written before they were denied. Neither is drift. They are counted
-under `unverifiable_by_type` — disclosed as outside the check rather than
-quietly dropped from it.
+an empty set reports it as recorded-but-never-sent every run, forever. Rows
+for types written before they were denied are the case that remains; they are
+counted under `unverifiable_by_type` — disclosed as outside the check rather
+than quietly dropped from it.
+
+**Arrivals are compared too**, from the point the log has one. Recording a
+join is the newest write path there is, and leaving it out made the least
+proven part of the system the one part nothing checked. Its window is its own:
+every room was joined long before arrivals were recorded, so a join older than
+the oldest recorded arrival cannot have a row and is counted rather than
+reported. After that point a join without a row is drift like any other.
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
     InboundMedia,
+    InboundMembership,
     InboundMessage,
 )
 
@@ -166,12 +173,15 @@ async def reconcile_room(
     # An explicit `since` is the caller overriding the boundary, so the anchor
     # only applies when the window is the recorded one.
     anchor_event_id = anchor.transport_event_id if anchor and since is None else None
+    oldest_join = await _oldest_recorded_join(session, room.id)
     on_the_bus, ignored, anchored = await _read_back_to(
         transport,
         room.matrix_room_id,
         anchor_event_id=anchor_event_id,
         floor_ms=_to_ms(window_start - ANCHOR_SEARCH_SLACK),
         window_start_ms=_to_ms(window_start),
+        joins_from_ms=_joins_from_ms(oldest_join),
+        join_anchor_id=oldest_join.transport_event_id if oldest_join else None,
     )
     recorded = await _recorded_since(session, room.id, window_start)
 
@@ -218,17 +228,41 @@ async def reconcile_room(
 def _comparable(row: Message) -> bool:
     """Whether the bus walk would have collected this row's event.
 
-    An arrival is recorded but was never a send, and a row written before its
-    type was denied has a bus event the walk now discards. Measuring either
-    against the collected set says "recorded, never sent" every single run.
+    A row written before its type was denied has a bus event the walk now
+    discards; measuring it against the collected set says "recorded, never
+    sent" every single run.
     """
-    if row.event_type == MEMBERSHIP_EVENT_TYPE:
-        return False
     return should_record(row.event_type)
+
+
+def _joins_from_ms(oldest_join: Message | None) -> int | None:
+    """The point from which a bus arrival is expected to have a row.
+
+    None means the log holds no arrival for this room, so every join on the
+    bus predates the path that records them and none can be compared.
+
+    The bound is the oldest recorded arrival's `sent_at`, which is fractionally
+    later than its own bus event — so that one event is admitted by event id
+    instead, the same way the window's anchor is.
+    """
+    if oldest_join is None:
+        return None
+    return _to_ms(cast("datetime", oldest_join.sent_at))
 
 
 def _to_ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
+
+
+async def _oldest_recorded_join(session: AsyncSession, room_id: str) -> Message | None:
+    """The first arrival the log holds for this room, which bounds join checking."""
+    result = await session.execute(
+        select(Message)
+        .where(Message.room_id == room_id, Message.event_type == MEMBERSHIP_EVENT_TYPE)
+        .order_by(Message.seq)
+        .limit(1)
+    )
+    return result.scalars().first()
 
 
 async def _oldest_recorded(session: AsyncSession, room_id: str) -> Message | None:
@@ -262,6 +296,8 @@ async def _read_back_to(
     anchor_event_id: str | None,
     floor_ms: int,
     window_start_ms: int,
+    joins_from_ms: int | None,
+    join_anchor_id: str | None,
 ) -> tuple[dict[str, InboundEvent], dict[str, int], bool]:
     """Page backwards until the window is covered.
 
@@ -296,7 +332,7 @@ async def _read_back_to(
             # The anchor is the one event admitted from before the window: its
             # row's `sent_at` is by construction later than it.
             if raw.timestamp >= window_start_ms or is_anchor:
-                _classify(raw, events, ignored)
+                _classify(raw, events, ignored, joins_from_ms, join_anchor_id)
             elif anchor_event_id is None:
                 done = True
                 break
@@ -314,16 +350,50 @@ async def _read_back_to(
 
 
 def _classify(
-    raw: InboundEvent, events: dict[str, InboundEvent], ignored: dict[str, int]
+    raw: InboundEvent,
+    events: dict[str, InboundEvent],
+    ignored: dict[str, int],
+    joins_from_ms: int | None,
+    join_anchor_id: str | None,
 ) -> None:
     """Sort one bus event into the comparison set or the ignored tally."""
     if isinstance(raw, InboundCustomEvent) and not should_record(raw.event_type):
         ignored[raw.event_type] = ignored.get(raw.event_type, 0) + 1
     elif isinstance(raw, InboundMessage | InboundCustomEvent):
         events[raw.event_id] = raw
+    elif isinstance(raw, InboundMembership):
+        _classify_membership(raw, events, ignored, joins_from_ms, join_anchor_id)
     else:
         name = type(raw).__name__
         ignored[name] = ignored.get(name, 0) + 1
+
+
+def _classify_membership(
+    raw: InboundMembership,
+    events: dict[str, InboundEvent],
+    ignored: dict[str, int],
+    joins_from_ms: int | None,
+    join_anchor_id: str | None,
+) -> None:
+    """An arrival is comparable; anything else membership does is not.
+
+    Only a transition into membership is recorded, so an invite, a leave and a
+    profile change re-firing as a join all belong in the tally. So does a join
+    from before the log held any arrival at all.
+    """
+    arrived = raw.membership == "join" and raw.prev_membership != "join"
+    in_log_window = joins_from_ms is not None and (
+        raw.timestamp >= joins_from_ms or raw.event_id == join_anchor_id
+    )
+    if arrived and in_log_window:
+        events[raw.event_id] = raw
+        return
+    label = (
+        f"{MEMBERSHIP_EVENT_TYPE} (before arrivals were recorded)"
+        if arrived
+        else MEMBERSHIP_EVENT_TYPE
+    )
+    ignored[label] = ignored.get(label, 0) + 1
 
 
 def _compare(event_id: str, event: InboundEvent, row: Message) -> list[Mismatch]:
@@ -333,6 +403,17 @@ def _compare(event_id: str, event: InboundEvent, row: Message) -> list[Mismatch]
     annotated with fields it added itself, and reporting those as drift would
     train everyone to ignore the report.
     """
+    if isinstance(event, InboundMembership):
+        # The row is about the member who arrived, which is `state_key`; the
+        # sender of a membership event can be whoever admitted them.
+        return _mismatches(
+            event_id,
+            [
+                ("member", event.state_key, row.sender_matrix_id),
+                ("event_type", MEMBERSHIP_EVENT_TYPE, row.event_type),
+            ],
+        )
+
     expected: list[tuple[str, object, object]] = [
         ("sender", event.sender, row.sender_matrix_id),
     ]
@@ -347,6 +428,12 @@ def _compare(event_id: str, event: InboundEvent, row: Message) -> list[Mismatch]
         if isinstance(event, InboundMedia):
             expected.append(("uri", event.uri, row.content.get("url")))
 
+    return _mismatches(event_id, expected)
+
+
+def _mismatches(
+    event_id: str, expected: list[tuple[str, object, object]]
+) -> list[Mismatch]:
     return [
         Mismatch(
             event_id=event_id,

@@ -23,15 +23,20 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.joins: list[str] = []
+        self.names: list[str] = []
 
-    async def record_join(self, *, transport_room_id, event, client_id) -> None:
+    async def record_join(
+        self, *, transport_room_id, event, client_id, member_name
+    ) -> None:
         self.joins.append(event.event_id)
+        self.names.append(member_name)
 
 
 class _Client(ClientBase):
     def __init__(self) -> None:
         self.matrix_user_id = SELF
         self.client_id = "client-1"
+        self.display_name = "client one"
         self.room_join_times = {}
         self._room_joined_events = {}
         self._self_join_dispatched = set()

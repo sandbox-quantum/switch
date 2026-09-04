@@ -8,25 +8,11 @@ from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.resource.events import (
-    ResourceLoadRequest,
-    ResourceLoadResponse,
-    RoomDocumentCreateRequest,
-    RoomDocumentCreateResponse,
-    RoomDocumentDeleteRequest,
-    RoomDocumentDeleteResponse,
-    RoomDocumentUpdateRequest,
-    RoomDocumentUpdateResponse,
-)
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.events import (
     AgentRuntimeStateEvent,
     CommandEvent,
     LlmCallReport,
-    MediationLlmRequest,
-    MediationLlmResponse,
-    MediationToolRequest,
-    MediationToolResult,
     SwitchEvent,
     TaskAccept,
     TaskCancel,
@@ -35,7 +21,7 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
-from switch_core.messages import MessageRecorder
+from switch_core.messages.recording import MessageRecording
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -89,7 +75,7 @@ class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
     config: ConfigT
     transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport]
     session_state: dict[str, str | None]
-    message_recorder: MessageRecorder
+    message_recorder: MessageRecording
     next_batch_token: NotRequired[str | None]
 
 
@@ -109,7 +95,7 @@ class ClientBase[ConfigT: ClientConfig]:
         config: ConfigT,
         transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
         session_state: dict[str, str | None],
-        message_recorder: MessageRecorder,
+        message_recorder: MessageRecording,
         next_batch_token: str | None = None,
     ) -> None:
         self.client_id = client_id
@@ -326,6 +312,7 @@ class ClientBase[ConfigT: ClientConfig]:
                         transport_room_id=room.room_id,
                         event=event,
                         client_id=self.client_id,
+                        member_name=self.display_name,
                     )
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into
@@ -371,22 +358,6 @@ class ClientBase[ConfigT: ClientConfig]:
 
     _EVENT_DISPATCH: dict[str, tuple[type[SwitchEvent], str]] = {
         "com.switch.command": (CommandEvent, "on_command"),
-        "com.switch.mediation.tool_request": (
-            MediationToolRequest,
-            "on_mediation_tool_request",
-        ),
-        "com.switch.mediation.llm_request": (
-            MediationLlmRequest,
-            "on_mediation_llm_request",
-        ),
-        "com.switch.mediation.tool_result": (
-            MediationToolResult,
-            "on_mediation_tool_result",
-        ),
-        "com.switch.mediation.llm_response": (
-            MediationLlmResponse,
-            "on_mediation_llm_response",
-        ),
         "com.switch.report.tool_call": (ToolCallReport, "on_tool_call_report"),
         "com.switch.report.llm_call": (LlmCallReport, "on_llm_call_report"),
         "com.switch.task.delegate": (TaskDelegate, "on_task_delegate"),
@@ -397,38 +368,6 @@ class ClientBase[ConfigT: ClientConfig]:
         "com.switch.agent.runtime_state": (
             AgentRuntimeStateEvent,
             "on_agent_runtime_state",
-        ),
-        "com.switch.resource.load_request": (
-            ResourceLoadRequest,
-            "on_resource_load_request",
-        ),
-        "com.switch.resource.load_response": (
-            ResourceLoadResponse,
-            "on_resource_load_response",
-        ),
-        "com.switch.resource.room_document_create_request": (
-            RoomDocumentCreateRequest,
-            "on_room_document_create_request",
-        ),
-        "com.switch.resource.room_document_create_response": (
-            RoomDocumentCreateResponse,
-            "on_room_document_create_response",
-        ),
-        "com.switch.resource.room_document_update_request": (
-            RoomDocumentUpdateRequest,
-            "on_room_document_update_request",
-        ),
-        "com.switch.resource.room_document_update_response": (
-            RoomDocumentUpdateResponse,
-            "on_room_document_update_response",
-        ),
-        "com.switch.resource.room_document_delete_request": (
-            RoomDocumentDeleteRequest,
-            "on_room_document_delete_request",
-        ),
-        "com.switch.resource.room_document_delete_response": (
-            RoomDocumentDeleteResponse,
-            "on_room_document_delete_response",
         ),
     }
 
@@ -535,26 +474,6 @@ class ClientBase[ConfigT: ClientConfig]:
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         pass
 
-    async def on_mediation_tool_request(
-        self, room: RoomRef, event: MediationToolRequest
-    ) -> None:
-        pass
-
-    async def on_mediation_llm_request(
-        self, room: RoomRef, event: MediationLlmRequest
-    ) -> None:
-        pass
-
-    async def on_mediation_tool_result(
-        self, room: RoomRef, event: MediationToolResult
-    ) -> None:
-        pass
-
-    async def on_mediation_llm_response(
-        self, room: RoomRef, event: MediationLlmResponse
-    ) -> None:
-        pass
-
     async def on_tool_call_report(self, room: RoomRef, event: ToolCallReport) -> None:
         pass
 
@@ -578,46 +497,6 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def on_agent_runtime_state(
         self, room: RoomRef, event: AgentRuntimeStateEvent
-    ) -> None:
-        pass
-
-    async def on_resource_load_request(
-        self, room: RoomRef, event: ResourceLoadRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_create_request(
-        self, room: RoomRef, event: RoomDocumentCreateRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_create_response(
-        self, room: RoomRef, event: RoomDocumentCreateResponse
-    ) -> None:
-        pass
-
-    async def on_room_document_update_request(
-        self, room: RoomRef, event: RoomDocumentUpdateRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_update_response(
-        self, room: RoomRef, event: RoomDocumentUpdateResponse
-    ) -> None:
-        pass
-
-    async def on_room_document_delete_request(
-        self, room: RoomRef, event: RoomDocumentDeleteRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_delete_response(
-        self, room: RoomRef, event: RoomDocumentDeleteResponse
-    ) -> None:
-        pass
-
-    async def on_resource_load_response(
-        self, room: RoomRef, event: ResourceLoadResponse
     ) -> None:
         pass
 

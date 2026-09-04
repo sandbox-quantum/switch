@@ -27,10 +27,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.models import Message
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE, should_record
+from switch_core.messages.row import attachments_in, text_field, thread_root_of
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -89,8 +90,15 @@ class MessageRecorder:
         transport_room_id: str,
         event: InboundMembership,
         client_id: str,
+        member_name: str,
     ) -> None:
         """Record an arrival, called by the client that arrived.
+
+        `member_name` is the arriving client's own name rather than the
+        display name on the membership event: the profile behind that name is
+        set from whatever the source platform calls the member, so taking it
+        would make the same participant read one way when they arrive and
+        another way when they speak.
 
         Like `record`, a failure here leaves a gap rather than disturbing
         anything: nothing about a join depends on it having been written.
@@ -100,6 +108,7 @@ class MessageRecorder:
                 transport_room_id=transport_room_id,
                 event=event,
                 client_id=client_id,
+                member_name=member_name,
             )
         except Exception:
             logger.error(
@@ -115,6 +124,7 @@ class MessageRecorder:
         transport_room_id: str,
         event: InboundMembership,
         client_id: str,
+        member_name: str,
     ) -> None:
         async with self._session_factory() as session:
             room_id = await self._resolve_room(session, transport_room_id)
@@ -144,7 +154,7 @@ class MessageRecorder:
                 transport_event_id=event.event_id,
                 sender_matrix_id=event.state_key,
                 sender_client_id=client_id,
-                sender_name=event.display_name,
+                sender_name=member_name,
                 event_type=MEMBERSHIP_EVENT_TYPE,
                 msgtype=None,
                 body=None,
@@ -182,13 +192,13 @@ class MessageRecorder:
                 sender_client_id=sender_client_id,
                 sender_name=sender_name,
                 event_type=result.event_type,
-                msgtype=_text(content.get("msgtype")),
-                body=_text(content.get("body")),
-                formatted_body=_text(content.get("formatted_body")),
-                thread_root_event_id=_thread_root(content),
+                msgtype=text_field(content.get("msgtype")),
+                body=text_field(content.get("body")),
+                formatted_body=text_field(content.get("formatted_body")),
+                thread_root_event_id=thread_root_of(content),
                 content=content,
             )
-            await self._message_store.create(session, message, _attachments_in(content))
+            await self._message_store.create(session, message, attachments_in(content))
             await session.commit()
 
     async def _resolve_room(
@@ -202,39 +212,3 @@ class MessageRecorder:
             return None
         self._room_ids[transport_room_id] = room.id
         return room.id
-
-
-def _text(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _thread_root(content: dict[str, object]) -> str | None:
-    relation = content.get("m.relates_to")
-    if not isinstance(relation, dict) or relation.get("rel_type") != "m.thread":
-        return None
-    return _text(relation.get("event_id"))
-
-
-def _attachments_in(content: dict[str, object]) -> list[MessageAttachment]:
-    """A media event carries exactly one file.
-
-    A message with several files is sent as one event per file sharing a group
-    id, so each of those events records a single attachment. The column exists
-    as a list because reassembling the group is the reader's job, not the
-    writer's.
-    """
-    uri = _text(content.get("url"))
-    if uri is None:
-        return []
-    info = content.get("info")
-    info = info if isinstance(info, dict) else {}
-    size = info.get("size")
-    return [
-        MessageAttachment(
-            uri=uri,
-            filename=_text(content.get("filename")) or _text(content.get("body")),
-            mimetype=_text(info.get("mimetype")),
-            size=size if isinstance(size, int) else None,
-            position=0,
-        )
-    ]

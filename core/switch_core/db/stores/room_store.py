@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy import func as sa_func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import ClientRoom, Room, RoomGroup, room_agents
@@ -276,7 +277,28 @@ class RoomStore:
     async def add_client(
         self, session: AsyncSession, client_id: str, room_id: str
     ) -> None:
-        session.add(ClientRoom(client_id=client_id, room_id=room_id))
+        """Record a membership, tolerating one that is already there.
+
+        Membership has more than one writer. Over Matrix it effectively had
+        one: an invitation was accepted later, over sync, long after the
+        inviting transaction had committed, so `room_service` was the only
+        thing writing this table. On the Postgres transport the invitation is
+        the join — synchronous and in-process — so the joining client writes
+        the row and the inviting caller then writes it again.
+
+        A plain insert made that second write an IntegrityError that rolled
+        the caller's whole transaction back, leaving an agent a member of the
+        room but not one of its agents: receiving messages while
+        `!list-agents` reported nobody. The conflict is a correct outcome
+        rather than a failure — the membership exists, which is what the
+        caller asked for — and this also closes the check-then-insert race
+        between two concurrent invitations.
+        """
+        await session.execute(
+            pg_insert(ClientRoom)
+            .values(client_id=client_id, room_id=room_id)
+            .on_conflict_do_nothing(index_elements=["client_id", "room_id"])
+        )
         await session.flush()
 
     async def remove_client(
@@ -289,6 +311,20 @@ class RoomStore:
             )
         )
         await session.flush()
+
+    async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
+        """The rooms a client is a member of.
+
+        The mirror of `get_client_ids`, and what a client asks for when it
+        wants to know where it belongs — over Matrix that question went to the
+        homeserver, which answered from the same memberships this table holds.
+        """
+        result = await session.execute(
+            select(Room)
+            .join(ClientRoom, ClientRoom.room_id == Room.id)
+            .where(ClientRoom.client_id == client_id)
+        )
+        return list(result.scalars().all())
 
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(

@@ -5,7 +5,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Literal, Unpack
+from typing import TYPE_CHECKING, Literal, Unpack
 
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import (
@@ -28,14 +28,6 @@ from switch_core.bridges.agent.protocol.types import (
     TaskFinalisePayload,
     TaskUpdatePayload,
 )
-from switch_core.bridges.agent.request_tracker import RequestTracker
-from switch_core.bridges.resource.events import (
-    ResourceLoadResponse,
-    RoomDocumentCreateResponse,
-    RoomDocumentDeleteResponse,
-    RoomDocumentUpdateResponse,
-)
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.client_base import (
     ClientBase,
     ClientBaseKwargs,
@@ -69,9 +61,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import (
     CommandEvent,
-    MediationLlmResponse,
-    MediationResult,
-    MediationToolResult,
     TaskAccept,
     TaskCancel,
     TaskDelegate,
@@ -85,6 +74,9 @@ from switch_core.transport import (
     InboundMessage,
     RoomRef,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -235,8 +227,6 @@ class AgentClient(ClientBase[ClientConfig]):
         agent_session_store: AgentSessionStore,
         room_role_store: RoomRoleStore,
         external_user_store: ExternalUserStore,
-        request_tracker: RequestTracker,
-        resource_request_tracker: ResourceRequestTracker,
         connections: ConnectionRegistry,
         frontend_base_url: str | None,
         **kwargs: Unpack[ClientBaseKwargs[ClientConfig]],
@@ -251,8 +241,6 @@ class AgentClient(ClientBase[ClientConfig]):
         self._agent_session_store = agent_session_store
         self._room_role_store = room_role_store
         self._external_user_store = external_user_store
-        self._request_tracker = request_tracker
-        self._resource_request_tracker = resource_request_tracker
         self._connections = connections
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
@@ -328,6 +316,28 @@ class AgentClient(ClientBase[ClientConfig]):
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
         await self.send_message(room.room_id, greeting, format="markdown")
 
+    async def _member_name(
+        self, session: AsyncSession, event: InboundMembership
+    ) -> str:
+        """What to call the member who just arrived.
+
+        The name Switch knows them by, not the one on the membership event: a
+        profile is set from whatever the source platform calls someone, so
+        taking it makes the same person read one way when they arrive and
+        another way when they speak — and the log, which records the Switch
+        name, disagree with what was delivered live.
+        """
+        client = await self.client_store.get_by_matrix_user_id(session, event.state_key)
+        if client is not None:
+            return client.display_name
+        fallback = event.display_name or event.state_key.split(":")[0].lstrip("@")
+        logger.warning(
+            "No Switch client owns %s; naming the arrival %r from the membership event",
+            event.state_key,
+            fallback,
+        )
+        return fallback
+
     async def on_member_event(self, room: RoomRef, event: InboundMembership) -> None:
         # Only forward genuine joins. A membership-preserving update (e.g. a
         # display-name or avatar change) re-fires m.room.member with
@@ -340,7 +350,6 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        member_name = event.display_name or event.state_key.split(":")[0].lstrip("@")
         # `listening` tells each connector whether THIS receiving agent is
         # configured to react to join events in this room. The event is always
         # delivered; the connector decides whether to surface it.
@@ -348,6 +357,7 @@ class AgentClient(ClientBase[ClientConfig]):
             listening = await self._room_store.get_receives_join_events(
                 session, meta.room_id, self.agent.id
             )
+            member_name = await self._member_name(session, event)
         self._event_buffer.enqueue(
             self.agent.id,
             meta.room_id,
@@ -1123,52 +1133,6 @@ class AgentClient(ClientBase[ClientConfig]):
                 ),
             ),
         )
-
-    # ── Post-invocation mediation ──────────────────────────────────────────────
-
-    async def on_mediation_tool_result(
-        self, room: RoomRef, event: MediationToolResult
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        result = MediationResult(verdict=event.status)
-        self._request_tracker.resolve(event.request_id, result)
-
-    async def on_mediation_llm_response(
-        self, room: RoomRef, event: MediationLlmResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        result = MediationResult(verdict=event.status)
-        self._request_tracker.resolve(event.request_id, result)
-
-    async def on_resource_load_response(
-        self, room: RoomRef, event: ResourceLoadResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_create_response(
-        self, room: RoomRef, event: RoomDocumentCreateResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_update_response(
-        self, room: RoomRef, event: RoomDocumentUpdateResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
-
-    async def on_room_document_delete_response(
-        self, room: RoomRef, event: RoomDocumentDeleteResponse
-    ) -> None:
-        if event.agent_id != self.agent.id:
-            return
-        self._resource_request_tracker.resolve(event.request_id, event)
 
     # ── Mention detection ─────────────────────────────────────────────────────
 

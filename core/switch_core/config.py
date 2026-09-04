@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -16,6 +17,13 @@ class SwitchConfig(BaseSettings):
     db_user: str
     db_password: str
     db_name: str
+
+    # Which transport carries messages: "matrix" for the homeserver,
+    # "postgres" for the message table. The choice pairs a transport with a
+    # provisioning implementation and a recorder, so it is one setting rather
+    # than three. Defaults to matrix, so an existing deployment is unchanged
+    # until it is asked to move.
+    message_transport: Literal["matrix", "postgres"] = "matrix"
 
     matrix_server: str
     matrix_server_name: str

@@ -12,7 +12,7 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Client
 from switch_core.db.stores.client_store import ClientStore
-from switch_core.matrix_admin import MatrixAdmin
+from switch_core.provisioning import Provisioning
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class ClientLifecycleService:
     def __init__(
         self,
         *,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         client_store: ClientStore,
         client_factory: ClientFactory,
         session_factory: async_sessionmaker[AsyncSession],

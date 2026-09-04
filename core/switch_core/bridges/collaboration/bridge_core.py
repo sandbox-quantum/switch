@@ -32,7 +32,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import AgentRuntimeStateEvent
-from switch_core.matrix_admin import MatrixAdmin
+from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.transport import (
     InboundMedia as TransportMedia,
@@ -116,7 +116,7 @@ class BridgeCore:
         client_store: ClientStore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         matrix_server_name: str,
         bridge_client_matrix_user_id: str,
