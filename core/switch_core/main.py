@@ -98,6 +98,7 @@ from switch_core.messages.notify import MessageListener
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.version import switch_core_version
 
@@ -192,6 +193,7 @@ async def run() -> None:
     # Invitations for the Postgres transport, which has no durable one of its
     # own. Built unconditionally: it is a dict until something registers.
     invites = InviteBus()
+    ephemeral = EphemeralBus()
 
     # ── Stores ───────────────────────────────────────────────────────────────
     agent_store = AgentStore()
@@ -290,6 +292,7 @@ async def run() -> None:
         media_store=media_store,
         listener=message_listener,
         invites=invites,
+        ephemeral=ephemeral,
     )
     client_factory.register(
         "agent",

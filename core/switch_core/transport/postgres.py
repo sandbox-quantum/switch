@@ -45,6 +45,7 @@ from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachm
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
 from switch_core.transport.content import media_content, message_content
+from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.port import Handler, TransportHandlers
 from switch_core.transport.types import (
@@ -109,6 +110,7 @@ class PostgresTransport:
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
+        ephemeral: EphemeralBus,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -119,6 +121,7 @@ class PostgresTransport:
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
+        self._ephemeral = ephemeral
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
         # to a handler. Both are keyed by the Switch room id, which is what
@@ -226,12 +229,26 @@ class PostgresTransport:
             )
         self._watching[room_id] = transport_room_id
         self._listener.subscribe(room_id, self._on_room_advanced)
+        self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
 
     def _unwatch_all(self) -> None:
-        for room_id in self._watching:
+        for room_id, transport_room_id in self._watching.items():
             self._listener.unsubscribe(room_id, self._on_room_advanced)
+            self._ephemeral.unsubscribe(transport_room_id, self._on_ephemeral)
         self._watching.clear()
         self._cursors.clear()
+
+    async def _on_ephemeral(self, event: InboundCustomEvent) -> None:
+        """An unstored event in a room this client watches.
+
+        It arrives already assembled, unlike a row: there is nothing to read
+        back, which is the whole difference between announcing a position and
+        announcing a value.
+        """
+        handler = self._handlers.on_custom_event
+        if handler is None:
+            return
+        await handler(RoomRef(room_id=event.room_id), event)
 
     async def _on_room_advanced(self, room_id: str) -> None:
         """Read what this client has not seen in one room, and hand it over.
@@ -367,8 +384,20 @@ class PostgresTransport:
         if event_type in EPHEMERAL:
             # Presence-like state, replaced by its own next value. Storing it
             # would put a row in the room's order for something no reader is
-            # ever shown, and delivery of it is a live concern rather than a
-            # durable one.
+            # ever shown, so it is delivered live instead of written: the
+            # announcement carries the value, because there is nowhere for a
+            # reader to go and fetch it.
+            await self._ephemeral.publish(
+                transport_room_id,
+                InboundCustomEvent(
+                    room_id=transport_room_id,
+                    event_id=result.event_id,
+                    sender=self.user_id,
+                    timestamp=_now_ms(),
+                    content=content,
+                    event_type=event_type,
+                ),
+            )
             return result
 
         async with self._session_factory() as session:

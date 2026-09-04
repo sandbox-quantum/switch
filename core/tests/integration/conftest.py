@@ -87,6 +87,7 @@ from switch_core.matrix_admin import (
 from switch_core.messages import MessageRecorder
 from switch_core.messages.notify import MessageListener
 from switch_core.room_service import RoomService
+from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
@@ -469,6 +470,7 @@ async def harness(session_env: SessionEnv) -> AsyncIterator[Harness]:
         media_store=MediaStore(),
         listener=MessageListener(lambda: create_unpooled_engine(config)),
         invites=InviteBus(),
+        ephemeral=EphemeralBus(),
     )
     client_factory.register(
         "agent",

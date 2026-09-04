@@ -16,6 +16,7 @@ from switch_core.messages import MessageRecorder
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.recording import MessageRecording, NoRecording
 from switch_core.transport import MessageTransport
+from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.matrix import MatrixTransport
 from switch_core.transport.postgres import PostgresTransport
@@ -55,6 +56,7 @@ class ClientFactory:
         media_store: MediaStore,
         listener: MessageListener,
         invites: InviteBus,
+        ephemeral: EphemeralBus,
     ) -> None:
         self._client_store = client_store
         self._session_factory = session_factory
@@ -65,6 +67,7 @@ class ClientFactory:
         self._media_store = media_store
         self._listener = listener
         self._invites = invites
+        self._ephemeral = ephemeral
         self._registry: dict[
             str, tuple[type[ClientBase[ClientConfig]], dict[str, object]]
         ] = {}
@@ -125,6 +128,7 @@ class ClientFactory:
             media_store=self._media_store,
             listener=self._listener,
             invites=self._invites,
+            ephemeral=self._ephemeral,
         )
 
     def recorder(self) -> MessageRecording:

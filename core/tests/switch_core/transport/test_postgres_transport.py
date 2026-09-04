@@ -32,6 +32,7 @@ from switch_core.transport import (
     TransportError,
     TransportHandlers,
 )
+from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.postgres import PostgresTransport
 
@@ -116,6 +117,7 @@ def _transport(
     client_id: str,
     user_id: str,
     listener: _FakeListener | None = None,
+    ephemeral: EphemeralBus | None = None,
 ) -> PostgresTransport:
     return PostgresTransport(
         user_id=user_id,
@@ -127,6 +129,7 @@ def _transport(
         media_store=MediaStore(),
         listener=listener or _FakeListener(),
         invites=InviteBus(),
+        ephemeral=ephemeral or EphemeralBus(),
     )
 
 
@@ -528,3 +531,110 @@ class TestReceiving:
         assert event.state_key == newcomer_mxid
         assert event.membership == "join"
         assert event.display_name == "the newcomer"
+
+
+class TestPresence:
+    """Events that are announced and never stored still have to arrive.
+
+    Dropping the row dropped the delivery with it: runtime state was recorded
+    in its own table and reached nobody, so an agent going busy stopped showing
+    up on a bridged channel. The value travels on the announcement, because
+    there is no row for a reader to go and fetch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self) -> Iterator[None]:
+        self._tasks: list[asyncio.Task] = []
+        yield
+        for task in self._tasks:
+            task.cancel()
+
+    async def test_presence_reaches_the_other_clients_watching_the_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        ephemeral = EphemeralBus()
+        received = _Received()
+        watcher = _transport(
+            session_factory, client_id=client_id, user_id=user_id, ephemeral=ephemeral
+        )
+        watcher.register_handlers(received.handlers())
+        await watcher.join_room(room)
+        self._tasks.append(asyncio.create_task(watcher.receive_forever(since=None)))
+        await _watched_room(watcher)
+
+        sender = _transport(
+            session_factory, client_id=client_id, user_id=user_id, ephemeral=ephemeral
+        )
+        await sender.send_event(
+            room, "com.switch.agent.runtime_state", {"state": "working"}
+        )
+
+        assert len(received.events) == 1
+        event = received.events[0]
+        assert isinstance(event, InboundCustomEvent)
+        assert event.event_type == "com.switch.agent.runtime_state"
+        assert event.content == {"state": "working"}
+        # The room a handler is given is the transport-side id, as for a row.
+        assert event.room_id == room
+
+    async def test_presence_in_another_room_is_not_delivered(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            _, elsewhere, other_client_id, other_user_id = await _make_room(session)
+            await session.commit()
+
+        ephemeral = EphemeralBus()
+        received = _Received()
+        watcher = _transport(
+            session_factory, client_id=client_id, user_id=user_id, ephemeral=ephemeral
+        )
+        watcher.register_handlers(received.handlers())
+        await watcher.join_room(room)
+        self._tasks.append(asyncio.create_task(watcher.receive_forever(since=None)))
+        await _watched_room(watcher)
+
+        sender = _transport(
+            session_factory,
+            client_id=other_client_id,
+            user_id=other_user_id,
+            ephemeral=ephemeral,
+        )
+        await sender.send_event(
+            elsewhere, "com.switch.agent.runtime_state", {"state": "idle"}
+        )
+
+        assert received.events == []
+
+    async def test_a_client_that_stopped_receiving_is_no_longer_told(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Presence is delivered live, so a closed client must leave the bus —
+        otherwise it holds a handler for a room nobody is reading."""
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+
+        ephemeral = EphemeralBus()
+        received = _Received()
+        watcher = _transport(
+            session_factory, client_id=client_id, user_id=user_id, ephemeral=ephemeral
+        )
+        watcher.register_handlers(received.handlers())
+        await watcher.join_room(room)
+        task = asyncio.create_task(watcher.receive_forever(since=None))
+        self._tasks.append(task)
+        await _watched_room(watcher)
+        await watcher.close()
+        await task
+
+        await watcher.send_event(
+            room, "com.switch.agent.runtime_state", {"state": "idle"}
+        )
+
+        assert received.events == []

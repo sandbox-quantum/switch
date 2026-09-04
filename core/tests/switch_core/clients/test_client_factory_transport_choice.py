@@ -24,6 +24,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.messages import MessageRecorder
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.recording import NoRecording
+from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.matrix import MatrixTransport
 from switch_core.transport.postgres import PostgresTransport
@@ -64,6 +65,7 @@ def _factory(
         media_store=MediaStore(),
         listener=MessageListener(lambda: None),  # type: ignore[arg-type,return-value]
         invites=InviteBus(),
+        ephemeral=EphemeralBus(),
     )
     factory.register("user", ClientBase)
     return factory
