@@ -27,9 +27,9 @@ Three consequences worth stating up front:
 - **Ids are opaque, and these are not `$event` ids.** Nothing in Switch parses
   one; the columns holding them are already named `transport_event_id`.
 
-What is *not* here yet: receiving, and media. Both are the next slice, and both
-raise rather than returning something empty — a transport that silently
-delivers nothing is the failure mode this codebase least wants to ship.
+History is the one method left unimplemented, and deliberately: the read path
+already queries these rows directly, and the only callers left are the walkers
+that exist to compare a bus against them.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
-from switch_core.db.models import ClientRoom, Message, MessageAttachment
+from switch_core.db.models import ClientRoom, MediaBlob, Message, MessageAttachment
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import attachments_in, text_field, thread_root_of
 from switch_core.transport.content import media_content, message_content
@@ -63,6 +63,7 @@ from switch_core.transport.types import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.db.stores.media_store import MediaStore
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.messages.notify import MessageListener
@@ -103,6 +104,7 @@ class PostgresTransport:
         session_factory: async_sessionmaker[AsyncSession],
         room_store: RoomStore,
         message_store: MessageStore,
+        media_store: MediaStore,
         listener: MessageListener,
     ) -> None:
         self.user_id = user_id
@@ -111,6 +113,7 @@ class PostgresTransport:
         self._session_factory = session_factory
         self._room_store = room_store
         self._message_store = message_store
+        self._media_store = media_store
         self._listener = listener
         self._handlers = TransportHandlers()
         # Per-room delivery position, and the transport-side id to hand back
@@ -354,15 +357,43 @@ class PostgresTransport:
     async def upload_media(
         self, data: bytes, content_type: str, filename: str
     ) -> UploadResult:
-        raise NotImplementedError(
-            "PostgresTransport has no media store yet; uploads still go "
-            "through the Matrix transport."
-        )
+        """Store the bytes and return the handle the message will carry.
+
+        The handle is a key and nothing more. Callers already treat it as
+        opaque — it crosses the agent protocol as `mxc` and comes back as a
+        query parameter — so what is behind it can become object storage later
+        without the protocol noticing.
+        """
+        uri = f"switch-media://{uuid.uuid4().hex}"
+        async with self._session_factory() as session:
+            await self._media_store.put(
+                session,
+                MediaBlob(
+                    uri=uri,
+                    content_type=content_type,
+                    filename=filename,
+                    size=len(data),
+                    data=data,
+                ),
+            )
+            await session.commit()
+        return UploadResult(uri=uri)
 
     async def download_media(self, uri: str) -> DownloadResult:
-        raise NotImplementedError(
-            "PostgresTransport has no media store yet; downloads still go "
-            "through the Matrix transport."
+        """The bytes for a handle.
+
+        A handle with nothing behind it raises rather than returning empty
+        bytes: an attachment the sender was told had been stored and a reader
+        gets back as a zero-byte file is the worst of the available answers.
+        """
+        async with self._session_factory() as session:
+            blob = await self._media_store.get(session, uri)
+        if blob is None:
+            raise TransportError(f"No media stored under {uri}")
+        return DownloadResult(
+            body=blob.data,
+            content_type=blob.content_type,
+            filename=blob.filename,
         )
 
     # ── History ───────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@ what the table ends up holding — the seq allocation, the denormalised columns
 and the attachment row are the behaviour, not an implementation detail behind
 it.
 
-Media is still unbuilt, and that is tested too: a transport that quietly
+What is deliberately not implemented is tested too: a transport that quietly
 returns nothing would look like a working deployment with a silent room, which
 is the one failure this codebase refuses to ship.
 """
@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Client, Room
+from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.transport import (
@@ -122,6 +123,7 @@ def _transport(
         session_factory=session_factory,
         room_store=RoomStore(),
         message_store=MessageStore(),
+        media_store=MediaStore(),
         listener=listener or _FakeListener(),
     )
 
@@ -324,15 +326,50 @@ class TestRooms:
         assert await transport.joined_rooms() == []
 
 
-class TestWhatIsNotBuiltYet:
-    async def test_media_storage_refuses_rather_than_losing_the_bytes(
+class TestMedia:
+    async def test_bytes_go_in_and_come_back(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
+
+        uploaded = await transport.upload_media(b"file contents", "text/plain", "a.txt")
+        downloaded = await transport.download_media(uploaded.uri)
+
+        assert downloaded.body == b"file contents"
+        assert downloaded.content_type == "text/plain"
+        assert downloaded.filename == "a.txt"
+
+    async def test_two_uploads_of_the_same_bytes_are_two_handles(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Deduplicating would make one sender's delete another's data loss."""
+        transport = _transport(session_factory, client_id="c", user_id="@a:test")
+
+        first = await transport.upload_media(b"same", "text/plain", "a.txt")
+        second = await transport.upload_media(b"same", "text/plain", "a.txt")
+
+        assert first.uri != second.uri
+
+    async def test_a_handle_with_nothing_behind_it_raises(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """An empty file is a worse answer than an error: the reader cannot
+        tell it apart from a file that was genuinely empty."""
+        transport = _transport(session_factory, client_id="c", user_id="@a:test")
+
+        with pytest.raises(TransportError):
+            await transport.download_media("switch-media://nothing")
+
+
+class TestWhatIsNotBuiltYet:
+    async def test_history_refuses_rather_than_answering_from_the_wrong_place(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The read path queries these rows directly; the only callers of this
+        method are the walkers that compare a bus against them."""
+        transport = _transport(session_factory, client_id="c", user_id="@a:test")
         with pytest.raises(NotImplementedError):
-            await transport.upload_media(b"x", "text/plain", "a.txt")
-        with pytest.raises(NotImplementedError):
-            await transport.download_media("blob://1")
+            await transport.read_history("!r:test", start=None, limit=10)
 
 
 class TestReceiving:
