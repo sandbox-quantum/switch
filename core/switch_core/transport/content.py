@@ -98,7 +98,7 @@ def _rendered(body: str, mentions: list[str] | None) -> str:
     still wants the id there for exactly that reason, so the form is shared
     rather than being made Matrix-only.
     """
-    html = markdown.markdown(body)
+    html: str = markdown.markdown(body)
     for user_id in mentions or ():
         local = user_id.split(":")[0].lstrip("@")
         html = html.replace(
