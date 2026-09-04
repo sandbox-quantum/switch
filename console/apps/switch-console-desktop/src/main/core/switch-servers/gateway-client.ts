@@ -341,6 +341,7 @@ export async function registerKnownAgent(
 type AgentSummaryJson = {
   id: string;
   name: string;
+  display_name?: string | null;
   description: string;
   connector_type: string;
   owner_id?: string | null;
@@ -358,6 +359,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
   return {
     id: json.id,
     name: json.name,
+    displayName: json.display_name ?? null,
     description: json.description,
     connectorType: json.connector_type,
     ownerId: json.owner_id ?? null,
