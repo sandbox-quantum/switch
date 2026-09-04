@@ -1,6 +1,7 @@
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
@@ -11,6 +12,7 @@ import { memo, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
+import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
 
 interface NavItem {
@@ -87,6 +89,7 @@ export default memo(function NavRail() {
   const location = useLocation();
   const { user, logout } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
 
   const items = user?.role === "admin" ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
@@ -209,11 +212,26 @@ export default memo(function NavRail() {
           <ThemeModeToggle />
         </Box>
         <Divider sx={{ my: 0.5 }} />
+        <MenuItem
+          onClick={() => {
+            setAnchor(null);
+            setPasswordDialogOpen(true);
+          }}
+          sx={{ gap: 1 }}
+        >
+          <LockOutlined sx={{ fontSize: 16 }} />
+          Change password
+        </MenuItem>
         <MenuItem onClick={logout} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
         </MenuItem>
       </Menu>
+
+      <ChangePasswordDialog
+        open={passwordDialogOpen}
+        onClose={() => setPasswordDialogOpen(false)}
+      />
     </Stack>
   );
 });
