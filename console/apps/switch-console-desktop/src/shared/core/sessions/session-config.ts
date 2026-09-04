@@ -13,6 +13,14 @@ const sessionConfigV0Schema = z.object({
   providerSessionId: z.string().optional(),
   /** Initial prompt to deliver on the first spawn; cleared from config after the session starts. */
   initialPrompt: z.string().optional(),
+  /**
+   * How this session drives its agent, copied from the agent's config when the
+   * session was created. A copy rather than a live read: the runtime is chosen
+   * once, at spawn, and a session already running through a provider adapter
+   * cannot become a PTY session because someone flipped the agent's toggle.
+   * Absent means `pty`.
+   */
+  runtime: z.enum(['pty', 'provider']).optional(),
 });
 
 export const sessionConfig = defineVersionedSchema().unversioned(sessionConfigV0Schema).build();

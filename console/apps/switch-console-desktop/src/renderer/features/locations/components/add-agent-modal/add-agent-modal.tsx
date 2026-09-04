@@ -3,6 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  OpencodeRuntimeToggle,
+  providerConfigWithRuntime,
+} from '@renderer/features/locations/components/opencode-runtime-toggle';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -195,6 +199,10 @@ export const AddAgentModal = observer(function AddAgentModal({
     launchProfileConfigRef.current = config;
   }, []);
 
+  // Drive the agent through its provider's own server rather than a terminal.
+  // Held in state rather than a ref: the switch has to render what it holds.
+  const [providerRuntime, setProviderRuntime] = useState(false);
+
   const trimmedRemoteDir = canonicalDir(remoteRepoDir);
   const dir = isRemoteRun ? trimmedRemoteDir : pickState.path;
 
@@ -330,7 +338,11 @@ export const AddAgentModal = observer(function AddAgentModal({
         autoSession: form.autoSession,
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,
-        providerConfig: launchProfileConfigRef.current,
+        providerConfig: providerConfigWithRuntime(
+          launchProfileConfigRef.current,
+          pickState.providerId,
+          providerRuntime
+        ),
         entryPoint,
       });
       if (result.kind !== 'created') {
@@ -511,6 +523,11 @@ export const AddAgentModal = observer(function AddAgentModal({
               sshHost={isRemoteRun ? runHost : null}
               dir={dir}
               onChange={onLaunchProfileConfigChange}
+            />
+            <OpencodeRuntimeToggle
+              providerId={pickState.providerId}
+              enabled={providerRuntime}
+              onChange={setProviderRuntime}
             />
           </>
         )}

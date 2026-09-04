@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
 import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
+import { isProviderRuntime } from '@main/core/agent-runtime/types';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
 import { resolveSessionAgent } from '../../locations/utils';
@@ -33,6 +34,16 @@ export async function hydrateSession(sessionId: string): Promise<void> {
 
   const config = row.config ?? {};
   const session = mapSessionRowToSession(row, loaded.providerId, loaded.name);
+
+  // A provider session has no terminal to open, so hydrating one is either its
+  // first start or nothing at all. Re-running `start` on a live session would
+  // ask the adapter to create a second session under the same id, which it
+  // refuses — correctly, but there is no reason to ask.
+  if (isProviderRuntime(agent)) {
+    if (!isFirstSpawn) return;
+    await agent.start(session, undefined, false, config.initialPrompt);
+    return;
+  }
 
   if (!isFirstSpawn && isAttachableRuntime(agent)) {
     await agent.ensureAttachable(session);

@@ -1,7 +1,7 @@
 import { createOpencodeClient, type Event, type OpencodeClient } from '@opencode-ai/sdk/v2';
 import { ProviderSessionError, ProviderUnavailableError } from '../adapter';
 import type { OpencodeConfigFile, OpencodePermissionRule } from './config';
-import { startOpencodeServer } from './server';
+import { type OpencodeSkill, startOpencodeServer } from './server';
 
 export type OpencodeEvent = Event;
 
@@ -44,6 +44,8 @@ export interface OpencodeTransport {
 export interface HttpTransportOptions {
   binaryPath: string;
   startupTimeoutMs: number;
+  /** Skills to place in each session's isolated config home. */
+  skills: OpencodeSkill[];
 }
 
 /**
@@ -61,6 +63,7 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
         env: input.env,
         config: input.config,
         startupTimeoutMs: options.startupTimeoutMs,
+        skills: options.skills,
       });
 
       const client = createOpencodeClient({

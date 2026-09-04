@@ -17,12 +17,30 @@ export interface OpencodeServerHandle {
   configHome: string;
 }
 
+/**
+ * A skill to place in the session's isolated config home.
+ *
+ * `name` has to be the skill's own frontmatter name: OpenCode discovers
+ * `skills/<name>/SKILL.md` and rejects a skill whose folder disagrees with it.
+ */
+export interface OpencodeSkill {
+  name: string;
+  content: string;
+}
+
 export interface StartServerInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
   config: OpencodeConfigFile;
   startupTimeoutMs: number;
+  /**
+   * Skills to write beside the generated config. Isolating `XDG_CONFIG_HOME`
+   * hides the user's own `~/.config/opencode/skills` along with their MCP
+   * registrations, so a caller that needs a skill in the session has to supply
+   * it here.
+   */
+  skills: OpencodeSkill[];
 }
 
 async function findFreePort(): Promise<number> {
@@ -49,16 +67,24 @@ async function findFreePort(): Promise<number> {
  * user's global `mcp` block in place. Auth lives under `XDG_DATA_HOME`, which
  * is deliberately left alone so the spawned server stays signed in.
  */
-async function writeSessionConfig(config: OpencodeConfigFile): Promise<string> {
+async function writeSessionConfig(
+  config: OpencodeConfigFile,
+  skills: OpencodeSkill[]
+): Promise<string> {
   const configHome = await mkdtemp(join(tmpdir(), 'switch-opencode-'));
   await mkdir(join(configHome, 'opencode'), { recursive: true });
   await writeFile(join(configHome, 'opencode', 'opencode.json'), JSON.stringify(config, null, 2));
+  for (const skill of skills) {
+    const dir = join(configHome, 'opencode', 'skills', skill.name);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'SKILL.md'), skill.content);
+  }
   return configHome;
 }
 
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
   const password = randomBytes(24).toString('base64url');
-  const configHome = await writeSessionConfig(input.config);
+  const configHome = await writeSessionConfig(input.config, input.skills);
   const port = await findFreePort();
 
   const child = spawn(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {

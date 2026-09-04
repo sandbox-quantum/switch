@@ -1,4 +1,5 @@
 import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
+import type { SessionControlAction } from './session-control';
 
 /**
  * A live destination for injected prompt keystrokes. Locally this is the
@@ -7,6 +8,13 @@ import { ptySessionRegistry } from '@main/core/pty/pty-session-registry';
  */
 export interface InjectionTarget {
   write(data: string): void;
+  /**
+   * Run a session-control step the target knows how to run itself, returning
+   * whether it did. Only a target with a real runtime behind it implements
+   * this; a terminal has nothing but keystrokes, so an unhandled step falls
+   * back to the keystroke recipe.
+   */
+  control?(action: SessionControlAction): Promise<boolean>;
 }
 
 /**

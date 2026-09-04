@@ -1,6 +1,7 @@
 import z from 'zod';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
+import type { SessionRuntimeKind } from '@shared/core/sessions/session-transcript';
 import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { TerminalShellId } from '@shared/core/terminals/terminal-settings';
 
@@ -49,6 +50,12 @@ export type Session = {
   archivedAt?: string;
   lastInteractedAt?: string;
   autoApprove?: boolean;
+  /**
+   * How the session drives its agent: `provider` runs it through a
+   * `@switch-console/agent-providers` adapter and has a transcript instead of a
+   * terminal. Absent means `pty` — the tmux/TUI path every session used before.
+   */
+  runtime?: SessionRuntimeKind;
   /** The session's agent's name, read live from the agent row on every load
    *  (so it follows a rename). Absent only for a row that predates named agents. */
   agentName?: string;

@@ -1,5 +1,6 @@
 import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
 import { isAttachableRuntime } from '@main/core/agent-runtime/attachment/types';
+import { isProviderRuntime } from '@main/core/agent-runtime/types';
 import { resolveSessionAgent } from '../../locations/utils';
 import { loadSessionWithAgent } from '../session-join';
 import { mapSessionRowToSession } from '../utils/utils';
@@ -44,6 +45,9 @@ export async function restartSessionAgent(sessionId: string): Promise<void> {
 
   await agent.stop();
   await agent.start(session, undefined, true);
+  // A provider session has no terminal, so there is nothing to reconcile with
+  // the attachment pool; the resume rode in on `providerSessionId` above.
+  if (isProviderRuntime(agent)) return;
 
   if (isAttachableRuntime(agent)) {
     await remoteAttachmentPool.requestAttach(sessionId, 'user');

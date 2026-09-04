@@ -1,22 +1,26 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
+import { isProviderRuntime } from '@main/core/agent-runtime/types';
 import { agentSettingsPath, subagentSettingsPath } from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
 import { isHumanInputRecent } from '@main/core/pty/human-activity';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
+import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { runWithLogContext } from '@main/lib/log-context';
 import { noteAgentName, noteSessionTitle } from '@main/lib/log-name-cache';
 import { log } from '@main/lib/logger';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
 import { makeAgentPtySessionId } from '@shared/core/pty/ptySessionId';
-import { PtyInjectionSink } from './injection-sink';
+import { PtyInjectionSink, type InjectionSink } from './injection-sink';
 import { PluginPromptInjector } from './plugin-prompt-injector';
-import { RoomConnection, type SpawnTurn } from './room-connection';
+import { ProviderInjectionSink, ProviderPromptInjector } from './provider-injection-sink';
+import { providerRoomRelay } from './provider-room-relay';
+import { RoomConnection, type PromptInjector, type SpawnTurn } from './room-connection';
 
 export type { SpawnTurn };
 import { sessionConnectionId } from './session-connection-id';
-import { resolveSessionControl } from './session-control';
+import { PROVIDER_CONTROL, resolveSessionControl } from './session-control';
 import {
   readSwitchAgentCredentials,
   readSwitchAgentCredentialsFromSettings,
@@ -170,6 +174,7 @@ class SwitchNotificationPoller {
     if (!conn) return;
     conn.stop();
     this.connections.delete(sessionId);
+    providerRoomRelay.unbind(sessionId);
     log.debug('SwitchNotificationPoller: poll stopped', { sessionId });
   }
 
@@ -259,6 +264,21 @@ class SwitchNotificationPoller {
       roomId: roomId ?? '(await the server)',
       owesTurn: spawnTurn !== null,
     });
+    // A provider-backed session has no pane: a room message is a turn on its
+    // adapter, its approvals are posted into the room by the relay, and there
+    // is no operator typing into anything to defer around. The runtime is
+    // registered before it is started, and this runs from inside its start, so
+    // it is already there to be found.
+    const providerRuntime = resolveProviderRuntime(ctx.sessionId);
+    const sink: InjectionSink = providerRuntime
+      ? new ProviderInjectionSink(ctx.sessionId, providerRuntime, (text) =>
+          providerRuntime.notice('info', text)
+        )
+      : new PtyInjectionSink(ptySessionId);
+    const injector: PromptInjector = providerRuntime
+      ? new ProviderPromptInjector()
+      : new PluginPromptInjector(ctx.providerId);
+
     const connection = new RoomConnection({
       creds,
       roomId,
@@ -267,11 +287,12 @@ class SwitchNotificationPoller {
       startCursor,
       spawnTurn,
       sessionId: ctx.sessionId,
-      sink: new PtyInjectionSink(ptySessionId),
-      injector: new PluginPromptInjector(ctx.providerId),
-      control: resolveSessionControl(ctx.providerId),
+      sink,
+      injector,
+      control: providerRuntime ? PROVIDER_CONTROL : resolveSessionControl(ctx.providerId),
       deeplinkScheme: DEEPLINK_SCHEME,
-      isHumanTyping: () => isHumanInputRecent(ptySessionId),
+      isHumanTyping: () => (providerRuntime ? false : isHumanInputRecent(ptySessionId)),
+      interceptInjection: (_text, message) => providerRoomRelay.consume(ctx.sessionId, message),
       mediaDir: path.join(os.tmpdir(), 'switch-console-switch-media', ctx.sessionId),
       // The server naming this connection's room is the authoritative signal,
       // so it is what updates the session→room map the UI reads. The
@@ -300,6 +321,14 @@ class SwitchNotificationPoller {
       log,
     });
     this.connections.set(ctx.sessionId, connection);
+    if (providerRuntime) {
+      providerRoomRelay.bind({
+        sessionId: ctx.sessionId,
+        creds,
+        room: () => connection.room,
+        runtime: providerRuntime,
+      });
+    }
 
     log.debug('SwitchNotificationPoller: poll started', {
       sessionId: ctx.sessionId,
@@ -352,6 +381,18 @@ class SwitchNotificationPoller {
     if (!connection) return;
     connection.reportActivity(detail);
   }
+}
+
+/**
+ * The session's provider runtime, when it has one and it is already running.
+ *
+ * Deliberately a lookup rather than a session-row read: the runtime is the
+ * thing that can actually take a turn, and a session whose row says `provider`
+ * but whose runtime has not been built yet has nothing to send one to.
+ */
+function resolveProviderRuntime(sessionId: string) {
+  const agent = sessionRuntimeManager.getAgent(sessionId);
+  return isProviderRuntime(agent) ? agent : null;
 }
 
 export const switchNotificationPoller = new SwitchNotificationPoller();

@@ -1,6 +1,7 @@
 import { isUnmountedLocation } from '@renderer/features/locations/stores/location';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
+import type { SessionRuntimeKind } from '@shared/core/sessions/session-transcript';
 import type { Session } from '@shared/core/sessions/sessions';
 import { sessionAgentRegistry } from './session-agent-registry';
 import type { SessionManagerStore } from './session-manager';
@@ -41,6 +42,20 @@ export function getSessionView(
   sessionId: string
 ): SessionViewModel | undefined {
   return getSessionStore(locationId, sessionId)?.viewModel ?? undefined;
+}
+
+/**
+ * How a session drives its agent: a terminal, or a provider adapter with a
+ * transcript. Absent means `pty`, which is every session that predates the
+ * provider runtime.
+ *
+ * The cast is the single place the renderer reads the field while `Session`
+ * does not yet declare it — delete it when the field lands, and nothing else
+ * changes.
+ */
+export function sessionRuntimeKind(store: SessionStore | undefined): SessionRuntimeKind {
+  const session = store ? registeredSessionData(store) : undefined;
+  return (session as { runtime?: SessionRuntimeKind } | undefined)?.runtime ?? 'pty';
 }
 
 export function sessionAgentStatus(store: SessionStore): AgentStatus | null {

@@ -30,6 +30,8 @@ export type {
   UserInputAnswers,
   UserInputQuestion,
 } from './events';
+export type { OpencodeAdapterOptions, OpencodeLogger } from './opencode/opencode-adapter';
 export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adapter';
+export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';

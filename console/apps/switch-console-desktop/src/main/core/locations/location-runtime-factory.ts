@@ -1,4 +1,5 @@
 import { LocalAgentRuntime } from '@main/core/agent-runtime/impl/local-agent-runtime';
+import { ProviderAgentRuntime } from '@main/core/agent-runtime/impl/provider-agent-runtime';
 import { SshAgentRuntime } from '@main/core/agent-runtime/impl/ssh-agent-runtime';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
@@ -21,6 +22,7 @@ import { LocalTerminalProvider } from '@main/core/terminals/impl/local-terminal-
 import { SshTerminalProvider } from '@main/core/terminals/impl/ssh-terminal-provider';
 import { runLifecycleScriptWithPolicy } from '@main/core/terminals/lifecycle-script-coordinator';
 import { log } from '@main/lib/logger';
+import type { SessionRuntimeKind } from '@shared/core/sessions/session-transcript';
 import type { Session } from '@shared/core/sessions/sessions';
 import { getEffectiveSessionSettings } from '../locations/settings/effective-session-settings';
 import type { LocationSettingsProvider } from '../locations/settings/provider';
@@ -220,6 +222,8 @@ type AgentRuntimeOpts = {
    * checks, in priority order — the agent's neutral `.switch/agents/<name>.json`
    * first, then the legacy `.claude/settings.local.json` (CHOO-1440). */
   credsRelPaths: string[];
+  /** How this session drives its agent, frozen onto it when it was created. */
+  runtime: SessionRuntimeKind;
 };
 
 async function resolveLocalAgentShellProfile(sessionId: string): Promise<ResolvedShellProfile> {
@@ -244,6 +248,17 @@ export async function buildAgentRuntime(
   opts: AgentRuntimeOpts
 ): Promise<AgentRuntimeProvider> {
   if (transport.kind === 'ssh') {
+    // A provider-backed session is local-only for now: the on-VM sidecar spawns
+    // and injects for a remote session and hosts no adapter, so honouring the
+    // toggle here would produce a session nothing on the VM could drive. Say so
+    // rather than quietly running it as a PTY session.
+    if (opts.runtime === 'provider') {
+      log.warn('buildAgentRuntime: provider runtime is local-only; using the PTY runtime', {
+        event: 'provider_runtime_unavailable_remote',
+        sessionId: opts.sessionId,
+        host: transport.host,
+      });
+    }
     const proxy = await connectSshTransport(transport);
     const ctx = new SshExecutionContext(proxy, { root: transport.dir });
     const fs = new SshFileSystem(proxy, transport.dir);
@@ -270,6 +285,15 @@ export async function buildAgentRuntime(
       fs,
       proxy,
       connectionId: transport.connectionId,
+      sessionEnvVars: opts.sessionEnvVars,
+    });
+  }
+
+  if (opts.runtime === 'provider') {
+    return new ProviderAgentRuntime({
+      locationId: opts.locationId,
+      sessionId: opts.sessionId,
+      sessionPath: opts.sessionPath,
       sessionEnvVars: opts.sessionEnvVars,
     });
   }

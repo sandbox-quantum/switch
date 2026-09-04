@@ -17,6 +17,11 @@ import {
   type ModelCatalogueResult,
 } from '@renderer/features/locations/components/agent-model-catalogue';
 import { useAgentEdit } from '@renderer/features/locations/components/main-panel/agent-edits';
+import {
+  OpencodeRuntimeToggle,
+  providerRuntimeEnabled,
+  withProviderRuntime,
+} from '@renderer/features/locations/components/opencode-runtime-toggle';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -112,13 +117,22 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
     setForm(savedForm);
   }, [savedForm]);
 
+  // The provider runtime is not one of the provider's declared fields, so it is
+  // carried beside the form — and folded back into every save, which replaces
+  // the whole settings record and would otherwise drop it.
+  const savedRuntime = providerRuntimeEnabled(current);
+  const [providerRuntime, setProviderRuntime] = useState(false);
+  useEffect(() => {
+    setProviderRuntime(savedRuntime);
+  }, [savedRuntime]);
+
   const staleSessionIds = sessionsStartedBeforeChanges(locationId, agentId);
 
   const save = useMutation({
     mutationFn: () =>
       rpc.agents.updateAdvancedConfig({
         agentId: agentId as string,
-        attributes: attributesFromForm(fields, form),
+        attributes: withProviderRuntime(attributesFromForm(fields, form), providerRuntime),
       }),
     onSuccess: () => {
       toast({ title: 'Advanced configuration saved' });
@@ -152,7 +166,10 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const onSave = useCallback(async () => {
     await saveMutation();
   }, [saveMutation]);
-  const onRevert = useCallback(() => setForm(savedForm), [savedForm]);
+  const onRevert = useCallback(() => {
+    setForm(savedForm);
+    setProviderRuntime(savedRuntime);
+  }, [savedForm, savedRuntime]);
 
   const [restartFailed, setRestartFailed] = useState<string[]>([]);
   const restart = useMutation({
@@ -194,8 +211,9 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
   const dirty =
     editable &&
     fields.length > 0 &&
-    JSON.stringify(attributesFromForm(fields, form)) !==
-      JSON.stringify(attributesFromForm(fields, savedForm));
+    (providerRuntime !== savedRuntime ||
+      JSON.stringify(attributesFromForm(fields, form)) !==
+        JSON.stringify(attributesFromForm(fields, savedForm)));
 
   const setField = (key: string, value: FormValue) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -265,6 +283,11 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
             </Field>
           );
         })}
+        <OpencodeRuntimeToggle
+          providerId={providerId}
+          enabled={providerRuntime}
+          onChange={setProviderRuntime}
+        />
         {showStaleNotice && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
             <p className="text-xs text-foreground-muted">

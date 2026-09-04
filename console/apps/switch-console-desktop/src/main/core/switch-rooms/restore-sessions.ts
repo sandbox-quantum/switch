@@ -1,9 +1,11 @@
+import { isProviderRuntime } from '@main/core/agent-runtime/types';
 import { locationManager } from '@main/core/locations/location-manager';
 import { getLocationById } from '@main/core/locations/store';
 import { ensureSessionAttachable } from '@main/core/sessions/operations/ensureSessionAttachable';
 import { hydrateSession } from '@main/core/sessions/operations/hydrateSession';
 import { formatProvisionSessionError } from '@main/core/sessions/provision-session-error';
 import { loadSessionWithAgent } from '@main/core/sessions/session-join';
+import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { sessionService } from '@main/core/sessions/session-service';
 import { log } from '@main/lib/logger';
 import { switchRoomService } from './switch-room-service';
@@ -89,7 +91,14 @@ export async function restoreSwitchRoomSessions(): Promise<void> {
         });
         continue;
       }
-      if (await ensureSessionAttachable(sessionId)) {
+      // A provider-backed session is neither of the two cases below: it has no
+      // tmux pane on a VM to attach to and no terminal to open. Starting it is
+      // the whole of restoring it, and `hydrateSession` is a no-op if the
+      // runtime is already up.
+      if (isProviderRuntime(sessionRuntimeManager.getAgent(sessionId))) {
+        await hydrateSession(sessionId);
+        launched += 1;
+      } else if (await ensureSessionAttachable(sessionId)) {
         attachable += 1;
       } else {
         await hydrateSession(sessionId);

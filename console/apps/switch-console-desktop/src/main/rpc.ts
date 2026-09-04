@@ -13,6 +13,7 @@ import { remoteHostsController } from './core/remote-hosts/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
 import { searchController } from './core/search/controller';
 import { sessionController } from './core/sessions/controller';
+import { sessionTranscriptController } from './core/sessions/transcript-controller';
 import { appSettingsController } from './core/settings/controller';
 import { providerSettingsController } from './core/settings/provider-settings-controller';
 import { sidecarController } from './core/sidecar/controller';
@@ -35,6 +36,7 @@ export const rpcRouter = createRPCRouter({
   promptLibrary: promptLibraryController,
   locations: locationsController,
   sessions: sessionController,
+  sessionTranscript: sessionTranscriptController,
   viewState: viewStateController,
   search: searchController,
   switchRooms: switchRoomsController,

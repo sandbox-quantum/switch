@@ -3,6 +3,7 @@ import type {
   SwitchLaunchSpecialization,
 } from '@switch-console/core/agents/plugins';
 import z from 'zod';
+import type { SessionRuntimeKind } from '@shared/core/sessions/session-transcript';
 import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-schema';
 
 /**
@@ -28,6 +29,16 @@ import { defineVersionedSchema } from '@shared/lib/versioned-schema/versioned-sc
  */
 const agentProviderConfigV2 = z.object({
   version: z.literal('2'),
+  /**
+   * How this agent's sessions drive their agent: through the provider's own
+   * SDK/protocol (`provider`) or by typing into a TUI in tmux (`pty`). Absent
+   * means `pty`, which is what every agent written before this did.
+   *
+   * A sibling of {@link agentProviderConfigV2.values} rather than a key inside
+   * it: `values` is the provider's own launch-profile vocabulary, and this is
+   * Switch Console's choice of how to run the thing at all.
+   */
+  runtime: z.enum(['pty', 'provider']).optional(),
   /**
    * The provider whose field keys {@link values} are named for. Recorded so a row
    * is readable on its own and so the v1 upgrade can state what it assumed, not
@@ -95,6 +106,30 @@ export const agentProviderConfig = defineVersionedSchema()
 export type AgentProviderConfig = typeof agentProviderConfig.Type;
 
 /**
+ * The key the runtime choice is collected under.
+ *
+ * It travels with the provider's launch-profile attributes because that is the
+ * one record the advanced-configuration form reads and writes as a whole; it is
+ * lifted out of them below, so it is stored as its own field rather than as a
+ * setting the provider never declared.
+ */
+export const RUNTIME_ATTRIBUTE = 'runtime';
+
+/**
+ * How an agent's sessions should be driven. `pty` unless the agent explicitly
+ * opted in, so an agent nobody has configured keeps the behaviour it had.
+ *
+ * `values` is consulted as well as the field: the attribute is what the form
+ * collects, and a row written before the lift below existed carries it there.
+ */
+export function agentRuntimeKind(
+  config: AgentProviderConfig | null | undefined
+): SessionRuntimeKind {
+  if (config?.runtime === 'provider') return 'provider';
+  return config?.values?.[RUNTIME_ATTRIBUTE] === 'provider' ? 'provider' : 'pty';
+}
+
+/**
  * Map stored per-agent config to the launch-time specialization the profile
  * builder consumes. Returns `undefined` when nothing is set, so callers pass no
  * specialization at all and the agent gets no profile.
@@ -128,6 +163,9 @@ export function attributesFromProviderConfig(
 ): RepoAgentAttributes {
   const attributes: RepoAgentAttributes = {};
   for (const [key, value] of Object.entries(config?.values ?? {})) attributes[key] = value;
+  // Put the runtime back where the form expects to find it, so a toggle seeded
+  // from a stored row shows what the row actually says.
+  if (config?.runtime === 'provider') attributes[RUNTIME_ATTRIBUTE] = config.runtime;
   return attributes;
 }
 
@@ -145,5 +183,16 @@ export function providerConfigFromAttributes(
     const value = clean(raw);
     if (value !== undefined) values[key] = value;
   }
-  return Object.keys(values).length > 0 ? { version: '2', providerId, values } : null;
+  // Lifted out of `values` rather than left in it: `values` is the provider's
+  // own launch-profile vocabulary, which the profile writer iterates, and this
+  // is Switch Console's choice of how to run the agent at all. The attributes
+  // are the whole picture — an absent key means the toggle is off, so nothing
+  // here is carried over from a previous row.
+  const runtime = values[RUNTIME_ATTRIBUTE] === 'provider' ? ('provider' as const) : undefined;
+  delete values[RUNTIME_ATTRIBUTE];
+  // A `provider` runtime is itself a setting, so a row is still worth writing
+  // for an agent that specializes nothing else — otherwise the opt-in would be
+  // dropped on save.
+  if (Object.keys(values).length === 0 && runtime === undefined) return null;
+  return { version: '2', providerId, values, ...(runtime ? { runtime } : {}) };
 }

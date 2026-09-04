@@ -135,6 +135,12 @@ interface QueuedInjection {
    * the agent has really been handed.
    */
   messageId: string | null;
+  /**
+   * The message as it arrived, for an interceptor that needs what the person
+   * actually typed rather than the line built for injection. Null for anything
+   * that is not a room message.
+   */
+  message: MessagePayload | null;
 }
 
 /** Provider-specific keystroke payload builder, injected to keep the core free
@@ -213,6 +219,16 @@ export interface RoomConnectionDeps {
    */
   isHumanTyping: () => boolean;
   /**
+   * A chance to consume an addressed message instead of delivering it as a
+   * turn. Returning true drops it: no injection, no room turn, no runtime
+   * state — the message was an answer to something the session had already
+   * asked, and handing it over as a fresh instruction would be wrong twice.
+   *
+   * Only provider-backed sessions supply one. A PTY session's dialogs live
+   * inside its TUI, where nothing here can see or answer them.
+   */
+  interceptInjection?: (text: string, message: MessagePayload | null) => boolean;
+  /**
    * Directory to materialise inbound image attachments into so the agent can
    * Read them. Local files, mirroring the connector channel's media dir; each
    * environment supplies its own (a Switch Console temp dir locally, a VM-local
@@ -271,6 +287,9 @@ export class RoomConnection {
   private readonly control: SessionControl;
   private readonly deeplinkScheme: string;
   private readonly isHumanTyping: () => boolean;
+  private readonly interceptInjection:
+    | ((text: string, message: MessagePayload | null) => boolean)
+    | null;
   private readonly mediaDir: string;
   private readonly log: RoomConnectionLogger;
 
@@ -358,6 +377,7 @@ export class RoomConnection {
     this.control = deps.control;
     this.deeplinkScheme = deps.deeplinkScheme;
     this.isHumanTyping = deps.isHumanTyping;
+    this.interceptInjection = deps.interceptInjection ?? null;
     this.mediaDir = deps.mediaDir;
     this.connectionId = deps.connectionId;
     this.startCursor = deps.startCursor;
@@ -728,7 +748,13 @@ export class RoomConnection {
       body = `${body}\n(Some earlier room events were dropped and cannot be replayed: ${this.pendingGapReason} — call read_context before responding.)`;
       this.pendingGapReason = null;
     }
-    this.enqueue({ text: body, addressed, threadId, messageId });
+    this.enqueue({
+      text: body,
+      addressed,
+      threadId,
+      messageId,
+      message: event.type === 'message' ? (event.payload as MessagePayload) : null,
+    });
   }
 
   /**
@@ -818,6 +844,18 @@ export class RoomConnection {
 
   private enqueue(injection: QueuedInjection): void {
     if (this.stopped) return;
+    // Before the queue rather than at the flush: an intercepted message is not
+    // a delayed delivery, it is not a delivery at all, and letting it into the
+    // queue would open a room turn for it on the way out.
+    if (injection.addressed && this.interceptInjection?.(injection.text, injection.message)) {
+      this.log.info('RoomConnection: room message consumed as an answer, not injected', {
+        event: 'switch_message_intercepted',
+        roomId: this.roomId,
+        sessionId: this.sessionId,
+        messageId: injection.messageId,
+      });
+      return;
+    }
     this.queue.push(injection);
     // Together with `switch_message_injected` below, these two say whether a
     // message that reached the session ever made it into the pane — the
@@ -1097,16 +1135,21 @@ export class RoomConnection {
         addressed: item.addressed,
         queued: this.queue.length,
       });
-      setTimeout(() => {
-        try {
-          target.write(submitSequence);
-        } catch (error) {
-          this.log.warn('RoomConnection: failed to submit injected message', {
-            roomId: this.roomId,
-            error: String(error),
-          });
-        }
-      }, submitDelayMs);
+      // A target with no submit keystroke (a provider session, where the write
+      // *is* the turn) gets no second write: an empty one would land as a
+      // blank turn of its own.
+      if (submitSequence) {
+        setTimeout(() => {
+          try {
+            target.write(submitSequence);
+          } catch (error) {
+            this.log.warn('RoomConnection: failed to submit injected message', {
+              roomId: this.roomId,
+              error: String(error),
+            });
+          }
+        }, submitDelayMs);
+      }
     } catch (error) {
       this.log.warn('RoomConnection: failed to inject message', {
         roomId: this.roomId,
@@ -1190,13 +1233,30 @@ export class RoomConnection {
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     for (const action of plan) {
       try {
+        // A target that owns a runtime runs the step itself — an interrupt is a
+        // method call there, not an escape byte. Anything it declines falls
+        // through to the keystroke recipe below.
+        if (await target.control?.(action)) {
+          await wait(CONTROL_STEP_GAP_MS);
+          continue;
+        }
+        if (action.kind === 'interrupt' || action.kind === 'notice') {
+          this.log.warn('RoomConnection: control step needs a runtime this target has not got', {
+            roomId: this.roomId,
+            command,
+            step: action.kind,
+          });
+          return;
+        }
         if (action.kind === 'raw') {
           target.write(action.data);
         } else {
           const { payload: text, submitSequence, submitDelayMs } = this.injector.build(action.text);
           target.write(text);
-          await wait(submitDelayMs);
-          target.write(submitSequence);
+          if (submitSequence) {
+            await wait(submitDelayMs);
+            target.write(submitSequence);
+          }
         }
       } catch (error) {
         this.log.warn('RoomConnection: control command step failed', {

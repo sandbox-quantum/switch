@@ -14,6 +14,14 @@
     "./agents": {
       "types": "./dist/agents.d.mts",
       "default": "./dist/agents.mjs"
+    },
+    "./agents/opencode/skill": {
+      "types": "./dist/opencode-skill.d.mts",
+      "default": "./dist/opencode-skill.mjs"
+    },
+    "./distribution": {
+      "types": "./dist/distribution.d.mts",
+      "default": "./dist/distribution.mjs"
     }
   },
   "scripts": {

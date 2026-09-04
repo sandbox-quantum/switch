@@ -1731,3 +1731,137 @@ describe('a room the server refuses', () => {
     conn.stop();
   });
 });
+
+/**
+ * Consuming a room message instead of delivering it.
+ *
+ * A provider-backed session posts its approvals and questions into the room and
+ * answers them from the reply. The reply must not also reach the agent as a
+ * turn: "2" arriving as a prompt is noise at best, and the agent is blocked on
+ * the very request that reply answers.
+ */
+describe('RoomConnection: intercepted messages', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function connectWithInterceptor(
+    intercept: (text: string, message: unknown) => boolean,
+    events: AgentBridgeEvent[]
+  ) {
+    const writes: string[] = [];
+    const target: InjectionTarget = { write: (data) => writes.push(data) };
+    const fetchMock = makeFetch(events);
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => target },
+      injector,
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      interceptInjection: intercept,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    return { conn, fetchMock, writes };
+  }
+
+  it('does not inject a message the interceptor consumed', async () => {
+    const { conn, writes } = connectWithInterceptor(() => true, [messageEvent(true)]);
+    await flush();
+    conn.stop();
+
+    expect(writes).toEqual([]);
+  });
+
+  /**
+   * An intercepted message is an answer, not a new request. Opening a turn for
+   * it would put "working on it…" in the room for work nobody asked for.
+   */
+  it('opens no room turn for a message the interceptor consumed', async () => {
+    const { conn, fetchMock } = connectWithInterceptor(() => true, [messageEvent(true)]);
+    await flush();
+    conn.stop();
+
+    expect(runtimeStates(fetchMock)).not.toContain('working');
+  });
+
+  it('hands the interceptor the message as it arrived, not only the injection line', async () => {
+    const seen: unknown[] = [];
+    const { conn } = connectWithInterceptor(
+      (_text, message) => {
+        seen.push(message);
+        return true;
+      },
+      [messageEvent(true)]
+    );
+    await flush();
+    conn.stop();
+
+    expect(seen[0]).toMatchObject({ body: 'hello agent', message_id: 'msg-1' });
+  });
+
+  it('delivers the message normally when the interceptor declines it', async () => {
+    const { conn, writes, fetchMock } = connectWithInterceptor(() => false, [messageEvent(true)]);
+    await flush();
+    conn.stop();
+
+    expect(writes.some((w) => w.includes('hello agent'))).toBe(true);
+    expect(runtimeStates(fetchMock)).toContain('working');
+  });
+
+  /**
+   * Only an addressed message can be an answer. Unaddressed chatter is not
+   * surfaced at all, and a task event is not something anyone replied to.
+   */
+  it('never offers an unaddressed message to the interceptor', async () => {
+    const intercept = vi.fn(() => true);
+    const { conn } = connectWithInterceptor(intercept, [messageEvent(false)]);
+    await flush();
+    conn.stop();
+
+    expect(intercept).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A target with no submit keystroke — a provider session, where the write *is*
+ * the turn. An empty submit write would land as a blank turn of its own.
+ */
+describe('RoomConnection: a target with no submit keystroke', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('writes the payload once and nothing after it', async () => {
+    const writes: string[] = [];
+    const fetchMock = makeFetch([messageEvent(true)]);
+    vi.stubGlobal('fetch', fetchMock);
+    const conn = new RoomConnection({
+      creds,
+      roomId: 'room-1',
+      roomName: 'Room One',
+      connectionId: 'conn-1',
+      sessionId: 'session-1',
+      sink: { acquire: () => ({ write: (data: string) => writes.push(data) }) },
+      injector: { build: (text) => ({ payload: text, submitSequence: '', submitDelayMs: 0 }) },
+      control,
+      deeplinkScheme: 'switchdash',
+      isHumanTyping: () => false,
+      mediaDir,
+      log: silentLog,
+    });
+    conn.start();
+    await flush(8);
+    conn.stop();
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('hello agent');
+  });
+});

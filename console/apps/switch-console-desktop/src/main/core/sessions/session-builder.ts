@@ -129,5 +129,6 @@ export async function buildSessionFromRuntime(
     shellSetup,
     sessionEnvVars,
     credsRelPaths,
+    runtime: session.runtime ?? 'pty',
   });
 }

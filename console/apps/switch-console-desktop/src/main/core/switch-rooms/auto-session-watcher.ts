@@ -3,6 +3,7 @@ import path from 'node:path';
 import { type AgentBridgeEvent, SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import { sessionStartupWatch } from '@main/core/agent-runtime/desktop-session-startup-watch';
 import { STARTUP_SIGNAL_TIMEOUT_MS } from '@main/core/agent-runtime/session-startup-watch';
+import { isProviderRuntime } from '@main/core/agent-runtime/types';
 import { getRemoteAgentLocation } from '@main/core/agents/agent-location';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import {
@@ -11,10 +12,12 @@ import {
 } from '@main/core/agents/switch-settings-paths';
 import { getLocationById } from '@main/core/locations/store';
 import { formatProvisionSessionError } from '@main/core/sessions/provision-session-error';
+import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { sessionService } from '@main/core/sessions/session-service';
 import { fetchRoomDetail } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
+import { agentRuntimeKind } from '@shared/core/agents/agent-provider-config';
 import {
   listAutoSessionAgentIds,
   listAutoSessionSubagents,
@@ -28,6 +31,7 @@ import {
 } from './switch-credentials';
 import { formatEventForInjection } from './switch-event-format';
 import { type SpawnTurn, switchNotificationPoller } from './switch-notification-poller';
+import { postRoomMessage } from './switch-room-client';
 import { switchRoomService } from './switch-room-service';
 
 /**
@@ -162,21 +166,6 @@ const STARTUP_STALL_NOTICE =
 
 const SPAWN_FAILED_NOTICE =
   "I tried to start a session to handle this but couldn't — my operator may need to start one manually.";
-
-/** Post a message to a room on the agent's behalf (used for the spawn-failure
- * notice). Best-effort; throws on non-OK so the caller can log. */
-async function postRoomMessage(
-  creds: SwitchAgentCredentials,
-  roomId: string,
-  content: string
-): Promise<void> {
-  const resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/message`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ room_id: roomId, content }),
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-}
 
 /**
  * Watches the Switch notification stream for `auto_session` agents and spins up
@@ -646,6 +635,33 @@ class AutoSessionWatcher {
     });
   }
 
+  /**
+   * Hand a provider-backed session the message it was started for.
+   *
+   * By this point `createSession` has awaited the runtime's start, which awaits
+   * the opening prompt, so the session is connected to the room and this is the
+   * next turn rather than a race with the first. A failure here is loud: the
+   * session exists and is in the room, but the thing it exists to answer never
+   * reached it.
+   */
+  private async deliverTrigger(sessionId: string, triggerLine: string): Promise<void> {
+    const runtime = sessionRuntimeManager.getAgent(sessionId);
+    if (!isProviderRuntime(runtime)) {
+      log.error('AutoSessionWatcher: no provider runtime to hand the trigger to', {
+        event: 'auto_session_trigger_undeliverable',
+        sessionId,
+      });
+      return;
+    }
+    await runtime.sendTurn(triggerLine, 'room').catch((error: unknown) => {
+      log.error('AutoSessionWatcher: the spawned session refused its trigger', {
+        event: 'auto_session_trigger_refused',
+        sessionId,
+        error: String(error),
+      });
+    });
+  }
+
   private async spawnForRoom(
     watcher: AgentWatcher,
     roomId: string,
@@ -657,6 +673,12 @@ class AutoSessionWatcher {
     // the per-agent setting (location settings) is the source of truth.
     const agent = await getAgentById(watcher.localAgentId);
     const autoApprove = agent?.autoApprove ?? false;
+    // A provider-backed session takes its trigger as a turn rather than in its
+    // opening prompt. It has no terminal to be typed into, so the reason the
+    // message rides in the prompt at all — that there is nowhere to put it for
+    // the first seconds — does not hold; and a turn is what puts it in the
+    // transcript as a room message rather than as part of the bootstrap.
+    const providerBacked = agentRuntimeKind(agent?.providerConfig ?? null) === 'provider';
     const roomName = await roomNameFor(watcher.localAgentId, roomId);
     const title = `Session for room ${roomName ?? roomId}`;
     let lastError: string | null = null;
@@ -682,7 +704,7 @@ class AutoSessionWatcher {
           // typing it in afterwards is what left the agent connecting, finding
           // nothing addressed to it, and greeting the room instead.
           initialPrompt:
-            triggerLine === null
+            triggerLine === null || providerBacked
               ? `connect to switch room ${roomId}`
               : `connect to switch room ${roomId}\n\nThen respond to this, which is what you were started for:\n${triggerLine}`,
           autoApprove,
@@ -714,6 +736,9 @@ class AutoSessionWatcher {
               sessionId: result.data.session.id,
               error: formatProvisionSessionError(provisioned.error),
             });
+          }
+          if (providerBacked && triggerLine !== null) {
+            await this.deliverTrigger(result.data.session.id, triggerLine);
           }
           return;
         }

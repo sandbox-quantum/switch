@@ -25,6 +25,7 @@ import type {
   UserInputQuestion,
 } from '../events';
 import { buildConfigFile, parseModelId, permissionRulesFor } from './config';
+import type { OpencodeSkill } from './server';
 import {
   createHttpTransport,
   type OpencodeEvent,
@@ -49,6 +50,15 @@ export interface OpencodeAdapterOptions {
    * falling back to polling `session.status`.
    */
   admissionTimeoutMs?: number;
+  /**
+   * Skills to place in every session's isolated config home.
+   *
+   * The transport isolates `XDG_CONFIG_HOME` to keep the user's own MCP
+   * registrations out of a session, which hides their `skills/` directory with
+   * them. Anything the session must be able to load — the Switch room-workflow
+   * skill, for one — has to be supplied here or it is simply not there.
+   */
+  skills?: OpencodeSkill[];
   /** Replaces the spawned server; the unit tests drive the adapter through this. */
   transport?: OpencodeTransport;
 }
@@ -116,6 +126,7 @@ export class OpencodeAdapter implements ProviderAdapter {
       createHttpTransport({
         binaryPath: options.binaryPath ?? 'opencode',
         startupTimeoutMs: options.startupTimeoutMs ?? 60_000,
+        skills: options.skills ?? [],
       });
   }
 
