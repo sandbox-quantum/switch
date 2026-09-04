@@ -12,7 +12,7 @@ from switch_core.bridges.collaboration.adapter import CollaborationAdapter
 from switch_core.bridges.collaboration.bridge_core import BridgeCore
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
-from switch_core.clients.client_factory import matrix_transport_for
+from switch_core.clients.client_factory import ClientFactory
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CollaborationBridge
 from switch_core.db.stores.agent_store import AgentStore
@@ -21,7 +21,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.matrix_admin import MatrixAdmin
+from switch_core.provisioning import Provisioning
 
 if TYPE_CHECKING:
     from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -61,9 +61,10 @@ class CollaborationBridgeLifecycleService:
         client_store: ClientStore,
         client_lifecycle: ClientLifecycleService,
         room_service: RoomService,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         config: SwitchConfig,
+        client_factory: ClientFactory,
     ) -> None:
         self._bridge_store = bridge_store
         self._external_user_store = external_user_store
@@ -76,6 +77,7 @@ class CollaborationBridgeLifecycleService:
         self._matrix_admin = matrix_admin
         self._session_factory = session_factory
         self._config = config
+        self._client_factory = client_factory
 
         self._adapter_registry: dict[str, type[CollaborationAdapter]] = {}
         self._config_registry: dict[str, type[BridgeConnectionConfig]] = {}
@@ -418,7 +420,8 @@ class CollaborationBridgeLifecycleService:
             session_factory=self._session_factory,
             client_store=self._client_store,
             config=BridgeClientConfig(bridge_id=bridge_id),
-            transport_factory=matrix_transport_for,
+            transport_factory=self._client_factory.transport_for,
+            message_recorder=self._client_factory.recorder(),
             session_state={
                 "access_token": bridge_client_record.access_token,
                 "device_id": bridge_client_record.device_id,
@@ -454,6 +457,36 @@ class CollaborationBridgeLifecycleService:
             )
             await session.commit()
 
+    async def _record_bridge_memberships(self, bridge_id: str, client_id: str) -> None:
+        """Make the bridge's rooms its recorded memberships before it starts.
+
+        A bridge belongs in every room it carries, and that was expressed by
+        inviting its client and letting the homeserver hold the membership —
+        so nothing wrote it down. Once `client_rooms` became what a client
+        reads its rooms from, a bridge that had never been re-invited was in
+        none of them: it still received from the platform, because inbound
+        posts into a room by id, and relayed nothing back out.
+
+        Run at every start rather than repaired once, because the rooms a
+        bridge carries change while it is stopped.
+        """
+        async with self._session_factory() as session:
+            rooms = await self._room_store.get_by_bridge(session, bridge_id)
+            added = 0
+            for room in rooms:
+                members = await self._room_store.get_client_ids(session, room.id)
+                if client_id in members:
+                    continue
+                await self._room_store.add_client(session, client_id, room.id)
+                added += 1
+            await session.commit()
+        if added:
+            logger.info(
+                "Recorded bridge %s as a member of %d room(s) it carries",
+                bridge_id,
+                added,
+            )
+
     async def _run_bridge(
         self,
         bridge_id: str,
@@ -461,6 +494,7 @@ class CollaborationBridgeLifecycleService:
         bridge_client: BridgeClient,
     ) -> None:
         try:
+            await self._record_bridge_memberships(bridge_id, bridge_client.client_id)
             await bridge_core.start()
             await bridge_client.start()
         except Exception:

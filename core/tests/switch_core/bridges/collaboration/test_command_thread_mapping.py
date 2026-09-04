@@ -35,16 +35,16 @@ def _fake_bridge(
     lookup = external_to_matrix or {}
 
     async def _ensure_user_in_matrix_room(**_kw: object) -> SimpleNamespace:
-        async def _send_event(_room_id: str, _type: str, content: dict) -> SendResult:
+        async def _send_event(_room_id: str, _type: str, content: dict) -> str:
             sent_content.append(content)
             if isinstance(send_result, TransportError):
                 raise send_result
-            return send_result
+            return send_result.event_id
 
         return SimpleNamespace(
             matrix_user_id="@puppet:switch.local",
             client_id="puppet-1",
-            transport=SimpleNamespace(send_event=_send_event),
+            send_event=_send_event,
         )
 
     async def _matrix_event_for_external_post(external_post_id: str) -> str | None:
@@ -66,7 +66,11 @@ def _fake_bridge(
 class TestCommandThreadMapping:
     async def test_top_level_command_maps_to_its_own_post(self) -> None:
         # No root_id: the command starts its own thread, rooted at its post.
-        bridge = _fake_bridge(SendResult(event_id="$cmd-event"))
+        bridge = _fake_bridge(
+            SendResult(
+                event_id="$cmd-event", event_type="com.switch.command", content={}
+            )
+        )
         await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref="mm-post-1"))
 
         assert bridge.recorded == [
@@ -84,7 +88,9 @@ class TestCommandThreadMapping:
         # command event relates to the existing Matrix root, and we do NOT remap
         # the (already-mapped) root post.
         bridge = _fake_bridge(
-            SendResult(event_id="$cmd-event"),
+            SendResult(
+                event_id="$cmd-event", event_type="com.switch.command", content={}
+            ),
             external_to_matrix={"mm-root": "$matrix-root"},
         )
         await BridgeCore._handle_inbound_command(
@@ -100,7 +106,11 @@ class TestCommandThreadMapping:
     async def test_in_thread_command_maps_root_when_unbridged(self) -> None:
         # Thread root not yet bridged: map the command event to the thread root
         # (a valid Mattermost root post), NOT to the mid-thread command post.
-        bridge = _fake_bridge(SendResult(event_id="$cmd-event"))
+        bridge = _fake_bridge(
+            SendResult(
+                event_id="$cmd-event", event_type="com.switch.command", content={}
+            )
+        )
         await BridgeCore._handle_inbound_command(
             bridge, _cmd(message_ref="mm-reply", root_id="mm-root")
         )
@@ -116,7 +126,11 @@ class TestCommandThreadMapping:
 
     async def test_no_mapping_without_external_post_ref(self) -> None:
         # Native (non-bridged) command: no external post to thread under.
-        bridge = _fake_bridge(SendResult(event_id="$cmd-event"))
+        bridge = _fake_bridge(
+            SendResult(
+                event_id="$cmd-event", event_type="com.switch.command", content={}
+            )
+        )
         await BridgeCore._handle_inbound_command(bridge, _cmd(message_ref=None))
 
         assert bridge.recorded == []

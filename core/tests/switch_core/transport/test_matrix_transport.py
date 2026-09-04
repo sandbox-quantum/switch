@@ -207,20 +207,6 @@ async def test_read_history_raises_on_failure() -> None:
         await _transport(nio).read_history("!r:s", start=None, limit=10)
 
 
-async def test_seek_by_timestamp_degrades_to_none_when_unavailable() -> None:
-    nio = _FakeNio()
-
-    async def _fail(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("no such endpoint")
-
-    nio.send = _fail  # type: ignore[attr-defined]
-
-    assert (
-        await _transport(nio).seek_by_timestamp("!r:s", 123, direction="backward")
-        is None
-    )
-
-
 def test_register_handlers_binds_only_what_was_supplied() -> None:
     nio = _FakeNio()
 

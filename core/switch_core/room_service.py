@@ -18,7 +18,7 @@ from switch_core.db.models import Room, RoomGroup, RoomRole
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.matrix_admin import MatrixAdmin
+from switch_core.provisioning import Provisioning
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.bridge_core import BridgeCore
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_CLIENT_TYPES = ("resource_manager", "observe", "admin")
+SYSTEM_CLIENT_TYPES = ("observe", "admin")
 
 
 class LinkedRoomSpec(BaseModel):
@@ -112,7 +112,7 @@ class RoomService:
     def __init__(
         self,
         *,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         room_store: RoomStore,
         agent_store: AgentStore,
         client_lifecycle: ClientLifecycleService,

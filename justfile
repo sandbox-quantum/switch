@@ -101,6 +101,24 @@ migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head
 
 
+# ── Check the recorded messages against the message bus ───────────────────────
+# Messages are written to Postgres after the send is accepted, so a database
+# problem leaves a row missing for a message that was really delivered. This
+# walks each room's history and reports the difference. Exits non-zero on drift.
+# Needs a real deployment — the question it answers cannot be asked of fakes.
+#   just reconcile-messages --room <id> --since <iso8601> --verbose
+reconcile-messages *args:
+    uv run --project core python scripts/reconcile_messages.py {{ args }}
+
+# ── Reconstruct room history from the bus into the message log ────────────────
+# Rows exist only from when the recorder was deployed; everything older is on
+# the homeserver and invisible to agents now that reads come from Postgres.
+# This walks each room to its start and writes what is missing, numbered below
+# the live log so nothing is redelivered. Safe to re-run. Start with --dry-run.
+#   just backfill-messages --dry-run --room <id>
+backfill-messages *args:
+    uv run --project core python scripts/backfill_messages.py {{ args }}
+
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"

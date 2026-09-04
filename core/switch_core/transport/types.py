@@ -31,9 +31,17 @@ class NotConnectedError(TransportError):
 
 @dataclass(frozen=True)
 class SendResult:
-    """A message or event accepted by the transport."""
+    """A message or event accepted by the transport.
+
+    `event_type` and `content` are what was actually put on the wire, which
+    the transport assembles and the caller therefore does not otherwise see.
+    Reporting them back means a caller recording what it sent transcribes the
+    transport's own dict rather than reconstructing it and drifting from it.
+    """
 
     event_id: str
+    event_type: str
+    content: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

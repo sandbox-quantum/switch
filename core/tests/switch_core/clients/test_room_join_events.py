@@ -16,6 +16,19 @@ class _FakeQueue:
         self.enqueued.append((agent_id, room_id, event))
 
 
+class _FakeClientStore:
+    """Resolves a matrix id to the Switch client that owns it, or nothing."""
+
+    def __init__(self, names: dict[str, str]) -> None:
+        self._names = names
+
+    async def get_by_matrix_user_id(
+        self, _session: object, matrix_user_id: str
+    ) -> object | None:
+        name = self._names.get(matrix_user_id)
+        return SimpleNamespace(display_name=name) if name else None
+
+
 class _FakeRoomStore:
     def __init__(self, receives: bool) -> None:
         self._receives = receives
@@ -26,7 +39,12 @@ class _FakeRoomStore:
         return self._receives
 
 
-def _client(meta: RoomMeta | None = None, *, receives: bool = True) -> SimpleNamespace:
+def _client(
+    meta: RoomMeta | None = None,
+    *,
+    receives: bool = True,
+    known: dict[str, str] | None = None,
+) -> SimpleNamespace:
     """A minimal fake `self` for the unbound AgentClient.on_member_event.
 
     Stubs the event queue, agent identity, room-meta resolution, and the room
@@ -48,13 +66,21 @@ def _client(meta: RoomMeta | None = None, *, receives: bool = True) -> SimpleNam
     async def _session_factory():
         yield SimpleNamespace()
 
-    return SimpleNamespace(
+    stub = SimpleNamespace(
         _event_buffer=_FakeQueue(),
         agent=SimpleNamespace(id="agent-1"),
         _resolve_room_meta=_resolve_room_meta,
         _room_store=_FakeRoomStore(receives),
+        client_store=_FakeClientStore(
+            {"@alice:switch.local": "Alice"} if known is None else known
+        ),
         session_factory=_session_factory,
     )
+    # Bound, so the handler resolves the name through the real implementation.
+    stub._member_name = lambda session, event: AgentClient._member_name(
+        stub, session, event
+    )
+    return stub
 
 
 def _member_event(
@@ -114,11 +140,22 @@ class TestRoomJoinEnqueue:
         _, _, event = client._event_buffer.enqueued[0]
         assert event.payload.listening is False
 
-    async def test_missing_displayname_falls_back_to_localpart(self) -> None:
-        client = _client()
+    async def test_the_member_is_named_the_way_switch_knows_them(self) -> None:
+        """A profile carries the source platform's spelling of a name; the log
+        records the Switch one. Delivering the profile name would make live
+        events and history disagree about the same person."""
+        client = _client(known={"@alice:switch.local": "alice"})
+        await _run(client, _member_event(displayname="Alice \U0001f495"))
+
+        _, _, event = client._event_buffer.enqueued[0]
+        assert event.payload.member_name == "alice"
+
+    async def test_a_member_no_switch_client_owns_falls_back_to_the_event(
+        self,
+    ) -> None:
+        client = _client(known={})
         await _run(
-            client,
-            _member_event(displayname=None, state_key="@bob:switch.local"),
+            client, _member_event(displayname=None, state_key="@bob:switch.local")
         )
 
         assert len(client._event_buffer.enqueued) == 1

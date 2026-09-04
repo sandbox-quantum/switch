@@ -32,7 +32,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.events import AgentRuntimeStateEvent
-from switch_core.matrix_admin import MatrixAdmin
+from switch_core.provisioning import Provisioning
 from switch_core.room_service import RoomCreateConfig
 from switch_core.transport import (
     InboundMedia as TransportMedia,
@@ -116,7 +116,7 @@ class BridgeCore:
         client_store: ClientStore,
         room_service: RoomService,
         client_lifecycle: ClientLifecycleService,
-        matrix_admin: MatrixAdmin,
+        matrix_admin: Provisioning,
         session_factory: async_sessionmaker[AsyncSession],
         matrix_server_name: str,
         bridge_client_matrix_user_id: str,
@@ -646,9 +646,7 @@ class BridgeCore:
             }
 
         try:
-            if puppet.transport is None:
-                raise TransportError(f"puppet {puppet.client_id} is not connected")
-            result = await puppet.transport.send_event(
+            event_id = await puppet.send_event(
                 matrix_room_id, "com.switch.command", content
             )
         except TransportError as exc:
@@ -667,7 +665,7 @@ class BridgeCore:
         if existing_matrix_root is None and thread_root_post is not None:
             await self._record_message_map(
                 external_channel_id=cmd.channel_id,
-                matrix_event_id=result.event_id,
+                matrix_event_id=event_id,
                 external_post_id=thread_root_post,
             )
 

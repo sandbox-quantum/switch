@@ -11,9 +11,7 @@ import io
 import logging
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
-import markdown
 from nio import (
     AsyncClient,
     DownloadError,
@@ -22,7 +20,6 @@ from nio import (
     LoginError,
     ProfileSetDisplayNameError,
     ReactionEvent,
-    RoomContextError,
     RoomGetEventError,
     RoomMemberEvent,
     RoomMessageMedia,
@@ -37,6 +34,7 @@ from nio import (
 )
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
+from switch_core.transport.content import media_content, message_content
 from switch_core.transport.port import TransportHandlers
 from switch_core.transport.types import (
     DownloadResult,
@@ -49,7 +47,6 @@ from switch_core.transport.types import (
     MessageFormat,
     NotConnectedError,
     RoomRef,
-    SeekDirection,
     SendResult,
     TransportError,
     UploadResult,
@@ -183,15 +180,6 @@ def to_inbound_event(room: Any, event: Any) -> InboundEvent:
     )
 
 
-def _thread_relation(thread_root_id: str) -> dict[str, object]:
-    """A pure `m.thread` relation, with no `m.in_reply_to` fallback.
-
-    The root id must already be an actual thread root; mid-thread ids are
-    normalised upstream.
-    """
-    return {"rel_type": "m.thread", "event_id": thread_root_id}
-
-
 class MatrixTransport:
     """Carries Switch messages over a Matrix homeserver."""
 
@@ -320,30 +308,14 @@ class MatrixTransport:
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
     ) -> SendResult:
-        content: dict[str, object] = {
-            "msgtype": "m.text",
-            "body": body,
-            "sender_name": sender_name,
-        }
-        # Caller-supplied content fields (e.g. a `com.switch.*` marker) are
-        # merged in. They ride on the plain m.room.message — the body still
-        # renders normally; the extra keys are metadata other clients can read.
-        if extra_content:
-            content.update(extra_content)
-
-        if format == "markdown":
-            html = markdown.markdown(body)
-            if mentions:
-                for user_id in mentions:
-                    local = user_id.split(":")[0].lstrip("@")
-                    pill = f'<a href="https://matrix.to/#/{user_id}">{local}</a>'
-                    html = html.replace(f"@{local}", pill)
-            content["format"] = "org.matrix.custom.html"
-            content["formatted_body"] = html
-
-        if thread_root_id is not None:
-            content["m.relates_to"] = _thread_relation(thread_root_id)
-
+        content = message_content(
+            body,
+            sender_name=sender_name,
+            format=format,
+            mentions=mentions,
+            thread_root_id=thread_root_id,
+            extra_content=extra_content,
+        )
         return await self._room_send(room_id, "m.room.message", content)
 
     async def send_event(
@@ -368,22 +340,17 @@ class MatrixTransport:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
     ) -> SendResult:
-        # When a caption is given it becomes the event body, with the real
-        # filename carried separately per the rich-media-caption convention.
-        content: dict[str, object] = {
-            "msgtype": msgtype,
-            "body": caption if caption else filename,
-            "url": uri,
-            "info": {"mimetype": mimetype, "size": size},
-            "sender_name": sender_name,
-        }
-        if caption:
-            content["filename"] = filename
-        if group is not None:
-            content[ATTACHMENT_GROUP_KEY] = group
-        if thread_root_id is not None:
-            content["m.relates_to"] = _thread_relation(thread_root_id)
-
+        content = media_content(
+            uri,
+            filename,
+            mimetype,
+            size,
+            sender_name=sender_name,
+            msgtype=msgtype,
+            caption=caption,
+            thread_root_id=thread_root_id,
+            group=group,
+        )
         return await self._room_send(room_id, "m.room.message", content)
 
     async def _room_send(
@@ -394,7 +361,9 @@ class MatrixTransport:
             raise TransportError(
                 f"Failed to send {event_type} to {room_id}: {resp.message}"
             )
-        return SendResult(event_id=resp.event_id)
+        return SendResult(
+            event_id=resp.event_id, event_type=event_type, content=content
+        )
 
     async def upload_media(
         self, data: bytes, content_type: str, filename: str
@@ -448,45 +417,6 @@ class MatrixTransport:
             events=[to_inbound(room, event) for event in resp.chunk],
             next_token=resp.end,
         )
-
-    async def seek_by_timestamp(
-        self, room_id: str, timestamp_ms: int, *, direction: SeekDirection
-    ) -> str | None:
-        """Locate a history cursor near a timestamp.
-
-        Matrix pagination is token-only, so reaching a point in time otherwise
-        means walking every page back to it. `timestamp_to_event` (Matrix 1.6)
-        jumps straight there; every failure degrades to None so the caller
-        scans instead.
-        """
-        client = self.raw_client
-        dir_flag = "b" if direction == "backward" else "f"
-        path = (
-            f"/_matrix/client/v1/rooms/{quote(room_id)}"
-            f"/timestamp_to_event?ts={timestamp_ms}&dir={dir_flag}"
-        )
-        try:
-            resp = await client.send(
-                "GET",
-                path,
-                headers={"Authorization": f"Bearer {client.access_token}"},
-            )
-            if resp.status != 200:
-                return None
-            payload = await resp.json()
-        except Exception:
-            logger.debug("timestamp_to_event unavailable in %s", room_id, exc_info=True)
-            return None
-
-        event_id = payload.get("event_id")
-        if not event_id:
-            return None
-
-        context = await client.room_context(room_id, event_id, limit=1)
-        if isinstance(context, RoomContextError):
-            return None
-        start: str | None = context.start
-        return start
 
     # ── Rooms ─────────────────────────────────────────────────────────────────
 

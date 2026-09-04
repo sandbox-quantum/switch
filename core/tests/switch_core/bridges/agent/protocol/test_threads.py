@@ -86,46 +86,5 @@ class TestResolveThreadRoot:
             await svc._resolve_thread_root(client, "!m:s", "nope")
 
 
-class TestReadContextThreads:
-    async def test_groups_threads_ordered_by_latest_activity(self) -> None:
-        # chunk is newest-first, as the homeserver returns it.
-        chunk = [
-            _ev("e2", "reply to e1", 200, thread_root="e1"),
-            _ev("e3", "later top-level", 150),
-            _ev("e1", "root", 100),
-        ]
-        svc = _service_with_transport(_transport(chunk=chunk))
-
-        result = (await svc.read_context("agent", "room"))["threads"]
-
-        # Two threads: e3 (latest 150) then e1 (latest 200) — most-active last.
-        assert [g["root"]["id"] for g in result] == ["e3", "e1"]
-        assert result[0]["replies"] == []
-        assert [m["id"] for m in result[1]["replies"]] == ["e2"]
-        # Each message exposes its id.
-        assert result[1]["root"]["id"] == "e1"
-
-    async def test_fetches_orphan_root_outside_window(self) -> None:
-        chunk = [_ev("e9", "reply", 200, thread_root="e1")]
-        events = {"e1": _ev("e1", "old root", 100)}
-        svc = _service_with_transport(_transport(chunk=chunk, events=events))
-
-        result = (await svc.read_context("agent", "room"))["threads"]
-
-        assert len(result) == 1
-        assert result[0]["root"]["id"] == "e1"
-        assert result[0]["root"]["body"] == "old root"
-        assert "elided" not in result[0]["root"]
-        assert [m["id"] for m in result[0]["replies"]] == ["e9"]
-
-    async def test_orphan_root_elided_when_fetch_fails(self) -> None:
-        chunk = [_ev("e9", "reply", 200, thread_root="e1")]
-        svc = _service_with_transport(_transport(chunk=chunk, events={}))
-
-        result = (await svc.read_context("agent", "room"))["threads"]
-
-        assert len(result) == 1
-        assert result[0]["root"]["id"] == "e1"
-        assert result[0]["root"]["elided"] is True
-        assert result[0]["root"]["body"] is None
-        assert [m["id"] for m in result[0]["replies"]] == ["e9"]
+# Thread grouping in read_context is covered by test_read_context.py, which
+# reads the message log rather than a transport.

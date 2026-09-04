@@ -3,32 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.resource.events import (
-    ResourceLoadRequest,
-    ResourceLoadResponse,
-    RoomDocumentCreateRequest,
-    RoomDocumentCreateResponse,
-    RoomDocumentDeleteRequest,
-    RoomDocumentDeleteResponse,
-    RoomDocumentUpdateRequest,
-    RoomDocumentUpdateResponse,
-)
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.events import (
     AgentRuntimeStateEvent,
     CommandEvent,
     LlmCallReport,
-    MediationLlmRequest,
-    MediationLlmResponse,
-    MediationToolRequest,
-    MediationToolResult,
-    PermissionRequest,
-    PermissionResponse,
     SwitchEvent,
     TaskAccept,
     TaskCancel,
@@ -37,6 +21,7 @@ from switch_core.events import (
     TaskUpdate,
     ToolCallReport,
 )
+from switch_core.messages.recording import MessageRecording
 from switch_core.transport import (
     InboundCustomEvent,
     InboundEvent,
@@ -45,6 +30,7 @@ from switch_core.transport import (
     InboundMessage,
     MessageTransport,
     RoomRef,
+    SendResult,
     TransportError,
     TransportHandlers,
 )
@@ -64,6 +50,35 @@ class ClientConfig(BaseModel):
     pass
 
 
+class ClientBaseKwargs[ConfigT: ClientConfig](TypedDict):
+    """What every `ClientBase` subclass must forward to `ClientBase`.
+
+    Subclasses take their own arguments and pass the rest through. Spelled as
+    `**kwargs: Any`, that pass-through is invisible to the type checker on both
+    sides: the subclass cannot be told it is missing something, and a caller
+    cannot be told it is passing something that no longer exists. A stale
+    `device_id=` type-checked clean that way and took all four collaboration
+    bridges down at startup — the credential had moved into `session_state`
+    and nothing said so until the process refused to start.
+
+    Declaring the shape here and unpacking it restores both checks without
+    making every subclass restate eleven parameters.
+    """
+
+    client_id: str
+    matrix_user_id: str
+    display_name: str
+    password: str
+    server_url: str
+    session_factory: async_sessionmaker[AsyncSession]
+    client_store: ClientStore
+    config: ConfigT
+    transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport]
+    session_state: dict[str, str | None]
+    message_recorder: MessageRecording
+    next_batch_token: NotRequired[str | None]
+
+
 class ClientBase[ConfigT: ClientConfig]:
     config_class: type[ConfigT] = ClientConfig  # type: ignore[assignment]
 
@@ -80,6 +95,7 @@ class ClientBase[ConfigT: ClientConfig]:
         config: ConfigT,
         transport_factory: Callable[[ClientBase[ConfigT]], MessageTransport],
         session_state: dict[str, str | None],
+        message_recorder: MessageRecording,
         next_batch_token: str | None = None,
     ) -> None:
         self.client_id = client_id
@@ -90,6 +106,7 @@ class ClientBase[ConfigT: ClientConfig]:
         self.session_factory = session_factory
         self.client_store = client_store
         self.config = config
+        self.message_recorder = message_recorder
 
         # Credentials the transport owns. Stored and handed back unread, so
         # what authentication needs is the transport's business alone.
@@ -287,6 +304,16 @@ class ClientBase[ConfigT: ClientConfig]:
         if event.state_key == self.matrix_user_id:
             if event.membership == "join":
                 self._mark_joined(room.room_id, event.timestamp)
+                if event.prev_membership != "join":
+                    # Recorded on the arrival itself rather than under the
+                    # announcement guards below: the log wants every arrival,
+                    # including ones too old to be worth announcing.
+                    await self.message_recorder.record_join(
+                        transport_room_id=room.room_id,
+                        event=event,
+                        client_id=self.client_id,
+                        member_name=self.display_name,
+                    )
                 # A membership-preserving update (display name, avatar) re-fires
                 # m.room.member with membership == "join"; only a transition into
                 # membership is an arrival. Joins predating this process are not
@@ -331,22 +358,6 @@ class ClientBase[ConfigT: ClientConfig]:
 
     _EVENT_DISPATCH: dict[str, tuple[type[SwitchEvent], str]] = {
         "com.switch.command": (CommandEvent, "on_command"),
-        "com.switch.mediation.tool_request": (
-            MediationToolRequest,
-            "on_mediation_tool_request",
-        ),
-        "com.switch.mediation.llm_request": (
-            MediationLlmRequest,
-            "on_mediation_llm_request",
-        ),
-        "com.switch.mediation.tool_result": (
-            MediationToolResult,
-            "on_mediation_tool_result",
-        ),
-        "com.switch.mediation.llm_response": (
-            MediationLlmResponse,
-            "on_mediation_llm_response",
-        ),
         "com.switch.report.tool_call": (ToolCallReport, "on_tool_call_report"),
         "com.switch.report.llm_call": (LlmCallReport, "on_llm_call_report"),
         "com.switch.task.delegate": (TaskDelegate, "on_task_delegate"),
@@ -357,43 +368,6 @@ class ClientBase[ConfigT: ClientConfig]:
         "com.switch.agent.runtime_state": (
             AgentRuntimeStateEvent,
             "on_agent_runtime_state",
-        ),
-        "com.switch.permission.request": (PermissionRequest, "on_permission_request"),
-        "com.switch.permission.response": (
-            PermissionResponse,
-            "on_permission_response",
-        ),
-        "com.switch.resource.load_request": (
-            ResourceLoadRequest,
-            "on_resource_load_request",
-        ),
-        "com.switch.resource.load_response": (
-            ResourceLoadResponse,
-            "on_resource_load_response",
-        ),
-        "com.switch.resource.room_document_create_request": (
-            RoomDocumentCreateRequest,
-            "on_room_document_create_request",
-        ),
-        "com.switch.resource.room_document_create_response": (
-            RoomDocumentCreateResponse,
-            "on_room_document_create_response",
-        ),
-        "com.switch.resource.room_document_update_request": (
-            RoomDocumentUpdateRequest,
-            "on_room_document_update_request",
-        ),
-        "com.switch.resource.room_document_update_response": (
-            RoomDocumentUpdateResponse,
-            "on_room_document_update_response",
-        ),
-        "com.switch.resource.room_document_delete_request": (
-            RoomDocumentDeleteRequest,
-            "on_room_document_delete_request",
-        ),
-        "com.switch.resource.room_document_delete_response": (
-            RoomDocumentDeleteResponse,
-            "on_room_document_delete_response",
         ),
     }
 
@@ -500,26 +474,6 @@ class ClientBase[ConfigT: ClientConfig]:
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         pass
 
-    async def on_mediation_tool_request(
-        self, room: RoomRef, event: MediationToolRequest
-    ) -> None:
-        pass
-
-    async def on_mediation_llm_request(
-        self, room: RoomRef, event: MediationLlmRequest
-    ) -> None:
-        pass
-
-    async def on_mediation_tool_result(
-        self, room: RoomRef, event: MediationToolResult
-    ) -> None:
-        pass
-
-    async def on_mediation_llm_response(
-        self, room: RoomRef, event: MediationLlmResponse
-    ) -> None:
-        pass
-
     async def on_tool_call_report(self, room: RoomRef, event: ToolCallReport) -> None:
         pass
 
@@ -543,56 +497,6 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def on_agent_runtime_state(
         self, room: RoomRef, event: AgentRuntimeStateEvent
-    ) -> None:
-        pass
-
-    async def on_permission_request(
-        self, room: RoomRef, event: PermissionRequest
-    ) -> None:
-        pass
-
-    async def on_permission_response(
-        self, room: RoomRef, event: PermissionResponse
-    ) -> None:
-        pass
-
-    async def on_resource_load_request(
-        self, room: RoomRef, event: ResourceLoadRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_create_request(
-        self, room: RoomRef, event: RoomDocumentCreateRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_create_response(
-        self, room: RoomRef, event: RoomDocumentCreateResponse
-    ) -> None:
-        pass
-
-    async def on_room_document_update_request(
-        self, room: RoomRef, event: RoomDocumentUpdateRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_update_response(
-        self, room: RoomRef, event: RoomDocumentUpdateResponse
-    ) -> None:
-        pass
-
-    async def on_room_document_delete_request(
-        self, room: RoomRef, event: RoomDocumentDeleteRequest
-    ) -> None:
-        pass
-
-    async def on_room_document_delete_response(
-        self, room: RoomRef, event: RoomDocumentDeleteResponse
-    ) -> None:
-        pass
-
-    async def on_resource_load_response(
-        self, room: RoomRef, event: ResourceLoadResponse
     ) -> None:
         pass
 
@@ -621,6 +525,20 @@ class ClientBase[ConfigT: ClientConfig]:
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)
             return None
+        await self._record(room_id, result)
+        return result.event_id
+
+    async def send_event(
+        self, room_id: str, event_type: str, content: dict[str, object]
+    ) -> str:
+        """Send a custom event, e.g. one of the `com.switch.*` types.
+
+        Raises rather than returning None: unlike a chat message, these events
+        carry protocol state, and a caller that proceeds as though one was
+        delivered when it was not corrupts whatever it was coordinating.
+        """
+        result = await self._transport.send_event(room_id, event_type, content)
+        await self._record(room_id, result)
         return result.event_id
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
@@ -675,7 +593,17 @@ class ClientBase[ConfigT: ClientConfig]:
         except TransportError as exc:
             logger.error("Failed to send media to %s: %s", room_id, exc)
             return None
+        await self._record(room_id, result)
         return result.event_id
+
+    async def _record(self, room_id: str, result: SendResult) -> None:
+        await self.message_recorder.record(
+            transport_room_id=room_id,
+            result=result,
+            sender_matrix_id=self.matrix_user_id,
+            sender_client_id=self.client_id,
+            sender_name=self.display_name,
+        )
 
     async def set_typing(self, room_id: str, is_typing: bool) -> None:
         await self._transport.set_typing(room_id, is_typing)

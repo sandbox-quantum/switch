@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from switch_core.config import SwitchConfig
 
@@ -44,6 +45,22 @@ def create_engine_from_config(
     }
     defaults.update(engine_kwargs)
     return create_async_engine(config.database_url, **defaults)
+
+
+def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
+    """An engine for a connection that is held rather than borrowed.
+
+    A `LISTEN` lives on one connection for the process's life. Every pool
+    setting is either meaningless for that or actively harmful — recycling
+    would drop the subscription, and the silence afterwards is indistinguishable
+    from a quiet room — so it takes the connection arguments and none of the
+    pooling.
+    """
+    return create_async_engine(
+        config.database_url,
+        poolclass=NullPool,
+        connect_args=app_connect_args(config),
+    )
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

@@ -22,8 +22,8 @@ from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.bridge_client import BridgeClient, BridgeClientConfig
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.client_factory import matrix_transport_for
-from switch_core.clients.resource_manager_client import ResourceManagerClient
 from switch_core.clients.user_client import UserClient
+from tests.switch_core.transport.fake import FakeMessageRecorder
 
 
 def _base_kwargs() -> dict[str, Any]:
@@ -38,6 +38,7 @@ def _base_kwargs() -> dict[str, Any]:
         "transport_factory": matrix_transport_for,
         "session_state": {"access_token": None, "device_id": None},
         "next_batch_token": None,
+        "message_recorder": FakeMessageRecorder(),
     }
 
 
@@ -59,7 +60,7 @@ def test_bridge_client_construction_matches_its_lifecycle_call_site() -> None:
     assert client.config.bridge_id == "bridge-1"
 
 
-@pytest.mark.parametrize("cls", [UserClient, AdminClient, ResourceManagerClient])
+@pytest.mark.parametrize("cls", [UserClient, AdminClient])
 def test_every_registered_client_type_constructs(cls: type) -> None:
     base = _base_kwargs()
     # Collaborators the factory injects as extra kwargs differ per class, so
@@ -118,4 +119,54 @@ def test_no_call_site_passes_transport_credentials_to_a_client() -> None:
     assert offenders == [], (
         "clients take an opaque `session_state`, not individual credentials; "
         f"these call sites still pass them: {offenders}"
+    )
+
+
+def test_only_the_factory_names_a_transport_implementation() -> None:
+    """A client's bus is one decision, made in one place.
+
+    The collaboration bridges named `matrix_transport_for` directly, so the
+    transport setting reached every agent and no bridge: agents talked in rows,
+    bridges talked to the homeserver, and neither side saw the other or logged
+    anything. Nothing failed — messages simply stopped crossing.
+
+    That is invisible in review, so scan for the cause instead. Any module that
+    can reach an implementation can pick the wrong one.
+
+    Guarded per module rather than per symbol: an implementation's module is
+    private, so one added later is covered the day it lands instead of the day
+    someone remembers to extend a list of names, and putting a module in
+    `allowed` is a deliberate act a reviewer sees.
+    """
+    package = pathlib.Path(__file__).resolve().parents[3] / "switch_core"
+    private = {"switch_core.transport.matrix", "switch_core.transport.postgres"}
+    allowed = {
+        "clients/client_factory.py",
+        "transport/matrix.py",
+        "transport/postgres.py",
+    }
+    offenders: list[str] = []
+
+    for path in package.rglob("*.py"):
+        relative = path.relative_to(package).as_posix()
+        if relative in allowed:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            imported: list[str] = []
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                # `from switch_core.transport import postgres` reaches the same
+                # module by importing its name from the package.
+                imported = [node.module] + [
+                    f"{node.module}.{alias.name}" for alias in node.names
+                ]
+            for name in imported:
+                if name in private:
+                    offenders.append(f"{relative}: {name}")
+
+    assert offenders == [], (
+        "ask ClientFactory.transport_for for a transport rather than reaching "
+        f"for one; these modules choose for themselves: {offenders}"
     )

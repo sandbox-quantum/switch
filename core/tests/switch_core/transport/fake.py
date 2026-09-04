@@ -8,17 +8,43 @@ from __future__ import annotations
 
 from typing import Any
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.transport import (
     DownloadResult,
     HistoryPage,
     InboundEvent,
     MessageFormat,
-    SeekDirection,
     SendResult,
     TransportError,
     TransportHandlers,
     UploadResult,
 )
+
+
+class FakeMessageRecorder:
+    """A `MessageRecorder` double for tests that send without a database."""
+
+    def __init__(self) -> None:
+        self.recorded: list[dict[str, Any]] = []
+
+    async def record(
+        self,
+        *,
+        transport_room_id: str,
+        result: SendResult,
+        sender_matrix_id: str,
+        sender_client_id: str,
+        sender_name: str,
+    ) -> None:
+        self.recorded.append(
+            {
+                "transport_room_id": transport_room_id,
+                "result": result,
+                "sender_matrix_id": sender_matrix_id,
+                "sender_client_id": sender_client_id,
+                "sender_name": sender_name,
+            }
+        )
 
 
 class FakeTransport:
@@ -31,14 +57,12 @@ class FakeTransport:
         upload_uri: str = "mxc://fake/abc",
         history: HistoryPage | None = None,
         download: DownloadResult | None = None,
-        seek_token: str | None = None,
         fail_send: str | None = None,
     ) -> None:
         self._joined = joined if joined is not None else []
         self._upload_uri = upload_uri
         self._history = history or HistoryPage(events=[], next_token=None)
         self._download = download or DownloadResult(body=b"", content_type="text/plain")
-        self._seek_token = seek_token
         self._fail_send = fail_send
 
         self.sent_messages: list[dict[str, Any]] = []
@@ -105,7 +129,23 @@ class FakeTransport:
                 "extra_content": extra_content,
             }
         )
-        return SendResult(event_id=self._next_id())
+        content: dict[str, object] = {
+            "msgtype": "m.text",
+            "body": body,
+            "sender_name": sender_name,
+        }
+        if extra_content:
+            content.update(extra_content)
+        if thread_root_id is not None:
+            content["m.relates_to"] = {
+                "rel_type": "m.thread",
+                "event_id": thread_root_id,
+            }
+        return SendResult(
+            event_id=self._next_id(),
+            event_type="m.room.message",
+            content=content,
+        )
 
     async def send_event(
         self, room_id: str, event_type: str, content: dict[str, object]
@@ -113,7 +153,9 @@ class FakeTransport:
         if self._fail_send:
             raise TransportError(self._fail_send)
         self.sent_events.append((room_id, event_type, content))
-        return SendResult(event_id=self._next_id())
+        return SendResult(
+            event_id=self._next_id(), event_type=event_type, content=content
+        )
 
     async def send_media(
         self,
@@ -145,7 +187,27 @@ class FakeTransport:
                 "group": group,
             }
         )
-        return SendResult(event_id=self._next_id())
+        content: dict[str, object] = {
+            "msgtype": msgtype,
+            "body": caption if caption else filename,
+            "url": uri,
+            "info": {"mimetype": mimetype, "size": size},
+            "sender_name": sender_name,
+        }
+        if caption:
+            content["filename"] = filename
+        if group is not None:
+            content[ATTACHMENT_GROUP_KEY] = group
+        if thread_root_id is not None:
+            content["m.relates_to"] = {
+                "rel_type": "m.thread",
+                "event_id": thread_root_id,
+            }
+        return SendResult(
+            event_id=self._next_id(),
+            event_type="m.room.message",
+            content=content,
+        )
 
     async def upload_media(
         self, data: bytes, content_type: str, filename: str
@@ -168,11 +230,6 @@ class FakeTransport:
         self, room_id: str, *, start: str | None, limit: int
     ) -> HistoryPage:
         return self._history
-
-    async def seek_by_timestamp(
-        self, room_id: str, timestamp_ms: int, *, direction: SeekDirection
-    ) -> str | None:
-        return self._seek_token
 
     # ── Rooms ─────────────────────────────────────────────────────────────────
 
