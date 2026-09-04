@@ -4,9 +4,9 @@ import { Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  OpencodeRuntimeToggle,
+  ProviderRuntimeToggle,
   providerConfigWithRuntime,
-} from '@renderer/features/locations/components/opencode-runtime-toggle';
+} from '@renderer/features/locations/components/provider-runtime-toggle';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -524,7 +524,7 @@ export const AddAgentModal = observer(function AddAgentModal({
               dir={dir}
               onChange={onLaunchProfileConfigChange}
             />
-            <OpencodeRuntimeToggle
+            <ProviderRuntimeToggle
               providerId={pickState.providerId}
               enabled={providerRuntime}
               onChange={setProviderRuntime}

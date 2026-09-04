@@ -53,6 +53,76 @@ export async function writeAgentCredentials(params: {
   return file;
 }
 
+/**
+ * Provision a Claude Code agent's on-disk definition and its committed config,
+ * the way Switch Console does when the agent is added through the app.
+ *
+ * A Claude agent is launched as a **named definition** — `--agent <name>` for a
+ * PTY session, the SDK's `agent` option for a provider-backed one — and Claude
+ * Code fails a session naming an agent it cannot find, so the definition has to
+ * exist before the console starts one. Two files, mirroring
+ * `syncAgentConfig` in `src/main/core/agents/agent-config-sync.ts`:
+ *
+ * - `<workingDir>/.claude/agents/<name>.md` — the definition Claude reads. Its
+ *   frontmatter is what `serializeDefinition` writes (name, description, then
+ *   the advanced fields that are set), and its body is the system prompt.
+ * - `<workingDir>/.switch/config/<name>.json` — the committed, secret-free
+ *   config the definition is generated from, which is also where the console
+ *   reads the agent's model and reasoning effort at launch.
+ *
+ * The `rendered` fingerprint the console records is deliberately omitted: with
+ * no fingerprint the console treats a hand-written definition as hand-edited and
+ * reads it back rather than overwriting it, which is what a harness wants.
+ */
+export async function writeClaudeAgentDefinition(params: {
+  workingDir: string;
+  agentName: string;
+  description: string;
+  instructions: string;
+  model: string;
+  effort: string;
+}): Promise<{ definitionPath: string; configPath: string }> {
+  const definitionDir = path.join(params.workingDir, '.claude', 'agents');
+  await fs.mkdir(definitionDir, { recursive: true });
+  const definitionPath = path.join(definitionDir, `${params.agentName}.md`);
+  const definition = [
+    '---',
+    `name: ${params.agentName}`,
+    `description: ${params.description.replace(/\s+/g, ' ')}`,
+    `model: ${params.model}`,
+    `effort: ${params.effort}`,
+    '---',
+    '',
+    params.instructions,
+    '',
+  ].join('\n');
+  await fs.writeFile(definitionPath, definition, 'utf8');
+
+  const configDir = path.join(params.workingDir, '.switch', 'config');
+  await fs.mkdir(configDir, { recursive: true });
+  const configPath = path.join(configDir, `${params.agentName}.json`);
+  const config = {
+    instructions: params.instructions,
+    settings: { model: params.model, effort: params.effort },
+  };
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+
+  return { definitionPath, configPath };
+}
+
+/** Remove the two files written by {@link writeClaudeAgentDefinition}. */
+export async function removeClaudeAgentDefinition(params: {
+  workingDir: string;
+  agentName: string;
+}): Promise<void> {
+  await fs.rm(path.join(params.workingDir, '.claude', 'agents', `${params.agentName}.md`), {
+    force: true,
+  });
+  await fs.rm(path.join(params.workingDir, '.switch', 'config', `${params.agentName}.json`), {
+    force: true,
+  });
+}
+
 /** Remove a credentials file written by {@link writeAgentCredentials}. */
 export async function removeAgentCredentials(params: {
   workingDir: string;

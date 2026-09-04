@@ -7,6 +7,7 @@ import type {
   RuntimeMode,
   UserInputAnswers,
 } from '@switch-console/agent-providers';
+import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { SWITCH_AGENT_RUNTIME_PIN } from '@switch-console/plugins/distribution';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import { isAppFocused, maybeShowNotification } from '@main/core/agent-hooks/notification';
@@ -18,6 +19,7 @@ import { agentCredsSlug } from '@main/core/agents/agent-creds-slug';
 import { agentLaunchSpecialization } from '@main/core/agents/agent-launch-config';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
+import { getPlugin } from '@main/core/providers/plugin-registry';
 import { buildAgentEnv } from '@main/core/pty/pty-env';
 import { saveNativeSessionId } from '@main/core/sessions/operations/save-provider-session-id';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
@@ -65,6 +67,29 @@ import type { Session } from '@shared/core/sessions/sessions';
  *   reason a PTY session opens one: the id has to exist in the environment the
  *   MCP server is spawned with, and the server refuses a tool call naming a
  *   connection that is not open.
+ *
+ * **The Switch tools are registered here, once, for every provider.** For
+ * Claude Code that is a decision worth stating, because the user's own install
+ * already has the connector plugin and the plugin registers a `switch` MCP
+ * server of its own. Measured against Claude Code 2.1.260: passing `mcpServers`
+ * to the SDK puts the CLI in strict MCP config, and the session's `init` then
+ * lists only the server passed here — `switch`, one set of `switch_*` tools —
+ * while the plugin's *skills* still load, so the agent gets the room-workflow
+ * instructions that make those tools usable. Suppressing our own server instead
+ * and leaning on the plugin's was the alternative; it registers the same
+ * runtime and would have worked, but it makes the tools an agent has depend on
+ * a plugin version the user updates by hand.
+ *
+ * The plugin's shell hooks still run, and mostly say nothing: the channel
+ * notifications resolve a port file this runtime never writes and return
+ * without a word, and no `SWITCHDASH_HOOK_*` is in the environment for the
+ * status hooks to report to. Nothing is installed into
+ * `.claude/settings.local.json` on this path either — `ensureHooksInstalled` is
+ * a PTY-launch step and is deliberately not called here. The one that is not
+ * harmless is the plugin's pre-tool mediation hook, which answers `allow` for
+ * every call Switch lets proceed and so settles the permission before this
+ * runtime is asked; the adapter takes that decision back (see
+ * `reclaimPermission` in `claude-adapter.ts`).
  */
 export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessionRuntime {
   private readonly transcript: ProviderTranscript;
@@ -161,7 +186,8 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
     });
 
     try {
-      const model = await this.resolveModel(session.agentId);
+      const model = await this.resolveModel(session);
+      const agentName = await this.resolveAgentDefinition(session, workspaceFs);
       await adapter.startSession({
         sessionId: this.params.sessionId,
         cwd: this.params.sessionPath,
@@ -172,6 +198,7 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
           ? { resume: { nativeSessionId: session.providerSessionId } }
           : {}),
         ...(model ? { model } : {}),
+        ...(agentName ? { agentName } : {}),
       });
     } catch (error) {
       this.unsubscribeAdapter?.();
@@ -197,16 +224,44 @@ export class ProviderAgentRuntime implements AgentRuntimeProvider, ProviderSessi
   }
 
   /**
-   * The per-agent model, as the adapter names one. OpenCode's launch profile
-   * calls it `model` and its reasoning control `variant`; anything else the
-   * profile carries is a config-file concern the adapter has no use for.
+   * The per-agent model, as the adapter names one.
+   *
+   * Every provider's launch profile calls the model `model`; what it calls the
+   * reasoning control is its own vocabulary, which is why this reads a
+   * per-provider key rather than one shared name. OpenCode has a model-specific
+   * `variant`, Claude Code a reasoning `effort`. Anything else the profile
+   * carries is a config-file concern the adapter has no use for.
    */
-  private async resolveModel(agentId: string): Promise<ModelSelection | undefined> {
-    const specialization = await agentLaunchSpecialization(agentId);
+  private async resolveModel(session: Session): Promise<ModelSelection | undefined> {
+    const specialization = await agentLaunchSpecialization(session.agentId);
     const id = specialization?.model?.trim();
     if (!id) return undefined;
-    const variant = specialization?.variant?.trim();
-    return { id, ...(variant ? { options: { variant } } : {}) };
+    const key = session.providerId === 'claude' ? 'effort' : 'variant';
+    const value = specialization?.[key]?.trim();
+    return { id, ...(value ? { options: { [key]: value } } : {}) };
+  }
+
+  /**
+   * The named agent definition this session should run *as*, when its provider
+   * launches one and the definition is actually on disk.
+   *
+   * A PTY launch passes `--agent <name>` from the provider's own `launchArgs`;
+   * the adapter takes the same name and the SDK applies the same definition. It
+   * is checked for rather than assumed because Claude Code fails a session that
+   * names an agent it cannot find, and an agent added to Switch Console without
+   * a `.claude/agents/<name>.md` — every OpenCode agent, and a Claude one whose
+   * definition was never written — has none.
+   */
+  private async resolveAgentDefinition(
+    session: Session,
+    workspaceFs: PluginFs
+  ): Promise<string | undefined> {
+    const name = session.agentName;
+    if (!name) return undefined;
+    const repoAgents = getPlugin(session.providerId).behavior.repoAgents;
+    if (!repoAgents) return undefined;
+    const relativePath = repoAgents.definitionPath(name);
+    return (await workspaceFs.exists(relativePath)) ? name : undefined;
   }
 
   private handleProviderEvent(event: ProviderRuntimeEvent): void {

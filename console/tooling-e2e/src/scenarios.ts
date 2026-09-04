@@ -219,31 +219,42 @@ const CHOSEN = 'green';
  */
 export const question: Scenario = (harness) =>
   scenario('question', async (record) => {
+    const prose = harness.env.questionMode === 'prose';
     const since = await ask(
       harness,
-      'before answering, ask me one clarifying multiple-choice question using your ' +
-        'ask-the-user tool (the question tool, not a plain message): "Which color?" with ' +
-        `exactly the options ${CHOICES.join(', ')}. Then reply with the single word I chose.`
+      prose
+        ? 'before answering, ask me one clarifying multiple-choice question as an ordinary ' +
+            `message: "Which color?", listing exactly the options ${CHOICES.join(', ')}. ` +
+            'Wait for my answer, then reply with the single word I chose.'
+        : 'before answering, ask me one clarifying multiple-choice question using your ' +
+            'ask-the-user tool (the question tool, not a plain message): "Which color?" with ' +
+            `exactly the options ${CHOICES.join(', ')}. Then reply with the single word I chose.`
     );
 
     const asked = await expectBotPost(harness, {
       since,
       record,
-      // The console relays the native question into the room as a numbered
-      // list; a plain-prose question would also list the three options, so the
-      // numbering is what proves the relay path was taken.
+      // The console relays a native question into the room as a numbered list;
+      // a plain-prose question also lists the three options, so the numbering is
+      // what proves the relay path was taken — and is exactly what cannot be
+      // required of a provider that offers SDK sessions no such tool.
       predicate: (post) =>
-        CHOICES.every((choice) => lower(post).includes(choice)) && /\b2\.\s/.test(post.message),
-      describe: `a relayed question numbering the options ${CHOICES.join('/')}`,
+        CHOICES.every((choice) => lower(post).includes(choice)) &&
+        (prose || /\b2\.\s/.test(post.message)),
+      describe: prose
+        ? `a question listing the options ${CHOICES.join('/')}`
+        : `a relayed question numbering the options ${CHOICES.join('/')}`,
     });
 
-    // Answer by number, which only the relay understands; the acknowledgement it
-    // posts names the choice too, so the agent's own reply must be told apart.
-    const answeredAt = await ask(harness, '2');
+    // By number where the relay is what reads the answer; by word where the
+    // agent itself is. The relay's acknowledgement names the choice too, so the
+    // agent's own reply must be told apart from it either way.
+    const answeredAt = await ask(harness, prose ? CHOSEN : '2');
     const answer = await expectBotPost(harness, {
       since: answeredAt,
       record,
-      predicate: (post) => lower(post).includes(CHOSEN) && !post.message.trimStart().startsWith('✅'),
+      predicate: (post) =>
+        lower(post).includes(CHOSEN) && !post.message.trimStart().startsWith('✅'),
       describe: `a reply naming my choice '${CHOSEN}'`,
     });
 

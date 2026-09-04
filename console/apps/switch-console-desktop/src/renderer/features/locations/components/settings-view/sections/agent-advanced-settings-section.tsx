@@ -18,10 +18,10 @@ import {
 } from '@renderer/features/locations/components/agent-model-catalogue';
 import { useAgentEdit } from '@renderer/features/locations/components/main-panel/agent-edits';
 import {
-  OpencodeRuntimeToggle,
+  ProviderRuntimeToggle,
   providerRuntimeEnabled,
   withProviderRuntime,
-} from '@renderer/features/locations/components/opencode-runtime-toggle';
+} from '@renderer/features/locations/components/provider-runtime-toggle';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { isProvisioned } from '@renderer/features/sessions/stores/session-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
@@ -283,7 +283,7 @@ export const AgentAdvancedSettingsSection = observer(function AgentAdvancedSetti
             </Field>
           );
         })}
-        <OpencodeRuntimeToggle
+        <ProviderRuntimeToggle
           providerId={providerId}
           enabled={providerRuntime}
           onChange={setProviderRuntime}

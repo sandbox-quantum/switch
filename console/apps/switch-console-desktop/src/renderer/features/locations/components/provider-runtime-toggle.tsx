@@ -1,19 +1,35 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { Switch } from '@renderer/lib/ui/switch';
-import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import {
+  supportsProviderRuntime,
+  type AgentProviderConfig,
+} from '@shared/core/agents/agent-provider-config';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { SessionRuntimeKind } from '@shared/core/sessions/session-transcript';
 
-/** The provider-config key that decides how an OpenCode session is driven. */
+/** The provider-config key that decides how an agent's sessions are driven. */
 export const RUNTIME_KEY = 'runtime';
 
 const PROVIDER: SessionRuntimeKind = 'provider';
 
-/** Which agent types can be driven through their own server rather than a TUI. */
-function supportsProviderRuntime(providerId: AgentProviderId | null): boolean {
-  return providerId === 'opencode';
-}
+/**
+ * What the toggle is called, per provider. Each names the thing the session is
+ * actually driven through, because that is what the user is choosing: OpenCode
+ * has a server with an HTTP API, Claude Code has the Agent SDK.
+ */
+const COPY: Record<string, { label: string; description: string }> = {
+  opencode: {
+    label: 'Drive through the OpenCode server (experimental)',
+    description:
+      'Runs sessions through OpenCode’s API instead of a terminal. Shows a transcript with approvals and questions you can answer here or from the room.',
+  },
+  claude: {
+    label: 'Drive through the Agent SDK (experimental)',
+    description:
+      'Runs sessions through the Claude Agent SDK instead of a terminal. Shows a transcript with approvals and questions you can answer here or from the room.',
+  },
+};
 
 /** Whether stored provider config selects the provider runtime. */
 export function providerRuntimeEnabled(
@@ -61,11 +77,12 @@ export function providerConfigWithRuntime(
 }
 
 /**
- * Opt an OpenCode agent out of the terminal and into its server's API, which is
- * what gives its sessions a transcript instead of a TUI. Renders nothing for
- * an agent type that has no such runtime.
+ * Opt an agent out of the terminal and into its provider's own runtime, which
+ * is what gives its sessions a transcript instead of a TUI. Renders nothing for
+ * an agent type that has no adapter behind it — the same list the main process
+ * gates on, so the switch is never offered where it would do nothing.
  */
-export function OpencodeRuntimeToggle({
+export function ProviderRuntimeToggle({
   providerId,
   enabled,
   onChange,
@@ -76,23 +93,21 @@ export function OpencodeRuntimeToggle({
   onChange: (enabled: boolean) => void;
   disabled?: boolean;
 }) {
-  if (!supportsProviderRuntime(providerId)) return null;
+  const copy = providerId ? COPY[providerId] : undefined;
+  if (!supportsProviderRuntime(providerId) || !copy) return null;
 
   return (
     <Field>
-      <FieldLabel htmlFor="opencode-provider-runtime" className="justify-between">
-        <span>Drive through the OpenCode server (experimental)</span>
+      <FieldLabel htmlFor="agent-provider-runtime" className="justify-between">
+        <span>{copy.label}</span>
         <Switch
-          id="opencode-provider-runtime"
+          id="agent-provider-runtime"
           checked={enabled}
           disabled={disabled}
           onCheckedChange={onChange}
         />
       </FieldLabel>
-      <FieldDescription className="text-foreground-muted">
-        Runs sessions through OpenCode&apos;s API instead of a terminal. Shows a transcript with
-        approvals and questions you can answer here or from the room.
-      </FieldDescription>
+      <FieldDescription className="text-foreground-muted">{copy.description}</FieldDescription>
     </Field>
   );
 }

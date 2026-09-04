@@ -46,6 +46,15 @@ export interface ProviderSessionStartInput {
   mcpServers: Record<string, McpServerSpec>;
   /** Extra system-level context appended to whatever the vendor loads itself. */
   systemContext?: string;
+  /**
+   * A named agent definition the vendor already knows, which the session should
+   * run *as* — its system prompt, tool restrictions and model.
+   *
+   * Claude Code's `--agent <name>`, reading `.claude/agents/<name>.md`. Naming a
+   * definition the vendor cannot find is an error there, so a caller passes this
+   * only once it knows the definition exists.
+   */
+  agentName?: string;
 }
 
 export interface ProviderSession {

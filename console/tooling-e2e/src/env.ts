@@ -7,6 +7,22 @@ import { fileURLToPath } from 'node:url';
  * address, so nothing is hard-coded: it comes from the process environment, or
  * from a gitignored `.env` beside this package.
  */
+/** The Switch known-agent type the harness registers its throwaway agent as. */
+export type HarnessAgentType = 'opencode' | 'claude-code';
+
+/**
+ * How the `question` scenario expects the agent to ask.
+ *
+ * `numbered` is the real thing: the provider offers a native ask-the-user tool,
+ * the console relays it into the room as a numbered list, and the answer goes
+ * back by number. `prose` is for a provider whose SDK sessions are offered no
+ * such tool — Claude Code 2.1.260 does not expose `AskUserQuestion` to one — so
+ * the agent asks in an ordinary message and is answered with the word. The
+ * round trip being tested (the session is still alive and still connected when
+ * the second message arrives) is the same; the relay path is not exercised.
+ */
+export type QuestionMode = 'numbered' | 'prose';
+
 export interface HarnessEnv {
   switchApiUrl: string;
   gatewayAdminEmail: string;
@@ -26,6 +42,10 @@ export interface HarnessEnv {
   manifestPath: string | null;
   /** Leave the channel and agent behind after the run (for debugging). */
   keepArtifacts: boolean;
+  /** Which agent type to register, and so which provider's runtime is exercised. */
+  agentType: HarnessAgentType;
+  /** How `question` expects the clarifying question to arrive. */
+  questionMode: QuestionMode;
 }
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -114,7 +134,35 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
     agentRepoDir: get('SWITCH_E2E_AGENT_DIR') ?? null,
     manifestPath: get('SWITCH_E2E_MANIFEST') ?? null,
     keepArtifacts: (get('SWITCH_E2E_KEEP') ?? '') === '1',
+    agentType: agentTypeFrom(get('SWITCH_E2E_AGENT_TYPE')),
+    // Defaulted from the agent type rather than fixed: the mode follows what the
+    // provider can actually do, so a run naming only the agent type still asks
+    // the right way. An explicit value overrides it.
+    questionMode:
+      get('SWITCH_E2E_QUESTION_MODE') === 'prose'
+        ? 'prose'
+        : get('SWITCH_E2E_QUESTION_MODE') === 'numbered'
+          ? 'numbered'
+          : defaultQuestionMode(agentTypeFrom(get('SWITCH_E2E_AGENT_TYPE'))),
   };
+}
+
+const AGENT_TYPES: readonly HarnessAgentType[] = ['opencode', 'claude-code'];
+
+function agentTypeFrom(raw: string | undefined): HarnessAgentType {
+  if (raw === undefined) return 'opencode';
+  const found = AGENT_TYPES.find((type) => type === raw);
+  if (!found) {
+    throw new Error(
+      `SWITCH_E2E_AGENT_TYPE must be one of ${AGENT_TYPES.join(', ')} — got '${raw}'.`
+    );
+  }
+  return found;
+}
+
+/** Claude Code offers SDK sessions no ask-the-user tool, so it asks in prose. */
+function defaultQuestionMode(agentType: HarnessAgentType): QuestionMode {
+  return agentType === 'claude-code' ? 'prose' : 'numbered';
 }
 
 export function stripTrailingSlash(url: string): string {

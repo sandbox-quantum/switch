@@ -1,10 +1,12 @@
 import {
+  createClaudeAdapter,
   createOpencodeAdapter,
   type ProviderAdapter,
   type OpencodeSkill,
 } from '@switch-console/agent-providers';
 import { OPENCODE_SKILL_CONTENT } from '@switch-console/plugins/agents/opencode/skill';
 import { log } from '@main/lib/logger';
+import { supportsProviderRuntime } from '@shared/core/agents/agent-provider-config';
 
 /**
  * The Switch room-workflow skill, as the isolated session needs it.
@@ -18,6 +20,10 @@ import { log } from '@main/lib/logger';
  *
  * The name must be the skill's own: OpenCode discovers `skills/<name>/SKILL.md`
  * and rejects one whose folder disagrees with its frontmatter.
+ *
+ * Claude Code needs no counterpart: its session loads the user's own settings
+ * and installed plugins, so the connector plugin's copy of the same skill is
+ * already there (see `ClaudeAdapter.startSession`).
  */
 const SWITCH_SKILL: OpencodeSkill = { name: 'switch', content: OPENCODE_SKILL_CONTENT };
 
@@ -42,7 +48,7 @@ class ProviderAdapterRegistry {
 
   /** Whether a provider can be driven through an adapter at all. */
   supports(providerId: string): boolean {
-    return providerId === 'opencode';
+    return supportsProviderRuntime(providerId);
   }
 
   async stopAll(): Promise<void> {
@@ -51,19 +57,23 @@ class ProviderAdapterRegistry {
   }
 
   private create(providerId: string): ProviderAdapter {
-    if (providerId !== 'opencode') {
-      throw new Error(
-        `No provider adapter for '${providerId}'. Only OpenCode can run a provider-backed session today.`
-      );
+    const logger = {
+      debug: (message: string, meta?: Record<string, unknown>) => log.debug(message, meta),
+      warn: (message: string, meta?: Record<string, unknown>) => log.warn(message, meta),
+      error: (message: string, meta?: Record<string, unknown>) => log.error(message, meta),
+    };
+    if (providerId === 'opencode') {
+      return createOpencodeAdapter({ skills: [SWITCH_SKILL], logger });
     }
-    return createOpencodeAdapter({
-      skills: [SWITCH_SKILL],
-      logger: {
-        debug: (message, meta) => log.debug(message, meta),
-        warn: (message, meta) => log.warn(message, meta),
-        error: (message, meta) => log.error(message, meta),
-      },
-    });
+    if (providerId === 'claude') {
+      // No executable is configured, so the adapter takes the `claude` on the
+      // session's own PATH — the CLI the user logged in with. It falls back to
+      // the one the SDK bundles, and says so on the transcript when it does.
+      return createClaudeAdapter({ logger });
+    }
+    throw new Error(
+      `No provider adapter for '${providerId}'. Only OpenCode and Claude Code can run a provider-backed session today.`
+    );
   }
 }
 

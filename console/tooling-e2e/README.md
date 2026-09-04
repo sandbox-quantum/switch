@@ -60,6 +60,8 @@ beside this file. Never commit one.
 | `SWITCH_E2E_MANIFEST` | no | File the setup records its agent and room in, so a second process can reuse them instead of registering its own. See "Seeding first" below. |
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | no | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | no | How long setup waits for a live session (default 2 min). |
+| `SWITCH_E2E_AGENT_TYPE` | no | `opencode` (default) or `claude-code` — which provider's runtime is under test. Decides the agent name prefix, the Switch known-agent type, and (for `claude-code`) the extra files written into the working dir. |
+| `SWITCH_E2E_QUESTION_MODE` | no | `numbered` or `prose`. Defaults to `prose` for `claude-code` and `numbered` otherwise; see the `question` row below. |
 
 The suite **skips, with the reason printed**, when `SWITCH_E2E` is unset, when
 configuration is missing (it names every missing variable at once), or when
@@ -93,6 +95,20 @@ that file itself, matching `writeNeutralAgentSettingsFs` in
 `src/main/core/agents/write-switch-settings.ts`; otherwise add the agent in
 Switch Console by hand between setup and the first scenario.
 
+With `SWITCH_E2E_AGENT_TYPE=claude-code` the harness writes two more files into
+the same directory, because a Claude Code session runs **as a named definition**
+(`--agent <name>` for a PTY session, the SDK's `agent` option for a
+provider-backed one) and Claude Code fails a session that names an agent it
+cannot find:
+
+```
+<workingDir>/.claude/agents/<agent-name>.md      the definition Claude reads
+<workingDir>/.switch/config/<agent-name>.json    the committed config it is generated from,
+                                                 and where the console reads model/effort
+```
+
+Both mirror what `syncAgentConfig` writes when an agent is added through the app.
+
 ### Seeding first
 
 The order is forced when the session is auto-started rather than opened by hand:
@@ -116,6 +132,12 @@ SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-wor
   ../node_modules/.bin/vitest run src/run.integration.test.ts
 ```
 
+For Claude Code, add `SWITCH_E2E_AGENT_TYPE=claude-code` to both commands and
+give the database row `provider_id` `'claude'` with
+`{"version":"2","providerId":"claude","values":{},"runtime":"provider"}`. The
+row's `name` must be the Switch agent's name, because that name is also the
+definition the session is launched as.
+
 Setup finds the manifest, reuses what is in it rather than registering a second
 agent, and deletes it during teardown — so a manifest never outlives its room.
 
@@ -124,12 +146,21 @@ agent, and deletes it during teardown — so a manifest never outlives its room.
 | Scenario | What it drives | Passes when |
 | --- | --- | --- |
 | `greet` | An addressed message reaches a session and its answer comes back. | The bot posts `SWITCH_E2E_OK`. |
-| `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after `@agent green`. |
+| `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after the answer. |
 | `approval` | A tool call the session is not pre-authorised to make. | The bot surfaces an approval prompt, `@agent 1` allows it, the bot replies `done`. |
 | `interrupt` | `!interrupt @agent-name` stops a long task. | No further bot posts for 45 s afterwards. |
 
 `question` is the one a one-shot reply cannot fake: it only passes if the session
 is still alive and still connected when the second message arrives.
+
+It has two modes, because the relay it exercises needs a native ask-the-user
+tool and not every provider offers one. In `numbered` mode the agent must use
+that tool, the console relays it into the room as a numbered list, and the
+answer goes back as `@agent 2` — the numbering is what proves the relay path was
+taken. In `prose` mode the agent asks in an ordinary message and is answered
+with `@agent green`; the two-turn round trip is still proved, the relay is not.
+Claude Code 2.1.260 does not offer `AskUserQuestion` to an SDK session (verified
+in the adapter's conformance run), so `claude-code` defaults to `prose`.
 
 `approval` is the most tightly coupled to the new runtime. An OpenCode agent's
 registered profile declares **no `pre_invocation_mediation`**, so the prompt does

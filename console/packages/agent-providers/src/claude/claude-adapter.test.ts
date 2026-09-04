@@ -113,6 +113,49 @@ describe('ClaudeAdapter session lifecycle', () => {
     });
   });
 
+  it('runs as a named agent definition, and as none when the caller names none', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(startInput({ agentName: 'e2e-claude-abc' }));
+    expect(sdk.options().agent).toBe('e2e-claude-abc');
+
+    const bare = createFakeSdk();
+    const bareAdapter = new ClaudeAdapter({
+      query: bare.query,
+      claudeExecutablePath: '/bin/claude',
+    });
+    await bareAdapter.startSession(startInput());
+    expect(bare.options().agent).toBeUndefined();
+  });
+
+  it('forwards the model and its reasoning effort, ignoring an effort it does not know', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({ model: { id: 'claude-sonnet-5', options: { effort: 'high' } } })
+    );
+    expect(sdk.options().model).toBe('claude-sonnet-5');
+    expect(sdk.options().effort).toBe('high');
+
+    const odd = createFakeSdk();
+    const oddAdapter = new ClaudeAdapter({ query: odd.query, claudeExecutablePath: '/bin/claude' });
+    await oddAdapter.startSession(
+      startInput({ model: { id: 'claude-sonnet-5', options: { effort: 'ludicrous' } } })
+    );
+    expect(odd.options().effort).toBeUndefined();
+  });
+
+  it('says so when it falls back to the CLI bundled with the SDK', async () => {
+    const sdk = createFakeSdk();
+    // No `claude` anywhere on this PATH, and no configured override.
+    const adapter = new ClaudeAdapter({ query: sdk.query });
+    const recorder = new EventRecorder(adapter);
+    await adapter.startSession(startInput({ env: { PATH: '/nonexistent-switch-e2e' } }));
+    expect(sdk.options().pathToClaudeCodeExecutable).toBeUndefined();
+    const warning = await recorder.waitFor('runtime.warning', () => true, 1_000);
+    expect(warning.message).toContain('bundled with the Agent SDK');
+  });
+
   it('maps each runtime mode onto a permission mode', async () => {
     for (const [runtimeMode, permissionMode] of [
       ['approval-required', 'default'],
@@ -498,10 +541,64 @@ describe('ClaudeAdapter approvals', () => {
     expect(result?.behavior).toBe('deny');
   });
 
+  it('never asks about a tool of an MCP server the caller registered', async () => {
+    // A session's MCP servers are the ones the caller put there for it to use —
+    // for Switch Console the room protocol. Asking a human for permission to
+    // speak in the room leaves the session unable to answer the room at all,
+    // including to ask.
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    const recorder = new EventRecorder(adapter);
+    await adapter.startSession(
+      startInput({
+        mcpServers: {
+          'switch:rooms': { transport: 'stdio', command: 'node', args: ['server.mjs'] },
+        },
+      })
+    );
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const controller = new AbortController();
+    const allowed = await sdk.canUseTool()(
+      // The server name is folded the way Claude Code names an MCP tool.
+      'mcp__switch_rooms__post_message',
+      { room_id: 'r' },
+      toolOptions(controller.signal)
+    );
+    expect(allowed?.behavior).toBe('allow');
+    expect(recorder.ofType('request.opened')).toEqual([]);
+
+    // A tool that is not one of theirs still asks.
+    void sdk.canUseTool()('Bash', { command: 'ls' }, toolOptions(controller.signal));
+    await recorder.waitFor('request.opened', () => true, 1_000);
+  });
+
   it('registers no permission callback in full access, where the SDK ignores it', async () => {
     const { sdk } = await startSession('full-access');
     expect(sdk.options().canUseTool).toBeUndefined();
     expect(sdk.options().permissionMode).toBe('bypassPermissions');
+  });
+
+  it('takes the decision back from a hook that would settle it, except in full access', async () => {
+    // Another hook's `allow` settles a permission outright and `canUseTool` is
+    // never called — which is how the Switch connector plugin's mediation hook
+    // ran shell commands with nobody ever offered the approval card.
+    const { sdk } = await startSession();
+    const entry = sdk.options().hooks?.PreToolUse?.find((group) => group.matcher?.includes('Bash'));
+    expect(entry).toBeDefined();
+    const decision = await entry!.hooks[0](
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} } as never,
+      undefined,
+      { signal: new AbortController().signal }
+    );
+    expect(decision).toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' },
+    });
+
+    // In full access nothing is asked, so nothing is reclaimed either.
+    const full = await startSession('full-access');
+    expect(
+      full.sdk.options().hooks?.PreToolUse?.some((group) => group.matcher?.includes('Bash'))
+    ).toBe(false);
   });
 
   it('cancels an open request when the session stops', async () => {

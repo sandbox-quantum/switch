@@ -52,6 +52,18 @@ import {
 
 const PROVIDER = 'claude';
 const ASK_USER_QUESTION = 'AskUserQuestion';
+
+/**
+ * The tools whose permission this adapter insists on being asked about, as a
+ * hook matcher.
+ *
+ * Deliberately the tools Claude Code already asks about in `default` mode —
+ * running a command and changing a file — and no others. A hook decision
+ * outranks the permission rules, so widening this would start prompting for
+ * reads and searches that nothing asks about today, and a session that asks
+ * before every `Read` cannot answer a room.
+ */
+const APPROVAL_TOOLS = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 const APPROVAL_OPTIONS: ApprovalOption[] = [
@@ -109,6 +121,8 @@ interface SessionState {
   nativeSessionId: string;
   query: Query;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
+  /** `mcp__<server>__` prefixes for the servers the caller registered. */
+  registeredMcpPrefixes: string[];
   input: PromptQueue;
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
@@ -186,10 +200,47 @@ function effortFrom(model: ModelSelection | undefined): EffortLevel | undefined 
   return EFFORT_LEVELS.find((level) => level === raw);
 }
 
+/**
+ * The tool-name prefixes covering the tools of the MCP servers the caller
+ * registered. Claude Code names an MCP tool `mcp__<server>__<tool>`, folding
+ * anything outside `[A-Za-z0-9_-]` in the server name to `_`.
+ *
+ * Their tools are allowed rather than asked about because a session's MCP
+ * servers are exactly the ones the caller registered for it — passing
+ * `mcpServers` puts the CLI in strict MCP config, so the user's own
+ * registrations are not there to be confused with these. For Switch Console
+ * that server is the room protocol, and a session that must ask a human before
+ * it may speak in the room cannot answer the room at all — including to ask.
+ */
+export function mcpToolPrefixes(names: string[]): string[] {
+  return names.map((name) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
+}
+
 /** Rescoped so "allow for this session" never writes a rule to the user's settings. */
 function sessionScoped(suggestions: readonly PermissionUpdate[] | undefined): PermissionUpdate[] {
   return (suggestions ?? []).map((suggestion) => ({ ...suggestion, destination: 'session' }));
 }
+
+/**
+ * Take the permission decision back from whatever else is hooked into this
+ * session, so the caller is the one asked.
+ *
+ * A `PreToolUse` hook's `allow` settles the permission outright: measured
+ * against Claude Code 2.1.260, `canUseTool` is then never called and the tool
+ * runs. The session loads the user's own settings and plugins, and the Switch
+ * connector plugin's hook answers `allow` for every tool Switch's mediation
+ * lets proceed — which is right for a session a human is watching in a
+ * terminal, and wrong for one whose only human is in a room: it ran shell
+ * commands with nobody ever offered the approval card.
+ *
+ * `ask` from a hook outranks another hook's `allow` (measured the same way) and
+ * hands the tool to `canUseTool`, which is where this adapter asks. It does not
+ * outrank a `deny`, so a mediation that actually blocks a call still blocks it.
+ */
+const reclaimPermission: HookCallback = async (input) => {
+  if (input.hook_event_name !== 'PreToolUse') return {};
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
+};
 
 function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): string | undefined {
   if (outcome === 'completed') return undefined;
@@ -237,6 +288,18 @@ export class ClaudeAdapter implements ProviderAdapter {
     return this.sessions.has(sessionId);
   }
 
+  /**
+   * Start a Claude Code session.
+   *
+   * `settingSources` is left unset, which loads what the CLI itself would: the
+   * user's settings, their installed plugins and their skills, and the project's
+   * `.claude/agents/<name>.md` definitions that {@link ProviderSessionStartInput.agentName}
+   * names. Passing `mcpServers` puts the CLI in strict MCP config — measured
+   * against 2.1.260, the session's `init` then lists *only* the servers passed
+   * here, so a server the user has registered for the same purpose (the Switch
+   * connector plugin's own) is not loaded a second time, while that plugin's
+   * skills and hooks still are.
+   */
   async startSession(input: ProviderSessionStartInput): Promise<ProviderSession> {
     if (this.sessions.has(input.sessionId)) {
       throw new ProviderSessionError(PROVIDER, input.sessionId, 'Session already started.');
@@ -261,6 +324,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         ? { allowDangerouslySkipPermissions: true }
         : { canUseTool: this.makeCanUseTool(input.sessionId) }),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      ...(input.agentName ? { agent: input.agentName } : {}),
       ...(input.model ? { model: input.model.id } : {}),
       ...(effort ? { effort } : {}),
       ...(input.resume ? { resume: nativeSessionId } : { sessionId: nativeSessionId }),
@@ -273,6 +337,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       hooks: {
         PreToolUse: [
           { matcher: ASK_USER_QUESTION, hooks: [this.makeAskUserQuestionHook(input.sessionId)] },
+          ...(permissionMode === 'bypassPermissions'
+            ? []
+            : [{ matcher: APPROVAL_TOOLS, hooks: [reclaimPermission] }]),
         ],
       },
       includePartialMessages: true,
@@ -291,6 +358,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       nativeSessionId,
       query: running,
       runtimeMode: input.runtimeMode,
+      registeredMcpPrefixes: mcpToolPrefixes(Object.keys(mcpServers)),
       input: prompt,
       turn: null,
       pendingApprovals: new Map(),
@@ -305,6 +373,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
     this.emit(session, { type: 'session.started', nativeSessionId });
+    if (executable === undefined) {
+      // Disclosed rather than silent: the bundled CLI is a different build from
+      // the one the user logged in with, so a session that falls back here can
+      // report itself unauthenticated for no visible reason.
+      this.emit(session, {
+        type: 'runtime.warning',
+        message:
+          'No `claude` executable on this session’s PATH — running the CLI bundled with the Agent SDK, which does not share the installed one’s login.',
+      });
+    }
     this.pump(session);
     return { sessionId: input.sessionId, nativeSessionId, provider: PROVIDER };
   }
@@ -679,6 +757,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       const session = this.sessions.get(sessionId);
       if (!session) return { behavior: 'deny', message: 'The session is gone.' };
       if (session.runtimeMode === 'full-access') return { behavior: 'allow' };
+      if (session.registeredMcpPrefixes.some((prefix) => toolName.startsWith(prefix))) {
+        return { behavior: 'allow' };
+      }
       return this.requestApproval(session, toolName, toolInput, options);
     };
   }

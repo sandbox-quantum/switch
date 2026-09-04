@@ -16,6 +16,15 @@
  *
  * The scenario run finds the manifest, reuses what is in it rather than
  * registering a second agent, and deletes it during teardown.
+ *
+ * `SWITCH_E2E_AGENT_TYPE` picks which provider is under test. `opencode` (the
+ * default) registers an `opencode` known agent; `claude-code` registers a
+ * `claude-code` one and additionally writes the `.claude/agents/<name>.md`
+ * definition and `.switch/config/<name>.json` that a Claude agent is launched
+ * from, because a Claude session runs *as* a named definition and fails when it
+ * cannot find one. The console DB row for either wants
+ * `provider_id` `'opencode'` / `'claude'` and a `provider_config` of
+ * `{"version":"2","providerId":"<that>","values":{},"runtime":"provider"}`.
  */
 import { loadEnv } from './env.ts';
 import { setupHarness } from './harness.ts';
@@ -28,6 +37,7 @@ export async function seed(log: (message: string) => void = console.log): Promis
   const harness = await setupHarness(env);
   log(
     [
+      `type     ${env.agentType} (question mode: ${env.questionMode})`,
       `agent    ${harness.agent.name} (${harness.agent.id})`,
       `bot      @${harness.bot.username} (${harness.bot.id})`,
       `channel  ${harness.channel.name} (${harness.channel.id})`,

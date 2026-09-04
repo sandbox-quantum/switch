@@ -1,12 +1,17 @@
 import { promises as fs } from 'node:fs';
-import { loadEnv, shortId, type HarnessEnv } from './env.ts';
+import {
+  removeAgentCredentials,
+  removeClaudeAgentDefinition,
+  writeAgentCredentials,
+  writeClaudeAgentDefinition,
+} from './console-credentials.ts';
+import { loadEnv, shortId, type HarnessAgentType, type HarnessEnv } from './env.ts';
 import {
   isValidMattermostUsername,
   MattermostClient,
   type MattermostChannel,
   type MattermostUser,
 } from './mattermost-client.ts';
-import { removeAgentCredentials, writeAgentCredentials } from './console-credentials.ts';
 import { sleep, SwitchClient, type RegisteredAgent, type RoomDetail } from './switch-client.ts';
 
 /**
@@ -41,6 +46,12 @@ export interface SetupOptions {
   prefix?: string;
 }
 
+/** The name prefix per agent type, kept inside Mattermost's 22-character cap. */
+const PREFIX_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
+  opencode: 'e2e-opencode',
+  'claude-code': 'e2e-claude',
+};
+
 /**
  * Why the name is built this way: the agent name becomes a **Mattermost bot
  * username** verbatim, and Mattermost caps usernames at 22 characters and allows
@@ -48,7 +59,7 @@ export interface SetupOptions {
  * to spare; anything longer silently fails bot creation on the bridge side and
  * the room is then never provisioned.
  */
-export function agentNameFor(runId: string, prefix = 'e2e-opencode'): string {
+export function agentNameFor(runId: string, prefix = PREFIX_BY_AGENT_TYPE.opencode): string {
   const name = `${prefix}-${runId}`;
   if (!isValidMattermostUsername(name)) {
     throw new Error(
@@ -118,15 +129,12 @@ export async function resolveSkip(): Promise<{ skip: SkipReason | null; env: Har
  * every collaboration bridge), and the Switch room only exists once that bot is
  * a channel member.
  */
-export async function setupHarness(
-  env: HarnessEnv,
-  options: SetupOptions = {}
-): Promise<Harness> {
+export async function setupHarness(env: HarnessEnv, options: SetupOptions = {}): Promise<Harness> {
   const reused = await readManifest(env.manifestPath);
   if (reused) return reuseHarness(env, reused);
 
   const runId = shortId();
-  const agentName = agentNameFor(runId, options.prefix);
+  const agentName = agentNameFor(runId, options.prefix ?? PREFIX_BY_AGENT_TYPE[env.agentType]);
 
   const switchClient = new SwitchClient({
     apiUrl: env.switchApiUrl,
@@ -142,8 +150,10 @@ export async function setupHarness(
   // and clearly when MATTERMOST_TEAM names a team that does not exist.
   await mattermost.findTeam(env.mattermostTeam);
 
+  // `ClaudeCodeOptions` and `OpencodeOptions` agree on the two keys used here
+  // (`auto_session`, `repo_dir`), so the payload is the same for both types.
   const agent = await switchClient.registerKnownAgent({
-    agentType: 'opencode',
+    agentType: env.agentType,
     name: agentName,
     description: `Switch Console end-to-end harness agent (run ${runId}). Safe to delete.`,
     options: {
@@ -193,6 +203,28 @@ export async function setupHarness(
       agent,
       apiEndpoint: env.switchApiUrl,
     });
+    // A Claude Code session runs *as* a named definition, so the definition has
+    // to be on disk before the console starts one — see the writer's docblock.
+    if (env.agentType === 'claude-code') {
+      await writeClaudeAgentDefinition({
+        workingDir: env.agentRepoDir,
+        agentName: agent.name,
+        description: `Switch Console end-to-end harness agent (run ${runId}).`,
+        // "Do exactly what you are asked" is load-bearing, and so is the second
+        // sentence: told merely to answer briefly, the agent declined the
+        // `interrupt` scenario's task on the grounds that 200 messages would
+        // spam the room — a refusal the scenario reads as a session that never
+        // started.
+        instructions:
+          'You are a Switch end-to-end test agent. Do exactly what you are asked in the ' +
+          'room, and post your answer back to the room you were addressed in. Never ' +
+          'decline or shorten a task on the grounds that it is repetitive or long: the ' +
+          'requests you get here are deliberate tests of exactly that.',
+        // Cheap on purpose: this spends a real subscription on every run.
+        model: 'claude-sonnet-5',
+        effort: 'low',
+      });
+    }
   }
 
   await waitForBridgeReady(harness);
@@ -283,10 +315,7 @@ async function reuseHarness(env: HarnessEnv, manifest: HarnessManifest): Promise
  * history, which carries ordinary chatter, rather than the notification stream,
  * which by design carries only addressed messages.
  */
-export async function waitForBridgeReady(
-  harness: Harness,
-  deadlineMs = 120_000
-): Promise<void> {
+export async function waitForBridgeReady(harness: Harness, deadlineMs = 120_000): Promise<void> {
   const probe = `switch-e2e-bridge-probe ${harness.runId}`;
   const until = Date.now() + deadlineMs;
   let posted = false;
@@ -325,10 +354,7 @@ const READY_STATUSES = new Set(['live', 'dormant']);
  * thing four times, and the report reads as four behavioural failures rather
  * than one missing session. Returns the status it settled on.
  */
-export async function waitForSession(
-  harness: Harness,
-  deadlineMs = 120_000
-): Promise<string> {
+export async function waitForSession(harness: Harness, deadlineMs = 120_000): Promise<string> {
   const until = Date.now() + deadlineMs;
   let last: string | null = null;
   while (Date.now() < until) {
@@ -369,6 +395,10 @@ export async function teardownHarness(
 
   if (harness.env.agentRepoDir) {
     await removeAgentCredentials({
+      workingDir: harness.env.agentRepoDir,
+      agentName: harness.agent.name,
+    }).catch(() => undefined);
+    await removeClaudeAgentDefinition({
       workingDir: harness.env.agentRepoDir,
       agentName: harness.agent.name,
     }).catch(() => undefined);

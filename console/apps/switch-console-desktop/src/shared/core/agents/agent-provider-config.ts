@@ -106,6 +106,24 @@ export const agentProviderConfig = defineVersionedSchema()
 export type AgentProviderConfig = typeof agentProviderConfig.Type;
 
 /**
+ * Providers that can be driven through a `@switch-console/agent-providers`
+ * adapter rather than by typing into a TUI.
+ *
+ * Shared rather than duplicated per side: the renderer decides whether to offer
+ * the toggle and the main process decides whether to honour it, and a list that
+ * disagreed between them would show a switch that silently does nothing (or
+ * hide one that already works). `provider-adapter-registry` reads the same list.
+ */
+const PROVIDER_RUNTIME_PROVIDERS: readonly string[] = ['opencode', 'claude'];
+
+/** Whether this provider has an adapter behind it. */
+export function supportsProviderRuntime(providerId: string | null | undefined): boolean {
+  return providerId !== null && providerId !== undefined
+    ? PROVIDER_RUNTIME_PROVIDERS.includes(providerId)
+    : false;
+}
+
+/**
  * The key the runtime choice is collected under.
  *
  * It travels with the provider's launch-profile attributes because that is the
