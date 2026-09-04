@@ -355,7 +355,6 @@ type AgentSummaryJson = {
   known_agent_type: string | null;
   addressing_policy?: AddressingPolicy | null;
   icon_url?: string | null;
-  display_name?: string | null;
   created_at: string;
 };
 
@@ -374,7 +373,6 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
     knownAgentType: json.known_agent_type,
     addressingPolicy: json.addressing_policy ?? null,
     iconUrl: json.icon_url ?? null,
-    displayName: json.display_name ?? null,
     createdAt: json.created_at,
   };
 }

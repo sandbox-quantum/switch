@@ -176,7 +176,6 @@ export type PasswordLoginParams = {
 export type RemoteAgentSummary = {
   id: string;
   name: string;
-  displayName: string | null;
   description: string;
   connectorType: string;
   /** Switch user id of the agent's owner, or null for an agent registered
