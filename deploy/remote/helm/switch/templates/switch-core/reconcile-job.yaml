@@ -1,0 +1,43 @@
+{{- if .Values.switchCore.reconcile.enabled }}
+# Compares the recorded messages against what the homeserver holds, and exits
+# non-zero on drift. The check to run after a backfill and before flipping the
+# transport, because afterwards there is only one record and nothing to compare
+# it against.
+#
+# Off by default, for the same reason as the backfill job: this is a step in a
+# migration, not part of a release.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "switch.fullname" . }}-reconcile
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.selectorLabels" (dict "Release" .Release "component" "reconcile") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  # Read-only, so a retry costs time and nothing else.
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        {{- include "switch.labels" . | nindent 8 }}
+        {{- include "switch.selectorLabels" (dict "Release" .Release "component" "reconcile") | nindent 8 }}
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "switch.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      restartPolicy: Never
+      initContainers:
+        {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
+        {{- include "switch.waitFor" (dict "name" "tuwunel" "host" (include "switch.tuwunelHost" .) "port" .Values.tuwunel.service.port) | nindent 8 }}
+      containers:
+        - name: reconcile
+          image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
+          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          command: ["python", "-m", "switch_core.cli.reconcile", "--verbose"]
+          env:
+            {{- include "switch.coreEnv" . | nindent 12 }}
+{{- end }}

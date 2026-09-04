@@ -1,0 +1,58 @@
+{{- if .Values.switchCore.backfill.enabled }}
+# Reconstructs each room's history from the homeserver into the message log.
+#
+# Off by default and deliberately not part of a normal release: it is a one-off
+# for the move onto the Postgres transport, and as a routine hook it would
+# re-walk every room's entire history on every upgrade.
+#
+# It reads the homeserver, so it can only run while Tuwunel is still deployed —
+# and it is the last thing that needs it. Run it with `dryRun: true` first and
+# read the log before letting it write.
+#
+# Ordered after the migrate hook (weight 10 vs 0): it writes into `messages`,
+# which alembic has to have created.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "switch.fullname" . }}-backfill
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.selectorLabels" (dict "Release" .Release "component" "backfill") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  # Backfill is idempotent — a unique transport_event_id and a commit per page,
+  # so a retry resumes rather than duplicates.
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "switch.labels" . | nindent 8 }}
+        {{- include "switch.selectorLabels" (dict "Release" .Release "component" "backfill") | nindent 8 }}
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "switch.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      restartPolicy: OnFailure
+      initContainers:
+        {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
+        {{- include "switch.waitFor" (dict "name" "tuwunel" "host" (include "switch.tuwunelHost" .) "port" .Values.tuwunel.service.port) | nindent 8 }}
+      containers:
+        - name: backfill
+          image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
+          imagePullPolicy: {{ .Values.switchCore.imagePullPolicy }}
+          command:
+            - python
+            - -m
+            - switch_core.cli.backfill
+            {{- if .Values.switchCore.backfill.dryRun }}
+            - --dry-run
+            {{- end }}
+            {{- if .Values.switchCore.backfill.allowEmpty }}
+            - --allow-empty
+            {{- end }}
+          env:
+            {{- include "switch.coreEnv" . | nindent 12 }}
+{{- end }}

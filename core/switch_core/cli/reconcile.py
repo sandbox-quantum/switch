@@ -20,6 +20,9 @@ Usage:
     just reconcile-messages --room <switch-room-uuid>
     just reconcile-messages --since 2026-09-01T00:00:00+00:00
     just reconcile-messages --verbose
+
+In a deployment it is the same command inside the image:
+    python -m switch_core.cli.reconcile --verbose
 """
 
 from __future__ import annotations

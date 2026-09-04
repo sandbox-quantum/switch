@@ -108,7 +108,7 @@ migrate:
 # Needs a real deployment — the question it answers cannot be asked of fakes.
 #   just reconcile-messages --room <id> --since <iso8601> --verbose
 reconcile-messages *args:
-    uv run --project core python scripts/reconcile_messages.py {{ args }}
+    uv run --project core python -m switch_core.cli.reconcile {{ args }}
 
 # ── Reconstruct room history from the bus into the message log ────────────────
 # Rows exist only from when the recorder was deployed; everything older is on
@@ -117,7 +117,7 @@ reconcile-messages *args:
 # the live log so nothing is redelivered. Safe to re-run. Start with --dry-run.
 #   just backfill-messages --dry-run --room <id>
 backfill-messages *args:
-    uv run --project core python scripts/backfill_messages.py {{ args }}
+    uv run --project core python -m switch_core.cli.backfill {{ args }}
 
 # ── Generate a new alembic migration ──────────────────────────────────────────
 migration msg:

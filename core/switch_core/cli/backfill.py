@@ -20,6 +20,9 @@ Usage:
     just backfill-messages --dry-run
     just backfill-messages --room <switch-room-uuid>
     just backfill-messages
+
+In a deployment it is the same command inside the image:
+    python -m switch_core.cli.backfill --dry-run
 """
 
 from __future__ import annotations
@@ -57,6 +60,16 @@ def _parse_args() -> argparse.Namespace:
             "writing it. Start here."
         ),
     )
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help=(
+            "Treat 'nothing to walk' as success. For unattended runs — a "
+            "first boot has no admin client and no rooms yet, and a stack "
+            "that refuses to start over an empty database is worse than one "
+            "with nothing to backfill."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -84,7 +97,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "every room. Start switch-core once to provision it.",
                 file=sys.stderr,
             )
-            return 2
+            return 0 if args.allow_empty else 2
         reader = readers[0]
         query = select(Room).where(Room.archived_at.is_(None))
         if args.room:
@@ -93,7 +106,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     if not rooms:
         print("No rooms to backfill.", file=sys.stderr)
-        return 2
+        return 0 if args.allow_empty else 2
 
     transport = MatrixTransport(
         server_url=config.matrix_server,
