@@ -77,6 +77,10 @@ class MattermostConnectionConfig(BridgeConnectionConfig):
     # could not read the room at all. Unset for bridges where membership is
     # managed on the platform.
     default_member: str | None = None
+    # Verify the Mattermost server's TLS certificate. Defaults to True so admin
+    # credentials and bot tokens are never sent over an unverified https
+    # connection. Set False only for a self-signed internal CA you trust.
+    verify_tls: bool = True
 
 
 class MattermostAdapter(CollaborationAdapter):
@@ -1694,7 +1698,7 @@ class MattermostAdapter(CollaborationAdapter):
             "url": host,
             "scheme": scheme,
             "port": port,
-            "verify": False,
+            "verify": self._config.verify_tls,
         }
         if token:
             opts["token"] = token
