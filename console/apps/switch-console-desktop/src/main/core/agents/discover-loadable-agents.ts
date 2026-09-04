@@ -1,7 +1,7 @@
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
-import { fetchAgents } from '@main/core/switch-servers/gateway-client';
+import { fetchAgents, fetchMe } from '@main/core/switch-servers/gateway-client';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -27,6 +27,10 @@ export type LoadableAgent = {
   alreadyAgent: boolean;
   /** The agent's owner on the server, when known via server-assisted discovery. */
   ownerName: string | null;
+  /** True when the signed-in user is the agent's owner on the server. */
+  viewerIsOwner: boolean;
+  /** The agent's server-side description, when known via server-assisted discovery. */
+  description: string | null;
   /** The source that found this agent. */
   source: 'server' | 'scan';
   /** True when the on-disk endpoint does not match the server's URL. */
@@ -42,6 +46,8 @@ export type DiscoverLoadableAgentsParams = {
 
 export type DiscoverLoadableAgentsResult = {
   agents: LoadableAgent[];
+  /** The target server's API URL, for rendering endpoint mismatches legibly. */
+  serverApiUrl: string;
 };
 
 /**
@@ -67,9 +73,13 @@ export async function discoverLoadableAgentsOnHost(
   // --- Source 1: Server-assisted discovery ---
   try {
     const remoteAgents = await fetchAgents(server);
+    // Who am I on this server? Used only to soften the owner/policy line for
+    // agents the viewer already owns; an auth hiccup degrades to "not owner".
+    const me = await fetchMe(server).catch(() => null);
 
     // Collect distinct repo_dirs from agents whose known_agent_options carry one.
-    const dirOwners = new Map<string, Map<string, string | null>>();
+    type ServerAgentInfo = { ownerName: string | null; ownerId: string | null; description: string | null };
+    const dirOwners = new Map<string, Map<string, ServerAgentInfo>>();
     for (const agent of remoteAgents) {
       const repoDir =
         agent.knownAgentOptions &&
@@ -80,7 +90,11 @@ export async function discoverLoadableAgentsOnHost(
       if (!repoDir) continue;
 
       if (!dirOwners.has(repoDir)) dirOwners.set(repoDir, new Map());
-      dirOwners.get(repoDir)!.set(agent.name, agent.ownerName);
+      dirOwners.get(repoDir)!.set(agent.name, {
+        ownerName: agent.ownerName,
+        ownerId: agent.ownerId,
+        description: agent.description ?? null,
+      });
     }
 
     // For each dir, run discover on the host and merge.
@@ -93,6 +107,7 @@ export async function discoverLoadableAgentsOnHost(
         });
         for (const agent of discovered) {
           const key = `${dir}\0${agent.name}`;
+          const info = nameOwners.get(agent.name) ?? null;
           seen.set(key, {
             name: agent.name,
             dir,
@@ -101,7 +116,9 @@ export async function discoverLoadableAgentsOnHost(
             providerId: agent.providerId,
             providerSource: agent.providerSource,
             alreadyAgent: agent.alreadyAgent,
-            ownerName: nameOwners.get(agent.name) ?? null,
+            ownerName: info?.ownerName ?? null,
+            viewerIsOwner: !!(me && info?.ownerId && info.ownerId === me.id),
+            description: info?.description ?? null,
             source: 'server',
             endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
             blockedReason: blockedReasonFor(agent, server.apiUrl),
@@ -145,6 +162,8 @@ export async function discoverLoadableAgentsOnHost(
               providerSource: agent.providerSource,
               alreadyAgent: agent.alreadyAgent,
               ownerName: null,
+              viewerIsOwner: false,
+              description: null,
               source: 'scan',
               endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
               blockedReason: blockedReasonFor(agent, server.apiUrl),
@@ -166,7 +185,7 @@ export async function discoverLoadableAgentsOnHost(
     });
   }
 
-  return { agents: [...seen.values()] };
+  return { agents: [...seen.values()], serverApiUrl: server.apiUrl };
 }
 
 function blockedReasonFor(agent: DiscoveredConfiguredAgent, serverApiUrl: string): string | null {
@@ -226,7 +245,7 @@ export async function discoverLoadableAgentsInDir(params: {
   sshHost: string;
   dir: string;
   serverId: string;
-}): Promise<LoadableAgent[]> {
+}): Promise<{ agents: LoadableAgent[]; serverApiUrl: string }> {
   const server = await getServer(params.serverId);
   if (!server) throw new Error(`No Switch server with id ${params.serverId}`);
 
@@ -236,7 +255,7 @@ export async function discoverLoadableAgentsInDir(params: {
     serverId: params.serverId,
   });
 
-  return discovered.map((agent) => ({
+  const agents = discovered.map((agent) => ({
     name: agent.name,
     dir: params.dir,
     switchAgentId: agent.switchAgentId,
@@ -245,8 +264,11 @@ export async function discoverLoadableAgentsInDir(params: {
     providerSource: agent.providerSource,
     alreadyAgent: agent.alreadyAgent,
     ownerName: null,
+    viewerIsOwner: false,
+    description: null,
     source: 'scan' as const,
     endpointMismatch: !sameApiEndpoint(agent.apiEndpoint, server.apiUrl),
     blockedReason: blockedReasonFor(agent, server.apiUrl),
   }));
+  return { agents, serverApiUrl: server.apiUrl };
 }

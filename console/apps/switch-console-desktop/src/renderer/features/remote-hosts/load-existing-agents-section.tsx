@@ -6,16 +6,29 @@
  * selects which to load (attach); agents that need a provider pick get one
  * inline. Already-loaded agents appear disabled.
  *
- * Placed persistently in `remote-host-view.tsx`, and auto-expanded when the
- * host was just added (the post-add-host prompt).
+ * Discovery is explicit: the host is only scanned when the user asks
+ * (SSHing into a box and walking $HOME unprompted is presumptuous on a
+ * colleague's host). Placed persistently in `remote-host-view.tsx`, and
+ * auto-expanded when the host was just added (the post-add-host prompt).
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, Download, FolderSearch, RefreshCw } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  FolderSearch,
+  Info,
+  RefreshCw,
+  ScanSearch,
+  Trash2,
+} from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { Input } from '@renderer/lib/ui/input';
@@ -40,6 +53,8 @@ type LoadableAgentRow = {
   providerSource: string;
   alreadyAgent: boolean;
   ownerName: string | null;
+  viewerIsOwner: boolean;
+  description: string | null;
   source: 'server' | 'scan';
   endpointMismatch: boolean;
   blockedReason: string | null;
@@ -57,16 +72,22 @@ export function LoadExistingAgentsSection({
   initiallyOpen?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(initiallyOpen);
+  // Discovery runs only once the user asks — never on mere expand.
+  const [scanStarted, setScanStarted] = useState(false);
   const queryClient = useQueryClient();
+  const showRemoveConfig = useShowModal('removeAgentConfigModal');
 
   const discovery = useQuery({
     queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId],
     queryFn: () => rpc.agents.discoverLoadableAgentsOnHost({ sshHost, serverId }),
-    enabled: isOpen,
+    enabled: isOpen && scanStarted,
   });
 
   // Agents found by manual directory scans (outside the auto-discovery scope).
   const [manualAgents, setManualAgents] = useState<LoadableAgentRow[]>([]);
+  // Server URL for endpoint-mismatch copy; either discovery source reports it.
+  const [manualServerApiUrl, setManualServerApiUrl] = useState<string | null>(null);
+  const serverApiUrl = discovery.data?.serverApiUrl ?? manualServerApiUrl;
 
   const agents: LoadableAgentRow[] = useMemo(() => {
     const auto = discovery.data?.agents ?? [];
@@ -84,9 +105,20 @@ export function LoadExistingAgentsSection({
 
   // Selection state: keys are "dir\0name".
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Rows with their detail panel expanded.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggleAgent = useCallback((key: string) => {
     setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleExpanded = useCallback((key: string) => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -155,12 +187,15 @@ export function LoadExistingAgentsSection({
       }
       return results;
     },
-    onSuccess: (names) => {
+    onSuccess: async (names) => {
       toast({
         title: `Loaded ${names.length} agent${names.length === 1 ? '' : 's'}`,
         description: names.join(', '),
       });
       setSelected(new Set());
+      // agentEvents is a main-process bus; the sidebar only refreshes when the
+      // renderer store reloads (same as the Add Agent flow does after create).
+      await agentsStore.load();
       void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
     },
     onError: (error) => {
@@ -172,16 +207,59 @@ export function LoadExistingAgentsSection({
     },
   });
 
+  const removeMutation = useMutation({
+    mutationFn: async (agent: LoadableAgentRow) => {
+      const result = await rpc.agents.removeLoadableAgentConfig({
+        sshHost,
+        dir: agent.dir,
+        name: agent.name,
+      });
+      if (!result.removed) throw new Error('Config file not found on the host.');
+      return agent;
+    },
+    onSuccess: (agent) => {
+      toast({ title: 'Config deleted', description: `${agent.name} removed from ${agent.dir}` });
+      const key = `${agent.dir}\0${agent.name}`;
+      setManualAgents((prev) => prev.filter((a) => `${a.dir}\0${a.name}` !== key));
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      void queryClient.invalidateQueries({ queryKey: [LOAD_AGENTS_QUERY_KEY, sshHost, serverId] });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Failed to delete config',
+        description: failureText(error, 'Could not delete the config file.'),
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const confirmRemove = useCallback(
+    (agent: LoadableAgentRow) => {
+      showRemoveConfig({
+        agentName: agent.name,
+        dir: agent.dir,
+        sshHost,
+        onSuccess: () => removeMutation.mutate(agent),
+      });
+    },
+    [showRemoveConfig, sshHost, removeMutation]
+  );
+
   // Manual directory scan.
   const [manualDir, setManualDir] = useState('');
   const manualScan = useMutation({
     mutationFn: (dir: string) => rpc.agents.discoverLoadableAgentsInDir({ sshHost, dir, serverId }),
     onSuccess: (found) => {
+      setManualServerApiUrl(found.serverApiUrl);
       setManualAgents((prev) => {
         const keys = new Set(prev.map((a) => `${a.dir}\0${a.name}`));
         return [
           ...prev,
-          ...found.filter((a: LoadableAgentRow) => !keys.has(`${a.dir}\0${a.name}`)),
+          ...found.agents.filter((a: LoadableAgentRow) => !keys.has(`${a.dir}\0${a.name}`)),
         ];
       });
       setManualDir('');
@@ -189,6 +267,7 @@ export function LoadExistingAgentsSection({
   });
 
   const providerOptions = AGENT_PROVIDERS.filter((p) => p.detectable !== false);
+  const hasScanned = scanStarted && !discovery.isLoading && !discovery.isError;
 
   return (
     <section className="pt-2">
@@ -203,7 +282,17 @@ export function LoadExistingAgentsSection({
 
       {isOpen && (
         <div className="space-y-3 px-3 pb-2">
-          {discovery.isLoading ? (
+          {!scanStarted ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-foreground-muted">
+                Find agents already configured on this host and load them into this Console. Nothing
+                runs until you scan.
+              </p>
+              <Button size="sm" variant="outline" onClick={() => setScanStarted(true)}>
+                <ScanSearch className="size-4" /> Scan this host
+              </Button>
+            </div>
+          ) : discovery.isLoading ? (
             <div className="flex items-center gap-2 text-sm text-foreground-muted">
               <Spinner /> Scanning host for configured agents…
             </div>
@@ -251,53 +340,128 @@ export function LoadExistingAgentsSection({
                   const blocked = !!agent.blockedReason;
                   const needsProvider = !agent.providerId && !providerOverrides[key];
                   const isSelected = selected.has(key);
+                  const isExpanded = expanded.has(key);
 
                   return (
-                    <div key={key} className="flex items-center gap-3 px-3 py-2">
-                      <Checkbox
-                        checked={isSelected}
-                        disabled={blocked}
-                        onCheckedChange={() => toggleAgent(key)}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium">{agent.name}</span>
-                          {agent.blockedReason && (
-                            <span className="shrink-0 text-xs text-destructive">
-                              {agent.blockedReason}
-                            </span>
+                    <div key={key}>
+                      <div className="flex items-center gap-3 px-3 py-2">
+                        <Checkbox
+                          checked={isSelected}
+                          disabled={blocked}
+                          onCheckedChange={() => toggleAgent(key)}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">{agent.name}</span>
+                            {agent.blockedReason && (
+                              <span className="shrink-0 text-xs text-destructive">
+                                {agent.blockedReason}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-foreground-muted">
+                            <span className="truncate">{agent.dir}</span>
+                            {agent.ownerName && <span>· by {agent.ownerName}</span>}
+                            {agent.providerId && (
+                              <span>
+                                · {getProvider(agent.providerId)?.name ?? agent.providerId}
+                              </span>
+                            )}
+                          </div>
+                          {agent.endpointMismatch ? (
+                            <p className="text-xs text-foreground-muted">
+                              Registered against <code>{agent.apiEndpoint}</code>
+                              {serverApiUrl && (
+                                <>
+                                  ; this server is <code>{serverApiUrl}</code>
+                                </>
+                              )}
+                            </p>
+                          ) : (
+                            !blocked &&
+                            agent.ownerName && (
+                              <p className="text-xs text-foreground-muted">
+                                Session access: yes · rooms: policy admits only its owner
+                                {agent.viewerIsOwner ? ' (you)' : `, ask ${agent.ownerName} to widen`}
+                              </p>
+                            )
                           )}
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-foreground-muted">
-                          <span className="truncate">{agent.dir}</span>
-                          {agent.ownerName && <span>· by {agent.ownerName}</span>}
-                          {agent.providerId && (
-                            <span>· {getProvider(agent.providerId)?.name ?? agent.providerId}</span>
-                          )}
-                        </div>
-                        {!blocked && agent.ownerName && (
-                          <p className="text-xs text-foreground-muted">
-                            Session access: yes · rooms: policy admits only its owner, ask{' '}
-                            {agent.ownerName} to widen
-                          </p>
+                        {!blocked && needsProvider && (
+                          <Select
+                            value={providerOverrides[key] ?? ''}
+                            onValueChange={(v) => setProviderFor(key, v as AgentProviderId)}
+                          >
+                            <SelectTrigger className="w-36">
+                              <SelectValue placeholder="Provider" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {providerOptions.map((p) => (
+                                <SelectItem key={p.id} value={p.id}>
+                                  {p.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         )}
-                      </div>
-                      {!blocked && needsProvider && (
-                        <Select
-                          value={providerOverrides[key] ?? ''}
-                          onValueChange={(v) => setProviderFor(key, v as AgentProviderId)}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 px-2 text-foreground-muted hover:text-foreground"
+                          aria-label={`${isExpanded ? 'Hide' : 'Show'} details for ${agent.name}`}
+                          onClick={() => toggleExpanded(key)}
                         >
-                          <SelectTrigger className="w-36">
-                            <SelectValue placeholder="Provider" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {providerOptions.map((p) => (
-                              <SelectItem key={p.id} value={p.id}>
-                                {p.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          <Info className="size-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 px-2 text-foreground-muted hover:text-destructive"
+                          aria-label={`Delete ${agent.name}'s config from this host`}
+                          disabled={agent.alreadyAgent || removeMutation.isPending}
+                          title={
+                            agent.alreadyAgent
+                              ? 'Loaded in this Console — remove it from the agent itself'
+                              : 'Delete this config file from the host'
+                          }
+                          onClick={() => confirmRemove(agent)}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                      {isExpanded && (
+                        <div className="space-y-1 border-t border-dashed border-border px-3 py-2 pl-10 text-xs">
+                          {agent.description && (
+                            <p className="text-foreground">{agent.description}</p>
+                          )}
+                          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-foreground-muted">
+                            <dt>Agent ID</dt>
+                            <dd className="truncate font-mono">{agent.switchAgentId}</dd>
+                            <dt>Endpoint</dt>
+                            <dd className="truncate font-mono">{agent.apiEndpoint}</dd>
+                            <dt>Directory</dt>
+                            <dd className="truncate font-mono">{agent.dir}</dd>
+                            <dt>Provider</dt>
+                            <dd>
+                              {agent.providerId
+                                ? `${getProvider(agent.providerId)?.name ?? agent.providerId} (${agent.providerSource})`
+                                : 'unknown — pick one to load'}
+                            </dd>
+                            {agent.ownerName && (
+                              <>
+                                <dt>Owner</dt>
+                                <dd>
+                                  {agent.ownerName}
+                                  {agent.viewerIsOwner ? ' (you)' : ''}
+                                </dd>
+                              </>
+                            )}
+                            <dt>Found via</dt>
+                            <dd>
+                              {agent.source === 'server' ? 'server registration' : 'host scan'}
+                            </dd>
+                          </dl>
+                        </div>
                       )}
                     </div>
                   );
@@ -334,7 +498,7 @@ export function LoadExistingAgentsSection({
           )}
 
           {/* Load button */}
-          {agents.length > 0 && (
+          {(hasScanned || manualAgents.length > 0) && agents.length > 0 && (
             <div className="flex justify-end">
               <Button
                 size="sm"
