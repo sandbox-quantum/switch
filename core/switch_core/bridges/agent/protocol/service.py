@@ -1307,6 +1307,7 @@ class ProtocolService:
         detail: str | None = None,
         control_capabilities: dict[str, bool] | None = None,
         anchor_event_id: str | None = None,
+        active_subagents: list[dict[str, Any]] | None = None,
     ) -> None:
         """Record and broadcast an agent's runtime state in a room.
 
@@ -1368,6 +1369,7 @@ class ProtocolService:
                 state,
                 deeplink_url=deeplink_url,
                 control_capabilities=control_capabilities,
+                active_subagents=active_subagents,
             )
             await session.commit()
 
@@ -1384,6 +1386,7 @@ class ProtocolService:
             deeplink_url=deeplink_url,
             detail=detail,
             anchor_event_id=anchor_event_id,
+            active_subagents=active_subagents,
         )
 
     async def _emit_runtime_state(
@@ -1399,6 +1402,7 @@ class ProtocolService:
         deeplink_url: str | None = None,
         detail: str | None = None,
         anchor_event_id: str | None = None,
+        active_subagents: list[dict[str, Any]] | None = None,
     ) -> None:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None or client.nio_client is None:
@@ -1419,6 +1423,7 @@ class ProtocolService:
                 "deeplink_url": deeplink_url,
                 "detail": detail,
                 "anchor_event_id": anchor_event_id,
+                "active_subagents": active_subagents,
             },
         )
 

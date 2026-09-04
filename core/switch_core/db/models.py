@@ -713,6 +713,7 @@ class AgentRuntimeState(Base):
     # Null when no controller reports capabilities (e.g. a standalone `claude`
     # session), which resolves session_dependent commands to "unsupported".
     control_capabilities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    active_subagents: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[str] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

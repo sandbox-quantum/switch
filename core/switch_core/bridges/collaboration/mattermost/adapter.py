@@ -20,6 +20,7 @@ from mattermostdriver.exceptions import NoAccessTokenProvided
 
 from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
+    ActiveSubagent,
     CollaborationAdapter,
     LiveRuntimeIndicator,
     format_elapsed,
@@ -507,6 +508,7 @@ class MattermostAdapter(CollaborationAdapter):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Surface runtime state as a posted message that is **never deleted**.
 
@@ -537,7 +539,7 @@ class MattermostAdapter(CollaborationAdapter):
             # Resuming work means the requested input was provided — remove the
             # now-resolved pings, then ensure the working indicator is up.
             await self._clear_input_pings(channel_id, agent_name)
-            body = self._working_body(detail, deeplink_url)
+            body = self._working_body(detail, deeplink_url, active_subagents)
             existing = self._working_msg.get(key)
             if existing is not None:
                 # Refresh the live message in place with the latest activity.
@@ -1278,6 +1280,22 @@ class MattermostAdapter(CollaborationAdapter):
             logger.exception("[BOT-ICON] failed to set icon for %s", agent_name)
 
     # ── Translation ──────────────────────────────────────────────────────────
+
+    def _escape_text(self, text: str) -> str:
+        """Escape user text for Mattermost markdown rendering.
+
+        Mattermost uses markdown, so escape markdown special characters to
+        prevent user input from being interpreted as formatting."""
+        return (
+            text.replace("\\", "\\\\")
+            .replace("*", "\\*")
+            .replace("_", "\\_")
+            .replace("[", "\\[")
+            .replace("]", "\\]")
+            .replace("`", "\\`")
+            .replace("#", "\\#")
+            .replace(">", "\\>")
+        )
 
     def translate_outbound(self, content: str) -> str:
         return re.sub(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.events import ActiveSubagent
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +408,7 @@ class CollaborationAdapter(ABC):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Serialise against any other runtime-indicator work for this agent,
         then apply the state. Adapters override ``_apply_runtime_state``."""
@@ -420,6 +423,7 @@ class CollaborationAdapter(ABC):
                 detail=detail,
                 trigger_thread_root_id=trigger_thread_root_id,
                 anchor_message_ref=anchor_message_ref,
+                active_subagents=active_subagents,
             )
 
     async def reposition_runtime_state(
@@ -443,6 +447,7 @@ class CollaborationAdapter(ABC):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Surface a Switch Console-managed agent's runtime state on the channel.
 
@@ -568,16 +573,89 @@ class CollaborationAdapter(ABC):
             return ""
         return f" ([Open in Switch Console]({deeplink_url}))"
 
-    def _working_body(self, detail: str | None, deeplink_url: str | None) -> str:
+    def _working_body(
+        self,
+        detail: str | None,
+        deeplink_url: str | None,
+        active_subagents: list[ActiveSubagent] | None = None,
+    ) -> str:
         """The "working on it…" status text, rendered for this platform.
 
         Uses the connector-supplied `detail` (e.g. "Editing foo.py") as the live
         activity line when present, falling back to the generic phrase. The
-        deeplink is appended as a trailing link either way."""
+        deeplink is appended as a trailing link either way. Any active
+        subagents are listed underneath."""
         activity = detail.strip() if detail and detail.strip() else "_Working on it…_"
-        return self.translate_outbound(
-            f"⚙️ {activity}" + self._deeplink_suffix(deeplink_url)
-        )
+        body = f"⚙️ {activity}" + self._deeplink_suffix(deeplink_url)
+
+        subagent_list = self._format_subagents(active_subagents)
+        if subagent_list:
+            body = f"{body}\n{subagent_list}"
+
+        return self.translate_outbound(body)
+
+    def _escape_text(self, text: str) -> str:
+        """Escape user text for safe rendering.
+
+        Base implementation uses HTML escaping. Platform-specific adapters
+        override this for their own escaping needs."""
+        return html.escape(text)
+
+    _STATE_EMOJIS: ClassVar[dict[str, str]] = {
+        "working": "⚙️",
+        "awaiting-input": "⏸️",
+        "complete": "✅",
+        "failed": "❌",
+        "idle": "⏹️",
+    }
+
+    def _state_emoji(self, state: str) -> str:
+        """Map subagent state to an emoji indicator."""
+        return self._STATE_EMOJIS.get(state, "⚙️")
+
+    def _max_subagents(self) -> int:
+        """Maximum number of subagents to display.
+
+        Base adapter allows 20; platform-specific adapters override
+        (Slack: 10, Teams: 4)."""
+        return 20
+
+    def _max_subagent_detail_length(self) -> int:
+        """Maximum length for subagent detail text.
+
+        Zero means no limit, which is the base; platform-specific adapters
+        override (Slack: 100 chars, Telegram: 120)."""
+        return 0
+
+    def _truncate_detail(self, detail: str) -> str:
+        """Truncate detail text to platform-specific limits."""
+        max_length = self._max_subagent_detail_length()
+        if max_length > 0 and len(detail) > max_length:
+            return detail[: max_length - 1] + "…"
+        return detail
+
+    def _format_subagents(self, active_subagents: list[ActiveSubagent] | None) -> str:
+        """Format active subagents as a bulleted list with state emojis.
+
+        Returns empty string if no subagents. Enforces platform-specific limits
+        on count and detail length. Escapes user text (agent_name, detail) to
+        prevent injection."""
+        if not active_subagents:
+            return ""
+
+        lines = []
+        for subagent in active_subagents[: self._max_subagents()]:
+            emoji = self._state_emoji(subagent["state"])
+            name = self._escape_text(subagent["agent_name"])
+            detail = subagent.get("detail")
+            if detail:
+                lines.append(
+                    f"- {emoji} {name}: {self._escape_text(self._truncate_detail(detail))}"
+                )
+            else:
+                lines.append(f"- {emoji} {name}")
+
+        return "\n".join(lines)
 
     async def _ping_operator(
         self,

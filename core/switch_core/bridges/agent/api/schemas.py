@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -140,6 +140,13 @@ class StatusRequest(BaseModel):
     detail: str | None = None
 
 
+class SubagentActivity(BaseModel):
+    agent_id: str
+    agent_name: str
+    state: Literal["working", "awaiting-input", "idle", "complete", "failed"]
+    detail: str | None = None
+
+
 class RuntimeStateRequest(BaseModel):
     room_id: str
     # The canonical runtime state. Connectors map provider-specific states onto
@@ -170,6 +177,9 @@ class RuntimeStateRequest(BaseModel):
     # Switch Console for sessions it controls; null for connectors that can't be
     # controlled (a session_dependent command then resolves to unsupported).
     control_capabilities: dict[str, bool] | None = None
+    # Active subagents spawned by this agent, with their current state and
+    # activity. Null means "unchanged" — the last reported list is preserved.
+    active_subagents: list[SubagentActivity] | None = Field(default=None, max_length=50)
 
 
 # ── Resources ─────────────────────────────────────────────────────────────────

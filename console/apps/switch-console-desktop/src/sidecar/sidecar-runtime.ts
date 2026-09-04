@@ -28,6 +28,7 @@ export interface ManagedConnection {
     detail?: Parameters<RoomConnection['onAgentStatusChange']>[2]
   ): void;
   reportActivity(detail: string): void;
+  reportSubagent(ev: Parameters<RoomConnection['reportSubagent']>[0]): void;
   /** The connection id this session's tool calls are expected to arrive on. */
   readonly connection: string;
 }
@@ -195,6 +196,12 @@ export class SidecarRuntime {
     if (parsed.kind === 'activity') {
       const session = this.sessions.get(parsed.ctx.sessionId);
       session?.connection.reportActivity(parsed.detail);
+      return;
+    }
+
+    if (parsed.kind === 'subagent') {
+      const session = this.sessions.get(parsed.ctx.sessionId);
+      session?.connection.reportSubagent(parsed);
       return;
     }
     // 'session' | 'ignore' → no-op: the VM persists no provider-session id and

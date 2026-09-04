@@ -19,6 +19,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from switch_core.bridges.collaboration.adapter import (
+    ActiveSubagent,
     CollaborationAdapter,
     LiveRuntimeIndicator,
 )
@@ -728,6 +729,7 @@ class SlackAdapter(CollaborationAdapter):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Render runtime state as persistent, truly-deletable status messages.
 
@@ -766,7 +768,7 @@ class SlackAdapter(CollaborationAdapter):
                 return
             # Posted under the agent's own name/icon, so the body just states
             # the activity — no need to repeat the agent name in the text.
-            body = self._working_body(detail, deeplink_url)
+            body = self._working_body(detail, deeplink_url, active_subagents)
             existing = self._working_msg.get(key)
             if existing is not None:
                 # Refresh the live message in place with the latest activity.
@@ -2476,6 +2478,23 @@ class SlackAdapter(CollaborationAdapter):
         # `<!subteam^S123>` is the documented form; the `|@handle` variant is
         # what Slack actually sends on some paths, so accept both.
         return re.sub(r"<!subteam\^([A-Z0-9]+)(\|[^>]*)?>", _replace, message)
+
+    # ── Runtime state formatting ─────────────────────────────────────────────
+
+    def _escape_text(self, text: str) -> str:
+        """Escape user text for mrkdwn rendering.
+
+        Slack uses mrkdwn, which requires escaping &, <, and > to prevent
+        them from being interpreted as special characters or breaking mentions."""
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _max_subagents(self) -> int:
+        """Slack-specific limit on displayed subagents."""
+        return 10
+
+    def _max_subagent_detail_length(self) -> int:
+        """Slack-specific limit on subagent detail text."""
+        return 100
 
     # ── Markdown → mrkdwn ────────────────────────────────────────────────────
 

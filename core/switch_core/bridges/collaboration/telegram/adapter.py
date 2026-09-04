@@ -26,6 +26,7 @@ from telegram.ext import Application, ApplicationBuilder, TypeHandler
 
 from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME, CommandArg
 from switch_core.bridges.collaboration.adapter import (
+    ActiveSubagent,
     CollaborationAdapter,
     LiveRuntimeIndicator,
 )
@@ -985,6 +986,7 @@ class TelegramAdapter(CollaborationAdapter):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Render runtime state as persistent, deletable status messages.
 
@@ -1009,7 +1011,7 @@ class TelegramAdapter(CollaborationAdapter):
 
         if state == "working":
             await self._clear_input_pings(channel_id, agent_name)
-            body = self._working_body(detail, deeplink_url)
+            body = self._working_body(detail, deeplink_url, active_subagents)
             existing = self._working_msg.get(key)
             if existing is not None:
                 await self.update_message(
@@ -1046,6 +1048,12 @@ class TelegramAdapter(CollaborationAdapter):
         refs = self._input_pings.pop((channel_id, agent_name), [])
         for ref in refs:
             await self.delete_message(channel_id, ref)
+
+    def _max_subagent_detail_length(self) -> int:
+        """Maximum length for subagent detail text.
+
+        Telegram has a 120 character platform constraint."""
+        return 120
 
     # ── Channels ─────────────────────────────────────────────────────────────
 

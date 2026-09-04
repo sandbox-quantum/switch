@@ -22,6 +22,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
+    ActiveSubagent,
     CollaborationAdapter,
     LiveRuntimeIndicator,
     format_elapsed,
@@ -981,6 +982,7 @@ class TeamsAdapter(CollaborationAdapter):
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
         anchor_message_ref: str | None = None,
+        active_subagents: list[ActiveSubagent] | None = None,
     ) -> None:
         """Persistent status messages, mirroring Slack.
 
@@ -1003,7 +1005,7 @@ class TeamsAdapter(CollaborationAdapter):
         key = (channel_id, agent_name)
         if state == "working":
             await self._clear_input_pings(channel_id, agent_name)
-            body = self._working_body(detail, deeplink_url)
+            body = self._working_body(detail, deeplink_url, active_subagents)
             existing = self._working_msg.get(key)
             if existing is not None:
                 await self._refresh_card(
@@ -1136,6 +1138,19 @@ class TeamsAdapter(CollaborationAdapter):
                 )
             else:
                 await self.delete_message(channel_id, ref)
+
+    def _max_subagents(self) -> int:
+        """Teams displays at most 4 subagents."""
+        return 4
+
+    def _escape_text(self, text: str) -> str:
+        """Escape markdown special characters for Teams Adaptive Cards TextBlock.
+
+        Adaptive Cards render markdown formatting, so we escape special
+        characters to prevent injection."""
+        for char in ["\\", "*", "_", "[", "]", ">"]:
+            text = text.replace(char, f"\\{char}")
+        return text
 
     # ── Channels ─────────────────────────────────────────────────────────────
 

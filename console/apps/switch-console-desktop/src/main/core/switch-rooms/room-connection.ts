@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SwitchEventStream } from '@sandboxaq/switch-agent-runtime';
 import type { AgentStatus, NotificationType } from '@shared/core/providers/agentEvents';
+import type { SubagentActivity } from '@shared/core/switch-rooms/subagent-activity';
 import type { InjectionSink } from './injection-sink';
 import type { SessionControl } from './session-control';
 import { buildSessionDeeplink } from './session-deeplink';
@@ -59,6 +60,9 @@ const MAX_ACTIVITY_REPORT_FAILURES = 5;
 // work that finished long ago. Set well past any real turn, so reaching it is
 // evidence of a bug rather than of a slow agent.
 export const MAX_ROOM_TURN_MS = 4 * 60 * 60 * 1000;
+// The server refuses a runtime-state report carrying more subagents than this,
+// so a turn that delegates more widely reports the first of them.
+const MAX_REPORTED_SUBAGENTS = 50;
 
 export type SwitchCredentials = { agentId: string; apiEndpoint: string; token: string };
 
@@ -300,6 +304,19 @@ export class RoomConnection {
   private currentAnchorId: string | null = null;
   /** Last activity line (without the elapsed suffix), to skip redundant refreshes. */
   private lastActivityDetail: string | null = null;
+  /**
+   * Subagents the session has spawned and not yet finished, oldest first.
+   * Per-turn: reported with runtime state while the turn works, and cleared
+   * when it ends.
+   *
+   * Not keyed by the hook's `agent_id`: Claude Code does not report the same
+   * `agent_id` on a named subagent's SubagentStart and its matching
+   * SubagentStop (observed: Stop carries a different id and no `agent_type`
+   * at all), so id-matching silently never removes a finished entry. A finish
+   * instead removes the oldest still-tracked entry — right whenever subagents
+   * finish in roughly the order they started, which is the common case.
+   */
+  private readonly subagents: SubagentActivity[] = [];
   /** Monotonic timestamp the current working turn began, for the elapsed suffix. */
   private workingStartedAt = 0;
   /** Ticker that re-pushes the activity line with a refreshed elapsed suffix. */
@@ -550,6 +567,7 @@ export class RoomConnection {
     this.currentAnchorId = null;
     this.runtimeState = 'idle';
     this.lastActivityDetail = null;
+    this.subagents.length = 0;
     this.activityFailures = 0;
     this.stopActivityTicker();
   }
@@ -558,6 +576,7 @@ export class RoomConnection {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.subagents.length = 0;
     // Clear any lingering runtime-state surface before aborting (the abort
     // signal would cancel the request, so fire it unsignalled and best-effort).
     // The server's heartbeat-expiry sweep is the backstop if this never lands.
@@ -638,6 +657,7 @@ export class RoomConnection {
       threadId,
       detached: opts.detached ?? false,
     });
+
     const resp = await this.fetchWithTimeout(
       `${this.creds.apiEndpoint}/agents/${this.creds.agentId}/runtime-state`,
       {
@@ -657,6 +677,7 @@ export class RoomConnection {
           deeplink_url: this.sessionDeeplink(),
           detail: detail ?? null,
           control_capabilities: this.control.capabilities,
+          active_subagents: this.subagents.slice(0, MAX_REPORTED_SUBAGENTS),
         }),
       },
       RUNTIME_STATE_REQUEST_TIMEOUT_MS,
@@ -908,6 +929,7 @@ export class RoomConnection {
     // A fresh state clears the activity line: a new "working" turn starts from
     // the generic indicator, and idle/awaiting-input carry no activity.
     this.lastActivityDetail = null;
+    if (state !== 'working' || !wasWorking) this.subagents.length = 0;
     if (state === 'working') {
       if (!wasWorking) {
         this.workingStartedAt = Date.now();
@@ -943,6 +965,36 @@ export class RoomConnection {
     const trimmed = detail.trim();
     if (!trimmed || trimmed === this.lastActivityDetail) return;
     this.lastActivityDetail = trimmed;
+    this.pushActivity();
+  }
+
+  /**
+   * A subagent this session spawned started or finished. One hook carries both
+   * surfaces — the activity line naming the delegation and the list of the
+   * subagents still running — so both are set here and pushed together, rather
+   * than posting the same turn twice. Pushed straight away: a spawn and a
+   * finish are the moments worth showing, and the ticker would show them late.
+   */
+  reportSubagent(ev: {
+    agentId: string;
+    agentName: string;
+    finished: boolean;
+    detail: string;
+  }): void {
+    if (this.stopped) return;
+    if (ev.finished) {
+      this.subagents.shift();
+    } else {
+      this.subagents.push({
+        agent_id: ev.agentId,
+        agent_name: ev.agentName,
+        state: 'working',
+        detail: null,
+      });
+    }
+    if (!this.roomTurnActive || this.runtimeState !== 'working') return;
+    const trimmed = ev.detail.trim();
+    if (trimmed) this.lastActivityDetail = trimmed;
     this.pushActivity();
   }
 

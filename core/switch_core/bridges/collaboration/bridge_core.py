@@ -1652,6 +1652,7 @@ class BridgeCore:
             detail=event.detail,
             trigger_thread_root_id=trigger_thread_ref,
             anchor_message_ref=anchor_message_ref,
+            active_subagents=event.active_subagents,
         )
         await self._follow_reported_anchor(
             channel_id,

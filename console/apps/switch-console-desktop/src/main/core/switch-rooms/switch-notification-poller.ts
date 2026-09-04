@@ -352,6 +352,19 @@ class SwitchNotificationPoller {
     if (!connection) return;
     connection.reportActivity(detail);
   }
+
+  /**
+   * A subagent of this session started or finished, so the room can name the
+   * ones still running alongside the activity line.
+   */
+  onSubagent(
+    sessionId: string,
+    ev: { agentId: string; agentName: string; finished: boolean; detail: string }
+  ): void {
+    const connection = this.connections.get(sessionId);
+    if (!connection) return;
+    connection.reportSubagent(ev);
+  }
 }
 
 export const switchNotificationPoller = new SwitchNotificationPoller();

@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+from typing import TypedDict
+
 from pydantic import BaseModel, ConfigDict
+
+
+class ActiveSubagent(TypedDict):
+    """One subagent an agent has spawned, as reported with its runtime state."""
+
+    agent_id: str
+    agent_name: str
+    state: str
+    detail: str | None
 
 
 class MediationResult(BaseModel):
@@ -164,6 +175,10 @@ class AgentRuntimeStateEvent(SwitchEvent):
     # the agent really has. Unchanged between reports (e.g. the periodic
     # activity refresh) means the indicator stays where it is.
     anchor_event_id: str | None = None
+    # Subagents this agent currently has running, listed under the working
+    # indicator. Persisted on agent_runtime_states under the same
+    # preserve-on-omit rule as control_capabilities: None means "unchanged".
+    active_subagents: list[ActiveSubagent] | None = None
 
 
 # ── Permission ────────────────────────────────────────────────────────────────

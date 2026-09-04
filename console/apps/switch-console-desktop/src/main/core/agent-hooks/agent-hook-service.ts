@@ -126,6 +126,13 @@ class AgentHookService implements IInitializable, IDisposable, Hookable<AgentHoo
       return;
     }
 
+    if (parsed.kind === 'subagent') {
+      // Carries both surfaces of the hook — the activity line and the live
+      // subagent list — so the turn is reported once rather than twice.
+      switchNotificationPoller.onSubagent(parsed.ctx.sessionId, parsed);
+      return;
+    }
+
     const event = parsed.event;
     const appFocused = isAppFocused();
     await maybeShowNotification(event, appFocused);

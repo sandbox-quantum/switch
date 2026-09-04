@@ -26,6 +26,7 @@ function fakeConnection(): ManagedConnection {
     stop: vi.fn(),
     onAgentStatusChange: vi.fn(),
     reportActivity: vi.fn(),
+    reportSubagent: vi.fn(),
     connection: 'conn-1',
   };
 }

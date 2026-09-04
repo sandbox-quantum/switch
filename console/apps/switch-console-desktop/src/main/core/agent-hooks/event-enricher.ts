@@ -28,6 +28,14 @@ export type ParsedHookEvent =
       agentId: string;
       roomName: string | null;
     }
+  | {
+      kind: 'subagent';
+      ctx: AgentHookContext;
+      agentId: string;
+      agentName: string;
+      finished: boolean;
+      detail: string;
+    }
   | { kind: 'ignore' };
 
 /**
@@ -56,6 +64,18 @@ export interface HookEventLogger {
  * adopted Codex session is therefore untracked rather than inconceivable.
  */
 const SWITCH_ROOM_CONNECT_EVENT = 'switch_room_connect';
+
+/**
+ * Event types the Claude connector's `SubagentStart` / `SubagentStop` hooks
+ * report. Their body carries `agent_id` and `agent_type`; no other provider
+ * emits them.
+ */
+const SUBAGENT_START_EVENT = 'subagent';
+const SUBAGENT_DONE_EVENT = 'subagent-done';
+
+function isSubagentEvent(type: string): boolean {
+  return type === SUBAGENT_START_EVENT || type === SUBAGENT_DONE_EVENT;
+}
 
 /** The value as a plain object, or null for anything else. */
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -196,6 +216,19 @@ export async function parseHookEvent(
   const plugin = getPlugin(ctx.providerId);
   const parser = plugin?.behavior.hooks?.parseHookEvent ?? defaultHookEventParser;
   const canonical = parser(raw.type, body);
+
+  if (isSubagentEvent(raw.type) && canonical.kind === 'activity') {
+    const agentType = typeof body.agent_type === 'string' ? body.agent_type.trim() : '';
+    const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
+    return {
+      kind: 'subagent',
+      ctx,
+      agentId: agentId || agentType || 'subagent',
+      agentName: agentType || 'subagent',
+      finished: raw.type === SUBAGENT_DONE_EVENT,
+      detail: canonical.detail,
+    };
+  }
 
   if (canonical.kind === 'ignore') return { kind: 'ignore' };
 
