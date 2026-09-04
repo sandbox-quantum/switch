@@ -44,6 +44,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.23.0] - 2026-09-03
+
+#### Performance
+- **Matrix I/O no longer runs inside a database transaction.**
+  `add_agents_to_room`, `remove_agents_from_room` and `delete_room` each held a
+  connection-pool slot open across a fan-out of Matrix invites/kicks (up to 10s
+  per call), a major contributor to pool exhaustion under load. The three now
+  read short, commit, then do the Matrix work holding nothing — ordered so
+  Matrix membership can never exceed what the database records (a crash leaves
+  an under-privileged, repairable agent, never one silently reading a room
+  Switch has no record of) (#354).
+- **Per-client sync-cursor writes are staggered.** With one Matrix client per
+  participant (hundreds in a single process) and the throttle interval equal to
+  the sync long-poll, every client persisted its cursor in the same instant on
+  an idle instance — a periodic burst of concurrent one-row transactions that
+  starved the pool and cost heartbeats their connection. A sync that carried
+  nothing durable no longer earns a write, and the writes that remain no longer
+  align (#357).
+
+#### Changed
+- On the collaboration bridges, a turn that ends on an error now renders as the
+  stall it is — the reason is shown as why the turn stopped, not streamed as an
+  in-progress step under a spinner (#356).
+
 ### [0.22.1] - 2026-09-02
 
 #### Performance
@@ -1155,6 +1179,37 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.32.0] - 2026-09-03
+
+#### Added
+- **A session that dies on an API error now says so.** A Claude Code turn that
+  fails on expired credentials, quota or a provider outage fires `StopFailure`,
+  which nothing listened for — the channel just went quiet and the operator had
+  to open the TUI to find out why. It now maps onto the `error` status and
+  carries the reason through, so the deeplink ping names what broke instead of a
+  bare "needs your input" (#356).
+
+#### Changed
+- **Sidecar upgrades are taken under live sessions now, except a major.** A
+  sidecar whose build differed from the client's used to be left alone whenever
+  it owned a session and upgraded only once idle, so a busy host could sit on a
+  stale sidecar indefinitely. The upgrade (a few seconds of room injection) is
+  now taken while sessions run; a major bump still waits for idle (#356).
+- Registering an agent with a name that isn't accepted now offers a valid slug
+  instead of rejecting it, and shows the rejected-name message as an error
+  banner (#325).
+- Bundles agent-runtime 0.4.1 (deleted-room / heartbeat backoff fixes), sidecar
+  1.9.7 (reaps dead tmux targets), and the updated connectors (Claude Code
+  0.9.12, Codex 0.3.13, OpenCode 0.1.8).
+- **Local-server mode now bundles switch-core 0.23.0** (was 0.21.0) — the pinned
+  images and standalone compose it pulls move up to the current release.
+
+#### Fixed
+- An errored turn no longer reads as a fresh request for input: the stalled
+  prompt that follows a failure is suppressed so it doesn't bury the reason, and
+  on the Slack card the reason is marked as a stall rather than streamed under a
+  spinner as if it were progress (#356).
 
 ### [0.31.3] - 2026-09-01
 
@@ -2582,7 +2637,25 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
-### [0.3.4] - 2026-09-01
+### [0.4.1] - 2026-09-03
+
+#### Fixed
+- **A deleted room no longer wedges the whole connection.** When the client
+  declared a room the server had dropped, the server refused the entire
+  connection; the client reopened and re-declared the same room, so it was
+  refused again — an unbreakable loop (measured at ~29 errors/min for over a
+  day). A refusal that names one of our rooms is now terminal for that room: it
+  is dropped, reported at error level, and the reduced room list is pushed over
+  the same callback the server's own updates use, so the reopen is a strictly
+  smaller request and cannot spin. Refusals that name no room keep their
+  existing transport backoff (#353).
+- **The heartbeat now backs off when the connection is rejected.** A 404/409 on
+  `/connection/beat` means we are not attached and only a reopen helps, but the
+  loop treated "the server answered" as recovery and beat on at full cadence —
+  one rejected request every two seconds against a connection that could never
+  reopen. A rejection now counts as a beat that did not land: reopen, then
+  double the interval to the 30s cap on the same curve as every other failure;
+  the first beat that lands returns to base cadence (#353).
 
 #### Added
 - Reap orphaned agent runtimes at boot: `reapOrphanedRuntimes` is now part of
@@ -2712,6 +2785,16 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.7] - 2026-09-03
+
+#### Fixed
+- Reap dead tmux targets so a pane whose tmux session has gone is not treated as
+  a live one (#336).
+
+#### Changed
+- Rebuilt on agent-runtime 0.4.1 (a deleted room no longer wedges the whole
+  connection, and the heartbeat backs off when the connection is rejected).
+
 ### [1.9.6] - 2026-09-01
 
 #### Changed
@@ -2807,6 +2890,14 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.12] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
 
 ### [0.9.11] - 2026-09-01
 #### Changed
@@ -3036,6 +3127,14 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.13] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skills updated: document user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
 ### [0.3.12] - 2026-09-01
 #### Changed
 - Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
@@ -3218,6 +3317,15 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.8] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. (Delivered at the next Switch Console update, which
+  rewrites the embedded connector.)
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
 
 ### [0.1.7] - 2026-09-01
 #### Changed

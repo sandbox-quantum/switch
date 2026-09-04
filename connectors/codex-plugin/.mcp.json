@@ -2,7 +2,7 @@
   "mcpServers": {
     "switch": {
       "command": "npx",
-      "args": ["-y", "@sandboxaq/switch-agent-runtime@0.3.4"],
+      "args": ["-y", "@sandboxaq/switch-agent-runtime@0.4.1"],
       "env_vars": [
         "SWITCH_API_ENDPOINT",
         "SWITCH_API_TOKEN",

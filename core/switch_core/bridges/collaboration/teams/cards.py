@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from switch_core.bridges.collaboration.adapter import AgentRendering
+
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 
 
 def agent_message_card(
-    agent_name: str,
+    agent: AgentRendering,
     body: str,
-    icon_url: str,
-    mentions: list[dict[str, Any]] | None = None,
+    mentions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """An Adaptive Card that labels a message with the sending agent's identity.
 
@@ -19,8 +20,11 @@ def agent_message_card(
     be run through ``translate_outbound`` (Adaptive Card TextBlocks render a
     markdown subset: bold, italic, links, lists).
 
-    ``icon_url`` is resolved by the caller — the agent's own icon or the shared
-    default — because looking it up is async and this builder is not.
+    ``agent`` is resolved by the caller — one lookup gives the label, its escaped
+    form and the icon — because resolving it is async and this builder is not.
+    Which form goes where is the point of taking the whole rendering: the header
+    is an ordinary TextBlock and so renders the markdown subset, while
+    ``altText`` is read out verbatim by a screen reader.
 
     ``mentions`` are Bot Framework mention entities matching ``<at>`` markup in
     ``body``. A card carries them under ``msteams`` rather than on the activity,
@@ -33,7 +37,7 @@ def agent_message_card(
         # Plain-text representation for surfaces that can't render the card
         # inline (mobile, notification toasts, copy-link/search previews); its
         # absence is what makes Teams show the "cards.unsupported" placeholder.
-        "fallbackText": f"{agent_name}: {body}",
+        "fallbackText": f"{agent.body_label}: {body}",
         "body": [
             {
                 "type": "ColumnSet",
@@ -44,10 +48,10 @@ def agent_message_card(
                         "items": [
                             {
                                 "type": "Image",
-                                "url": icon_url,
+                                "url": agent.icon_url,
                                 "size": "Small",
                                 "style": "Person",
-                                "altText": agent_name,
+                                "altText": agent.field_label,
                             }
                         ],
                     },
@@ -58,7 +62,7 @@ def agent_message_card(
                         "items": [
                             {
                                 "type": "TextBlock",
-                                "text": agent_name,
+                                "text": agent.body_label,
                                 "weight": "Bolder",
                                 "wrap": True,
                                 "spacing": "None",

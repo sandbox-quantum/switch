@@ -180,6 +180,21 @@ def to_inbound_event(room: Any, event: Any) -> InboundEvent:
     )
 
 
+def _carries_durable_events(response: SyncResponse) -> bool:
+    """Whether a sync response holds anything a restart would need to replay.
+
+    Timeline events, room state and invites are dispatched to handlers, so the
+    cursor must move past them durably. Presence, typing, receipts and account
+    data are not — they only advance the token.
+    """
+    if response.rooms.invite or response.to_device_events:
+        return True
+    return any(
+        room.timeline.events or room.state
+        for room in (*response.rooms.join.values(), *response.rooms.leave.values())
+    )
+
+
 class MatrixTransport:
     """Carries Switch messages over a Matrix homeserver."""
 
@@ -280,7 +295,7 @@ class MatrixTransport:
             on_sync = handlers.on_sync
 
             async def _sync_cb(response: SyncResponse) -> None:
-                await on_sync(response.next_batch)
+                await on_sync(response.next_batch, _carries_durable_events(response))
 
             client.add_response_callback(_sync_cb, SyncResponse)  # type: ignore[arg-type]
 

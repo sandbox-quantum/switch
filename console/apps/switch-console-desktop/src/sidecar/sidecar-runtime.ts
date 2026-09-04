@@ -1,6 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { deriveAgentStatus } from '@main/core/agent-hooks/derive-agent-status';
+import { deriveAgentStatus, deriveErrorDetail } from '@main/core/agent-hooks/derive-agent-status';
 import type { ContextResolver, ParsedHookEvent } from '@main/core/agent-hooks/event-enricher';
 import { parseHookEvent } from '@main/core/agent-hooks/event-enricher';
 import type { RawHookRequest } from '@main/core/agent-hooks/hook-server';
@@ -24,7 +24,8 @@ export interface ManagedConnection {
   stop(): void;
   onAgentStatusChange(
     status: Parameters<RoomConnection['onAgentStatusChange']>[0],
-    notificationType?: Parameters<RoomConnection['onAgentStatusChange']>[1]
+    notificationType?: Parameters<RoomConnection['onAgentStatusChange']>[1],
+    detail?: Parameters<RoomConnection['onAgentStatusChange']>[2]
   ): void;
   reportActivity(detail: string): void;
   /** The connection id this session's tool calls are expected to arrive on. */
@@ -76,6 +77,7 @@ export interface SessionRegistry {
 
 interface SessionConnection {
   connection: ManagedConnection;
+  ptyId: string | null;
   /** Null while the session holds no room — the server has not named one yet,
    * or it named one and then took it away. `connectRoom` branches on this. */
   roomId: string | null;
@@ -182,7 +184,11 @@ export class SidecarRuntime {
         parsed.event.type === 'notification' ? parsed.event.payload.notificationType : undefined;
       // Route to the session the event came from — not every connection.
       const session = this.sessions.get(parsed.event.sessionId);
-      session?.connection.onAgentStatusChange(status, notificationType);
+      session?.connection.onAgentStatusChange(
+        status,
+        notificationType,
+        deriveErrorDetail(parsed.event)
+      );
       return;
     }
 
@@ -262,6 +268,16 @@ export class SidecarRuntime {
     startCursor?: number
   ): string {
     const tmuxTarget = makeAgentTmuxSessionName(sessionId);
+    // A connection can be opened from persisted or test data before the
+    // provider has been validated. Only a known provider can have a startup
+    // watch; preserve the connection path for unknown values instead of
+    // making liveness cleanup introduce a new validation failure.
+    let ptyId: string | null = null;
+    try {
+      ptyId = makePtyId(asPtyProviderId(providerId), sessionId);
+    } catch {
+      // The provider-specific injector remains the authority for that input.
+    }
     // Derived, not random: the session's pane outlives this process and keeps
     // stamping the id it was launched with, so a restarted sidecar has to
     // recompute that id rather than mint one the agent will never hear about.
@@ -283,7 +299,7 @@ export class SidecarRuntime {
         this.deps.tmuxRun,
         () =>
           this.deps.isPaneLive(tmuxTarget) &&
-          !this.deps.startupWatch.blocksInjection(makePtyId(asPtyProviderId(providerId), sessionId))
+          (ptyId === null || !this.deps.startupWatch.blocksInjection(ptyId))
       ),
       injector: new PluginPromptInjector(providerId),
       control: resolveSessionControl(providerId),
@@ -315,7 +331,7 @@ export class SidecarRuntime {
       },
       log: this.deps.log,
     });
-    this.sessions.set(sessionId, { connection, roomId, lostRoom: false, tmuxTarget });
+    this.sessions.set(sessionId, { connection, ptyId, roomId, lostRoom: false, tmuxTarget });
     if (roomId) this.deps.registry.record({ sessionId, roomId, providerId, tmuxTarget });
     // The other end of the watcher's hand-off. If a spawned session comes up
     // without the message that triggered it, this says whether a cursor was
@@ -377,9 +393,29 @@ export class SidecarRuntime {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     session.connection.stop();
+    if (session.ptyId) this.deps.startupWatch.end(session.ptyId);
     this.sessions.delete(sessionId);
     this.deps.registry.forget(sessionId);
     this.deps.log.debug('SidecarRuntime: session stopped', { sessionId });
+  }
+
+  /**
+   * Reap connections whose tmux pane disappeared since the last liveness poll.
+   *
+   * A dead pane must not remain in this map: RoomConnection would otherwise
+   * keep its no-target retry timer alive forever, and the durable registry plus
+   * watcher would continue to say that the room has a session. Return the
+   * rooms before stopSession forgets the connection so the entrypoint can
+   * release its corresponding spawn guard as well.
+   */
+  reapDeadSessions(): Array<{ sessionId: string; roomId: string | null }> {
+    const dead: Array<{ sessionId: string; roomId: string | null }> = [];
+    for (const [sessionId, session] of this.sessions) {
+      if (this.deps.isPaneLive(session.tmuxTarget)) continue;
+      dead.push({ sessionId, roomId: session.roomId });
+      this.stopSession(sessionId);
+    }
+    return dead;
   }
 
   /** Agent tmux targets the runtime is currently injecting into (for pane-liveness polling). */
@@ -421,7 +457,10 @@ export class SidecarRuntime {
   }
 
   stop(): void {
-    for (const session of this.sessions.values()) session.connection.stop();
+    for (const session of this.sessions.values()) {
+      session.connection.stop();
+      if (session.ptyId) this.deps.startupWatch.end(session.ptyId);
+    }
     this.sessions.clear();
   }
 }

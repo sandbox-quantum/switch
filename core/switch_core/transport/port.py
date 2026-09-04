@@ -25,7 +25,11 @@ from switch_core.transport.types import (
 )
 
 Handler = Callable[[Any, Any], Awaitable[None]]
-SyncHandler = Callable[[str], Awaitable[None]]
+# (cursor, durable). `durable` says whether the batch carried anything a
+# restart would have to replay, so the client can decide how urgently to
+# persist the cursor. The transport decides it: only it can see what the batch
+# held, and saying so as a bool keeps its event classes out of the client.
+SyncHandler = Callable[[str, bool], Awaitable[None]]
 SyncErrorHandler = Callable[[str], Awaitable[None]]
 
 

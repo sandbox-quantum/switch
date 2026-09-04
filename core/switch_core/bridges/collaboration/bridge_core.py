@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.collaboration.adapter import CollaborationAdapter
+from switch_core.bridges.collaboration.adapter import (
+    AgentPresentation,
+    CollaborationAdapter,
+)
 from switch_core.bridges.collaboration.models import (
     ChannelType,
     InboundAgentJoin,
@@ -170,6 +173,12 @@ class BridgeCore:
         # (channel_id, agent_name) -> the last message the agent reported having
         # been handed. Cleared when its turn ends. See _follow_reported_anchor.
         self._reported_anchors: dict[tuple[str, str], str] = {}
+        # Matrix-event -> external-post anchors written synchronously right after
+        # room_send, before the durable _record_message_map commit, so a fast
+        # command reply relayed during that DB await still resolves the command's
+        # thread root instead of dropping to the channel root. Popped on commit.
+        # Same race class as _provisioning_channels. See _prerecord_message_map.
+        self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
 
@@ -181,7 +190,7 @@ class BridgeCore:
         await self._load_channel_map()
         await self._load_existing_puppets()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
-        self._adapter.set_agent_icon_resolver(self._agent_icon_url)
+        self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         await self._adapter.start(
             on_message=self._handle_inbound_message,
             on_command=self._handle_inbound_command,
@@ -311,17 +320,23 @@ class BridgeCore:
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
-    async def _agent_icon_url(self, agent_name: str) -> str | None:
-        """An agent's own icon URL, or None if it has not been given one.
+    async def _agent_presentation(self, agent_name: str) -> AgentPresentation | None:
+        """How an agent is presented — its label and its icon — off one row.
 
-        Installed on the adapter as its icon resolver; None sends the adapter
-        to its existing default. A name matching no agent — an alias, or a bot
-        the platform reports that Switch does not own — also yields None rather
-        than an error, since the caller only wants to know whether to override.
+        Installed on the adapter as its presentation resolver. A name matching
+        no agent — an alias, or a bot the platform reports that Switch does not
+        own — yields None rather than an error, since the caller only wants to
+        know whether to override what it already has. Either field being None
+        within a hit means the same thing one field down: the agent was given
+        no value, and the adapter's default stands.
         """
         async with self._session_factory() as session:
             agent = await self._agent_store.get_by_name(session, agent_name)
-        return agent.icon_url if agent else None
+        if agent is None:
+            return None
+        return AgentPresentation(
+            display_name=agent.display_name, icon_url=agent.icon_url
+        )
 
     async def _is_registered_agent(self, name: str) -> bool:
         """Whether `name` is a registered Switch agent. Switch creates each
@@ -631,7 +646,7 @@ class BridgeCore:
 
         content: dict[str, object] = {
             "command": cmd.command,
-            "args": cmd.args,
+            "args": self._adapter.translate_inbound(cmd.args),
             "user_id": puppet.matrix_user_id,
             "user_name": cmd.sender_name,
         }
@@ -663,11 +678,18 @@ class BridgeCore:
         # Mattermost root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
         if existing_matrix_root is None and thread_root_post is not None:
-            await self._record_message_map(
-                external_channel_id=cmd.channel_id,
-                matrix_event_id=event_id,
-                external_post_id=thread_root_post,
-            )
+            # Anchor in memory before the DB write: the write awaits a query that
+            # yields the loop, and a fast reply (e.g. !help) relayed in that gap
+            # would miss the row and land at the channel root. Popped on commit.
+            self._prerecord_message_map(event_id, thread_root_post)
+            try:
+                await self._record_message_map(
+                    external_channel_id=cmd.channel_id,
+                    matrix_event_id=event_id,
+                    external_post_id=thread_root_post,
+                )
+            finally:
+                self._pending_message_maps.pop(event_id, None)
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1771,6 +1793,21 @@ class BridgeCore:
 
     # ── Message-map helpers ───────────────────────────────────────────────────
 
+    def _prerecord_message_map(
+        self, matrix_event_id: str, external_post_id: str
+    ) -> None:
+        """Anchor a Matrix-event → external-post mapping in memory, synchronously,
+        so it resolves before the durable _record_message_map write commits.
+
+        _record_message_map awaits a DB round-trip that yields the event loop; a
+        fast command reply (e.g. !help) can be relayed during that yield and miss
+        the not-yet-committed row, dropping the result at the channel root rather
+        than in the command's thread. Callers set this immediately after
+        room_send returns, with NO await in between, and pop it once the row is
+        committed. Same discipline as begin_provisioning for the room-mapping
+        race."""
+        self._pending_message_maps[matrix_event_id] = external_post_id
+
     async def _record_message_map(
         self, *, external_channel_id: str, matrix_event_id: str, external_post_id: str
     ) -> None:
@@ -1802,6 +1839,9 @@ class BridgeCore:
         return mapping.matrix_event_id if mapping is not None else None
 
     async def _external_post_for_matrix_event(self, matrix_event_id: str) -> str | None:
+        pending = self._pending_message_maps.get(matrix_event_id)
+        if pending is not None:
+            return pending
         async with self._session_factory() as session:
             mapping = await self._bridge_message_map_store.get_by_matrix_event_id(
                 session, self._bridge_id, matrix_event_id

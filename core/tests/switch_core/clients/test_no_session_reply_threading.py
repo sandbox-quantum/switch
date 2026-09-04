@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -8,8 +9,14 @@ from switch_core.clients.agent_client import (
     _STARTING_SESSION_MESSAGE,
     AUTO_REPLY_FLAG,
     AgentClient,
+    _GateOutcome,
 )
 from switch_core.transport import InboundMessage, RoomRef
+
+
+@asynccontextmanager
+async def _session_factory():  # type: ignore[no-untyped-def]
+    yield object()
 
 
 class _Recorder:
@@ -41,37 +48,48 @@ def _fake_self(
     async def _resolve_room_meta(_matrix_room_id: str) -> SimpleNamespace:
         return _meta()
 
-    async def _compute_addressed(_event: object, _meta: object) -> bool:
+    def _addressed_without_lookup(_event: object, _meta: object) -> bool:
+        return True
+
+    async def _compute_addressed(
+        _session: object, _event: object, _meta: object
+    ) -> bool:
         return True  # addressed → the offline auto-reply path runs
 
-    async def _gate_addressed(
-        _room: object,
-        _event: object,
-        _meta: object,
-        _reply_thread_root: str,
-        is_addressed: bool,
-    ) -> bool:
-        # No addressing policy in these tests — pass the addressed flag through.
-        return is_addressed
+    async def _fresh_agent(_session: object) -> object:
+        return ns.agent
 
-    async def _is_available(_room_id: str) -> bool:
+    async def _gate_addressed(
+        _session: object, _agent: object, _event: object, _meta: object
+    ) -> _GateOutcome:
+        # No addressing policy in these tests — the message stays addressed.
+        return _GateOutcome(addressed=True, refusal=None)
+
+    async def _is_available(_session: object, _agent: object, _room_id: str) -> bool:
         return False  # no live session → triggers the auto-reply
 
-    async def _reply_when_unavailable_here(_meta: object, _asker_handle: str) -> str:
+    async def _reply_when_unavailable_here(
+        _session: object, _agent: object, _meta: object, _asker_handle: str
+    ) -> str:
         return unavailable_reply
 
     ns = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="cc-bug-fixing"),
+        session_factory=_session_factory,
         _resolve_room_meta=_resolve_room_meta,
+        _addressed_without_lookup=_addressed_without_lookup,
         _compute_addressed=_compute_addressed,
+        _fresh_agent=_fresh_agent,
         _gate_addressed=_gate_addressed,
         _is_available=_is_available,
         _reply_when_unavailable_here=_reply_when_unavailable_here,
+        _triggered_by_auto_reply=AgentClient._triggered_by_auto_reply,
         send_message=send_message,
         _event_buffer=SimpleNamespace(enqueue=lambda *a, **k: None),
     )
-    # Exercise the real sender-tagging helper.
+    # Exercise the real sender-tagging and auto-reply helpers.
     ns._sender_handle = AgentClient._sender_handle.__get__(ns)
+    ns._post_auto_reply = AgentClient._post_auto_reply.__get__(ns)
     return ns
 
 

@@ -14,6 +14,11 @@ from switch_core.delivery.addressing import (
 )
 
 
+@asynccontextmanager
+async def _session_factory():  # type: ignore[no-untyped-def]
+    yield object()
+
+
 def _no_connections() -> SimpleNamespace:
     """A connection registry with nothing live.
 
@@ -48,7 +53,9 @@ def _resolver(**attrs: object) -> SimpleNamespace:
             name,
             (
                 lambda method: (
-                    lambda **kw: getattr(AddressingResolver, method)(resolver, **kw)
+                    lambda *a, **kw: getattr(AddressingResolver, method)(
+                        resolver, *a, **kw
+                    )
                 )
             )(name),
         )
@@ -77,10 +84,12 @@ def _is_mentioned(name: str, body: str) -> bool:
 async def _command_addresses(name: str, args: str) -> bool:
     # Exercise the real default command-targeting predicate with a client that
     # holds no role, so this reflects pure name-boundary matching.
-    client = SimpleNamespace(agent=SimpleNamespace(name=name))
+    client = SimpleNamespace(
+        agent=SimpleNamespace(name=name), session_factory=_session_factory
+    )
     client._args_tag_my_name = lambda text: AgentClient._args_tag_my_name(client, text)
 
-    async def _no(_text: str, _room_id: str) -> bool:
+    async def _no(_session: object, _text: str, _room_id: str) -> bool:
         return False
 
     client._text_tags_my_role = _no
@@ -182,17 +191,12 @@ def _role_client(agent_name: str, held_role: str | None) -> SimpleNamespace:
     """A fake client for role tagging: its agent LIVE-holds `held_role` (or
     None) — agent_room_role just returns that, ignoring the DB."""
 
-    @asynccontextmanager
-    async def _session_factory():  # type: ignore[no-untyped-def]
-        yield object()
-
     async def _agent_room_role(_session, _room_id, _agent_id, _alive=()):  # type: ignore[no-untyped-def]
         return held_role
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name=agent_name),
         _addressing=_resolver(
-            _session_factory=_session_factory,
             _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
             _live_agent_ids=_no_connections().live_agent_ids,
         ),
@@ -209,7 +213,9 @@ class TestRoleMentionRouting:
     async def test_role_holder_is_addressed(self) -> None:
         client = _role_client("ephemeral-cc", held_role="manager")
         assert (
-            await AgentClient._text_tags_my_role(client, "@manager review", "room-1")
+            await AgentClient._text_tags_my_role(
+                client, None, "@manager review", "room-1"
+            )
             is True
         )
 
@@ -217,7 +223,9 @@ class TestRoleMentionRouting:
         # This agent holds no role, so an @manager tag does not reach it.
         client = _role_client("ephemeral-cc", held_role=None)
         assert (
-            await AgentClient._text_tags_my_role(client, "@manager review", "room-1")
+            await AgentClient._text_tags_my_role(
+                client, None, "@manager review", "room-1"
+            )
             is False
         )
 
@@ -225,7 +233,9 @@ class TestRoleMentionRouting:
         # Holds "worker" but "@manager" is tagged → not addressed.
         client = _role_client("ephemeral-cc", held_role="worker")
         assert (
-            await AgentClient._text_tags_my_role(client, "@manager review", "room-1")
+            await AgentClient._text_tags_my_role(
+                client, None, "@manager review", "room-1"
+            )
             is False
         )
 
@@ -233,14 +243,16 @@ class TestRoleMentionRouting:
         # Boundary safety: holding "lead" must not match "@lead-dev".
         client = _role_client("ephemeral-cc", held_role="lead")
         assert (
-            await AgentClient._text_tags_my_role(client, "@lead-dev ping", "room-1")
+            await AgentClient._text_tags_my_role(
+                client, None, "@lead-dev ping", "room-1"
+            )
             is False
         )
 
     async def test_no_at_short_circuits(self) -> None:
         client = _role_client("ephemeral-cc", held_role="manager")
         assert (
-            await AgentClient._text_tags_my_role(client, "no at here", "room-1")
+            await AgentClient._text_tags_my_role(client, None, "no at here", "room-1")
             is False
         )
 
@@ -249,17 +261,12 @@ def _alias_client(agent_name: str, alias_by_room: dict[str, str]) -> SimpleNames
     """A fake client whose room alias is looked up from `alias_by_room`
     (room_id -> alias), mirroring RoomStore.get_alias scoped per room."""
 
-    @asynccontextmanager
-    async def _session_factory():  # type: ignore[no-untyped-def]
-        yield object()
-
     async def _get_alias(_session, room_id, _agent_id):  # type: ignore[no-untyped-def]
         return alias_by_room.get(room_id)
 
     return SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name=agent_name),
         _addressing=_resolver(
-            _session_factory=_session_factory,
             _room_store=SimpleNamespace(get_alias=_get_alias),
         ),
     )
@@ -273,7 +280,7 @@ class TestAliasMentionRouting:
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
             await AgentClient._text_tags_my_alias(
-                client, "@fixer please look", "room-1"
+                client, None, "@fixer please look", "room-1"
             )
             is True
         )
@@ -281,21 +288,22 @@ class TestAliasMentionRouting:
     async def test_alias_case_insensitive(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(client, "@FIXER hi", "room-1") is True
+            await AgentClient._text_tags_my_alias(client, None, "@FIXER hi", "room-1")
+            is True
         )
 
     async def test_alias_is_room_scoped(self) -> None:
         # Alias set in room-1 only — tagging it in room-2 does not address us.
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(client, "@fixer hi", "room-2")
+            await AgentClient._text_tags_my_alias(client, None, "@fixer hi", "room-2")
             is False
         )
 
     async def test_no_alias_not_addressed(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {})
         assert (
-            await AgentClient._text_tags_my_alias(client, "@fixer hi", "room-1")
+            await AgentClient._text_tags_my_alias(client, None, "@fixer hi", "room-1")
             is False
         )
 
@@ -303,14 +311,14 @@ class TestAliasMentionRouting:
         # Boundary safety: alias "fix" must not match "@fixer".
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fix"})
         assert (
-            await AgentClient._text_tags_my_alias(client, "@fixer ping", "room-1")
+            await AgentClient._text_tags_my_alias(client, None, "@fixer ping", "room-1")
             is False
         )
 
     async def test_no_at_short_circuits(self) -> None:
         client = _alias_client("claude-code.aq-switch-2", {"room-1": "fixer"})
         assert (
-            await AgentClient._text_tags_my_alias(client, "no at here", "room-1")
+            await AgentClient._text_tags_my_alias(client, None, "no at here", "room-1")
             is False
         )
 
@@ -325,19 +333,22 @@ class TestCommandRoleTargeting:
     async def test_holder_targeted_by_role(self) -> None:
         client = _role_client("ephemeral-cc", held_role="manager")
         assert (
-            await AgentClient._text_tags_my_role(client, "@manager", "room-1") is True
+            await AgentClient._text_tags_my_role(client, None, "@manager", "room-1")
+            is True
         )
 
     async def test_non_holder_not_targeted(self) -> None:
         client = _role_client("ephemeral-cc", held_role=None)
         assert (
-            await AgentClient._text_tags_my_role(client, "@manager", "room-1") is False
+            await AgentClient._text_tags_my_role(client, None, "@manager", "room-1")
+            is False
         )
 
     async def test_role_prefix_not_targeted(self) -> None:
         client = _role_client("ephemeral-cc", held_role="lead")
         assert (
-            await AgentClient._text_tags_my_role(client, "@lead-dev", "room-1") is False
+            await AgentClient._text_tags_my_role(client, None, "@lead-dev", "room-1")
+            is False
         )
 
 
@@ -358,10 +369,6 @@ def _unavailable_client(
     returns the sentinel "OFFLINE".
     """
 
-    @asynccontextmanager
-    async def _session_factory():  # type: ignore[no-untyped-def]
-        yield object()
-
     async def _live_connected_rooms(_session, _agent_id):  # type: ignore[no-untyped-def]
         return list(live_rooms)
 
@@ -372,6 +379,7 @@ def _unavailable_client(
         return bound_here
 
     async def _unavailable_reply(  # type: ignore[no-untyped-def]
+        _session,
         _room_name,
         _agent,
         _asker_handle,
@@ -392,12 +400,8 @@ def _unavailable_client(
         integration_profile={"connection_model": connection_model},
     )
 
-    async def _fresh_agent():  # type: ignore[no-untyped-def]
-        return agent
-
     return SimpleNamespace(
         agent=agent,
-        _fresh_agent=_fresh_agent,
         session_factory=_session_factory,
         _connections=_no_connections(),
         _room_role_store=SimpleNamespace(agent_room_role=_agent_room_role),
@@ -421,7 +425,9 @@ class TestUnavailableHereReply:
     async def test_role_holder_session_elsewhere_says_role_elsewhere(self) -> None:
         # Holds a role here, but its assuming session is attending room-B.
         client = _unavailable_client(live_rooms=["room-B"], role_here=True)
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == _role_elsewhere_message("Room room-B")
         assert "Room room-B" in msg
 
@@ -430,21 +436,27 @@ class TestUnavailableHereReply:
         # Defers to the known-agent reply (paste-ready connect command) with
         # the other rooms threaded in, rather than the role-flavoured wording.
         client = _unavailable_client(live_rooms=["room-B", "room-C"], role_here=False)
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == "ELSEWHERE: Room room-B, Room room-C"
 
     async def test_only_session_is_here_falls_back_to_offline(self) -> None:
         # The only live session is the addressed room itself → nothing elsewhere.
         client = _unavailable_client(live_rooms=["room-A"], role_here=False)
         assert (
-            await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+            await AgentClient._reply_when_unavailable_here(
+                client, None, client.agent, _here(), "asker"
+            )
             == "OFFLINE"
         )
 
     async def test_no_live_sessions_is_offline(self) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False)
         assert (
-            await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+            await AgentClient._reply_when_unavailable_here(
+                client, None, client.agent, _here(), "asker"
+            )
             == "OFFLINE"
         )
 
@@ -455,12 +467,16 @@ class TestConnectedNotLive:
 
     async def test_bound_but_not_live_says_connected_not_live(self) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False, bound_here=True)
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == "NOT_LIVE"
 
     async def test_no_binding_is_offline(self) -> None:
         client = _unavailable_client(live_rooms=[], role_here=False, bound_here=False)
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == "OFFLINE"
 
     async def test_passive_never_says_connected_not_live(self) -> None:
@@ -471,7 +487,9 @@ class TestConnectedNotLive:
             connection_model="session_passive",
             bound_here=True,
         )
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == "OFFLINE"
 
     async def test_same_named_live_room_not_offered_as_elsewhere(self) -> None:
@@ -480,7 +498,9 @@ class TestConnectedNotLive:
         # not live → connected-not-live, not a confusing same-name pointer.
         # _here() is room-A / "Room A"; room id "A" → name "Room A" (collision).
         client = _unavailable_client(live_rooms=["A"], role_here=False, bound_here=True)
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == "NOT_LIVE"
 
     async def test_distinct_named_live_room_still_points_elsewhere(self) -> None:
@@ -488,5 +508,7 @@ class TestConnectedNotLive:
         client = _unavailable_client(
             live_rooms=["room-B"], role_here=False, bound_here=True
         )
-        msg = await AgentClient._reply_when_unavailable_here(client, _here(), "asker")
+        msg = await AgentClient._reply_when_unavailable_here(
+            client, None, client.agent, _here(), "asker"
+        )
         assert msg == "ELSEWHERE: Room room-B"

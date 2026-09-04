@@ -62,6 +62,9 @@ def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
     resolver.mentions_name = lambda **kw: AddressingResolver.mentions_name(
         resolver, **kw
     )
+    resolver.addressed_without_lookup = lambda **kw: (
+        AddressingResolver.addressed_without_lookup(resolver, **kw)
+    )
     resolver.mentions_alias = _no
     resolver.mentions_role = _no
     return resolver
@@ -70,8 +73,11 @@ def _client(name: str = "flintai-sdk.ts") -> SimpleNamespace:
 async def _addressed(
     resolver: SimpleNamespace, event: InboundMessage, meta: RoomMeta
 ) -> bool:
+    # `object()` stands in for the session the caller owns: the marker and the
+    # name mention are answered before any store is consulted.
     return await AddressingResolver.addresses(
         resolver,
+        object(),
         agent=resolver.agent,
         agent_matrix_id=resolver.matrix_user_id,
         room_id=meta.room_id,

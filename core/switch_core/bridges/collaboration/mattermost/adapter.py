@@ -55,6 +55,11 @@ _JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
 # Emoji marking the message an agent is currently working on.
 _WORKING_REACTION = "eyes"
 
+# The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
+# a bot's display name in the post header. Under any other value — including
+# the server default, "username" — the display name is stored and never shown.
+_NAME_DISPLAY_SHOWS_LABEL = frozenset({"full_name", "nickname_full_name"})
+
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
     url: str
@@ -126,6 +131,14 @@ class MattermostAdapter(CollaborationAdapter):
 
         # channel id -> channel name (URL slug), for building channel deeplinks.
         self._channel_name_cache: dict[str, str] = {}
+
+        # The server's `TeamSettings.TeammateNameDisplay`, read once per run:
+        # it decides whether a bot's display name is rendered anywhere, and
+        # under the default ("username") it never is. None once a read has been
+        # attempted and could not answer.
+        self._name_display_setting: str | None = None
+        self._name_display_read = False
+        self._name_display_warned = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -565,7 +578,12 @@ class MattermostAdapter(CollaborationAdapter):
                 await self._post_typing(channel_id, agent_name, trigger_thread_root_id)
         elif state == "awaiting-input":
             ref = await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -970,9 +988,25 @@ class MattermostAdapter(CollaborationAdapter):
 
         loop = self._main_loop
 
+        # The username is the routing handle — the mention, the member-list key
+        # and the key this adapter adopts a bot back by — so it stays the
+        # identifier. Only the bot's own display name carries the label.
+        label = (await self.agent_rendering(agent_name)).field_label
+        if label != agent_name:
+            self._warn_once_if_display_names_are_hidden()
+
         existing = await self._find_existing_bot(agent_name)
         if existing:
             bot_id: str = str(existing["user_id"])
+            if existing.get("display_name") != label:
+                try:
+                    self._mm_api("put", f"/bots/{bot_id}", {"display_name": label})
+                except Exception as e:
+                    logger.exception(
+                        "Failed to update the display name of Mattermost bot %s: %s",
+                        agent_name,
+                        e,
+                    )
         else:
             try:
                 bot = self._mm_api(
@@ -980,7 +1014,7 @@ class MattermostAdapter(CollaborationAdapter):
                     "/bots",
                     {
                         "username": agent_name,
-                        "display_name": agent_name,
+                        "display_name": label,
                         "description": f"Switch agent: {agent_description}",
                     },
                 )
@@ -1209,6 +1243,53 @@ class MattermostAdapter(CollaborationAdapter):
             if bot_name:
                 agent_names.append(bot_name)
         return agent_names
+
+    def _read_name_display_setting(self) -> str | None:
+        """`TeamSettings.TeammateNameDisplay`, read at most once per run.
+
+        None when the read could not answer — the server config is readable
+        only by a system admin, and an agent's bot is worth having either
+        way, so the caller reports the blind spot instead of failing on it."""
+        if self._name_display_read:
+            return self._name_display_setting
+        self._name_display_read = True
+        try:
+            config = self._mm_api("get", "/config")
+            setting = (config.get("TeamSettings") or {}).get("TeammateNameDisplay")
+        except Exception as e:
+            logger.warning(
+                "Could not read the Mattermost server config (%s), so whether "
+                "agent display names are rendered on this server is unknown",
+                e,
+            )
+            return None
+        if not isinstance(setting, str):
+            logger.warning(
+                "The Mattermost server config carries no "
+                "TeamSettings.TeammateNameDisplay, so whether agent display "
+                "names are rendered on this server is unknown"
+            )
+            return None
+        self._name_display_setting = setting
+        return setting
+
+    def _warn_once_if_display_names_are_hidden(self) -> None:
+        """Say so when this server will store an agent's display name and show
+        nobody. Mattermost renders a bot under its username unless the server
+        is told otherwise, so a display name Switch sets can be invisible with
+        nothing about the write itself failing."""
+        if self._name_display_warned:
+            return
+        setting = self._read_name_display_setting()
+        if setting is None or setting in _NAME_DISPLAY_SHOWS_LABEL:
+            return
+        self._name_display_warned = True
+        logger.warning(
+            "Mattermost TeamSettings.TeammateNameDisplay is '%s', so agent "
+            "display names will not appear in the post header on this server — "
+            "set it to 'full_name' or 'nickname_full_name' to render them",
+            setting,
+        )
 
     # ── Bot icons ────────────────────────────────────────────────────────────
 

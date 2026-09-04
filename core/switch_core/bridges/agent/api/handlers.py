@@ -1183,7 +1183,10 @@ async def list_task_agents(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    agents = [AgentInfo(id=p.id, name=p.name, description="") for p in performers]
+    agents = [
+        AgentInfo(id=p.id, name=p.name, description="", display_name=p.display_name)
+        for p in performers
+    ]
 
     return TaskAgentsResponse(agents=agents)
 
@@ -1478,7 +1481,13 @@ async def list_agents(
     agents = await protocol.list_all_agents(agent.id)
     return AgentListResponse(
         agents=[
-            AgentInfo(id=a.id, name=a.name, description=a.description) for a in agents
+            AgentInfo(
+                id=a.id,
+                name=a.name,
+                description=a.description,
+                display_name=a.display_name,
+            )
+            for a in agents
         ]
     )
 

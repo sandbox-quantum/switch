@@ -1,6 +1,6 @@
 import type { SidecarRunStatus } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import type { SidecarVerdict } from '@shared/events/sidecarEvents';
-import { compareSidecarVersions } from '../../../sidecar/sidecar-version';
+import { compareSidecarVersions, isMajorUpgrade } from '../../../sidecar/sidecar-version';
 
 /** What this client ships, and who it is — the other half of the comparison. */
 export interface SidecarClientBuild {
@@ -37,5 +37,12 @@ export function verdictFor(status: SidecarRunStatus, client: SidecarClientBuild)
   if (order === 0 && status.deployerId !== null && status.deployerId !== client.deployerId) {
     return 'other-install';
   }
-  return status.liveSessions > 0 ? 'upgrade-pending' : 'upgrade-available';
+  // Live sessions no longer hold an upgrade back on their own — the launcher
+  // takes one through a restart, which costs a few seconds of room injection.
+  // Only a major bump waits for an idle sidecar, because that is where the
+  // durable state schema may move.
+  if (status.liveSessions > 0 && isMajorUpgrade(status.version, client.version)) {
+    return 'upgrade-pending';
+  }
+  return 'upgrade-available';
 }

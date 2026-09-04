@@ -130,6 +130,7 @@ class ParticipantDescriptor(BaseModel):
     name: str
     type: Literal["agent", "user"]
     agent_type: str | None = None
+    display_name: str | None = None
     can_delegate: bool = False
     can_accept: bool = False
     status: AgentStatus | None = None

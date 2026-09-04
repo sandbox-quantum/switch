@@ -43,8 +43,10 @@ class _FakeChat:
 class _FakeBot:
     def __init__(self, chat: _FakeChat) -> None:
         self._chat = chat
+        self.get_chat_calls = 0
 
     async def get_chat(self, chat_id: Any) -> _FakeChat:
+        self.get_chat_calls += 1
         return self._chat
 
 
@@ -169,6 +171,50 @@ def test_a_public_chat_uses_its_real_address() -> None:
     # beats the internal form whenever the chat has one.
     adapter = _adapter(_FakeChat("supergroup", username="acme_public"))
 
+    assert _run(adapter.channel_deeplink(SUPERGROUP_ID)) == "https://t.me/acme_public"
+
+
+def test_a_resolved_chat_is_only_looked_up_once() -> None:
+    # A deeplink is built per room on every dashboard read, inside the
+    # request's transaction. Uncached, a getChat round trip per room is a pool
+    # slot held for the network, per room, per page load.
+    adapter = _adapter(_FakeChat("supergroup", username="acme_public"))
+
+    for _ in range(3):
+        assert (
+            _run(adapter.channel_deeplink(SUPERGROUP_ID)) == "https://t.me/acme_public"
+        )
+
+    assert adapter._bot.get_chat_calls == 1  # type: ignore[union-attr]
+
+
+def test_a_chat_with_no_username_is_not_looked_up_again_either() -> None:
+    adapter = _adapter(_FakeChat("supergroup"))
+
+    for _ in range(3):
+        assert (
+            _run(adapter.channel_deeplink(SUPERGROUP_ID))
+            == "https://t.me/c/1234567890/1"
+        )
+
+    assert adapter._bot.get_chat_calls == 1  # type: ignore[union-attr]
+
+
+def test_a_failed_lookup_is_not_cached() -> None:
+    # A transient outage must not cost the chat its real address for the life
+    # of the process.
+    adapter = _adapter(_FakeChat("supergroup", username="acme_public"))
+    working = adapter._bot.get_chat  # type: ignore[union-attr]
+
+    async def _fail(_chat_id: Any) -> _FakeChat:
+        raise RuntimeError("telegram unreachable")
+
+    adapter._bot.get_chat = _fail  # type: ignore[union-attr]
+    assert (
+        _run(adapter.channel_deeplink(SUPERGROUP_ID)) == "https://t.me/c/1234567890/1"
+    )
+
+    adapter._bot.get_chat = working  # type: ignore[union-attr]
     assert _run(adapter.channel_deeplink(SUPERGROUP_ID)) == "https://t.me/acme_public"
 
 

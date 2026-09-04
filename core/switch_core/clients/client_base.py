@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
@@ -40,7 +41,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SYNC_STATE_INTERVAL = 30
+SYNC_STATE_INTERVAL = 30.0
+# Every client in this process starts when the process does, and its sync
+# long-poll is SYNC_STATE_INTERVAL as well, so a fixed interval has all of them
+# crossing the threshold in the same instant — hundreds of one-row transactions
+# competing for the connection pool at once. A per-client interval keeps them
+# spread out and stops them re-converging after a restart.
+SYNC_STATE_JITTER = 15.0
+# A sync that carried nothing durable still advances the cursor, and persisting
+# that is wasted work: resuming from the older cursor replays the same nothing.
+# The token should still not be left arbitrarily far behind the server, so an
+# unwritten one is flushed once it is this stale.
+SYNC_STATE_MAX_STALENESS = 900.0
 SYNC_MAX_RETRIES = 5
 SYNC_BACKOFF_BASE = 1.0
 SYNC_BACKOFF_CAP = 60.0
@@ -125,7 +137,12 @@ class ClientBase[ConfigT: ClientConfig]:
         self._self_join_dispatched: set[str] = set()
         self._ready = asyncio.Event()
         self._startup_ts: int = 0
-        self._last_sync_persist: float = 0.0
+        self._sync_persist_interval = SYNC_STATE_INTERVAL + random.uniform(
+            0.0, SYNC_STATE_JITTER
+        )
+        self._last_sync_persist: float = time.monotonic() - random.uniform(
+            0.0, SYNC_STATE_INTERVAL
+        )
         self._sync_state_dirty: bool = False
         self._running: bool = False
 
@@ -419,10 +436,16 @@ class ClientBase[ConfigT: ClientConfig]:
                 "Error in handler for %s in %s", event.event_type, room.room_id
             )
 
-    async def _handle_sync(self, next_batch: str) -> None:
-        if next_batch and next_batch != self.next_batch_token:
-            self.next_batch_token = next_batch
+    async def _handle_sync(self, next_batch: str, durable: bool) -> None:
+        if not next_batch or next_batch == self.next_batch_token:
+            return
+        self.next_batch_token = next_batch
+        if durable:
             await self._persist_state()
+            return
+        self._sync_state_dirty = True
+        if (time.monotonic() - self._last_sync_persist) >= SYNC_STATE_MAX_STALENESS:
+            await self._persist_state(force=True)
 
     async def _handle_sync_error(self, message: str) -> None:
         logger.error("Sync error for %s: %s", self.matrix_user_id, message)
@@ -619,7 +642,7 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def _persist_state(self, force: bool = False) -> None:
         now = time.monotonic()
-        if not force and (now - self._last_sync_persist) < SYNC_STATE_INTERVAL:
+        if not force and (now - self._last_sync_persist) < self._sync_persist_interval:
             self._sync_state_dirty = True
             return
 

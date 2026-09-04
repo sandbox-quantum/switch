@@ -13,6 +13,20 @@ function asNotificationType(value: unknown): NotificationType | undefined {
     : undefined;
 }
 
+/**
+ * The human-readable reason a turn died, from a stop-failure body: the provider
+ * stamps an `error_type` (`authentication_failed`, `rate_limit`, `billing_error`,
+ * `server_error`, …) alongside a message. Either may be absent, so fall back to
+ * a generic phrase rather than surfacing an empty error.
+ */
+function stopFailureDetail(body: Record<string, unknown>): string {
+  const type = typeof body.error_type === 'string' ? body.error_type.trim() : '';
+  const raw = typeof body.error_message === 'string' ? body.error_message.trim() : '';
+  const message = raw.replace(/\s+/g, ' ').slice(0, 300);
+  if (type && message) return `${type} — ${message}`;
+  return type || message || 'the turn ended on an error';
+}
+
 /** Extract the first non-empty string from a list of candidates. */
 export function extractProviderSessionId(body: Record<string, unknown>): string | undefined {
   const candidates = [
@@ -48,6 +62,15 @@ export function defaultHookEventParser(
     const providerSessionId = extractProviderSessionId(body);
     if (providerSessionId) return { kind: 'session', providerSessionId };
     return { kind: 'ignore' };
+  }
+
+  if (eventType === 'stop-failure') {
+    return {
+      kind: 'status',
+      type: 'error',
+      title: typeof body.error_type === 'string' ? body.error_type : undefined,
+      message: stopFailureDetail(body),
+    };
   }
 
   if (eventType === 'start' || eventType === 'stop' || eventType === 'error') {

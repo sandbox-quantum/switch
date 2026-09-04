@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Literal, Unpack
 
+from switch_core.agent_display_name import agent_label_with_identifier
 from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.connections import ConnectionRegistry
 from switch_core.clients.admin_messages import (
@@ -201,10 +202,12 @@ class AdminClient(ClientBase[ClientConfig]):
                 agent = await self._agent_store.get_by_name_insensitive(session, token)
                 if agent is None or agent.id in member_ids:
                     continue
-                absent.append(agent.name)
+                absent.append(
+                    agent_label_with_identifier(agent.display_name, agent.name)
+                )
         if not absent:
             return
-        names = ", ".join(f"**{name}**" for name in absent)
+        names = ", ".join(f"**{label}**" for label in absent)
         verb = "isn't" if len(absent) == 1 else "aren't"
         pronoun = "it" if len(absent) == 1 else "them"
         handle = self._sender_handle(event)

@@ -1,3 +1,18 @@
+"""Room lifecycle: provisioning, membership, and bridge binding.
+
+Matrix calls here run with no database session open, so a slow invite or kick
+cannot hold a connection-pool slot while it waits. That splits atomicity, and
+the split has a deliberate direction: **Matrix membership must never exceed
+what the database records.** Write the membership row before inviting; revoke
+the Matrix membership before dropping the row. A crash in the window then
+leaves an agent Switch believes is a member but which cannot see the room —
+under-privileged, visible, and repairable — rather than one silently reading a
+room Switch has no record of it being in.
+
+`reconcile_room_clients` closes that window at startup: a member with no
+`room_clients` row is (re-)invited, invites being idempotent.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -634,15 +649,16 @@ class RoomService:
 
             client_ids = await self._room_store.get_client_ids(session, room_id)
 
-            for client_id in client_ids:
-                client = self._client_lifecycle.get(client_id)
-                if client:
-                    await self._matrix_admin.kick_user(
-                        room.matrix_room_id, client.matrix_user_id
-                    )
+        for client_id in client_ids:
+            client = self._client_lifecycle.get(client_id)
+            if client:
+                await self._matrix_admin.kick_user(
+                    room.matrix_room_id, client.matrix_user_id
+                )
 
-            await self._matrix_admin.delete_room(room.matrix_room_id)
+        await self._matrix_admin.delete_room(room.matrix_room_id)
 
+        async with self._session_factory() as session:
             await self._room_store.delete(session, room_id)
             await session.commit()
 
@@ -693,29 +709,33 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
             existing = await self._room_store.get_agent_ids(session, room.id)
-            new_agent_ids = [aid for aid in agent_ids if aid not in existing]
-            if not new_agent_ids:
-                logger.debug(
-                    "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
-                    existing,
-                    new_agent_ids,
-                    agent_ids,
-                )
-                return
 
-            agent_clients = self._resolve_agent_clients(new_agent_ids)
+        new_agent_ids = [aid for aid in agent_ids if aid not in existing]
+        if not new_agent_ids:
+            logger.debug(
+                "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
+                existing,
+                new_agent_ids,
+                agent_ids,
+            )
+            return
 
-            await self._invite_clients(room.matrix_room_id, agent_clients)
+        agent_clients = self._resolve_agent_clients(new_agent_ids)
 
+        async with self._session_factory() as session:
             await self._room_store.add_agents(
                 session,
                 room.id,
                 new_agent_ids,
                 join_event_listeners={aid for aid in new_agent_ids if aid in listeners},
             )
+            await session.commit()
+
+        await self._invite_clients(room.matrix_room_id, agent_clients)
+
+        async with self._session_factory() as session:
             for client_id in agent_clients:
                 await self._room_store.add_client(session, client_id, room.id)
-
             await session.commit()
 
         if room.bridge_id and room.external_channel_id:
@@ -734,12 +754,14 @@ class RoomService:
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
 
-            agent_clients = self._resolve_agent_clients(agent_ids)
+        agent_clients = self._resolve_agent_clients(agent_ids)
 
-            for client_id, matrix_user_id in agent_clients.items():
-                await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
+        for matrix_user_id in agent_clients.values():
+            await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
+
+        async with self._session_factory() as session:
+            for client_id in agent_clients:
                 await self._room_store.remove_client(session, client_id, room_id)
-
             await self._room_store.remove_agents(session, room_id, agent_ids)
             await session.commit()
 
@@ -1076,26 +1098,33 @@ class RoomService:
         for matrix_user_id in client_ids.values():
             await self._matrix_admin.invite_to_room(matrix_room_id, matrix_user_id)
 
-    async def reconcile_system_clients(self) -> None:
-        """Ensure every running system client is a member of every room.
+    async def reconcile_room_clients(self) -> None:
+        """Ensure every room's clients are actually in it, on Matrix.
 
-        Rooms created before a system-client type existed (e.g. the admin
-        client) have no membership for it. Run once at startup, after the
-        clients are running so they auto-accept the invites. Idempotent:
-        `invite_to_room` is a no-op for an already-joined user, and DB
-        membership is only recorded where it is missing.
+        Two sources of drift. Rooms created before a system-client type existed
+        (e.g. the admin client) have no membership for it. And a membership
+        change writes the `room_agents` row, invites, then records
+        `room_clients` — so a crash in that window leaves a member the invite
+        may never have reached, with the absent `room_clients` row as the
+        marker.
+
+        Run once at startup. The clients are starting concurrently, so agent
+        clients are resolved from the database rather than from the running
+        registry; a pending invite is accepted on the client's first sync.
+        Idempotent: `invite_to_room` is a no-op for an already-joined user, and
+        DB membership is only recorded where it is missing.
         """
         system_clients = self._resolve_system_clients()
-        if not system_clients:
-            return
         async with self._session_factory() as session:
             rooms = await self._room_store.get_all(session, include_archived=True)
         for room in rooms:
             async with self._session_factory() as session:
                 existing = set(await self._room_store.get_client_ids(session, room.id))
-            missing = {
-                cid: uid for cid, uid in system_clients.items() if cid not in existing
-            }
+                expected = await self._room_store.get_member_agent_clients(
+                    session, room.id
+                )
+            expected.update(system_clients)
+            missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
             if not missing:
                 continue
             await self._invite_clients(room.matrix_room_id, missing)
@@ -1103,9 +1132,7 @@ class RoomService:
                 for client_id in missing:
                     await self._room_store.add_client(session, client_id, room.id)
                 await session.commit()
-            logger.info(
-                "Reconciled %d system client(s) into room %s", len(missing), room.id
-            )
+            logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record
