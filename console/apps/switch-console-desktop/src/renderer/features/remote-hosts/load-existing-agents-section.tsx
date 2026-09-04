@@ -382,7 +382,9 @@ export function LoadExistingAgentsSection({
                             agent.ownerName && (
                               <p className="text-xs text-foreground-muted">
                                 Session access: yes · rooms: policy admits only its owner
-                                {agent.viewerIsOwner ? ' (you)' : `, ask ${agent.ownerName} to widen`}
+                                {agent.viewerIsOwner
+                                  ? ' (you)'
+                                  : `, ask ${agent.ownerName} to widen`}
                               </p>
                             )
                           )}

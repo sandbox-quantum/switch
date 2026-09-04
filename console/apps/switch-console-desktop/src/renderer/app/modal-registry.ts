@@ -1,9 +1,9 @@
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
-import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
+import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
 import { DeleteSessionModal } from '@renderer/features/sessions/delete-session-modal';
 import { RenameSessionModal } from '@renderer/features/sessions/rename-session-modal';

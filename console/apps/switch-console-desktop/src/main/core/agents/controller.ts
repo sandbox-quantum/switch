@@ -23,8 +23,6 @@ import { createAgent } from './createAgent';
 import { getAgentDefinitionFields } from './definition-fields';
 import { deleteAgent, type DeleteAgentOptions } from './deleteAgent';
 import { discoverConfiguredAgents } from './discover-configured-agents';
-import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-config';
-import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
 import {
   discoverLoadableAgentsInDir,
   discoverLoadableAgentsOnHost,
@@ -35,6 +33,8 @@ import { getAgentById } from './getAgentById';
 import { getAgents } from './getAgents';
 import { onboardAgent } from './onboard-agent';
 import { onboardLocationAgents, type OnboardLocationParams } from './onboard-location-agents';
+import type { RemoveLoadableAgentConfigParams } from './remove-loadable-agent-config';
+import { removeLoadableAgentConfig } from './remove-loadable-agent-config';
 import { renameAgent } from './renameAgent';
 import { resetRemoteAgent } from './reset-remote-agent';
 import { setAgentAutoApprove, type AgentAutoApproveParams } from './setAgentAutoApprove';

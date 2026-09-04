@@ -78,7 +78,11 @@ export async function discoverLoadableAgentsOnHost(
     const me = await fetchMe(server).catch(() => null);
 
     // Collect distinct repo_dirs from agents whose known_agent_options carry one.
-    type ServerAgentInfo = { ownerName: string | null; ownerId: string | null; description: string | null };
+    type ServerAgentInfo = {
+      ownerName: string | null;
+      ownerId: string | null;
+      description: string | null;
+    };
     const dirOwners = new Map<string, Map<string, ServerAgentInfo>>();
     for (const agent of remoteAgents) {
       const repoDir =
