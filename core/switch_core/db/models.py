@@ -1,6 +1,7 @@
 import uuid
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -9,9 +10,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Table,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -19,6 +22,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from switch_core.db.base import Base
+from switch_core.db.notify_ddl import (
+    CREATE_NOTIFY_FUNCTION,
+    CREATE_NOTIFY_TRIGGER,
+    DROP_NOTIFY_TRIGGER,
+)
 
 
 def _uuid() -> str:
@@ -97,6 +105,7 @@ class ClientRoom(Base):
 
 class Agent(Base):
     __tablename__ = "agents"
+    __table_args__ = (Index("ix_agents_parent_agent_id", "parent_agent_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -614,6 +623,7 @@ class ExternalUserClaim(Base):
     """
 
     __tablename__ = "external_user_claims"
+    __table_args__ = (Index("ix_external_user_claims_user_id", "user_id"),)
 
     external_user_id: Mapped[str] = mapped_column(
         Text,
@@ -659,6 +669,8 @@ class AgentSession(Base):
             text("coalesce(room_id, '')"),
             unique=True,
         ),
+        Index("ix_agent_sessions_agent_room", "agent_id", "room_id"),
+        Index("ix_agent_sessions_transport_session_id", "transport_session_id"),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -944,3 +956,95 @@ class MessageAttachment(Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class DeliveryCursor(Base):
+    """How far one agent has been delivered in one room.
+
+    The cursor it replaces lived in memory in the event buffer, so a restart
+    resumed from wherever that buffer happened to be rather than from what the
+    agent had actually been given. Persisting it makes "what has this agent
+    seen" outlive the process, which is what lets delivery be driven from the
+    table instead of from a live connection.
+
+    `last_seq` is a position in the room, not a count: `seq` is a per-room
+    total order, so "everything up to n" is unambiguous and re-reading from it
+    is idempotent. It is only ever advanced, never rewound — a cursor that
+    could go backwards would redeliver, and a redelivered message is
+    indistinguishable to a reader from a new one.
+    """
+
+    __tablename__ = "delivery_cursors"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "room_id", name="uq_delivery_cursors_agent_room"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    room_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class MediaBlob(Base):
+    """The bytes behind an attachment.
+
+    Media used to live in the homeserver's own store, reached by an opaque
+    handle that travelled on the message. The handle is still opaque and still
+    travels on the message; only what is behind it changed. Callers must not
+    parse `uri` — it is a key, and the store behind it is free to become object
+    storage without the protocol noticing.
+
+    `bytea` rather than a large object: attachments are capped
+    (`agent_media_max_bytes`, 20MB by default) and are written and read whole,
+    which is exactly what TOAST handles well and what large objects add
+    lifecycle problems to. A blob that would not fit is rejected at the edge,
+    loudly, as it already is.
+
+    Rows are not reference-counted against the attachments pointing at them.
+    Deleting a room deletes its messages; the bytes it referenced are then
+    unreferenced and a later sweep can find them by that. Cascading from the
+    attachment instead would delete the bytes of a file that two messages
+    quote.
+    """
+
+    __tablename__ = "media_blobs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    uri: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# `create_all` builds the schema for tests; the trigger has to come with it or
+# the delivery tests would exercise a table that announces nothing. Real
+# databases get the same DDL from a migration.
+event.listen(
+    Message.__table__,
+    "after_create",
+    DDL(CREATE_NOTIFY_FUNCTION).execute_if(dialect="postgresql"),
+)
+event.listen(
+    Message.__table__,
+    "after_create",
+    DDL(CREATE_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)
+event.listen(
+    Message.__table__,
+    "before_drop",
+    DDL(DROP_NOTIFY_TRIGGER).execute_if(dialect="postgresql"),
+)

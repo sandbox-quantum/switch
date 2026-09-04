@@ -479,6 +479,7 @@ class TestRecordsArrivals:
                 display_name="agent one",
             ),
             client_id=client_id,
+            member_name="agent one",
         )
 
         async with session_factory() as session:
@@ -489,6 +490,36 @@ class TestRecordsArrivals:
         assert message.sender_matrix_id == "@agent:test"
         assert message.sender_name == "agent one"
         assert message.content["membership"] == "join"
+
+    async def test_the_arrival_is_named_the_way_the_member_speaks(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The membership event's display name comes from the profile, which is
+        set from whatever the source platform calls the member. Recording it
+        would make one participant read two ways in the same history."""
+        async with session_factory() as session:
+            _, matrix_room_id, client_id = await _make_room(session)
+            await session.commit()
+
+        await _recorder(session_factory).record_join(
+            transport_room_id=matrix_room_id,
+            event=InboundMembership(
+                room_id=matrix_room_id,
+                event_id="$join5",
+                sender="@agent:test",
+                timestamp=1000,
+                state_key="@agent:test",
+                membership="join",
+                display_name="agent one on the platform",
+            ),
+            client_id=client_id,
+            member_name="agent one",
+        )
+
+        async with session_factory() as session:
+            message = await MessageStore().get_by_transport_event_id(session, "$join5")
+        assert message is not None
+        assert message.sender_name == "agent one"
 
     async def test_the_row_carries_no_rendered_sentence(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -511,6 +542,7 @@ class TestRecordsArrivals:
                 display_name="agent one",
             ),
             client_id=client_id,
+            member_name="agent one",
         )
 
         async with session_factory() as session:
@@ -538,10 +570,16 @@ class TestRecordsArrivals:
         )
         recorder = _recorder(session_factory)
         await recorder.record_join(
-            transport_room_id=matrix_room_id, event=event, client_id=client_id
+            transport_room_id=matrix_room_id,
+            event=event,
+            client_id=client_id,
+            member_name="agent one",
         )
         await recorder.record_join(
-            transport_room_id=matrix_room_id, event=event, client_id=client_id
+            transport_room_id=matrix_room_id,
+            event=event,
+            client_id=client_id,
+            member_name="agent one",
         )
 
         async with session_factory() as session:
@@ -579,6 +617,7 @@ class TestRecordsArrivals:
                     membership="join",
                 ),
                 client_id=client_id,
+                member_name="agent one",
             )
 
         assert "failed to record the arrival" in caplog.text

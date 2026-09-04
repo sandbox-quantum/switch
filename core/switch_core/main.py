@@ -22,7 +22,6 @@ from switch_core.bridges.agent.protocol.connections import (
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.service import ProtocolService
-from switch_core.bridges.agent.request_tracker import RequestTracker
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
@@ -54,16 +53,18 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramConnectionConfig,
 )
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.bridges.resource.tracker import ResourceRequestTracker
 from switch_core.clients.admin_client import AdminClient
 from switch_core.clients.agent_client import AgentClient
 from switch_core.clients.client_base import ClientBase
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.clients.resource_manager_client import ResourceManagerClient
 from switch_core.config import SwitchConfig
 from switch_core.crypto import encrypt_token
-from switch_core.db.engine import create_engine_from_config, create_session_factory
+from switch_core.db.engine import (
+    create_engine_from_config,
+    create_session_factory,
+    create_unpooled_engine,
+)
 from switch_core.db.models import ApiKey, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
@@ -73,6 +74,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -92,7 +94,12 @@ from switch_core.matrix_admin import (
     wait_for_homeserver,
 )
 from switch_core.messages import MessageRecorder
+from switch_core.messages.notify import MessageListener
+from switch_core.provisioning import Provisioning
+from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
+from switch_core.transport.ephemeral import EphemeralBus
+from switch_core.transport.invites import InviteBus
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -178,21 +185,15 @@ async def run() -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     engine = create_engine_from_config(config)
     session_factory = create_session_factory(engine)
+    # Its connection is held rather than borrowed, so it builds its own outside
+    # the pool. Nothing subscribes yet; it starts with the server so that the
+    # subscription exists before the first consumer needs it.
+    message_listener = MessageListener(lambda: create_unpooled_engine(config))
 
-    # ── Matrix homeserver admin ──────────────────────────────────────────────
-    await wait_for_homeserver(config.matrix_server)
-    await ensure_admin_exists(
-        server_url=config.matrix_server,
-        username=config.matrix_admin_user,
-        password=config.matrix_admin_password,
-        shared_secret=config.matrix_registration_shared_secret,
-    )
-    matrix_admin = await MatrixAdmin.create(
-        server_url=config.matrix_server,
-        admin_user=config.matrix_admin_user,
-        admin_password=config.matrix_admin_password,
-        shared_secret=config.matrix_registration_shared_secret,
-    )
+    # Invitations for the Postgres transport, which has no durable one of its
+    # own. Built unconditionally: it is a dict until something registers.
+    invites = InviteBus()
+    ephemeral = EphemeralBus()
 
     # ── Stores ───────────────────────────────────────────────────────────────
     agent_store = AgentStore()
@@ -213,6 +214,7 @@ async def run() -> None:
     room_group_store = RoomGroupStore()
     room_role_store = RoomRoleStore()
     message_store = MessageStore()
+    media_store = MediaStore()
     message_recorder = MessageRecorder(
         session_factory=session_factory,
         room_store=room_store,
@@ -227,8 +229,6 @@ async def run() -> None:
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer()
-    request_tracker = RequestTracker()
-    resource_request_tracker = ResourceRequestTracker()
     connector_store = ServerConnectorStore()
 
     # ── Resource service ─────────────────────────────────────────────────────
@@ -243,6 +243,38 @@ async def run() -> None:
     async with session_factory() as session:
         await resource_service.log_builtin_shadowing(session)
 
+    # ── Provisioning ─────────────────────────────────────────────────────────
+    # The homeserver is only contacted when it is the transport. Reaching it
+    # unconditionally would keep a Postgres deployment waiting on, and failing
+    # to start without, a service it does not use.
+    matrix_admin: Provisioning
+    if config.message_transport == "matrix":
+        await wait_for_homeserver(config.matrix_server)
+        await ensure_admin_exists(
+            server_url=config.matrix_server,
+            username=config.matrix_admin_user,
+            password=config.matrix_admin_password,
+            shared_secret=config.matrix_registration_shared_secret,
+        )
+        matrix_admin = await MatrixAdmin.create(
+            server_url=config.matrix_server,
+            admin_user=config.matrix_admin_user,
+            admin_password=config.matrix_admin_password,
+            shared_secret=config.matrix_registration_shared_secret,
+        )
+    else:
+        logger.warning(
+            "Running on the Postgres transport: no homeserver is contacted, "
+            "and media uploaded before the switch cannot be served"
+        )
+        matrix_admin = PostgresProvisioning(
+            session_factory=session_factory,
+            room_store=room_store,
+            client_store=client_store,
+            message_store=message_store,
+            invites=invites,
+        )
+
     # One connection registry for the process. Created here rather than inside
     # the agent bridge because the Matrix agent clients are wired first and read
     # presence from it — an agent is reachable if it has a live connection OR a
@@ -255,6 +287,12 @@ async def run() -> None:
         session_factory=session_factory,
         config=config,
         message_recorder=message_recorder,
+        room_store=room_store,
+        message_store=message_store,
+        media_store=media_store,
+        listener=message_listener,
+        invites=invites,
+        ephemeral=ephemeral,
     )
     client_factory.register(
         "agent",
@@ -268,18 +306,8 @@ async def run() -> None:
         agent_session_store=agent_session_store,
         room_role_store=room_role_store,
         external_user_store=external_user_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         connections=connections,
         frontend_base_url=config.frontend_base_url,
-    )
-    client_factory.register(
-        "resource_manager",
-        ResourceManagerClient,
-        agent_store=agent_store,
-        room_store=room_store,
-        resource_service=resource_service,
-        request_tracker=request_tracker,
     )
     client_factory.register("user", ClientBase)
     client_factory.register("bridge", ClientBase)
@@ -306,7 +334,7 @@ async def run() -> None:
         matrix_admin=matrix_admin,
         session_factory=session_factory,
         config=config,
-        message_recorder=message_recorder,
+        client_factory=client_factory,
     )
 
     # ── Room service ─────────────────────────────────────────────────────────
@@ -349,8 +377,6 @@ async def run() -> None:
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
         task_store=task_store,
-        request_tracker=request_tracker,
-        resource_request_tracker=resource_request_tracker,
         resource_service=resource_service,
         api_key_store=api_key_store,
         external_user_store=external_user_store,
@@ -413,7 +439,6 @@ async def run() -> None:
     agent_bridge_app.mount("/gateway", gateway_app)
 
     # ── Ensure system clients exist ─────────────────────────────────────────
-    await client_lifecycle.ensure_system_client("resource_manager")
     await client_lifecycle.ensure_system_client("admin")
 
     # ── Lifespan: start server-side connectors once HTTP is serving ────────
@@ -427,11 +452,13 @@ async def run() -> None:
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
+            await message_listener.start()
             try:
                 yield
             finally:
                 sweep_task.cancel()
                 connection_sweep_task.cancel()
+                await message_listener.stop()
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 
@@ -538,7 +565,7 @@ async def _shutdown(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     connector_lifecycle: ServerSideConnectorLifecycleService,
-    matrix_admin: MatrixAdmin,
+    matrix_admin: Provisioning,
 ) -> None:
     logger.info("Shutting down...")
     server.should_exit = True

@@ -70,30 +70,6 @@ def _is_real_drift(entry: Any) -> bool:
     return not (isinstance(entry, tuple) and entry[0] == "modify_default")
 
 
-# Drift that already existed when this test was written: four indexes a
-# migration creates but whose model never declares them. It is real — the
-# models are missing `Index(...)` entries in `__table_args__`, and autogenerate
-# would drop these indexes — so it is listed row by row rather than filtered by
-# kind. Fix a model, delete its line; a fifth index appearing here is a new
-# regression and fails.
-_KNOWN_MODEL_SIDE_GAPS = frozenset(
-    {
-        "ix_agent_sessions_agent_room",
-        "ix_agent_sessions_transport_session_id",
-        "ix_agents_parent_agent_id",
-        "ix_external_user_claims_user_id",
-    }
-)
-
-
-def _is_known_gap(entry: Any) -> bool:
-    return (
-        isinstance(entry, tuple)
-        and entry[0] == "remove_index"
-        and entry[1].name in _KNOWN_MODEL_SIDE_GAPS
-    )
-
-
 @pytest.fixture
 async def migrated_url(postgres_url: str) -> Any:
     """An empty database, separate from the create_all one the store tests use."""
@@ -123,9 +99,7 @@ async def test_migrations_match_the_models(migrated_url: str) -> None:
     finally:
         await engine.dispose()
 
-    drift = [
-        entry for entry in diff if _is_real_drift(entry) and not _is_known_gap(entry)
-    ]
+    drift = [entry for entry in diff if _is_real_drift(entry)]
     assert not drift, (
         "the migrations and the models disagree; autogenerate would emit:\n"
         + "\n".join(f"  {entry}" for entry in drift)

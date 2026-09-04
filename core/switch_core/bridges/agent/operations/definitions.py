@@ -402,22 +402,14 @@ async def load_internal_documents(ids: list[str]) -> list[dict[str, Any]]:
         the requested ids. Raises an error if any id is not attached to the
         current room.
 
-    The load goes through the Switch resource manager as a Matrix event
-    round-trip, mirroring how tool and LLM mediation works.
     """
-    import uuid
-
     agent_id = get_agent_id()
     room_id = await require_connected_room()
     protocol = get_protocol()
-    await protocol.require_room_member(agent_id, room_id)
-    request_id = str(uuid.uuid4())
     return await protocol.request_document_load(
         agent_id=agent_id,
         room_id=room_id,
         document_ids=ids,
-        request_id=request_id,
-        timeout=30.0,
     )
 
 
@@ -446,17 +438,13 @@ async def create_room_document(
         content: Full text content (max 1 MiB).
 
     Returns:
-        ``{"document_id": "..."}`` once the resource manager confirms creation.
+        ``{"document_id": "..."}``.
     """
-    import uuid
-
     if len(content.encode("utf-8")) > _ROOM_DOCUMENT_MAX_CONTENT_BYTES:
         raise ValueError(f"content exceeds {_ROOM_DOCUMENT_MAX_CONTENT_BYTES} bytes")
     agent_id = get_agent_id()
     room_id = await require_connected_room()
     protocol = get_protocol()
-    await protocol.require_room_member(agent_id, room_id)
-    request_id = str(uuid.uuid4())
     document_id = await protocol.request_room_document_create(
         agent_id=agent_id,
         room_id=room_id,
@@ -464,8 +452,6 @@ async def create_room_document(
         description=description,
         instructions=instructions,
         content=content,
-        request_id=request_id,
-        timeout=30.0,
     )
     return {"document_id": document_id}
 
@@ -483,8 +469,6 @@ async def update_room_document(
     Only the agent that created the document can update it. Pass only the
     fields you want to change; omit (or set to None) the others.
     """
-    import uuid
-
     if (
         content is not None
         and len(content.encode("utf-8")) > _ROOM_DOCUMENT_MAX_CONTENT_BYTES
@@ -493,8 +477,6 @@ async def update_room_document(
     agent_id = get_agent_id()
     room_id = await require_connected_room()
     protocol = get_protocol()
-    await protocol.require_room_member(agent_id, room_id)
-    request_id = str(uuid.uuid4())
     await protocol.request_room_document_update(
         agent_id=agent_id,
         room_id=room_id,
@@ -503,8 +485,6 @@ async def update_room_document(
         description=description,
         instructions=instructions,
         content=content,
-        request_id=request_id,
-        timeout=30.0,
     )
     return {"document_id": document_id, "status": "ok"}
 
@@ -516,19 +496,13 @@ async def delete_room_document(document_id: str) -> dict[str, str]:
     Only the agent that created the document can delete it via MCP. Users
     can also delete from the room UI as an admin escape hatch.
     """
-    import uuid
-
     agent_id = get_agent_id()
     room_id = await require_connected_room()
     protocol = get_protocol()
-    await protocol.require_room_member(agent_id, room_id)
-    request_id = str(uuid.uuid4())
     await protocol.request_room_document_delete(
         agent_id=agent_id,
         room_id=room_id,
         document_id=document_id,
-        request_id=request_id,
-        timeout=30.0,
     )
     return {"document_id": document_id, "status": "ok"}
 
