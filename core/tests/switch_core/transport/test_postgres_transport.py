@@ -47,7 +47,6 @@ async def _make_room(session: AsyncSession) -> tuple[str, str, str, str]:
         matrix_user_id=f"@agent-{suffix}:test",
         display_name="agent one",
         type="agent",
-        password="x",
     )
     session.add(client)
     await session.flush()
@@ -185,7 +184,7 @@ class TestSending:
         assert message.msgtype == "m.text"
         assert message.event_type == "m.room.message"
         assert message.sender_client_id == client_id
-        assert message.sender_matrix_id == user_id
+        assert message.sender_id == user_id
         # The id the caller got back is the row's, so a caller that quotes it
         # in a reply or a thread is naming something that exists.
         assert message.transport_event_id == result.event_id
@@ -420,7 +419,7 @@ class TestReceiving:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(transport_room_id)
-        task = asyncio.create_task(transport.receive_forever(since=None))
+        task = asyncio.create_task(transport.receive_forever())
         self._tasks.append((task, transport))
         await _watched_room(transport)
         return transport, listener, received, transport_room_id, user_id
@@ -472,7 +471,7 @@ class TestReceiving:
         )
         reader.register_handlers(received.handlers())
         await reader.join_room(room)
-        task = asyncio.create_task(reader.receive_forever(since=None))
+        task = asyncio.create_task(reader.receive_forever())
         self._tasks.append((task, reader))
         switch_room_id = await _watched_room(reader)
         await listener.announce(switch_room_id)
@@ -533,7 +532,6 @@ class TestReceiving:
                 matrix_user_id=f"@later-{uuid.uuid4().hex[:8]}:test",
                 display_name="the newcomer",
                 type="agent",
-                password="x",
             )
             session.add(newcomer)
             await session.commit()
@@ -583,7 +581,7 @@ class TestPresence:
         )
         watcher.register_handlers(received.handlers())
         await watcher.join_room(room)
-        self._tasks.append(asyncio.create_task(watcher.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(watcher.receive_forever()))
         await _watched_room(watcher)
 
         sender = _transport(
@@ -616,7 +614,7 @@ class TestPresence:
         )
         watcher.register_handlers(received.handlers())
         await watcher.join_room(room)
-        self._tasks.append(asyncio.create_task(watcher.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(watcher.receive_forever()))
         await _watched_room(watcher)
 
         sender = _transport(
@@ -647,7 +645,7 @@ class TestPresence:
         )
         watcher.register_handlers(received.handlers())
         await watcher.join_room(room)
-        task = asyncio.create_task(watcher.receive_forever(since=None))
+        task = asyncio.create_task(watcher.receive_forever())
         self._tasks.append(task)
         await _watched_room(watcher)
         await watcher.close()
@@ -690,7 +688,7 @@ class TestOneClientCannotStallAnother:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
         switch_room_id = await _watched_room(transport)
 
         await transport.send_message(room, "hello", sender_name="agent one")
@@ -721,7 +719,7 @@ class TestOneClientCannotStallAnother:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
         switch_room_id = await _watched_room(transport)
 
         await transport.send_message(room, "hello", sender_name="agent one")
@@ -764,7 +762,7 @@ class TestJoiningARoomAlreadyRecorded:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
         await _watched_room(transport)
 
         # Somebody else records the membership — what a moderation invite does
@@ -817,7 +815,7 @@ class TestHearingYourOwnArrival:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
         await _watched_room(transport)
 
         await transport.join_room(later)
@@ -851,7 +849,7 @@ class TestHearingYourOwnArrival:
         )
         transport.register_handlers(received.handlers())
         await transport.join_room(room)
-        self._tasks.append(asyncio.create_task(transport.receive_forever(since=None)))
+        self._tasks.append(asyncio.create_task(transport.receive_forever()))
         await _watched_room(transport)
 
         await transport.join_room(later)

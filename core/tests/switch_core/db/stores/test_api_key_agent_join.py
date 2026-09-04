@@ -34,7 +34,9 @@ async def _make_key(
 
 async def _make_agent(session: AsyncSession, name: str, api_key: ApiKey) -> Agent:
     client = Client(
-        matrix_user_id=f"@{name}:test", display_name=name, type="agent", password="x"
+        matrix_user_id=f"@{name}:test",
+        display_name=name,
+        type="agent",
     )
     session.add(client)
     await session.flush()

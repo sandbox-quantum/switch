@@ -205,6 +205,7 @@ def _describe_room(room: Room) -> RoomDescriptor:
         id=room.id,
         name=room.name,
         description=room.description,
+        transport_room_id=room.matrix_room_id,
         matrix_room_id=room.matrix_room_id,
         archived=room.archived_at is not None,
         bridge_id=room.bridge_id,
@@ -1581,12 +1582,12 @@ class ProtocolService:
         decide, not the writer's — so the sentence is composed here and can be
         changed without rewriting history.
         """
-        name = message.sender_name or message.sender_matrix_id
+        name = message.sender_name or message.sender_id
         if message.event_type == MEMBERSHIP_EVENT_TYPE:
             return {
                 "id": message.transport_event_id,
                 "kind": "room_join",
-                "sender": message.sender_matrix_id,
+                "sender": message.sender_id,
                 "sender_name": name,
                 "body": f"{name} joined the room",
                 "timestamp": _epoch_ms(message.sent_at),
@@ -1595,7 +1596,7 @@ class ProtocolService:
         return {
             "id": message.transport_event_id,
             "kind": "message",
-            "sender": message.sender_matrix_id,
+            "sender": message.sender_id,
             "sender_name": name,
             "body": message.body,
             "timestamp": _epoch_ms(message.sent_at),
@@ -3162,6 +3163,7 @@ class ProtocolService:
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,
+            transport_room_id=room.matrix_room_id,
             matrix_room_id=room.matrix_room_id,
             created_at=str(room.created_at),
             bridge_id=room.bridge_id,

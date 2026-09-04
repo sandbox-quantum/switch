@@ -1,5 +1,4 @@
 import re
-from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -18,18 +17,10 @@ class SwitchConfig(BaseSettings):
     db_password: str
     db_name: str
 
-    # Which transport carries messages: "matrix" for the homeserver,
-    # "postgres" for the message table. The choice pairs a transport with a
-    # provisioning implementation and a recorder, so it is one setting rather
-    # than three. Defaults to matrix, so an existing deployment is unchanged
-    # until it is asked to move.
-    message_transport: Literal["matrix", "postgres"] = "matrix"
-
-    matrix_server: str
+    # The server half of every client's `@localpart:server` id. Not a
+    # homeserver address — nothing is contacted at it — but the ids are stable
+    # public handles, so the shape outlives the homeserver that chose it.
     matrix_server_name: str
-    matrix_admin_user: str
-    matrix_admin_password: str
-    matrix_registration_shared_secret: str
     agent_registration_token: str
 
     # JWT auth

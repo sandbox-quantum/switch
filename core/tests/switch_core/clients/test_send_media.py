@@ -4,7 +4,7 @@ import pytest
 
 from switch_core.clients.client_base import ClientBase
 from switch_core.transport import TransportError, UploadResult
-from tests.switch_core.transport.fake import FakeMessageRecorder, FakeTransport
+from tests.switch_core.transport.fake import FakeTransport
 
 
 class _FailingUploadTransport(FakeTransport):
@@ -22,7 +22,6 @@ def _client(transport: FakeTransport) -> ClientBase:
     client.display_name = "Alice"  # type: ignore[attr-defined]
     client.matrix_user_id = "@alice:switch.local"  # type: ignore[attr-defined]
     client.client_id = "client-1"  # type: ignore[attr-defined]
-    client.message_recorder = FakeMessageRecorder()  # type: ignore[assignment]
     return client
 
 

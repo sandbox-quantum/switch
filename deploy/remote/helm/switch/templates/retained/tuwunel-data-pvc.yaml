@@ -1,0 +1,29 @@
+{{- if .Values.retainTuwunelData }}
+# The homeserver is gone; its disk is not, deliberately.
+#
+# It still holds every media blob and the raw history. The backfill moved the
+# messages into Postgres but not the files, so this is the only copy of them —
+# and deleting the template is what deletes the volume, since Helm prunes an
+# object whose manifest disappears. Dropping it therefore belongs to a later
+# release than the one that stopped reading it, once whoever owns the data has
+# decided they do not want it.
+#
+# Nothing mounts this. It exists to not be destroyed.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "switch.fullname" . }}-tuwunel-data
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.global.storageClass }}
+  storageClassName: {{ .Values.global.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.retainedTuwunelDataSize }}
+{{- end }}

@@ -1404,6 +1404,7 @@ async def create_room(
     return CreateModerationRoomResponse(
         id=result.room.id,
         name=result.room.name,
+        transport_room_id=result.room.matrix_room_id,
         matrix_room_id=result.room.matrix_room_id,
         failed_attachments=result.failed_attachments,
     )

@@ -8,8 +8,6 @@ else talks to the port and the neutral types in `types`.
 from switch_core.transport.port import (
     Handler,
     MessageTransport,
-    SyncErrorHandler,
-    SyncHandler,
     TransportHandlers,
 )
 from switch_core.transport.types import (
@@ -44,8 +42,6 @@ __all__ = [
     "RoomRef",
     "SeekDirection",
     "SendResult",
-    "SyncErrorHandler",
-    "SyncHandler",
     "TransportError",
     "TransportHandlers",
     "UploadResult",

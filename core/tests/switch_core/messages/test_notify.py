@@ -74,7 +74,7 @@ async def _write(session: AsyncSession, room_id: str, seq: int) -> None:
             seq=seq,
             room_id=room_id,
             transport_event_id=f"$e{uuid.uuid4().hex[:8]}",
-            sender_matrix_id="@a:test",
+            sender_id="@a:test",
             event_type="m.room.message",
             msgtype="m.text",
             body="hello",

@@ -64,7 +64,6 @@ class _FakeClientLifecycle:
                 matrix_user_id=f"@{display_name}:test",
                 display_name=display_name,
                 type=client_type,
-                password="x",
             )
             session.add(client)
             await session.commit()
@@ -129,7 +128,6 @@ async def _seed_agent(
                 matrix_user_id=f"@{name}:test",
                 display_name=name,
                 type="agent",
-                password="x",
             )
             session.add(client)
             await session.flush()
@@ -413,11 +411,7 @@ _CONFIG_KWARGS = dict(
     db_user="postgres",
     db_password="pw",
     db_name="switch",
-    matrix_server="http://tuwunel:8008",
     matrix_server_name="switch.local",
-    matrix_admin_user="admin",
-    matrix_admin_password="pw",
-    matrix_registration_shared_secret="secret",
     agent_registration_token="token",
     jwt_secret_key="jwt",
     gateway_admin_email="admin@example.com",

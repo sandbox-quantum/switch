@@ -44,7 +44,6 @@ async def _make_room(session: AsyncSession) -> tuple[str, str]:
         matrix_user_id=f"@agent-{suffix}:test",
         display_name="agent one",
         type="agent",
-        password="x",
     )
     session.add(client)
     await session.flush()
@@ -77,7 +76,7 @@ async def _write(
     message = Message(
         room_id=room_id,
         transport_event_id=event_id,
-        sender_matrix_id=sender,
+        sender_id=sender,
         sender_client_id=client_id,
         sender_name=sender_name,
         event_type=event_type,

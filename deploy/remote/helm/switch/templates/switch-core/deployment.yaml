@@ -30,7 +30,6 @@ spec:
       {{- end }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
-        {{- include "switch.waitForHttp" (dict "name" "tuwunel" "url" (printf "http://%s:8008/_matrix/client/versions" (include "switch.tuwunelHost" .))) | nindent 8 }}
       containers:
         - name: switch-core
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}

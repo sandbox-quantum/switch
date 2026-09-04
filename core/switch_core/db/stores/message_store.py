@@ -1,10 +1,10 @@
 from collections.abc import Collection
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Message, MessageAttachment, Room
+from switch_core.db.models import Message, MessageAttachment
 
 
 class MessageStore:
@@ -30,22 +30,6 @@ class MessageStore:
             session.add(attachment)
         await session.flush()
         return message
-
-    async def mark_history_backfilled(
-        self, session: AsyncSession, room_id: str
-    ) -> None:
-        """Record that this room's history has been walked to its start.
-
-        A write of the backfill's own progress, so it lives beside the writes
-        of its output: a dry run replaces this store wholesale, and anything
-        that reaches the database from outside it is a write a dry run does
-        not know to withhold.
-        """
-        room = await session.get(Room, room_id)
-        if room is None:
-            return
-        room.history_backfilled_at = datetime.now(UTC)  # type: ignore[assignment]
-        await session.flush()
 
     async def create_historical(
         self,

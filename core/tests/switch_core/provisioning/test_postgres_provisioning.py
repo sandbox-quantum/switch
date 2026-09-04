@@ -29,7 +29,6 @@ async def _client(session: AsyncSession, name: str = "someone") -> Client:
         matrix_user_id=f"@{name}-{uuid.uuid4().hex[:8]}:test",
         display_name=name,
         type="agent",
-        password=str(uuid.uuid4()),
     )
     session.add(client)
     await session.flush()
@@ -54,31 +53,6 @@ def _provisioning(
         message_store=MessageStore(),
         invites=invites or InviteBus(),
     )
-
-
-class TestAccounts:
-    async def test_registering_writes_nothing(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        """The caller's `clients` row is the account; there is no second
-        system to create one in."""
-        await _provisioning(session_factory).register_user("@a:test", "secret")
-
-        async with session_factory() as session:
-            assert await ClientStore().get_by_matrix_user_id(session, "@a:test") is None
-
-    async def test_a_password_is_checked_against_the_client_row(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        async with session_factory() as session:
-            client = await _client(session)
-            await session.commit()
-            user_id, password = client.matrix_user_id, client.password
-
-        provisioning = _provisioning(session_factory)
-        assert await provisioning.verify_login(user_id, password) is True
-        assert await provisioning.verify_login(user_id, "wrong") is False
-        assert await provisioning.verify_login("@nobody:test", password) is False
 
 
 class TestRooms:
@@ -122,7 +96,7 @@ class TestMembership:
         # The arrival explains the membership, and carries no rendered
         # sentence: how it reads is the reader's to phrase.
         assert [row.event_type for row in rows] == [MEMBERSHIP_EVENT_TYPE]
-        assert rows[0].sender_matrix_id == user_id
+        assert rows[0].sender_id == user_id
         assert rows[0].sender_name == "nova"
         assert rows[0].body is None
 

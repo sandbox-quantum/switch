@@ -1,7 +1,7 @@
 # Switch Helm chart
 
 Deploys Switch into a Kubernetes cluster: switch-core (the API and all bridge
-adapters), the gateway dashboard, a Tuwunel Matrix homeserver, Postgres, and
+adapters), the gateway dashboard, Postgres, and
 optionally Mattermost.
 
 ```bash
