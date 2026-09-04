@@ -231,6 +231,7 @@ __marimo__/
 related-projects
 .claude/settings.local.json
 .claude/agents/
+.claude/worktrees/
 
 # Switch Console working-tree artifacts. Build output and scratch downloads that
 # land at the repo root; ignored so they cannot be committed by accident.
