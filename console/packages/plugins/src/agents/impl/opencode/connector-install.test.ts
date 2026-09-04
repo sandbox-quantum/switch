@@ -176,7 +176,7 @@ describe('the OpenCode connector installer', () => {
    * overwrite a same-named skill without a word, and uninstall then removed the
    * whole directory — taking files this tool never wrote with it.
    */
-  describe("a skill directory it does not own", () => {
+  describe('a skill directory it does not own', () => {
     it('refuses to overwrite a skill someone else wrote', async () => {
       mkdirSync(join(configDir, 'skills', 'configure'), { recursive: true });
       writeFileSync(join(configDir, 'skills', 'configure', 'SKILL.md'), '# my own notes\n');
