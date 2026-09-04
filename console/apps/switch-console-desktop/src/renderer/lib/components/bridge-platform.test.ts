@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { SWITCH_DOCS_MESSAGING_APPS_URL } from '@shared/urls';
 import { hasBridgeIcon } from './bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from './bridge-platform';
 
@@ -12,9 +13,6 @@ const BRIDGE_ICON_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
   '../../../assets/images/bridges'
 );
-
-/** Repo root, for checking the setup guides the docs links point at. */
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../../../../..');
 
 describe('bridgePlatformLabel', () => {
   it('names each platform the way its own docs do', () => {
@@ -38,23 +36,23 @@ describe('bridgePlatformLabel', () => {
 });
 
 describe('bridgeSetupDocsUrl', () => {
-  it('points at the per-platform setup guide', () => {
-    expect(bridgeSetupDocsUrl('slack')).toMatch(/docs\/bridges\/SLACK_SETUP\.md$/);
-    expect(bridgeSetupDocsUrl('teams')).toMatch(/docs\/bridges\/TEAMS_SETUP\.md$/);
+  it('points at the per-platform page on the documentation site', () => {
+    expect(bridgeSetupDocsUrl('slack')).toBe(`${SWITCH_DOCS_MESSAGING_APPS_URL}/slack`);
+    // `teams` is published under its full name, so the bridge key is not a
+    // usable slug — the one mapping in here that is not the identity.
+    expect(bridgeSetupDocsUrl('teams')).toBe(`${SWITCH_DOCS_MESSAGING_APPS_URL}/microsoft-teams`);
   });
 
   it('falls back to the index rather than a dead link', () => {
-    expect(bridgeSetupDocsUrl('zulip')).toMatch(/docs\/bridges\/README\.md$/);
+    expect(bridgeSetupDocsUrl('zulip')).toBe(SWITCH_DOCS_MESSAGING_APPS_URL);
   });
 
-  it.each(BRIDGE_TYPES)('the guide linked for %s exists in the repo', (type) => {
-    // The links are repo paths for now, so a renamed or moved guide should
-    // fail here rather than 404 for a user mid-setup.
-    const path = bridgeSetupDocsUrl(type).replace(
-      'https://github.com/sandbox-quantum/switch/blob/main/',
-      ''
-    );
-    expect(existsSync(join(REPO_ROOT, path))).toBe(true);
+  it.each(BRIDGE_TYPES)('%s has its own page rather than the index', (type) => {
+    // Falling back is right for a bridge type this build has never heard of,
+    // but silently doing it for one we ship is a mapping we forgot to add.
+    const url = bridgeSetupDocsUrl(type);
+    expect(url).not.toBe(SWITCH_DOCS_MESSAGING_APPS_URL);
+    expect(url.startsWith(`${SWITCH_DOCS_MESSAGING_APPS_URL}/`)).toBe(true);
   });
 });
 

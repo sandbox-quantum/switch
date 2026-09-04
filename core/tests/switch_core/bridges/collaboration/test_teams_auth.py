@@ -178,8 +178,70 @@ def test_validator_rejects_wrong_audience() -> None:
     priv, pub = _keypair()
     validator = _validator(pub, app_id="app-1")
 
-    with pytest.raises(jwt.InvalidAudienceError):
+    with pytest.raises(PermissionError) as excinfo:
         validator.validate(f"Bearer {_token(priv, aud='someone-else')}")
+
+    # A mismatch is a misconfiguration, and the operator cannot fix it without
+    # both halves: the app id Azure addressed the activity to, and the one this
+    # bridge was registered with.
+    message = str(excinfo.value)
+    assert "someone-else" in message
+    assert "app-1" in message
+
+
+def test_audience_mismatch_message_survives_an_unreadable_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mismatch message reads the audience back out of the token. A token
+    that decodes for verification but not for inspection must still produce the
+    rejection, not a second error on top of it."""
+    priv, pub = _keypair()
+    validator = _validator(pub, app_id="app-1")
+    token = _token(priv, aud="someone-else")
+
+    original = jwt.decode
+
+    def _decode(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("options", {}).get("verify_aud") is False:
+            raise jwt.DecodeError("unreadable")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jwt, "decode", _decode)
+
+    with pytest.raises(PermissionError) as excinfo:
+        validator.validate(f"Bearer {token}")
+
+    assert "app-1" in str(excinfo.value)
+
+
+def test_the_audience_quoted_back_is_a_signature_verified_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rejection message names the audience the token carries, so that
+    value must not come from an unverified parse — otherwise the text
+    explaining why an attacker was rejected is written by the attacker.
+
+    Every decode in the validator carries a key and checks the signature; only
+    the audience claim, the one already known to mismatch, is relaxed.
+    """
+    priv, pub = _keypair()
+    validator = _validator(pub, app_id="app-1")
+    seen: list[dict[str, Any]] = []
+
+    original = jwt.decode
+
+    def _decode(*args: Any, **kwargs: Any) -> Any:
+        seen.append(dict(kwargs.get("options") or {}))
+        assert len(args) > 1 and args[1], "decoded with no key"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jwt, "decode", _decode)
+
+    with pytest.raises(PermissionError):
+        validator.validate(f"Bearer {_token(priv, aud='someone-else')}")
+
+    assert seen, "the validator did not decode at all"
+    assert not any(o.get("verify_signature") is False for o in seen)
 
 
 def test_validator_rejects_expired_token() -> None:

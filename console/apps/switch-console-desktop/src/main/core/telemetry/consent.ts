@@ -13,11 +13,11 @@ import { appSettingsService } from '@main/core/settings/settings-service';
  * that has not reached the prompt sends nothing, and a settings read that
  * throws sends nothing either.
  *
- * There is no telemetry in the app today — this is the gate the collection work
- * (CHOO-1683) is expected to call once there is something to send. What it may
- * send is constrained: see the payload rule in `console/AGENTS.md`. Anonymous
- * counters only, and no identifier of any kind, because the toggle defaults to
- * on and an opt-out default is only defensible for non-personal data.
+ * The toggle defaults to off: what is sent carries a random per-install id, and
+ * that makes the data pseudonymous rather than anonymous, which an opt-out
+ * default would not cover. What may be sent is constrained beyond that — see
+ * the payload rule in `console/AGENTS.md` and the closed event catalogue in
+ * `./events`.
  */
 export async function isTelemetryAllowed(): Promise<boolean> {
   const telemetry = await appSettingsService.get('telemetry');

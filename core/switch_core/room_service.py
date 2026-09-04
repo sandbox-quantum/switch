@@ -1,3 +1,18 @@
+"""Room lifecycle: provisioning, membership, and bridge binding.
+
+Matrix calls here run with no database session open, so a slow invite or kick
+cannot hold a connection-pool slot while it waits. That splits atomicity, and
+the split has a deliberate direction: **Matrix membership must never exceed
+what the database records.** Write the membership row before inviting; revoke
+the Matrix membership before dropping the row. A crash in the window then
+leaves an agent Switch believes is a member but which cannot see the room —
+under-privileged, visible, and repairable — rather than one silently reading a
+room Switch has no record of it being in.
+
+`reconcile_room_clients` closes that window at startup: a member with no
+`room_clients` row is (re-)invited, invites being idempotent.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -21,6 +36,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.matrix_admin import MatrixAdmin
 
 if TYPE_CHECKING:
+    from switch_core.bridges.collaboration.bridge_core import BridgeCore
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
@@ -344,6 +360,69 @@ class RoomService:
             "allow channel creation for this connection."
         )
 
+    @staticmethod
+    async def _add_users_to_channel(
+        bridge_core: BridgeCore,
+        external_channel_id: str,
+        user_names: list[str],
+    ) -> list[dict[str, Any]]:
+        """Add the room's people to its channel; report who did not make it.
+
+        Returns ``failed_attachments``-shaped entries, because that is what this
+        is: a post-creation step that can partly fail without the room being
+        wrong. Two ways to miss — Switch not knowing the person on this bridge,
+        and the platform refusing to add them — and both used to disappear into
+        a log line, leaving a room that silently lacked the people it was asked
+        for.
+        """
+        resolved = await bridge_core.resolve_external_user_id_map(user_names)
+        failures: list[dict[str, Any]] = [
+            {
+                "kind": "user",
+                "id": name,
+                "error": "no account with this name is known on the bridge",
+            }
+            for name in user_names
+            if name not in resolved
+        ]
+        # Paired positionally by contract, so build both from the same mapping
+        # rather than passing the caller's full name list beside a shorter list
+        # of ids — an adapter that zips them would otherwise mis-attribute.
+        names = list(resolved)
+        failed_ids = await bridge_core.adapter.add_users_to_channel(
+            external_channel_id, names, [resolved[name] for name in names]
+        )
+        by_id = {resolved[name]: name for name in names}
+        failures.extend(
+            {
+                "kind": "user",
+                "id": by_id.get(external_id, external_id),
+                "error": "the platform would not add them to the channel",
+            }
+            for external_id in failed_ids
+        )
+        return failures
+
+    @staticmethod
+    async def _ensure_channel_capture(
+        bridge_core: BridgeCore,
+        external_channel_id: str,
+        channel_type: ChannelType,
+    ) -> None:
+        """Establish server-side message capture for a channel bound to a room.
+
+        Provisioning a channel subscribes to it on the way past, but binding one
+        that already exists does not — and on a bridge whose capture is a
+        per-channel subscription (Teams, via Graph) that leaves the room
+        receiving only what @mentions the bot, until the bridge next restarts
+        and its startup reconciliation notices. A no-op for adapters whose
+        capture is a single bridge-wide stream, and idempotent for those where
+        it is not.
+        """
+        await bridge_core.adapter.ensure_channel_subscriptions(
+            [(external_channel_id, channel_type)]
+        )
+
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
         await self._validate_attachments(config)
         # Validate the group up front so a bad id fails before we provision a
@@ -465,6 +544,11 @@ class RoomService:
             if bridge_core and external_channel_id:
                 bridge_core.end_provisioning(external_channel_id)
 
+        if bridge_core and external_channel_id:
+            await self._ensure_channel_capture(
+                bridge_core, external_channel_id, channel_type
+            )
+
         # Invite the bridge client before the agent clients so it is joined (and
         # thus replicating) before any agent can post — otherwise messages sent
         # in the gap predate the bridge's join and are dropped by _should_ignore,
@@ -474,6 +558,7 @@ class RoomService:
                 matrix_room_id, bridge_core._bridge_client_matrix_user_id
             )
 
+        unreachable_users: list[dict[str, Any]] = []
         if (
             bridge_core
             and external_channel_id
@@ -484,9 +569,8 @@ class RoomService:
                 external_channel_id, agent_names
             )
             if config.user_names:
-                ext_ids = await bridge_core.resolve_external_user_ids(config.user_names)
-                await bridge_core.adapter.add_users_to_channel(
-                    external_channel_id, config.user_names, ext_ids
+                unreachable_users = await self._add_users_to_channel(
+                    bridge_core, external_channel_id, config.user_names
                 )
                 await bridge_core.ensure_users_in_room(
                     room.id, matrix_room_id, config.user_names
@@ -516,7 +600,9 @@ class RoomService:
             len(system_clients),
         )
 
-        failed_attachments = await self._attach_after_creation(room.id, config)
+        failed_attachments = unreachable_users + await self._attach_after_creation(
+            room.id, config
+        )
         if failed_attachments:
             logger.warning(
                 "Room %s created with %d attachment failure(s): %s",
@@ -563,15 +649,16 @@ class RoomService:
 
             client_ids = await self._room_store.get_client_ids(session, room_id)
 
-            for client_id in client_ids:
-                client = self._client_lifecycle.get(client_id)
-                if client:
-                    await self._matrix_admin.kick_user(
-                        room.matrix_room_id, client.matrix_user_id
-                    )
+        for client_id in client_ids:
+            client = self._client_lifecycle.get(client_id)
+            if client:
+                await self._matrix_admin.kick_user(
+                    room.matrix_room_id, client.matrix_user_id
+                )
 
-            await self._matrix_admin.delete_room(room.matrix_room_id)
+        await self._matrix_admin.delete_room(room.matrix_room_id)
 
+        async with self._session_factory() as session:
             await self._room_store.delete(session, room_id)
             await session.commit()
 
@@ -622,29 +709,33 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
             existing = await self._room_store.get_agent_ids(session, room.id)
-            new_agent_ids = [aid for aid in agent_ids if aid not in existing]
-            if not new_agent_ids:
-                logger.debug(
-                    "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
-                    existing,
-                    new_agent_ids,
-                    agent_ids,
-                )
-                return
 
-            agent_clients = self._resolve_agent_clients(new_agent_ids)
+        new_agent_ids = [aid for aid in agent_ids if aid not in existing]
+        if not new_agent_ids:
+            logger.debug(
+                "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
+                existing,
+                new_agent_ids,
+                agent_ids,
+            )
+            return
 
-            await self._invite_clients(room.matrix_room_id, agent_clients)
+        agent_clients = self._resolve_agent_clients(new_agent_ids)
 
+        async with self._session_factory() as session:
             await self._room_store.add_agents(
                 session,
                 room.id,
                 new_agent_ids,
                 join_event_listeners={aid for aid in new_agent_ids if aid in listeners},
             )
+            await session.commit()
+
+        await self._invite_clients(room.matrix_room_id, agent_clients)
+
+        async with self._session_factory() as session:
             for client_id in agent_clients:
                 await self._room_store.add_client(session, client_id, room.id)
-
             await session.commit()
 
         if room.bridge_id and room.external_channel_id:
@@ -663,12 +754,14 @@ class RoomService:
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
 
-            agent_clients = self._resolve_agent_clients(agent_ids)
+        agent_clients = self._resolve_agent_clients(agent_ids)
 
-            for client_id, matrix_user_id in agent_clients.items():
-                await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
+        for matrix_user_id in agent_clients.values():
+            await self._matrix_admin.kick_user(room.matrix_room_id, matrix_user_id)
+
+        async with self._session_factory() as session:
+            for client_id in agent_clients:
                 await self._room_store.remove_client(session, client_id, room_id)
-
             await self._room_store.remove_agents(session, room_id, agent_ids)
             await session.commit()
 
@@ -752,10 +845,13 @@ class RoomService:
             await session.commit()
 
     async def add_users_to_room(self, room_id: str, user_names: list[str]) -> list[str]:
-        """Add users to a bridged room; returns the names that could not be
-        resolved on the room's bridge (added users are omitted from the
-        result). A name is unresolvable when the bridge has no external user
-        for it — e.g. the person has not yet signed into that workspace."""
+        """Add users to a bridged room; returns the names that did not make it
+        (added users are omitted from the result).
+
+        Two ways to miss. The bridge may have no external user for the name —
+        the person has not yet signed into that workspace — or the platform may
+        refuse to add someone it does know. Both come back here, because to the
+        caller they are the same fact: that person is not in the room."""
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -768,9 +864,11 @@ class RoomService:
         resolved = await bridge_core.resolve_external_user_id_map(user_names)
         unresolved = [name for name in user_names if name not in resolved]
         resolved_names = list(resolved.keys())
-        await bridge_core.adapter.add_users_to_channel(
+        failed_ids = await bridge_core.adapter.add_users_to_channel(
             room.external_channel_id, resolved_names, list(resolved.values())
         )
+        by_id = {resolved[name]: name for name in resolved_names}
+        unresolved.extend(by_id.get(fid, fid) for fid in failed_ids)
         await bridge_core.ensure_users_in_room(
             room.id, room.matrix_room_id, resolved_names
         )
@@ -818,6 +916,9 @@ class RoomService:
         if bridge_core and external_channel_id:
             bridge_core.add_room_mapping(
                 room.id, room.matrix_room_id, external_channel_id
+            )
+            await self._ensure_channel_capture(
+                bridge_core, external_channel_id, channel_type
             )
 
         logger.info("Linked bridge %s to room %s", bridge_id, room_id)
@@ -924,6 +1025,10 @@ class RoomService:
             new_bridge.add_room_mapping(room_id, matrix_room_id, external_channel_id)
         finally:
             new_bridge.end_provisioning(external_channel_id)
+
+        await self._ensure_channel_capture(
+            new_bridge, external_channel_id, resolved_channel_type
+        )
         await self._matrix_admin.invite_to_room(
             matrix_room_id, new_bridge._bridge_client_matrix_user_id
         )
@@ -993,26 +1098,33 @@ class RoomService:
         for matrix_user_id in client_ids.values():
             await self._matrix_admin.invite_to_room(matrix_room_id, matrix_user_id)
 
-    async def reconcile_system_clients(self) -> None:
-        """Ensure every running system client is a member of every room.
+    async def reconcile_room_clients(self) -> None:
+        """Ensure every room's clients are actually in it, on Matrix.
 
-        Rooms created before a system-client type existed (e.g. the admin
-        client) have no membership for it. Run once at startup, after the
-        clients are running so they auto-accept the invites. Idempotent:
-        `invite_to_room` is a no-op for an already-joined user, and DB
-        membership is only recorded where it is missing.
+        Two sources of drift. Rooms created before a system-client type existed
+        (e.g. the admin client) have no membership for it. And a membership
+        change writes the `room_agents` row, invites, then records
+        `room_clients` — so a crash in that window leaves a member the invite
+        may never have reached, with the absent `room_clients` row as the
+        marker.
+
+        Run once at startup. The clients are starting concurrently, so agent
+        clients are resolved from the database rather than from the running
+        registry; a pending invite is accepted on the client's first sync.
+        Idempotent: `invite_to_room` is a no-op for an already-joined user, and
+        DB membership is only recorded where it is missing.
         """
         system_clients = self._resolve_system_clients()
-        if not system_clients:
-            return
         async with self._session_factory() as session:
             rooms = await self._room_store.get_all(session, include_archived=True)
         for room in rooms:
             async with self._session_factory() as session:
                 existing = set(await self._room_store.get_client_ids(session, room.id))
-            missing = {
-                cid: uid for cid, uid in system_clients.items() if cid not in existing
-            }
+                expected = await self._room_store.get_member_agent_clients(
+                    session, room.id
+                )
+            expected.update(system_clients)
+            missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
             if not missing:
                 continue
             await self._invite_clients(room.matrix_room_id, missing)
@@ -1020,9 +1132,7 @@ class RoomService:
                 for client_id in missing:
                     await self._room_store.add_client(session, client_id, room.id)
                 await session.commit()
-            logger.info(
-                "Reconciled %d system client(s) into room %s", len(missing), room.id
-            )
+            logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
     async def ensure_client_in_room(self, room_id: str, client_id: str) -> None:
         """Invite a single running client to the room (it auto-joins) and record

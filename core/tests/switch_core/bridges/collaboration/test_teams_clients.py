@@ -32,11 +32,36 @@ def _run(coro: Any) -> Any:
 
 
 class _FakeTokens:
+    """A token provider with nothing cached, so an authorization refusal has no
+    stale token to blame and is not retried. The retry itself is exercised by
+    `_StaleTokens` below."""
+
+    def __init__(self) -> None:
+        self.tokens = ["graph-tok"]
+
     async def graph_token(self) -> str:
-        return "graph-tok"
+        return self.tokens[-1]
 
     async def bot_token(self) -> str:
         return "bot-tok"
+
+    def invalidate(self, scope: str, *, min_age_seconds: float = 0.0) -> bool:
+        return False
+
+
+class _StaleTokens(_FakeTokens):
+    """A provider holding one token old enough to predate a recent grant."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.invalidations = 0
+
+    def invalidate(self, scope: str, *, min_age_seconds: float = 0.0) -> bool:
+        self.invalidations += 1
+        if self.invalidations > 1:
+            return False
+        self.tokens.append("graph-tok-fresh")
+        return True
 
 
 class _Recorder:
@@ -63,8 +88,8 @@ def _client(recorder: _Recorder) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(recorder.handler))
 
 
-def _graph(recorder: _Recorder) -> GraphClient:
-    return GraphClient(tokens=_FakeTokens(), http=_client(recorder))  # type: ignore[arg-type]
+def _graph(recorder: _Recorder, tokens: _FakeTokens | None = None) -> GraphClient:
+    return GraphClient(tokens=tokens or _FakeTokens(), http=_client(recorder))  # type: ignore[arg-type]
 
 
 def _connector(recorder: _Recorder) -> BotConnectorClient:
@@ -396,3 +421,94 @@ def test_remove_reaction_error_raises() -> None:
                 reaction="1f440_eyes",
             )
         )
+# ── a permission granted while we hold a token ───────────────────────────────
+
+
+class _RelentingRecorder(_Recorder):
+    """Refuses the first call and accepts the second, the way Graph behaves
+    once the caller presents a token minted after the grant."""
+
+    def __init__(self, body: Any) -> None:
+        super().__init__(403, body)
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return httpx.Response(403, json=self.body)
+        return httpx.Response(200, json={"value": []})
+
+
+def _denied() -> dict[str, Any]:
+    return {
+        "error": {
+            "code": "Authorization_RequestDenied",
+            "message": "Insufficient privileges to complete the operation.",
+        }
+    }
+
+
+def test_a_403_is_retried_once_with_a_freshly_minted_token() -> None:
+    # An app's Graph roles are fixed when its token is issued, so a permission
+    # consented while the bridge runs does nothing until the token is replaced.
+    # Left alone, that is an hour of Graph reporting a permission the operator
+    # can see is granted.
+    recorder = _RelentingRecorder(_denied())
+    tokens = _StaleTokens()
+
+    result = _run(_graph(recorder, tokens).list_subscriptions())
+
+    assert result == []
+    assert len(recorder.requests) == 2
+    assert recorder.requests[0].headers["Authorization"] == "Bearer graph-tok"
+    assert recorder.requests[1].headers["Authorization"] == "Bearer graph-tok-fresh"
+
+
+def test_a_403_that_survives_the_retry_still_raises() -> None:
+    recorder = _Recorder(403, _denied())
+
+    with pytest.raises(GraphError, match="Authorization_RequestDenied"):
+        _run(_graph(recorder, _StaleTokens()).list_subscriptions())
+
+    # Exactly twice: retrying a genuine denial in a loop helps nobody.
+    assert len(recorder.requests) == 2
+
+
+def test_a_401_is_retried_too() -> None:
+    # An expired or revoked token looks like this rather than a 403.
+    recorder = _RelentingRecorder({"error": {"code": "InvalidAuthenticationToken"}})
+    recorder.status = 401
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorder.requests.append(request)
+        if len(recorder.requests) == 1:
+            return httpx.Response(401, json=recorder.body)
+        return httpx.Response(200, json={"value": []})
+
+    recorder.handler = handler  # type: ignore[method-assign]
+
+    _run(_graph(recorder, _StaleTokens()).list_subscriptions())
+
+    assert len(recorder.requests) == 2
+
+
+def test_a_freshly_minted_token_is_not_re_minted() -> None:
+    # `_FakeTokens.invalidate` reports nothing droppable, standing in for a
+    # token issued moments ago — which cannot have missed a grant, so retrying
+    # would only add a round trip to every genuine denial.
+    recorder = _Recorder(403, _denied())
+
+    with pytest.raises(GraphError):
+        _run(_graph(recorder).list_subscriptions())
+
+    assert len(recorder.requests) == 1
+
+
+def test_a_non_authorization_failure_is_not_retried() -> None:
+    # A 400 says the request was wrong, and asking again with a new token
+    # cannot make it right.
+    recorder = _Recorder(400, {"error": {"code": "ValidationError"}})
+
+    with pytest.raises(GraphError):
+        _run(_graph(recorder, _StaleTokens()).list_subscriptions())
+
+    assert len(recorder.requests) == 1

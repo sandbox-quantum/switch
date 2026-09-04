@@ -1,5 +1,5 @@
 import { CheckIcon, XIcon } from 'lucide-react';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { Button } from '@renderer/lib/ui/button';
 import { Dialog, DialogContent, DialogContentArea, DialogFooter } from '@renderer/lib/ui/dialog';
@@ -50,14 +50,15 @@ function DisclosureList({
  *
  * Rendered only when the user has never answered it, and not dismissible: the
  * answer is recorded by `askedAt`, so closing it without choosing would leave
- * the app asking again on every launch. Declining is a first-class option, not
- * a hidden one — the toggle starts on, matching the default, and the user can
- * turn it off before continuing.
+ * the app asking again on every launch. The toggle starts off, matching the
+ * default: what is sent carries a random per-install id, so sharing has to be
+ * something the user turns on rather than something they failed to turn off.
  */
 export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void }) {
   const { value, updateAsync } = useAppSettingsKey('telemetry');
-  const [enabled, setEnabled] = useState(value?.enabled ?? true);
+  const [enabled, setEnabled] = useState(value?.enabled ?? false);
   const [saving, setSaving] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
 
   const confirm = useCallback(() => {
     setSaving(true);
@@ -81,7 +82,16 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
     // Controlled `open` with no `onOpenChange`: Escape and outside clicks are
     // requests the parent ignores, so the prompt cannot be dismissed unanswered.
     <Dialog open>
-      <DialogContent aria-labelledby="telemetry-consent-heading" onKeyDown={onKeyDown}>
+      {/* Focus the popup, not its first tabbable child. The default would land
+          on the consent switch, which renders its focus ring as a highlighted
+          band around the toggle row — reading as a pre-selected answer to a
+          question the user has not answered yet. */}
+      <DialogContent
+        ref={popupRef}
+        initialFocus={popupRef}
+        aria-labelledby="telemetry-consent-heading"
+        onKeyDown={onKeyDown}
+      >
         <div className="flex flex-col gap-2 p-6 pb-4">
           <h2 id="telemetry-consent-heading" className="text-base font-normal text-foreground">
             Help improve Switch Console
@@ -97,7 +107,7 @@ export function TelemetryConsentDialog({ onAnswered }: { onAnswered: () => void 
           />
           <div className="mt-1 flex items-center justify-between gap-4 rounded-lg border border-border bg-background-1 p-3">
             <label htmlFor="telemetry-consent-switch" className="text-sm text-foreground">
-              Share anonymous usage data
+              Share usage data
             </label>
             <Switch
               id="telemetry-consent-switch"

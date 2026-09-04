@@ -265,7 +265,9 @@ collides and nobody can tell which human is behind which agent:
   from `$USER` or `whoami`.
 
 To slugify: lowercase, replace anything outside `[a-z0-9._-]` with `-`, collapse
-repeats, strip leading/trailing `-`.
+runs of `-`, strip leading/trailing `.`, `_` and `-`. Strip all three, not just `-`:
+the pattern requires a letter or digit first, so a surviving leading `.` or `_`
+is rejected all over again.
 
 Confirm the name or accept a custom one; if it fails the regex, explain why and
 ask again. If it carries no user identifier, flag the collision risk once and
@@ -323,11 +325,13 @@ with no live session. It is built from what you record here and in Step 5, so it
 carries the channels flag when you said channels work:
 
 ```
-cd <repo_dir> && claude "connect to switch room <name>" \
+cd <repo_dir> && claude "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>" \
   --dangerously-load-development-channels plugin:switch-connector@switch-plugins
 ```
 
-(without the flag when `channels_enabled` is false).
+(without the flag when `channels_enabled` is false). The prompt names the agent
+so a session started in a directory holding several of them answers
+`select_agent` without the user having to.
 
 **Note the path is not quoted** in what Switch generates, so a `repo_dir`
 containing a space produces a command that breaks when pasted. If the directory
@@ -810,7 +814,7 @@ Report the registered subagents (Switch name + id; not the token) and explain
 that each runs as its own session:
 
 ```
-cd <repo> && claude "connect to switch room <name>" \
+cd <repo> && claude "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>" \
   --agent <subagent_name> \
   --settings .claude/switch-subagents/<subagent_name>.settings.json \
   --dangerously-load-development-channels plugin:switch-connector@switch-plugins
@@ -832,7 +836,7 @@ subagent while it has no live session, so the user doesn't have to memorise it.
 Be straight with the user; do not imply parity.
 
 **Works:** the full Switch tool surface (including `send_attachment` /
-`download_attachment`), room participation, threads, tasks, roles, moderation,
+`download_attachment`), room participation, threads, roles, moderation,
 tool mediation and event reporting via the plugin's hooks, and the offline run
 command Switch posts. **Pushed inbound events also work** — unlike the Codex
 connector — provided the session is launched with

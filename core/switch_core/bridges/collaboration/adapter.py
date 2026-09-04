@@ -24,6 +24,27 @@ from switch_core.bridges.collaboration.models import (
 logger = logging.getLogger(__name__)
 
 
+def format_elapsed(seconds: float) -> str:
+    """How long a turn took, for the marker its status line becomes.
+
+    Rounded to whole seconds and written the way a reader skims it — "8s",
+    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
+    second turns report "0s" instead of an empty string.
+
+    Lives here rather than beside one adapter because every platform that
+    retires a status line by editing it rather than deleting it wants the same
+    words on it.
+    """
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
 @dataclass(frozen=True)
 class LiveRuntimeIndicator:
     """The runtime status message currently posted for one agent in one channel.
@@ -128,6 +149,57 @@ class CollaborationAdapter(ABC):
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
 
+    @classmethod
+    async def prepare_config(
+        cls, connection_config: dict[str, object]
+    ) -> dict[str, object]:
+        """Fill in values the operator should not have to supply, at create time.
+
+        Called once, when a bridge is registered — never on start, so a value
+        minted here is persisted and stable for the life of the bridge. An
+        adapter that generates key material must do it here rather than in a
+        model default, or every restart would mint a fresh one and quietly
+        invalidate whatever the last one signed or encrypted.
+
+        Async because generating key material is CPU-bound and this runs on
+        the event loop that carries every live Matrix session.
+        """
+        return connection_config
+
+    @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """Name a host resource this bridge needs to itself, if any.
+
+        Two bridges returning the same string cannot coexist in one process.
+        Returning None — the default — means a bridge of this type can be run
+        alongside any number of its own kind, which is true of every adapter
+        that only dials out.
+
+        The returned string is quoted verbatim in the refusal shown to whoever
+        registers the second bridge, so it must not embed credential material.
+
+        The point is to refuse the second one at registration, with a sentence
+        saying what clashed. Without it the collision surfaces as whatever the
+        underlying resource does when contended, which for a TCP port is a bind
+        error inside a background task, minutes later and nowhere near the
+        operator who caused it.
+        """
+        return None
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Prove the credentials work, before the bridge is persisted.
+
+        Raise :class:`BridgeCredentialError` with a message fit for an operator
+        to read. Adapters start in a background task whose exceptions are logged
+        and swallowed, so without this a wrong password looks like success and
+        surfaces hours later as an unrelated-looking failure.
+
+        The default accepts anything: an adapter that cannot check cheaply
+        should not pretend to.
+        """
+        return None
+
     @abstractmethod
     async def start(
         self,
@@ -194,13 +266,45 @@ class CollaborationAdapter(ABC):
     def _bridge_display_name(self) -> str:
         return "Switch"
 
+    def is_placeholder_username(self, username: str) -> bool:
+        """Whether a stored name for a person is really one of this platform's
+        opaque ids, recorded because nothing better was available at the time.
+
+        Switch files a person under the name it first sees, and some platforms
+        do not always supply one — Teams omits it from a 1:1 chat activity. The
+        id then becomes that person's name everywhere: their Matrix account,
+        the title of any room auto-created for them, and every agent reply that
+        addresses them. Fixing the resolution stops it happening to the next
+        person and does nothing for the ones already recorded, so an adapter
+        that can recognise its own ids says so here and the name is repaired
+        the next time they speak.
+
+        Default False: on a platform whose handles are handles, there is
+        nothing to recognise and nothing to repair.
+        """
+        return False
+
+    def render_app_mention(self, token: str) -> str:
+        """Render a mention of the Switch app itself, given the platform's own
+        handle for it.
+
+        Mention syntax is per-platform and the caller is not: this is used by a
+        notice in shared bridge code, which for a long time emitted Slack's
+        ``<@id>`` form everywhere. Slack renders that as the app's name; Teams
+        prints it verbatim, so a user was told they had tagged
+        ``<@28:11111111-…>``. Override wherever that form is not what the
+        platform reads.
+        """
+        return f"<@{token}>"
+
     def slash_invite_hint(self) -> str | None:
         """How to run `invite-agent` as a native slash command here, if at all.
 
-        Native slash commands are per-platform: Slack declares them in its app
-        manifest, Discord registers them per guild and Telegram publishes a bot
-        command menu, while Mattermost and Teams have none — so the no-agents
-        notice must not advertise a `/` form on a bridge that has none to offer.
+        The `/` form is per-platform: Slack declares its commands in the app
+        manifest, Discord registers them per guild, and Telegram and Teams
+        accept `/` as an ordinary message prefix, while Mattermost has nothing —
+        so the no-agents notice must not advertise a `/` form on a bridge that
+        has none to offer.
         The invocation differs too, since Slack and Telegram take a free-text
         tail where Discord names each argument as its own field, so each adapter
         spells out its own.
@@ -301,6 +405,7 @@ class CollaborationAdapter(ABC):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Serialise against any other runtime-indicator work for this agent,
         then apply the state. Adapters override ``_apply_runtime_state``."""
@@ -314,6 +419,7 @@ class CollaborationAdapter(ABC):
                 deeplink_url=deeplink_url,
                 detail=detail,
                 trigger_thread_root_id=trigger_thread_root_id,
+                anchor_message_ref=anchor_message_ref,
             )
 
     async def reposition_runtime_state(
@@ -336,6 +442,7 @@ class CollaborationAdapter(ABC):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Surface a Switch Console-managed agent's runtime state on the channel.
 
@@ -356,6 +463,13 @@ class CollaborationAdapter(ABC):
         distinction reads it, and its callers should not have to restate a
         value the other adapters ignore.
 
+        ``anchor_message_ref`` is the external post the agent reports it is
+        answering — the last message it was actually handed. Unlike the two
+        above it names a *message* rather than a thread, and it is set whether
+        or not that message opened one, so an adapter can mark the message
+        itself (Discord puts a reaction on it) without moving where the status
+        is posted. None when nothing the agent was handed crossed this bridge.
+
         ``deeplink_url``, when set, is an https link (served by the gateway) that
         opens the agent's session in the Switch Console desktop app; adapters that
         post a visible status message append it so a reader can jump there.
@@ -370,7 +484,12 @@ class CollaborationAdapter(ABC):
         elif state == "awaiting-input":
             await self.send_typing(channel_id, agent_name, True)
             await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
         else:
             await self.send_typing(channel_id, agent_name, False)
@@ -467,8 +586,14 @@ class CollaborationAdapter(ABC):
         mention_handle: str | None,
         thread_root_id: str | None,
         deeplink_url: str | None = None,
+        detail: str | None = None,
     ) -> str | None:
-        """Post a message nudging the operator that the agent needs input.
+        """Post a message nudging the operator that the agent needs attention.
+
+        ``detail``, when set, is the reason the session stalled — an API or auth
+        failure the agent cannot recover from on its own. It replaces the
+        generic "needs your input" wording so the operator knows what is wrong
+        before clicking through.
 
         `mention_handle` is the agent owner's account on this platform, or None
         when there is nobody to reach — no owner, or an owner who has not said
@@ -478,11 +603,14 @@ class CollaborationAdapter(ABC):
 
         Returns the posted message ref so callers that can remove it (Slack,
         Mattermost) track it for cleanup when the turn ends."""
+        reason = detail.strip() if detail and detail.strip() else ""
+        need = f"hit an error: {reason}" if reason else "needs your input"
+        lead = "⚠️ " if reason else ""
         if mention_handle:
-            text = f"@{mention_handle} **{agent_name}** needs your input."
+            text = f"@{mention_handle} {lead}**{agent_name}** {need}."
         else:
             text = (
-                f"**{agent_name}** needs your input — but nobody here is linked "
+                f"{lead}**{agent_name}** {need} — but nobody here is linked "
                 f"to its owner, so this pings no one. Link your "
                 f"{self.platform_name} account in Switch Console to be notified."
             )
@@ -496,7 +624,18 @@ class CollaborationAdapter(ABC):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str: ...
+    ) -> str:
+        """Provision a channel on the platform and return its external id.
+
+        When the platform *refuses* — a permission not consented, a name it
+        will not take — raise :class:`BridgeOperationError` carrying what the
+        platform said. Room creation turns that into a 502 quoting it, so the
+        operator who asked for the room learns why it failed; anything else
+        becomes an opaque 500 and the explanation stays in the log. Raise
+        :class:`ChannelCreationUnsupported` instead when declining without
+        asking the platform at all.
+        """
+        ...
 
     async def create_dm_channel(
         self,
@@ -594,7 +733,20 @@ class CollaborationAdapter(ABC):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None: ...
+    ) -> list[str]:
+        """Add the given people to a channel; return the ids that could not be.
+
+        ``user_names`` and ``user_external_ids`` are positionally paired.
+
+        A person who cannot be added is a poor reason to fail the whole
+        operation — the caller is usually creating a room, and abandoning it
+        over one guest account or one missing platform permission leaves a
+        half-provisioned room behind and tells the operator nothing. Nor should
+        it pass silently, which reports a room that quietly lacks the people
+        asked for. So: continue, and hand back who was left out for the caller
+        to disclose.
+        """
+        ...
 
     @abstractmethod
     async def create_agent_identity(
@@ -646,6 +798,19 @@ class CollaborationAdapter(ABC):
         Default is a no-op; adapters whose outbound endpoint is only discovered
         from inbound activities (Teams, whose Bot Connector ``serviceUrl`` is
         carried on inbound activities) override this to persist it."""
+        return None
+
+    def set_channel_team_persister(
+        self, persist: Callable[[str, str], Awaitable[None]]
+    ) -> None:
+        """Install a callback the adapter uses to persist which container a
+        channel belongs to, when that is learned from inbound traffic rather
+        than configured.
+
+        Default is a no-op; Teams overrides it because a Graph message
+        subscription is created against `teams/{team}/channels/{channel}`, and
+        the team arrives only on an inbound activity. Losing it on restart
+        silently kills capture in every channel outside the configured team."""
         return None
 
     def set_channel_migration_handler(

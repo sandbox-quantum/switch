@@ -394,27 +394,87 @@ pnpm run lint
   or generated dependency folders.
 - Application secrets are stored through encrypted app secret services and Electron
   safe storage.
-- The app sends no telemetry or analytics today, and nothing may start sending without
-  going through the consent gate below. Logs are local-only and no code path transmits
-  them off the machine. Do not add one. `getDiagnosticLogAttachment()` builds a redacted
-  export and is the only function intended to ever feed such a path; anything that ships
-  log content must go through it rather than reading the log itself.
+- The app sends a small, fixed set of product events to the company's public OTLP relay,
+  which forwards them to Amplitude and Datadog, and nothing else. The relay holds both
+  vendor keys, so **no credential ships in the app** — do not reintroduce one, and do not
+  call a vendor directly. It also means the vendors see the relay's network address rather
+  than the user's. Do not turn that into a promise about *them*: it is a property of the
+  relay's configuration, which lives in another repository and whose own documentation
+  describes the change that would undo it. The consent copy therefore promises only what
+  this app does — it sends no address and no location — which stays true either way.
+  Logs are local-only and no code path transmits them off the machine. Do not add one.
+  `getDiagnosticLogAttachment()` builds a redacted export and is the only function
+  intended to ever feed such a path; anything that ships log content must go through it
+  rather than reading the log itself, and no log content may enter a telemetry payload.
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
   emission and send nothing when it returns false. Do not read `telemetry.enabled` from
   settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
-  cache the answer across a send, since the user can revoke it at any time.
-- **What telemetry may contain, if it is ever built.** The consent toggle defaults to *on*,
-  which is only defensible for data that is not personal, so the payload is limited to
-  anonymous counters: feature-usage counts, error and crash counts, app version, operating
-  system. It must carry **no identifier of any kind** — no install id, machine id, user id,
-  or any other value that distinguishes one install from another — and no prompts, code,
-  file paths, or agent/room/project/server names. Adding an identifier makes the data
-  pseudonymous personal data under GDPR/nFADP, at which point an opt-out default is no
-  longer valid and the default has to flip to off. That is a decision for the product
-  owner, not a code change: if you need per-install numbers, raise it rather than adding
-  a field. The user-facing wording of this promise lives in
-  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step.
+  cache the answer across a send, since the user can revoke it at any time. Consent off
+  means **no request is made at all**, not a request whose result is discarded.
+- **The toggle defaults to off.** The payload carries a random per-install id, which makes
+  it pseudonymous personal data under GDPR/nFADP; an opt-out default does not cover that.
+  Flipping the default back to on is a product decision that requires the id to go first,
+  not a code change.
+- **What a telemetry payload may contain.** Add an event only by adding it to the closed
+  catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions,
+  numbers and booleans, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which
+  the emitter uses to drop anything else before it builds a payload. A count goes as a number
+  and a yes/no as a boolean rather than as text, so both stay usable at the far end; anything
+  else — an object, an array, `null`, a non-finite number — is refused rather than encoded. The types alone are not
+  enough — excess-property checking does not apply through a spread — so the runtime
+  filter is what makes "nothing free-text can reach a payload" true rather than intended.
+  Permitted: which of the catalogued things happened, agent type, local-vs-remote,
+  success-vs-failure, app version, operating system, and the random install id. Never:
+  prompts, code, file paths, working directories, error messages or stack traces (use an
+  enumerated code), machine or user names, IP or MAC addresses, email or sign-in, and no
+  agent, room, project, location or server names or ids. Widening this is a consent
+  decision — the user-facing wording lives in
+  `src/renderer/features/telemetry/telemetry-copy.ts` and must be kept in step with it.
+- **The interface may report only through the one gate.** Almost everything is
+  reported from the main process, where a call site is type-checked against the
+  catalogue. The exceptions are moments that exist only in the UI — a screen
+  opened, a command run, a checklist abandoned — and they go through
+  `rpc.telemetry.track` into `src/main/core/telemetry/renderer-events.ts`, which
+  checks the event is one of the few permitted and every value against the set
+  the catalogue allows. That check is not ceremony: a type does not survive a
+  process boundary, so it is the only thing standing between a received value
+  and a payload. Do not add a second path, and if a moment can be observed from
+  the main process, observe it there.
+- **Report a moment, not a state — and if you must report a state, claim it after
+  the gate.** A condition that is true from the instant it becomes true is true
+  again on every later launch, so reporting it directly counts it forever;
+  `ONCE_PER_INSTALL` in `renderer-events.ts` exists for that case and keeps the
+  record beside the emitter rather than in the user's settings, which would
+  report a setting nobody changed. The record is spent once and never given
+  back, so it must not be claimed until a send is actually possible: the app
+  renders behind the first-run consent prompt, so anything claiming before the
+  consent check spends its one chance while the answer is still unset and
+  retires the event for the life of the install.
+- **Prefer a value the caller declares to one you read back.** Several
+  dimensions describe an intent that only the caller has — which button, which
+  source, whether a room was chosen — and the state that would answer is often
+  consumed by the very operation being reported. Pass it through the params;
+  narrow it at the emitter, because it crossed a process boundary.
+- **A fallback must not assert something.** `unknown` is the right default for a
+  dimension nobody supplied. Falling back to a real variant — `user` for "who
+  started this" — reports a claim the code has no evidence for, and it lands in
+  the bucket a human would read as deliberate.
+- **Telemetry never affects the user.** It is fire-and-forget with a short timeout and no
+  retry: a send that fails is logged with an `errorCode` and dropped. It must never block,
+  delay or fail an operation, and must never surface in the UI. It is off in a dev build,
+  which is logged once so a build that is not reporting says why.
+- **The compile-time guards are load-bearing; keep them in the `[X] extends
+  [never]` form.** An indexed access by a union distributes and then collapses,
+  so `Map[Union]` yields `true | never` — which is `true`, and passes while
+  every member but one is wrong. Two assertions in this area were written that
+  way and asserted nothing. Wrapping both sides in a tuple stops the
+  distribution. Note also that `satisfies { [K in Name]: readonly (keyof T[K])[] }`
+  constrains what an array *may* contain, never what it *must* — that is why
+  `_everyPropertyIsAllowListed` is a separate check.
+- **The sidecar sends nothing.** It runs headless on a user's VM with no consent prompt
+  and no access to this setting, so sessions it starts are not counted. Do not "fix" that
+  by having it report; the gate is not reachable from there.
 - **Redaction is split by destination, and both halves must be preserved:**
   - **Secrets** (tokens, keys, JWTs, PEM blocks, URL credentials) are redacted on the
     write path by `redactSecrets()` and must never reach disk.
@@ -509,9 +569,9 @@ forgotten and someone will debug a build they think is newer than it is.
 | Artifact | Version lives in | Bump when |
 |---|---|---|
 | Remote sidecar | `src/sidecar/sidecar-version.ts` | any behaviour change; **major only** on a client↔sidecar wire break (ready line, endpoint shapes, shared on-disk layout) |
-| Claude Code plugin | `connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
-| Codex plugin | `connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
-| OpenCode connector | `connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
+| Claude Code plugin | `../connectors/claude-code-plugin/.claude-plugin/plugin.json` | any change to the plugin — installs will not pick it up otherwise |
+| Codex plugin | `../connectors/codex-plugin/.codex-plugin/plugin.json` | any change to the plugin (the room-workflow and `configure` skills, and its own `.mcp.json`) — installs will not pick it up otherwise |
+| OpenCode connector | `../connectors/opencode-plugin/package.json` | any change to the connector. Nothing fetches it — Switch Console writes it — so the number is for humans reading a diff rather than for an installer, and `just artifacts-check` fails if it disagrees with `artifacts.yaml` |
 | Agent runtime package | `packages/switch-agent-runtime/package.json` | any change; it is published, and the marketplace connectors' `.mcp.json` pin the version sessions actually run. An agent type whose connector the app writes rather than installs is pinned by `SWITCH_AGENT_RUNTIME_PIN` in `packages/plugins/src/distribution.ts`, which `connectors/opencode-plugin/opencode.json` must match. `runtime-pin.test.ts` and `connector-assets.test.ts` fail if any of them disagree |
 
 "Non-trivial" means anything a user could observe: behaviour, protocol, wiring,
@@ -618,8 +678,17 @@ pnpm run test
   `.switchdash.json`.
 - Optional environment variables:
   `SWITCHDASH_DB_FILE`, `SWITCHDASH_DISABLE_NATIVE_DB`,
-  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`, and
-  `SWITCHDASH_FAKE_UPDATE`.
+  `SWITCHDASH_DISABLE_PTY`, `SWITCHDASH_REGISTER_DEEPLINK`,
+  `SWITCHDASH_FAKE_UPDATE`, `SWITCHDASH_TELEMETRY_DEV`, and
+  `SWITCHDASH_TELEMETRY_ENDPOINT`.
+- Telemetry in dev: a dev build sends nothing, so the emitter cannot be exercised by
+  `pnpm run dev` alone. `SWITCHDASH_TELEMETRY_DEV=1` opts a dev run in, and
+  `SWITCHDASH_TELEMETRY_ENDPOINT` redirects it at a local listener so what is actually
+  sent can be read off the wire rather than off the code. Both are dev-only and cannot
+  activate in a packaged build. There is no key to configure: events go to the public
+  OTLP relay, which holds the vendor credentials server-side, so every build can report
+  and none carries a secret. Example:
+  `SWITCHDASH_TELEMETRY_DEV=1 SWITCHDASH_TELEMETRY_ENDPOINT=http://127.0.0.1:9009 pnpm run dev`.
 - **A hook command is built for the machine the session runs on, not for the one
   building it.** `writeHooks(fs, hooks, { platform })` takes the target
   platform: `process.platform` locally and in the sidecar, the VM's `uname -s`

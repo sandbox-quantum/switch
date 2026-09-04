@@ -29,13 +29,11 @@ import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
 import { log } from '@renderer/utils/logger';
 import { deriveHostStatus, type HostStatus } from '@shared/core/remote-hosts/host-status';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
+import { SWITCH_DOCS_REMOTE_HOSTING_URL } from '@shared/urls';
 import { hostReachabilityStore } from '../host-reachability-store';
 import { useAllHostSetupPlans } from '../setup/use-host-setup';
 
 export const REMOTE_HOSTS_QUERY_KEY = ['remote-hosts'];
-
-/** Same destination as the Docs tab in Settings, until a cloud-hosting page exists to point at. */
-const CLOUD_HOSTING_DOC_URL = 'https://github.com/sandbox-quantum/switch';
 
 type HostFilter = 'all' | 'ready' | 'attention';
 
@@ -171,7 +169,10 @@ export const RemoteHostsSettingsPage = observer(function RemoteHostsSettingsPage
               type="button"
               className="cursor-pointer underline underline-offset-2 hover:text-foreground"
               onClick={() =>
-                void openExternalUrl(CLOUD_HOSTING_DOC_URL, 'Could not open the documentation')
+                void openExternalUrl(
+                  SWITCH_DOCS_REMOTE_HOSTING_URL,
+                  'Could not open the documentation'
+                )
               }
             >
               doc for cloud hosting ↗︎

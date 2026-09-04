@@ -35,6 +35,9 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     OutboundAttachment,
 )
+from switch_core.bridges.collaboration.slack.agent_groups import (
+    SlackAgentGroupDirectory,
+)
 from switch_core.bridges.collaboration.slack.avatar import on_slack_background
 
 logger = logging.getLogger(__name__)
@@ -91,6 +94,13 @@ def _group_description(agent_description: str) -> str:
 # on. Slack returns codes this list does not know about, and a status that
 # cannot work must not warn on every turn for the life of the bridge.
 _AGENT_SESSIONS_FAILURE_LIMIT = 3
+
+# How long a give-up over unrecognised errors lasts before the bridge tries
+# again. Long enough that a bad patch is waited out rather than hammered
+# through, short enough that a bridge does not stay dark for a day because of
+# one. A refusal that named its own cause is not covered: nothing about the
+# workspace will have changed, so it is not retried at all.
+_AGENT_SESSIONS_RETRY_AFTER = 600
 
 # Prefix on the trace lines that follow a turn through the session, so a run
 # can be read end to end when something does not render. Debug level: the
@@ -219,6 +229,13 @@ class SlackAdapter(CollaborationAdapter):
     # opened for it — which was most turns.
     runtime_state_follows_anchor: ClassVar[bool] = True
 
+    # Every Slack bridge in this process shares one, because resolving a
+    # mention that crossed a workspace boundary means reading a group another
+    # bridge minted. Rebind it to a fresh instance to isolate a test.
+    agent_group_directory: ClassVar[SlackAgentGroupDirectory] = (
+        SlackAgentGroupDirectory()
+    )
+
     def __init__(self, *, config: SlackConnectionConfig) -> None:
         super().__init__()
         self._config = config
@@ -265,10 +282,16 @@ class SlackAdapter(CollaborationAdapter):
         # Set once Slack has told us it will not host agent sessions, so the
         # bridge stops asking and says so only once.
         self._agent_sessions_off_reason: str | None = None
+        # When a give-up over unrecognised errors expires. None means the
+        # reason above is a workspace's settled answer and will not improve on
+        # its own, so nothing re-arms it.
+        self._agent_sessions_retry_at: float | None = None
         # Consecutive identical session-status failures, so an error code this
         # build does not recognise still stops complaining eventually.
         self._session_failures = 0
         self._last_session_error: str | None = None
+        # While Slack is throttling us, when it said we may call again.
+        self._sessions_throttled_until: float | None = None
         # (channel_id, thread_ts) -> agent whose turn owns that session, so the
         # stop button can be routed to the agent it belongs to.
         self._session_owner: dict[tuple[str, str], str] = {}
@@ -294,6 +317,11 @@ class SlackAdapter(CollaborationAdapter):
         self._agent_eyes: dict[tuple[str, str], set[str]] = {}
         # (channel_id, thread_ts) -> ts of the last message asking in it.
         self._thread_trigger: dict[tuple[str, str], str] = {}
+        # (channel_id, ts) Slack says it cannot find. Retrying it on every
+        # progress report of a long turn is how one unmarkable message became
+        # a warning a second for as long as the agent worked.
+        self._unmarkable: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._unmarkable_max = 500
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -356,6 +384,7 @@ class SlackAdapter(CollaborationAdapter):
                 pass
             self._socket_client = None
         self._web_client = None
+        self.agent_group_directory.forget(self._team_id)
         logger.info("Slack adapter stopped")
 
     # ── Messaging ────────────────────────────────────────────────────────────
@@ -386,7 +415,7 @@ class SlackAdapter(CollaborationAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=self.translate_outbound(content),
+                text=content,
                 username=sender_name,
                 icon_url=await self.agent_icon_url(sender_name),
                 thread_ts=thread_ts,
@@ -698,6 +727,7 @@ class SlackAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Render runtime state as persistent, truly-deletable status messages.
 
@@ -756,7 +786,12 @@ class SlackAdapter(CollaborationAdapter):
         elif state == "awaiting-input":
             # Leave the working indicator up; add a ping and track it.
             ref = await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -841,6 +876,8 @@ class SlackAdapter(CollaborationAdapter):
         key = (channel_id, ts)
         if working == (key in self._eyes):
             return
+        if key in self._unmarkable:
+            return
 
         try:
             if working:
@@ -860,9 +897,15 @@ class SlackAdapter(CollaborationAdapter):
             if error in ("already_reacted", "no_reaction"):
                 self._eyes.add(key) if working else self._eyes.discard(key)
                 return
+            if error == "message_not_found":
+                # There is no message to mark, and there will not be one later.
+                self._unmarkable[key] = None
+                if len(self._unmarkable) > self._unmarkable_max:
+                    self._unmarkable.popitem(last=False)
             logger.warning(
-                "Could not %s the working reaction on %s: %s",
+                "Could not %s the working reaction on %s in %s: %s",
                 "add" if working else "remove",
+                ts,
                 channel_id,
                 error or e,
             )
@@ -903,7 +946,7 @@ class SlackAdapter(CollaborationAdapter):
         if not self._config.agent_sessions:
             logger.debug(_TRACE + "skipped for %s: turned off in config", agent_name)
             return
-        if self._agent_sessions_off_reason:
+        if self._agent_sessions_off():
             # Silent by design. Giving up is announced once, where it happens;
             # saying so again per skipped turn produced eleven thousand lines
             # in a night — an instrument that ruins the thing it measures.
@@ -928,23 +971,37 @@ class SlackAdapter(CollaborationAdapter):
         self._threadless_logged.discard((channel_id, agent_name))
 
         working = state in ("working", "awaiting-input")
+        if working and self._sessions_throttled():
+            # A step lost to throttling costs one line of the card. Teardown is
+            # not skipped the same way: dropping it would leave the card open
+            # for good, so it is attempted even while we are being throttled.
+            return
         key = (channel_id, thread_ts)
         if working:
             self._session_owner[key] = agent_name
         else:
             self._session_owner.pop(key, None)
 
+        # A detail on `awaiting-input` is the reason a turn died, not a step the
+        # agent is taking. Streamed unmarked it reads as progress — a spinner
+        # over "the turn ended on an error" — so it is flagged as the stall it is.
+        step_detail = f"⚠️ {detail}" if state == "awaiting-input" and detail else detail
         await self._drive_stream(
             channel_id,
             thread_ts,
             agent_name,
             working=working,
-            detail=detail,
+            detail=step_detail,
             deeplink_url=deeplink_url,
         )
 
     def _note_session_failure(
-        self, error: str, agent_name: str, channel_id: str
+        self,
+        error: str,
+        agent_name: str,
+        channel_id: str,
+        *,
+        retry_after: int | None = None,
     ) -> None:
         """Log a failed status call, and give up if it is not going to improve.
 
@@ -954,7 +1011,15 @@ class SlackAdapter(CollaborationAdapter):
         list does not know about (`not_authorized` for an app that is not an
         agent, found in the pilot), and without a backstop each one means a
         warning on every turn for as long as the bridge runs.
+
+        Throttling is the exception, and is not counted at all: it says the app
+        is busy, not that it is unfit, and counting it turned a burst of
+        traffic into a bridge that never showed a card again.
         """
+        if error == "ratelimited":
+            self._note_session_throttled(retry_after or _RATE_LIMIT_DEFAULT_DELAY)
+            return
+
         if error in _AGENT_SESSIONS_UNAVAILABLE_ERRORS:
             self._disable_agent_sessions(error)
             return
@@ -972,7 +1037,54 @@ class SlackAdapter(CollaborationAdapter):
             error or "unknown error",
         )
         if self._session_failures >= _AGENT_SESSIONS_FAILURE_LIMIT:
-            self._disable_agent_sessions(error)
+            self._disable_agent_sessions(error, retry_in=_AGENT_SESSIONS_RETRY_AFTER)
+
+    def _note_session_throttled(self, delay: int) -> None:
+        """Stand down for as long as Slack asked, and say so once per burst."""
+        already_waiting = self._sessions_throttled()
+        self._sessions_throttled_until = time.monotonic() + delay
+        if already_waiting:
+            logger.debug(_TRACE + "still throttled; waiting %ss more", delay)
+            return
+        logger.warning(
+            "Slack is rate-limiting agent session updates; pausing them for %ss. "
+            "Cards may miss a step until it clears; Switch's own status messages "
+            "are unaffected.",
+            delay,
+        )
+
+    def _sessions_throttled(self) -> bool:
+        until = self._sessions_throttled_until
+        if until is None:
+            return False
+        if time.monotonic() < until:
+            return True
+        self._sessions_throttled_until = None
+        logger.debug(_TRACE + "throttling window elapsed; resuming session updates")
+        return False
+
+    def _agent_sessions_off(self) -> bool:
+        """Whether sessions are given up on — re-arming a lapsed give-up.
+
+        A give-up over errors this build cannot name is a guess, so it expires:
+        the bridge tries again rather than staying dark until someone restarts
+        it. A refusal that named its own cause does not expire, because nothing
+        will have changed without an operator changing it.
+        """
+        if self._agent_sessions_off_reason is None:
+            return False
+        retry_at = self._agent_sessions_retry_at
+        if retry_at is None or time.monotonic() < retry_at:
+            return True
+        logger.info(
+            "Trying Slack agent sessions again after backing off over '%s'.",
+            self._agent_sessions_off_reason,
+        )
+        self._agent_sessions_off_reason = None
+        self._agent_sessions_retry_at = None
+        self._session_failures = 0
+        self._last_session_error = None
+        return False
 
     async def _drive_stream(
         self,
@@ -1011,11 +1123,13 @@ class SlackAdapter(CollaborationAdapter):
                         ),
                         agent_name=agent_name,
                         channel_id=channel_id,
+                        stream_key=key,
                     )
                 await self._call_session_api(
                     lambda: client.chat_stopStream(channel=channel_id, ts=closing_ts),
                     agent_name=agent_name,
                     channel_id=channel_id,
+                    stream_key=key,
                 )
                 # The card is a progress indicator, not a record. Once the turn
                 # is over the agent's own reply is the thing worth reading, so
@@ -1073,7 +1187,7 @@ class SlackAdapter(CollaborationAdapter):
         # every time stacked eight identical links under one card.
         first_link = deeplink_url if self._stream_step.get(key) is None else None
         stream_ts = open_ts
-        await self._call_session_api(
+        pushed = await self._call_session_api(
             lambda: client.chat_appendStream(
                 channel=channel_id,
                 ts=stream_ts,
@@ -1081,7 +1195,12 @@ class SlackAdapter(CollaborationAdapter):
             ),
             agent_name=agent_name,
             channel_id=channel_id,
+            stream_key=key,
         )
+        if pushed is None:
+            # The step never landed, so it is not what the card is showing —
+            # and recording it would tell the next one the link had been sent.
+            return
         self._stream_step[key] = step
 
     async def _call_session_api(
@@ -1090,38 +1209,80 @@ class SlackAdapter(CollaborationAdapter):
         *,
         agent_name: str,
         channel_id: str,
+        stream_key: tuple[str, str] | None = None,
     ) -> str | None:
         """Make a session call, routing a refusal through the same give-up path.
 
         Returns the response's `ts` on success (empty string when it has none)
         and None on failure, so a caller that needs the stream's id cannot
-        mistake a refusal for a stream it can append to."""
+        mistake a refusal for a stream it can append to.
+
+        `stream_key` names the card being written to, where there is one, so a
+        card that has gone can be forgotten instead of counted against the app.
+        """
         try:
             result = await call()
         except SlackApiError as e:
+            error = str(e.response.get("error", ""))
+            if error == "message_not_found":
+                self._forget_stream(stream_key, agent_name)
+                return None
             self._note_session_failure(
-                str(e.response.get("error", "")), agent_name, channel_id
+                error,
+                agent_name,
+                channel_id,
+                retry_after=_retry_after_seconds(e) if error == "ratelimited" else None,
             )
             return None
         self._session_failures = 0
+        self._sessions_throttled_until = None
         return str(result.get("ts", ""))
 
-    def _disable_agent_sessions(self, error: str) -> None:
+    def _forget_stream(self, key: tuple[str, str] | None, agent_name: str) -> None:
+        """Drop a card Slack says is no longer there.
+
+        The card is deleted when a turn ends, so a state report that arrives
+        just behind the teardown writes to something that has gone — as does a
+        card a user deleted by hand. It says nothing about whether this app can
+        host sessions, and counting it as if it did took the card away from
+        every agent in the workspace over one stale thread. The turn falls back
+        to the posted status message, and the next one opens a fresh card.
+        """
+        if key is not None:
+            self._stream_ts.pop(key, None)
+            self._stream_step.pop(key, None)
+            self._session_owner.pop(key, None)
+        logger.debug(
+            _TRACE + "card for %s is gone; forgetting it and carrying on", agent_name
+        )
+
+    def _disable_agent_sessions(
+        self, error: str, *, retry_in: int | None = None
+    ) -> None:
         if self._agent_sessions_off_reason:
             return
         self._agent_sessions_off_reason = error
+        self._agent_sessions_retry_at = (
+            time.monotonic() + retry_in if retry_in is not None else None
+        )
         reason = _AGENT_SESSIONS_UNAVAILABLE_ERRORS.get(
             error,
             f"Slack kept refusing with '{error or 'an unknown error'}'. If the "
             "app is not declared as an Agent in its settings, that is the "
             "likeliest cause.",
         )
+        recovery = (
+            f" Trying again in {retry_in}s."
+            if retry_in is not None
+            else " This will not change without an operator changing it."
+        )
         logger.warning(
             "Slack agent sessions are unavailable for this app (%s): %s "
             "Turns still show Switch's own status messages; only Slack's native "
-            "loading UX and stop button are missing.",
+            "loading UX and stop button are missing.%s",
             error,
             reason,
+            recovery,
         )
 
     @staticmethod
@@ -1295,12 +1456,13 @@ class SlackAdapter(CollaborationAdapter):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         if not self._web_client:
             raise RuntimeError(
                 "Cannot add users to channel: Slack client not connected"
             )
 
+        failed: list[str] = []
         for user_id in user_external_ids:
             try:
                 await self._web_client.conversations_invite(
@@ -1314,6 +1476,8 @@ class SlackAdapter(CollaborationAdapter):
                         channel_id,
                         e,
                     )
+                    failed.append(user_id)
+        return failed
 
     # ── Agent identity ───────────────────────────────────────────────────────
 
@@ -1418,6 +1582,7 @@ class SlackAdapter(CollaborationAdapter):
         await self._web_client.usergroups_disable(usergroup=group_id)
         self._agent_group_ids.pop(folded, None)
         self._agent_group_names.pop(group_id, None)
+        self.agent_group_directory.discard(self._team_id, group_id)
         self._agent_groups_disabled[folded] = group_id
         logger.info("Disabled Slack user group %s for agent %s", group_id, agent_name)
 
@@ -1562,6 +1727,7 @@ class SlackAdapter(CollaborationAdapter):
     def _remember_agent_group(self, group_id: str, agent_name: str) -> None:
         self._agent_group_ids[agent_name.casefold()] = group_id
         self._agent_group_names[group_id] = agent_name
+        self.agent_group_directory.add(self._team_id, group_id, agent_name)
 
     @staticmethod
     def _usergroup_handle(agent_name: str) -> str:
@@ -1639,6 +1805,7 @@ class SlackAdapter(CollaborationAdapter):
             else:
                 self._remember_agent_group(group_id, name)
 
+        self.agent_group_directory.replace(self._team_id, self._agent_group_names)
         self._agent_groups_loaded = True
         logger.info(
             "Loaded %d Slack agent user groups (%d disabled, %d other groups seen)",
@@ -1665,6 +1832,28 @@ class SlackAdapter(CollaborationAdapter):
         """Convert Slack link syntax `<url|label>` / `<url>` to markdown."""
         message = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"[\2](\1)", message)
         return re.sub(r"<(https?://[^>]+)>", r"\1", message)
+
+    @staticmethod
+    def _unwrap_code_span(text: str) -> str:
+        """Return the inside of a message that is *entirely* one Slack code span
+        (```x``` or `x`), else the stripped text unchanged.
+
+        Slack keeps the backticks in the delivered text, so a `!cmd` in a code
+        span no longer starts with "!" and gets treated as chatter instead of a
+        command. This happens a lot when people copy-paste a command. Unwrapping
+        a whole-message span lets it run, while a span sitting inside prose (e.g.
+        "run `!remove-alias @bot` to undo") is left alone.
+        """
+        stripped = text.strip()
+        for fence in ("```", "`"):
+            if (
+                len(stripped) > 2 * len(fence)
+                and stripped.startswith(fence)
+                and stripped.endswith(fence)
+                and fence not in stripped[len(fence) : -len(fence)]
+            ):
+                return stripped[len(fence) : -len(fence)].strip()
+        return stripped
 
     def prime_mention_targets(self, targets: dict[str, str]) -> None:
         for name, external_id in targets.items():
@@ -1844,22 +2033,30 @@ class SlackAdapter(CollaborationAdapter):
         # Remember the thread this message belongs to so the "thinking"
         # indicator can be posted into the same conversation.
         self._last_thread_ts[channel_id] = thread_ts or message_ts
+        root = thread_ts or message_ts
+        # The message that actually asked. Inside a thread this is a reply, not
+        # the root, and the mark belongs on what was said — not on the
+        # conversation it happens to sit in. An app's post counts: a Slack
+        # workflow asking an agent something is a request like any other, and
+        # treating it as nobody asking left the mark aimed at a thread root
+        # that need not be a message at all.
+        self._thread_trigger[(channel_id, root)] = message_ts
         # Streaming a reply into a channel has to name who it is for, and the
-        # runtime-state path never sees the asker — so keep it per thread.
+        # runtime-state path never sees the asker — so keep it per thread. This
+        # one does need a person: Slack will not open a session addressed to an
+        # app, so a workflow-triggered turn has the posted status message and
+        # the mark, and no card.
         if user_id and not bot_id:
-            root = thread_ts or message_ts
             self._thread_requester[(channel_id, root)] = user_id
-            # The message that actually asked. Inside a thread this is a reply,
-            # not the root, and the mark belongs on what was said — not on the
-            # conversation it happens to sit in.
-            self._thread_trigger[(channel_id, root)] = message_ts
 
         message_ref = f"{channel_id}:{message_ts}"
         stripped = text.strip()
+        if user_id and not bot_id:
+            stripped = self._unwrap_code_span(stripped)
         if stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
-            args = parts[1].strip() if len(parts) > 1 else ""
+            args = self.translate_inbound(parts[1].strip()) if len(parts) > 1 else ""
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
@@ -1922,9 +2119,9 @@ class SlackAdapter(CollaborationAdapter):
         user = await self._resolve_user_name(user_id)
         channel_name = str(payload.get("channel_name", "")) or None
 
-        # Slack encodes any @mentions in the slash text as `<@U…>`; normalise
-        # them to `@name` so the command dispatcher's targeting (first @token →
-        # target agent/role) resolves the same way it does for a typed command.
+        # Slack encodes @mentions in command arguments as `<@U…>`; normalise
+        # them to `@name` so the command dispatcher's first `@` token resolves
+        # to the target agent or role.
         args = self.translate_inbound(text)
 
         try:
@@ -2251,11 +2448,19 @@ class SlackAdapter(CollaborationAdapter):
         resolves to its real name. Groups we do not know are left untouched: a
         workspace's own group is not an agent, and rewriting it would invent a
         mention of someone who does not exist.
+
+        An id this workspace never minted may still be an agent's. On an
+        Enterprise Grid org the composer offers a sibling workspace's group, so
+        the mention arrives here naming a group only that bridge knows —
+        consulting the shared directory is what keeps the agent addressable
+        from either side of the org.
         """
 
         def _replace(match: re.Match[str]) -> str:
             group_id = match.group(1)
-            agent_name = self._agent_group_names.get(group_id)
+            agent_name = self._agent_group_names.get(
+                group_id
+            ) or self.agent_group_directory.resolve(group_id)
             if agent_name:
                 return f"@{agent_name}"
             label = match.group(2)

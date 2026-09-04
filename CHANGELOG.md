@@ -55,6 +55,498 @@ version of their own to them without also giving them a release of their own.
   has no per-agent `@handle` to match Slack's user groups, and its native
   streaming indicator is one-on-one only with a two-minute cap — both are
   written down in the bridge's README rather than faked.
+### [0.23.0] - 2026-09-03
+
+#### Performance
+- **Matrix I/O no longer runs inside a database transaction.**
+  `add_agents_to_room`, `remove_agents_from_room` and `delete_room` each held a
+  connection-pool slot open across a fan-out of Matrix invites/kicks (up to 10s
+  per call), a major contributor to pool exhaustion under load. The three now
+  read short, commit, then do the Matrix work holding nothing — ordered so
+  Matrix membership can never exceed what the database records (a crash leaves
+  an under-privileged, repairable agent, never one silently reading a room
+  Switch has no record of) (#354).
+- **Per-client sync-cursor writes are staggered.** With one Matrix client per
+  participant (hundreds in a single process) and the throttle interval equal to
+  the sync long-poll, every client persisted its cursor in the same instant on
+  an idle instance — a periodic burst of concurrent one-row transactions that
+  starved the pool and cost heartbeats their connection. A sync that carried
+  nothing durable no longer earns a write, and the writes that remain no longer
+  align (#357).
+
+#### Changed
+- On the collaboration bridges, a turn that ends on an error now renders as the
+  stall it is — the reason is shown as why the turn stopped, not streamed as an
+  in-progress step under a spinner (#356).
+
+### [0.22.1] - 2026-09-02
+
+#### Performance
+- **Agent Bridge no longer holds a database connection while doing other
+  work.** Under load the connection pool could be exhausted by slots checked
+  out and left idle in transaction, which surfaced as `QueuePool limit ...
+  connection timed out` and, because heartbeats share the same pool, as
+  fleet-wide agent loss. Three fixes: a request never takes a second pool
+  checkout while holding one (targeted messages to owner-only agents were the
+  common trigger); the message path collapses six checkouts to one on an
+  internal room and two on a bridged one; and authentication is taken off the
+  heartbeat path via a single outer join plus a narrow in-process cache of
+  resolved credentials (#351).
+
+#### Added
+- New operator settings for the above: `AGENT_AUTH_CACHE_TTL_SECONDS` and
+  `AGENT_AUTH_CACHE_MAX_ENTRIES` tune the credential cache (set the TTL to `0`
+  to disable it), and the opt-in `DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT`
+  (default off) turns a leaked idle-in-transaction slot into a loud error. All
+  three are exposed as Helm chart values (#351).
+
+#### Fixed
+- Rejoin the two Alembic migration heads left by the parallel 0.22.0 merges, so
+  `alembic upgrade head` is unambiguous again — deploys from main were failing
+  on the two heads (#351).
+
+### [0.22.0] - 2026-09-02
+
+#### Added
+- Agents can carry an optional human display name, stored on the agent and
+  surfaced over the agent protocol (agent detail) and the gateway (#326).
+- **User-defined external reference types.** Reference types are no longer a
+  closed set of four. Any signed-in user can define one — slug, display name,
+  agent-facing instructions, value hint and a read/write visibility pair,
+  exactly like a Reference — from the new **Reference types** tab under
+  Resources, or over `POST /references/reference-types`. The four built-ins
+  (Google Drive, Confluence, GitHub, Jira) stay in code, cannot be edited or
+  deleted, and win any slug collision. Agents see the types their owner can
+  read, via `list_reference_types`; each entry now also carries `value_hint`
+  and `origin` (`builtin` or `user`). A type's visibility gates who may *pick*
+  it, never delivery of its instructions for a reference already attached to a
+  room — the attachment is the grant.
+- **`list_all_references` lets an agent discover references across the whole
+  instance.** Until now an agent only saw the references attached to its
+  current room. The result is scoped to what the agent's owner may read.
+  Three optional filters narrow it — `name_contains`, `type` and `owner_name`
+  — and they are ANDed. Each row carries the reference's metadata but never
+  its `value`. When the caller is connected to exactly one room, each row also
+  reports `attached_to_current_room`. An agent can therefore find a reference
+  and attach it in the same turn.
+
+#### Changed
+- **A reference value must now carry at least one URL.** An empty `urls` list
+  was already rejected, but an absent `urls` key silently validated to an empty
+  list and was stored. It is now a 400. Existing rows still read fine; the
+  failure appears the first time someone saves one — including a no-op save
+  from the reference detail page. Find them before upgrading and give each a
+  real URL:
+
+  ```sql
+  SELECT id, type FROM "references"
+  WHERE value->'urls' = '[]'::jsonb OR NOT (value ? 'urls');
+  ```
+- **`GET /references/reference-types` now requires a session** and returns
+  401 without one. It was the last unauthenticated route on the references
+  router; the set it returns is per-caller now, so it cannot be answered
+  anonymously.
+
+#### Fixed
+- Discord: create the room on the first command, not only on the first message
+  (#341).
+- Deeplinks: replaced the handoff page with a branded two-state design (#339).
+
+#### Performance
+- Agent bridge: take the sequential scan off the heartbeat path and size the DB
+  pool for it, backed by a new index on `agents.api_key_id` (#344).
+
+### [0.21.1] - 2026-09-01
+
+#### Fixed
+- Slack: normalize typed command mentions so commands addressed with a typed
+  `@agent` are recognized (#316).
+- Slack: resolve agent mentions that crossed a workspace boundary (#327).
+
+### [0.21.0] - 2026-08-25
+
+#### Added
+- The gateway's **registration keys** page can now search agent keys, and its
+  table fills the page height rather than being capped short (#177).
+- Switch's commands appear in Teams' `/` autocomplete picker. The shipped
+  manifest moves to schema v1.29 and declares `supportsTargetedMessages` plus a
+  second command list with `triggers: ["slash"]`. The two surfaces disagree
+  about the slash — the picker prints it and inserts the bare name, while the
+  mention menu inserts a title verbatim — so the lists carry the same commands
+  spelled for their own surface. A command picked from the picker is sent
+  privately to Switch and needs no `@`-mention.
+
+#### Fixed
+- A Slack turn triggered by another app's post — a workflow, a scheduled summary
+  — is handled as an ordinary request: `bot_id` was read as "nobody asked", so
+  the 👀 went on the thread root (which in such a channel need not be a message)
+  and Slack answered `message_not_found`. The message that asked is now
+  remembered whoever sent it; a mark Slack cannot place is recorded as
+  unmarkable rather than retried every progress report; and the warning names
+  the message, not just the channel. A workflow-triggered turn still gets the
+  status message and mark but no card, since Slack will not open a session
+  addressed to an app (#288).
+- A Teams message that merely began with a slash is no longer swallowed as a
+  command. Pasting `/Users/ada/notes.md` came back "unknown command" instead of
+  reaching an agent. `/` is not Switch's prefix — it opens paths, dates and
+  fractions — so an unknown `/name` is now read as text. `!` is Switch's own,
+  so `!list-agent` still answers that it is a typo.
+- An agent no longer answers Switch's own notices. A system message — a
+  command's result, "Added X to this room", the guidance shown when someone
+  tags the app itself — is output, not a request for a reply, and the marker
+  saying so was honoured by the admin client but not by agents. Two ways in: a
+  direct room addresses its agent with every message, so running
+  `/list-agents` in a 1:1 chat had the agent start a session to respond to its
+  own roster; and any notice that lists the agents present writes each `@name`,
+  which tagged all of them. Such a message now arrives as ordinary unaddressed
+  context on every platform.
+
+#### Added
+- `just teams-app-package` builds the Teams app package an operator uploads.
+  Every route into a tenant wants a `.zip` — the Developer Portal's Import app,
+  Upload a custom app, the admin centre — and none of them takes a bare
+  `manifest.json`, so the guide's "now zip these three files" was a step people
+  had to get right by hand. It also writes the app id into the three places it
+  has to match, checks the limits Teams enforces without explaining them, and
+  exits non-zero naming any placeholder left in, so a null app id cannot ship
+  quietly.
+
+#### Changed
+- The shipped Teams app manifest declares `supportsChannelFeatures: tier1`.
+  Teams requires it of any manifest at schema v1.25 or later whose bot takes
+  the `team` scope and refuses the upload without it — a validator rule, not a
+  schema one, so the package validated cleanly against the published schema and
+  was still rejected. The package builder now checks the same rule.
+- The shipped Teams app manifest moves to schema v1.27. It was written at v1.19
+  on the reasoning that older schemas upload most reliably; the tenant we
+  actually run on is on v1.27, which settles that better than the reasoning
+  did. Nothing is removed between the two and the required fields are
+  identical, so it is a version bump rather than a rewrite — and v1.25 raised a
+  command list's cap from ten entries to twelve, so the menu gains
+  `/list-switch-agents` and `/room-url`.
+
+#### Fixed
+- A Teams posts channel no longer fills with *"This message has been deleted."*
+  Teams substitutes that for any deleted message and keeps it in the post, so
+  an agent's status line — posted, moved as the conversation went on, and
+  removed at the end — left one behind per move and per turn. Talking to an
+  agent produced a column of them. The status is now posted once, stays where
+  it is, and is edited to `✓ Done · <elapsed>` when the turn ends, as it
+  already was on Mattermost for the same reason. Threads-layout channels delete
+  cleanly and are unchanged.
+- An agent addressing a Teams user by name produces a real mention again,
+  rather than flat text that notifies nobody. Teams offers a *display* name on
+  an inbound activity, and that was taken as the person's handle — so someone
+  was filed under `Louis Amaudruz`, space and all, while the matcher that turns
+  `@name` back into a mention stops at the first space. It looked for `Louis`,
+  the directory held `louis amaudruz`, and the two could never meet: anyone
+  whose handle contained a space was permanently unmentionable. A display name
+  is now traded for the one-word principal name the directory holds, and the
+  matcher recognises the names it knows however many words they run to, so
+  people already stored the old way work without being renamed.
+- Concurrent writes to a bridge's learned `connection_config` no longer lose
+  each other. The Teams bridge records a channel's team the first time it sees
+  that channel, each from its own session, so a burst of new channels was a
+  burst of read-modify-writes on one JSONB value: measured, eight concurrent
+  writes landed two. A dropped entry is exactly the state that makes Graph
+  refuse that channel's subscription after the next restart. The row is now
+  locked for the update, which also stops the serviceUrl writer clobbering it.
+- The Graph notification endpoint compares its `clientState` in constant time.
+  It is the only control that authenticates a notification's origin, and a
+  plain `!=` on a secret leaks its prefix through timing.
+- Repairing a placeholder username costs one lookup per person rather than one
+  per message. It runs on every inbound message on every bridge, and the common
+  case — a stored name that is already fine — was still opening a session and
+  querying.
+- A Graph read of a Teams channel that fails is retried later instead of being
+  believed forever. The name and layout of a channel are read together and
+  cached, and a failure was cached with them — so one blip, or a permission
+  granted a minute after the bridge started, left that channel nameless and
+  threaded as a posts channel for the life of the process. Learning a channel's
+  team now also discards anything read against the previous one, since a read
+  made against the wrong team is exactly the read Graph refuses.
+- The rejection an inbound Teams activity gets when it is addressed to the
+  wrong app id names the audience the token carries — and now reads that back
+  out of a signature-verified decode rather than an unverified one. The
+  signature had in fact already been checked by the time this ran, so nothing
+  was exploitable, but quoting an unverified claim in the message explaining
+  why a caller was rejected is a habit worth not having.
+- Teams channel capture no longer dies at a restart for any channel outside the
+  connection's configured team. A Graph subscription names the team as well as
+  the channel, and the team is only ever carried on an inbound activity — held
+  in memory it was lost on restart, and those channels fell back to the
+  configured team, where Graph answers "Channel is not present in the team".
+  Nothing recovered it: refilling the map needs an activity from the channel,
+  and without capture Teams delivers only messages mentioning the bot, so
+  addressing an agent — the normal way to use the room — never arrived. The
+  mapping is now persisted the way the Bot Connector endpoint already was.
+
+#### Added
+- Teams accepts `/command` as well as `!command`, and the setup guide carries
+  the app-manifest snippet that puts the commands above the compose box. Teams
+  has no server-registered slash commands: a manifest command list types the
+  text and the bot parses it, so the two prefixes are the same thing by the
+  time Switch sees them — but people arriving from Slack try `/` first, and
+  until now got nothing.
+
+- The Helm chart can publish and route the Microsoft Teams bridge listener. The
+  Teams adapter serves Bot Framework activities and Graph change notifications
+  from its own HTTP server on port 3978, separate from the API on 8000, and
+  nothing in the chart exposed it — so a Teams bridge could create channels and
+  post while receiving nothing back, looking healthy throughout. Set
+  `switchCore.teamsBridge.enabled=true` to publish the container and Service
+  port, and `switchCore.teamsBridge.ingress.mode` to say how the two callback
+  paths are routed: `dedicated` renders a second Ingress carrying only those
+  paths on their own host and certificate, so Microsoft can reach them while the
+  gateway stays internal; `shared` adds them to the chart's managed Ingress;
+  `external` leaves the routing to you (see `samples/ingress.example.yaml`).
+  Off by default, because bridges are created at runtime and the chart cannot
+  detect one.
+- The Teams Ingress supports sitting behind a CDN or reverse proxy: leave its
+  `host` empty and TLS off, and it renders a host-less rule that answers
+  whatever `Host` arrives. That is the shape needed when the public name belongs
+  to something upstream, and it is the only option that needs no domain of your
+  own — the setup doc carries the CloudFront recipe, including the two settings
+  (forward query strings, do not cache) without which Graph's subscription
+  handshake fails. Empty `host` with TLS enabled is still rejected, since a
+  host-less rule cannot carry a certificate.
+- The chart now refuses to render a Teams bridge that nothing can reach —
+  enabled with no routing mode, `shared` without a managed Ingress, or either
+  managed mode without a hostname. Publishing the port without a route is the
+  silent half-failure the rest of this work exists to prevent, so it is a
+  render-time error rather than something found days later.
+- `helm test` checks the Teams listener, running Graph's own validation
+  handshake against the Service. It proves the listener is bound and the port
+  published; it runs in-cluster, so it deliberately does not claim anything
+  about public reachability, and says so.
+- Post-install notes print the exact `public_base_url` to paste into the bridge,
+  and warn when its Ingress has TLS disabled — Graph only calls HTTPS it trusts.
+- The Helm chart has a `README.md`, covering which of Switch's three network
+  surfaces have to be reachable from where. Only the Teams listener needs the
+  public internet; every other bridge connects outbound.
+- Registering a bridge that would contend with an existing one for a host
+  resource is refused, naming what clashed. Teams is the case that has one: its
+  inbound listener needs a TCP port, and a second bridge on the same port failed
+  to bind inside a background task, was dropped from the running set, and never
+  retried — surfacing much later as `Bridge not running: <id>` with no stated
+  cause. Adapters declare this by implementing `exclusive_resource`; those that
+  only dial out declare nothing and are unaffected. The same check runs at
+  startup, so rows predating it get a clear error instead of a bind failure.
+- Bridge credentials are verified before a bridge is saved. Adapters start in a
+  background task whose exceptions are logged and swallowed, so credentials that
+  the platform rejects used to be stored, reported as success, and surface hours
+  later as an unrelated-looking failure. Registering a Teams bridge now asks
+  Azure for both tokens it will need first, and a refusal comes back as a 400
+  carrying Microsoft's own explanation — which names the mistake outright,
+  including the client secret **value** vs secret **ID** mix-up. Adapters opt in
+  by implementing `verify_credentials`; the default still accepts anything,
+  because an adapter that cannot check cheaply should not pretend to.
+
+#### Changed
+- A Teams bridge is five fields instead of nine. The `clientState` shared secret
+  and the Graph encryption certificate, public key and private key are generated
+  when the bridge is created rather than asked for: they are values the operator
+  invents rather than gets from Microsoft, and asking meant an invented secret,
+  an `openssl` invocation, and three PEM fields whose only symptom when pasted
+  wrong is channel capture that silently never decrypts. Supplying your own
+  through the API still wins, all three or none. Existing bridges are untouched,
+  including any left without encryption material.
+- The Teams Graph private key is no longer typed into a plaintext form field.
+  The gateway decides which inputs to mask by matching the field name against
+  `token|password|secret|api_key`, which `encryption_private_key` does not match;
+  generating it removes the field from the form entirely.
+- `docs/bridges/TEAMS_SETUP.md` rewritten. It now walks through Azure setup
+  value by value and says where each one comes from, documents the deployment
+  and public-ingress requirements (previously absent), and adds verification and
+  troubleshooting sections keyed to the errors these failures actually produce —
+  starting with the client secret **value** vs secret **ID** mix-up, which
+  surfaces only as an opaque `AADSTS7000215` at the first Graph call.
+
+#### Fixed
+- Following an "Open in Switch Console" link no longer strands the browser tab.
+  The gateway answered the click with a bare `302` to the `switchdash://`
+  deeplink; the browser hands that to the desktop app without loading a page,
+  so the tab kept whatever it last rendered — on Teams, Defender's Safe Links
+  interstitial, still saying "Verifying link . . ." after Switch Console had
+  opened, which reads as a link that hung. It now serves a page that opens the
+  app, tries to close itself, and — since browsers only let a script close a
+  window a script opened — otherwise says the handover worked and the tab can
+  be closed.
+- A Graph permission granted while the bridge is running takes effect on the
+  next call instead of within the hour. An app's roles are stamped into its
+  access token when it is issued, so consent granted afterwards is invisible
+  for the token's lifetime — Graph keeps answering `Authorization_RequestDenied`
+  on a permission the operator can see plainly granted in Azure, which sends
+  them back to look at it again. A `401` or `403` from Graph now discards the
+  cached token and retries once with a fresh one. Once, and only when the token
+  was old enough to have missed the grant, so a genuine denial costs one extra
+  round trip rather than looping.
+- A person recorded under a Teams id gets their name back on their next
+  message. Switch files someone under the name it is first given, and Teams
+  often gives none — a 1:1 activity carries no sender name — so its own id went
+  in and then read as that person's name in room titles, on their Matrix
+  account and in every agent reply addressing them. Resolving names properly
+  helped only people met afterwards; this repairs the records already written,
+  without a migration. One-way by design: an id becomes a name, never the
+  reverse, and one name never replaces another.
+- A Teams channel with no name in its activity is looked up in Graph rather
+  than falling back to its id, so an auto-created room is called something a
+  person recognises instead of `19:7641f9de326b4…`. Cached, including the
+  "asked and could not say" case.
+- An agent's first message in a Teams channel opens a post and everything it
+  says next joins that post. It used to open a fresh one each time, so an agent
+  introducing itself produced a column of one-line posts rather than a
+  conversation.
+- An agent answering in a Teams channel replies inside the post it was asked
+  in. A channel is a list of posts rather than a stream, so posting at the root
+  opens a new conversation — the question sat in one post and the answer
+  appeared as a fresh one below it. A reply that names no thread now goes to
+  the post the bridge last saw that channel speak in. Per channel, so two
+  conversations at once in the same channel can still cross; Teams offers no
+  better signal on an untied reply, and the wrong post beats a new one every
+  time. Chats and group chats are unaffected.
+- Teams messages are rendered for Teams. Shared bridge code emitted Slack's
+  `<@id>` mention form on every platform, so a Teams user was told they had
+  tagged `<@28:11111111-…>`; an `@name` was inert text, because Teams needs
+  `<at>` markup *and* a matching entity and the adapter emitted neither, so an
+  agent could never notify its owner; and single line breaks vanished, because
+  an Adaptive Card text block follows Markdown in treating one newline as
+  whitespace. Outbound bodies were also being rendered twice — callers of
+  `send_message` render first by contract, and Slack and Teams rendered again,
+  which Slack's real conversion has been quietly suffering.
+- A Teams sender with no name attached is looked up rather than filed under
+  their id. Teams omits the sender's name from some activities — 1:1 chats
+  especially — and the raw `29:…` id became that person's name in the room
+  title, on their Matrix account and in every reply addressing them. The
+  directory and the message paths now also agree on one handle (the local part
+  of the principal name) instead of storing a principal name from one and a
+  display name from the other. Existing records keep the name they were
+  created with.
+- Directory search matches on user principal name, so confirming a claim finds
+  the person who was just picked from the list. It searched display name and
+  mail only, then re-searched by principal name to confirm — a 404 for anyone
+  whose mail differs from their UPN or who has none. `User.ReadBasic.All` is
+  also now documented; without it the search fails and nobody can link an
+  account at all.
+- The "Open in Switch Console" link no longer renders as empty brackets on
+  Teams. Teams strips a link whose scheme is not http(s) — label included —
+  and the console deeplink is `switchdash://`. Teams now declares that, so the
+  URL is rewritten to the gateway redirect as it already was for Discord and
+  Telegram, and a deployment missing `GATEWAY_PUBLIC_URL` is told at startup.
+- Adding a room to a bridge no longer answers `500` when the platform refuses
+  to create the channel. Graph says exactly what is wrong — which permission is
+  missing, which value it will not take — and that sentence went to the log
+  while the operator got an unhandled exception. Platform refusals are now
+  `BridgeOperationError`, the counterpart to `BridgeCredentialError` for
+  everything after the credentials are accepted, and room creation returns a
+  `502` quoting the platform. Registering a bridge only proves it will issue a
+  token, so this class of failure always surfaces after setup has reported
+  success. Only the Teams adapter raises it so far.
+- A Teams channel subscription that fails is retried instead of leaving capture
+  dead until someone restarts the process. Graph validates a notification URL
+  by calling it, and the bridge asks for its subscriptions seconds after
+  binding its port — behind a load balancer that is precisely when nothing
+  answers yet, so the first attempt after *every* restart was refused and the
+  restart that broke capture was also the only thing that could fix it. The
+  retry backs off to a few minutes and says so when capture recovers; repeats
+  of an unchanged failure are quiet, but a change of reason is not.
+- Binding a room to a collaboration channel that already exists now establishes
+  message capture for it. Capture was only ever set up as a side effect of
+  *creating* a channel, so a room pointed at an existing one — on creation, on
+  linking a bridge to an internal room, or on moving a room between bridges —
+  heard nothing but the messages that @mentioned it. Invisible on bridges whose
+  capture is one bridge-wide stream, and on Teams it survived only until the
+  next restart happened to reconcile it.
+- A Teams activity rejected for the wrong audience says which audience it
+  carried and which one the bridge expects. The rejection is almost always the
+  Azure Bot resource and the registered app registration having different app
+  ids, and the message it replaced — `Audience doesn't match` — named neither,
+  so the one fact needed to fix it was the one fact not logged.
+
+### [0.20.0] - 2026-08-24
+
+#### Added
+- Each agent gets a mentionable **Discord role**, so its `@name` autocompletes
+  in the composer and arrives as a real pill rather than plain text that only
+  looks like one. The roles are minted empty and permissionless — mentioning one
+  notifies nobody — and an inbound `<@&…>` resolves back to the agent's name
+  before the addressing layer sees it. A Discord role carries no metadata, so an
+  agent's role is the one named exactly after it: a role made by hand is adopted
+  rather than duplicated, and one that has members is never deleted. Off with
+  `agent_roles: false`, and it turns itself off, saying why, on a server missing
+  Manage Roles or at Discord's 250-role cap (CHOO-2316).
+- Discord puts **👀 on the message an agent is answering** for as long as its
+  turn lasts. The posted status says an agent is busy; the reaction is what says
+  which message it is busy with, and an agent answering two people at once marks
+  both and clears both together. Needs the bot's Add Reactions permission;
+  without it the bridge warns and posts no reaction rather than faking one
+  (CHOO-2316).
+
+#### Fixed
+- A Discord command argument naming someone picked from the composer's `@` menu
+  is resolved to their name instead of being refused. Both the slash and typed
+  `!` forms branch off before the translation an ordinary message gets, so an
+  agent or person chosen from the menu arrived as raw `<@&…>` / `<@…>` markup
+  and was rejected as "not a single name" — quoting a string the invoker never
+  typed. Newly reachable because an agent's name now autocompletes, but the
+  typed form was wrong before that too (CHOO-2316).
+- Disconnecting a messaging app no longer fails with a 500 when a room member
+  has already left. Deleting a bridge kicks every client of every room it had,
+  and one that had already left answered a 403; "already not a member" is now
+  treated as done, while every other failure — permission denials included —
+  still raises (CHOO-2344).
+- An addressed **auto-session agent that is offline** now asks its **owner** to
+  open Switch Console — the person who can actually bring it online — instead of
+  telling the whole room to run a terminal command. The reply threads off the
+  triggering message, names the asker as the reason (dropped when they are the
+  owner), and the connect command names the agent it was generated for, so a
+  directory holding several agents answers `select_agent` on its own (CHOO-2344).
+
+### [0.19.0] - 2026-08-22
+
+#### Added
+- Telegram marks the message an agent is working on with **👀**, and clears it
+  when the turn ends — in groups, channels and 1:1 chats alike, with no
+  administrator rights needed. Outside forum topics Telegram has no threads, so
+  the mark goes on the last thing a person said, which is what the agent is
+  answering. A chat with reactions switched off loses the mark, not the turn
+  (CHOO-2314).
+- Telegram setup docs now spell out that BotFather shows the bot token **once**,
+  and what to do if it was not saved (CHOO-2314).
+
+#### Known limitations
+- **Telegram cannot autocomplete an agent's name.** Slack's per-agent user
+  groups have no Telegram equivalent: `@` autocomplete offers only real chat
+  members, there is no user-group concept, and every agent posts through one
+  bot. Real per-agent autocomplete would need a Telegram bot account per agent
+  (CHOO-2314).
+- Mattermost marks the message an agent is working on with **👀**, added when the
+  turn opens and removed when it ends. Inside a thread the mark goes on the
+  reply that asked rather than the root it hangs off, and an agent handling two
+  messages at once clears both together instead of leaving the first marked for
+  good. The reaction is added by the agent's own bot, so two agents on one
+  message read as two marks naming who is on it. Documented alongside it:
+  Mattermost has no equivalent of Slack's native progress card, and Switch does
+  not approximate one (CHOO-2317).
+#### Changed
+- The gateway's **Docs** button opens the published documentation at
+  `docs.flintai.dev` rather than the GitHub repository (CHOO-2313).
+
+#### Fixed
+- Slack's native agent-session card could vanish from a workspace and never come
+  back until the pod was replaced. A burst of Slack rate limits was being counted
+  as the app being unfit to host sessions and tripped the permanent give-up after
+  three in a row; throttling now makes the bridge stand down for the `Retry-After`
+  Slack sent rather than counting against it, and a give-up over an unrecognised
+  error expires after ten minutes instead of lasting the life of the process
+  (#276).
+- A stale or hand-deleted Slack agent card no longer turns cards off for the
+  whole workspace. A status update arriving just after a card is torn down — or a
+  user deleting the card by hand — wrote to a message that was gone, and three in
+  a row tripped the same permanent give-up. Such a card is now forgotten: the
+  turn falls back to the posted status message and the next turn opens a fresh
+  card. A step that failed to land is also no longer recorded as the card's
+  current step (#283).
 
 ### [0.18.0] - 2026-08-21
 
@@ -698,6 +1190,183 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+### [0.32.0] - 2026-09-03
+
+#### Added
+- **A session that dies on an API error now says so.** A Claude Code turn that
+  fails on expired credentials, quota or a provider outage fires `StopFailure`,
+  which nothing listened for — the channel just went quiet and the operator had
+  to open the TUI to find out why. It now maps onto the `error` status and
+  carries the reason through, so the deeplink ping names what broke instead of a
+  bare "needs your input" (#356).
+
+#### Changed
+- **Sidecar upgrades are taken under live sessions now, except a major.** A
+  sidecar whose build differed from the client's used to be left alone whenever
+  it owned a session and upgraded only once idle, so a busy host could sit on a
+  stale sidecar indefinitely. The upgrade (a few seconds of room injection) is
+  now taken while sessions run; a major bump still waits for idle (#356).
+- Registering an agent with a name that isn't accepted now offers a valid slug
+  instead of rejecting it, and shows the rejected-name message as an error
+  banner (#325).
+- Bundles agent-runtime 0.4.1 (deleted-room / heartbeat backoff fixes), sidecar
+  1.9.7 (reaps dead tmux targets), and the updated connectors (Claude Code
+  0.9.12, Codex 0.3.13, OpenCode 0.1.8).
+- **Local-server mode now bundles switch-core 0.23.0** (was 0.21.0) — the pinned
+  images and standalone compose it pulls move up to the current release.
+
+#### Fixed
+- An errored turn no longer reads as a fresh request for input: the stalled
+  prompt that follows a failure is suppressed so it doesn't bury the reason, and
+  on the Slack card the reason is marked as a stall rather than streamed under a
+  spinner as if it were progress (#356).
+
+### [0.31.3] - 2026-09-01
+
+#### Added
+- The disabled "Add agent" button now explains why on hover, splitting the
+  not-ready tooltip into distinct checking and blocked messages (#314).
+
+#### Changed
+- Bundles agent-runtime 0.3.4 (reaps orphaned agent runtimes at boot) and the
+  updated connectors (Claude Code 0.9.11, Codex 0.3.12, OpenCode 0.1.7) and
+  sidecar 1.9.6.
+
+### [0.31.2] - 2026-08-27
+
+#### Added
+- Orphaned agent runtimes are reaped at boot: a runtime whose host has gone —
+  left behind because a user updated the app but never revisited the connector —
+  is cleared on startup, using the same "is this runtime abandoned?" predicate
+  the runtime itself uses, so a live session is never touched (#309).
+- A one-shot catch-up brings already-installed Switch connectors up to date once,
+  so an install that never revisits Settings → Agents stops drifting several
+  runtime versions behind. It runs once, latches, and leaves the Update button
+  as the normal path; it never installs a connector that isn't already there
+  (#309).
+
+#### Changed
+- The bundled sidecar (`1.9.5`) and the OpenCode connector (`0.1.6`) this build
+  writes now run agent-runtime `0.3.3`, which exits with its host instead of
+  leaving stale processes behind.
+
+### [0.31.1] - 2026-08-26
+
+#### Fixed
+- The setup checklist's ✕ now actually dismisses it. The button did nothing, so
+  a checklist a user had finished with stayed on screen.
+
+### [0.31.0] - 2026-08-25
+#### Added
+- Creating an agent, starting a session and adding a server now report whether
+  they worked, and an enumerated reason when they did not. Previously only the
+  ones that succeeded were counted, so nothing showed where people got stuck.
+  A session start also records which button it came from, whether a room and an
+  opening prompt were chosen, and whether a person started the session, the app
+  started it on their behalf, or it was found already running on a remote host —
+  never the room, the prompt or the host.
+- Removing an agent, resetting a remote agent, removing a server, attaching a
+  remote session's terminal and retrying a session that failed to set up are all
+  reported now, each with whether it worked. Removing an agent distinguishes a
+  person doing it from a server teardown sweeping every agent up with it.
+- Installing, updating and removing an agent's CLI is reported — the app's main
+  first-run wall, and previously invisible. So are creating and deleting rooms,
+  signing in and out, connecting and disconnecting a messaging app, setting up a
+  remote host, starting and stopping a managed server, and the update check,
+  download and install.
+- Where people stop is now visible: the first-run checklist, the add-a-server
+  wizard, which screens get opened and which commands get run. Opening a link
+  from a message reports whether this copy of the app could find what the link
+  pointed at.
+- Turning usage sharing **on** is reported. Turning it off is not, and cannot
+  be: the check happens immediately before anything is sent, so the moment
+  someone declines is the moment nothing more is sent. The opt-out rate stays
+  unknown rather than being obtained that way.
+
+#### Fixed
+- Retrying a session that failed to set up now says whether it worked. The retry
+  reported failure by throwing, which nothing was listening for, so a second
+  attempt that failed left the session sitting on "setting up" with no error and
+  no explanation.
+- Deleting an agent left its sessions counted as still running. The sessions were
+  removed by the database itself, so nothing in the app was told they had ended.
+- A session that is un-archived can end again. Its first ending was remembered
+  for good, so the second one — and every one after it — went unrecorded.
+- A remote agent whose host refuses the connection now says so, rather than
+  reporting the generic failure every other fault shares.
+- Installing an update no longer reports that it both worked and failed. The
+  success was sent before handing over to the installer, so an install that then
+  failed to take was counted twice, in both directions.
+
+#### Changed
+- Local-server mode now bundles and pulls **switch-core `0.21.0`** (was
+  `0.19.0`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
+  current core release.
+- Third-party dependency updates (#193).
+
+### [0.30.0] - 2026-08-24
+
+#### Changed
+- **Windows in-app updates now verify the installer's Authenticode signature**
+  before installing it, against SandboxAQ's certificate. The check was held off
+  until a signed release confirmed the certificate's subject verbatim; a
+  mismatched name would have blocked updates for every existing install rather
+  than warning. The release build now fails if the signature and the name it
+  ships for the updater ever diverge (CHOO-1468).
+
+#### Fixed
+- The first-run **Share usage data** prompt no longer opens with focus on the
+  consent toggle. Base UI focused the dialog's first tabbable element, which drew
+  a highlighted band around the row that read as a pre-selected answer and
+  vanished on the first click; focus now goes to the dialog itself, so nothing is
+  pre-selected (CHOO-2344).
+- Error toasts no longer pile up or repeat on every refresh. The agent-icon
+  backfill is reported once per server keyed by outcome — a signed-out or too-old
+  server that could not store icons was raising a toast every few seconds for one
+  standing condition — and `toast` now replaces a toast it already shows rather
+  than stacking another copy (CHOO-2344).
+
+### [0.29.0] - 2026-08-22
+#### Added
+- Switch Console now sends a small, fixed set of product events — the app
+  launching, an agent being created, a session starting and ending, a server
+  being added, a connector being installed — so we can see which features get
+  used and where the app runs into trouble. Nothing is sent unless you agree to
+  it, and the first-run prompt now defaults to **off**, because each event
+  carries a random id for your installation.
+- Events go to a relay we run, which forwards them on. The analytics services
+  therefore never see your network address, and the app itself ships no
+  credential — there is nothing in it to leak.
+
+#### Fixed
+- The OpenCode connector the app writes carries its own copy of the
+  room-workflow skill, so it picked up the same wrong claim that a Telegram DM
+  is adopted like Mattermost's. Corrected alongside the connector directory
+  (CHOO-2314).
+
+#### Changed
+- Local-server mode now bundles and pulls **switch-core `0.19.0`** (was
+  `0.18.0`): the bundle pin / `COMPATIBLE_SWITCH_VERSION` is raised to the
+  current core release.
+- Every **Docs** affordance opens the published documentation at
+  `docs.flintai.dev` instead of the GitHub repository, deep-linked to the page
+  that answers the question: the sidebar and app-menu Docs entries and the
+  Settings Docs tab go to getting-started, the remote-hosts hint and the
+  hosting cards to *Host remotely*, the messaging-app cards to *Messaging
+  apps*, and the Rooms card to *Rooms and agents*. The welcome footer's GitHub
+  link keeps pointing at the repository (CHOO-2313).
+- The "How to set up {Platform}" link on the connect-messaging-app form opens
+  the platform's published setup page — Slack, Mattermost, Discord, Microsoft
+  Teams or Telegram — rather than the repository's markdown, with the
+  messaging-apps index as the fallback for an unrecognised platform
+  (CHOO-2313, unblocking CHOO-2269).
+- The **Share usage data** prompt and its Settings row default to off, and say
+  plainly that a random id for the installation is part of what is sent. The
+  0.27.2 entry below describes a payload of anonymous counters carrying no
+  identifier of any kind; that was the shape of a feature that sent nothing, and
+  this replaces it. Anyone who had already agreed under the old default keeps
+  that answer — it is not silently reset to a refusal.
 
 ### [0.28.0] - 2026-08-21
 
@@ -1979,6 +2648,45 @@ The Switch protocol client and MCP runtime
 
 ### [Unreleased]
 
+### [0.4.1] - 2026-09-03
+
+#### Fixed
+- **A deleted room no longer wedges the whole connection.** When the client
+  declared a room the server had dropped, the server refused the entire
+  connection; the client reopened and re-declared the same room, so it was
+  refused again — an unbreakable loop (measured at ~29 errors/min for over a
+  day). A refusal that names one of our rooms is now terminal for that room: it
+  is dropped, reported at error level, and the reduced room list is pushed over
+  the same callback the server's own updates use, so the reopen is a strictly
+  smaller request and cannot spin. Refusals that name no room keep their
+  existing transport backoff (#353).
+- **The heartbeat now backs off when the connection is rejected.** A 404/409 on
+  `/connection/beat` means we are not attached and only a reopen helps, but the
+  loop treated "the server answered" as recovery and beat on at full cadence —
+  one rejected request every two seconds against a connection that could never
+  reopen. A rejection now counts as a beat that did not land: reopen, then
+  double the interval to the 30s cap on the same curve as every other failure;
+  the first beat that lands returns to base cadence (#353).
+
+#### Added
+- Reap orphaned agent runtimes at boot: `reapOrphanedRuntimes` is now part of
+  the package's public surface so the runtime and Switch Console share one
+  definition of an abandoned runtime, and a session started on a dead host is
+  cleaned up on the next start (#309).
+
+### [0.3.3] - 2026-08-27
+
+#### Fixed
+- The runtime now exits when its host does, instead of running forever. Its
+  intended shutdown path (via the transport's `onclose`) never fired for a host
+  that was killed, crashed or force-quit, and the hook listener's TCP server
+  plus the heartbeat and lease timers kept the process alive against a Switch
+  that was already gone — leaving stale processes and loopback listeners piling
+  up across sessions. Shutdown is now driven by four independent triggers —
+  stdin `end`/`close`, termination signals, a stdout/stderr write error, and a
+  parent-pid watchdog — so the process goes away whichever way its host vanishes
+  (#307).
+
 ### [0.3.2] - 2026-08-19
 
 #### Fixed
@@ -2088,6 +2796,29 @@ by Switch Console rather than published on its own.
 
 ### [Unreleased]
 
+### [1.9.7] - 2026-09-03
+
+#### Fixed
+- Reap dead tmux targets so a pane whose tmux session has gone is not treated as
+  a live one (#336).
+
+#### Changed
+- Rebuilt on agent-runtime 0.4.1 (a deleted room no longer wedges the whole
+  connection, and the heartbeat backs off when the connection is rejected).
+
+### [1.9.6] - 2026-09-01
+
+#### Changed
+- Rebuilt on agent-runtime 0.3.4, which reaps orphaned agent runtimes at boot.
+
+### [1.9.5]
+
+#### Changed
+- Runs agent-runtime `0.3.3`, which now exits when its host does instead of
+  leaving stale runtime processes and loopback listeners behind (#307). The
+  client↔sidecar wire (ready line, endpoints, on-disk layout) is unchanged, so
+  the major stays `1`.
+
 ### [1.9.4]
 
 #### Fixed
@@ -2170,6 +2901,48 @@ compatibility signal. History for those is in the git log.
 `.claude-plugin/plugin.json`.
 
 ### [Unreleased]
+
+### [0.9.12] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
+### [0.9.11] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
+
+### [0.9.10] - 2026-08-27
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.3` (was `0.3.2`) — picks up the
+  runtime's host-exit fix (#307), which stops stale runtime processes and
+  loopback listeners piling up. Plugin version bumps so installs re-download.
+
+### [0.9.9] - 2026-08-26
+#### Fixed
+- The `configure` skill's standalone feature list no longer claims the **task
+  protocol** works — it was removed from the connector skills, so an agent
+  reading the old list could try something unavailable. Plugin version bumped so
+  installs re-download.
+
+### [0.9.8] - 2026-08-24
+#### Changed
+- The `configure` skill's generated connect command now names the agent it was
+  set up for, so a session started in a directory holding several agents answers
+  `select_agent` on its own instead of asking the operator. Plugin version bumped
+  so installs re-download (CHOO-2344).
+
+### [0.9.7] - 2026-08-22
+#### Fixed
+- The room-workflow skill said a Telegram DM is adopted the way Mattermost's
+  is, so an agent asked for a 1:1 on Telegram would tell the user to message
+  the bot and wait for a room that never arrives. Telegram has no DM: a private
+  chat with the bot is the lobby, which answers with setup guidance and
+  provisions nothing. The skill now says so, and points at a group of two as
+  the way to get DM-like behaviour (CHOO-2314).
 
 ### [0.9.6] - 2026-08-19
 
@@ -2365,6 +3138,49 @@ manifest history.
 
 ### [Unreleased]
 
+### [0.3.13] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. Plugin version bumps so installs re-download.
+- Skills updated: document user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
+### [0.3.12] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
+
+### [0.3.11] - 2026-08-27
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.3` (was `0.3.2`) — picks up the
+  runtime's host-exit fix (#307), which stops stale runtime processes and
+  loopback listeners piling up. Plugin version bumps so installs re-download.
+
+### [0.3.10] - 2026-08-26
+#### Fixed
+- The `configure` skill's standalone feature list no longer claims the **task
+  protocol** works — it was removed from the connector skills, so an agent
+  reading the old list could try something unavailable. Also corrects a
+  `mcp_servers` → `mcpServers` reference. Plugin version bumped so installs
+  re-download.
+
+### [0.3.9] - 2026-08-24
+#### Changed
+- The `configure` skill's generated connect command now names the agent it was
+  set up for, so a session started in a directory holding several agents answers
+  `select_agent` on its own instead of asking the operator; the plugin README is
+  updated to match. Plugin version bumped so installs re-download (CHOO-2344).
+
+### [0.3.8] - 2026-08-22
+#### Fixed
+- The room-workflow skill said a Telegram DM is adopted the way Mattermost's
+  is, so an agent asked for a 1:1 on Telegram would tell the user to message
+  the bot and wait for a room that never arrives. Telegram has no DM: a private
+  chat with the bot is the lobby, which answers with setup guidance and
+  provisions nothing. The skill now says so, and points at a group of two as
+  the way to get DM-like behaviour (CHOO-2314).
+
 ### [0.3.7] - 2026-08-19
 
 #### Changed
@@ -2512,6 +3328,35 @@ for humans reading a diff rather than for an installer, and an install reports
 the app version that wrote it rather than a version of its own.
 
 ### [Unreleased]
+
+### [0.1.8] - 2026-09-03
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.4.1` (was `0.3.4`) — a deleted room no
+  longer wedges the whole connection, and the heartbeat backs off when the
+  connection is rejected. (Delivered at the next Switch Console update, which
+  rewrites the embedded connector.)
+- Skill updated: documents user-defined external reference types and
+  `list_all_references` for discovering references across the instance.
+
+### [0.1.7] - 2026-09-01
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.4` (was `0.3.3`) — picks up reaping
+  of orphaned agent runtimes at boot.
+
+### [0.1.6] - 2026-08-27
+#### Changed
+- Pin `@sandboxaq/switch-agent-runtime@0.3.3` (was `0.3.2`) — picks up the
+  runtime's host-exit fix (#307). Reaches users with the next Switch Console
+  release, which writes this connector.
+
+### [0.1.5] - 2026-08-22
+#### Fixed
+- The room-workflow skill said a Telegram DM is adopted the way Mattermost's
+  is, so an agent asked for a 1:1 on Telegram would tell the user to message
+  the bot and wait for a room that never arrives. Telegram has no DM: a private
+  chat with the bot is the lobby, which answers with setup guidance and
+  provisions nothing. The skill now says so, and points at a group of two as
+  the way to get DM-like behaviour (CHOO-2314).
 
 ### [0.1.4] - 2026-08-19
 

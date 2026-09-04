@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
-
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -199,23 +197,38 @@ class _FailingGraph(_FakeGraph):
         await super().add_team_member(team_id=team_id, user_aad_id=user_aad_id)
 
 
-def test_add_users_raises_on_partial_failure() -> None:
-    # A user that fails to add must surface as an error — the caller cannot be
-    # told the add succeeded when it did not (fail-loud). The good user is still
-    # added; the failure is reported afterwards.
+def test_add_users_reports_partial_failure_without_raising() -> None:
+    # This used to raise, and raising is what made adding a room answer 500:
+    # the call runs inside room creation, so one guest account or one missing
+    # Teams permission destroyed the whole request and left a half-provisioned
+    # room behind. Every other adapter carries on. Still not silent — who was
+    # left out comes back, and room creation reports them.
     adapter = _adapter()
     fake = _FailingGraph()
     adapter._graph = fake  # type: ignore[assignment]
     adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
 
-    with pytest.raises(RuntimeError, match="aad-bad"):
-        _run(
-            adapter.add_users_to_channel(
-                "19:c@thread.tacv2",
-                ["good", "bad"],
-                ["aad-good", "aad-bad"],
-            )
+    failed = _run(
+        adapter.add_users_to_channel(
+            "19:c@thread.tacv2",
+            ["good", "bad"],
+            ["aad-good", "aad-bad"],
         )
+    )
 
-    # The user that could be added was still added before the error surfaced.
+    assert failed == ["aad-bad"]
+    # The user that could be added was added rather than abandoned partway.
     assert fake.team_members == [{"team_id": "team-7", "user": "aad-good"}]
+
+
+def test_add_users_reports_nothing_when_all_succeed() -> None:
+    adapter = _adapter()
+    fake = _FakeGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+    adapter._channel_type["19:c@thread.tacv2"] = "channel_public"
+
+    failed = _run(
+        adapter.add_users_to_channel("19:c@thread.tacv2", ["good"], ["aad-good"])
+    )
+
+    assert failed == []

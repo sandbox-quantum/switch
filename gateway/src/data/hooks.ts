@@ -16,6 +16,7 @@ import {
   type EcosystemGraphData,
   type PackageDetail,
   type ReferenceDetail,
+  type ReferenceTypeDetail,
   type ReferenceTypeInfo,
   type ResourceRoom,
   type RoomDetail,
@@ -42,6 +43,7 @@ import {
   fetchPackageReferences,
   fetchPackageRooms,
   fetchPackages,
+  fetchOwnedReferenceTypes,
   fetchReferenceRooms,
   fetchReferenceTypes,
   fetchReferences,
@@ -177,6 +179,10 @@ export function useDocuments(): UseQueryResult<DocumentSummary[]> {
 
 export function useReferenceTypes(): UseQueryResult<ReferenceTypeInfo[]> {
   return useQuery(fetchReferenceTypes);
+}
+
+export function useOwnedReferenceTypes(): UseQueryResult<ReferenceTypeDetail[]> {
+  return useQuery(fetchOwnedReferenceTypes);
 }
 
 export function useLinkedRooms(

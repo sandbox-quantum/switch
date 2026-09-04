@@ -96,7 +96,11 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
         </div>
         {description && <p className="text-sm text-foreground-muted">{description}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Button onClick={() => showCreateSessionModal({ locationId, agentName })}>
+          <Button
+            onClick={() =>
+              showCreateSessionModal({ locationId, agentName, entryPoint: 'agent_page' })
+            }
+          >
             New Session <BoundShortcut settingsKey="newSession" />
           </Button>
           {roomable && (

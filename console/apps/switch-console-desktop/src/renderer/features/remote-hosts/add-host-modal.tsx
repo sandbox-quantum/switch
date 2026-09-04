@@ -62,13 +62,24 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
     [configHosts.data, onboarded]
   );
 
-  const chooseHost = (alias: string) => {
+  // Which affordance supplied the alias. Both write the same field, so without
+  // recording it here nothing downstream can tell a host the app offered from
+  // one someone had to already know the name of.
+  const [pickedFromConfig, setPickedFromConfig] = useState(false);
+
+  const chooseHost = (alias: string, fromConfig: boolean) => {
     setSshHost(alias);
+    setPickedFromConfig(fromConfig);
     if (!nameEdited) setName(suggestName(alias));
   };
 
   const mutation = useMutation({
-    mutationFn: () => rpc.remoteHosts.onboardHost({ sshHost: sshHost.trim(), name: name.trim() }),
+    mutationFn: () =>
+      rpc.remoteHosts.onboardHost({
+        sshHost: sshHost.trim(),
+        name: name.trim(),
+        pickedFromSshConfig: pickedFromConfig,
+      }),
     onError: (error) => log.error('Failed to onboard remote host', { sshHost, error }),
     onSuccess: (host) => {
       onAdded(host.sshHost);
@@ -102,7 +113,7 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
                 <Spinner /> Reading ~/.ssh/config…
               </div>
             ) : available.length > 0 ? (
-              <Select value={sshHost} onValueChange={(value) => chooseHost(value ?? '')}>
+              <Select value={sshHost} onValueChange={(value) => chooseHost(value ?? '', true)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select a host alias" />
                 </SelectTrigger>
@@ -119,7 +130,7 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
                 <Input
                   value={sshHost}
                   placeholder="dev-vm"
-                  onChange={(event) => chooseHost(event.target.value)}
+                  onChange={(event) => chooseHost(event.target.value, false)}
                 />
                 <p className="text-xs text-foreground-muted">
                   {(configHosts.data ?? []).length === 0
@@ -143,7 +154,7 @@ export function AddHostModal({ onboarded, onAdded, onClose }: AddHostModalProps)
           </Field>
 
           {mutation.isError && (
-            <p className="text-destructive text-xs">
+            <p className="text-xs text-destructive">
               {failureText(mutation.error, 'Could not add the host.')}
             </p>
           )}

@@ -1,0 +1,74 @@
+{{- if .Values.switchCore.teamsBridge.enabled }}
+{{- $teams := .Values.switchCore.teamsBridge }}
+# `helm test` check for the Teams bridge listener.
+#
+# Probes the notification path through the Service: GET it with a
+# validationToken and require it echoed back verbatim. That proves the listener
+# is bound inside the pod AND that the Service publishes its port — the two
+# halves the chart is responsible for.
+#
+# Graph's real handshake is a POST carrying the same query parameter. The same
+# handler answers both, and a GET is what a probe can express, so this
+# exercises the handshake's shape rather than reproducing it.
+#
+# It deliberately does NOT prove Microsoft can reach you. This runs inside the
+# cluster, so it says nothing about public DNS, ingress routing or certificate
+# trust, which is exactly where this usually fails. Verify that from outside:
+#
+#   curl -i "https://<your-public-host>/api/teams/notifications?validationToken=ping"
+#
+# Expect 200 with `ping` echoed as text/plain.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "switch.fullname" . }}-teams-listener-test
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- if .Values.global.imagePullSecrets }}
+  {{- include "switch.imagePullSecrets" . | nindent 2 }}
+  {{- end }}
+  containers:
+    - name: probe
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          url="http://{{ include "switch.switchCoreHost" . }}:{{ $teams.port }}/api/teams/notifications"
+          token="switch-helm-test"
+          echo "GET $url?validationToken=$token"
+          body=$(wget -T 10 -qO- "$url?validationToken=$token") || {
+            echo "FAIL: nothing answered on port {{ $teams.port }}."
+            echo
+            echo "Most likely no Teams bridge is registered yet. The chart publishes"
+            echo "the port, but only a configured bridge starts a listener behind it —"
+            echo "and you normally enable the chart flag FIRST, because the bridge"
+            echo "needs the public URL that produces. If that is where you are,"
+            echo "register the bridge and run this again."
+            echo
+            echo "Otherwise the listener failed to start. Look for 'Teams adapter"
+            echo "listening on' in the switch-core logs; if it is absent, look for"
+            echo "'crashed' — a second Teams bridge cannot bind the same port."
+            exit 1
+          }
+          if [ "$body" != "$token" ]; then
+            echo "FAIL: expected the validation token echoed back, got: $body"
+            exit 1
+          fi
+          echo "OK: listener answered Graph's validation handshake."
+          echo
+          echo "This proves the pod and Service only. Confirm Microsoft can reach you"
+          echo "from OUTSIDE the cluster:"
+          {{- $origin := include "switch.teamsPublicOrigin" . }}
+          {{- if $origin }}
+          echo '  curl -i "{{ $origin }}/api/teams/notifications?validationToken=ping"'
+          {{- else }}
+          echo '  curl -i "https://<your-public-host>/api/teams/notifications?validationToken=ping"'
+          {{- end }}
+{{- end }}

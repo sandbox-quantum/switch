@@ -1,12 +1,9 @@
 import { useCallback, useState } from 'react';
 import { randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
+import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
-
-/** Switch agent-name charset, enforced server-side too: lowercase letters,
- * digits, `.`, `-`, `_`, starting with a letter or digit. */
-export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 export function usePickMode() {
   const [path, setPath] = useState('');
@@ -85,12 +82,19 @@ export function useConfigureAgentForm() {
   );
 
   const nameIsValid = AGENT_NAME_PATTERN.test(agentName);
+  const nameIsRejected = agentName.length > 0 && !nameIsValid;
+  // A rejected name the app can repair itself is an offer, not a dead end. Only
+  // an offer: rewriting as the user types moves text out from under them. Empty
+  // when nothing of the name survives slugging, and there is nothing to offer.
+  const suggestedName = nameIsRejected ? slugifyAgentNamePart(agentName) : '';
   const isValid = nameIsValid && description.trim().length > 0;
 
   return {
     agentName,
     setAgentName,
     nameIsValid,
+    nameIsRejected,
+    suggestedName,
     description,
     setDescription,
     instructions,

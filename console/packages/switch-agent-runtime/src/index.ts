@@ -33,6 +33,14 @@ export {
   type StreamScope,
   type SwitchEventStreamDeps,
 } from './event-stream';
+export {
+  findOrphanedRuntimes,
+  parseProcessTable,
+  reapOrphanedRuntimes,
+  staleSessionDirs,
+  type ProcessRow,
+  type ReapOutcome,
+} from './reap';
 export { readSse, type SseFrame } from './sse';
 export type {
   AgentBridgeEvent,

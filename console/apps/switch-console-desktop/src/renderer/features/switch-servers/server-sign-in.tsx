@@ -166,10 +166,10 @@ export const ServerSignInFields = observer(function ServerSignInFields({
       )}
 
       {!config.passwordLoginEnabled && !config.oidcEnabled && (
-        <p className="text-destructive text-sm">This server has no enabled sign-in methods.</p>
+        <p className="text-sm text-destructive">This server has no enabled sign-in methods.</p>
       )}
 
-      {signIn.error && <p className="text-destructive text-xs">{signIn.error}</p>}
+      {signIn.error && <p className="text-xs text-destructive">{signIn.error}</p>}
     </div>
   );
 });

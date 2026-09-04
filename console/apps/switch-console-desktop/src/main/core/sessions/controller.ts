@@ -1,5 +1,10 @@
 import { remoteAttachmentPool } from '@main/core/agent-runtime/attachment/production-remote-attachment-pool';
+import type { AttachState } from '@main/core/agent-runtime/attachment/types';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import { provisionTriggerOf } from '@main/core/telemetry/narrow';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import type { CreateSessionParams, SessionLifecycleStatus } from '@shared/core/sessions/sessions';
+import type { SessionProvisionTrigger } from '@shared/core/telemetry/reporting';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { generateSessionName } from './name-generation/generateSessionName';
 import { dehydrateSession } from './operations/dehydrateSession';
@@ -8,6 +13,29 @@ import { hydrateSession } from './operations/hydrateSession';
 import { markSessionSeen } from './operations/markSessionSeen';
 import { restartSessionAgent } from './operations/restartSessionAgent';
 import { sessionService } from './session-service';
+
+/**
+ * Report an attach the user asked for and waited on.
+ *
+ * Only the two states that are an answer. `attaching` is not over yet, and
+ * `detached` covers both a local session, which never attaches, and an attach
+ * cancelled because the transport dropped — one failure for the whole host, not
+ * one per session queued behind it.
+ */
+function reportAttach(sessionId: string, state: AttachState): void {
+  if (state !== 'attached' && state !== 'failed') return;
+
+  // Not awaited: describing the attach needs a read the person attaching should
+  // not be waiting on, and a failure to describe it must not fail the attach.
+  void getSession(sessionId)
+    .then((session) => {
+      trackEvent('session_attached', {
+        agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
+        outcome: state === 'attached' ? 'success' : 'failure',
+      });
+    })
+    .catch(() => {});
+}
 
 export const sessionController = createRPCController({
   getSession,
@@ -26,7 +54,9 @@ export const sessionController = createRPCController({
   },
   /** Attach a session's terminal on request — the detached state's Attach button. */
   async attachSession(sessionId: string) {
-    return remoteAttachmentPool.requestAttach(sessionId, 'user');
+    const state = await remoteAttachmentPool.requestAttach(sessionId, 'user');
+    reportAttach(sessionId, state);
+    return state;
   },
   /** Close a session's terminal, leaving its agent running on the VM. */
   async detachSession(sessionId: string) {
@@ -72,8 +102,11 @@ export const sessionController = createRPCController({
   async restartAgent(sessionId: string) {
     return restartSessionAgent(sessionId);
   },
-  async provisionSession(sessionId: string) {
-    return sessionService.provisionSession(sessionId);
+  async provisionSession(params: { sessionId: string; trigger: SessionProvisionTrigger }) {
+    // The trigger is typed on this side of the channel but arrives from the
+    // renderer, so it is checked rather than trusted — an unrecognised one
+    // falls back to `initial`, which reports nothing.
+    return sessionService.provisionSession(params.sessionId, provisionTriggerOf(params.trigger));
   },
   generateSessionName,
 });

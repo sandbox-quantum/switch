@@ -1,11 +1,12 @@
 import { CircleCheck, Globe, Laptop, Server, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { report } from '@renderer/lib/telemetry/report';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -19,6 +20,10 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardStepHeader } from '@renderer/lib/ui/wizard-step-header';
+import type {
+  AddServerChoiceName,
+  AddServerStepName,
+} from '@shared/core/switch-servers/add-server-steps';
 import type {
   ServerApiUrlPropagation,
   SwitchServer,
@@ -75,6 +80,18 @@ type Props = BaseModalProps<void> & {
 type Step = 'choose' | 'local' | 'remoteHost' | 'external' | 'signIn' | 'linkAccounts';
 
 /**
+ * This wizard's steps and the shared list of step names say the same thing.
+ *
+ * The list is what a drop-off is reported against and cannot import a component.
+ * Asserted both ways, so adding a step without naming it there — or leaving a
+ * name behind after removing one — fails to compile.
+ */
+const _stepsAreExhaustive: AddServerStepName extends Step ? true : never = true;
+const _stepsAreComplete: Step extends AddServerStepName ? true : never = true;
+void _stepsAreExhaustive;
+void _stepsAreComplete;
+
+/**
  * How many steps connecting to a server someone else runs takes: choose that
  * path, point at the server, sign in, then say which messaging account is you.
  *
@@ -95,9 +112,69 @@ const CONNECT_STEPS = 4;
  * those two steps follow in the same dialog rather than waiting on the server's
  * page to be discovered (CHOO-2164).
  */
+/**
+ * The path each step belongs to, or null for the steps that inherit whatever
+ * was chosen before them.
+ *
+ * The chooser is `none` rather than null, and the difference is the whole point
+ * of the column: arriving at the chooser is arriving with nothing chosen, which
+ * is as true of pressing Back as it is of opening the wizard. Carrying the
+ * abandoned path forwards would make a return read as progress along it.
+ */
+const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
+  choose: 'none',
+  local: 'local',
+  remoteHost: 'remoteHost',
+  external: 'external',
+  signIn: null,
+  linkAccounts: null,
+};
+
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;
-  const [step, setStep] = useState<Step>(isEdit ? 'external' : (props.mode ?? 'choose'));
+  const openedAt: Step = isEdit ? 'external' : (props.mode ?? 'choose');
+  const openedWith = CHOICE_FOR_STEP[openedAt] ?? 'none';
+  const [step, setStep] = useState<Step>(openedAt);
+  // Which path was taken at the chooser, carried so every later step can be
+  // attributed to it. `none` while still on the chooser, which is what makes a
+  // drop-off before choosing distinguishable from one after.
+  const [choice, setChoice] = useState<AddServerChoiceName>(openedWith);
+
+  /**
+   * Report the step the wizard opened on.
+   *
+   * The steps below are reported as they are reached, so without this the first
+   * one — the one every later step is measured against — is the only one never
+   * counted, and the funnel has no denominator. The ref rather than the
+   * dependency list is what holds it to a single report: strict mode mounts
+   * every effect twice, and a wizard that opens twice per opening would put the
+   * denominator out by a factor of two in development builds.
+   *
+   * Editing is not one of the steps. It borrows the same form to change a
+   * server that already exists, reaches no step after this one, and counting it
+   * would put arrivals in the funnel that were never adding anything.
+   */
+  const reportedOpening = useRef(false);
+  useEffect(() => {
+    if (isEdit || reportedOpening.current) return;
+    reportedOpening.current = true;
+    report('add_server_step', { step: openedAt, choice: openedWith });
+  }, [isEdit, openedAt, openedWith]);
+
+  /**
+   * Move to a step, and report reaching it.
+   *
+   * One function rather than nine `setStep` calls: the wizard's back buttons go
+   * through the same state, so instrumenting each site would count returning to
+   * the chooser as reaching it again and make the funnel read as if people
+   * restarted rather than gave up.
+   */
+  const goToStep = (next: Step) => {
+    const nextChoice = CHOICE_FOR_STEP[next] ?? choice;
+    setChoice(nextChoice);
+    setStep(next);
+    report('add_server_step', { step: next, choice: nextChoice });
+  };
   // The server the wizard just created, and the subject of every step after
   // it. Null in edit mode and on the two managed paths, which is what
   // distinguishes the standalone edit form from step 2 of the wizard.
@@ -122,9 +199,9 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'choose') {
     return (
       <ChooseStep
-        onLocal={() => setStep('local')}
-        onRemoteHost={() => setStep('remoteHost')}
-        onExternal={() => setStep('external')}
+        onLocal={() => goToStep('local')}
+        onRemoteHost={() => goToStep('remoteHost')}
+        onExternal={() => goToStep('external')}
         onClose={props.onClose}
       />
     );
@@ -132,7 +209,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'local') {
     return (
       <LocalSetupStep
-        onBack={isEdit ? undefined : () => setStep('choose')}
+        onBack={isEdit ? undefined : () => goToStep('choose')}
         onDone={finish}
         onClose={props.onClose}
       />
@@ -141,7 +218,7 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
   if (step === 'remoteHost') {
     return (
       <RemoteHostSetupStep
-        onBack={() => setStep('choose')}
+        onBack={() => goToStep('choose')}
         onDone={finish}
         onClose={props.onClose}
       />
@@ -151,9 +228,9 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
     return (
       <SignInStep
         server={connected}
-        onBack={() => setStep('external')}
+        onBack={() => goToStep('external')}
         onClose={props.onClose}
-        onSignedIn={() => setStep('linkAccounts')}
+        onSignedIn={() => goToStep('linkAccounts')}
       />
     );
   }
@@ -173,10 +250,10 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
       {...props}
       isEdit={isEdit}
       existing={connected}
-      onBack={isEdit ? undefined : () => setStep('choose')}
+      onBack={isEdit ? undefined : () => goToStep('choose')}
       onConnected={(server) => {
         setConnected(server);
-        setStep('signIn');
+        goToStep('signIn');
       }}
     />
   );
@@ -748,7 +825,7 @@ const ExternalServerStep = observer(function ExternalServerStep({
               placeholder="https://switch-gateway.example.com"
               autoFocus={isEdit}
             />
-            {gatewayMessage && <p className="text-destructive mt-1 text-xs">{gatewayMessage}</p>}
+            {gatewayMessage && <p className="mt-1 text-xs text-destructive">{gatewayMessage}</p>}
           </Field>
           <Field>
             <FieldLabel>API URL</FieldLabel>
@@ -760,8 +837,8 @@ const ExternalServerStep = observer(function ExternalServerStep({
                 if (e.key === 'Enter') void handleSubmit();
               }}
             />
-            {apiMessage && <p className="text-destructive mt-1 text-xs">{apiMessage}</p>}
-            {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
+            {apiMessage && <p className="mt-1 text-xs text-destructive">{apiMessage}</p>}
+            {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
           </Field>
         </FieldGroup>
       </DialogContentArea>

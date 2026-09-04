@@ -81,6 +81,11 @@ class _FakeAdapter:
     ) -> None:
         self._events.append(("add_agents", channel_id, list(agent_names)))
 
+    async def ensure_channel_subscriptions(
+        self, channels: list[tuple[str, str]]
+    ) -> None:
+        self._events.append(("ensure_capture", list(channels)))
+
 
 class _FakeBridgeCore:
     def __init__(
@@ -316,6 +321,39 @@ class TestChangeBridge:
         assert room_store.update_bridge_calls[0]["external_channel_id"] == "chan-reused"
         assert ("add_room_mapping", "room-1", "chan-reused") in events
         assert ("add_agents", "chan-reused", ["agent.one"]) in events
+        # Provisioning a channel subscribes to it on the way past; binding one
+        # that already exists has nothing to piggy-back on, so capture must be
+        # established explicitly or the room only ever hears @mentions.
+        assert ("ensure_capture", [("chan-reused", "channel_public")]) in events
+
+    async def test_capture_is_established_for_a_freshly_created_channel(self) -> None:
+        # Idempotent by design: the adapter skips a channel it is already
+        # subscribed to, so asking again after provisioning costs nothing and
+        # removes the need for either path to know what the other did.
+        events: list[Any] = []
+        room = SimpleNamespace(
+            id="room-1",
+            name="Work",
+            description="d",
+            matrix_room_id="!mx:switch.local",
+            bridge_id=None,
+            channel_type=None,
+            external_channel_id=None,
+        )
+        new_bridge = _FakeBridgeCore(
+            events, matrix_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        )
+        svc, _ = _build_service(
+            room=room,
+            agent_ids=[],
+            agent_names={},
+            bridges={"bridge-new": new_bridge},
+            events=events,
+        )
+
+        await svc.change_bridge("room-1", bridge_id="bridge-new")
+
+        assert ("ensure_capture", [("chan-new", "channel_public")]) in events
 
     async def test_raises_when_target_bridge_not_running(self) -> None:
         events: list[Any] = []
@@ -395,3 +433,68 @@ class TestChangeBridge:
 
         assert room_store.update_bridge_calls == []
         assert events == []
+
+
+class TestLinkBridgeToRoom:
+    """Binding a bridge to an existing internal room.
+
+    The other way a room ends up pointing at a channel nobody subscribed to.
+    """
+
+    def _room(self) -> Any:
+        return SimpleNamespace(
+            id="room-1",
+            name="Work",
+            description="d",
+            matrix_room_id="!mx:switch.local",
+            bridge_id=None,
+            channel_type=None,
+            external_channel_id=None,
+        )
+
+    async def test_binding_an_existing_channel_establishes_capture(self) -> None:
+        events: list[Any] = []
+        bridge = _FakeBridgeCore(events, matrix_user_id="@bot:switch.local")
+        svc, room_store = _build_service(
+            room=self._room(),
+            agent_ids=[],
+            agent_names={},
+            bridges={"bridge-1": bridge},
+            events=events,
+        )
+
+        await svc.link_bridge_to_room(
+            "room-1",
+            "bridge-1",
+            "channel_private",
+            external_channel_id="chan-existing",
+        )
+
+        assert not any(e[0] == "create_channel" for e in events)
+        assert room_store.update_bridge_calls[0]["external_channel_id"] == (
+            "chan-existing"
+        )
+        assert ("ensure_capture", [("chan-existing", "channel_private")]) in events
+
+    async def test_capture_follows_the_mapping(self) -> None:
+        # Capture must not be established before the room↔channel mapping is
+        # registered: a notification arriving in the gap has nowhere to land.
+        events: list[Any] = []
+        bridge = _FakeBridgeCore(events, matrix_user_id="@bot:switch.local")
+        svc, _ = _build_service(
+            room=self._room(),
+            agent_ids=[],
+            agent_names={},
+            bridges={"bridge-1": bridge},
+            events=events,
+        )
+
+        await svc.link_bridge_to_room(
+            "room-1", "bridge-1", "channel_public", external_channel_id="chan-existing"
+        )
+
+        map_idx = events.index(("add_room_mapping", "room-1", "chan-existing"))
+        capture_idx = events.index(
+            ("ensure_capture", [("chan-existing", "channel_public")])
+        )
+        assert map_idx < capture_idx

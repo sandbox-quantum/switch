@@ -16,6 +16,11 @@ from switch_core.bridges.collaboration.models import (
 # away from the external-user path.
 
 
+async def _noop_repair(*_args: object, **_kwargs: object) -> None:
+    """Correcting a name recorded as a platform id — not what these tests turn on."""
+    return None
+
+
 def _msg(sender_name: str) -> InboundMessage:
     return InboundMessage(
         channel_id="chan-1",
@@ -55,6 +60,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
         return None
 
     return SimpleNamespace(
+        _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
         _ensure_user_in_matrix_room=_ensure_user_in_matrix_room,
         _handle_agent_joined_channel=_handle_agent_joined_channel,

@@ -18,7 +18,7 @@ the standalone path is deliberately not feature-complete.
 
 ## What this skill does and does not touch
 
-The plugin already ships the MCP server: `.mcp.json` declares `mcp_servers.switch`
+The plugin already ships the MCP server: `.mcp.json` declares `mcpServers.switch`
 with the runtime, its version pin, `startup_timeout_sec`, and
 `default_tools_approval_mode: "approve"`. **Leave that alone.**
 
@@ -193,7 +193,9 @@ and nobody can tell which human is behind which agent:
   from `$USER` or `whoami`.
 
 To slugify: lowercase, replace anything outside `[a-z0-9._-]` with `-`, collapse
-repeats, strip leading/trailing `-`.
+runs of `-`, strip leading/trailing `.`, `_` and `-`. Strip all three, not just `-`:
+the pattern requires a letter or digit first, so a surviving leading `.` or `_`
+is rejected all over again.
 
 Confirm the name or accept a custom one; if it fails the regex, explain why and
 ask again. If it carries no user identifier, flag the collision risk once and
@@ -214,8 +216,11 @@ Switch shows room participants a paste-ready command when the agent is
 addressed with no live session:
 
 ```
-cd "<repo_dir>" && codex "connect to switch room <name>"
+cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"
 ```
+
+The prompt names the agent so a session started in a directory holding several
+of them answers `select_agent` without the user having to.
 
 `repo_dir` is what makes it useful — **and for Codex it matters twice over**,
 because the runtime reads the agent store from the session's working directory.
@@ -427,10 +432,10 @@ way they leak into logs and screenshots.
 Be straight with the user; do not imply parity.
 
 **Works:** the full Switch tool surface (including `send_attachment` /
-`download_attachment`), room participation, threads, tasks, roles, moderation,
+`download_attachment`), room participation, threads, roles, moderation,
 and the offline run command Switch posts — which is a bare
-`cd "<repo_dir>" && codex "connect to switch room <name>"`, so it works as
-written provided `repo_dir` is where the store lives.
+`cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"`, so it works
+as written provided `repo_dir` is where the store lives.
 
 **Does not work, or works differently:**
 

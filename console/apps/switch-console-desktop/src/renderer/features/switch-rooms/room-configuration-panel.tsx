@@ -274,7 +274,7 @@ function GeneralSection({ serverId, room }: { serverId: string; room: RemoteRoom
 /** Says where the edits stand, so an unsaved change is never silent. */
 function SaveStatus({ state, dirty }: { state: SaveState; dirty: boolean }) {
   if (state.phase === 'failed') {
-    return <span className="text-destructive text-xs">Not saved — {state.message}</span>;
+    return <span className="text-xs text-destructive">Not saved — {state.message}</span>;
   }
   if (state.phase === 'saved' && !dirty) {
     return <span className="text-xs text-foreground-muted">Saved.</span>;
@@ -440,6 +440,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
         serverId,
         roomId: room.id,
         agentIds: [switchAgentId],
+        direction: 'agents_to_room',
       });
       await onAdded();
     } catch (cause) {
@@ -475,7 +476,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
         )}
       </InputGroup>
 
-      {error !== null && <p className="text-destructive text-xs">Not added — {error}</p>}
+      {error !== null && <p className="text-xs text-destructive">Not added — {error}</p>}
 
       {candidates.length === 0 ? (
         <p className="px-1 py-2 text-sm text-foreground-muted">

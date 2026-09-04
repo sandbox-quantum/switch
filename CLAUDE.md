@@ -22,7 +22,7 @@ history — a later commit cannot take it back. Keep internal detail out of it:
 
 ## Project Overview
 
-Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms with room-scoped protection, observability, and collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
+Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using Matrix (Tuwunel) as the internal message bus. Agents register via the Agent Bridge API and communicate through Matrix rooms, with collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
 
 The target architecture is documented in `docs/`.
 
@@ -76,14 +76,12 @@ just test -k "test_name"         # run specific test
   - `models.py` — SQLAlchemy table definitions
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
-- `rooms/` — Room lifecycle, configuration, provisioning
-- `clients/` — Matrix clients (agent, user, resource manager, observe)
+- `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
+- `clients/` — Matrix clients (agent, user, admin, bridge, resource manager)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors)
   - `collaboration/` — Collaboration Bridge (Slack, Mattermost, Discord, Teams, Telegram adapters)
-  - `observe/` — Observe Bridge (event sinks)
   - `resource/` — Resource Bridge (platform resource management)
-- `protect/` — Protection pipeline (checks, protect bridge, API)
 - `gateway/` — Management API for the frontend
 
 **Key patterns:**
@@ -114,8 +112,7 @@ and each ships its own copy of the Switch room-workflow skill at
   `env_vars` and Codex forwards them **by name** from its own environment — no
   expansion, and no secret in the file. An unset name is simply not forwarded,
   which is why the list can include the Switch Console-only variables without
-  breaking a standalone session (the Claude connector cannot do this: `${VAR}`
-  expansion makes every declared variable mandatory).
+  breaking a standalone session.
 
   The plugin's `.mcp.json` also carries `default_tools_approval_mode =
   "approve"`, so the Switch tools never prompt. It has to live there rather than
@@ -174,12 +171,9 @@ commands, room workflow, or anything an agent-facing client needs to know:
   `connectors/codex-plugin/skills/switch/SKILL.md` *and*
   `connectors/opencode-plugin/skills/switch/SKILL.md` so the documented workflow
   matches actual behavior on every host.
-  `core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` asserts the
-  count, so it fails rather than letting a host quietly go undocumented.
-- **Bump the versions of whatever you changed, in the same commit.** Not at
-  release time — it gets forgotten, and then a version number is a claim nobody
-  can trust. `console/AGENTS.md` has the table (all three plugins, runtime
-  package, sidecar) and the rules for which digit moves.
+  `core/tests/switch_core/bridges/agent/test_mcp_tool_surface.py` compares the
+  three `## Tool index` sections against each other and against the tools the
+  server actually registers, so a host left undocumented fails there.
 - **Diff the skills against each other after editing.** They are deliberately not identical
   (host-specific wording for tool namespacing, event delivery, attachments, and
   MCP registration), so diff them to confirm
@@ -226,14 +220,18 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 
 ## Reference Documentation
 
-Everything under `docs/` is listed here; if it is not in this list, it does not
-exist:
-- `docs/ARCHITECTURE.md` — system overview: components, domain model, key flows,
-  entry points, and a code map from area to module
-- `docs/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
+- `docs/official/` — the published user-facing documentation
+  (docs.flintai.dev) synced into the repo. Generated — edit the source in the
+  docs repository, never here. Start at `docs/README.md` for how the sync
+  works; `docs/official/internals/` covers architecture and the agent
+  protocol for readers of this repo.
+- `docs/old/ARCHITECTURE.md` — historical system overview: components, domain
+  model, key flows, entry points, and a code map. Predates the docs sync and
+  may lag the tree.
+- `docs/old/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
   event stream, room slots, failure handling). Authoritative where it and
   `ARCHITECTURE.md` overlap
-- `docs/bridges/` — collaboration bridge setup: `README.md` plus one page each
+- `docs/old/bridges/` — collaboration bridge setup: `README.md` plus one page each
   for Slack, Mattermost, Discord, Teams, and Telegram
 
 There is no separate schema, room-design, HTTP-API or MCP-surface document. Read

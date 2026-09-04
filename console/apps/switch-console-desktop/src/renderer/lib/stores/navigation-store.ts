@@ -2,6 +2,7 @@ import { makeAutoObservable, toJS } from 'mobx';
 import { type GuardResult, type ViewId, type WrapParams } from '@renderer/app/view-registry';
 import type { NonSettingsViewId } from '@renderer/lib/layout/navigation-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
+import { report } from '@renderer/lib/telemetry/report';
 import type { NavigationSnapshot } from '@shared/view-state';
 import { appState } from './app-state';
 import type { Snapshottable } from './snapshottable';
@@ -68,6 +69,10 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
     }
 
     if (viewId !== this.currentViewId) {
+      // Inside the changed check: re-navigating to the screen you are already on
+      // is not opening it, and counting it would make the busiest view the one
+      // people revisit rather than the one they use.
+      report('view_opened', { view_id: viewId });
       this.currentViewId = viewId;
       if (viewId !== 'settings') {
         this.lastNonSettingsView = viewId;
@@ -125,5 +130,15 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
         this.viewParamsStore = { ...this.viewParamsStore, [guard.redirect]: guard.params };
       }
     }
+
+    // The screen a session resumes on is arrived at rather than navigated to, so
+    // `_applyNavigation` never sees it and nobody would be counted as having
+    // opened it — someone who works all afternoon in a restored session would
+    // report no screen at all. Reported once, here at the end, so a snapshot the
+    // guard sends back counts the screen the user lands on rather than both it
+    // and the one that was persisted. `currentViewId` has settled by now, which
+    // is also what keeps a later navigation to the same screen from counting a
+    // second opening.
+    report('view_opened', { view_id: this.currentViewId });
   }
 }

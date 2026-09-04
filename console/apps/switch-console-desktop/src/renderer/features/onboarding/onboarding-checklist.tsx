@@ -4,7 +4,11 @@ import { openExternalUrl } from '@renderer/lib/open-external';
 import { SectionLabel } from '@renderer/lib/ui/label';
 import { cn } from '@renderer/utils/utils';
 import type { OnboardingStep, OnboardingStepId } from '@shared/core/onboarding/checklist';
-import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
+import {
+  SWITCH_DOCS_MESSAGING_APPS_URL,
+  SWITCH_DOCS_REMOTE_HOSTING_URL,
+  SWITCH_DOCS_ROOMS_URL,
+} from '@shared/urls';
 
 /**
  * The first-run setup checklist (CHOO-2022), in two shapes:
@@ -18,26 +22,22 @@ import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
  *   land on the welcome screen.
  */
 
-/**
- * Where "Learn more" points, for now. These are placeholders agreed with the
- * dev on CHOO-2022: the docs site does not exist yet, so all three go to the
- * repository README rather than to a dead page. Repoint them when it does.
- */
+/** Where "Learn more" points. Mirrors the welcome screen's shelf. */
 const LEARN_MORE_LINKS: { label: string; linkText: string; url: string }[] = [
   {
     label: 'Remote or cloud ',
     linkText: 'hosting',
-    url: SWITCH_CONSOLE_DOCS_URL,
+    url: SWITCH_DOCS_REMOTE_HOSTING_URL,
   },
   {
     label: 'Connect to ',
     linkText: 'messaging apps',
-    url: SWITCH_CONSOLE_DOCS_URL,
+    url: SWITCH_DOCS_MESSAGING_APPS_URL,
   },
   {
     label: 'Best ways to use ',
     linkText: 'Rooms',
-    url: SWITCH_CONSOLE_DOCS_URL,
+    url: SWITCH_DOCS_ROOMS_URL,
   },
 ];
 

@@ -16,6 +16,7 @@ from typing import Any
 
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.context import (
+    connected_room,
     get_agent_id,
     get_protocol,
     require_connected_room,
@@ -156,20 +157,7 @@ async def list_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
     agent_id = get_agent_id()
 
     protocol = get_protocol()
-    connected_room_id: str | None = None
-    key = session_key()
-    if key:
-        # Ask the live connection first and the binding row only for callers
-        # that have none, matching how require_connected_room resolves it — a
-        # connection carries its own rooms and no row is written for it.
-        connection = protocol.connections.get(key)
-        if connection is not None and len(connection.rooms) == 1:
-            connected_room_id = next(iter(connection.rooms))
-        elif connection is None:
-            async with protocol.session_factory() as db:
-                row = await protocol.agent_session_store.get_connected_room(db, key)
-            if row is not None:
-                _, connected_room_id = row
+    connected_room_id = await connected_room()
     rooms = await protocol.list_rooms(agent_id, include_archived=include_archived)
 
     return [
@@ -356,7 +344,10 @@ async def list_references() -> dict[str, Any]:
 
     External references carry their `value` inline (URLs / IDs); fetch the
     underlying content using your own tools as described in
-    `reference_types[<type>].instructions`.
+    `reference_types[<type>].instructions`. An entry may instead carry
+    `"missing": true`, meaning that type could not be resolved on this
+    instance: treat its instructions as absent and say so rather than
+    guessing at how to use the reference.
 
     Internal documents are advertised by id + description + instructions
     only; call `load_internal_documents` to fetch their content.
@@ -1202,18 +1193,22 @@ async def release_role() -> dict[str, Any]:
 
 @operation
 async def list_reference_types() -> list[dict[str, Any]]:
-    """List the Reference sub-types this Switch instance supports.
+    """List the Reference types you can use on this Switch instance.
 
-    Call this before `create_reference` to discover which `type` values
-    are valid and what shape the `value` payload must have.
+    The set is open and per-caller: it is the types built into Switch plus
+    the user-defined ones your owner can read, so another agent may see a
+    different list. Call this before `create_reference` and pick a `type`
+    from what it returns for you.
 
     Returns:
-        List of `{type, display_name, instructions, value_schema}`.
-        `value_schema` is the JSON Schema for the per-type value
-        payload — use it to build the `value` dict for `create_reference`.
+        List of `{type, display_name, instructions, value_schema,
+        value_hint, origin}`. `value_schema` is the JSON Schema for the
+        `value` dict `create_reference` expects, `value_hint` says what the
+        URLs in it should point at, and `origin` is `"builtin"` for a type
+        that ships with Switch or `"user"` for one someone defined here.
     """
     protocol = get_protocol()
-    return protocol.list_reference_types()
+    return await protocol.list_reference_types(get_agent_id())
 
 
 @operation
@@ -1234,10 +1229,10 @@ async def create_reference(
     and access it.
 
     Args:
-        type: Reference type. Supported values: "google_drive",
-            "confluence", "github", "jira". Each type expects a specific
-            `value` shape. Call `list_reference_types` for the authoritative
-            list and each type's `value_schema`.
+        type: Reference type — a slug `list_reference_types` returned for
+            YOU. The set is open (users define their own types) and
+            per-caller, so call `list_reference_types` first rather than
+            guessing a slug; an unknown or unreadable one is rejected.
         name: Short display name.
         description: One-or-two sentence summary of what this reference
             points at, shown in listings.
@@ -1245,10 +1240,10 @@ async def create_reference(
             reference — what's in it, when to consult it, any caveats.
             This is the field agents read when the reference shows up in
             their room context.
-        value: Type-specific payload. For every built-in type today the
-            shape is `{"urls": ["https://...", ...]}` — `min_length=1`. For
-            "jira" the URLs point at projects, issues, or boards (e.g.
-            `https://your-org.atlassian.net/browse/PROJ-123`).
+        value: `{"urls": ["https://...", ...]}` — the shape every type
+            shares, with at least one URL. What those URLs should point at
+            is the type's `value_hint` from `list_reference_types` (for
+            "jira", say, projects, issues, or boards).
         read_visibility: "private" (default — only you can read/attach it) or
             "public" (anyone can read/attach).
         write_visibility: "private" (default — only you can edit it) or
@@ -1299,6 +1294,50 @@ async def attach_reference_to_room(room_id: str, reference_id: str) -> dict[str,
     protocol = get_protocol()
     await protocol.attach_reference_to_room_as_agent(agent_id, room_id, reference_id)
     return {"ok": True}
+
+
+@operation
+async def list_all_references(
+    name_contains: str | None = None,
+    type: str | None = None,
+    owner_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """List every reference on this Switch instance your owner can read.
+
+    Unlike `list_references` (which is scoped to the connected room and shows
+    what is already attached there), this searches the whole instance, so it is
+    how you find the `reference_id` to pass to `attach_reference_to_room`. It
+    needs no room connection. Use the optional filters to narrow the result;
+    they are ANDed together, and omitting one ignores it.
+
+    Args:
+        name_contains: Case-insensitive substring to match against reference
+            names.
+        type: Return only references of this exact type slug (e.g. "github").
+            See `list_reference_types` for the types in use.
+        owner_name: Return only references owned by the user with this exact
+            name.
+
+    Returns:
+        A list of {id, type, name, description, owner_name, read_visibility,
+        write_visibility, created_at} dicts, newest first. When this session has
+        exactly one current room, each entry also carries
+        `attached_to_current_room` — false means you still need to attach it;
+        the key is absent when the session has no current room or spans several,
+        so a missing key never means "not attached".
+        `value` (the URLs / ids a reference points at) is deliberately omitted:
+        this is discovery. Attach the reference and call `list_references` to
+        get its `value`.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    return await protocol.list_all_references(
+        agent_id,
+        name_contains=name_contains,
+        type=type,
+        owner_name=owner_name,
+        current_room_id=await connected_room(),
+    )
 
 
 @operation
@@ -1551,10 +1590,12 @@ async def list_agents(
 
     Returns:
         A list of agent summaries (sorted by name), each
-        {id, name, description, icon_url, connector_type, connection_model,
-        tool_count, model_count, owner_id, owner_name, oauth_client_id,
-        created_at, parent_agent_id, known_agent_type, known_agent_options}.
-        `icon_url` is null when the agent has no icon set.
+        {id, name, description, icon_url, display_name, connector_type,
+        connection_model, tool_count, model_count, owner_id, owner_name,
+        oauth_client_id, created_at, parent_agent_id, known_agent_type,
+        known_agent_options}.
+        `icon_url` is null when the agent has no icon set. `display_name` is
+        null when the agent has no display name set; fall back to `name`.
         Use `get_agent_detail` for the full detail of one agent.
     """
     agent_id = get_agent_id()
@@ -1576,12 +1617,13 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
             `list_all_rooms`/`get_room_detail`).
 
     Returns:
-        {id, name, description, icon_url, connector_type, connection_model,
-        tool_count, model_count, owner_id, owner_name, oauth_client_id,
-        created_at, parent_agent_id, known_agent_type, known_agent_options,
-        agent_type, integration_profile, tools, models, rooms, sessions,
-        children}.
-        `icon_url` is null when the agent has no icon set.
+        {id, name, description, icon_url, display_name, connector_type,
+        connection_model, tool_count, model_count, owner_id, owner_name,
+        oauth_client_id, created_at, parent_agent_id, known_agent_type,
+        known_agent_options, agent_type, integration_profile, tools, models,
+        rooms, sessions, children}.
+        `icon_url` is null when the agent has no icon set. `display_name` is
+        null when the agent has no display name set; fall back to `name`.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()

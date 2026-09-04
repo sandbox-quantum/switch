@@ -16,11 +16,13 @@ import asyncio
 import time
 from typing import Any
 
-from switch_core.bridges.collaboration.adapter import LiveRuntimeIndicator
+from switch_core.bridges.collaboration.adapter import (
+    LiveRuntimeIndicator,
+    format_elapsed,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
-    _format_elapsed,
 )
 
 
@@ -308,12 +310,12 @@ def test_a_retired_turn_does_not_nudge() -> None:
 
 
 def test_elapsed_is_written_the_way_it_is_read() -> None:
-    assert _format_elapsed(0.4) == "0s"
-    assert _format_elapsed(8.9) == "8s"
-    assert _format_elapsed(59) == "59s"
-    assert _format_elapsed(60) == "1m00s"
-    assert _format_elapsed(134) == "2m14s"
-    assert _format_elapsed(3600) == "1h00m"
-    assert _format_elapsed(3780) == "1h03m"
+    assert format_elapsed(0.4) == "0s"
+    assert format_elapsed(8.9) == "8s"
+    assert format_elapsed(59) == "59s"
+    assert format_elapsed(60) == "1m00s"
+    assert format_elapsed(134) == "2m14s"
+    assert format_elapsed(3600) == "1h00m"
+    assert format_elapsed(3780) == "1h03m"
     # A clock that ran backwards is not a negative duration.
-    assert _format_elapsed(-5) == "0s"
+    assert format_elapsed(-5) == "0s"

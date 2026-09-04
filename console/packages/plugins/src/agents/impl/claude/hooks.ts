@@ -161,6 +161,11 @@ export function buildClaudeHookConfig() {
       { hookKey: 'UserPromptSubmit', command: makeStdinHookCommand('start') },
       { hookKey: 'Notification', command: makeStdinHookCommand('notification') },
       { hookKey: 'Stop', command: makeStdinHookCommand('stop') },
+      // A turn that died on an API error (expired credentials, quota, provider
+      // outage) fires StopFailure instead of Stop. Without it such a session is
+      // indistinguishable from one that finished cleanly, and the operator sees
+      // silence rather than a reason.
+      { hookKey: 'StopFailure', command: makeStdinHookCommand('stop-failure') },
       // Switch room detection: report the room a session connects to so
       // Switch Console can surface membership and drive notification injection.
       {

@@ -10,6 +10,7 @@ import { setupApplicationMenu } from './app/menu';
 import { registerAppScheme, setupAppProtocol } from './app/protocol';
 import { createMainWindow, getMainWindow } from './app/window';
 import { agentHookService } from './core/agent-hooks/agent-hook-service';
+import { reapOrphanedAgentRuntimes } from './core/agent-runtime/reap-orphaned-runtimes';
 import { migrateAgentStorage } from './core/agents/migrate-agent-storage';
 import { initializeRemoteDiscovery, initializeRemoteWatchers } from './core/agents/remote-watcher';
 import { resolveAgentServers } from './core/agents/resolve-servers';
@@ -32,6 +33,9 @@ import { registerSidecarDiagnostics } from './core/sidecar/sidecar-diagnostics';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { restoreSwitchRoomSessions } from './core/switch-rooms/restore-sessions';
+import { catchUpConnectorsToCurrentVersion } from './core/switch-setup/catch-up-connectors';
+import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
+import { trackEvent } from './core/telemetry/telemetry-service';
 import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { initializeDatabase } from './db/initialize';
@@ -137,6 +141,11 @@ void app.whenReady().then(async () => {
   await appSettingsService.initialize();
   await promptLibraryService.initialize();
 
+  // After the settings store, which owns the consent gate every event asks
+  // before it is sent, and never before the database it is read from.
+  registerTelemetryListeners();
+  trackEvent('app_launched', {});
+
   try {
     await resolveAgentServers();
   } catch (e) {
@@ -157,6 +166,22 @@ void app.whenReady().then(async () => {
   registerRPCRouter(rpcRouter, ipcMain, withRPCLogContext);
 
   void reconcileResourceSampler();
+
+  // Before any session is relaunched below, so a runtime abandoned by a
+  // previous run is gone before its replacement starts — but not awaited: it
+  // scans every process on the machine and may remove thousands of stale
+  // directories, and the window must not wait for either.
+  void reapOrphanedAgentRuntimes().catch((e: unknown) => {
+    log.warn('agent-runtime: failed to reap orphaned runtimes at boot', { error: e });
+  });
+
+  // A one-shot, not a standing auto-updater — it latches on a generation marker
+  // and does nothing on every later launch. Unawaited because it talks to a
+  // plugin marketplace over the network: a session relaunched below may still
+  // start on the old pin, and picks the new one up next launch.
+  void catchUpConnectorsToCurrentVersion().catch((e: unknown) => {
+    log.warn('switch-setup: connector catch-up failed at boot', { error: e });
+  });
 
   // Reflect a managed local Switch stack that survived the last quit, so the UI
   // shows it running without the user restarting it.

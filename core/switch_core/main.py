@@ -75,6 +75,7 @@ from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -203,6 +204,7 @@ async def run() -> None:
     user_store = UserStore()
     api_key_store = ApiKeyStore()
     reference_store = ReferenceStore()
+    reference_type_store = ReferenceTypeStore()
     document_store = DocumentStore()
     package_store = PackageStore()
     room_link_store = RoomLinkStore()
@@ -224,11 +226,14 @@ async def run() -> None:
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
+        reference_type_store=reference_type_store,
         document_store=document_store,
         package_store=package_store,
         room_link_store=room_link_store,
         session_factory=session_factory,
     )
+    async with session_factory() as session:
+        await resource_service.log_builtin_shadowing(session)
 
     # One connection registry for the process. Created here rather than inside
     # the agent bridge because the Matrix agent clients are wired first and read
@@ -424,9 +429,10 @@ async def run() -> None:
     await client_lifecycle.start_all()
     await collab_lifecycle.start_all()
 
-    # Backfill system clients (e.g. the admin client) into rooms created before
-    # they existed; the just-started clients auto-accept the invites.
-    await room_service.reconcile_system_clients()
+    # Backfill room membership: system clients (e.g. the admin client) added
+    # after a room was created, and any agent whose invite did not land. The
+    # just-started clients accept the invites on their first sync.
+    await room_service.reconcile_room_clients()
 
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port

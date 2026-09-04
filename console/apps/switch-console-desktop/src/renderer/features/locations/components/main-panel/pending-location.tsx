@@ -69,10 +69,10 @@ export const PendingLocationStatus = observer(function PendingLocationStatus({
         })}
 
         {isError && (
-          <div className="border-destructive/40 bg-destructive/10 mt-2 flex w-full min-w-0 flex-col gap-3 rounded-md border p-3">
+          <div className="mt-2 flex w-full min-w-0 flex-col gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-3">
             <div className="flex min-w-0 items-start gap-2 text-left">
-              <AlertCircle className="text-destructive mt-0.5 h-4 w-4 shrink-0" />
-              <span className="text-destructive min-w-0 text-sm break-words">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <span className="min-w-0 text-sm break-words text-destructive">
                 {location.error ?? 'An error occurred'}
               </span>
             </div>

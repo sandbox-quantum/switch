@@ -403,7 +403,10 @@ from `documents[*].id`; it returns `{id, description, content}` per id, in the
 order asked, and errors if an id is not attached to this room. External
 references are different: they carry their `value` inline, and you fetch what
 it points at with your own tools, as that reference type's `instructions`
-describe.
+describe. An entry in `reference_types` may instead carry `"missing": true`,
+meaning that type could not be resolved on this instance: treat its
+instructions as absent and say so rather than guessing at how to use the
+reference.
 
 You can also author a document scoped to the room:
 
@@ -456,14 +459,20 @@ For a private 1:1 between one agent and one human, create a room with
 - **Mattermost**: DMs are user-initiated from the client, so creating a
   `direct` room here fails — the user starts the DM with the agent's bot and
   Switch picks it up automatically.
-- **Telegram**: same as Mattermost — the user messages the bot first and
-  Switch adopts the chat. Telegram bots cannot create chats at all, so
-  `create_room` fails on a Telegram bridge for *every* channel type, not just
-  `direct`; the chat is made in a Telegram client and the bot added to it.
-  `list_bridges` reports this as `can_create_channels: false`, so check there
-  before offering to make a room rather than finding out from the failure —
-  and note an operator can withhold channel creation from any platform, so a
-  false answer is not Telegram-specific.
+- **Telegram**: there is **no DM at all**, and this one is not a "create it
+  from the other side" case. A private chat with the bot is the *lobby*: the
+  bridge answers it with setup guidance and never provisions a room, so no
+  agent is reachable there and nothing you do in Telegram adopts it. One bot
+  fronts every agent, so a 1:1 could not say which agent it was with anyway.
+  Offer a **group containing just that user and the bot**, with the one agent
+  invited — that behaves like a DM and the agent is addressable by name.
+  Separately, Telegram bots cannot create chats at all, so `create_room` fails
+  on a Telegram bridge for *every* channel type, not just `direct`; the chat is
+  made in a Telegram client and the bot added to it. `list_bridges` reports
+  this as `can_create_channels: false`, so check there before offering to make
+  a room rather than finding out from the failure — and note an operator can
+  withhold channel creation from any platform, so a false answer is not
+  Telegram-specific.
 
 The user must already be known to Switch on the bridge (they have messaged the
 workspace before). If not, creation fails loudly with `no user '<name>' is
@@ -529,16 +538,33 @@ it was set in.
 
 ### External references
 
-- **`list_reference_types`** — the Reference sub-types this instance supports,
-  including each one's `value_schema`. Call this first if you do not already
-  know the `type` and `value` shape to use.
+- **`list_reference_types`** — the Reference types you can use here. The set is
+  open and per-caller: the types built into Switch plus the user-defined ones
+  your owner can read, so another agent may see a different list. Each entry
+  carries `value_schema`, a `value_hint` saying what the URLs in the value
+  should point at, and `origin` (`"builtin"` or `"user"`). Call this first if
+  you do not already know the `type` and `value` shape to use.
 - **`create_reference`** — register a new external Reference (Google Drive,
   Confluence, GitHub, …). Required: `type`, `name`, `description`,
-  `instructions`, `value`. Optional: `read_visibility` / `write_visibility`
+  `instructions`, `value`. `type` must be a slug that `list_reference_types`
+  returned for THIS agent; an unknown or unreadable slug is rejected, so call
+  it first rather than guessing. Optional: `read_visibility` / `write_visibility`
   (both default `"private"`; `write_visibility` must not be `"public"` while
   `read_visibility` is `"private"`). The reference is owned by your agent's
   user. Use `instructions` to tell other agents how to USE it — what is in it,
   when to consult it, any caveats.
+- **`list_all_references`** — every Reference on this instance your agent's
+  owner can read: their own, plus every reference with `read_visibility`
+  `"public"` (an admin owner sees all of them). This is how you find the
+  `reference_id` to hand to `attach_reference_to_room`. Optional
+  `name_contains` (case-insensitive substring of the name), `type` and
+  `owner_name` (exact) filters are ANDed together; omit one and it is ignored.
+  It needs no room connection. It does NOT return `value` — this is discovery,
+  so attach the reference and call `list_references` to read its `value`. When
+  the session has exactly one current room, each entry also carries
+  `attached_to_current_room`: false means you still need to attach it. That key
+  is absent when the session has no current room or spans several, so a missing
+  key never means "not attached".
 - **`attach_reference_to_room`** — attach an existing Reference to an existing
   room; the standalone version of `create_room`'s `reference_ids`. Your
   agent's owner must be able to access the reference (public, owned, or admin).
@@ -732,6 +758,7 @@ failure-mode tools are covered in the sections just above.
 - `update_room` — change an existing room, including its aliases.
 - `invite_agent_to_room` — add an agent to an existing room by name.
 - `list_references` — re-fetch the room's references, documents and packages.
+- `list_all_references` — every reference your owner can read, instance-wide.
 - `load_internal_documents` — read the content of attached internal documents.
 - `create_room_document` — author a document scoped to the connected room.
 - `update_room_document` — change a document you created.

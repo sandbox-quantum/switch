@@ -897,6 +897,48 @@ export interface ReferenceTypeInfo {
   display_name: string;
   instructions: string;
   value_schema: Record<string, unknown>;
+  value_hint: string;
+  is_builtin: boolean;
+  // Null for a built-in. A user-defined type names its author wherever it is
+  // offered: its instructions are prose every agent in the room is told to follow.
+  owner_id: string | null;
+  owner_name: string | null;
+}
+
+export interface ReferenceTypeDetail {
+  type: string;
+  display_name: string;
+  instructions: string;
+  value_schema: Record<string, unknown>;
+  value_hint: string;
+  is_builtin: boolean;
+  owner_id: string;
+  owner_name: string | null;
+  read_visibility: "public" | "private";
+  write_visibility: "public" | "private";
+  shadowed_by_builtin: boolean;
+  created_at: string;
+}
+
+export interface ReferenceTypeCreateInput {
+  type: string;
+  display_name: string;
+  instructions: string;
+  value_hint: string;
+  read_visibility: "public" | "private";
+  write_visibility: "public" | "private";
+}
+
+export interface ReferenceTypeUpdateInput {
+  display_name?: string;
+  instructions?: string;
+  value_hint?: string;
+  read_visibility?: "public" | "private";
+  write_visibility?: "public" | "private";
+}
+
+export interface ReferenceTypeDeleteResult {
+  deleted_type: string;
 }
 
 export interface ReferenceDetail {
@@ -913,6 +955,9 @@ export interface ReferenceDetail {
   attached_rooms_count: number;
   packages: string[];
   created_at: string;
+  // Resolved server-side and unfiltered by the type's visibility. Null when
+  // the slug resolves to no type at all.
+  type_display_name: string | null;
 }
 
 export interface ReferenceCreateInput {
@@ -987,6 +1032,42 @@ export interface ResourceDeleteResult {
 
 export async function fetchReferenceTypes(): Promise<ReferenceTypeInfo[] | null> {
   return fetchJson<ReferenceTypeInfo[]>("/references/reference-types");
+}
+
+export async function fetchOwnedReferenceTypes(): Promise<
+  ReferenceTypeDetail[] | null
+> {
+  return fetchJson<ReferenceTypeDetail[]>("/references/reference-types/owned");
+}
+
+export async function createReferenceType(
+  input: ReferenceTypeCreateInput,
+): Promise<ReferenceTypeDetail> {
+  return jsonRequest<ReferenceTypeDetail>(
+    "/references/reference-types",
+    "POST",
+    input,
+  );
+}
+
+export async function updateReferenceType(
+  type: string,
+  input: ReferenceTypeUpdateInput,
+): Promise<ReferenceTypeDetail> {
+  return jsonRequest<ReferenceTypeDetail>(
+    `/references/reference-types/${type}`,
+    "PATCH",
+    input,
+  );
+}
+
+export async function deleteReferenceType(
+  type: string,
+): Promise<ReferenceTypeDeleteResult> {
+  return jsonRequest<ReferenceTypeDeleteResult>(
+    `/references/reference-types/${type}`,
+    "DELETE",
+  );
 }
 
 export async function fetchReferences(): Promise<ReferenceDetail[] | null> {

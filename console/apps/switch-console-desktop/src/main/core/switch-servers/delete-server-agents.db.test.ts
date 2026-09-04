@@ -80,7 +80,11 @@ describe('deleteAgentsForServer', () => {
 
     await deleteAgentsForServer('managed-1');
 
-    expect(mocks.deleteAgent).toHaveBeenCalledWith('agent-a', { deleteInSwitch: false });
+    expect(mocks.deleteAgent).toHaveBeenCalledWith('agent-a', {
+      deleteInSwitch: false,
+      // Wiping a server is one action, not a person deleting each agent.
+      trigger: 'server_teardown',
+    });
   });
 
   it('reports a failed agent instead of stranding the rest', async () => {

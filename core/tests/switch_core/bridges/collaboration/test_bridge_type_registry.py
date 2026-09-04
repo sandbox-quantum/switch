@@ -66,7 +66,9 @@ def test_discord_adapter_registers_with_expected_required_fields() -> None:
 
     assert service.get_registered_types() == ["discord"]
     schema = service.get_config_schema("discord")
-    assert set(schema["properties"]) == {"bot_token", "guild_id"}
+    # agent_roles is offered but not required: it needs Manage Roles and room
+    # under Discord's 250-role cap, so a connection stays valid without it.
+    assert set(schema["properties"]) == {"bot_token", "guild_id", "agent_roles"}
     assert set(schema["required"]) == {"bot_token", "guild_id"}
 
 
@@ -156,34 +158,33 @@ def test_teams_adapter_registers_with_expected_required_fields() -> None:
     assert "teams" in service.get_registered_types()
 
     schema = service.get_config_schema("teams")
-    # The credentials + endpoint fields with no default are required; the
-    # subscription/encryption fields are optional. client_state is required —
-    # it is the only control that authenticates a notification's origin.
+    # Every field on the form is a value the operator has to fetch from Azure,
+    # and all of them are required — there is no such thing as a half-configured
+    # Teams bridge.
     assert set(schema["required"]) == {
         "app_id",
         "app_password",
         "tenant_id",
         "team_id",
         "public_base_url",
-        "client_state",
     }
-    # Switch-internal fields (the listener bind, the runtime-learned serviceUrl)
-    # are hidden from the admin config form — the admin only supplies genuine
-    # Teams/Azure credentials + endpoint.
-    assert set(schema["properties"]) == {
-        "app_id",
-        "app_password",
-        "tenant_id",
-        "team_id",
-        "public_base_url",
+    assert set(schema["properties"]) == set(schema["required"])
+    # Switch-internal fields are hidden: the listener bind and the
+    # runtime-learned serviceUrl, plus everything Switch generates for itself —
+    # the clientState shared secret and the Graph encryption trio. Asking an
+    # operator to invent a secret or paste PEMs is three ways to get a silently
+    # broken bridge.
+    for hidden in (
+        "listen_host",
+        "listen_port",
+        "service_url",
         "client_state",
         "encryption_certificate_id",
         "encryption_public_certificate",
         "encryption_private_key",
-    }
-    assert "listen_host" not in schema["properties"]
-    assert "listen_port" not in schema["properties"]
-    assert "service_url" not in schema["properties"]
+        "channel_teams",
+    ):
+        assert hidden not in schema["properties"]
 
 
 # ── Connection config validation ─────────────────────────────────────────────

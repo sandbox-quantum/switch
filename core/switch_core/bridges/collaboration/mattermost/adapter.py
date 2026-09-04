@@ -22,6 +22,7 @@ from switch_core.agent_icon import default_icon_url
 from switch_core.bridges.collaboration.adapter import (
     CollaborationAdapter,
     LiveRuntimeIndicator,
+    format_elapsed,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -50,6 +51,9 @@ _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 # for them and they must not be adopted from a membership sweep either — a DM
 # becomes a room when someone actually writes in it.
 _JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
+
+# Emoji marking the message an agent is currently working on.
+_WORKING_REACTION = "eyes"
 
 
 class MattermostConnectionConfig(BridgeConnectionConfig):
@@ -98,6 +102,25 @@ class MattermostAdapter(CollaborationAdapter):
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
+
+        # (channel_id, thread root post id) -> the post that actually asked.
+        # Inside a thread that is the reply, not the root the reply hangs off.
+        # Bounded like _seen_post_ids: it grows with inbound traffic and only
+        # the recent entries can still be the subject of a live turn.
+        self._thread_trigger: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._thread_trigger_max = 1000
+        self._thread_trigger_lock = threading.Lock()
+
+        # (agent_name, post_id) currently carrying the working reaction. A
+        # reaction belongs to the bot that added it, so two agents on the same
+        # post are two independent marks.
+        self._eyes: set[tuple[str, str]] = set()
+
+        # (channel_id, agent_name) -> the posts that agent has marked. An agent
+        # asked two things at once works on both, and the turn ends once — so
+        # the marks are cleared together rather than only on the last thread
+        # touched.
+        self._agent_eyes: dict[tuple[str, str], set[str]] = {}
 
         self._main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -483,6 +506,7 @@ class MattermostAdapter(CollaborationAdapter):
         deeplink_url: str | None = None,
         detail: str | None = None,
         trigger_thread_root_id: str | None = None,
+        anchor_message_ref: str | None = None,
     ) -> None:
         """Surface runtime state as a posted message that is **never deleted**.
 
@@ -502,7 +526,12 @@ class MattermostAdapter(CollaborationAdapter):
           into a "done" marker, and resolve any pings the same way.
         - ``awaiting-input`` → leave the working message up; post a separate
           operator ping (tracked for resolution when the turn ends).
+
+        The message that triggered the turn is marked with 👀 throughout, and
+        unmarked when it ends — see ``_track_eyes``.
         """
+        await self._track_eyes(channel_id, agent_name, state, thread_root_id)
+
         key = (channel_id, agent_name)
         if state == "working":
             # Resuming work means the requested input was provided — remove the
@@ -536,7 +565,12 @@ class MattermostAdapter(CollaborationAdapter):
                 await self._post_typing(channel_id, agent_name, trigger_thread_root_id)
         elif state == "awaiting-input":
             ref = await self._ping_operator(
-                channel_id, agent_name, mention_handle, thread_root_id, deeplink_url
+                channel_id,
+                agent_name,
+                mention_handle,
+                thread_root_id,
+                deeplink_url,
+                detail,
             )
             if ref is not None:
                 self._input_pings.setdefault(key, []).append(ref)
@@ -554,6 +588,113 @@ class MattermostAdapter(CollaborationAdapter):
             await self._patch_post_as(
                 agent_name, post_id, self.translate_outbound("✓ Input received")
             )
+
+    # ── The eyes on the message being worked on ──────────────────────────────
+
+    def _remember_trigger(self, channel_id: str, root_id: str, post_id: str) -> None:
+        """Record the latest post in a thread, so the eyes land on what asked.
+
+        Written from the websocket thread and read from the main loop, hence
+        the lock. Oldest entries are dropped past the cap: a thread nobody has
+        written in for a thousand messages is not the subject of a live turn,
+        and losing the entry only puts the mark on the thread root.
+        """
+        with self._thread_trigger_lock:
+            self._thread_trigger[(channel_id, root_id)] = post_id
+            self._thread_trigger.move_to_end((channel_id, root_id))
+            while len(self._thread_trigger) > self._thread_trigger_max:
+                self._thread_trigger.popitem(last=False)
+
+    async def _track_eyes(
+        self,
+        channel_id: str,
+        agent_name: str,
+        state: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """Mark every message this agent is working on, and clear them together.
+
+        ``thread_root_id`` is where the answer will land: the thread the agent
+        was addressed in, or — since this adapter follows the anchor — the
+        message itself when it was addressed at the channel root. The mark
+        belongs on what was actually said, so a threaded turn is traced back
+        through ``_thread_trigger`` to the reply that asked rather than being
+        put on the root it hangs off.
+        """
+        akey = (channel_id, agent_name)
+
+        if state in ("working", "awaiting-input"):
+            if thread_root_id is None:
+                return
+            asked_on = self._thread_trigger.get(
+                (channel_id, thread_root_id), thread_root_id
+            )
+            self._agent_eyes.setdefault(akey, set()).add(asked_on)
+            await self._mark_being_read(agent_name, asked_on, working=True)
+            return
+
+        for post_id in sorted(self._agent_eyes.pop(akey, set())):
+            await self._mark_being_read(agent_name, post_id, working=False)
+
+    async def _mark_being_read(
+        self, agent_name: str, post_id: str, *, working: bool
+    ) -> None:
+        """Put 👀 on the post an agent is working on, and take it off after.
+
+        Added by the agent's own bot rather than the bridge account, so the
+        reaction says *which* agent picked the message up and two agents on one
+        message read as two. This is the progress signal that always works:
+        unlike the status post it needs no thread, and unlike the typing
+        indicator it does not expire.
+        """
+        key = (agent_name, post_id)
+        if working == (key in self._eyes):
+            return
+
+        bot_info = self._agent_bots.get(agent_name)
+        driver = self._bot_drivers.get(agent_name)
+        loop = self._main_loop
+        if not bot_info or driver is None or loop is None:
+            logger.warning(
+                "Cannot %s the working reaction for %s: no connected bot",
+                "add" if working else "remove",
+                agent_name,
+            )
+            return
+        user_id = bot_info["user_id"]
+
+        try:
+            if working:
+                await loop.run_in_executor(
+                    None,
+                    driver.reactions.create_reaction,
+                    {
+                        "user_id": user_id,
+                        "post_id": post_id,
+                        "emoji_name": _WORKING_REACTION,
+                    },
+                )
+                self._eyes.add(key)
+            else:
+                await loop.run_in_executor(
+                    None,
+                    driver.reactions.delete_reaction,
+                    user_id,
+                    post_id,
+                    _WORKING_REACTION,
+                )
+                self._eyes.discard(key)
+        except Exception as e:
+            # Cosmetic, and the post may simply be gone. Record nothing and
+            # keep the turn going.
+            logger.warning(
+                "Could not %s the working reaction on %s: %s",
+                "add" if working else "remove",
+                post_id,
+                e,
+            )
+            if not working:
+                self._eyes.discard(key)
 
     async def _reposition_runtime_state(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
@@ -580,7 +721,7 @@ class MattermostAdapter(CollaborationAdapter):
         live = self._working_msg.pop((channel_id, agent_name), None)
         if live is None:
             return
-        elapsed = _format_elapsed(time.monotonic() - live.started_at)
+        elapsed = format_elapsed(time.monotonic() - live.started_at)
         await self._patch_post_as(
             agent_name,
             live.message_ref,
@@ -772,14 +913,21 @@ class MattermostAdapter(CollaborationAdapter):
         channel_id: str,
         user_names: list[str],
         user_external_ids: list[str],
-    ) -> None:
+    ) -> list[str]:
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError(
                 "Cannot add users to channel: Mattermost client not connected"
             )
 
         loop = self._main_loop
-        for username in user_names:
+        failed: list[str] = []
+        # Mattermost resolves people by username and ignores the ids, and one
+        # internal caller (the default-member add) has only a name to give — so
+        # walk the names and reach for a paired id only if one was supplied.
+        for index, username in enumerate(user_names):
+            external_id = (
+                user_external_ids[index] if index < len(user_external_ids) else username
+            )
             try:
                 user = await loop.run_in_executor(
                     None, self._admin_driver.users.get_user_by_username, username
@@ -796,6 +944,8 @@ class MattermostAdapter(CollaborationAdapter):
                     username,
                     channel_id,
                 )
+                failed.append(external_id)
+        return failed
 
     async def get_external_user_id(self, username: str) -> str | None:
         """Resolve a platform username to its current user id, or None if the
@@ -1186,6 +1336,7 @@ class MattermostAdapter(CollaborationAdapter):
         message = post.get("message", "")
         # Mattermost sets root_id to the thread root for replies, "" otherwise.
         root_id = post.get("root_id", "") or None
+        self._remember_trigger(channel_id, root_id or post_id, post_id)
         mm_channel_type = data.get("channel_type", "")
         channel_name = str(data.get("channel_display_name", "")) or None
 
@@ -1515,20 +1666,3 @@ class MattermostAdapter(CollaborationAdapter):
         except Exception:
             pass
         return None
-
-
-def _format_elapsed(seconds: float) -> str:
-    """How long a turn took, for the marker its status line becomes.
-
-    Rounded to whole seconds and written the way a reader skims it — "8s",
-    "2m14s", "1h03m" — rather than as a precise duration nobody reads. Sub-
-    second turns report "0s" instead of an empty string.
-    """
-    total = max(0, int(seconds))
-    if total < 60:
-        return f"{total}s"
-    minutes, secs = divmod(total, 60)
-    if minutes < 60:
-        return f"{minutes}m{secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"

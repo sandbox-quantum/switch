@@ -238,3 +238,8 @@ related-projects
 .switchdash-icon-drop/
 download.txt
 download.xml
+
+# Teams app packages built from docs/bridges/teams-app/. The manifest there
+# ships with a placeholder app id on purpose; a built package carries a real
+# tenant's, and this directory is where people naturally build one.
+docs/bridges/teams-app/*.zip

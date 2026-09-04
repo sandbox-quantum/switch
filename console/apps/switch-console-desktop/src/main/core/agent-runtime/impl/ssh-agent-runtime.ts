@@ -12,7 +12,10 @@ import { DEEPLINK_SCHEME } from '@main/app/deeplinks';
 import { agentHookService } from '@main/core/agent-hooks/agent-hook-service';
 import type { PreparedLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
 import { resolveAgentLaunchProfile } from '@main/core/agent-runtime/agent-launch-profile';
-import { AgentRuntimeSupervisor } from '@main/core/agent-runtime/agent-runtime-supervisor';
+import {
+  AgentRuntimeSupervisor,
+  type ExitDecision,
+} from '@main/core/agent-runtime/agent-runtime-supervisor';
 import type { AttachableRuntime } from '@main/core/agent-runtime/attachment/types';
 import { resolveAgentSessionCommandArgs } from '@main/core/agent-runtime/resolve-agent-session-command';
 import type { AgentRuntimeProvider } from '@main/core/agent-runtime/types';
@@ -863,7 +866,7 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
         this.pty = null;
         if (decision.kind === 'stopped') return;
 
-        this.emitExited();
+        this.emitExited(decision.kind);
 
         if (this.tmux) return;
 
@@ -937,9 +940,9 @@ export class SshAgentRuntime implements AgentRuntimeProvider, AttachableRuntime 
     }
   }
 
-  private emitExited(): void {
+  private emitExited(decision: ExitDecision['kind']): void {
     events.emit(agentSessionExitedChannel, { sessionId: this.sessionId });
-    sessionHooks._emit('session:agent-exited', { sessionId: this.sessionId });
+    sessionHooks._emit('session:agent-exited', { sessionId: this.sessionId, decision });
   }
 
   private detachPty(): void {

@@ -5,7 +5,12 @@ from typing import Any
 ADAPTIVE_CARD_CONTENT_TYPE = "application/vnd.microsoft.card.adaptive"
 
 
-def agent_message_card(agent_name: str, body: str, icon_url: str) -> dict[str, Any]:
+def agent_message_card(
+    agent_name: str,
+    body: str,
+    icon_url: str,
+    mentions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """An Adaptive Card that labels a message with the sending agent's identity.
 
     Teams has a single bot identity and no per-message username override (unlike
@@ -15,8 +20,13 @@ def agent_message_card(agent_name: str, body: str, icon_url: str) -> dict[str, A
     markdown subset: bold, italic, links, lists).
 
     ``icon_url`` is resolved by the caller — the agent's own icon or the shared
-    default — because looking it up is async and this builder is not."""
-    return {
+    default — because looking it up is async and this builder is not.
+
+    ``mentions`` are Bot Framework mention entities matching ``<at>`` markup in
+    ``body``. A card carries them under ``msteams`` rather than on the activity,
+    and without them the markup renders as inert text and the person is never
+    notified."""
+    card: dict[str, Any] = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
         "version": "1.4",
@@ -64,6 +74,9 @@ def agent_message_card(agent_name: str, body: str, icon_url: str) -> dict[str, A
             },
         ],
     }
+    if mentions:
+        card["msteams"] = {"entities": mentions}
+    return card
 
 
 def card_attachment(card: dict[str, Any]) -> dict[str, Any]:

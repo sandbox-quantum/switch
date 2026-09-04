@@ -107,7 +107,7 @@ export function SwitchSetupCard({ agentId }: { agentId: string }) {
           </div>
         </div>
         {status.refreshError && (
-          <p className="text-destructive text-xs">
+          <p className="text-xs text-destructive">
             Couldn't refresh the plugin marketplace — showing cached status. {status.refreshError}
           </p>
         )}

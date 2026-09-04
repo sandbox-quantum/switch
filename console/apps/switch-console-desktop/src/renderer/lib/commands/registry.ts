@@ -1,6 +1,8 @@
 import { comparer, makeAutoObservable, reaction } from 'mobx';
 import type { ShortcutSettingsKey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { appState } from '@renderer/lib/stores/app-state';
+import { report } from '@renderer/lib/telemetry/report';
+import type { CommandId } from '@shared/commands';
 import { SCOPE_LEVELS, type AppCommand, type CommandProvider, type ScopeId } from './types';
 
 class CommandRegistry {
@@ -28,6 +30,7 @@ class CommandRegistry {
         .getCommands()
         .find((c) => c.shortcutKey === shortcutKey && c.enabled !== false);
       if (cmd) {
+        report('command_executed', { command_id: cmd.id as CommandId, invoked_by: 'shortcut' });
         cmd.execute();
         return true;
       }

@@ -17,13 +17,24 @@ const h = vi.hoisted(() => {
   const removeLocal = vi.fn(async (fs: PluginFs, name: string) => {
     await fs.delete(`.claude/agents/${name}.md`);
   });
-  const state: { fs: PluginFs; repoAgents: object | null; agent: Record<string, unknown> | null } =
-    {
-      fs: fakeFs(),
-      repoAgents: { removeLocal },
-      agent: null,
-    };
-  return { state, removeLocal, removeSwitchCredentials: vi.fn(async () => {}) };
+  const state: {
+    fs: PluginFs;
+    repoAgents: object | null;
+    agent: Record<string, unknown> | null;
+    sessionRows: { id: string }[];
+  } = {
+    fs: fakeFs(),
+    repoAgents: { removeLocal },
+    agent: null,
+    sessionRows: [],
+  };
+  return {
+    state,
+    removeLocal,
+    removeSwitchCredentials: vi.fn(async () => {}),
+    sessionHookEmit: vi.fn(),
+    trackEvent: vi.fn(),
+  };
 });
 
 vi.mock('@main/core/providers/plugin-registry', () => ({
@@ -52,7 +63,18 @@ vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
 vi.mock('@main/core/switch-rooms/auto-session-watcher', () => ({
   autoSessionWatcher: { stopForAgent: vi.fn() },
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ deleteAgent: vi.fn() }));
+vi.mock('@main/core/switch-servers/gateway-client', () => ({
+  deleteAgent: vi.fn(),
+  // The real class, because the reported failure code is read off it.
+  GatewayError: class GatewayError extends Error {
+    constructor(
+      readonly kind: string,
+      message: string
+    ) {
+      super(message);
+    }
+  },
+}));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/core/view-state/view-state-service', () => ({
   viewStateService: { del: vi.fn(async () => {}) },
@@ -64,10 +86,15 @@ vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error:
 vi.mock('@main/db/schema', () => ({ agents: {}, sessions: {} }));
 vi.mock('@main/db/client', () => ({
   db: {
-    select: () => ({ from: () => ({ where: async () => [] }) }),
+    select: () => ({ from: () => ({ where: async () => h.state.sessionRows }) }),
     delete: () => ({ where: async () => undefined }),
+    update: () => ({ set: () => ({ where: async () => undefined }) }),
   },
 }));
+vi.mock('@main/core/sessions/session-hooks', () => ({
+  sessionHooks: { _emit: h.sessionHookEmit },
+}));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
 
 const { deleteAgent } = await import('./deleteAgent');
 
@@ -80,6 +107,7 @@ describe('deleteAgent', () => {
     vi.clearAllMocks();
     h.state.repoAgents = { removeLocal: h.removeLocal };
     h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
+    h.state.sessionRows = [];
   });
 
   it('removes the per-agent credentials for a provider with no repo-agent definitions', async () => {
@@ -91,7 +119,7 @@ describe('deleteAgent', () => {
     const fs = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: CREDS });
     h.state.fs = fs;
 
-    await deleteAgent('agent-1', { deleteInSwitch: false });
+    await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
 
     expect(await fs.exists(agentSettingsRelativePath('codex-hoot'))).toBe(false);
   });
@@ -103,7 +131,7 @@ describe('deleteAgent', () => {
     });
     h.state.fs = fs;
 
-    await deleteAgent('agent-1', { deleteInSwitch: false });
+    await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(false);
     expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(false);
@@ -116,8 +144,90 @@ describe('deleteAgent', () => {
     });
     h.state.fs = fs;
 
-    await deleteAgent('agent-1', { deleteInSwitch: false });
+    await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
 
     expect(await fs.exists(agentSettingsRelativePath('cc-sibling'))).toBe(true);
+  });
+
+  describe('what it reports', () => {
+    it('describes the agent that was removed, from the row before it goes', async () => {
+      await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+
+      expect(h.trackEvent).toHaveBeenCalledWith('agent_removed', {
+        agent_type: 'claude',
+        location: 'local',
+        delete_in_switch: false,
+        trigger: 'user',
+        outcome: 'success',
+        failure_reason: 'none',
+      });
+    });
+
+    it('separates a server teardown from a person removing an agent', async () => {
+      // Wiping a managed server deletes every agent on it through this same
+      // function; without the distinction one click looks like an exodus.
+      await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'server_teardown' });
+
+      expect(h.trackEvent).toHaveBeenCalledWith(
+        'agent_removed',
+        expect.objectContaining({ trigger: 'server_teardown' })
+      );
+    });
+
+    it('announces the sessions that went with it, which the database removes silently', async () => {
+      // The rows go by a foreign key, so nothing else says they ended — and
+      // every one of them reported starting.
+      h.state.sessionRows = [{ id: 's-1' }, { id: 's-2' }];
+
+      await deleteAgent('agent-1', { deleteInSwitch: false, trigger: 'user' });
+
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1');
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-2');
+    });
+
+    it('reports the removal as failed, with a code, when the gateway refuses', async () => {
+      const { deleteAgent: gatewayDeleteAgent } =
+        await import('@main/core/switch-servers/gateway-client');
+      vi.mocked(gatewayDeleteAgent).mockRejectedValue(new Error('boom'));
+      h.state.agent = {
+        id: 'agent-1',
+        name: 'cc-hoot',
+        providerId: 'claude',
+        locationId: 'loc',
+        serverId: 'srv-1',
+        switchAgentId: 'sw-1',
+      };
+      const { getServer } = await import('@main/core/switch-servers/servers-store');
+      vi.mocked(getServer).mockResolvedValue({ id: 'srv-1' } as never);
+
+      await expect(
+        deleteAgent('agent-1', { deleteInSwitch: true, trigger: 'user' })
+      ).rejects.toThrow();
+
+      expect(h.trackEvent).toHaveBeenCalledWith(
+        'agent_removed',
+        expect.objectContaining({ outcome: 'failure', failure_reason: 'error' })
+      );
+    });
+
+    it('reports an agent with no identity to delete as exactly that', async () => {
+      h.state.agent = {
+        id: 'agent-1',
+        name: 'cc-hoot',
+        providerId: 'claude',
+        locationId: 'loc',
+        serverId: null,
+        switchAgentId: null,
+      };
+
+      await expect(
+        deleteAgent('agent-1', { deleteInSwitch: true, trigger: 'user' })
+      ).rejects.toThrow();
+
+      expect(h.trackEvent).toHaveBeenCalledWith(
+        'agent_removed',
+        expect.objectContaining({ failure_reason: 'not_linked_to_switch' })
+      );
+    });
   });
 });

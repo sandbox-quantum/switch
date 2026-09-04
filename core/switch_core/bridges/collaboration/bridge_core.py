@@ -139,6 +139,11 @@ class BridgeCore:
         self._channel_to_room: dict[str, tuple[str, str]] = {}
         self._room_to_channel: dict[tuple[str, str], str] = {}
         self._user_puppets: dict[str, str] = {}
+        # External user ids whose stored name is known not to be a platform id,
+        # so the placeholder repair does not re-ask the database once per
+        # message. One-way, so a cached answer cannot go stale — see
+        # _repair_placeholder_username.
+        self._names_known_good: set[str] = set()
         self._puppet_matrix_ids: set[str] = set()
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._puppet_locks: dict[str, asyncio.Lock] = {}
@@ -162,6 +167,12 @@ class BridgeCore:
         # (channel_id, agent_name) -> the last message the agent reported having
         # been handed. Cleared when its turn ends. See _follow_reported_anchor.
         self._reported_anchors: dict[tuple[str, str], str] = {}
+        # Matrix-event -> external-post anchors written synchronously right after
+        # room_send, before the durable _record_message_map commit, so a fast
+        # command reply relayed during that DB await still resolves the command's
+        # thread root instead of dropping to the channel root. Popped on commit.
+        # Same race class as _provisioning_channels. See _prerecord_message_map.
+        self._pending_message_maps: dict[str, str] = {}
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
 
@@ -344,7 +355,7 @@ class BridgeCore:
                 if agent is not None:
                     agents.append((agent.name, agent.description))
 
-        app_mention = f"<@{token}>"
+        app_mention = self._adapter.render_app_mention(token)
         if agents:
             agent_list = "\n".join(
                 f"• @{name} — {description}" for name, description in agents
@@ -464,6 +475,7 @@ class BridgeCore:
             if mention_target is None:
                 await self._maybe_guide_self_mention(msg, room_id)
 
+        await self._repair_placeholder_username(msg.sender_id, msg.sender_name)
         puppet = await self._ensure_user_in_matrix_room(
             external_user_id=msg.sender_id,
             external_username=msg.sender_name,
@@ -584,8 +596,19 @@ class BridgeCore:
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
         room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
-            logger.error("No room mapping for channel %s", cmd.channel_id)
-            return
+            lock = self._channel_locks.setdefault(cmd.channel_id, asyncio.Lock())
+            async with lock:
+                room_ids = self._channel_to_room.get(cmd.channel_id)
+                if room_ids is None:
+                    room_ids = await self._create_room_for_channel(
+                        channel_id=cmd.channel_id,
+                        channel_type=cmd.channel_type,
+                        agent_name=cmd.agent_name,
+                        sender_name=cmd.sender_name,
+                        channel_name=cmd.channel_name,
+                    )
+            if room_ids is None:
+                return
         room_id, matrix_room_id = room_ids
 
         puppet = await self._ensure_user_in_matrix_room(
@@ -611,7 +634,7 @@ class BridgeCore:
 
         content: dict[str, object] = {
             "command": cmd.command,
-            "args": cmd.args,
+            "args": self._adapter.translate_inbound(cmd.args),
             "user_id": puppet.matrix_user_id,
             "user_name": cmd.sender_name,
         }
@@ -643,11 +666,18 @@ class BridgeCore:
         # Mattermost root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
         if existing_matrix_root is None and thread_root_post is not None:
-            await self._record_message_map(
-                external_channel_id=cmd.channel_id,
-                matrix_event_id=resp.event_id,
-                external_post_id=thread_root_post,
-            )
+            # Anchor in memory before the DB write: the write awaits a query that
+            # yields the loop, and a fast reply (e.g. !help) relayed in that gap
+            # would miss the row and land at the channel root. Popped on commit.
+            self._prerecord_message_map(resp.event_id, thread_root_post)
+            try:
+                await self._record_message_map(
+                    external_channel_id=cmd.channel_id,
+                    matrix_event_id=resp.event_id,
+                    external_post_id=thread_root_post,
+                )
+            finally:
+                self._pending_message_maps.pop(resp.event_id, None)
 
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
@@ -1037,6 +1067,74 @@ class BridgeCore:
         )
 
     # ── Puppet lifecycle ─────────────────────────────────────────────────────
+
+    async def _repair_placeholder_username(
+        self, external_user_id: str, resolved_username: str
+    ) -> None:
+        """Replace a stored name that is really a platform id, now we have one.
+
+        Switch files someone under the name it first saw, and a platform that
+        supplied none left its own id there — which then reads as that person's
+        name in the room title, on their Matrix account and in every agent
+        reply that addresses them. Repairing on the way past needs no migration
+        for the rows already written.
+
+        Runs on every inbound message on every bridge, so the common path — a
+        stored name that is fine — must not cost a query. Once someone's stored
+        name is known not to be a placeholder it cannot become one again (the
+        repair below is one-way), so that answer is remembered and the lookup
+        happens once per person rather than once per message.
+
+        Deliberately one-way: an id is replaced by a name, never the reverse,
+        and a name is never replaced by another name. Renaming someone people
+        have been addressing for weeks because a platform changed its mind about
+        their display name would be worse than the problem.
+        """
+        if not resolved_username or not external_user_id:
+            return
+        if external_user_id in self._names_known_good:
+            return
+        if self._adapter.is_placeholder_username(resolved_username):
+            return
+        async with self._session_factory() as session:
+            existing = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            if existing is None:
+                # Not filed yet; the caller creates them a moment later under
+                # the name we already have, so there is nothing to repair and
+                # nothing worth remembering.
+                return
+            if existing.external_username == resolved_username or not (
+                self._adapter.is_placeholder_username(existing.external_username)
+            ):
+                self._names_known_good.add(external_user_id)
+                return
+            logger.info(
+                "Renaming external user %s from its %s id to '%s'",
+                external_user_id,
+                self._bridge_type,
+                resolved_username,
+            )
+            await self._external_user_store.rename(
+                session, existing.id, resolved_username
+            )
+            await session.commit()
+            client_id = existing.client_id
+        # The Matrix account keeps its localpart — that is an address, and
+        # changing it would orphan the history — but its display name is what
+        # people read.
+        puppet = self._client_lifecycle.get(client_id)
+        if puppet is not None:
+            try:
+                await puppet.set_display_name(resolved_username)
+            except Exception:
+                logger.warning(
+                    "Renamed external user %s but could not update the display "
+                    "name of its Matrix account",
+                    external_user_id,
+                    exc_info=True,
+                )
 
     async def ensure_external_user(
         self, *, external_user_id: str, external_username: str
@@ -1518,6 +1616,15 @@ class BridgeCore:
                 event.thread_id
             )
 
+        # The message the agent says it is answering. Resolved whichever way
+        # the status is positioned, so an adapter can mark that message without
+        # also moving the status onto it.
+        anchor_message_ref: str | None = None
+        if event.anchor_event_id is not None:
+            anchor_message_ref = await self._external_post_for_matrix_event(
+                event.anchor_event_id
+            )
+
         # Where a persistent status belongs, which on an adapter that asks for
         # it is the thread the reply will open on the message being worked on.
         anchor_ref = event.thread_id
@@ -1544,6 +1651,7 @@ class BridgeCore:
             deeplink_url=event.deeplink_url,
             detail=event.detail,
             trigger_thread_root_id=trigger_thread_ref,
+            anchor_message_ref=anchor_message_ref,
         )
         await self._follow_reported_anchor(
             channel_id,
@@ -1674,6 +1782,21 @@ class BridgeCore:
 
     # ── Message-map helpers ───────────────────────────────────────────────────
 
+    def _prerecord_message_map(
+        self, matrix_event_id: str, external_post_id: str
+    ) -> None:
+        """Anchor a Matrix-event → external-post mapping in memory, synchronously,
+        so it resolves before the durable _record_message_map write commits.
+
+        _record_message_map awaits a DB round-trip that yields the event loop; a
+        fast command reply (e.g. !help) can be relayed during that yield and miss
+        the not-yet-committed row, dropping the result at the channel root rather
+        than in the command's thread. Callers set this immediately after
+        room_send returns, with NO await in between, and pop it once the row is
+        committed. Same discipline as begin_provisioning for the room-mapping
+        race."""
+        self._pending_message_maps[matrix_event_id] = external_post_id
+
     async def _record_message_map(
         self, *, external_channel_id: str, matrix_event_id: str, external_post_id: str
     ) -> None:
@@ -1705,6 +1828,9 @@ class BridgeCore:
         return mapping.matrix_event_id if mapping is not None else None
 
     async def _external_post_for_matrix_event(self, matrix_event_id: str) -> str | None:
+        pending = self._pending_message_maps.get(matrix_event_id)
+        if pending is not None:
+            return pending
         async with self._session_factory() as session:
             mapping = await self._bridge_message_map_store.get_by_matrix_event_id(
                 session, self._bridge_id, matrix_event_id

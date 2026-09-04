@@ -19,6 +19,7 @@ from switch_core.db.models import Reference, Room, User
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
+from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -35,6 +36,7 @@ def _resource_service(
 ) -> ResourceService:
     return ResourceService(
         reference_store=ReferenceStore(),
+        reference_type_store=ReferenceTypeStore(),
         document_store=DocumentStore(),
         package_store=PackageStore(),
         room_link_store=RoomLinkStore(),

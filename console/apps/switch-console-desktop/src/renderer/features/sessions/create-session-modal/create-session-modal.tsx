@@ -41,6 +41,7 @@ import { log } from '@renderer/utils/logger';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
 import type { RemoteAgentRoom } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { buildConnectPrompt } from './build-connect-prompt';
 
 // In Switch Console a "session" is a *session*: a `claude` process spawned in the agent's
@@ -131,8 +132,15 @@ export const CreateSessionModal = observer(function CreateSessionModal({
   locationId,
   agentName,
   roomId,
+  entryPoint,
   onClose,
 }: BaseModalProps & {
+  /**
+   * Which control opened this dialog. Required rather than defaulted: five
+   * places open it, and a default would file whichever one forgot under the
+   * same heading as the ones that did not.
+   */
+  entryPoint: UiEntryPoint;
   locationId?: string;
   /** When set, start the session as this Claude Code subagent of the agent. */
   agentName?: string;
@@ -295,6 +303,11 @@ export const CreateSessionModal = observer(function CreateSessionModal({
         autoApprove: resolvedAgent.autoApprove,
         initialPrompt,
         agentName: effectiveAgentName || undefined,
+        entryPoint,
+        // Whether a room was asked for, never which one. Declared here because
+        // the record `noteIntendedRoom` just wrote is consumed while this
+        // session launches, so nothing downstream can read the answer back.
+        connectedToRoom: activeRoom !== null,
       });
       navigate('session', { locationId: selectedLocationId, sessionId: id });
       onClose();

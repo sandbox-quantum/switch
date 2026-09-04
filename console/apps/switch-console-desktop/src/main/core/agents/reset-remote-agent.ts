@@ -7,8 +7,12 @@ import {
   writeWatchEnabled,
 } from '@main/core/agent-runtime/impl/remote-sidecar-launcher';
 import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-http';
+import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionRuntimeManager } from '@main/core/sessions/session-runtime-manager';
 import { switchRoomService } from '@main/core/switch-rooms/switch-room-service';
+import { agentTypeOf } from '@main/core/telemetry/agent-type';
+import type { TelemetryAgentResetFailure } from '@main/core/telemetry/events';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
 import { sessions } from '@main/db/schema';
@@ -25,6 +29,46 @@ import { ensureRemoteWatcher, startRemoteDiscovery } from './remote-watcher';
 import { buildKillTmuxScript, resetTmuxTargets } from './reset-remote-agent-tmux';
 
 const SESSIONS_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * A reset that failed for a reason worth naming.
+ *
+ * The reason travels as a field rather than in the message, so it can be
+ * reported as a code without anyone matching on prose. Everything left unnamed —
+ * an exec, the transport dropping mid-reset — is reported as `error`, because a
+ * remote failure's own text is not ours to enumerate and never ours to send.
+ */
+class AgentResetError extends Error {
+  constructor(
+    readonly reason: TelemetryAgentResetFailure,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Reasons for failures this module did not raise itself.
+ *
+ * The one worth naming most comes from below: reaching the host fails with the
+ * transport's own error, and the interface branches on that error's class to
+ * tell someone their host is unreachable rather than that "something went
+ * wrong". Wrapping it in one of ours would buy a code and lose that, so the
+ * reason is remembered beside the error and the error travels untouched.
+ */
+const namedFailures = new WeakMap<object, TelemetryAgentResetFailure>();
+
+/** Remember why an error happened, and hand it straight back. */
+function named<E>(error: E, reason: TelemetryAgentResetFailure): E {
+  if (typeof error === 'object' && error !== null) namedFailures.set(error, reason);
+  return error;
+}
+
+function resetFailureReason(error: unknown): TelemetryAgentResetFailure {
+  if (error instanceof AgentResetError) return error.reason;
+  if (typeof error === 'object' && error !== null) return namedFailures.get(error) ?? 'error';
+  return 'error';
+}
 
 interface SidecarSessionsResponse {
   sessions: Array<{ sessionId: string; roomId: string | null }>;
@@ -113,6 +157,11 @@ async function removeLocalSession(sessionId: string): Promise<void> {
   const deleted = await db.delete(sessions).where(eq(sessions.id, sessionId));
   await viewStateService.del(`session:${sessionId}`);
   if (deleted.changes === 0) return;
+  // The same pair the reconciler's remote-driven delete fires: the hook for
+  // anything in the main process that tracks a session's lifetime, and the IPC
+  // event so an open window drops the row. Firing only the second leaves a
+  // session that was reported as started and never as ended.
+  sessionHooks._emit('session:deleted', sessionId);
   events.emit(sessionDeletedChannel, { sessionId });
 }
 
@@ -132,17 +181,51 @@ async function removeLocalSession(sessionId: string): Promise<void> {
  */
 export async function resetRemoteAgent(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId);
-  if (!agent) throw new Error(`No agent with id ${agentId}`);
+  if (!agent) {
+    trackEvent('agent_reset', {
+      agent_type: 'unknown',
+      outcome: 'failure',
+      failure_reason: 'agent_not_found',
+    });
+    throw new AgentResetError('agent_not_found', `No agent with id ${agentId}`);
+  }
+
+  const agentType = agentTypeOf(agent.providerId);
+  try {
+    await runReset(agentId, agent);
+  } catch (error) {
+    trackEvent('agent_reset', {
+      agent_type: agentType,
+      outcome: 'failure',
+      failure_reason: resetFailureReason(error),
+    });
+    throw error;
+  }
+  trackEvent('agent_reset', { agent_type: agentType, outcome: 'success', failure_reason: 'none' });
+}
+
+async function runReset(agentId: string, agent: Agent): Promise<void> {
   const location = await getRemoteAgentLocation(agent);
   if (!location) {
-    throw new Error(`Agent ${agentId} is not remote, so it cannot be reset.`);
+    throw new AgentResetError(
+      'not_remote',
+      `Agent ${agentId} is not remote, so it cannot be reset.`
+    );
   }
 
   // Stop this client's discovery loop before killing anything so a reconcile tick
   // cannot re-adopt a session from a stale snapshot mid-reset.
   remoteSessionReconciler.stop(agentId);
 
-  const conn = await connectRemoteAgent(agent);
+  let conn: RemoteConn;
+  try {
+    conn = await connectRemoteAgent(agent);
+  } catch (error) {
+    // The likeliest way a reset fails, and the only step here that depends on
+    // something outside the app — worth separating from everything the app
+    // itself can get wrong.
+    throw named(error, 'connect');
+  }
   const credsSlug = agent.name ?? agent.id;
 
   // Silence the VM watcher first so it cannot auto-start a fresh session between

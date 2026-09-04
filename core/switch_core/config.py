@@ -1,7 +1,11 @@
+import re
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# A Postgres time value: a bare count of milliseconds, or a count with a unit.
+_PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 
 
 class SwitchConfig(BaseSettings):
@@ -72,10 +76,46 @@ class SwitchConfig(BaseSettings):
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
 
-    db_pool_size: int = 20
+    # Every authenticated agent request resolves its bearer token against the
+    # database before the handler runs, and each live agent connection beats
+    # every 2s, so the pool is sized against connection count rather than
+    # human traffic: a fleet of N connections costs roughly N/2 checkouts per
+    # second. Exceeding the pool does not shed load, it queues, and a queued
+    # heartbeat that misses HEARTBEAT_TTL_SECONDS costs the connection.
+    db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
     db_pool_pre_ping: bool = True
+    # SQLAlchemy's default is 30s, long enough that pool starvation surfaces as
+    # unexplained latency rather than an error. Fail fast and loudly instead.
+    db_pool_timeout: float = 5.0
+
+    # Resolving a bearer token to its agent is the highest-frequency query in
+    # the system — it runs before every authenticated request, and a fleet of
+    # agents beats continuously — so a successful resolution is memoised in
+    # process for this long. Only successes are cached; an unknown or revoked
+    # token always reaches Postgres, and a rotation or an agent deletion drops
+    # the entry immediately rather than waiting for it to expire. This is the
+    # window in which an already-issued credential outlives its revocation, so
+    # it is deliberately shorter than the agent heartbeat TTL. Set to 0 to
+    # disable the cache and read the database on every request.
+    agent_auth_cache_ttl_seconds: float = 5.0
+    # Bound on the memo. One entry per distinct live token; the oldest is
+    # evicted past this, so a flood of tokens cannot grow the process.
+    agent_auth_cache_max_entries: int = 4096
+
+    # Postgres terminates a connection that sits inside an open transaction
+    # without executing anything for longer than this (a Postgres interval such
+    # as "15s"), turning a slot that never comes back into a loud, attributable
+    # error. Disabled by default, and it must stay that way until Matrix I/O
+    # moves out of the RoomService transactions: `add_agents_to_room`,
+    # `remove_agents_from_room` and `delete_room` currently hold a transaction
+    # across invite/kick round trips, so enabling this today would trade a
+    # latency problem for a consistency one — Matrix membership changed, the
+    # rows that record it rolled back. Applies to the application engine only;
+    # Alembic builds its own engine from `db_connect_args`, so a migration is
+    # never killed mid-transaction.
+    db_idle_in_transaction_session_timeout: str | None = None
 
     # libpq-style TLS mode for the Postgres connection, forwarded to asyncpg.
     # "disable" (the default) keeps in-cluster / local-dev connections plain,
@@ -83,6 +123,31 @@ class SwitchConfig(BaseSettings):
     # requires TLS — set "require" to encrypt without verifying the server
     # certificate, or "verify-ca" / "verify-full" to also validate it.
     db_ssl_mode: str = "disable"
+
+    @model_validator(mode="after")
+    def _validate_agent_auth_cache(self) -> "SwitchConfig":
+        if self.agent_auth_cache_ttl_seconds < 0:
+            raise ValueError(
+                "AGENT_AUTH_CACHE_TTL_SECONDS must not be negative (0 disables "
+                f"the cache), got {self.agent_auth_cache_ttl_seconds!r}."
+            )
+        if self.agent_auth_cache_max_entries < 1:
+            raise ValueError(
+                "AGENT_AUTH_CACHE_MAX_ENTRIES must be at least 1, got "
+                f"{self.agent_auth_cache_max_entries!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_idle_in_transaction_session_timeout(self) -> "SwitchConfig":
+        value = self.db_idle_in_transaction_session_timeout
+        if value is not None and not _PG_INTERVAL_RE.match(value):
+            raise ValueError(
+                "DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT must be a Postgres "
+                "interval such as '15s', '500ms' or a bare count of "
+                f"milliseconds, got {value!r}."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_db_ssl_mode(self) -> "SwitchConfig":

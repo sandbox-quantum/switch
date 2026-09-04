@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import random
 import time
 from typing import Literal
 
@@ -13,6 +14,7 @@ from nio import (
     JoinedRoomsError,
     LoginError,
     MatrixRoom,
+    ProfileSetDisplayNameError,
     ReactionEvent,
     RoomMemberEvent,
     RoomMessageMedia,
@@ -60,10 +62,36 @@ from switch_core.events import (
 
 logger = logging.getLogger(__name__)
 
-SYNC_STATE_INTERVAL = 30
+SYNC_STATE_INTERVAL = 30.0
+# Every client in this process starts when the process does, and its sync
+# long-poll is SYNC_STATE_INTERVAL as well, so a fixed interval has all of them
+# crossing the threshold in the same instant — hundreds of one-row transactions
+# competing for the connection pool at once. A per-client interval keeps them
+# spread out and stops them re-converging after a restart.
+SYNC_STATE_JITTER = 15.0
+# A sync that carried nothing durable still advances the cursor, and persisting
+# that is wasted work: resuming from the older cursor replays the same nothing.
+# The token should still not be left arbitrarily far behind the server, so an
+# unwritten one is flushed once it is this stale.
+SYNC_STATE_MAX_STALENESS = 900.0
 SYNC_MAX_RETRIES = 5
 SYNC_BACKOFF_BASE = 1.0
 SYNC_BACKOFF_CAP = 60.0
+
+
+def _carries_durable_events(response: SyncResponse) -> bool:
+    """Whether a sync response holds anything a restart would need to replay.
+
+    Timeline events, room state and invites are dispatched to handlers, so the
+    cursor must move past them durably. Presence, typing, receipts and account
+    data are not — they only advance the token.
+    """
+    if response.rooms.invite or response.to_device_events:
+        return True
+    return any(
+        room.timeline.events or room.state
+        for room in (*response.rooms.join.values(), *response.rooms.leave.values())
+    )
 
 
 class ClientConfig(BaseModel):
@@ -112,12 +140,31 @@ class ClientBase[ConfigT: ClientConfig]:
         self._self_join_dispatched: set[str] = set()
         self._ready = asyncio.Event()
         self._startup_ts: int = 0
-        self._last_sync_persist: float = 0.0
+        self._sync_persist_interval = SYNC_STATE_INTERVAL + random.uniform(
+            0.0, SYNC_STATE_JITTER
+        )
+        self._last_sync_persist: float = time.monotonic() - random.uniform(
+            0.0, SYNC_STATE_INTERVAL
+        )
         self._sync_state_dirty: bool = False
         self._running: bool = False
 
     async def wait_ready(self) -> None:
         await self._ready.wait()
+
+    async def set_display_name(self, display_name: str) -> None:
+        """Change the name this client shows under in Matrix.
+
+        The user id is an address and stays put; this is the label rooms
+        render. Used to correct a puppet filed under a platform id before the
+        platform would say who the person was.
+        """
+        resp = await self.client.set_displayname(display_name)
+        if isinstance(resp, ProfileSetDisplayNameError):
+            raise RuntimeError(
+                f"Could not set the display name of {self.matrix_user_id}: {resp}"
+            )
+        self.display_name = display_name
 
     def _joined_event(self, room_id: str) -> asyncio.Event:
         event = self._room_joined_events.get(room_id)
@@ -456,9 +503,15 @@ class ClientBase[ConfigT: ClientConfig]:
             logger.exception("Error in handler for %s in %s", event.type, room.room_id)
 
     async def _handle_sync(self, response: SyncResponse) -> None:
-        if response.next_batch and response.next_batch != self.next_batch_token:
-            self.next_batch_token = response.next_batch
+        if not response.next_batch or response.next_batch == self.next_batch_token:
+            return
+        self.next_batch_token = response.next_batch
+        if _carries_durable_events(response):
             await self._persist_state()
+            return
+        self._sync_state_dirty = True
+        if (time.monotonic() - self._last_sync_persist) >= SYNC_STATE_MAX_STALENESS:
+            await self._persist_state(force=True)
 
     async def _handle_sync_error(self, response: SyncError) -> None:
         logger.error("Sync error for %s: %s", self.matrix_user_id, response.message)
@@ -756,7 +809,7 @@ class ClientBase[ConfigT: ClientConfig]:
 
     async def _persist_state(self, force: bool = False) -> None:
         now = time.monotonic()
-        if not force and (now - self._last_sync_persist) < SYNC_STATE_INTERVAL:
+        if not force and (now - self._last_sync_persist) < self._sync_persist_interval:
             self._sync_state_dirty = True
             return
 

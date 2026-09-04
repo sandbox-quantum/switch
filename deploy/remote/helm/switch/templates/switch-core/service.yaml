@@ -1,3 +1,4 @@
+{{- include "switch.validateTeamsBridge" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -12,5 +13,11 @@ spec:
       targetPort: 8000
       protocol: TCP
       name: http
+    {{- if .Values.switchCore.teamsBridge.enabled }}
+    - port: {{ .Values.switchCore.teamsBridge.port }}
+      targetPort: {{ .Values.switchCore.teamsBridge.port }}
+      protocol: TCP
+      name: teams
+    {{- end }}
   selector:
     {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 4 }}

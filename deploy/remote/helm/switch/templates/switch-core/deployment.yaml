@@ -38,6 +38,11 @@ spec:
           ports:
             - containerPort: 8000
               protocol: TCP
+            {{- if .Values.switchCore.teamsBridge.enabled }}
+            - containerPort: {{ .Values.switchCore.teamsBridge.port }}
+              name: teams
+              protocol: TCP
+            {{- end }}
           env:
             {{- include "switch.coreEnv" . | nindent 12 }}
           readinessProbe:

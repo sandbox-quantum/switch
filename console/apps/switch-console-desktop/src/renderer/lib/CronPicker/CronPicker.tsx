@@ -343,7 +343,7 @@ export function CronPicker({ value, onChange, className }: CronPickerProps) {
       </div>
 
       {parseError && (
-        <p className="text-destructive text-xs">
+        <p className="text-xs text-destructive">
           Could not parse the cron expression. Showing defaults — saving will overwrite it.
         </p>
       )}

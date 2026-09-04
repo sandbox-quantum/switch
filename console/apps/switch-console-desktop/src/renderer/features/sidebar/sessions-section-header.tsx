@@ -322,7 +322,7 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader() {
                 Collapse all
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => showAddLocationModal({})}>
+              <DropdownMenuItem onClick={() => showAddLocationModal({ entryPoint: 'sidebar' })}>
                 <UserPlus className="mr-1.5 h-4 w-4" />
                 Add an agent
               </DropdownMenuItem>
@@ -339,7 +339,7 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader() {
       <div className="px-2 pb-1">
         <button
           type="button"
-          onClick={() => showCreateSessionModal({})}
+          onClick={() => showCreateSessionModal({ entryPoint: 'sidebar' })}
           className="flex w-full cursor-pointer items-center gap-[9px] rounded-lg px-[9px] py-[6px] text-sm text-foreground-muted transition-colors hover:bg-[var(--sel-soft)] hover:text-foreground"
         >
           <Plus className="size-4 shrink-0" />

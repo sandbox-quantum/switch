@@ -88,6 +88,14 @@ artifacts:
 artifacts-check:
     uv run --project core python scripts/gen_artifacts.py --check
 
+# ── Build the Teams app package an operator uploads ───────────────────────────
+# Every route into a tenant wants a .zip — Developer Portal Import app, Upload a
+# custom app, the admin centre — and none takes a bare manifest.json. Pass the
+# Azure Bot app id and it fills the three places it has to match.
+#   just teams-app-package --app-id <guid> --public-host teams.example.com
+teams-app-package *args:
+    uv run --project core python scripts/build_teams_app_package.py {{ args }}
+
 # ── Run alembic migrations ─────────────────────────────────────────────────────
 migrate:
     uv run --project core alembic -c core/alembic.ini upgrade head
@@ -133,3 +141,11 @@ standalone-reset:
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
     docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down -v
+
+# ── Documentation ──────────────────────────────────────────────────────────────
+# Clones the docs repository unless --source names a checkout of it:
+#     just sync-docs --source ../docs
+# Everything under docs/official is rewritten, so edit the source pages instead.
+# Convert the published Switch pages into docs/official as Markdown
+sync-docs *args:
+    python3 scripts/sync_docs.py {{ args }}

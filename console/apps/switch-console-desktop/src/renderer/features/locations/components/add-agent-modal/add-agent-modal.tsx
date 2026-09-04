@@ -40,9 +40,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/lib/ui/select';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import { type ProvisionAgentResult } from '@shared/core/switch-servers/switch-servers';
+import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { AgentTypePicker } from './agent-type-picker';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
@@ -54,7 +56,14 @@ import { useConfigureAgentForm, usePickMode } from './modes';
 // switch-connector `configure` skill has set up (its `.claude/settings.local.json`
 // carries the SWITCH_* env block). The richer Switch Console flows — SSH, clone, create
 // new GitHub repo — are out of scope for v0, so this modal is local + pick only.
-export type AddLocationModalProps = BaseModalProps<void>;
+export type AddLocationModalProps = BaseModalProps<void> & {
+  /**
+   * Which control opened this dialog. Required rather than defaulted: four
+   * places open it, and a default would silently file whichever one forgot
+   * under the same heading as the ones that did not.
+   */
+  entryPoint: UiEntryPoint;
+};
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
@@ -68,7 +77,10 @@ function canonicalDir(dir: string): string {
   return stripped || (trimmed.startsWith('/') ? '/' : '');
 }
 
-export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLocationModalProps) {
+export const AddAgentModal = observer(function AddAgentModal({
+  onClose,
+  entryPoint,
+}: AddLocationModalProps) {
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
@@ -216,6 +228,34 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
     runHostReady &&
     submitState === 'idle';
 
+  // Why "Add agent" is greyed out, in one line, shown on hover over the button.
+  const disabledReason: string | null =
+    submitState !== 'idle'
+      ? null
+      : !pickState.serverId
+        ? 'Add a Switch server to register this agent on.'
+        : form.agentName.trim().length === 0
+          ? 'Enter a name for the agent.'
+          : !form.nameIsValid
+            ? 'Fix the agent name: lowercase letters, digits, . - _, starting with a letter or digit.'
+            : form.description.trim().length === 0
+              ? 'Add a description so people and agents know what this agent is for.'
+              : !runHostReachable
+                ? `${runLocationLabel} can’t be reached right now — pick a run location that can.`
+                : hostReadiness.checking
+                  ? `Checking what ${runLocationLabel} has installed…`
+                  : hostReadiness.blocked
+                    ? `${runLocationLabel} is missing setup this agent needs — the notice below has the details.`
+                    : !pickState.providerId
+                      ? 'Choose an agent type.'
+                      : dir.trim().length === 0
+                        ? isRemoteRun
+                          ? 'Enter the agent’s working directory on the host.'
+                          : 'Choose the agent’s working directory.'
+                        : policyHasDeadRule(form.addressingPolicy)
+                          ? 'One addressing rule can never match — fix it under Settings.'
+                          : null;
+
   /** `agentName` is what picks the agent out of the location — a location can
    * hold several, so navigating on `locationId` alone opens the directory
    * rather than the agent that was just created. */
@@ -291,6 +331,7 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
         autoApprove: form.autoApprove,
         definitionAttributes: advancedAttributesRef.current,
         providerConfig: launchProfileConfigRef.current,
+        entryPoint,
       });
       if (result.kind !== 'created') {
         reportProvisionError(result);
@@ -330,9 +371,6 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
       }
       footer={
         <DialogFooter>
-          {/* Why Add agent is greyed out, said where the greyed-out button is.
-              Left alone, a disabled primary with no explanation beside it is
-              indistinguishable from a broken one. */}
           {isRemoteRun && hostReadiness.checking && (
             <span className="mr-auto self-center text-xs text-foreground-muted">
               Waiting for {runLocationLabel}…
@@ -346,9 +384,27 @@ export const AddAgentModal = observer(function AddAgentModal({ onClose }: AddLoc
           >
             Cancel
           </Button>
-          <ConfirmButton type="button" onClick={() => void handleCreate()} disabled={!canSubmit}>
-            {submitState === 'creating' ? 'Adding…' : 'Add agent'}
-          </ConfirmButton>
+          <TooltipProvider delay={150}>
+            <Tooltip>
+              {/* Span, not button, carries the tooltip: a disabled button emits no pointer events. */}
+              <TooltipTrigger
+                render={
+                  <span className="inline-flex">
+                    <ConfirmButton
+                      type="button"
+                      onClick={() => void handleCreate()}
+                      disabled={!canSubmit}
+                    >
+                      {submitState === 'creating' ? 'Adding…' : 'Add agent'}
+                    </ConfirmButton>
+                  </span>
+                }
+              />
+              {disabledReason !== null && (
+                <TooltipContent side="top">{disabledReason}</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </DialogFooter>
       }
     >

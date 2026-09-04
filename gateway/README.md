@@ -19,4 +19,7 @@ a copy of `hoot.css` plus that command. The formatting conventions Hoot is
 prescriptive about (dates, numbers, empty values, identifiers) live in
 `src/theme/hootFormat.ts`.
 
-> **Note:** full documentation is coming as part of the docs effort.
+## Documentation
+
+User-facing documentation for Switch is published at
+[docs.flintai.dev](https://docs.flintai.dev/flintai/switch/getting-started).

@@ -52,6 +52,7 @@ import {
   readAgentStore,
   type ResolvedAgent,
 } from './credentials';
+import { reapOrphanedRuntimes } from './reap';
 import { readSse, type SseFrame } from './sse';
 
 const ENV_ENDPOINT = process.env.SWITCH_API_ENDPOINT ?? '';
@@ -84,7 +85,8 @@ function looksUnresolved(value: string): boolean {
 }
 
 const SESSION_PPID = process.ppid;
-const SESSION_DIR = path.join(os.homedir(), '.switch', 'sessions', String(SESSION_PPID));
+const SESSIONS_ROOT = path.join(os.homedir(), '.switch', 'sessions');
+const SESSION_DIR = path.join(SESSIONS_ROOT, String(SESSION_PPID));
 const PORT_FILE = path.join(SESSION_DIR, 'port');
 const STARTUP_ERROR_FILE = path.join(SESSION_DIR, 'startup-error.log');
 
@@ -364,6 +366,12 @@ process.on('unhandledRejection', (err) => {
 });
 process.on('uncaughtException', (err) => {
   if (!serving) failStartup(`uncaught exception during startup: ${err}`);
+  // A broken stdio pipe is not an error to carry on through: it means the host
+  // is gone, and carrying on is what leaves this process running for weeks.
+  if ((err as NodeJS.ErrnoException).code === 'EPIPE') {
+    shutdown('stdio pipe broken');
+    return;
+  }
   process.stderr.write(`switch: uncaught exception: ${err}\n`);
 });
 
@@ -1584,6 +1592,11 @@ function startHookListener() {
     })();
   });
 
+  // Unref'd so it cannot be the only thing keeping this process alive: the
+  // stdin reader holds the loop open while a host is attached, which makes
+  // "alive" mean "someone is talking to us" rather than "a port is bound".
+  server.unref();
+
   server.listen(0, '127.0.0.1', () => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
@@ -1841,15 +1854,54 @@ async function emitNotification(content: string, meta: Record<string, string>) {
 
 // -- Connect and start -------------------------------------------------------
 
-const transport = new StdioServerTransport();
+// A host can stop needing this process in more ways than it can tell it so, and
+// every way that is not a clean shutdown leaves the timers below running and the
+// hook listener holding the event loop open. Each trigger here covers a case the
+// others miss; any one of them is enough on its own.
 
-transport.onclose = () => {
+let shuttingDown = false;
+
+function shutdown(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   stopStream();
   stopHeartbeat();
   stopLeaseRenew();
   unpublishPort();
+  // Best-effort: on a broken pipe this is what we are reacting to.
+  try {
+    process.stderr.write(`switch: shutting down — ${reason}\n`);
+  } catch {
+    // Nothing left to say it to.
+  }
   process.exit(0);
-};
+}
+
+const transport = new StdioServerTransport();
+
+transport.onclose = () => shutdown('transport closed');
+
+// The SDK's stdio transport binds only 'data' and 'error' on stdin, so `onclose`
+// above is reached only by an orderly `close()` — never by a host that was
+// killed, crashed or force-quit, which is the case it exists for.
+process.stdin.on('end', () => shutdown('stdin ended'));
+process.stdin.on('close', () => shutdown('stdin closed'));
+
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
+  process.on(signal, () => shutdown(signal));
+}
+
+// A pipe whose reader is gone but which was never closed accepts writes that can
+// never drain, and node queues them in memory for as long as the process lives.
+process.stdout.on('error', () => shutdown('stdout gone'));
+process.stderr.on('error', () => shutdown('stderr gone'));
+
+// The backstop, and the only signal that survives every way a host can vanish:
+// losing our parent reparents us, and nothing about that reaches our stdio.
+const PARENT_CHECK_INTERVAL_MS = 30_000;
+setInterval(() => {
+  if (process.ppid !== SESSION_PPID) shutdown('host process exited');
+}, PARENT_CHECK_INTERVAL_MS).unref();
 
 // Load the operation list before serving, so the tool surface is whole the
 // first time a host asks for it.
@@ -1891,6 +1943,26 @@ if (!isDegraded()) {
 
 await mcp.connect(transport);
 serving = true;
+
+// After the handshake and never awaited: this scans every process on the
+// machine and may remove thousands of directories, and a host waiting on
+// `initialize` must not pay for either. Needs no identity, so it runs degraded
+// too — an orphan from a previous session is there to clear up regardless.
+void reapOrphanedRuntimes({ sessionsRoot: SESSIONS_ROOT, keepSessionDir: SESSION_DIR }).then(
+  (outcome) => {
+    if (outcome.reaped > 0) {
+      process.stderr.write(`switch: reaped ${outcome.reaped} runtime(s) whose host is gone\n`);
+    }
+    if (outcome.removedSessionDirs > 0) {
+      process.stderr.write(
+        `switch: removed ${outcome.removedSessionDirs} stale session director(ies)\n`
+      );
+    }
+    for (const failure of outcome.failures) {
+      process.stderr.write(`switch: reap ${failure.stage} failed: ${failure.error}\n`);
+    }
+  }
+);
 
 // Degraded, none of the machinery below has anything to act on: no identity to
 // open a connection as, no room to route a hook to. Publishing no port also

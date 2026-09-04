@@ -171,6 +171,9 @@ export async function attachConfiguredAgents(
   }
 
   await locationManager.openLocation(location);
-  for (const agent of created) agentEvents._emit('agent:created', agent);
+  // No control to name: an attach is driven by whichever screen offered the
+  // scan, and nothing on the way here says which. `unknown` reports the absence
+  // of a claim rather than inventing one.
+  for (const agent of created) agentEvents._emit('agent:created', agent, 'unknown');
   return ok(created);
 }

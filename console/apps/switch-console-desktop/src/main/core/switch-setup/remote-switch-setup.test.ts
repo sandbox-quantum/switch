@@ -6,7 +6,11 @@ const mocks = vi.hoisted(() => ({
   getPlugin: vi.fn(),
   listPlugins: vi.fn(),
   ensureSshConnected: vi.fn(),
+  trackEvent: vi.fn(),
 }));
+
+// Reaches the settings store, and through it the database, at import time.
+vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: mocks.trackEvent }));
 
 vi.mock('@main/core/execution-context/ssh-execution-context', () => ({
   SshExecutionContext: class {
@@ -387,6 +391,139 @@ describe('RemoteSwitchSetupService.update', () => {
       success: false,
       message:
         'Update failed: the plugin was removed but could not be reinstalled. Install it again for this host.',
+    });
+  });
+});
+
+describe('RemoteSwitchSetupService.install', () => {
+  it('installs the plugin and reports success', async () => {
+    mocks.exec.mockImplementation(codexExecImpl('sandbox-quantum/switch'));
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('codex');
+
+    expect(result.success).toBe(true);
+    expect(calls()).toContain(`plugin add ${CODEX_REF}`);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'success',
+    });
+  });
+
+  it('reports failure when the install command exits non-zero', async () => {
+    mocks.exec.mockImplementation((_bin: string, args: string[] = []) => {
+      if (args.join(' ') === `plugin add ${CODEX_REF}`) {
+        return Promise.reject(
+          Object.assign(new Error('exit 1'), { code: 1, stderr: 'no write access' })
+        );
+      }
+      return codexExecImpl('sandbox-quantum/switch')('codex', args);
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('codex');
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe('no write access');
+    expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+      agent_type: 'codex',
+      target: 'remote',
+      outcome: 'failure',
+    });
+  });
+
+  it('reports nothing when the agent type has no Switch setup to attempt', async () => {
+    mocks.getPlugin.mockReturnValue({
+      metadata: { id: 'no-switch-agent' },
+      capabilities: {
+        switchSetup: { kind: 'none' },
+        hostDependency: { binaryNames: ['nosw'] },
+      },
+    });
+
+    const service = await getRemoteSwitchSetupService(SSH_HOST);
+    const result = await service.install('no-switch-agent');
+
+    expect(result).toEqual({
+      success: false,
+      message: 'Switch setup is not supported for this agent.',
+    });
+    expect(mocks.trackEvent).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A connector the app writes rather than installs through a CLI. The local
+   * service has the same branch and the same telemetry; these are here because
+   * the two are separate implementations of one behaviour, and the remote one
+   * had no test of it at all.
+   */
+  describe('a connector the app writes itself', () => {
+    const install = vi.fn();
+    const FILES_AGENT = {
+      metadata: { id: 'opencode' },
+      capabilities: {
+        switchSetup: {
+          kind: 'files',
+          connectorName: 'Switch connector',
+          artifact: 'switch-connector-opencode',
+        },
+        hostDependency: { binaryNames: ['opencode'] },
+      },
+      behavior: { switchSetup: { files: { install } } },
+    };
+
+    beforeEach(() => {
+      mocks.getPlugin.mockReturnValue(FILES_AGENT);
+    });
+
+    it('reports the install, and writes to the host rather than running a CLI', async () => {
+      install.mockResolvedValue(undefined);
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+      const result = await service.install('opencode');
+
+      expect(result).toEqual({ success: true });
+      expect(calls()).toEqual([]);
+      expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+        agent_type: 'opencode',
+        target: 'remote',
+        outcome: 'success',
+      });
+    });
+
+    it('reports its failure', async () => {
+      install.mockRejectedValue(new Error('permission denied'));
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+      const result = await service.install('opencode');
+
+      expect(result.success).toBe(false);
+      expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+        agent_type: 'opencode',
+        target: 'remote',
+        outcome: 'failure',
+      });
+    });
+
+    it('still answers, and still reports, when the connector implements nothing', async () => {
+      // A plugin can declare a files connector and supply no behaviour for it.
+      // The user asked for an install: they get a failure, not a rejected
+      // promise reaching the UI as a stack trace with nothing recorded.
+      mocks.getPlugin.mockReturnValue({
+        ...FILES_AGENT,
+        behavior: { switchSetup: {} },
+      });
+
+      const service = await getRemoteSwitchSetupService(SSH_HOST);
+      const result = await service.install('opencode');
+
+      expect(result.success).toBe(false);
+      expect(mocks.trackEvent).toHaveBeenCalledWith('connector_installed', {
+        agent_type: 'opencode',
+        target: 'remote',
+        outcome: 'failure',
+      });
     });
   });
 });

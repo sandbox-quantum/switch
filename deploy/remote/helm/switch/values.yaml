@@ -46,6 +46,15 @@ ingress:
     - /oauth
     - /.well-known
     - /health
+  # Path prefixes served by the Teams bridge listener rather than the FastAPI
+  # app, because that listener is a separate HTTP server on its own port. Used
+  # by both switchCore.teamsBridge.ingress modes "shared" and "dedicated".
+  # Graph rejects a subscription whose notification URL does not answer its
+  # validation handshake over valid TLS within 10 seconds, so wherever these are
+  # served must be publicly reachable — not Tailscale- or VPN-only.
+  teamsPaths:
+    - /api/messages
+    - /api/teams/notifications
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # Two ways to supply secrets:
@@ -111,9 +120,83 @@ switchCore:
     redirectUrl: ""
     # Set false to disable password login entirely (OIDC-only).
     passwordLoginEnabled: true
+  # Bearer-token resolution runs before every authenticated request and agents
+  # beat continuously, so a successful resolution is memoised in process for
+  # this many seconds. Only successes are cached — an unknown or revoked token
+  # always reads the database — and a key rotation or agent deletion drops the
+  # entry at once rather than waiting for it to expire. This is therefore the
+  # window in which an already-issued credential can outlive its revocation;
+  # it must stay under the 6s agent heartbeat TTL, and 0 disables the cache.
+  authCache:
+    ttlSeconds: 5
   service:
     type: ClusterIP
     port: 8000
+  # Microsoft Teams bridge listener. The Teams adapter runs its own HTTP server
+  # inside switch-core, separate from the FastAPI app on service.port: Bot
+  # Framework activities arrive at /api/messages and Graph change notifications
+  # at /api/teams/notifications. Microsoft calls both from the public internet,
+  # so both must be reachable over HTTPS. Without that the bridge is
+  # outbound-only — it can create channels and post, but receives nothing back
+  # and captures no messages.
+  #
+  # Off by default, and deliberately: Teams bridges are created at runtime in the
+  # gateway, not in Helm values, so the chart cannot tell whether you have one.
+  # Enable this when you configure a Teams bridge, and set that bridge's
+  # public_base_url to the host this is served on.
+  teamsBridge:
+    enabled: false
+    # Listener bind port inside the container; must match the bridge's
+    # listen_port (default 3978). One Teams bridge per port.
+    port: 3978
+    # How Microsoft reaches the two callback paths (ingress.teamsPaths).
+    # Required when enabled — publishing the port without routing it is the
+    # failure this whole block exists to prevent, so the chart refuses to render
+    # rather than let you deploy a bridge that can never receive anything.
+    #
+    #   dedicated -> the chart renders a second Ingress carrying only those two
+    #                paths, with its own host, class, annotations and TLS. Use
+    #                this to give Teams a public hostname while the gateway
+    #                stays internal: Microsoft needs those two paths and nothing
+    #                else, and both authenticate per-request inside the adapter.
+    #   shared    -> add the paths to the chart's main Ingress. Requires
+    #                ingress.mode=managed, and puts Teams on the same public
+    #                host as the gateway.
+    #   external  -> the chart renders no route; you add the two paths to your
+    #                own Ingress. See samples/ingress.example.yaml.
+    ingress:
+      mode: ""
+      # Used by mode=dedicated only.
+      className: ""
+      # Public hostname Microsoft resolves, e.g. "teams.switch.example.com".
+      # Must match the host in the bridge's public_base_url.
+      #
+      # Leave empty ONLY when something upstream terminates TLS and owns the
+      # public name — a CDN or reverse proxy in front of this Ingress. The rule
+      # then carries no host and answers whatever Host header arrives, which is
+      # required there: the incoming Host is the proxy's name, and the chart
+      # cannot know it. Empty with tls.enabled=true is rejected, because a
+      # host-less rule cannot carry a certificate.
+      host: ""
+      # Annotations for the dedicated Ingress. This is the ONLY source of them:
+      # the top-level ingress.annotations are not merged in, so an org-wide
+      # annotation set there (a WAF association, cost tags, a policy webhook)
+      # does not reach this Ingress and must be repeated here. That separation
+      # is deliberate — the main Ingress's streaming annotations suit long-lived
+      # MCP/SSE connections and Teams callbacks are short request/response —
+      # but it does mean this list is not additive.
+      # For cert-manager, add e.g.:
+      #   cert-manager.io/cluster-issuer: letsencrypt-prod
+      annotations: {}
+      tls:
+        # Graph only calls an HTTPS URL whose certificate it trusts, so this is
+        # on by default. Set false only when TLS terminates upstream and is not
+        # expressed in spec.tls — e.g. an AWS ALB configured by annotation. The
+        # chart cannot verify that, so it warns instead of failing.
+        enabled: true
+        # Secret holding the cert; cert-manager creates it from the annotation
+        # above, or reference a pre-created TLS Secret.
+        secretName: ""
   # switch-core keeps live Matrix sync sessions in memory, so it MUST run as a
   # single replica — a second replica would double every client and split
   # session state. This is enforced at render time; do not raise it.
@@ -228,6 +311,32 @@ postgresql:
   # managed cloud databases generally require "require" or stricter.
   sslMode: disable
 
+  # switch-core's SQLAlchemy connection pool. Size this against the number of
+  # live agent connections, not human traffic: bearer-token auth hits the
+  # database on every authenticated request and each agent connection beats
+  # every 2s, so roughly N/2 checkouts per second for N connections. When the
+  # pool is exhausted requests queue rather than fail, and a heartbeat delayed
+  # past the server's TTL loses its connection — so under-sizing this shows up
+  # as fleet-wide agent disconnects, not as database errors.
+  # size + maxOverflow must stay under Postgres max_connections, remembering
+  # Mattermost and Keycloak share the same instance.
+  pool:
+    size: 30
+    maxOverflow: 10
+    # Seconds to wait for a free slot before raising. Deliberately short:
+    # SQLAlchemy's 30s default hides starvation as latency.
+    timeout: 5
+
+  # Postgres kills a switch-core connection that sits inside an open
+  # transaction without executing anything for longer than this (e.g. "15s"),
+  # so a leaked checkout becomes a loud, attributable error instead of a slot
+  # that never comes back. Empty (the default) leaves it off, and it must stay
+  # off until switch-core stops holding transactions across Matrix round trips
+  # on the room-membership paths — until then this trades request latency for
+  # membership drift: agents invited on Matrix with no row recording it. Set it
+  # in staging first. Migrations are unaffected; Alembic does not read it.
+  idleInTransactionSessionTimeout: ""
+
   # Password source. By default the password is read from the chart-managed
   # Secret (secrets.postgresPassword). To source it from a pre-existing Secret
   # instead (e.g. synced by external-secrets / sealed-secrets), set
@@ -258,6 +367,18 @@ postgresql:
       memory: 256Mi
     limits:
       memory: 512Mi
+
+  # Postgres server parameters, passed as `-c name=value`. Each client
+  # connection is a backend process costing several MB of non-reclaimable
+  # memory, so raising the pool above without also raising resources.limits
+  # .memory trades a connection-pool stall for an OOMKill — size them together.
+  # effective_cache_size in particular should track the memory limit rather
+  # than being left at the Postgres default, which assumes a far larger host.
+  # Example:
+  #   parameters:
+  #     effective_cache_size: 1536MB
+  #     shared_buffers: 256MB
+  parameters: {}
 
 # ── Backups ───────────────────────────────────────────────────────────────────
 # This chart ships no backup jobs on purpose — an on-cluster backup shares the

@@ -4,22 +4,24 @@ from switch_core.bridges.resource.events import (
     ResourceLoadResponse,
 )
 from switch_core.bridges.resource.registry import (
-    REFERENCE_TYPES,
-    list_known_types,
-    serialize_used_types,
-    validate_reference_type,
+    BUILTIN_REFERENCE_TYPES,
+    ReferenceTypeSpec,
+    ReferenceValue,
+    is_builtin_type,
+    validate_reference_value,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.bridges.resource.tracker import ResourceRequestTracker
 
 __all__ = [
-    "REFERENCE_TYPES",
+    "BUILTIN_REFERENCE_TYPES",
+    "ReferenceTypeSpec",
+    "ReferenceValue",
     "ResourceLoadEntry",
     "ResourceLoadRequest",
     "ResourceLoadResponse",
     "ResourceRequestTracker",
     "ResourceService",
-    "list_known_types",
-    "serialize_used_types",
-    "validate_reference_type",
+    "is_builtin_type",
+    "validate_reference_value",
 ]

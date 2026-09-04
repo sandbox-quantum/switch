@@ -57,8 +57,7 @@ depends on them:
   server could not ship here at all.)
 - **An unset name is simply not forwarded.** So the list can name
   Switch Console-only variables (`SWITCH_CONNECTION_ID`) without breaking a
-  session that has none of them. The Claude connector cannot do this: `${VAR}`
-  expansion makes every declared variable mandatory.
+  session that has none of them.
 
 `startup_timeout_sec` is raised from Codex's 10s default because a host that has
 never run the runtime can exceed it on the `npx` fetch alone, and a timeout
@@ -146,7 +145,7 @@ server, which is precisely why the runtime learned to find them itself.
 
 Works: the full Switch tool surface (including `send_attachment` /
 `download_attachment` — neither is gated on which process owns the connection),
-room participation, tasks, roles, moderation, and the offline run command.
+room participation, roles, moderation, and the offline run command.
 
 Does not: **inbound events are not pushed into the session.** Switch Console reads
 the session's event connection and injects `[Switch] …` lines into its pane;
@@ -165,10 +164,11 @@ knowing:
 
 - `repo_dir` should be the directory the credentials were written into. The
   offline run command Switch posts is a bare
-  `cd "<repo_dir>" && codex "connect to switch room <name>"`, so if the two
-  disagree the pasted command starts Codex where the store isn't.
+  `cd "<repo_dir>" && codex "connect to switch room <name> — if you are asked which agent you are, you are <agent_name>"`, so if the
+  two disagree the pasted command starts Codex where the store isn't.
 - Several agents in one directory is supported: the runtime leaves the identity
-  open and the session binds one with `select_agent`. Agents spanning **several
+  open and the session binds one with `select_agent` — which the prompt above
+  answers, since it names the agent the command was generated for. Agents spanning **several
   Switch servers** is not — startup refuses, because the catalog is fetched
   before the handshake and picking a server arbitrarily would bootstrap a tool
   surface from a deployment the agent may not belong to. `SWITCH_API_ENDPOINT`

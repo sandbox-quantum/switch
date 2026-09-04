@@ -41,6 +41,15 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ steps.app-token.outputs.token }}
         with:
           path-to-signatures: signatures/version1/cla.json
+          # These name this very repository, which looks redundant but is not:
+          # the action only reaches for PERSONAL_ACCESS_TOKEN (the CLA App
+          # token above) to read and write the signature file when a remote
+          # org or repo is set. Left unset, it writes with GITHUB_TOKEN, which
+          # is contents:read here — so signing fails with "Resource not
+          # accessible by integration". Do not remove without also granting
+          # this workflow contents:write.
+          remote-organization-name: sandbox-quantum
+          remote-repository-name: switch
           path-to-document: https://github.com/sandbox-quantum/switch/blob/main/CLA.md
           branch: main
           allowlist: dependabot[bot],renovate[bot],socket-fix[bot]

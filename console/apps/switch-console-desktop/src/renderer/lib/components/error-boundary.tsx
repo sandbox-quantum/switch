@@ -1,4 +1,5 @@
 import React from 'react';
+import { report } from '@renderer/lib/telemetry/report';
 import { log } from '@renderer/utils/logger';
 import { rpc } from '../ipc';
 import { Button } from '../ui/button';
@@ -47,6 +48,9 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
    * record of left none.
    */
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // A count only. The message, the stack and the component stack all stay in
+    // the local log — none of them may leave the machine.
+    report('renderer_crashed', {});
     log.error('Renderer crashed', {
       event: 'renderer_crash',
       error: { name: error.name, message: error.message, stack: error.stack },

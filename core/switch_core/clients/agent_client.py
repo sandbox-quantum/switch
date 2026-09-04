@@ -46,6 +46,7 @@ from switch_core.bridges.resource.events import (
     RoomDocumentUpdateResponse,
 )
 from switch_core.bridges.resource.tracker import ResourceRequestTracker
+from switch_core.clients.admin_messages import ADMIN_MARKER
 from switch_core.clients.client_base import ClientBase, ClientConfig
 from switch_core.clients.mentions import (
     NAME_CHAR as _NAME_CHAR,
@@ -153,6 +154,43 @@ _CONNECTED_NOT_LIVE_MESSAGE = (
 )
 
 
+def _offline_owner_message(
+    owner_handle: str | None, asker_handle: str, cmd: str | None
+) -> str:
+    """The reply for an auto_session agent addressed with nothing to start it.
+
+    An auto_session agent is brought online by Switch Console watching on its
+    owner's machine, so reaching this means the app is not running or not
+    connected — the fix is for the OWNER to open it, and nobody else in the
+    room can act. So the owner leads and is asked directly; the asker is named
+    as the reason, not as a second person being told to do something.
+
+    Deliberately says "online" rather than anything about sessions: which
+    process is or is not attached to which room is Switch's business, not
+    something to hand a reader in a chat channel.
+    """
+    # The owner addressing their own agent is the common case; naming them as
+    # the reason they should act reads as a stutter ("@me … and @me needs me").
+    needs_me = "" if owner_handle == asker_handle else f", and @{asker_handle} needs me"
+    if owner_handle:
+        opening = (
+            f"@{owner_handle} — I'm not online in this room{needs_me}. "
+            "Open Switch Console to bring me online here."
+        )
+        terminal = "If you'd rather do it from a terminal:"
+    else:
+        # No owner account on this platform to mention. Still name who has to
+        # act, so the message is not read as something the room can fix.
+        opening = (
+            f"I'm not online in this room{needs_me}. **My owner needs to open "
+            "Switch Console** to bring me online here."
+        )
+        terminal = "Or, from a terminal:"
+    if cmd is None:
+        return opening
+    return f"{opening} {terminal}\n\n```\n{cmd}\n```"
+
+
 # Posted (once, guarded by AUTO_REPLY_FLAG) when a sender tags this agent but
 # the agent's scoped addressing policy does not permit that sender to address
 # it here. The message is demoted to unaddressed room chatter; this reply is
@@ -192,6 +230,15 @@ class _AddressingDecision(NamedTuple):
 
     allowed: bool
     refusal: str
+
+
+class _GateOutcome(NamedTuple):
+    """Whether a message that tags this agent really addresses it, plus the
+    refusal to post when it does not. The refusal is returned rather than sent
+    so the caller can close its database session before talking to Matrix."""
+
+    addressed: bool
+    refusal: str | None
 
 
 # Shown to an agent addressed here while it holds a role in THIS room but the
@@ -261,7 +308,7 @@ class AgentClient(ClientBase[ClientConfig]):
             raise RuntimeError("Agent not loaded — call start() first")
         return self._agent
 
-    async def _fresh_agent(self) -> Agent:
+    async def _fresh_agent(self, session: AsyncSession) -> Agent:
         """Re-read the agent row and refresh the cached snapshot.
 
         `self.agent` is loaded once in `start()`. An operator can edit the
@@ -269,9 +316,12 @@ class AgentClient(ClientBase[ClientConfig]):
         `auto_session`) via the gateway while this client runs, so any branch
         on `connection_model` must read fresh rather than trust the boot-time
         snapshot.
+
+        Reads through the caller's session: one inbound message asks several
+        questions of this row, and each one opening a session of its own is
+        several pool slots taken to answer a single event.
         """
-        async with self.session_factory() as session:
-            fresh = await self._agent_store.get(session, self.agent.id)
+        fresh = await self._agent_store.get(session, self.agent.id)
         if fresh is not None:
             self._agent = fresh
         return self.agent
@@ -350,7 +400,6 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        is_addressed = await self._compute_addressed(event, meta)
 
         thread_id: str | None = None
         relates = event.source.get("content", {}).get("m.relates_to") or {}
@@ -359,35 +408,54 @@ class AgentClient(ClientBase[ClientConfig]):
 
         reply_thread_root = thread_id if thread_id is not None else event.event_id
 
-        is_addressed = await self._gate_addressed(
-            room, event, meta, reply_thread_root, is_addressed
-        )
+        # Every database read this message needs happens in one session, and
+        # nothing is posted to Matrix while it is open. A busy room fans one
+        # inbound event out to every agent client in it at once, so a client
+        # that took a slot per question would multiply a single message into
+        # dozens of concurrent checkouts.
+        is_addressed = False
+        refusal: str | None = None
+        unavailable: str | None = None
+        if self._addressed_without_lookup(event, meta) is not False:
+            async with self.session_factory() as session:
+                is_addressed = await self._compute_addressed(session, event, meta)
+                if is_addressed:
+                    agent = await self._fresh_agent(session)
+                    gate = await self._gate_addressed(session, agent, event, meta)
+                    is_addressed = gate.addressed
+                    refusal = gate.refusal
+                    if (
+                        is_addressed
+                        and not self._triggered_by_auto_reply(event)
+                        and not await self._is_available(session, agent, meta.room_id)
+                    ):
+                        unavailable = await self._reply_when_unavailable_here(
+                            session, agent, meta, self._sender_handle(event)
+                        )
 
-        if is_addressed:
-            triggered_by_auto_reply = bool(
-                event.source.get("content", {}).get(AUTO_REPLY_FLAG)
+        if refusal is not None:
+            await self._post_auto_reply(room.room_id, event, refusal, reply_thread_root)
+        if unavailable is not None:
+            await self._post_auto_reply(
+                room.room_id,
+                event,
+                unavailable,
+                # Where this lands depends on whether an answer follows it.
+                #
+                # "Starting a session" is a preamble: the real answer arrives
+                # after it, in the room the question was asked in. Threading it
+                # off the trigger buries the notice away from the answer it
+                # introduces, so it goes where the question was — `thread_id`,
+                # which is None for a message at the root (CHOO-2173).
+                #
+                # Everything else here is the whole reply and nothing follows
+                # it, so it threads off the triggering message: an owner mention
+                # and a paste-ready command are a wall of text to drop into a
+                # channel for something only one person can act on (CHOO-2344).
+                thread_id
+                if unavailable == _STARTING_SESSION_MESSAGE
+                else reply_thread_root,
             )
-            if not triggered_by_auto_reply and not await self._is_available(
-                meta.room_id
-            ):
-                msg = await self._reply_when_unavailable_here(meta)
-                handle = self._sender_handle(event)
-                already_tagged = _mention_regex(handle).search(msg) is not None
-                body = msg if already_tagged else f"@{handle} {msg}"
-                await self.send_message(
-                    room.room_id,
-                    body,
-                    format="markdown",
-                    mentions=[event.sender],
-                    # Answer where the question was asked: `thread_id`, not the
-                    # reply root. They differ for a message at the conversation
-                    # root, where the reply root is the message itself — which
-                    # opens a thread off it, so a one-line "starting a session"
-                    # buries itself somewhere nobody is looking, away from the
-                    # answer that follows it.
-                    thread_root_id=thread_id,
-                    extra_content={AUTO_REPLY_FLAG: True},
-                )
 
         text = event.body
 
@@ -426,7 +494,7 @@ class AgentClient(ClientBase[ClientConfig]):
         meta = await self._resolve_room_meta(room.room_id)
         if meta is None:
             return
-        is_addressed = await self._compute_addressed(event, meta)
+        is_addressed = await self._addressed(event, meta)
 
         content = event.source.get("content", {})
         info = content.get("info", {}) or {}
@@ -592,9 +660,15 @@ class AgentClient(ClientBase[ClientConfig]):
         body: str,
     ) -> None:
         reply_thread_root = thread_id if thread_id is not None else event.event_id
-        is_addressed = await self._gate_addressed(
-            room, event, meta, reply_thread_root, is_addressed
-        )
+        if is_addressed:
+            async with self.session_factory() as session:
+                agent = await self._fresh_agent(session)
+                gate = await self._gate_addressed(session, agent, event, meta)
+            is_addressed = gate.addressed
+            if gate.refusal is not None:
+                await self._post_auto_reply(
+                    room.room_id, event, gate.refusal, reply_thread_root
+                )
 
         agent_event = AgentEvent(
             type="message",
@@ -662,7 +736,9 @@ class AgentClient(ClientBase[ClientConfig]):
             ),
         )
 
-    async def _command_targets_me_explicitly(self, args: str, room_id: str) -> bool:
+    async def _command_targets_me_explicitly(
+        self, session: AsyncSession, args: str, room_id: str
+    ) -> bool:
         """Whether the command names this agent, rather than reaching it as part
         of a room-wide fan-out (`!reset-all-agents`, or a bare command with no
         `@` token)."""
@@ -670,9 +746,9 @@ class AgentClient(ClientBase[ClientConfig]):
             return False
         if self._args_tag_my_name(args):
             return True
-        if await self._text_tags_my_alias(args, room_id):
+        if await self._text_tags_my_alias(session, args, room_id):
             return True
-        return await self._text_tags_my_role(args, room_id)
+        return await self._text_tags_my_role(session, args, room_id)
 
     async def _gate_command(
         self, room: MatrixRoom, event: CommandEvent, meta: RoomMeta
@@ -689,10 +765,17 @@ class AgentClient(ClientBase[ClientConfig]):
         would flood a room holding several restricted agents; those are declined
         quietly, with a warning in the log.
         """
-        decision = await self._addressing_allowed(event.user_id, meta.room_id)
-        if decision.allowed:
-            return True
-        if await self._command_targets_me_explicitly(event.args, meta.room_id):
+        async with self.session_factory() as session:
+            agent = await self._fresh_agent(session)
+            decision = await self._addressing_allowed(
+                session, agent, event.user_id, meta.room_id
+            )
+            if decision.allowed:
+                return True
+            targets_me = await self._command_targets_me_explicitly(
+                session, event.args, meta.room_id
+            )
+        if targets_me:
             await self.reply_command(
                 room.room_id,
                 decision.refusal,
@@ -756,7 +839,9 @@ class AgentClient(ClientBase[ClientConfig]):
         self._room_meta[matrix_room_id] = meta
         return meta
 
-    async def _reply_when_unavailable_here(self, meta: RoomMeta) -> str:
+    async def _reply_when_unavailable_here(
+        self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
+    ) -> str:
         """Message for an agent addressed here but not live in this room.
 
         If the agent has live session(s) connected to OTHER rooms, name them so
@@ -776,7 +861,6 @@ class AgentClient(ClientBase[ClientConfig]):
         not live here (and no live session in a distinct room), the reply says
         so and tells the operator to relaunch with live channels.
         """
-        agent = await self._fresh_agent()
         connection_model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
         )
@@ -795,48 +879,46 @@ class AgentClient(ClientBase[ClientConfig]):
             return _STARTING_SESSION_MESSAGE
 
         if connection_model == "auto_session":
-            async with self.session_factory() as session:
-                watching = await self._agent_session_store.get_live_agent_ids(
-                    session, [self.agent.id], None
-                )
+            watching = await self._agent_session_store.get_live_agent_ids(
+                session, [self.agent.id], None
+            )
             if self.agent.id in watching or self._connections.is_live(self.agent.id):
                 return _STARTING_SESSION_MESSAGE
 
-        async with self.session_factory() as session:
-            room_ids = await self._agent_session_store.live_connected_rooms(
-                session, self.agent.id
-            )
-            # A connection covering a room is a session in it, whether or not
-            # anything wrote an agent_sessions row for it.
-            room_ids = sorted(
-                set(room_ids)
-                | {
-                    room
-                    for conn in self._connections.for_agent(self.agent.id)
-                    for room in conn.rooms
-                }
-            )
-            bound_here = await self._agent_session_store.has_room_binding(
-                session, self.agent.id, meta.room_id
-            ) or self._connections.has_session_in(self.agent.id, meta.room_id)
-            names: list[str] = []
-            holds_role_here = False
-            other_room_ids = [rid for rid in room_ids if rid != meta.room_id]
-            if other_room_ids:
-                for rid in other_room_ids:
-                    room = await self._room_store.get(session, rid)
-                    name = room.name if room is not None else rid
-                    if name != meta.name:
-                        names.append(name)
-                holds_role_here = (
-                    await self._room_role_store.agent_room_role(
-                        session,
-                        meta.room_id,
-                        self.agent.id,
-                        self._connections.live_agent_ids(),
-                    )
-                    is not None
+        room_ids = await self._agent_session_store.live_connected_rooms(
+            session, self.agent.id
+        )
+        # A connection covering a room is a session in it, whether or not
+        # anything wrote an agent_sessions row for it.
+        room_ids = sorted(
+            set(room_ids)
+            | {
+                room
+                for conn in self._connections.for_agent(self.agent.id)
+                for room in conn.rooms
+            }
+        )
+        bound_here = await self._agent_session_store.has_room_binding(
+            session, self.agent.id, meta.room_id
+        ) or self._connections.has_session_in(self.agent.id, meta.room_id)
+        names: list[str] = []
+        holds_role_here = False
+        other_room_ids = [rid for rid in room_ids if rid != meta.room_id]
+        if other_room_ids:
+            for rid in other_room_ids:
+                room = await self._room_store.get(session, rid)
+                name = room.name if room is not None else rid
+                if name != meta.name:
+                    names.append(name)
+            holds_role_here = (
+                await self._room_role_store.agent_room_role(
+                    session,
+                    meta.room_id,
+                    self.agent.id,
+                    self._connections.live_agent_ids(),
                 )
+                is not None
+            )
 
         if names:
             if holds_role_here:
@@ -844,17 +926,23 @@ class AgentClient(ClientBase[ClientConfig]):
             # No role lease here, just sessions elsewhere: prefer the
             # known-agent reply so the operator gets the paste-ready
             # connect command alongside the "ask me there" alternative.
-            return await self._unavailable_reply(meta, agent, other_room_names=names)
+            return await self._unavailable_reply(
+                session, meta, agent, asker_handle, other_room_names=names
+            )
 
         # No live session in a distinct room. A session_addressable agent bound
         # to THIS room but not live here was most likely launched without live
         # channels: say a session is connected-but-not-live rather than imply
         # there is none.
         if connection_model == "session_addressable" and bound_here:
-            return await self._unavailable_reply(meta, agent, connected_not_live=True)
-        return await self._unavailable_reply(meta, agent)
+            return await self._unavailable_reply(
+                session, meta, agent, asker_handle, connected_not_live=True
+            )
+        return await self._unavailable_reply(session, meta, agent, asker_handle)
 
-    async def owner_handle_in(self, agent: Agent, bridge_id: str | None) -> str | None:
+    async def owner_handle_in(
+        self, session: AsyncSession, agent: Agent, bridge_id: str | None
+    ) -> str | None:
         """The agent owner's account on the platform this room is bridged to,
         for @-mentioning them (CHOO-2137).
 
@@ -870,10 +958,7 @@ class AgentClient(ClientBase[ClientConfig]):
         """
         if agent.owner_id is None or bridge_id is None:
             return None
-        async with self.session_factory() as session:
-            claimed = await self._external_user_store.get_by_user(
-                session, agent.owner_id
-            )
+        claimed = await self._external_user_store.get_by_user(session, agent.owner_id)
         # Claiming is not exclusive and one person may hold several accounts on
         # a bridge. Sorted so a second account cannot change who gets mentioned
         # between one message and the next.
@@ -882,32 +967,58 @@ class AgentClient(ClientBase[ClientConfig]):
 
     async def _unavailable_reply(
         self,
+        session: AsyncSession,
         meta: RoomMeta,
         agent: Agent,
+        asker_handle: str,
         other_room_names: list[str] | None = None,
         connected_not_live: bool = False,
     ) -> str:
         """Build the room-facing message for an addressed-but-offline agent.
 
-        Prefers per-known-agent `start_session_instructions` (e.g. the
-        paste-ready terminal command for Claude Code). Falls back to the
-        static `_UNAVAILABLE_MESSAGES` text keyed by connection_model when
-        the agent has no known-agent spec or the spec returns None;
-        `connected_not_live` selects the "bound here but not live" fallback.
+        An auto_session agent with nowhere else to point the asker gets the
+        owner-facing "I'm not online" reply: only its owner can act, so the
+        message asks them and nobody else. Every other case prefers the
+        per-known-agent `start_session_instructions` (e.g. the paste-ready
+        terminal command for Claude Code), falling back to the static
+        `_UNAVAILABLE_MESSAGES` text keyed by connection_model when the agent
+        has no known-agent spec or the spec returns None; `connected_not_live`
+        selects the "bound here but not live" fallback.
 
         `agent` is the freshly-read row supplied by the caller (via
         `_fresh_agent`), so option edits made through the gateway (e.g.
         `PATCH /agents/{id}/options`, `connection_model`) take effect without
         restarting this client — `self.agent` alone is a boot-time snapshot.
         """
+        connection_model = (agent.integration_profile or {}).get(
+            "connection_model", "session_passive"
+        )
         spec_options = known_agent_for(agent)
+        # `other_room_names` outranks this: a live session in another room is
+        # somewhere the asker can go right now, which beats asking the owner to
+        # start something.
+        if (
+            connection_model == "auto_session"
+            and not other_room_names
+            and not connected_not_live
+        ):
+            cmd = (
+                spec_options[0].connect_command(spec_options[1], agent, meta.name, None)
+                if spec_options is not None
+                else None
+            )
+            return _offline_owner_message(
+                await self.owner_handle_in(session, agent, meta.bridge_id),
+                asker_handle,
+                cmd,
+            )
         if spec_options is not None:
             spec, options = spec_options
             msg = spec.start_session_instructions(
                 options,
                 agent,
                 meta.name,
-                await self.owner_handle_in(agent, meta.bridge_id),
+                await self.owner_handle_in(session, agent, meta.bridge_id),
                 other_room_names=other_room_names,
                 connected_not_live=connected_not_live,
             )
@@ -915,21 +1026,19 @@ class AgentClient(ClientBase[ClientConfig]):
                 return msg
         if connected_not_live:
             return _CONNECTED_NOT_LIVE_MESSAGE
-        connection_model = (agent.integration_profile or {}).get(
-            "connection_model", "session_passive"
-        )
         return _UNAVAILABLE_MESSAGES.get(
             connection_model, _UNAVAILABLE_MESSAGES["session_passive"]
         )
 
-    async def _is_available(self, room_id: str) -> bool:
+    async def _is_available(
+        self, session: AsyncSession, agent: Agent, room_id: str
+    ) -> bool:
         """Return True if this agent has a live session for `room_id`.
 
         always_on agents heartbeat against `room_id=None`; session_addressable
         agents heartbeat against the specific room; session_passive agents
         have no heartbeat and are never considered live in real time.
         """
-        agent = await self._fresh_agent()
         connection_model = (agent.integration_profile or {}).get(
             "connection_model", "session_passive"
         )
@@ -947,10 +1056,9 @@ class AgentClient(ClientBase[ClientConfig]):
             return True
 
         heartbeat_room = None if connection_model == "always_on" else room_id
-        async with self.session_factory() as session:
-            live = await self._agent_session_store.get_live_agent_ids(
-                session, [self.agent.id], heartbeat_room
-            )
+        live = await self._agent_session_store.get_live_agent_ids(
+            session, [self.agent.id], heartbeat_room
+        )
         return self.agent.id in live
 
     async def _is_direct_room(self, matrix_room_id: str) -> bool:
@@ -1123,20 +1231,59 @@ class AgentClient(ClientBase[ClientConfig]):
 
     # ── Mention detection ─────────────────────────────────────────────────────
 
-    async def _compute_addressed(self, event: RoomMessage, meta: RoomMeta) -> bool:
+    def _addressed_without_lookup(
+        self, event: RoomMessage, meta: RoomMeta
+    ) -> bool | None:
+        """The addressing answer that needs no database read, or None when the
+        room's aliases and role leases have to be consulted.
+
+        Callers use it to decide whether to take a pool slot at all: most room
+        chatter carries no `@` and is answered here, and a room fans every
+        message out to all of its agent clients at once.
+        """
+        if ADMIN_MARKER in (event.source.get("content") or {}):
+            return False
+        if meta.channel_type == "direct":
+            return True
+        if self._is_mentioned(event):
+            return True
+        if "@" not in (getattr(event, "body", "") or ""):
+            return False
+        return None
+
+    async def _addressed(self, event: RoomMessage, meta: RoomMeta) -> bool:
+        """`_compute_addressed`, in a session of its own when it needs one."""
+        decided = self._addressed_without_lookup(event, meta)
+        if decided is not None:
+            return decided
+        async with self.session_factory() as session:
+            return await self._compute_addressed(session, event, meta)
+
+    async def _compute_addressed(
+        self, session: AsyncSession, event: RoomMessage, meta: RoomMeta
+    ) -> bool:
         """Whether this message addresses this agent (expects a response).
 
         Direct rooms always address. Otherwise the agent is addressed by an
         `@name` mention OR by an `@<role>` tag for a room-role it currently
         holds (see `_is_mentioned_via_role`).
+
+        **A system message never addresses anyone**, whatever the room type.
+        Switch's own notices — a command's answer, "Added X to this room", the
+        guidance shown when someone tags the app itself — are output, not a
+        request for a reply. Two ways they were read as one: in a direct room
+        every message addresses the agent, so running `/list-agents` in a 1:1
+        chat had the agent start a session to respond to its own roster; and in
+        any room, a notice that lists the agents present writes each `@name`,
+        which tagged every one of them. The marker exists to say "generated by
+        Switch"; this is it being honoured.
         """
-        if meta.channel_type == "direct":
+        decided = self._addressed_without_lookup(event, meta)
+        if decided is not None:
+            return decided
+        if await self._is_mentioned_via_alias(session, event, meta.room_id):
             return True
-        if self._is_mentioned(event):
-            return True
-        if await self._is_mentioned_via_alias(event, meta.room_id):
-            return True
-        return await self._is_mentioned_via_role(event, meta.room_id)
+        return await self._is_mentioned_via_role(session, event, meta.room_id)
 
     async def _resolve_sender_principal(
         self, session: AsyncSession, matrix_user_id: str
@@ -1171,7 +1318,7 @@ class AgentClient(ClientBase[ClientConfig]):
         return None
 
     async def _addressing_allowed(
-        self, matrix_sender: str, room_id: str
+        self, session: AsyncSession, agent: Agent, matrix_sender: str, room_id: str
     ) -> _AddressingDecision:
         """Whether `matrix_sender` may address this agent in `room_id`, per the
         agent's scoped addressing policy.
@@ -1182,13 +1329,11 @@ class AgentClient(ClientBase[ClientConfig]):
         wording to send back, which differs when the sender looks like someone
         whose platform identity simply has not been claimed yet.
         """
-        agent = await self._fresh_agent()
         policy = parse_policy(agent.addressing_policy)
         if policy.is_open():
             return _AddressingDecision(allowed=True, refusal="")
-        async with self.session_factory() as session:
-            principal = await self._resolve_sender_principal(session, matrix_sender)
-            room = await self._room_store.get(session, room_id)
+        principal = await self._resolve_sender_principal(session, matrix_sender)
+        room = await self._room_store.get(session, room_id)
         if principal is None:
             logger.warning(
                 "Addressing denied for %s: unresolvable sender %s in room %s",
@@ -1250,50 +1395,60 @@ class AgentClient(ClientBase[ClientConfig]):
 
     async def _gate_addressed(
         self,
-        room: MatrixRoom,
+        session: AsyncSession,
+        agent: Agent,
         event: RoomMessage,
         meta: RoomMeta,
-        reply_thread_root: str,
-        is_addressed: bool,
-    ) -> bool:
-        """Apply the scoped addressing policy to a would-be-addressed message.
+    ) -> _GateOutcome:
+        """Apply the scoped addressing policy to a message that tags this agent.
 
-        When the message tags this agent but the sender is not permitted by the
-        agent's policy, demote it to unaddressed room chatter and (once, guarded
-        by AUTO_REPLY_FLAG so two agents can't ping-pong) reply to the sender
-        explaining they can't address it here. Returns the effective addressed
-        flag. Zero cost for the common case: only messages that already tag this
-        agent are ever checked, and open policies short-circuit.
+        When the sender is not permitted by the agent's policy, the message is
+        demoted to unaddressed room chatter and the caller is handed a refusal
+        to post (once, guarded by AUTO_REPLY_FLAG so two agents can't
+        ping-pong). Zero cost for the common case: only messages that already
+        tag this agent are ever checked, and open policies short-circuit.
         """
-        if not is_addressed:
-            return False
-        decision = await self._addressing_allowed(event.sender, meta.room_id)
-        if decision.allowed:
-            return True
-        triggered_by_auto_reply = bool(
-            event.source.get("content", {}).get(AUTO_REPLY_FLAG)
+        decision = await self._addressing_allowed(
+            session, agent, event.sender, meta.room_id
         )
-        if not triggered_by_auto_reply:
-            handle = self._sender_handle(event)
-            msg = decision.refusal
-            already_tagged = _mention_regex(handle).search(msg) is not None
-            body = msg if already_tagged else f"@{handle} {msg}"
-            await self.send_message(
-                room.room_id,
-                body,
-                format="markdown",
-                mentions=[event.sender],
-                thread_root_id=reply_thread_root,
-                extra_content={AUTO_REPLY_FLAG: True},
-            )
-        return False
+        if decision.allowed:
+            return _GateOutcome(addressed=True, refusal=None)
+        if self._triggered_by_auto_reply(event):
+            return _GateOutcome(addressed=False, refusal=None)
+        return _GateOutcome(addressed=False, refusal=decision.refusal)
+
+    @staticmethod
+    def _triggered_by_auto_reply(event: RoomMessage) -> bool:
+        return bool(event.source.get("content", {}).get(AUTO_REPLY_FLAG))
+
+    async def _post_auto_reply(
+        self,
+        matrix_room_id: str,
+        event: RoomMessage,
+        msg: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """Post a reply addressed at the sender and flagged as an auto-reply, so
+        another offline agent it tags does not answer it in turn."""
+        handle = self._sender_handle(event)
+        already_tagged = _mention_regex(handle).search(msg) is not None
+        await self.send_message(
+            matrix_room_id,
+            msg if already_tagged else f"@{handle} {msg}",
+            format="markdown",
+            mentions=[event.sender],
+            thread_root_id=thread_root_id,
+            extra_content={AUTO_REPLY_FLAG: True},
+        )
 
     def _args_tag_my_name(self, text: str) -> bool:
         """True when `text` contains our own `@name` at a full-token boundary
         (so a name that is a prefix of a longer one is not falsely matched)."""
         return _mention_regex(self.agent.name).search(_strip_emphasis(text)) is not None
 
-    async def _text_tags_my_alias(self, text: str, room_id: str) -> bool:
+    async def _text_tags_my_alias(
+        self, session: AsyncSession, text: str, room_id: str
+    ) -> bool:
         """True when `text` `@`-tags this agent's room alias at a token boundary.
 
         The alias is looked up live (like a role lease) so a change takes effect
@@ -1301,21 +1456,26 @@ class AgentClient(ClientBase[ClientConfig]):
         """
         if "@" not in text:
             return False
-        async with self.session_factory() as session:
-            alias = await self._room_store.get_alias(session, room_id, self.agent.id)
+        alias = await self._room_store.get_alias(session, room_id, self.agent.id)
         if not alias:
             return False
         return _mention_regex(alias).search(text) is not None
 
-    async def _is_mentioned_via_alias(self, event: RoomMessage, room_id: str) -> bool:
+    async def _is_mentioned_via_alias(
+        self, session: AsyncSession, event: RoomMessage, room_id: str
+    ) -> bool:
         """True when the message body tags this agent's room alias.
 
         A room alias addresses the agent exactly like its real name, so an
         `@<alias>` mention routes here just as `@<name>` does.
         """
-        return await self._text_tags_my_alias(getattr(event, "body", "") or "", room_id)
+        return await self._text_tags_my_alias(
+            session, getattr(event, "body", "") or "", room_id
+        )
 
-    async def _text_tags_my_role(self, text: str, room_id: str) -> bool:
+    async def _text_tags_my_role(
+        self, session: AsyncSession, text: str, room_id: str
+    ) -> bool:
         """True when `text` `@`-tags a room-role this agent LIVE-holds.
 
         Only a live lease counts, so "held" means the same thing here as in
@@ -1327,22 +1487,25 @@ class AgentClient(ClientBase[ClientConfig]):
         """
         if "@" not in text:
             return False
-        async with self.session_factory() as session:
-            role_name = await self._room_role_store.agent_room_role(
-                session, room_id, self.agent.id, self._connections.live_agent_ids()
-            )
+        role_name = await self._room_role_store.agent_room_role(
+            session, room_id, self.agent.id, self._connections.live_agent_ids()
+        )
         if not role_name:
             return False
         return _mention_regex(role_name).search(_strip_emphasis(text)) is not None
 
-    async def _is_mentioned_via_role(self, event: RoomMessage, room_id: str) -> bool:
+    async def _is_mentioned_via_role(
+        self, session: AsyncSession, event: RoomMessage, room_id: str
+    ) -> bool:
         """True when the message body tags a room-role this agent holds.
 
         Tagging `@<role>` addresses whichever agent holds that role, so an
         interchangeable agent can be reached by responsibility rather than by
         name.
         """
-        return await self._text_tags_my_role(getattr(event, "body", "") or "", room_id)
+        return await self._text_tags_my_role(
+            session, getattr(event, "body", "") or "", room_id
+        )
 
     def _sender_handle(self, event: RoomMessage) -> str:
         """The @-handle to tag the message sender with.

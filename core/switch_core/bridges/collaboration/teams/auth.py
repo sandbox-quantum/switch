@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 import httpx
 import jwt
@@ -45,8 +46,28 @@ class TeamsTokenProvider:
         self._app_id = app_id
         self._app_password = app_password
         self._http = http
-        # scope -> (access_token, expires_at_epoch)
-        self._cache: dict[str, tuple[str, float]] = {}
+        # scope -> (access_token, expires_at_epoch, issued_at_epoch)
+        self._cache: dict[str, tuple[str, float, float]] = {}
+
+    def invalidate(self, scope: str, *, min_age_seconds: float = 0.0) -> bool:
+        """Drop a cached token so the next call mints a fresh one.
+
+        An app's Graph roles are fixed when its token is issued, so a permission
+        consented while the bridge is running is invisible for as long as the
+        token lasts — about an hour of Graph insisting a permission is missing
+        while the operator looks at it plainly granted in Azure. Throwing the
+        token away on that refusal is what turns an hour into a second.
+
+        ``min_age_seconds`` guards the pathological case: a token minted moments
+        ago cannot have missed a grant, so re-minting it would only add a round
+        trip to every genuine denial. Returns whether anything was dropped, so a
+        caller can skip a retry that has nothing new to offer.
+        """
+        cached = self._cache.get(scope)
+        if cached is None or time.time() - cached[2] < min_age_seconds:
+            return False
+        del self._cache[scope]
+        return True
 
     async def token(self, scope: str) -> str:
         cached = self._cache.get(scope)
@@ -68,10 +89,21 @@ class TeamsTokenProvider:
                 f"AAD token request for scope {scope} failed "
                 f"({resp.status_code}): {resp.text}"
             )
-        payload = resp.json()
-        access_token = str(payload["access_token"])
+        # A 200 whose body is not the token response we expect — an HTML error
+        # page from a proxy in front of AAD, or a shape change — must fail the
+        # same way a 401 does. Left to raise on its own it surfaces as KeyError
+        # or a JSON decode error, which callers looking for a credential problem
+        # do not catch, and the save-time check turns into a 500.
+        try:
+            payload = resp.json()
+            access_token = str(payload["access_token"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"AAD token request for scope {scope} returned "
+                f"{resp.status_code} with an unusable body: {resp.text[:500]}"
+            ) from exc
         expires_in = float(payload.get("expires_in", 3600))
-        self._cache[scope] = (access_token, now + expires_in)
+        self._cache[scope] = (access_token, now + expires_in, now)
         return access_token
 
     async def bot_token(self) -> str:
@@ -111,14 +143,49 @@ class InboundActivityValidator:
             raise PermissionError("missing bearer token on inbound Teams activity")
         token = auth_header.split(" ", 1)[1].strip()
         signing_key = self._ensure_jwks().get_signing_key_from_jwt(token)
-        jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=self._app_id,
-            issuer=_BOTFRAMEWORK_ISSUER,
-            options={"require": ["exp", "iss", "aud"]},
-        )
+        try:
+            jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=self._app_id,
+                issuer=_BOTFRAMEWORK_ISSUER,
+                options={"require": ["exp", "iss", "aud"]},
+            )
+        except jwt.InvalidAudienceError as exc:
+            audience = self._describe_audience(token, signing_key.key)
+            raise PermissionError(
+                f"inbound Teams activity is addressed to {audience}, "
+                f"but this bridge is configured with app id {self._app_id!r}. "
+                "The Azure Bot resource's Microsoft App ID must be the app id "
+                "registered on the bridge."
+            ) from exc
+
+    @staticmethod
+    def _describe_audience(token: str, signing_key: Any) -> str:
+        """The audience the token actually carries, for a mismatch message.
+
+        Decoded with the same signing key, relaxing only the audience check —
+        the one claim already known not to match. Reading it from an unverified
+        parse would mean quoting an attacker's own words back in the message
+        explaining why they were rejected, and the habit is worth not having
+        even where, as here, the signature has just been checked.
+
+        The audience of a Bot Connector token is an application id, not a
+        secret; the token itself is never logged.
+        """
+        try:
+            claims = jwt.decode(
+                token,
+                signing_key,
+                algorithms=["RS256"],
+                issuer=_BOTFRAMEWORK_ISSUER,
+                options={"verify_aud": False},
+            )
+        except jwt.PyJWTError:
+            return "an unreadable audience"
+        aud = claims.get("aud")
+        return f"app id {aud!r}" if aud else "no audience"
 
     def close(self) -> None:
         self._http.close()

@@ -296,6 +296,22 @@ class MatrixAdmin:
             json={"user_id": user_id},
         )
         if not resp.is_success:
+            # User is already out — nothing to do, the room teardown this serves
+            # wants them gone and they are. Tuwunel/conduwuit rejects it with
+            # "Cannot kick a user who is not apart of the room" (their typo);
+            # Synapse says "not in the room". The counterpart to the
+            # already-a-member tolerance in `invite_to_room`.
+            if resp.status_code == 403 and (
+                "not apart of the room" in resp.text
+                or "not in the room" in resp.text
+                or "not in room" in resp.text
+            ):
+                logger.debug(
+                    "Skipped kicking %s from %s: already not a member",
+                    user_id,
+                    room_id,
+                )
+                return
             raise MatrixAdminError(
                 f"Failed to kick {user_id} from {room_id}: {resp.status_code} {resp.text}"
             )

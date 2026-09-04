@@ -6,6 +6,7 @@ import { httpGetJsonOverChannel } from '@main/core/agent-runtime/impl/sidecar-ht
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import type { HostReachabilityChange } from '@main/core/remote-hosts/host-reachability-service';
 import { hostReachabilityService } from '@main/core/remote-hosts/production-host-reachability';
+import { formatProvisionSessionError } from '@main/core/sessions/provision-session-error';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
@@ -508,6 +509,10 @@ class RemoteSessionReconciler {
       // opens the session — a first sync against a busy host would otherwise
       // spawn one PTY per adopted session in a single pass.
       attach: false,
+      // Nobody started this here: the agent was already running on the VM and
+      // this row is catching up with it, so it is reported apart from the
+      // sessions this app actually started.
+      startSource: 'adopted',
     });
     if (!result.success) {
       if (result.error.type === 'already-exists') {
@@ -531,13 +536,16 @@ class RemoteSessionReconciler {
     // not session:provisioned — without the latter an open renderer leaves the
     // session stuck "Setting up session…". provisionSession is idempotent and
     // emits the provisioned event the renderer needs.
-    await sessionService.provisionSession(sessionId).catch((error) => {
+    // The failure is a value now, not a rejection: a `.catch` here would never
+    // run and the failure would pass in silence.
+    const provisioned = await sessionService.provisionSession(sessionId);
+    if (!provisioned.success) {
       log.warn('RemoteSessionReconciler: post-adopt provision-reconcile failed', {
         agentId: agent.id,
         sessionId,
-        error: String(error),
+        error: formatProvisionSessionError(provisioned.error),
       });
-    });
+    }
     let adoptedIds = this.adopted.get(agent.id);
     if (!adoptedIds) {
       adoptedIds = new Set();

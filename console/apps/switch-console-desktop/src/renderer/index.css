@@ -51,6 +51,10 @@
 
   --color-background-destructive: var(--background-destructive);
   --color-foreground-destructive: var(--foreground-destructive);
+  /* The bare `destructive` utilities — text-destructive, border-destructive,
+     bg-destructive/10, aria-invalid:ring-destructive/20 — are used throughout
+     the app and need a colour of their own to resolve against. */
+  --color-destructive: var(--foreground-destructive);
 
   --color-background-quaternary: var(--background-quaternary);
   --color-background-quaternary-1: var(--background-quaternary-1);
